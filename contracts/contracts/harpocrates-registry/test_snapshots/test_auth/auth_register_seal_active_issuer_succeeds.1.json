@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 5,
     "nonce": 0,
     "mux_id": 0
   },
@@ -32,16 +32,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "add_credential_root",
+              "function_name": "add_issuer",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "bytes": "0505050505050505050505050505050505050505050505050505050505050505"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "bytes": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                  "bytes": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 }
               ]
             }
@@ -50,8 +50,59 @@
         }
       ]
     ],
-    [],
-    []
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "add_credential_root",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "bytes": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                {
+                  "bytes": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "register_seal",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "bytes": "2020202020202020202020202020202020202020202020202020202020202020"
+                },
+                {
+                  "bytes": "2121212121212121212121212121212121212121212121212121212121212121"
+                },
+                {
+                  "bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ]
   ],
   "ledger": {
     "protocol_version": 25,
@@ -100,7 +151,7 @@
                     "symbol": "CredentialRoot"
                   },
                   {
-                    "bytes": "0505050505050505050505050505050505050505050505050505050505050505"
+                    "bytes": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                   }
                 ]
               },
@@ -128,7 +179,7 @@
                       "symbol": "metadata_hash"
                     },
                     "val": {
-                      "bytes": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                      "bytes": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     }
                   }
                 ]
@@ -149,16 +200,33 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Nullifier"
+                    "symbol": "Issuer"
                   },
                   {
-                    "bytes": "0404040404040404040404040404040404040404040404040404040404040404"
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "active"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata_hash"
+                    },
+                    "val": {
+                      "bytes": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  }
+                ]
               }
             }
           },
@@ -179,7 +247,7 @@
                     "symbol": "Proof"
                   },
                   {
-                    "bytes": "0303030303030303030303030303030303030303030303030303030303030303"
+                    "bytes": "2222222222222222222222222222222222222222222222222222222222222222"
                   }
                 ]
               },
@@ -206,23 +274,23 @@
                     "key": {
                       "symbol": "issuer"
                     },
-                    "val": "void"
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
                   },
                   {
                     "key": {
                       "symbol": "metadata_hash"
                     },
                     "val": {
-                      "bytes": "0202020202020202020202020202020202020202020202020202020202020202"
+                      "bytes": "2121212121212121212121212121212121212121212121212121212121212121"
                     }
                   },
                   {
                     "key": {
                       "symbol": "nullifier"
                     },
-                    "val": {
-                      "bytes": "0404040404040404040404040404040404040404040404040404040404040404"
-                    }
+                    "val": "void"
                   },
                   {
                     "key": {
@@ -243,7 +311,7 @@
                       "symbol": "tier"
                     },
                     "val": {
-                      "u32": 1
+                      "u32": 3
                     }
                   },
                   {
@@ -251,7 +319,7 @@
                       "symbol": "video_hash"
                     },
                     "val": {
-                      "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                      "bytes": "2020202020202020202020202020202020202020202020202020202020202020"
                     }
                   }
                 ]
@@ -275,13 +343,13 @@
                     "symbol": "Video"
                   },
                   {
-                    "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                    "bytes": "2020202020202020202020202020202020202020202020202020202020202020"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
-                "bytes": "0303030303030303030303030303030303030303030303030303030303030303"
+                "bytes": "2222222222222222222222222222222222222222222222222222222222222222"
               }
             }
           },
@@ -341,7 +409,47 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
               "key": {
                 "ledger_key_nonce": {
+                  "nonce": "1033654523790656264"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "4837995959683129791"
                 }
               },
               "durability": "temporary",
@@ -368,5 +476,57 @@
       }
     ]
   },
-  "events": []
+  "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "proof"
+              },
+              {
+                "symbol": "reg"
+              },
+              {
+                "bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "status"
+                  },
+                  "val": {
+                    "u32": 1
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "tier"
+                  },
+                  "val": {
+                    "u32": 3
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "video_hash"
+                  },
+                  "val": {
+                    "bytes": "2020202020202020202020202020202020202020202020202020202020202020"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    }
+  ]
 }

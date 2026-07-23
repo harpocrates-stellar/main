@@ -12,6 +12,43 @@ const TIER_PUBLIC_SEAL: u32 = 3;
 const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
 
+// ---------------------------------------------------------------------------
+// Proof-expiration policy (#44)
+// ---------------------------------------------------------------------------
+//
+// Every proof record stores an `expires_at` epoch-second timestamp.
+//
+// - `expires_at == 0`  → no expiration (backward-compatible with records that
+//   pre-date this field, which are deserialized with the Soroban SDK default
+//   of zero for missing u64 fields in persistent storage).
+// - `expires_at > 0`   → the proof is considered expired once
+//   `ledger.timestamp() > expires_at`.
+//
+// The registry admin can update the global TTL applied to *new* registrations
+// via `set_proof_ttl`.  Existing records are unaffected.
+//
+// `DEFAULT_PROOF_TTL_SECS = 0` means new proofs are eternal unless the admin
+// overrides the TTL, preserving the original behavior on a fresh deployment.
+//
+// Migration note: proofs registered before this field was added will have
+// `expires_at == 0` in persistent storage and will therefore be treated as
+// non-expiring by `get_proof_status`.
+pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
+
+/// Verification status returned by `get_proof_status`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofVerificationStatus {
+    /// Proof is registered and has not expired.
+    Valid,
+    /// Proof was explicitly revoked by the admin.
+    Revoked,
+    /// Proof has passed its `expires_at` deadline.
+    Expired,
+    /// No record found for the given proof_id.
+    NotFound,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProofRecord {
@@ -20,6 +57,10 @@ pub struct ProofRecord {
     pub tier: u32,
     pub status: u32,
     pub created_at: u64,
+    /// Epoch-second deadline after which this proof is considered expired.
+    /// `0` means no expiration.  See the expiration-policy comment at the top
+    /// of this file.
+    pub expires_at: u64,
     pub source: Option<Address>,
     pub issuer: Option<Address>,
     pub nullifier: Option<BytesN<32>>,
@@ -98,6 +139,8 @@ pub enum DataKey {
     CredentialRoot(BytesN<32>),
     Issuer(Address),
     Verifier,
+    /// Global proof TTL in seconds (set by admin via `set_proof_ttl`).
+    ProofTtl,
 }
 
 #[contracterror]
@@ -218,6 +261,55 @@ impl HarpocratesRegistry {
         IssuerRevoked { issuer }.publish(&env);
     }
 
+    // -----------------------------------------------------------------------
+    // Expiration policy (#44)
+    // -----------------------------------------------------------------------
+
+    /// Set the global TTL (in seconds) applied to new proof registrations.
+    /// `0` disables expiration for newly registered proofs.
+    /// Only the registry admin may call this.  Existing records are unaffected.
+    pub fn set_proof_ttl(env: Env, admin: Address, ttl_secs: u64) {
+        require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProofTtl, &ttl_secs);
+    }
+
+    /// Get the currently configured global proof TTL in seconds.
+    pub fn get_proof_ttl(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofTtl)
+            .unwrap_or(DEFAULT_PROOF_TTL_SECS)
+    }
+
+    /// Return the human-readable verification status of a proof at the current
+    /// ledger time without modifying any state.
+    ///
+    /// Clients should prefer this over reading the raw `ProofRecord` when they
+    /// need a definitive "is this proof still valid?" answer, because it
+    /// incorporates both the revocation flag and the expiration deadline.
+    pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
+        let record: Option<ProofRecord> =
+            env.storage().persistent().get(&DataKey::Proof(proof_id));
+        match record {
+            None => ProofVerificationStatus::NotFound,
+            Some(r) => {
+                if r.status == STATUS_REVOKED {
+                    return ProofVerificationStatus::Revoked;
+                }
+                if r.expires_at > 0 && env.ledger().timestamp() > r.expires_at {
+                    return ProofVerificationStatus::Expired;
+                }
+                ProofVerificationStatus::Valid
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Registration entry points
+    // -----------------------------------------------------------------------
+
     pub fn register_anonymous(
         env: Env,
         video_hash: BytesN<32>,
@@ -246,6 +338,7 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Nullifier(nullifier.clone()), &true);
 
+        let expires_at = compute_expires_at(&env);
         save_record(
             &env,
             &proof_id,
@@ -255,6 +348,7 @@ impl HarpocratesRegistry {
                 tier: TIER_SILENT_WITNESS,
                 status: STATUS_REGISTERED,
                 created_at: env.ledger().timestamp(),
+                expires_at,
                 source: None,
                 issuer: None,
                 nullifier: Some(nullifier),
@@ -297,6 +391,7 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
 
+        let expires_at = compute_expires_at(&env);
         save_record(
             &env,
             &proof_id,
@@ -306,6 +401,7 @@ impl HarpocratesRegistry {
                 tier: TIER_SILENT_WITNESS,
                 status: STATUS_REGISTERED,
                 created_at: env.ledger().timestamp(),
+                expires_at,
                 source: None,
                 issuer: None,
                 nullifier: Some(parsed.nullifier),
@@ -323,6 +419,7 @@ impl HarpocratesRegistry {
         source.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
+        let expires_at = compute_expires_at(&env);
         save_record(
             &env,
             &proof_id,
@@ -332,6 +429,7 @@ impl HarpocratesRegistry {
                 tier: TIER_CONSISTENT_SOURCE,
                 status: STATUS_REGISTERED,
                 created_at: env.ledger().timestamp(),
+                expires_at,
                 source: Some(source),
                 issuer: None,
                 nullifier: None,
@@ -354,6 +452,7 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::UnknownIssuer);
         }
 
+        let expires_at = compute_expires_at(&env);
         save_record(
             &env,
             &proof_id,
@@ -363,6 +462,7 @@ impl HarpocratesRegistry {
                 tier: TIER_PUBLIC_SEAL,
                 status: STATUS_REGISTERED,
                 created_at: env.ledger().timestamp(),
+                expires_at,
                 source: None,
                 issuer: Some(issuer),
                 nullifier: None,
@@ -413,6 +513,24 @@ fn require_admin(env: &Env, candidate: &Address) {
     candidate.require_auth();
     if &admin != candidate {
         panic_with_error!(env, RegistryError::Unauthorized);
+    }
+}
+
+/// Compute the `expires_at` value for a freshly registered proof.
+///
+/// Returns `created_at + ttl` when a non-zero TTL is configured, or `0`
+/// (no expiration) otherwise.  Uses saturating addition to avoid overflow on
+/// extreme inputs.
+fn compute_expires_at(env: &Env) -> u64 {
+    let ttl: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProofTtl)
+        .unwrap_or(DEFAULT_PROOF_TTL_SECS);
+    if ttl == 0 {
+        0
+    } else {
+        env.ledger().timestamp().saturating_add(ttl)
     }
 }
 
@@ -525,3 +643,6 @@ fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool 
 }
 
 mod test;
+mod test_auth;
+mod test_invariants;
+mod test_expiry;
