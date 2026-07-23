@@ -3,6 +3,7 @@ import {
   BadgeCheck,
   Building2,
   CheckCircle2,
+  Fingerprint,
   KeyRound,
   Loader2,
   Shield,
@@ -127,6 +128,7 @@ function App() {
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [events, setEvents] = useState<ProofEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
+  const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
 
   const selectedTierMeta = useMemo(
     () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
@@ -149,10 +151,20 @@ function App() {
 
   async function connectWallet() {
     try {
-      const { connectFreighter } = await import('./stellar')
+      const { connectFreighter, getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('./stellar')
+      const { checkNetworkMatch } = await import('./networkGuard')
       const publicKey = await connectFreighter()
       setWallet(publicKey)
-      setMessage('Wallet connected on Stellar Testnet.')
+
+      const walletPassphrase = await getWalletNetwork()
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+      if (check.ok) {
+        setNetworkMismatch(null)
+        setMessage('Wallet connected on Stellar Testnet.')
+      } else {
+        setNetworkMismatch(`${check.reason} ${check.remediation}`)
+        setMessage(check.reason)
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Freighter is not available.')
     }
@@ -235,6 +247,25 @@ function App() {
 
     if (!wallet) {
       setMessage('Connect Freighter before registering evidence.')
+      return
+    }
+
+    // Re-check network immediately before submission – the user may have
+    // switched networks in Freighter after connecting.
+    try {
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('./stellar')
+      const { checkNetworkMatch } = await import('./networkGuard')
+      const walletPassphrase = await getWalletNetwork()
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+      if (!check.ok) {
+        setNetworkMismatch(`${check.reason} ${check.remediation}`)
+        setMessage(check.reason)
+        return
+      }
+      setNetworkMismatch(null)
+    } catch {
+      // If we cannot query the network, abort rather than submit to the wrong chain.
+      setMessage('Could not verify wallet network before submitting. Reconnect Freighter and try again.')
       return
     }
 
@@ -539,6 +570,13 @@ function App() {
             <p>{message}</p>
           </header>
 
+          {networkMismatch ? (
+            <div className="network-mismatch-banner" role="alert">
+              <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+              <span>{networkMismatch}</span>
+            </div>
+          ) : null}
+
           <label className="dropzone">
             <Upload size={20} aria-hidden="true" />
             <span>{file ? file.name : 'Drop or choose a video file'}</span>
@@ -610,7 +648,7 @@ function App() {
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || stage === 'hashing' || stage === 'embedding' || stage === 'proving'}
+            disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving'}
             onClick={() => void registerProof()}
           >
             {stage === 'hashing' || stage === 'embedding' || stage === 'proving' ? (

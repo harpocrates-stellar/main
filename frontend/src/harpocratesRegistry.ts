@@ -12,7 +12,15 @@ import type {
 } from './stellarTypes'
 
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
-const NETWORK_PASSPHRASE = Networks.TESTNET
+
+/**
+ * The network passphrase the deployed contract was built against.
+ * Exported so network-guard code can compare it with the wallet's
+ * reported network without duplicating the constant.
+ */
+export const CONTRACT_NETWORK_PASSPHRASE: string = Networks.TESTNET
+
+const NETWORK_PASSPHRASE = CONTRACT_NETWORK_PASSPHRASE
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 
 export async function registerProofOnStellar(input: RegisterProofInput): Promise<RegisterProofResult> {
