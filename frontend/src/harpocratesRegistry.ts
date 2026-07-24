@@ -1,14 +1,17 @@
-import { Address, BASE_FEE, Contract, Networks, TransactionBuilder, scValToNative } from '@stellar/stellar-sdk'
+import { Address, BASE_FEE, Contract, Networks, TransactionBuilder, nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
 import { rpc } from '@stellar/stellar-sdk'
 import { signTransaction } from '@stellar/freighter-api'
 import { asHex32, asHexBytes, bytesToHex, scBytes, scBytes32 } from './stellarEncoding'
 import type {
   ChainProofRecord,
+  ChainVerifierState,
   IdentityTier,
   NormalizedRegisterProofInput,
   RegisterProofInput,
   RegisterProofResult,
   RegistryMethod,
+  VerifierRotationActionInput,
+  VerifierRotationInput,
 } from './stellarTypes'
 
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
@@ -58,6 +61,163 @@ export async function registerProofOnStellar(input: RegisterProofInput): Promise
   return {
     hash: submitted.hash,
     status: submitted.status,
+  }
+}
+
+export async function scheduleVerifierRotation(input: VerifierRotationInput): Promise<RegisterProofResult> {
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(input.publicKey)
+  const contract = new Contract(input.contractId)
+  const operation = contract.call(
+    'schedule_verifier_rotation' satisfies RegistryMethod,
+    new Address(input.publicKey).toScVal(),
+    new Address(input.verifier).toScVal(),
+    nativeToScVal(input.activationLedger),
+    nativeToScVal(input.overlapWindow),
+    nativeToScVal(input.rollbackWindow),
+  )
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(90)
+    .build()
+
+  const prepared = await server.prepareTransaction(transaction)
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: input.publicKey,
+  })
+
+  if (signed.error) {
+    throw new Error(signed.error.message)
+  }
+
+  const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
+  const submitted = await server.sendTransaction(signedTransaction)
+
+  if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
+    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+  }
+
+  return {
+    hash: submitted.hash,
+    status: submitted.status,
+  }
+}
+
+export async function activateVerifierRotation(input: VerifierRotationActionInput): Promise<RegisterProofResult> {
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(input.publicKey)
+  const contract = new Contract(input.contractId)
+  const operation = contract.call('activate_verifier_rotation' satisfies RegistryMethod, new Address(input.publicKey).toScVal())
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(90)
+    .build()
+
+  const prepared = await server.prepareTransaction(transaction)
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: input.publicKey,
+  })
+
+  if (signed.error) {
+    throw new Error(signed.error.message)
+  }
+
+  const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
+  const submitted = await server.sendTransaction(signedTransaction)
+
+  if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
+    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+  }
+
+  return {
+    hash: submitted.hash,
+    status: submitted.status,
+  }
+}
+
+export async function rollbackVerifierRotation(input: VerifierRotationActionInput): Promise<RegisterProofResult> {
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(input.publicKey)
+  const contract = new Contract(input.contractId)
+  const operation = contract.call('rollback_verifier_rotation' satisfies RegistryMethod, new Address(input.publicKey).toScVal())
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(90)
+    .build()
+
+  const prepared = await server.prepareTransaction(transaction)
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: input.publicKey,
+  })
+
+  if (signed.error) {
+    throw new Error(signed.error.message)
+  }
+
+  const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
+  const submitted = await server.sendTransaction(signedTransaction)
+
+  if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
+    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+  }
+
+  return {
+    hash: submitted.hash,
+    status: submitted.status,
+  }
+}
+
+export async function getVerifierState(contractId: string, sourceAddress?: string): Promise<ChainVerifierState | null> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for verifier state inspection.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_verifier_state' satisfies RegistryMethod))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    activeVerifier: native.active_verifier ? native.active_verifier.toString() : null,
+    pendingVerifier: native.pending_verifier ? native.pending_verifier.toString() : null,
+    previousVerifier: native.previous_verifier ? native.previous_verifier.toString() : null,
+    activationLedger: String(native.activation_ledger ?? 0),
+    overlapWindow: String(native.overlap_window ?? 0),
+    rollbackWindow: String(native.rollback_window ?? 0),
+    rollbackWindowEnd: String(native.rollback_window_end ?? 0),
   }
 }
 

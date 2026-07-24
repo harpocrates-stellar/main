@@ -81,6 +81,18 @@ pub struct CredentialRootRecord {
     pub issued_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifierState {
+    pub active_verifier: Option<Address>,
+    pub pending_verifier: Option<Address>,
+    pub previous_verifier: Option<Address>,
+    pub activation_ledger: u64,
+    pub overlap_window: u64,
+    pub rollback_window: u64,
+    pub rollback_window_end: u64,
+}
+
 #[contractevent(topics = ["proof", "reg"])]
 pub struct ProofRegistered {
     #[topic]
@@ -151,6 +163,31 @@ pub struct AdminAccepted {
     pub previous_admin: Address,
 }
 
+#[contractevent(topics = ["verif", "schedule"])]
+pub struct VerifierRotationScheduled {
+    #[topic]
+    pub active_verifier: Address,
+    pub pending_verifier: Address,
+    pub activation_ledger: u64,
+    pub overlap_window: u64,
+    pub rollback_window: u64,
+}
+
+#[contractevent(topics = ["verif", "activate"])]
+pub struct VerifierRotationActivated {
+    #[topic]
+    pub active_verifier: Address,
+    pub previous_verifier: Address,
+    pub rollback_window_end: u64,
+}
+
+#[contractevent(topics = ["verif", "rollback"])]
+pub struct VerifierRotationRolledBack {
+    #[topic]
+    pub active_verifier: Address,
+    pub previous_verifier: Address,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -160,6 +197,7 @@ pub enum DataKey {
     CredentialRoot(BytesN<32>),
     Issuer(Address),
     Verifier,
+    VerifierState,
     /// Global proof TTL in seconds (set by admin via `set_proof_ttl`).
     ProofTtl,
     PendingAdmin,
@@ -182,6 +220,9 @@ pub enum RegistryError {
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
     NoPendingAdmin = 13,
+    RotationNotScheduled = 14,
+    RotationNotReady = 15,
+    RotationWindowClosed = 16,
 }
 
 #[contract]
@@ -275,14 +316,100 @@ impl HarpocratesRegistry {
     pub fn set_verifier(env: Env, admin: Address, verifier: Address) {
         require_admin(&env, &admin);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Verifier, &verifier);
+        env.storage().persistent().set(&DataKey::Verifier, &verifier);
+        env.storage().persistent().remove(&DataKey::VerifierState);
         VerifierSet { verifier }.publish(&env);
     }
 
     pub fn get_verifier(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Verifier)
+    }
+
+    pub fn schedule_verifier_rotation(
+        env: Env,
+        admin: Address,
+        verifier: Address,
+        activation_ledger: u64,
+        overlap_window: u64,
+        rollback_window: u64,
+    ) {
+        require_admin(&env, &admin);
+
+        let active_verifier = get_active_verifier(&env);
+        let state = VerifierState {
+            active_verifier: Some(active_verifier.clone()),
+            pending_verifier: Some(verifier.clone()),
+            previous_verifier: Some(active_verifier.clone()),
+            activation_ledger,
+            overlap_window,
+            rollback_window,
+            rollback_window_end: activation_ledger.saturating_add(rollback_window),
+        };
+        env.storage().persistent().set(&DataKey::VerifierState, &state);
+        VerifierRotationScheduled {
+            active_verifier: active_verifier.clone(),
+            pending_verifier: verifier.clone(),
+            activation_ledger,
+            overlap_window,
+            rollback_window,
+        }
+        .publish(&env);
+    }
+
+    pub fn activate_verifier_rotation(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+
+        let mut state = get_verifier_rotation_state(&env);
+        let pending_verifier = state.pending_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let active_verifier = state.active_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let current_ledger = u64::from(env.ledger().sequence());
+        if current_ledger < state.activation_ledger {
+            panic_with_error!(&env, RegistryError::RotationNotReady);
+        }
+
+        state.active_verifier = Some(pending_verifier.clone());
+        state.pending_verifier = None;
+        state.rollback_window_end = current_ledger.saturating_add(state.rollback_window.max(0));
+        env.storage().persistent().set(&DataKey::VerifierState, &state);
+        env.storage().persistent().set(&DataKey::Verifier, &pending_verifier);
+        VerifierRotationActivated {
+            active_verifier: pending_verifier,
+            previous_verifier: active_verifier,
+            rollback_window_end: state.rollback_window_end,
+        }
+        .publish(&env);
+    }
+
+    pub fn rollback_verifier_rotation(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+
+        let state = get_verifier_rotation_state(&env);
+        let active_verifier = state.active_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let previous_verifier = state.previous_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let current_ledger = u64::from(env.ledger().sequence());
+        if state.rollback_window_end == 0 || current_ledger > state.rollback_window_end {
+            panic_with_error!(&env, RegistryError::RotationWindowClosed);
+        }
+
+        env.storage().persistent().set(&DataKey::Verifier, &previous_verifier);
+        env.storage().persistent().remove(&DataKey::VerifierState);
+        VerifierRotationRolledBack {
+            active_verifier: previous_verifier.clone(),
+            previous_verifier: active_verifier,
+        }
+        .publish(&env);
+    }
+
+    pub fn get_verifier_state(env: Env) -> VerifierState {
+        get_verifier_rotation_state(&env)
     }
 
     pub fn add_credential_root(
@@ -460,12 +587,7 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::DuplicateNullifier);
         }
 
-        let verifier: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Verifier)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-        verify_external_proof(&env, &verifier, public_inputs, proof);
+        verify_external_proof_with_overlap(&env, public_inputs, proof);
 
         env.storage()
             .persistent()
@@ -653,6 +775,28 @@ fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> Creden
         .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownCredentialRoot))
 }
 
+fn get_active_verifier(env: &Env) -> Address {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Verifier)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::VerifierNotSet))
+}
+
+fn get_verifier_rotation_state(env: &Env) -> VerifierState {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VerifierState)
+        .unwrap_or(VerifierState {
+            active_verifier: env.storage().persistent().get(&DataKey::Verifier),
+            pending_verifier: None,
+            previous_verifier: None,
+            activation_ledger: 0,
+            overlap_window: 0,
+            rollback_window: 0,
+            rollback_window_end: 0,
+        })
+}
+
 fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     let record = get_credential_root_record(env, credential_root);
     if !record.active {
@@ -708,14 +852,44 @@ fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> Silen
     }
 }
 
-fn verify_external_proof(env: &Env, verifier: &Address, public_inputs: Bytes, proof: Bytes) {
+fn verify_external_proof_with_overlap(env: &Env, public_inputs: Bytes, proof: Bytes) {
+    let state = get_verifier_rotation_state(env);
+    let active_verifier = state.active_verifier.clone().unwrap_or_else(|| get_active_verifier(env));
+    let mut candidates = SorobanVec::new(env);
+    candidates.push_back(active_verifier.clone());
+
+    let overlap_end = state.activation_ledger.saturating_add(state.overlap_window);
+    let current_ledger = u64::from(env.ledger().sequence());
+    if state.pending_verifier.is_none()
+        && state.previous_verifier.is_some()
+        && current_ledger <= overlap_end
+        && state.previous_verifier.as_ref() != Some(&active_verifier)
+    {
+        candidates.push_back(state.previous_verifier.clone().unwrap());
+    }
+
+    let mut verified = false;
+    for candidate in candidates {
+        if verify_external_proof(env, &candidate, public_inputs.clone(), proof.clone()) {
+            verified = true;
+            break;
+        }
+    }
+
+    if !verified {
+        panic_with_error!(env, RegistryError::InvalidProof);
+    }
+}
+
+fn verify_external_proof(env: &Env, verifier: &Address, public_inputs: Bytes, proof: Bytes) -> bool {
     let mut args: SorobanVec<Val> = SorobanVec::new(env);
     args.push_back(public_inputs.into_val(env));
     args.push_back(proof.into_val(env));
 
-    env.try_invoke_contract::<(), InvokeError>(verifier, &Symbol::new(env, "verify_proof"), args)
-        .unwrap_or_else(|_| panic_with_error!(env, RegistryError::InvalidProof))
-        .unwrap_or_else(|_| panic_with_error!(env, RegistryError::InvalidProof));
+    match env.try_invoke_contract::<(), InvokeError>(verifier, &Symbol::new(env, "verify_proof"), args) {
+        Ok(Ok(_)) => true,
+        _ => false,
+    }
 }
 
 fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool {

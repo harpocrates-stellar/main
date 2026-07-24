@@ -36,6 +36,30 @@ export type RegisterProofResult = {
   status: string
 }
 
+export type VerifierRotationInput = {
+  contractId: string
+  publicKey: string
+  verifier: string
+  activationLedger: number | bigint
+  overlapWindow: number | bigint
+  rollbackWindow: number | bigint
+}
+
+export type VerifierRotationActionInput = {
+  contractId: string
+  publicKey: string
+}
+
+export type ChainVerifierState = {
+  activeVerifier: string | null
+  pendingVerifier: string | null
+  previousVerifier: string | null
+  activationLedger: string
+  overlapWindow: string
+  rollbackWindow: string
+  rollbackWindowEnd: string
+}
+
 export type ChainProofRecord = {
   videoHash: string
   metadataHash: string
@@ -51,3 +75,7 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'schedule_verifier_rotation'
+  | 'activate_verifier_rotation'
+  | 'rollback_verifier_rotation'
+  | 'get_verifier_state'
