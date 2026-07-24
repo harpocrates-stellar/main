@@ -4,9 +4,10 @@ import base64
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -20,6 +21,7 @@ from db import (
     insert_proof_event,
     list_proof_events,
 )
+from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 
@@ -37,13 +39,30 @@ def create_app() -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
 
+    @app.before_request
+    def start_timer():
+        g.start_time = time.perf_counter()
+
     @app.after_request
-    def add_security_headers(response: Response):
+    def process_response(response: Response):
         if config.security_headers_enabled:
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
             response.headers.setdefault("Cache-Control", "no-store")
+
+        if config.metrics_enabled and request.path != config.metrics_path:
+            start_time = getattr(g, "start_time", None)
+            duration = time.perf_counter() - start_time if start_time is not None else 0.0
+            endpoint_rule = request.url_rule.rule if request.url_rule else "unmatched"
+            metrics_collector.record_request(
+                method=request.method,
+                endpoint=endpoint_rule,
+                status=response.status_code,
+                duration_seconds=duration,
+                upload_bytes=request.content_length,
+            )
+
         return response
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -57,6 +76,21 @@ def create_app() -> Flask:
     @app.errorhandler(RuntimeError)
     def runtime_error(error: RuntimeError):
         return jsonify({"error": str(error)}), 500
+
+    @app.get(config.metrics_path)
+    def metrics():
+        if not config.metrics_enabled:
+            return jsonify({"error": "metrics service disabled"}), 404
+
+        if config.metrics_token:
+            auth_header = request.headers.get("Authorization", "")
+            token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+            custom_token = request.headers.get("X-Metrics-Token", "").strip()
+            if token != config.metrics_token and custom_token != config.metrics_token:
+                return jsonify({"error": "unauthorized metrics access"}), 401
+
+        output = metrics_collector.generate_prometheus_metrics()
+        return Response(output, mimetype="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/health")
     def health():

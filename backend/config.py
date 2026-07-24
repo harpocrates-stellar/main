@@ -13,6 +13,9 @@ class AppConfig:
     expose_metadata_header: bool
     noir_worker_enabled: bool
     security_headers_enabled: bool
+    metrics_enabled: bool
+    metrics_token: str | None
+    metrics_path: str
 
 
 def load_config() -> AppConfig:
@@ -29,6 +32,9 @@ def load_config() -> AppConfig:
         expose_metadata_header=_bool_env("EXPOSE_METADATA_HEADER", False),
         noir_worker_enabled=_bool_env("NOIR_WORKER_ENABLED", app_env != "production"),
         security_headers_enabled=_bool_env("SECURITY_HEADERS_ENABLED", True),
+        metrics_enabled=_bool_env("METRICS_ENABLED", True),
+        metrics_token=_str_env("METRICS_TOKEN"),
+        metrics_path=os.getenv("METRICS_PATH", "/metrics").strip(),
     )
 
 
@@ -52,3 +58,11 @@ def _bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _str_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
