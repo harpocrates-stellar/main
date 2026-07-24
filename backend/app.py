@@ -126,16 +126,18 @@ def create_app() -> Flask:
 
     @app.errorhandler(429)
     def ratelimit_exceeded(error):
-        retry_after = error.description if isinstance(error.description, int) else None
+        # Derive Retry-After from the rate-limit window size so clients
+        # know exactly how long to back off.  error.limit is the Limit
+        # wrapper; error.limit.limit is the RateLimitItem whose
+        # get_expiry() returns the window length in seconds.
+        try:
+            retry_after = str(error.limit.limit.get_expiry())
+        except Exception:
+            retry_after = "60"
+
         response = jsonify({"error": "rate limit exceeded, please slow down"})
         response.status_code = 429
-        # Flask-Limiter sets Retry-After automatically when headers_enabled=True,
-        # but we add it explicitly here too so it is always present regardless of
-        # whether the limiter headers are stripped by a proxy.
-        if retry_after is not None:
-            response.headers["Retry-After"] = str(retry_after)
-        elif "Retry-After" not in response.headers:
-            response.headers["Retry-After"] = "60"
+        response.headers["Retry-After"] = retry_after
         return response
 
     @app.get("/health")
