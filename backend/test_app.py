@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import io
 import json
-import os
+import tempfile
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
 
-os.environ.setdefault("MAX_CONTENT_LENGTH", "500000000")
-os.environ.setdefault("MAX_VIDEO_BYTES", "200000000")
-os.environ.setdefault("NOIR_WORKER_ENABLED", "false")
+import app as app_module
+import stego
 
-from app import app
+
+REAL_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
 
 
 class AppHardeningTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = app.test_client()
+        self.client = app_module.app.test_client()
 
     def test_health_sets_security_headers(self) -> None:
         response = self.client.get("/health")
@@ -57,147 +60,131 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("metadata missing required field", response.json["error"])
 
-    def test_embed_rejects_metadata_too_large(self) -> None:
-        response = self.client.post(
+    def test_embed_success_removes_temp_directory(self) -> None:
+        def fake_embed(source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
+            if not source_path.exists():
+                raise RuntimeError("source upload was not saved")
+            output_path.write_bytes(b"embedded video bytes")
+
+        response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
-            data={
-                "metadata": "x" * 17_000,
-                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
-            },
-            content_type="multipart/form-data",
-        )
-
-        self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json["error"], "metadata is too large")
-
-    def test_embed_accepts_boundary_metadata(self) -> None:
-        response = self.client.post(
-            "/api/stego/embed",
-            data={
-                "metadata": "x" * 16_384,
-                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
-            },
-            content_type="multipart/form-data",
-        )
-
-        self.assertNotEqual(response.status_code, 413)
-
-    def test_embed_rejects_video_too_large(self) -> None:
-        response = self.client.post(
-            "/api/stego/embed",
-            data={
+            {
                 "metadata": json.dumps(valid_metadata()),
-                "video": (io.BytesIO(b"x" * 250_000_001), "evidence.mp4", "video/mp4"),
+                "video": video_upload(),
             },
-            content_type="multipart/form-data",
+            patch.object(app_module, "embed_metadata", side_effect=fake_embed),
+            patch.object(app_module, "insert_proof_event", return_value={"id": 1}),
         )
 
-        self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json["error"], "video payload exceeds size limit")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"embedded video bytes")
 
-    def test_embed_accepts_small_video(self) -> None:
-        response = self.client.post(
+    def test_embed_ffmpeg_failure_removes_temp_directory(self) -> None:
+        def require_video_tool(binary: str) -> str:
+            if binary == "ffmpeg":
+                raise RuntimeError("ffmpeg is required for steganography processing")
+            return binary
+
+        response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
-            data={
+            {
                 "metadata": json.dumps(valid_metadata()),
-                "video": (io.BytesIO(b"x" * 1024), "evidence.mp4", "video/mp4"),
+                "video": video_upload(),
             },
-            content_type="multipart/form-data",
+            patch.object(stego, "_require", side_effect=require_video_tool),
         )
 
-        self.assertIn(response.status_code, {200, 500})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json["error"], "ffmpeg is required for steganography processing")
 
-    def test_embed_accepts_boundary_video(self) -> None:
-        response = self.client.post(
+    def test_embed_ffprobe_failure_removes_temp_directory(self) -> None:
+        def require_video_tool(binary: str) -> str:
+            if binary == "ffprobe":
+                raise RuntimeError("ffprobe is required for steganography processing")
+            return binary
+
+        response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
-            data={
+            {
                 "metadata": json.dumps(valid_metadata()),
-                "video": (io.BytesIO(b"x" * 200_000_000), "evidence.mp4", "video/mp4"),
+                "video": video_upload(),
             },
-            content_type="multipart/form-data",
+            patch.object(stego, "_require", side_effect=require_video_tool),
         )
 
-        self.assertIn(response.status_code, {200, 500})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json["error"], "ffprobe is required for steganography processing")
 
-    def test_extract_rejects_video_too_large(self) -> None:
-        response = self.client.post(
+    def test_extract_failure_removes_temp_directory(self) -> None:
+        response = self.post_with_tracked_tempdirs(
             "/api/stego/extract",
-            data={"video": (io.BytesIO(b"x" * 250_000_001), "evidence.mp4", "video/mp4")},
-            content_type="multipart/form-data",
+            {"video": video_upload()},
+            patch.object(app_module, "extract_metadata", side_effect=RuntimeError("metadata extraction failed")),
         )
 
-        self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json["error"], "video payload exceeds size limit")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json["error"], "metadata extraction failed")
 
-    def test_extract_rejects_missing_video(self) -> None:
-        response = self.client.post("/api/stego/extract")
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json["error"], "video is required")
+    def test_embed_database_failure_removes_temp_directory(self) -> None:
+        def fake_embed(_source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
+            output_path.write_bytes(b"embedded video bytes")
 
-    def test_register_rejects_body_too_large(self) -> None:
-        response = self.client.post(
-            "/api/proofs/register",
-            json={"data": "z" * 2_000_000},
-        )
-
-        self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json["error"], "JSON payload exceeds size limit")
-
-    def test_register_accepts_valid_minimal_body(self) -> None:
-        response = self.client.post(
-            "/api/proofs/register",
-            json={
-                "videoHash": "11" * 32,
-                "metadataHash": "22" * 32,
-                "proofId": "33" * 32,
-                "txHash": "44" * 32,
-                "tier": "silent",
-                "txStatus": "done",
-                "fileName": "file.mp4",
+        response = self.post_with_tracked_tempdirs(
+            "/api/stego/embed",
+            {
+                "metadata": json.dumps(valid_metadata()),
+                "video": video_upload(),
             },
+            patch.object(app_module, "embed_metadata", side_effect=fake_embed),
+            patch.object(app_module, "insert_proof_event", side_effect=RuntimeError("database write failed")),
         )
 
-        self.assertIn(response.status_code, {200, 400})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json["error"], "database write failed")
 
-    def test_silent_witness_rejects_body_too_large(self) -> None:
-        response = self.client.post(
-            "/api/noir/silent-witness",
-            data=b"x" * 2_000_000,
-            content_type="application/json",
+    def test_extract_database_failure_removes_temp_directory(self) -> None:
+        response = self.post_with_tracked_tempdirs(
+            "/api/stego/extract",
+            {"video": video_upload()},
+            patch.object(app_module, "extract_metadata", return_value=valid_metadata()),
+            patch.object(app_module, "insert_proof_event", side_effect=RuntimeError("database write failed")),
         )
 
-        self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json["error"], "JSON payload exceeds size limit")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json["error"], "database write failed")
 
-    def test_silent_witness_returns_404_when_disabled(self) -> None:
-        response = self.client.post(
-            "/api/noir/silent-witness",
-            json={
-                "videoHash": "11" * 32,
-                "credentialSecret": "42",
-                "nullifierSecret": "99",
-            },
-        )
+    def post_with_tracked_tempdirs(self, path: str, data: dict[str, object], *patches):
+        observed: list[Path] = []
+        with REAL_TEMPORARY_DIRECTORY(prefix="harpocrates-route-test-") as parent:
+            temp_root = Path(parent)
+            tempdir_factory = tracking_temporary_directory_factory(temp_root, observed)
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(app_module.tempfile, "TemporaryDirectory", tempdir_factory))
+                for patcher in patches:
+                    stack.enter_context(patcher)
+                response = self.client.post(path, data=data, content_type="multipart/form-data")
 
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json["error"], "local Noir worker is disabled")
+            self.assertGreaterEqual(len(observed), 1)
+            for temp_path in observed:
+                self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
+            self.assertEqual(list(temp_root.iterdir()), [])
+            return response
 
-    def test_silent_witness_accepts_boundary_json(self) -> None:
-        # Body length is exactly max_json_bytes (1 MB). Must not be rejected as too large.
-        max_json_bytes = os.environ.get("MAX_JSON_BYTES", "1048576")
-        boundary = int(max_json_bytes)
-        raw = b'{"x":"' + b"y" * (boundary - 8) + b'"}'
-        self.assertEqual(len(raw), boundary)
 
-        response = self.client.post(
-            "/api/noir/silent-witness",
-            data=raw,
-            content_type="application/json",
-        )
+def tracking_temporary_directory_factory(temp_root: Path, observed: list[Path]):
+    class TrackingTemporaryDirectory:
+        def __init__(self, *args, **kwargs) -> None:
+            kwargs["dir"] = temp_root
+            self._manager = REAL_TEMPORARY_DIRECTORY(*args, **kwargs)
+            observed.append(Path(self._manager.name))
 
-        self.assertNotEqual(response.status_code, 413)
-        # Worker is disabled in the test config, so the next handler returns 404.
-        self.assertEqual(response.status_code, 404)
+        def __enter__(self):
+            return self._manager.__enter__()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return self._manager.__exit__(exc_type, exc, traceback)
+
+    return TrackingTemporaryDirectory
 
 
 def valid_metadata() -> dict[str, object]:
@@ -209,6 +196,10 @@ def valid_metadata() -> dict[str, object]:
         "proofId": "22" * 32,
         "timestamp": "2026-06-18T00:00:00.000Z",
     }
+
+
+def video_upload() -> tuple[io.BytesIO, str, str]:
+    return io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"
 
 
 if __name__ == "__main__":

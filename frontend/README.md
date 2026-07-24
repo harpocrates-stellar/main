@@ -48,3 +48,11 @@ noirClient
 barretenberg
 barretenberg-threads
 ```
+
+## Test
+
+Run the Vitest and React Testing Library suite:
+
+```powershell
+npm test
+```
