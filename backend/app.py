@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import tempfile
@@ -8,6 +9,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
@@ -29,12 +32,75 @@ REDACTED_METADATA_KEYS = {"credentialSecret", "nullifierSecret", "proof", "publi
 REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
 
 
+def _make_key_func(config):
+    """Return a rate-limit key function that uses the real client IP.
+
+    If ``trusted_proxies`` is configured the leftmost *untrusted* address in
+    ``X-Forwarded-For`` is used, preventing spoofing by clients who inject
+    extra entries.  When no trusted proxies are configured the WSGI
+    ``REMOTE_ADDR`` is used unconditionally, which is always safe.
+    """
+
+    trusted = set()
+    for entry in config.trusted_proxies:
+        try:
+            trusted.add(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            pass
+
+    def _key_func() -> str:
+        if not trusted:
+            # No proxies trusted – use the direct peer address, cannot be spoofed.
+            return get_remote_address()
+
+        # Walk X-Forwarded-For right-to-left, skipping trusted proxy IPs.
+        # The first address that is NOT a trusted proxy is the real client.
+        xff = request.headers.get("X-Forwarded-For", "")
+        addrs = [a.strip() for a in xff.split(",") if a.strip()]
+        # Append the direct peer so we always have at least one candidate.
+        addrs.append(request.remote_addr or "127.0.0.1")
+
+        for addr in reversed(addrs):
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                continue
+            if not any(ip in net for net in trusted):
+                return str(ip)
+
+        # Fallback: direct peer (always safe).
+        return get_remote_address()
+
+    return _key_func
+
+
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
     app = Flask(__name__)
     CORS(app, origins=config.cors_origins)
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
+
+    # ------------------------------------------------------------------ #
+    # Rate limiting                                                        #
+    # ------------------------------------------------------------------ #
+    limiter = Limiter(
+        key_func=_make_key_func(config),
+        app=app,
+        enabled=config.ratelimit_enabled,
+        # In-memory storage is fine for a single-process server; swap for
+        # Redis via RATELIMIT_STORAGE_URI env var in multi-worker deployments.
+        storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
+        default_limits=[],   # No global limit – each endpoint opts in explicitly.
+        headers_enabled=True,  # Emit X-RateLimit-* headers on every response.
+        swallow_errors=True,   # Never crash the app due to storage errors.
+    )
+
+    @limiter.request_filter
+    def _health_exempt():
+        """Health and readiness probes must never be rate-limited."""
+        return request.path in {"/health", "/ready"}
+
     init_db()
 
     @app.after_request
@@ -58,6 +124,20 @@ def create_app() -> Flask:
     def runtime_error(error: RuntimeError):
         return jsonify({"error": str(error)}), 500
 
+    @app.errorhandler(429)
+    def ratelimit_exceeded(error):
+        retry_after = error.description if isinstance(error.description, int) else None
+        response = jsonify({"error": "rate limit exceeded, please slow down"})
+        response.status_code = 429
+        # Flask-Limiter sets Retry-After automatically when headers_enabled=True,
+        # but we add it explicitly here too so it is always present regardless of
+        # whether the limiter headers are stripped by a proxy.
+        if retry_after is not None:
+            response.headers["Retry-After"] = str(retry_after)
+        elif "Retry-After" not in response.headers:
+            response.headers["Retry-After"] = "60"
+        return response
+
     @app.get("/health")
     def health():
         return jsonify({"ok": True, "service": "harpocrates-stego"})
@@ -77,6 +157,7 @@ def create_app() -> Flask:
         ), 200 if database_ready and video_tools_ready else 503
 
     @app.post("/api/stego/embed")
+    @limiter.limit(lambda: config.ratelimit_embed)
     def embed():
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
@@ -131,6 +212,7 @@ def create_app() -> Flask:
         return response
 
     @app.post("/api/stego/extract")
+    @limiter.limit(lambda: config.ratelimit_extract)
     def extract():
         video = request.files.get("video")
 
@@ -183,6 +265,7 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "events": find_proof_events_by_video(video_hash)})
 
     @app.post("/api/proofs/register")
+    @limiter.limit(lambda: config.ratelimit_register)
     def register_proof_event():
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
@@ -220,6 +303,7 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "db_event": db_event})
 
     @app.post("/api/noir/silent-witness")
+    @limiter.limit(lambda: config.ratelimit_silent_witness)
     def silent_witness_proof():
         if not config.noir_worker_enabled:
             return jsonify({"error": "local Noir worker is disabled"}), 404
