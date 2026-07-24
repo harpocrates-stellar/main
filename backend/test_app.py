@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import app as app_module
 import stego
+from config import load_config
 from db import ConflictError, make_idempotency_key
 from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
@@ -623,5 +624,102 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         self.assertEqual(response.get_json()["conflict_field"], "metadata_hash")
 
 
+class CorsConfigurationTest(unittest.TestCase):
+    def test_production_rejects_wildcard_cors(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "production", "CORS_ORIGINS": "*", "ALLOW_WILDCARD_CORS": "true"}):
+            with self.assertRaises(RuntimeError) as ctx:
+                load_config()
+            self.assertIn("Wildcard CORS origins are not permitted in production", str(ctx.exception))
+
+    def test_production_accepts_explicit_cors_origins(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "production", "CORS_ORIGINS": "https://app.example.com"}):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["https://app.example.com"])
+
+    def test_development_allows_wildcard_cors_when_flag_enabled(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development", "CORS_ORIGINS": "*", "ALLOW_WILDCARD_CORS": "true"}):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["*"])
+
+    def test_development_rejects_wildcard_cors_without_flag(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development", "CORS_ORIGINS": "*"}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                load_config()
+            self.assertIn("Wildcard CORS requires ALLOW_WILDCARD_CORS=true", str(ctx.exception))
+
+    def test_default_local_development_origins(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development"}, clear=True):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["http://localhost:5173", "http://127.0.0.1:5173"])
+
+
+class CorsPreflightAndHeadersTest(unittest.TestCase):
+    def setUp(self) -> None:
+        metrics_collector.reset()
+        self.client = app_module.app.test_client()
+
+    def test_preflight_positive_allowed_origin_method_and_headers(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type, X-Request-ID",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+        self.assertIn("POST", allowed_methods)
+        allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+        self.assertIn("Content-Type", allowed_headers)
+        self.assertIn("X-Request-ID", allowed_headers)
+
+    def test_preflight_negative_disallowed_method(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "DELETE",
+            },
+        )
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+        self.assertNotIn("DELETE", allowed_methods)
+
+    def test_preflight_negative_disallowed_header(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-Forbidden-Header",
+            },
+        )
+        allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+        self.assertNotIn("X-Forbidden-Header", allowed_headers)
+
+    def test_preflight_negative_disallowed_origin(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://unauthorized-domain.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        self.assertNotEqual(response.headers.get("Access-Control-Allow-Origin"), "http://unauthorized-domain.com")
+
+    def test_cors_exposes_required_response_headers(self) -> None:
+        response = self.client.get(
+            "/health",
+            headers={"Origin": "http://localhost:5173"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+        exposed = response.headers.get("Access-Control-Expose-Headers", "")
+        self.assertIn("X-Request-ID", exposed)
+        self.assertIn("X-Harpocrates-Source-Hash", exposed)
+
+
 if __name__ == "__main__":
     unittest.main()
+

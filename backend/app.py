@@ -47,7 +47,21 @@ def create_app() -> Flask:
     load_dotenv()
     config = load_config()
     app = Flask(__name__)
-    CORS(app, origins=config.cors_origins)
+    CORS(
+        app,
+        origins=config.cors_origins,
+        methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Metrics-Token"],
+        expose_headers=[
+            "Content-Disposition",
+            "X-Request-ID",
+            "X-Harpocrates-Source-Hash",
+            "X-Harpocrates-Embedded-Hash",
+            "X-Harpocrates-Metadata-Hash",
+            "X-Harpocrates-Db-Event",
+            "X-Harpocrates-Metadata",
+        ],
+    )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
 
