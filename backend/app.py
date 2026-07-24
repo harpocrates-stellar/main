@@ -22,6 +22,9 @@ from db import (
     init_db,
     insert_proof_event,
     list_proof_events,
+    make_idempotency_key,
+    upsert_register_event,
+    ConflictError,
 )
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness
@@ -278,21 +281,30 @@ def create_app() -> Flask:
             if not is_hex_32(value):
                 return jsonify({"error": f"{name} must be a 32-byte hex string"}), 400
 
-        db_event = insert_proof_event(
-            event_type="register",
-            file_name=safe_filename(payload.get("fileName")),
-            video_hash=video_hash,
-            metadata_hash=metadata_hash,
-            proof_id=proof_id,
-            tier=payload.get("tier"),
-            tx_hash=tx_hash,
-            tx_status=payload.get("txStatus"),
-            source_address=payload.get("sourceAddress"),
-            contract_id=payload.get("contractId"),
-            metadata=redact_metadata(payload),
-        )
+        idempotency_key = make_idempotency_key(video_hash, proof_id, tx_hash)
 
-        return jsonify({"ok": True, "db_event": db_event})
+        try:
+            db_event, created = upsert_register_event(
+                idempotency_key=idempotency_key,
+                file_name=safe_filename(payload.get("fileName")),
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=proof_id,
+                tier=payload.get("tier"),
+                tx_hash=tx_hash,
+                tx_status=payload.get("txStatus"),
+                source_address=payload.get("sourceAddress"),
+                contract_id=payload.get("contractId"),
+                metadata=redact_metadata(payload),
+            )
+        except ConflictError as exc:
+            return jsonify({
+                "error": "idempotency key reused with conflicting payload",
+                "conflict_field": exc.field,
+            }), 409
+
+        status = 201 if created else 200
+        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
 
     @app.post("/api/noir/silent-witness")
     def silent_witness_proof():
