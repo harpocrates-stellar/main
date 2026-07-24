@@ -305,10 +305,14 @@ function App() {
     if (!nextFile) return
 
     setVerifyResult('Inspecting evidence...')
-    const videoHash = await sha256(await nextFile.arrayBuffer())
-    setVerifyHash(videoHash)
+    setVerifyHash('')
+    let hasLocalHash = false
 
     try {
+      const videoHash = await sha256(await nextFile.arrayBuffer())
+      setVerifyHash(videoHash)
+      hasLocalHash = true
+
       const form = new FormData()
       form.append('video', nextFile)
 
@@ -335,7 +339,11 @@ function App() {
       setEvents(dbMatches)
       setChainProof(onChain)
     } catch {
-      setVerifyResult('Local hash complete. Verification services are unavailable.')
+      setVerifyResult(
+        hasLocalHash
+          ? 'Local hash complete. Verification services are unavailable.'
+          : 'Verification services are unavailable.',
+      )
     }
   }
 

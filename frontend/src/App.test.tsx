@@ -64,4 +64,20 @@ describe('App', () => {
     }))
     expect(screen.getByText(/chain status/i).nextElementSibling).toHaveTextContent(/not loaded/i)
   })
+
+  it('handles a local verification hash failure without calling the API', async () => {
+    const user = userEvent.setup()
+    const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('should not reach API'))
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockRejectedValueOnce(new Error('digest unavailable'))
+
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: /^verify$/i }))
+    await user.upload(screen.getByLabelText(/drop or choose a received video/i), new File(['video'], 'clip.mp4', {
+      type: 'video/mp4',
+    }))
+
+    expect(await screen.findByText(/verification services are unavailable/i)).toBeInTheDocument()
+    expect(fetch).not.toHaveBeenCalled()
+    expect(screen.getByText(/received hash/i).nextElementSibling).toHaveTextContent(/not generated/i)
+  })
 })
