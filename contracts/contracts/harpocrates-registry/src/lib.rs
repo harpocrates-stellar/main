@@ -130,6 +130,12 @@ pub struct CredentialRootRevoked {
     pub credential_root: BytesN<32>,
 }
 
+#[contractevent(topics = ["revroot", "set"])]
+pub struct RevocationRootSet {
+    #[topic]
+    pub revocation_root: BytesN<32>,
+}
+
 #[contractevent(topics = ["admin", "propose"])]
 pub struct AdminProposed {
     #[topic]
@@ -163,6 +169,8 @@ pub enum DataKey {
     /// Global proof TTL in seconds (set by admin via `set_proof_ttl`).
     ProofTtl,
     PendingAdmin,
+    /// Merkle root of the credential-revocation tree (set by admin).
+    RevocationRoot,
 }
 
 #[contracterror]
@@ -584,6 +592,27 @@ impl HarpocratesRegistry {
     pub fn get_issuer(env: Env, issuer: Address) -> Option<IssuerRecord> {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
     }
+
+    // -----------------------------------------------------------------------
+    // Revocation-witness root management (#98)
+    // -----------------------------------------------------------------------
+
+    /// Publish the current Merkle root of the credential-revocation tree.
+    /// Only the registry admin may call this.
+    pub fn set_revocation_root(env: Env, admin: Address, revocation_root: BytesN<32>) {
+        require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RevocationRoot, &revocation_root);
+        RevocationRootSet { revocation_root }.publish(&env);
+    }
+
+    /// Return the currently-published revocation tree root, if any.
+    pub fn get_revocation_root(env: Env) -> Option<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RevocationRoot)
+    }
 }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -726,3 +755,4 @@ mod test;
 mod test_auth;
 mod test_invariants;
 mod test_expiry;
+mod test_revocation;
