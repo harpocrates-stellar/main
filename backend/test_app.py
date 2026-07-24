@@ -26,6 +26,8 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.headers["X-Harpocrates-Release"], "harpocrates-1.0.0")
+        self.assertEqual(response.headers["X-Harpocrates-Network"], "testnet")
 
     def test_ready_endpoint_reports_service_dependencies(self) -> None:
         response = self.client.get("/ready")

@@ -44,6 +44,8 @@ def create_app() -> Flask:
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
             response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("X-Harpocrates-Release", config.release_id)
+        response.headers.setdefault("X-Harpocrates-Network", config.release_network)
         return response
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -60,7 +62,14 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health():
-        return jsonify({"ok": True, "service": "harpocrates-stego"})
+        return jsonify(
+            {
+                "ok": True,
+                "service": "harpocrates-stego",
+                "release_id": config.release_id,
+                "network": config.release_network,
+            }
+        )
 
     @app.get("/ready")
     def ready():
@@ -73,6 +82,8 @@ def create_app() -> Flask:
                 "database": "connected" if database_ready else "not_configured",
                 "video_tools": "available" if video_tools_ready else "missing",
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
+                "release_id": config.release_id,
+                "network": config.release_network,
             }
         ), 200 if database_ready and video_tools_ready else 503
 

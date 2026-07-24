@@ -13,6 +13,8 @@ class AppConfig:
     expose_metadata_header: bool
     noir_worker_enabled: bool
     security_headers_enabled: bool
+    release_id: str
+    release_network: str
 
 
 def load_config() -> AppConfig:
@@ -29,6 +31,8 @@ def load_config() -> AppConfig:
         expose_metadata_header=_bool_env("EXPOSE_METADATA_HEADER", False),
         noir_worker_enabled=_bool_env("NOIR_WORKER_ENABLED", app_env != "production"),
         security_headers_enabled=_bool_env("SECURITY_HEADERS_ENABLED", True),
+        release_id=_release_id(os.getenv("HARPOCRATES_RELEASE_ID", "harpocrates-1.0.0")),
+        release_network=_release_network(os.getenv("HARPOCRATES_RELEASE_NETWORK", "testnet")),
     )
 
 
@@ -52,3 +56,15 @@ def _bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _release_id(value: str) -> str:
+    if value != "harpocrates-1.0.0":
+        raise RuntimeError("HARPOCRATES_RELEASE_ID is not a supported compatibility release")
+    return value
+
+
+def _release_network(value: str) -> str:
+    if value not in {"local", "testnet", "mainnet"}:
+        raise RuntimeError("HARPOCRATES_RELEASE_NETWORK must be local, testnet, or mainnet")
+    return value
