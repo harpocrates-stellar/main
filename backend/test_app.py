@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import app as app_module
 import stego
+from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
 
 
@@ -29,6 +30,40 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
 
+    def test_request_log_includes_correlation_fields(self) -> None:
+        with self.assertLogs("harpocrates.requests", level="INFO") as logs:
+            response = self.client.get("/health", headers={"X-Request-ID": "req-test-1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Request-ID"], "req-test-1")
+        event = json.loads(logs.output[0].split(":", 2)[2])
+        self.assertEqual(event["event"], "request")
+        self.assertEqual(event["request_id"], "req-test-1")
+        self.assertEqual(event["route"], "/health")
+        self.assertEqual(event["status"], 200)
+        self.assertIn("duration_ms", event)
+
+    def test_error_log_includes_correlation_fields(self) -> None:
+        with self.assertLogs("harpocrates.requests", level="INFO") as logs:
+            response = self.client.post(
+                "/api/stego/embed",
+                data={
+                    "metadata": json.dumps(valid_metadata()),
+                    "video": (io.BytesIO(b"not a video"), "note.txt"),
+                },
+                content_type="multipart/form-data",
+                headers={"X-Request-ID": "req-error-1"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        events = [json.loads(item.split(":", 2)[2]) for item in logs.output]
+        error_event = next(item for item in events if item["event"] == "error")
+        request_event = next(item for item in events if item["event"] == "request")
+        self.assertEqual(error_event["request_id"], "req-error-1")
+        self.assertEqual(error_event["route"], "/api/stego/embed")
+        self.assertEqual(error_event["status"], 400)
+        self.assertEqual(request_event["request_id"], "req-error-1")
+        self.assertEqual(request_event["status"], 400)
 
     def test_ready_endpoint_reports_service_dependencies(self) -> None:
         response = self.client.get("/ready")
@@ -253,6 +288,40 @@ class AppHardeningTest(unittest.TestCase):
             res = disabled_client.get("/metrics")
             self.assertEqual(res.status_code, 404)
             self.assertEqual(res.json["error"], "metrics service disabled")
+
+    def test_redact_sensitive_redacts_nested_fields(self) -> None:
+        value = {
+            "Authorization": "Bearer secret",
+            "proof": "secret-proof",
+            "nested": {
+                "publicInputs": ["secret-public-input"],
+                "public_inputs": ["secret-public-input"],
+                "items": [
+                    {"credential_secret": "secret-credential"},
+                    {"NullifierSecret": "secret-nullifier"},
+                    {"compiledWitness": "secret-witness"},
+                ],
+            },
+        }
+
+        redacted = redact_sensitive(value)
+
+        self.assertEqual(redacted["Authorization"], REDACTED_VALUE)
+        self.assertEqual(redacted["proof"], REDACTED_VALUE)
+        self.assertEqual(redacted["nested"]["publicInputs"], REDACTED_VALUE)
+        self.assertEqual(redacted["nested"]["public_inputs"], REDACTED_VALUE)
+        self.assertEqual(redacted["nested"]["items"][0]["credential_secret"], REDACTED_VALUE)
+        self.assertEqual(redacted["nested"]["items"][1]["NullifierSecret"], REDACTED_VALUE)
+        self.assertEqual(redacted["nested"]["items"][2]["compiledWitness"], REDACTED_VALUE)
+
+    def test_redact_sensitive_preserves_safe_fields(self) -> None:
+        value = {
+            "videoHash": "11" * 32,
+            "metadata": {"tier": "silent", "count": 2},
+            "items": [{"status": "ok"}],
+        }
+
+        self.assertEqual(redact_sensitive(value), value)
 
 
 

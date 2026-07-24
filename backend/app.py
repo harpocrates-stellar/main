@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request
@@ -24,11 +26,18 @@ from db import (
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from logging_utils import log_structured, redact_sensitive
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
-REDACTED_METADATA_KEYS = {"credentialSecret", "nullifierSecret", "proof", "publicInputs"}
 REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
+LOGGER = logging.getLogger("harpocrates.requests")
+if not LOGGER.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    LOGGER.addHandler(handler)
+LOGGER.setLevel(logging.INFO)
+LOGGER.propagate = False
 
 
 def create_app() -> Flask:
@@ -40,11 +49,14 @@ def create_app() -> Flask:
     init_db()
 
     @app.before_request
-    def start_timer():
+    def start_request_context():
         g.start_time = time.perf_counter()
+        g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        g.request_started_at = time.perf_counter()
 
     @app.after_request
     def process_response(response: Response):
+        response.headers["X-Request-ID"] = request_id()
         if config.security_headers_enabled:
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -63,6 +75,21 @@ def create_app() -> Flask:
                 upload_bytes=request.content_length,
             )
 
+        if response.status_code >= 400:
+            log_error_response(response.status_code)
+        log_structured(
+            LOGGER,
+            logging.INFO,
+            {
+                "event": "request",
+                "request_id": request_id(),
+                "method": request.method,
+                "route": request_route(),
+                "path": request.path,
+                "status": response.status_code,
+                "duration_ms": request_duration_ms(),
+            },
+        )
         return response
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -302,6 +329,37 @@ def create_app() -> Flask:
     return app
 
 
+def request_id() -> str:
+    return getattr(g, "request_id", "unknown")
+
+
+def request_route() -> str:
+    return request.url_rule.rule if request.url_rule else request.path
+
+
+def request_duration_ms() -> float:
+    started_at = getattr(g, "request_started_at", None)
+    if started_at is None:
+        return 0.0
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def log_error_response(status: int) -> None:
+    log_structured(
+        LOGGER,
+        logging.ERROR,
+        {
+            "event": "error",
+            "request_id": request_id(),
+            "method": request.method,
+            "route": request_route(),
+            "path": request.path,
+            "status": status,
+            "duration_ms": request_duration_ms(),
+        },
+    )
+
+
 def is_hex_32(value: object) -> bool:
     if not isinstance(value, str) or len(value) != 64:
         return False
@@ -355,15 +413,7 @@ def safe_filename(value: object) -> str | None:
 def redact_metadata(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
-    redacted = {}
-    for key, item in value.items():
-        if key in REDACTED_METADATA_KEYS:
-            redacted[key] = "[redacted]"
-        elif isinstance(item, dict):
-            redacted[key] = redact_metadata(item)
-        else:
-            redacted[key] = item
-    return redacted
+    return redact_sensitive(value)
 
 
 def video_tooling_ready() -> bool:
