@@ -11,6 +11,7 @@ import {
   Wallet,
 } from 'lucide-react'
 import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stellar'
+import { fieldSecret, hasSeeds } from './seedVault'
 import EvilEye from './components/EvilEye'
 import './App.css'
 
@@ -51,8 +52,6 @@ type ProofEvent = {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
-const BN254_FIELD_MODULUS =
-  21888242871839275222246405745257275088548364400416034343698204186575808495617n
 
 const tiers = [
   {
@@ -93,12 +92,6 @@ function hex(buffer: ArrayBuffer) {
 async function sha256(input: ArrayBuffer | string) {
   const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input
   return hex(await crypto.subtle.digest('SHA-256', bytes))
-}
-
-async function fieldSecret(label: string, seed: string) {
-  const digest = await sha256(`harpocrates:${label}:${seed}`)
-  const value = BigInt(`0x${digest}`) % BN254_FIELD_MODULUS
-  return value === 0n ? '1' : value.toString(10)
 }
 
 function shortHash(value: string) {
@@ -142,7 +135,18 @@ function App() {
     return () => window.removeEventListener('scroll', updateScrollState)
   }, [])
 
+  useEffect(() => {
+    return () => {
+      setCredentialSeed('')
+      setNullifierSeed('')
+    }
+  }, [])
+
   function openView(view: View) {
+    if (view !== 'studio') {
+      setCredentialSeed('')
+      setNullifierSeed('')
+    }
     setCurrentView(view)
     const nextHash = view === 'landing' ? window.location.pathname : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)
@@ -387,15 +391,19 @@ function App() {
   }
 
   async function attachSilentWitnessProof(nextProof: ProofPackage) {
-    if (!credentialSeed.trim() || !nullifierSeed.trim()) {
+    if (!hasSeeds({ credentialSeed, nullifierSeed })) {
       throw new Error('Silent Witness requires your credential and nullifier seeds.')
     }
+
+    const rawCredentialSeed = credentialSeed.trim()
+    const rawNullifierSeed = nullifierSeed.trim()
+    clearSeeds()
 
     setStage('proving')
     setMessage('Generating Noir UltraHonk proof in this browser.')
     const [credentialSecret, nullifierSecret] = await Promise.all([
-      fieldSecret('credential', credentialSeed.trim()),
-      fieldSecret('nullifier', nullifierSeed.trim()),
+      fieldSecret('credential', rawCredentialSeed),
+      fieldSecret('nullifier', rawNullifierSeed),
     ])
 
     const { generateSilentWitnessProof } = await import('./noirClient')
@@ -411,6 +419,11 @@ function App() {
     }
     setProof(nextWithProof)
     return nextWithProof
+  }
+
+  function clearSeeds() {
+    setCredentialSeed('')
+    setNullifierSeed('')
   }
 
   async function fetchProofEventsByVideo(videoHash: string) {

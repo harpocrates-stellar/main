@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import app as app_module
 import stego
+from metrics import collector as metrics_collector
 
 
 REAL_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
@@ -17,6 +18,7 @@ REAL_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
 
 class AppHardeningTest(unittest.TestCase):
     def setUp(self) -> None:
+        metrics_collector.reset()
         self.client = app_module.app.test_client()
 
     def test_health_sets_security_headers(self) -> None:
@@ -28,6 +30,7 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["X-Harpocrates-Release"], "harpocrates-1.0.0")
         self.assertEqual(response.headers["X-Harpocrates-Network"], "testnet")
+
 
     def test_ready_endpoint_reports_service_dependencies(self) -> None:
         response = self.client.get("/ready")
@@ -171,6 +174,88 @@ class AppHardeningTest(unittest.TestCase):
                 self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
             self.assertEqual(list(temp_root.iterdir()), [])
             return response
+
+    def test_metrics_exposes_request_counts_status_and_latency(self) -> None:
+        self.client.get("/health")
+        response = self.client.get("/metrics")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/plain", response.content_type)
+        metrics_text = response.data.decode("utf-8")
+
+        self.assertIn("# HELP harpocrates_requests_total", metrics_text)
+        self.assertIn('# TYPE harpocrates_requests_total counter', metrics_text)
+        self.assertIn('harpocrates_requests_total{endpoint="/health",method="GET",status="200"} 1', metrics_text)
+
+        self.assertIn("# HELP harpocrates_request_duration_seconds", metrics_text)
+        self.assertIn('# TYPE harpocrates_request_duration_seconds histogram', metrics_text)
+        self.assertIn('harpocrates_request_duration_seconds_count{endpoint="/health",method="GET",status="200"} 1', metrics_text)
+
+    def test_metrics_privacy_excludes_sensitive_identifiers_and_parameterizes_routes(self) -> None:
+        video_hash = "a" * 64
+        self.client.get(f"/api/proofs/by-video/{video_hash}")
+        response = self.client.get("/metrics")
+
+        self.assertEqual(response.status_code, 200)
+        metrics_text = response.data.decode("utf-8")
+
+        # Must NOT leak individual video hash parameter
+        self.assertNotIn(video_hash, metrics_text)
+        # Must expose parameterized route rule
+        self.assertIn('endpoint="/api/proofs/by-video/<video_hash>"', metrics_text)
+
+    def test_metrics_records_bounded_upload_size_histogram(self) -> None:
+        self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps(valid_metadata()),
+                "video": video_upload(),
+            },
+            content_type="multipart/form-data",
+        )
+        response = self.client.get("/metrics")
+
+        self.assertEqual(response.status_code, 200)
+        metrics_text = response.data.decode("utf-8")
+
+        self.assertIn("# HELP harpocrates_upload_bytes_total", metrics_text)
+        self.assertIn('# TYPE harpocrates_upload_bytes_total histogram', metrics_text)
+        self.assertIn('harpocrates_upload_bytes_total_bucket{endpoint="/api/stego/embed",method="POST",le="', metrics_text)
+
+    def test_metrics_protection_token_authentication(self) -> None:
+        with patch.dict(app_module.os.environ, {"METRICS_TOKEN": "secret-scraping-token"}):
+            token_app = app_module.create_app()
+            token_client = token_app.test_client()
+
+            token_client.get("/health")
+
+            # Missing token -> 401
+            res_unauth = token_client.get("/metrics")
+            self.assertEqual(res_unauth.status_code, 401)
+            self.assertEqual(res_unauth.json["error"], "unauthorized metrics access")
+
+            # Invalid Bearer token -> 401
+            res_invalid = token_client.get("/metrics", headers={"Authorization": "Bearer wrong-token"})
+            self.assertEqual(res_invalid.status_code, 401)
+
+            # Valid Bearer token -> 200
+            res_bearer = token_client.get("/metrics", headers={"Authorization": "Bearer secret-scraping-token"})
+            self.assertEqual(res_bearer.status_code, 200)
+            self.assertIn("harpocrates_requests_total", res_bearer.data.decode("utf-8"))
+
+            # Valid X-Metrics-Token -> 200
+            res_header = token_client.get("/metrics", headers={"X-Metrics-Token": "secret-scraping-token"})
+            self.assertEqual(res_header.status_code, 200)
+
+    def test_metrics_isolation_disabled_endpoint(self) -> None:
+        with patch.dict(app_module.os.environ, {"METRICS_ENABLED": "false"}):
+            disabled_app = app_module.create_app()
+            disabled_client = disabled_app.test_client()
+
+            res = disabled_client.get("/metrics")
+            self.assertEqual(res.status_code, 404)
+            self.assertEqual(res.json["error"], "metrics service disabled")
+
 
 
 def tracking_temporary_directory_factory(temp_root: Path, observed: list[Path]):
