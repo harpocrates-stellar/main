@@ -23,8 +23,11 @@ class AppConfig:
 def load_config() -> AppConfig:
     app_env = os.getenv("APP_ENV", "development").strip().lower()
     cors_origins = _csv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
-    if "*" in cors_origins and os.getenv("ALLOW_WILDCARD_CORS") != "true":
-        raise RuntimeError("Wildcard CORS requires ALLOW_WILDCARD_CORS=true")
+    if "*" in cors_origins:
+        if app_env == "production":
+            raise RuntimeError("Wildcard CORS origins are not permitted in production")
+        if os.getenv("ALLOW_WILDCARD_CORS") != "true":
+            raise RuntimeError("Wildcard CORS requires ALLOW_WILDCARD_CORS=true")
 
     return AppConfig(
         app_env=app_env,
