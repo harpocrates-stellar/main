@@ -1039,3 +1039,131 @@ code {
   font-size: 1rem;
   line-height: 1.45;
 }
+
+/* ── Skip to content ───────────────────────────────────────────────────── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  color: #050505;
+  background: #fff;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transform: translateX(-50%);
+  transition: top 160ms ease;
+}
+
+.skip-link:focus {
+  top: 8px;
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+/* ── Screen reader only ─────────────────────────────────────────────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Visible focus rings (WCAG 2.4.11 Focus Appearance) ─────────────────── */
+:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+/* Remove outline for mouse users who don't need it */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Ensure buttons and interactive elements have sufficient focus ring */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[role="radio"]:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Minimum touch/click target size (WCAG 2.5.8) ───────────────────────── */
+.tier-tab {
+  min-height: 44px;
+}
+
+.navlinks button {
+  min-height: 44px;
+  padding: 0 8px;
+}
+
+/* ── High-contrast text for data labels ─────────────────────────────────── */
+.data-list dt {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.data-list dd {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.rail-block h3 {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.page-header p {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.lede {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* Tier tabs: visible selected state beyond color alone */
+.tier-tab.active {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.38);
+}
+
+/* ── Reduced motion: disable decorative animations ───────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .flow-connector {
+    animation: none;
+    stroke-dasharray: none;
+  }
+
+  .hero-copy h1,
+  .lede,
+  .hero-actions {
+    opacity: 1;
+    animation: none;
+    transform: none;
+  }
+
+  .spin {
+    animation: none;
+  }
+
+  .topbar {
+    transition: none;
+  }
+}
+
+/* ── Error state visual ──────────────────────────────────────────────────── */
+.primary-action[aria-busy="true"] {
+  cursor: wait;
+}
