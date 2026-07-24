@@ -13,6 +13,7 @@ export {
   expireProof,
   getProofByVideoHash,
   getProofHistory,
+  getProofHistoryAt,
   getProofHistoryCount,
   registerProofOnStellar,
   verifyProof,

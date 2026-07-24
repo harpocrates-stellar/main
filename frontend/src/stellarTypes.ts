@@ -53,7 +53,7 @@ export type RegistryMethod =
   | 'get_by_video'
   | 'get_proof'
   | 'get_proof_status'
-  | 'get_proof_history'
+  | 'get_proof_history_at'
   | 'get_proof_history_count'
   | 'revoke_proof'
   | 'verify_proof'
