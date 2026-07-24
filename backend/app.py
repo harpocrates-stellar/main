@@ -18,7 +18,9 @@ from db import (
     find_proof_events_by_video,
     init_db,
     insert_proof_event,
+    insert_proof_history_event,
     list_proof_events,
+    list_proof_history_events,
 )
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
@@ -215,6 +217,54 @@ def create_app() -> Flask:
             source_address=payload.get("sourceAddress"),
             contract_id=payload.get("contractId"),
             metadata=redact_metadata(payload),
+        )
+
+        return jsonify({"ok": True, "db_event": db_event})
+
+    @app.get("/api/proofs/history/<proof_id>")
+    def proof_history(proof_id: str):
+        if not is_hex_32(proof_id):
+            return jsonify({"error": "proof_id must be a 32-byte hex string"}), 400
+
+        limit = request.args.get("limit", "50")
+        offset = request.args.get("offset", "0")
+        try:
+            parsed_limit = int(limit)
+            parsed_offset = int(offset)
+        except ValueError:
+            return jsonify({"error": "limit and offset must be integers"}), 400
+
+        return jsonify(
+            {"ok": True, "events": list_proof_history_events(proof_id, parsed_limit, parsed_offset)}
+        )
+
+    @app.post("/api/proofs/history")
+    def register_proof_history_event():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+
+        proof_id = payload.get("proofId")
+        action = payload.get("action")
+        actor = payload.get("actor")
+        reason_code = payload.get("reasonCode")
+        contract_id = payload.get("contractId")
+        tx_hash = payload.get("txHash")
+
+        if not is_hex_32(proof_id):
+            return jsonify({"error": "proofId must be a 32-byte hex string"}), 400
+        if not isinstance(action, str) or not action:
+            return jsonify({"error": "action is required"}), 400
+        if reason_code is None or not isinstance(reason_code, int):
+            return jsonify({"error": "reasonCode is required"}), 400
+
+        db_event = insert_proof_history_event(
+            proof_id=proof_id,
+            action=action,
+            actor=actor,
+            reason_code=reason_code,
+            contract_id=contract_id,
+            tx_hash=tx_hash,
         )
 
         return jsonify({"ok": True, "db_event": db_event})
