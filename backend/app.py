@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -30,6 +31,8 @@ from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
+from streaming_upload import init_streaming_uploads, with_streaming_upload
+from upload_state import upload_manager, UploadStatus
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -50,6 +53,9 @@ def create_app() -> Flask:
     CORS(app, origins=config.cors_origins)
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+    
+    # Initialize streaming upload system
+    init_streaming_uploads(app, config)
 
     @app.before_request
     def start_request_context():
@@ -77,6 +83,9 @@ def create_app() -> Flask:
                 duration_seconds=duration,
                 upload_bytes=request.content_length,
             )
+            
+            # Update streaming upload active count
+            metrics_collector.record_upload_active(upload_manager.get_active_count())
 
         if response.status_code >= 400:
             log_error_response(response.status_code)
@@ -146,17 +155,52 @@ def create_app() -> Flask:
         video.seek(0)
         return size <= config.max_video_bytes
 
+    def _enforce_video_size_streaming(video) -> bool:
+        """Enhanced video size validation for streaming uploads."""
+        # For streaming uploads, size is already validated during parsing
+        if hasattr(video, 'upload_state') and video.upload_state:
+            upload_state = video.upload_state
+            # Record metrics
+            if upload_state.bytes_received > 0:
+                metrics_collector.record_upload_bytes_received(upload_state.bytes_received)
+            
+            # Check if upload completed successfully
+            if upload_state.status.value in ['complete', 'confirming']:
+                return upload_state.bytes_received <= config.max_video_bytes
+            elif upload_state.status.value == 'failed':
+                # Record error metrics
+                error_type = upload_state._get_error_type()
+                if error_type:
+                    metrics_collector.record_upload_error(error_type)
+                return False
+        
+        # Fallback to original validation for non-streaming uploads
+        return _enforce_video_size(video)
+
+    def _check_existing_video_hash(computed_hash: str) -> Optional[dict]:
+        """Check if a video with this hash already exists (idempotency check)."""
+        try:
+            existing_events = find_proof_events_by_video(computed_hash)
+            if existing_events:
+                # Return the most recent event
+                return existing_events[0]
+        except Exception:
+            # If database check fails, proceed with upload to avoid blocking
+            pass
+        return None
+
     def _enforce_json_size() -> int:
         raw = request.get_data()
         return len(raw) if raw else 0
 
     @app.post("/api/stego/embed")
+    @with_streaming_upload(config)
     def embed():
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
         if video is None or metadata_raw is None:
             return jsonify({"error": "video and metadata are required"}), 400
-        if not _enforce_video_size(video):
+        if not _enforce_video_size_streaming(video):
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
@@ -174,13 +218,53 @@ def create_app() -> Flask:
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
             source_path = Path(tmp_dir) / "source.video"
             output_path = Path(tmp_dir) / "embedded.mp4"
-            video.save(source_path)
+            
+            # For streaming uploads, use the temp file if available
+            if hasattr(video, 'upload_state') and video.upload_state and video.upload_state.temp_path:
+                # Copy from streaming temp file
+                source_path_from_stream = Path(video.upload_state.temp_path)
+                if source_path_from_stream.exists():
+                    shutil.copy2(source_path_from_stream, source_path)
+                else:
+                    video.save(source_path)
+            else:
+                # Fallback: save uploaded file
+                video.save(source_path)
 
             embed_metadata(source_path, output_path, metadata)
             output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(source_path)
+            
+            # For streaming uploads, use pre-computed hash if available
+            if hasattr(video, 'computed_hash') and video.computed_hash:
+                source_hash = video.computed_hash
+            else:
+                source_hash = sha256_file(source_path)
+            
             embedded_hash = sha256_file(output_path)
             metadata_hash = canonical_metadata_hash(metadata)
+
+            # Check for existing upload (idempotency)
+            existing_event = _check_existing_video_hash(source_hash)
+            if existing_event and existing_event.get("metadata_hash") == metadata_hash:
+                log_structured(
+                    app.logger,
+                    logging.INFO,
+                    {
+                        "event": "duplicate_embed_detected",
+                        "video_hash": source_hash,
+                        "metadata_hash": metadata_hash,
+                        "existing_db_event": existing_event.get("id"),
+                    }
+                )
+                # Return the existing embedded content if we can regenerate it
+                # For now, continue with new embed but could optimize in future
+
+        # Record metrics for streaming uploads
+        if hasattr(video, 'upload_state') and video.upload_state:
+            upload_state = video.upload_state
+            upload_state.transition_to(UploadStatus.CONFIRMING)
+            if upload_state.bytes_received > 0:
+                metrics_collector.record_upload_bytes_received(upload_state.bytes_received)
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -192,6 +276,12 @@ def create_app() -> Flask:
             embedded_hash=embedded_hash,
             metadata=redact_metadata(metadata),
         )
+
+        # Mark upload as complete and record duration
+        if hasattr(video, 'upload_state') and video.upload_state:
+            upload_state = video.upload_state
+            upload_state.transition_to(UploadStatus.COMPLETE)
+            metrics_collector.record_upload_duration(upload_state.duration_seconds)
 
         response = Response(output_bytes, mimetype="video/mp4")
         response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
@@ -206,20 +296,46 @@ def create_app() -> Flask:
         return response
 
     @app.post("/api/stego/extract")
+    @with_streaming_upload(config)
     def extract():
         video = request.files.get("video")
         if video is None:
             return jsonify({"error": "video is required"}), 400
-        if not _enforce_video_size(video):
+        if not _enforce_video_size_streaming(video):
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
             source_path = Path(tmp_dir) / "source.video"
-            video.save(source_path)
+            
+            # For streaming uploads, use the temp file if available
+            if hasattr(video, 'upload_state') and video.upload_state and video.upload_state.temp_path:
+                # Copy from streaming temp file
+                source_path_from_stream = Path(video.upload_state.temp_path)
+                if source_path_from_stream.exists():
+                    shutil.copy2(source_path_from_stream, source_path)
+                else:
+                    video.save(source_path)
+            else:
+                # Fallback: save uploaded file
+                video.save(source_path)
+                
             metadata = extract_metadata(source_path)
-            video_hash = sha256_file(source_path)
+            
+            # For streaming uploads, use pre-computed hash if available
+            if hasattr(video, 'computed_hash') and video.computed_hash:
+                video_hash = video.computed_hash
+            else:
+                video_hash = sha256_file(source_path)
+                
             metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+
+        # Record metrics for streaming uploads
+        if hasattr(video, 'upload_state') and video.upload_state:
+            upload_state = video.upload_state
+            upload_state.transition_to(UploadStatus.CONFIRMING)
+            if upload_state.bytes_received > 0:
+                metrics_collector.record_upload_bytes_received(upload_state.bytes_received)
 
         db_event = insert_proof_event(
             event_type="extract",
@@ -230,6 +346,12 @@ def create_app() -> Flask:
             tier=metadata.get("tier") if metadata else None,
             metadata=redact_metadata(metadata),
         )
+
+        # Mark upload as complete and record duration
+        if hasattr(video, 'upload_state') and video.upload_state:
+            upload_state = video.upload_state
+            upload_state.transition_to(UploadStatus.COMPLETE)
+            metrics_collector.record_upload_duration(upload_state.duration_seconds)
 
         return jsonify(
             {

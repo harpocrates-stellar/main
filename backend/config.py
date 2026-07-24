@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
 
 
@@ -18,6 +19,11 @@ class AppConfig:
     metrics_enabled: bool
     metrics_token: str | None
     metrics_path: str
+    # Streaming upload configuration
+    upload_max_bytes: int
+    upload_temp_dir: str
+    upload_timeout_seconds: int
+    upload_max_concurrent: int
 
 
 def load_config() -> AppConfig:
@@ -39,6 +45,11 @@ def load_config() -> AppConfig:
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
         metrics_token=_str_env("METRICS_TOKEN"),
         metrics_path=os.getenv("METRICS_PATH", "/metrics").strip(),
+        # Streaming upload configuration
+        upload_max_bytes=_int_env("UPLOAD_MAX_BYTES", 262_144_000),
+        upload_temp_dir=os.getenv("UPLOAD_TEMP_DIR", "").strip() or tempfile.gettempdir(),
+        upload_timeout_seconds=_int_env("UPLOAD_TIMEOUT_SECONDS", 300),
+        upload_max_concurrent=_int_env("UPLOAD_MAX_CONCURRENT", 10),
     )
 
 
