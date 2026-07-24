@@ -2,6 +2,7 @@ import { Address, BASE_FEE, Contract, Networks, TransactionBuilder, scValToNativ
 import { rpc } from '@stellar/stellar-sdk'
 import { signTransaction } from '@stellar/freighter-api'
 import { asHex32, asHexBytes, bytesToHex, scBytes, scBytes32 } from './stellarEncoding'
+import { assertReleaseCompatibility } from './releaseCompatibility'
 import type {
   ChainProofRecord,
   IdentityTier,
@@ -24,6 +25,7 @@ const NETWORK_PASSPHRASE = CONTRACT_NETWORK_PASSPHRASE
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 
 export async function registerProofOnStellar(input: RegisterProofInput): Promise<RegisterProofResult> {
+  assertReleaseCompatibility()
   const normalized = normalizeRegisterProofInput(input)
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(normalized.publicKey)
@@ -66,6 +68,7 @@ export async function getProofByVideoHash(
   videoHash: string,
   sourceAddress?: string,
 ): Promise<ChainProofRecord | null> {
+  assertReleaseCompatibility()
   const source = sourceAddress || READONLY_SOURCE
   if (!source) {
     throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')

@@ -16,6 +16,22 @@ project.md  Product and architecture spec
 DESIGN.md   Visual design source
 ```
 
+## Compatibility releases
+
+Frontend, backend, circuit, verifier, and registry changes ship as one
+digest-pinned compatibility bundle. Before building or deploying a release,
+run:
+
+```bash
+python3 devx/release_guard.py
+python3 -m unittest discover -s devx -p 'test_*.py' -v
+```
+
+See [release operations](docs/release-operations.md) for staged rollout,
+rollback, deployment binding, privacy-safe signals, migrations, and
+troubleshooting. Do not deploy a bundle unless its release manifest has passed
+the gate for the target network.
+
 ## Quick Start
 
 ### 1. Backend
