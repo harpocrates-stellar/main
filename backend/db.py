@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -86,6 +87,17 @@ def init_db() -> None:
                 """
                 create index if not exists proof_history_events_proof_id_idx
                 on proof_history_events (proof_id);
+                """
+            )
+            # Idempotency support: unique key for register events only.
+            cursor.execute("alter table proof_events add column if not exists idempotency_key text;")
+            # Partial unique index: only enforced when idempotency_key is non-null
+            # (i.e., only for 'register' events). embed/extract events are unaffected.
+            cursor.execute(
+                """
+                create unique index if not exists proof_events_idempotency_key_idx
+                on proof_events (idempotency_key)
+                where idempotency_key is not null;
                 """
             )
         connection.commit()
@@ -300,3 +312,199 @@ def list_proof_history_events(
                 (proof_id, limit, offset),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+
+def make_idempotency_key(video_hash: str, proof_id: str, tx_hash: str | None) -> str:
+    """Derive the idempotency key for a register event.
+
+    Key material: ``video_hash:proof_id:tx_hash`` where ``tx_hash`` defaults
+    to the empty string when absent.  Using SHA-256 keeps the stored value a
+    fixed-length hex string and avoids any length-extension ambiguity.
+    """
+    raw = f"{video_hash}:{proof_id}:{tx_hash or ''}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+# Fields compared when deciding whether a retry carries a conflicting payload.
+_CONFLICT_FIELDS = ("video_hash", "metadata_hash", "proof_id", "tier", "source_address", "contract_id")
+
+
+def upsert_register_event(
+    *,
+    idempotency_key: str,
+    file_name: str | None = None,
+    video_hash: str | None = None,
+    metadata_hash: str | None = None,
+    proof_id: str | None = None,
+    tier: str | None = None,
+    tx_hash: str | None = None,
+    tx_status: str | None = None,
+    source_address: str | None = None,
+    contract_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Insert a register event idempotently.
+
+    Returns ``(row, created)`` where *created* is ``True`` when a new row was
+    written and ``False`` when an existing row was found via the idempotency
+    key.
+
+    Raises ``ConflictError`` when the same idempotency key is reused with a
+    payload that differs in one of the canonical proof-identity fields.
+
+    The insert is done with ``ON CONFLICT DO NOTHING`` so that concurrent
+    requests with the same key race safely: only one writer wins and the
+    other falls back to the ``SELECT`` path.
+    """
+    if not database_url():
+        # When no database is configured return a stub so the rest of the app
+        # remains functional in minimal dev environments.
+        stub: dict[str, Any] = {
+            "id": None,
+            "created_at": None,
+            "video_hash": video_hash,
+            "metadata_hash": metadata_hash,
+            "proof_id": proof_id,
+            "tier": tier,
+            "source_address": source_address,
+            "contract_id": contract_id,
+        }
+        return stub, True
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # Attempt the insert; if the unique key already exists the row is
+            # silently skipped and nothing is returned.
+            cursor.execute(
+                """
+                insert into proof_events (
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    metadata,
+                    idempotency_key
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (idempotency_key)
+                where idempotency_key is not null
+                do nothing
+                returning
+                    id,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    metadata,
+                    created_at;
+                """,
+                (
+                    "register",
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    Jsonb(metadata) if metadata is not None else None,
+                    idempotency_key,
+                ),
+            )
+            row = cursor.fetchone()
+
+            if row is not None:
+                # Fresh insert – committed below.
+                connection.commit()
+                return dict(row), True
+
+            # Key already existed (concurrent insert or retry): fetch the
+            # previously stored row.
+            cursor.execute(
+                """
+                select
+                    id,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    metadata,
+                    created_at
+                from proof_events
+                where idempotency_key = %s;
+                """,
+                (idempotency_key,),
+            )
+            existing = cursor.fetchone()
+
+        # No commit needed for the read-only fallback path; any uncommitted
+        # state is just the no-op insert.
+        connection.rollback()
+
+    if existing is None:
+        # Should not happen – the constraint guarantees the row is visible.
+        raise RuntimeError("idempotency key collision but row not found; please retry")
+
+    existing_row = dict(existing)
+
+    # Check whether the caller is re-submitting with a conflicting payload.
+    incoming = {
+        "video_hash": video_hash,
+        "metadata_hash": metadata_hash,
+        "proof_id": proof_id,
+        "tier": tier,
+        "source_address": source_address,
+        "contract_id": contract_id,
+    }
+    for field in _CONFLICT_FIELDS:
+        if existing_row.get(field) != incoming.get(field):
+            raise ConflictError(
+                idempotency_key=idempotency_key,
+                field=field,
+                existing_value=existing_row.get(field),
+                incoming_value=incoming.get(field),
+            )
+
+    return existing_row, False
+
+
+class ConflictError(Exception):
+    """Raised when the same idempotency key is reused with a conflicting payload."""
+
+    def __init__(
+        self,
+        *,
+        idempotency_key: str,
+        field: str,
+        existing_value: object,
+        incoming_value: object,
+    ) -> None:
+        super().__init__(
+            f"idempotency key reused with conflicting value for '{field}'"
+        )
+        self.idempotency_key = idempotency_key
+        self.field = field
+        self.existing_value = existing_value
+        self.incoming_value = incoming_value

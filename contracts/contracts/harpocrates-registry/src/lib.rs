@@ -148,6 +148,27 @@ pub struct ProofHistoryEvent {
     pub reason_code: u32,
 }
 
+#[contractevent(topics = ["admin", "propose"])]
+pub struct AdminProposed {
+    #[topic]
+    pub pending_admin: Address,
+    pub current_admin: Address,
+}
+
+#[contractevent(topics = ["admin", "cancel"])]
+pub struct AdminTransferCancelled {
+    #[topic]
+    pub pending_admin: Address,
+    pub current_admin: Address,
+}
+
+#[contractevent(topics = ["admin", "accept"])]
+pub struct AdminAccepted {
+    #[topic]
+    pub new_admin: Address,
+    pub previous_admin: Address,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -160,6 +181,7 @@ pub enum DataKey {
     ProofTtl,
     ProofHistorySeq(BytesN<32>),
     ProofHistoryEntry(BytesN<32>, u32),
+    PendingAdmin,
 }
 
 #[contracterror]
@@ -185,6 +207,7 @@ pub enum RegistryError {
     AlreadyExpired = 17,
     NoCorrectionChange = 18,
     HistoryCorruption = 19,
+    NoPendingAdmin = 20,
 }
 
 #[contract]
@@ -199,6 +222,63 @@ impl HarpocratesRegistry {
 
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
+    }
+
+    pub fn propose_admin(env: Env, admin: Address, pending_admin: Address) {
+        require_admin(&env, &admin);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &pending_admin);
+        AdminProposed {
+            pending_admin,
+            current_admin: admin,
+        }
+        .publish(&env);
+    }
+
+    pub fn cancel_admin_transfer(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+
+        let pending_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        AdminTransferCancelled {
+            pending_admin,
+            current_admin: admin,
+        }
+        .publish(&env);
+    }
+
+    pub fn accept_admin(env: Env, pending_admin: Address) {
+        let proposed_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
+
+        pending_admin.require_auth();
+        if proposed_admin != pending_admin {
+            panic_with_error!(&env, RegistryError::Unauthorized);
+        }
+
+        let previous_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            new_admin: pending_admin,
+            previous_admin,
+        }
+        .publish(&env);
     }
 
     pub fn add_issuer(env: Env, admin: Address, issuer: Address, metadata_hash: BytesN<32>) {
@@ -835,6 +915,7 @@ fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool 
 
 mod test;
 mod test_auth;
+mod test_budget;
 mod test_invariants;
 mod test_expiry;
 mod test_lifecycle;
