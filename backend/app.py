@@ -76,16 +76,27 @@ def create_app() -> Flask:
             }
         ), 200 if database_ready and video_tools_ready else 503
 
+    def _enforce_video_size(video) -> bool:
+        video.seek(0, 2)
+        size = video.tell()
+        video.seek(0)
+        return size <= config.max_video_bytes
+
+    def _enforce_json_size() -> int:
+        raw = request.get_data()
+        return len(raw) if raw else 0
+
     @app.post("/api/stego/embed")
     def embed():
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
-
         if video is None or metadata_raw is None:
             return jsonify({"error": "video and metadata are required"}), 400
+        if not _enforce_video_size(video):
+            return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "metadata is too large"}), 400
+            return jsonify({"error": "metadata is too large"}), 413
 
         try:
             metadata = json.loads(metadata_raw)
@@ -133,9 +144,10 @@ def create_app() -> Flask:
     @app.post("/api/stego/extract")
     def extract():
         video = request.files.get("video")
-
         if video is None:
             return jsonify({"error": "video is required"}), 400
+        if not _enforce_video_size(video):
+            return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
@@ -184,11 +196,13 @@ def create_app() -> Flask:
 
     @app.post("/api/proofs/register")
     def register_proof_event():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify({"error": "JSON body is required"}), 400
         if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "registration payload is too large"}), 400
+            return jsonify({"error": "registration payload is too large"}), 413
 
         video_hash = payload.get("videoHash")
         metadata_hash = payload.get("metadataHash")
@@ -221,6 +235,8 @@ def create_app() -> Flask:
 
     @app.post("/api/noir/silent-witness")
     def silent_witness_proof():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
         if not config.noir_worker_enabled:
             return jsonify({"error": "local Noir worker is disabled"}), 404
 
