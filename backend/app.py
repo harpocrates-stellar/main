@@ -31,6 +31,7 @@ from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
+from readiness import ReadinessManager
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -65,6 +66,10 @@ def create_app() -> Flask:
     )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+
+    readiness_manager = ReadinessManager(timeout_seconds=1.0, cache_ttl_seconds=5.0)
+    readiness_manager.add_dependency("database", check_db, critical=True)
+    readiness_manager.add_dependency("video_tools", video_tooling_ready, critical=True)
 
     @app.before_request
     def start_request_context():
@@ -143,17 +148,16 @@ def create_app() -> Flask:
 
     @app.get("/ready")
     def ready():
-        database_ready = check_db()
-        video_tools_ready = video_tooling_ready()
+        status = readiness_manager.check()
         return jsonify(
             {
-                "ok": database_ready and video_tools_ready,
+                "ok": status["ok"],
                 "service": "harpocrates-stego",
-                "database": "connected" if database_ready else "not_configured",
-                "video_tools": "available" if video_tools_ready else "missing",
+                "database": status.get("database", "not_configured"),
+                "video_tools": status.get("video_tools", "missing"),
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
             }
-        ), 200 if database_ready and video_tools_ready else 503
+        ), 200 if status["ok"] else 503
 
     def _enforce_video_size(video) -> bool:
         video.seek(0, 2)
