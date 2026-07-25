@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  AlertCircle,
   BadgeCheck,
   Building2,
   CheckCircle2,
+  Clock,
+  Copy,
+  Fingerprint,
   KeyRound,
   Loader2,
   Shield,
   Upload,
   Wallet,
+  XCircle,
 } from 'lucide-react'
-import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stellar'
+import type { ChainProofRecord, IdentityTier, RegisterProofResult, TxState } from './stellar'
+import { describeTxState } from './stellar'
 import EvilEye from './components/EvilEye'
 import './App.css'
 
@@ -105,6 +111,52 @@ function shortHash(value: string) {
   return `${value.slice(0, 12)}...${value.slice(-10)}`
 }
 
+function TxStatusBadge({ state, hash }: { state: TxState; hash: string }) {
+  const [copyStatus, setCopyStatus] = useState('')
+
+  if (state === 'idle') return null
+
+  const config: Record<TxState, { icon: typeof Loader2; label: string; className: string }> = {
+    idle: { icon: Loader2, label: 'Idle', className: '' },
+    submitting: { icon: Loader2, label: 'Submitting…', className: 'tx-submitting' },
+    awaiting_confirmation: { icon: Clock, label: 'Awaiting confirmation…', className: 'tx-pending' },
+    confirmed: { icon: CheckCircle2, label: 'Confirmed', className: 'tx-confirmed' },
+    failed: { icon: XCircle, label: 'Failed', className: 'tx-failed' },
+    timeout: { icon: AlertCircle, label: 'Timed out', className: 'tx-timeout' },
+  }
+
+  const { icon: Icon, label, className } = config[state]
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(hash)
+      setCopyStatus('Copied!')
+      setTimeout(() => setCopyStatus(''), 2000)
+    } catch {
+      setCopyStatus('Failed')
+    }
+  }
+
+  return (
+    <div className={`tx-status-badge ${className}`} role="status" aria-live="polite">
+      <Icon size={14} className={state === 'submitting' ? 'spin' : undefined} aria-hidden="true" />
+      <span>{label}</span>
+      {hash && (
+        <button
+          className="tx-hash-copy"
+          type="button"
+          onClick={() => void handleCopy()}
+          title="Copy transaction hash"
+          aria-label={`Copy transaction hash: ${hash}`}
+        >
+          <Copy size={11} aria-hidden="true" />
+          {copyStatus || shortHash(hash)}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
   return hash === 'studio' || hash === 'verify' ? hash : 'landing'
@@ -125,6 +177,7 @@ function App() {
   const [verifyHash, setVerifyHash] = useState('')
   const [verifyResult, setVerifyResult] = useState('')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
+  const [txState, setTxState] = useState<TxState>('idle')
   const [events, setEvents] = useState<ProofEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
 
@@ -238,7 +291,9 @@ function App() {
       return
     }
 
-    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
+    setTxState('submitting')
+    setRegistration(null)
+    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet...`)
 
     try {
       const proofForRegistration =
@@ -262,10 +317,19 @@ function App() {
       })
       await persistRegistration(proofForRegistration, result)
       setRegistration(result)
-      setStage('registered')
-      setMessage(`Registration submitted with Stellar status: ${result.status}.`)
+      setTxState(result.txState)
+
+      const messages: Record<TxState, string> = {
+        idle: 'Registration not started.',
+        submitting: 'Submitting proof to Stellar Testnet...',
+        awaiting_confirmation: `Transaction submitted. Awaiting confirmation on Stellar Testnet. Hash: ${shortHash(result.hash)}`,
+        confirmed: 'Registration confirmed on Stellar. Evidence is now on-chain.',
+        failed: `Registration failed. Check the transaction hash for details.`,
+        timeout: 'Registration timed out waiting for confirmation. The transaction may still complete — save the hash and check later.',
+      }
+      setMessage(messages[result.txState])
     } catch (error) {
-      setStage('error')
+      setTxState('failed')
       setMessage(error instanceof Error ? error.message : 'Stellar registration failed.')
     }
   }
@@ -536,7 +600,8 @@ function App() {
         <div className="studio">
           <header className="page-header">
             <h2>Evidence Studio</h2>
-            <p>{message}</p>
+            <p aria-live="polite">{message}</p>
+            <TxStatusBadge state={txState} hash={registration?.hash ?? ''} />
           </header>
 
           <label className="dropzone">
@@ -550,7 +615,7 @@ function App() {
           </label>
 
           <div className="tier-tabs" role="group" aria-label="Identity tier">
-            {tiers.map((tier) => {
+{tiers.map((tier) => {
               const Icon = tier.icon
               return (
                 <button
@@ -598,7 +663,7 @@ function App() {
             <div><dt>Nullifier</dt><dd>{shortHash(proof?.silentWitness?.nullifier ?? '')}</dd></div>
             <div><dt>Credential Root</dt><dd>{shortHash(proof?.silentWitness?.credentialRoot ?? '')}</dd></div>
             <div><dt>Stellar Tx</dt><dd>{shortHash(registration?.hash ?? '')}</dd></div>
-            <div><dt>Tx Status</dt><dd>{registration?.status ?? 'Not submitted'}</dd></div>
+            <div><dt>Tx Status</dt><dd>{registration ? describeTxState(txState) : 'Not submitted'}</dd></div>
           </dl>
 
           {processedVideoUrl ? (
@@ -610,10 +675,10 @@ function App() {
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || stage === 'hashing' || stage === 'embedding' || stage === 'proving'}
+            disabled={!proof || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation'}
             onClick={() => void registerProof()}
           >
-            {stage === 'hashing' || stage === 'embedding' || stage === 'proving' ? (
+            {stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation' ? (
               <Loader2 className="spin" size={18} aria-hidden="true" />
             ) : (
               <BadgeCheck size={18} aria-hidden="true" />

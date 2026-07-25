@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:noir-client": "node scripts/test-noir-client-prover.mjs",
     "proof:noir-client": "node scripts/generate-noir-client-proof.mjs"
   },

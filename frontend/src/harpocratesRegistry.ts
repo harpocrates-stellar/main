@@ -9,13 +9,46 @@ import type {
   RegisterProofInput,
   RegisterProofResult,
   RegistryMethod,
+  TxState,
 } from './stellarTypes'
 
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 const NETWORK_PASSPHRASE = Networks.TESTNET
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
+const POLL_INTERVAL_MS = 1000
+const POLL_TIMEOUT_MS = 30000
 
-export async function registerProofOnStellar(input: RegisterProofInput): Promise<RegisterProofResult> {
+type SendTransactionResponse = Awaited<ReturnType<rpc.Server['sendTransaction']>>
+
+function initialTxState(status: string): TxState {
+  if (status === 'PENDING' || status === 'DUPLICATE') return 'awaiting_confirmation'
+  return 'submitting'
+}
+
+function resolveTxState(
+  pollResult: rpc.Api.GetSuccessfulTransactionResponse | null,
+  timedOut: boolean,
+): TxState {
+  if (timedOut) return 'timeout'
+  if (pollResult) return 'confirmed'
+  return 'failed'
+}
+
+function resolveStatus(
+  isRejected: boolean,
+  pollResult: rpc.Api.GetSuccessfulTransactionResponse | null,
+  timedOut: boolean,
+): string {
+  if (isRejected) return 'REJECTED_BY_WALLET'
+  if (timedOut) return 'TIMEOUT'
+  if (pollResult) return 'SUCCESS'
+  return 'FAILED'
+}
+
+export async function registerProofOnStellar(
+  input: RegisterProofInput,
+  waitForConfirmation = true,
+): Promise<RegisterProofResult> {
   const normalized = normalizeRegisterProofInput(input)
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(normalized.publicKey)
@@ -37,20 +70,61 @@ export async function registerProofOnStellar(input: RegisterProofInput): Promise
   })
 
   if (signed.error) {
-    throw new Error(signed.error.message)
+    return {
+      hash: '',
+      status: 'REJECTED_BY_WALLET',
+      txState: 'failed',
+    }
   }
 
   const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
-  const submitted = await server.sendTransaction(signedTransaction)
+  const submitted: SendTransactionResponse = await server.sendTransaction(signedTransaction)
 
   if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
-    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+    return {
+      hash: submitted.hash ?? '',
+      status: 'REJECTED_BY_RPC',
+      txState: 'failed',
+    }
   }
+
+  if (!waitForConfirmation) {
+    return {
+      hash: submitted.hash,
+      status: submitted.status,
+      txState: initialTxState(submitted.status),
+    }
+  }
+
+  const pollResult = await pollForConfirmation(server, submitted.hash)
+  const timedOut = pollResult === null
 
   return {
     hash: submitted.hash,
-    status: submitted.status,
+    status: resolveStatus(false, pollResult, timedOut),
+    txState: resolveTxState(pollResult, timedOut),
   }
+}
+
+export async function pollForConfirmation(
+  server: rpc.Server,
+  hash: string,
+  timeoutMs = POLL_TIMEOUT_MS,
+): Promise<rpc.Api.GetSuccessfulTransactionResponse | null> {
+  const start = Date.now()
+
+  while (Date.now() - start < timeoutMs) {
+    const response = await server.getTransaction(hash)
+    if (response.status === 'SUCCESS') {
+      return response as rpc.Api.GetSuccessfulTransactionResponse
+    }
+    if (response.status === 'FAILED') {
+      return null
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+  }
+
+  return null
 }
 
 export async function getProofByVideoHash(
