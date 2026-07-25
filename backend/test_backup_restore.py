@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -273,9 +274,6 @@ class TestRetention(unittest.TestCase):
         old_backup.touch()
 
         # Set modification time to 2 days ago
-        old_mtime = time.time() - (2 * 24 * 3600) if hasattr(self, '_time') else None
-        # Use os.utime for portability
-        import time
         two_days_ago = time.time() - (2 * 24 * 3600)
         os.utime(str(old_backup), (two_days_ago, two_days_ago))
 
@@ -284,7 +282,6 @@ class TestRetention(unittest.TestCase):
         recent_backup.touch()
 
         # Simulate retention cleanup
-        import time
         cutoff = time.time() - (retention_days * 24 * 3600)
 
         for f in Path(self.temp_dir).glob("*.gpg"):
@@ -302,7 +299,6 @@ class TestRetention(unittest.TestCase):
         backup.touch()
 
         # With retention 0, nothing is deleted
-        import time
         cutoff = time.time()
         for f in Path(self.temp_dir).glob("*.gpg"):
             if f.stat().st_mtime < cutoff and 0 > 0:
@@ -313,5 +309,4 @@ class TestRetention(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    import time
     unittest.main()
