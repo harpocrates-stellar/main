@@ -56,3 +56,15 @@ Run the Vitest and React Testing Library suite:
 ```powershell
 npm test
 ```
+
+## Browser storage policy
+
+All application-owned browser persistence must go through the wrappers in
+`src/safeStorage.ts`. The allowlist contains only these public UI preferences:
+
+- `currentView`: the active navigation view
+- `selectedTier`: the active identity-tier selection
+
+Credential or nullifier seeds, proof witnesses, generated proofs, raw private
+inputs, and every other field are prohibited from both `localStorage` and
+`sessionStorage`. Keep secret proof-generation data in memory only.

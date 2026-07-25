@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -10,6 +11,8 @@ from unittest.mock import patch
 
 import app as app_module
 import stego
+from config import load_config
+from db import ConflictError, make_idempotency_key
 from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
 
@@ -356,5 +359,367 @@ def video_upload() -> tuple[io.BytesIO, str, str]:
     return io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def valid_register_payload(**overrides) -> dict[str, object]:
+    """Return a well-formed /api/proofs/register payload."""
+    base = {
+        "fileName": "evidence.mp4",
+        "videoHash": "aa" * 32,
+        "metadataHash": "bb" * 32,
+        "proofId": "cc" * 32,
+        "tier": "source",
+        "txHash": "dd" * 32,
+        "txStatus": "SUCCESS",
+        "sourceAddress": "GDVRSXIO4SK2KSMUKJTQHMDDHBBFC7NGZZ6WLVOPKAG47GYPYAZCZR7G",
+        "contractId": "CCKTQNMBLXZXMWVR2WG4HDDUI3QGJU5LV5NTLFPCB72UITWE5TEDK7BT",
+    }
+    base.update(overrides)
+    return base
+
+
+def _stub_event(payload: dict) -> dict:
+    """Build a fake db row that matches the given payload, as upsert_register_event would return."""
+    return {
+        "id": 1,
+        "event_type": "register",
+        "file_name": payload.get("fileName"),
+        "video_hash": payload["videoHash"],
+        "metadata_hash": payload["metadataHash"],
+        "proof_id": payload["proofId"],
+        "tier": payload.get("tier"),
+        "embedded_hash": None,
+        "tx_hash": payload.get("txHash"),
+        "tx_status": payload.get("txStatus"),
+        "source_address": payload.get("sourceAddress"),
+        "contract_id": payload.get("contractId"),
+        "metadata": None,
+        "created_at": "2026-07-24T00:00:00+00:00",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Idempotency tests
+# ---------------------------------------------------------------------------
+
+class ProofRegistrationIdempotencyTest(unittest.TestCase):
+    """Tests for idempotent behaviour on /api/proofs/register."""
+
+    def setUp(self) -> None:
+        self.client = app_module.app.test_client()
+
+    # ------------------------------------------------------------------
+    # make_idempotency_key unit tests
+    # ------------------------------------------------------------------
+
+    def test_idempotency_key_is_deterministic(self) -> None:
+        k1 = make_idempotency_key("aa" * 32, "bb" * 32, "cc" * 32)
+        k2 = make_idempotency_key("aa" * 32, "bb" * 32, "cc" * 32)
+        self.assertEqual(k1, k2)
+
+    def test_idempotency_key_is_hex_64(self) -> None:
+        k = make_idempotency_key("aa" * 32, "bb" * 32, None)
+        self.assertEqual(len(k), 64)
+        int(k, 16)  # must parse as hex
+
+    def test_idempotency_key_differs_on_different_tx_hash(self) -> None:
+        k1 = make_idempotency_key("aa" * 32, "bb" * 32, "cc" * 32)
+        k2 = make_idempotency_key("aa" * 32, "bb" * 32, "dd" * 32)
+        self.assertNotEqual(k1, k2)
+
+    def test_idempotency_key_absent_tx_hash_equals_empty_string(self) -> None:
+        k_none = make_idempotency_key("aa" * 32, "bb" * 32, None)
+        k_empty = make_idempotency_key("aa" * 32, "bb" * 32, "")
+        self.assertEqual(k_none, k_empty)
+
+    def test_idempotency_key_differs_on_different_video_hash(self) -> None:
+        k1 = make_idempotency_key("aa" * 32, "bb" * 32, None)
+        k2 = make_idempotency_key("ee" * 32, "bb" * 32, None)
+        self.assertNotEqual(k1, k2)
+
+    def test_idempotency_key_differs_on_different_proof_id(self) -> None:
+        k1 = make_idempotency_key("aa" * 32, "bb" * 32, None)
+        k2 = make_idempotency_key("aa" * 32, "ff" * 32, None)
+        self.assertNotEqual(k1, k2)
+
+    # ------------------------------------------------------------------
+    # Positive path: first submission creates the record (201)
+    # ------------------------------------------------------------------
+
+    def test_register_first_submission_returns_201(self) -> None:
+        payload = valid_register_payload()
+        db_row = _stub_event(payload)
+
+        with patch.object(app_module, "upsert_register_event", return_value=(db_row, True)):
+            response = self.client.post(
+                "/api/proofs/register",
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["created"])
+        self.assertEqual(body["db_event"]["video_hash"], payload["videoHash"])
+
+    # ------------------------------------------------------------------
+    # Positive path: idempotent retry returns original record (200)
+    # ------------------------------------------------------------------
+
+    def test_register_idempotent_retry_returns_200_with_existing_record(self) -> None:
+        payload = valid_register_payload()
+        db_row = _stub_event(payload)
+        db_row["id"] = 42  # simulate pre-existing row
+
+        with patch.object(app_module, "upsert_register_event", return_value=(db_row, False)):
+            response = self.client.post(
+                "/api/proofs/register",
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["created"])
+        self.assertEqual(body["db_event"]["id"], 42)
+
+    def test_register_retry_response_contains_same_record_as_original(self) -> None:
+        """Second call must return the *same* row content as the first."""
+        payload = valid_register_payload()
+        db_row = _stub_event(payload)
+        db_row["id"] = 99
+
+        # Both calls return the same row (created=False on second)
+        with patch.object(app_module, "upsert_register_event", return_value=(db_row, False)):
+            r1 = self.client.post("/api/proofs/register", json=payload)
+            r2 = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(r1.status_code, r2.status_code)
+        self.assertEqual(r1.get_json()["db_event"]["id"], r2.get_json()["db_event"]["id"])
+
+    # ------------------------------------------------------------------
+    # Negative path: conflicting reuse of idempotency key → 409
+    # ------------------------------------------------------------------
+
+    def test_register_conflict_returns_409(self) -> None:
+        payload = valid_register_payload()
+        conflict = ConflictError(
+            idempotency_key=make_idempotency_key(payload["videoHash"], payload["proofId"], payload.get("txHash")),
+            field="metadata_hash",
+            existing_value="bb" * 32,
+            incoming_value="ff" * 32,
+        )
+
+        with patch.object(app_module, "upsert_register_event", side_effect=conflict):
+            response = self.client.post(
+                "/api/proofs/register",
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 409)
+        body = response.get_json()
+        self.assertIn("conflict", body["error"])
+        self.assertEqual(body["conflict_field"], "metadata_hash")
+
+    def test_register_conflict_error_exposes_conflicting_field(self) -> None:
+        """409 body must tell the caller which field differed."""
+        payload = valid_register_payload()
+        for differing_field in ("video_hash", "metadata_hash", "tier", "source_address", "contract_id"):
+            conflict = ConflictError(
+                idempotency_key="x" * 64,
+                field=differing_field,
+                existing_value="old",
+                incoming_value="new",
+            )
+            with patch.object(app_module, "upsert_register_event", side_effect=conflict):
+                response = self.client.post("/api/proofs/register", json=payload)
+
+            self.assertEqual(response.status_code, 409, msg=f"field={differing_field}")
+            self.assertEqual(response.get_json()["conflict_field"], differing_field)
+
+    def test_register_missing_required_field_still_returns_400(self) -> None:
+        """Validation errors before idempotency logic must still be 400."""
+        payload = valid_register_payload()
+        del payload["videoHash"]
+
+        response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("videoHash", response.get_json()["error"])
+
+    def test_register_invalid_video_hash_format_returns_400(self) -> None:
+        payload = valid_register_payload(videoHash="not-hex")
+        response = self.client.post("/api/proofs/register", json=payload)
+        self.assertEqual(response.status_code, 400)
+
+    # ------------------------------------------------------------------
+    # Concurrent submissions
+    # ------------------------------------------------------------------
+
+    def test_register_concurrent_identical_requests_one_created_rest_idempotent(self) -> None:
+        """Simulate N threads submitting the same payload simultaneously.
+
+        One thread wins the insert (created=True / 201); all others receive
+        the pre-existing row (created=False / 200).  No 409 must be raised
+        for truly identical payloads.
+        """
+        payload = valid_register_payload()
+        db_row = _stub_event(payload)
+
+        # Simulate the real DB race: the first call returns (row, True);
+        # all subsequent calls return (row, False) — as ON CONFLICT DO NOTHING
+        # followed by SELECT would behave.
+        call_count = {"n": 0}
+        lock = threading.Lock()
+
+        def fake_upsert(**kwargs):
+            with lock:
+                call_count["n"] += 1
+                created = call_count["n"] == 1
+            return db_row, created
+
+        results: list[tuple[int, dict]] = []
+        results_lock = threading.Lock()
+
+        def do_request() -> None:
+            with patch.object(app_module, "upsert_register_event", side_effect=fake_upsert):
+                resp = self.client.post("/api/proofs/register", json=payload)
+            with results_lock:
+                results.append((resp.status_code, resp.get_json()))
+
+        threads = [threading.Thread(target=do_request) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        statuses = [r[0] for r in results]
+        self.assertEqual(statuses.count(201), 1, "Exactly one thread should receive 201")
+        self.assertEqual(statuses.count(200), 7, "All other threads should receive 200")
+        # No 409 or 5xx
+        for status, body in results:
+            self.assertIn(status, {200, 201})
+            self.assertTrue(body["ok"])
+
+    def test_register_concurrent_conflicting_requests_raise_409(self) -> None:
+        """Threads with genuinely different payloads for the same key get 409."""
+        payload_a = valid_register_payload()
+        payload_b = valid_register_payload(metadataHash="ff" * 32)  # different hash
+        db_row = _stub_event(payload_a)
+
+        def fake_upsert_conflict(**kwargs):
+            raise ConflictError(
+                idempotency_key="x" * 64,
+                field="metadata_hash",
+                existing_value=payload_a["metadataHash"],
+                incoming_value=payload_b["metadataHash"],
+            )
+
+        with patch.object(app_module, "upsert_register_event", side_effect=fake_upsert_conflict):
+            response = self.client.post("/api/proofs/register", json=payload_b)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["conflict_field"], "metadata_hash")
+
+
+class CorsConfigurationTest(unittest.TestCase):
+    def test_production_rejects_wildcard_cors(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "production", "CORS_ORIGINS": "*", "ALLOW_WILDCARD_CORS": "true"}):
+            with self.assertRaises(RuntimeError) as ctx:
+                load_config()
+            self.assertIn("Wildcard CORS origins are not permitted in production", str(ctx.exception))
+
+    def test_production_accepts_explicit_cors_origins(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "production", "CORS_ORIGINS": "https://app.example.com"}):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["https://app.example.com"])
+
+    def test_development_allows_wildcard_cors_when_flag_enabled(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development", "CORS_ORIGINS": "*", "ALLOW_WILDCARD_CORS": "true"}):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["*"])
+
+    def test_development_rejects_wildcard_cors_without_flag(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development", "CORS_ORIGINS": "*"}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                load_config()
+            self.assertIn("Wildcard CORS requires ALLOW_WILDCARD_CORS=true", str(ctx.exception))
+
+    def test_default_local_development_origins(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development"}, clear=True):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["http://localhost:5173", "http://127.0.0.1:5173"])
+
+
+class CorsPreflightAndHeadersTest(unittest.TestCase):
+    def setUp(self) -> None:
+        metrics_collector.reset()
+        self.client = app_module.app.test_client()
+
+    def test_preflight_positive_allowed_origin_method_and_headers(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type, X-Request-ID",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+        self.assertIn("POST", allowed_methods)
+        allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+        self.assertIn("Content-Type", allowed_headers)
+        self.assertIn("X-Request-ID", allowed_headers)
+
+    def test_preflight_negative_disallowed_method(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "DELETE",
+            },
+        )
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+        self.assertNotIn("DELETE", allowed_methods)
+
+    def test_preflight_negative_disallowed_header(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-Forbidden-Header",
+            },
+        )
+        allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+        self.assertNotIn("X-Forbidden-Header", allowed_headers)
+
+    def test_preflight_negative_disallowed_origin(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://unauthorized-domain.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        self.assertNotEqual(response.headers.get("Access-Control-Allow-Origin"), "http://unauthorized-domain.com")
+
+    def test_cors_exposes_required_response_headers(self) -> None:
+        response = self.client.get(
+            "/health",
+            headers={"Origin": "http://localhost:5173"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+        exposed = response.headers.get("Access-Control-Expose-Headers", "")
+        self.assertIn("X-Request-ID", exposed)
+        self.assertIn("X-Harpocrates-Source-Hash", exposed)
+
+
 if __name__ == "__main__":
     unittest.main()
+

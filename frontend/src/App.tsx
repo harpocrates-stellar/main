@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stellar'
 import { fieldSecret, hasSeeds } from './seedVault'
+import type { VerificationEvent } from './verificationFlow'
 import EvilEye from './components/EvilEye'
 import './App.css'
 
@@ -36,18 +37,6 @@ type ProofPackage = {
   timestamp: string
   tier: IdentityTier
   silentWitness?: SilentWitnessProof
-}
-
-type ProofEvent = {
-  id: number
-  event_type: string
-  file_name: string | null
-  video_hash: string | null
-  proof_id: string | null
-  tier: string | null
-  tx_hash?: string | null
-  tx_status?: string | null
-  created_at: string
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
@@ -119,7 +108,7 @@ function App() {
   const [verifyHash, setVerifyHash] = useState('')
   const [verifyResult, setVerifyResult] = useState('')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
-  const [events, setEvents] = useState<ProofEvent[]>([])
+  const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
 
@@ -317,31 +306,18 @@ function App() {
       setVerifyHash(videoHash)
       hasLocalHash = true
 
-      const form = new FormData()
-      form.append('video', nextFile)
-
-      const response = await fetch(`${API_BASE}/api/stego/extract`, {
-        method: 'POST',
-        body: form,
+      const { verifyArtifact } = await import('./verificationFlow')
+      const result = await verifyArtifact({
+        apiBase: API_BASE,
+        contractId: CONTRACT_ID,
+        file: nextFile,
+        videoHash,
+        wallet: wallet || undefined,
       })
-      const data = await response.json()
-      const dbMatches = await fetchProofEventsByVideo(videoHash)
-      const { getProofByVideoHash } = await import('./stellar')
-      const onChain = CONTRACT_ID
-        ? await getProofByVideoHash(CONTRACT_ID, videoHash, wallet || undefined)
-        : null
 
-      setVerifyResult(
-        data.metadata?.protocol === 'harpocrates'
-          ? `Harpocrates metadata found. NeonDB has ${dbMatches.length} event(s). Chain registry: ${
-              onChain ? 'confirmed' : 'not found'
-            }.`
-          : `No embedded Harpocrates metadata found. NeonDB has ${dbMatches.length} event(s). Chain registry: ${
-              onChain ? 'confirmed' : 'not found'
-            }.`,
-      )
-      setEvents(dbMatches)
-      setChainProof(onChain)
+      setVerifyResult(result.message)
+      setEvents(result.events)
+      setChainProof(result.chainProof)
     } catch {
       setVerifyResult(
         hasLocalHash
@@ -424,12 +400,6 @@ function App() {
   function clearSeeds() {
     setCredentialSeed('')
     setNullifierSeed('')
-  }
-
-  async function fetchProofEventsByVideo(videoHash: string) {
-    const response = await fetch(`${API_BASE}/api/proofs/by-video/${videoHash}`)
-    const data = await response.json()
-    return (data.events ?? []) as ProofEvent[]
   }
 
   return (
@@ -768,7 +738,10 @@ function App() {
             </div>
             <dl className="data-list">
               <div><dt>Received Hash</dt><dd>{shortHash(verifyHash)}</dd></div>
-              <div><dt>Chain Status</dt><dd>{chainProof ? 'Confirmed' : 'Not loaded'}</dd></div>
+              <div>
+                <dt>Chain Status</dt>
+                <dd>{chainProof ? (chainProof.status === 2 ? 'Revoked' : 'Confirmed') : 'Not loaded'}</dd>
+              </div>
             </dl>
           </div>
 
