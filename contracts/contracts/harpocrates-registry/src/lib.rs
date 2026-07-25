@@ -130,9 +130,39 @@ pub struct CredentialRootRevoked {
     pub credential_root: BytesN<32>,
 }
 
+/// Domain separator that binds non‑revocation proofs to the Harpocrates
+/// revocation witness circuit version.  Both the Noir circuit and this
+/// contract use the same constant.  Changing the circuit requires updating
+/// this value to prevent proof replay across protocol versions.
+///
+/// Format: 32‑byte big‑endian BN254 field element serialization of
+///   `0x484152504f4352415445535f5245564f434154494f4e5f5631`
+/// which represents the ASCII string "HARPOCRATES_REVOCATION_V1" as a
+/// 192‑bit integer.  The 8 leading zero bytes come from the BN254 field
+/// serialisation (field elements are padded to 32 bytes).
+///
+/// Layout:
+///   [ 0.. 8)  leading zeros (BN254 field padding)
+///   [ 8..32)  "HARPOCRATES_REVOCATION_V1" (24 ASCII bytes)
+const REVOCATION_DOMAIN_SEPARATOR: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 7 leading zeros (BN254 padding)
+    0x48, 0x41, 0x52, 0x50, 0x4f, 0x43, 0x52, 0x41, // HARPOCRA
+    0x54, 0x45, 0x53, 0x5f, 0x52, 0x45, 0x56, 0x4f, // TES_REVO
+    0x43, 0x41, 0x54, 0x49, 0x4f, 0x4e, 0x5f, 0x56, // CATION_V
+    0x31, // 1
+];
+
 #[contractevent(topics = ["revroot", "set"])]
 pub struct RevocationRootSet {
     #[topic]
+    pub revocation_root: BytesN<32>,
+}
+
+#[contractevent(topics = ["nonrev", "check"])]
+pub struct NonRevocationChecked {
+    #[topic]
+    pub credential_root: BytesN<32>,
+    pub nullifier: BytesN<32>,
     pub revocation_root: BytesN<32>,
 }
 
@@ -613,6 +643,83 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::RevocationRoot)
     }
+
+    /// Verify a non‑revocation proof produced by the `revocation_witness`
+    /// Noir circuit.
+    ///
+    /// The proof demonstrates that `credential_root` is **not** a member of
+    /// the currently‑published revocation tree (`revocation_root`) without
+    /// revealing which revoked credentials exist or which identity is acting.
+    ///
+    /// # Public input layout (128 bytes, 4 × BN254 field elements)
+    ///
+    /// ```text
+    /// [  0.. 32)  revocation_root   – must match the on‑chain stored root
+    /// [ 32.. 64)  nullifier         – one‑use replay guard
+    /// [ 64.. 96)  domain_separator  – must match REVOCATION_DOMAIN_SEPARATOR
+    /// [ 96..128)  credential_root   – must be registered & active on‑chain
+    /// ```
+    ///
+    /// # Reverts
+    ///
+    /// - `NotInitialized`      if no revocation root has been published yet
+    /// - `VerifierNotSet`       if no external verifier contract is configured
+    /// - `InvalidPublicInputs`  if the domain separator or layout is wrong
+    /// - `UnknownCredentialRoot` if the credential has not been registered
+    /// - `RevokedCredentialRoot` if the credential root has been revoked
+    /// - `DuplicateNullifier`   if this nullifier was already consumed
+    /// - `InvalidProof`         if the external verifier rejects the proof
+    pub fn check_non_revocation(env: Env, public_inputs: Bytes, proof: Bytes) {
+        let parsed = parse_revocation_public_inputs(&env, &public_inputs);
+
+        // 1. Domain binding — must match the expected version tag.
+        let expected_domain = BytesN::from_array(&env, &REVOCATION_DOMAIN_SEPARATOR);
+        if parsed.domain_separator != expected_domain {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        // 2. Revocation root — must match the currently published root.
+        let stored_root: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RevocationRoot)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+        if parsed.revocation_root != stored_root {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        // 3. Credential must be registered and active.
+        require_active_credential_root(&env, &parsed.credential_root);
+
+        // 4. Nullifier must be fresh (prevents replay of this proof).
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Nullifier(parsed.nullifier.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DuplicateNullifier);
+        }
+
+        // 5. Verify the Noir proof through the external UltraHonk verifier.
+        let verifier: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Verifier)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
+        verify_external_proof(&env, &verifier, public_inputs, proof);
+
+        // 6. Consume the nullifier so this proof cannot be replayed.
+        env.storage()
+            .persistent()
+            .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
+
+        NonRevocationChecked {
+            credential_root: parsed.credential_root,
+            nullifier: parsed.nullifier,
+            revocation_root: parsed.revocation_root,
+        }
+        .publish(&env);
+    }
 }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -745,6 +852,53 @@ fn verify_external_proof(env: &Env, verifier: &Address, public_inputs: Bytes, pr
     env.try_invoke_contract::<(), InvokeError>(verifier, &Symbol::new(env, "verify_proof"), args)
         .unwrap_or_else(|_| panic_with_error!(env, RegistryError::InvalidProof))
         .unwrap_or_else(|_| panic_with_error!(env, RegistryError::InvalidProof));
+}
+
+struct RevocationPublicInputs {
+    revocation_root: BytesN<32>,
+    nullifier: BytesN<32>,
+    domain_separator: BytesN<32>,
+    credential_root: BytesN<32>,
+}
+
+/// Parse the 128‑byte public‑input blob produced by the revocation_witness
+/// Noir circuit.
+///
+/// Layout (4 × BN254 field elements, 32 bytes each):
+///   [  0.. 32)  revocation_root
+///   [ 32.. 64)  nullifier
+///   [ 64.. 96)  domain_separator
+///   [ 96..128)  credential_root
+fn parse_revocation_public_inputs(
+    env: &Env,
+    public_inputs: &Bytes,
+) -> RevocationPublicInputs {
+    if public_inputs.len() != 128 {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+
+    let mut bytes = [0u8; 128];
+    public_inputs.copy_into_slice(&mut bytes);
+
+    // Each field is a contiguous 32‑byte slice.
+    let mut revocation_root = [0u8; 32];
+    revocation_root.copy_from_slice(&bytes[0..32]);
+
+    let mut nullifier = [0u8; 32];
+    nullifier.copy_from_slice(&bytes[32..64]);
+
+    let mut domain_separator = [0u8; 32];
+    domain_separator.copy_from_slice(&bytes[64..96]);
+
+    let mut credential_root = [0u8; 32];
+    credential_root.copy_from_slice(&bytes[96..128]);
+
+    RevocationPublicInputs {
+        revocation_root: BytesN::from_array(env, &revocation_root),
+        nullifier: BytesN::from_array(env, &nullifier),
+        domain_separator: BytesN::from_array(env, &domain_separator),
+        credential_root: BytesN::from_array(env, &credential_root),
+    }
 }
 
 fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool {
