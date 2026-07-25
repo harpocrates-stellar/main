@@ -1,4 +1,4 @@
-import { requestAccess } from '@stellar/freighter-api'
+import { getNetwork, requestAccess } from '@stellar/freighter-api'
 
 export type {
   ChainProofRecord,
@@ -8,7 +8,7 @@ export type {
   TxState,
 } from './stellarTypes'
 export { describeTxState } from './stellarTypes'
-export { getProofByVideoHash, registerProofOnStellar } from './harpocratesRegistry'
+export { getProofByVideoHash, registerProofOnStellar, CONTRACT_NETWORK_PASSPHRASE } from './harpocratesRegistry'
 
 export async function connectFreighter() {
   const result = await requestAccess()
@@ -16,4 +16,18 @@ export async function connectFreighter() {
     throw new Error(result.error.message)
   }
   return result.address
+}
+
+/**
+ * Return the network passphrase that the connected Freighter wallet is
+ * currently pointed at. Returns an empty string when the extension is
+ * unavailable or returns an error so the caller can handle both cases
+ * uniformly.
+ */
+export async function getWalletNetwork(): Promise<string> {
+  const result = await getNetwork()
+  if (result.error) {
+    return ''
+  }
+  return result.networkPassphrase ?? ''
 }

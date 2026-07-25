@@ -1,7 +1,11 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Bytes, Env};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{Address as _, Events as _},
+    Address, Bytes, Env,
+};
 
 #[contract]
 struct MockNoirVerifier;
@@ -202,4 +206,111 @@ fn rejects_revoked_silent_witness_credential_root() {
         &silent_public_inputs(&env, &video_hash, &credential_root, &nullifier),
         &proof_bytes(&env),
     );
+}
+
+#[test]
+fn transfers_admin_after_proposal_is_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.init(&admin);
+    client.propose_admin(&admin, &new_admin);
+    assert_eq!(env.events().all().events().len(), 1);
+    client.accept_admin(&new_admin);
+    assert_eq!(env.events().all().events().len(), 1);
+
+    client.add_issuer(&new_admin, &issuer, &bytes32(&env, 61));
+    assert!(client.get_issuer(&issuer).unwrap().active);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn cancelled_admin_transfer_cannot_be_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+
+    client.init(&admin);
+    client.propose_admin(&admin, &pending_admin);
+    client.cancel_admin_transfer(&admin);
+    assert_eq!(env.events().all().events().len(), 1);
+    client.accept_admin(&pending_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn replaced_admin_proposal_cannot_be_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let first_pending_admin = Address::generate(&env);
+    let replacement_pending_admin = Address::generate(&env);
+
+    client.init(&admin);
+    client.propose_admin(&admin, &first_pending_admin);
+    client.propose_admin(&admin, &replacement_pending_admin);
+    client.accept_admin(&first_pending_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn non_admin_cannot_propose_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+
+    client.init(&admin);
+    client.propose_admin(&unauthorized, &pending_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn non_pending_admin_cannot_accept_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    client.init(&admin);
+    client.propose_admin(&admin, &pending_admin);
+    client.accept_admin(&unauthorized);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn non_admin_cannot_cancel_admin_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    client.init(&admin);
+    client.propose_admin(&admin, &pending_admin);
+    client.cancel_admin_transfer(&unauthorized);
 }

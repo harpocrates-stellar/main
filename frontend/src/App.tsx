@@ -16,6 +16,8 @@ import {
 } from 'lucide-react'
 import type { ChainProofRecord, IdentityTier, RegisterProofResult, TxState } from './stellar'
 import { describeTxState } from './stellar'
+import { fieldSecret, hasSeeds } from './seedVault'
+import type { VerificationEvent } from './verificationFlow'
 import EvilEye from './components/EvilEye'
 import './App.css'
 
@@ -42,22 +44,8 @@ type ProofPackage = {
   silentWitness?: SilentWitnessProof
 }
 
-type ProofEvent = {
-  id: number
-  event_type: string
-  file_name: string | null
-  video_hash: string | null
-  proof_id: string | null
-  tier: string | null
-  tx_hash?: string | null
-  tx_status?: string | null
-  created_at: string
-}
-
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
-const BN254_FIELD_MODULUS =
-  21888242871839275222246405745257275088548364400416034343698204186575808495617n
 
 const tiers = [
   {
@@ -98,12 +86,6 @@ function hex(buffer: ArrayBuffer) {
 async function sha256(input: ArrayBuffer | string) {
   const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input
   return hex(await crypto.subtle.digest('SHA-256', bytes))
-}
-
-async function fieldSecret(label: string, seed: string) {
-  const digest = await sha256(`harpocrates:${label}:${seed}`)
-  const value = BigInt(`0x${digest}`) % BN254_FIELD_MODULUS
-  return value === 0n ? '1' : value.toString(10)
 }
 
 function shortHash(value: string) {
@@ -178,8 +160,9 @@ function App() {
   const [verifyResult, setVerifyResult] = useState('')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [txState, setTxState] = useState<TxState>('idle')
-  const [events, setEvents] = useState<ProofEvent[]>([])
+  const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
+  const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
 
   const selectedTierMeta = useMemo(
     () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
@@ -193,7 +176,18 @@ function App() {
     return () => window.removeEventListener('scroll', updateScrollState)
   }, [])
 
+  useEffect(() => {
+    return () => {
+      setCredentialSeed('')
+      setNullifierSeed('')
+    }
+  }, [])
+
   function openView(view: View) {
+    if (view !== 'studio') {
+      setCredentialSeed('')
+      setNullifierSeed('')
+    }
     setCurrentView(view)
     const nextHash = view === 'landing' ? window.location.pathname : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)
@@ -202,10 +196,20 @@ function App() {
 
   async function connectWallet() {
     try {
-      const { connectFreighter } = await import('./stellar')
+      const { connectFreighter, getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('./stellar')
+      const { checkNetworkMatch } = await import('./networkGuard')
       const publicKey = await connectFreighter()
       setWallet(publicKey)
-      setMessage('Wallet connected on Stellar Testnet.')
+
+      const walletPassphrase = await getWalletNetwork()
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+      if (check.ok) {
+        setNetworkMismatch(null)
+        setMessage('Wallet connected on Stellar Testnet.')
+      } else {
+        setNetworkMismatch(`${check.reason} ${check.remediation}`)
+        setMessage(check.reason)
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Freighter is not available.')
     }
@@ -295,6 +299,29 @@ function App() {
     setRegistration(null)
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet...`)
 
+    // Re-check network immediately before submission – the user may have
+    // switched networks in Freighter after connecting.
+    try {
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('./stellar')
+      const { checkNetworkMatch } = await import('./networkGuard')
+      const walletPassphrase = await getWalletNetwork()
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+      if (!check.ok) {
+        setTxState('idle')
+        setNetworkMismatch(`${check.reason} ${check.remediation}`)
+        setMessage(check.reason)
+        return
+      }
+      setNetworkMismatch(null)
+    } catch {
+      setTxState('idle')
+      // If we cannot query the network, abort rather than submit to the wrong chain.
+      setMessage('Could not verify wallet network before submitting. Reconnect Freighter and try again.')
+      return
+    }
+
+    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
+
     try {
       const proofForRegistration =
         selectedTier === 'silent' && !proof.silentWitness
@@ -338,37 +365,32 @@ function App() {
     if (!nextFile) return
 
     setVerifyResult('Inspecting evidence...')
-    const videoHash = await sha256(await nextFile.arrayBuffer())
-    setVerifyHash(videoHash)
+    setVerifyHash('')
+    let hasLocalHash = false
 
     try {
-      const form = new FormData()
-      form.append('video', nextFile)
+      const videoHash = await sha256(await nextFile.arrayBuffer())
+      setVerifyHash(videoHash)
+      hasLocalHash = true
 
-      const response = await fetch(`${API_BASE}/api/stego/extract`, {
-        method: 'POST',
-        body: form,
+      const { verifyArtifact } = await import('./verificationFlow')
+      const result = await verifyArtifact({
+        apiBase: API_BASE,
+        contractId: CONTRACT_ID,
+        file: nextFile,
+        videoHash,
+        wallet: wallet || undefined,
       })
-      const data = await response.json()
-      const dbMatches = await fetchProofEventsByVideo(videoHash)
-      const { getProofByVideoHash } = await import('./stellar')
-      const onChain = CONTRACT_ID
-        ? await getProofByVideoHash(CONTRACT_ID, videoHash, wallet || undefined)
-        : null
 
-      setVerifyResult(
-        data.metadata?.protocol === 'harpocrates'
-          ? `Harpocrates metadata found. NeonDB has ${dbMatches.length} event(s). Chain registry: ${
-              onChain ? 'confirmed' : 'not found'
-            }.`
-          : `No embedded Harpocrates metadata found. NeonDB has ${dbMatches.length} event(s). Chain registry: ${
-              onChain ? 'confirmed' : 'not found'
-            }.`,
-      )
-      setEvents(dbMatches)
-      setChainProof(onChain)
+      setVerifyResult(result.message)
+      setEvents(result.events)
+      setChainProof(result.chainProof)
     } catch {
-      setVerifyResult('Local hash complete. Verification services are unavailable.')
+      setVerifyResult(
+        hasLocalHash
+          ? 'Local hash complete. Verification services are unavailable.'
+          : 'Verification services are unavailable.',
+      )
     }
   }
 
@@ -412,15 +434,19 @@ function App() {
   }
 
   async function attachSilentWitnessProof(nextProof: ProofPackage) {
-    if (!credentialSeed.trim() || !nullifierSeed.trim()) {
+    if (!hasSeeds({ credentialSeed, nullifierSeed })) {
       throw new Error('Silent Witness requires your credential and nullifier seeds.')
     }
+
+    const rawCredentialSeed = credentialSeed.trim()
+    const rawNullifierSeed = nullifierSeed.trim()
+    clearSeeds()
 
     setStage('proving')
     setMessage('Generating Noir UltraHonk proof in this browser.')
     const [credentialSecret, nullifierSecret] = await Promise.all([
-      fieldSecret('credential', credentialSeed.trim()),
-      fieldSecret('nullifier', nullifierSeed.trim()),
+      fieldSecret('credential', rawCredentialSeed),
+      fieldSecret('nullifier', rawNullifierSeed),
     ])
 
     const { generateSilentWitnessProof } = await import('./noirClient')
@@ -438,10 +464,9 @@ function App() {
     return nextWithProof
   }
 
-  async function fetchProofEventsByVideo(videoHash: string) {
-    const response = await fetch(`${API_BASE}/api/proofs/by-video/${videoHash}`)
-    const data = await response.json()
-    return (data.events ?? []) as ProofEvent[]
+  function clearSeeds() {
+    setCredentialSeed('')
+    setNullifierSeed('')
   }
 
   return (
@@ -604,6 +629,13 @@ function App() {
             <TxStatusBadge state={txState} hash={registration?.hash ?? ''} />
           </header>
 
+          {networkMismatch ? (
+            <div className="network-mismatch-banner" role="alert">
+              <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+              <span>{networkMismatch}</span>
+            </div>
+          ) : null}
+
           <label className="dropzone">
             <Upload size={20} aria-hidden="true" />
             <span>{file ? file.name : 'Drop or choose a video file'}</span>
@@ -675,7 +707,7 @@ function App() {
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation'}
+            disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation'}
             onClick={() => void registerProof()}
           >
             {stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation' ? (
@@ -774,7 +806,10 @@ function App() {
             </div>
             <dl className="data-list">
               <div><dt>Received Hash</dt><dd>{shortHash(verifyHash)}</dd></div>
-              <div><dt>Chain Status</dt><dd>{chainProof ? 'Confirmed' : 'Not loaded'}</dd></div>
+              <div>
+                <dt>Chain Status</dt>
+                <dd>{chainProof ? (chainProof.status === 2 ? 'Revoked' : 'Confirmed') : 'Not loaded'}</dd>
+              </div>
             </dl>
           </div>
 

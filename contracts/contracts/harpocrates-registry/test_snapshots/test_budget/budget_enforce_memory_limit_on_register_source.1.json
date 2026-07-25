@@ -1,0 +1,17 @@
+{
+  "generators": {
+    "address": 3,
+    "nonce": 0,
+    "mux_id": 0
+  },
+  "auth": [
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "init",
+    

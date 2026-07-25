@@ -25,6 +25,9 @@ The current registry exports:
 
 ```text
 init
+propose_admin
+cancel_admin_transfer
+accept_admin
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -42,6 +45,26 @@ get_by_video
 has_nullifier
 get_issuer
 ```
+
+## Admin Transfer
+
+Admin control uses a two-step transfer:
+
+1. The current admin calls `propose_admin`, which creates or replaces the pending
+   admin proposal.
+2. The pending admin calls `accept_admin` to complete the transfer.
+
+The current admin may call `cancel_admin_transfer` before acceptance. Proposals,
+cancellations, and acceptances emit `["admin", "propose"]`,
+`["admin", "cancel"]`, and `["admin", "accept"]` lifecycle events.
+
+### Storage compatibility
+
+The existing `DataKey::Admin` value and all existing record layouts are
+unchanged. `DataKey::PendingAdmin` is appended as a new, independent persistent
+storage key, so upgrading an initialized contract preserves its current admin
+and all existing registry data. An upgraded contract starts with no pending
+admin proposal.
 
 ## Tier 1 Verifier
 
@@ -75,6 +98,9 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["verif", "set", verifier]        => {}
 ["credroot", "add", root]         => metadata_hash, issued_at
 ["credroot", "revoke", root]      => {}
+["admin", "propose", pending]     => current_admin
+["admin", "cancel", pending]      => current_admin
+["admin", "accept", new_admin]    => previous_admin
 ```
 
 ## Scripts

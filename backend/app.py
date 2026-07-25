@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -19,31 +22,91 @@ from db import (
     init_db,
     insert_proof_event,
     list_proof_events,
+    make_idempotency_key,
+    upsert_register_event,
+    ConflictError,
 )
+from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from logging_utils import log_structured, redact_sensitive
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
-REDACTED_METADATA_KEYS = {"credentialSecret", "nullifierSecret", "proof", "publicInputs"}
 REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
+LOGGER = logging.getLogger("harpocrates.requests")
+if not LOGGER.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    LOGGER.addHandler(handler)
+LOGGER.setLevel(logging.INFO)
+LOGGER.propagate = False
 
 
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
     app = Flask(__name__)
-    CORS(app, origins=config.cors_origins)
+    CORS(
+        app,
+        origins=config.cors_origins,
+        methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Metrics-Token"],
+        expose_headers=[
+            "Content-Disposition",
+            "X-Request-ID",
+            "X-Harpocrates-Source-Hash",
+            "X-Harpocrates-Embedded-Hash",
+            "X-Harpocrates-Metadata-Hash",
+            "X-Harpocrates-Db-Event",
+            "X-Harpocrates-Metadata",
+        ],
+    )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
 
+    @app.before_request
+    def start_request_context():
+        g.start_time = time.perf_counter()
+        g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        g.request_started_at = time.perf_counter()
+
     @app.after_request
-    def add_security_headers(response: Response):
+    def process_response(response: Response):
+        response.headers["X-Request-ID"] = request_id()
         if config.security_headers_enabled:
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
             response.headers.setdefault("Cache-Control", "no-store")
+
+        if config.metrics_enabled and request.path != config.metrics_path:
+            start_time = getattr(g, "start_time", None)
+            duration = time.perf_counter() - start_time if start_time is not None else 0.0
+            endpoint_rule = request.url_rule.rule if request.url_rule else "unmatched"
+            metrics_collector.record_request(
+                method=request.method,
+                endpoint=endpoint_rule,
+                status=response.status_code,
+                duration_seconds=duration,
+                upload_bytes=request.content_length,
+            )
+
+        if response.status_code >= 400:
+            log_error_response(response.status_code)
+        log_structured(
+            LOGGER,
+            logging.INFO,
+            {
+                "event": "request",
+                "request_id": request_id(),
+                "method": request.method,
+                "route": request_route(),
+                "path": request.path,
+                "status": response.status_code,
+                "duration_ms": request_duration_ms(),
+            },
+        )
         return response
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -57,6 +120,21 @@ def create_app() -> Flask:
     @app.errorhandler(RuntimeError)
     def runtime_error(error: RuntimeError):
         return jsonify({"error": str(error)}), 500
+
+    @app.get(config.metrics_path)
+    def metrics():
+        if not config.metrics_enabled:
+            return jsonify({"error": "metrics service disabled"}), 404
+
+        if config.metrics_token:
+            auth_header = request.headers.get("Authorization", "")
+            token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+            custom_token = request.headers.get("X-Metrics-Token", "").strip()
+            if token != config.metrics_token and custom_token != config.metrics_token:
+                return jsonify({"error": "unauthorized metrics access"}), 401
+
+        output = metrics_collector.generate_prometheus_metrics()
+        return Response(output, mimetype="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/health")
     def health():
@@ -76,16 +154,27 @@ def create_app() -> Flask:
             }
         ), 200 if database_ready and video_tools_ready else 503
 
+    def _enforce_video_size(video) -> bool:
+        video.seek(0, 2)
+        size = video.tell()
+        video.seek(0)
+        return size <= config.max_video_bytes
+
+    def _enforce_json_size() -> int:
+        raw = request.get_data()
+        return len(raw) if raw else 0
+
     @app.post("/api/stego/embed")
     def embed():
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
-
         if video is None or metadata_raw is None:
             return jsonify({"error": "video and metadata are required"}), 400
+        if not _enforce_video_size(video):
+            return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "metadata is too large"}), 400
+            return jsonify({"error": "metadata is too large"}), 413
 
         try:
             metadata = json.loads(metadata_raw)
@@ -133,9 +222,10 @@ def create_app() -> Flask:
     @app.post("/api/stego/extract")
     def extract():
         video = request.files.get("video")
-
         if video is None:
             return jsonify({"error": "video is required"}), 400
+        if not _enforce_video_size(video):
+            return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
@@ -184,11 +274,13 @@ def create_app() -> Flask:
 
     @app.post("/api/proofs/register")
     def register_proof_event():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify({"error": "JSON body is required"}), 400
         if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "registration payload is too large"}), 400
+            return jsonify({"error": "registration payload is too large"}), 413
 
         video_hash = payload.get("videoHash")
         metadata_hash = payload.get("metadataHash")
@@ -203,24 +295,35 @@ def create_app() -> Flask:
             if not is_hex_32(value):
                 return jsonify({"error": f"{name} must be a 32-byte hex string"}), 400
 
-        db_event = insert_proof_event(
-            event_type="register",
-            file_name=safe_filename(payload.get("fileName")),
-            video_hash=video_hash,
-            metadata_hash=metadata_hash,
-            proof_id=proof_id,
-            tier=payload.get("tier"),
-            tx_hash=tx_hash,
-            tx_status=payload.get("txStatus"),
-            source_address=payload.get("sourceAddress"),
-            contract_id=payload.get("contractId"),
-            metadata=redact_metadata(payload),
-        )
+        idempotency_key = make_idempotency_key(video_hash, proof_id, tx_hash)
 
-        return jsonify({"ok": True, "db_event": db_event})
+        try:
+            db_event, created = upsert_register_event(
+                idempotency_key=idempotency_key,
+                file_name=safe_filename(payload.get("fileName")),
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=proof_id,
+                tier=payload.get("tier"),
+                tx_hash=tx_hash,
+                tx_status=payload.get("txStatus"),
+                source_address=payload.get("sourceAddress"),
+                contract_id=payload.get("contractId"),
+                metadata=redact_metadata(payload),
+            )
+        except ConflictError as exc:
+            return jsonify({
+                "error": "idempotency key reused with conflicting payload",
+                "conflict_field": exc.field,
+            }), 409
+
+        status = 201 if created else 200
+        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
 
     @app.post("/api/noir/silent-witness")
     def silent_witness_proof():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
         if not config.noir_worker_enabled:
             return jsonify({"error": "local Noir worker is disabled"}), 404
 
@@ -250,6 +353,37 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "proof": proof})
 
     return app
+
+
+def request_id() -> str:
+    return getattr(g, "request_id", "unknown")
+
+
+def request_route() -> str:
+    return request.url_rule.rule if request.url_rule else request.path
+
+
+def request_duration_ms() -> float:
+    started_at = getattr(g, "request_started_at", None)
+    if started_at is None:
+        return 0.0
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def log_error_response(status: int) -> None:
+    log_structured(
+        LOGGER,
+        logging.ERROR,
+        {
+            "event": "error",
+            "request_id": request_id(),
+            "method": request.method,
+            "route": request_route(),
+            "path": request.path,
+            "status": status,
+            "duration_ms": request_duration_ms(),
+        },
+    )
 
 
 def is_hex_32(value: object) -> bool:
@@ -305,15 +439,7 @@ def safe_filename(value: object) -> str | None:
 def redact_metadata(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
-    redacted = {}
-    for key, item in value.items():
-        if key in REDACTED_METADATA_KEYS:
-            redacted[key] = "[redacted]"
-        elif isinstance(item, dict):
-            redacted[key] = redact_metadata(item)
-        else:
-            redacted[key] = item
-    return redacted
+    return redact_sensitive(value)
 
 
 def video_tooling_ready() -> bool:
