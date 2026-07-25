@@ -33,8 +33,8 @@ const REGRESSION_SEEDS: &[u64] = &[
     0x93_0000_0000_0004,
     0x93_0000_0000_0005,
     0x93_D0C5AFE_BADF00D,
-    0x93_A11CE5E_C0FFEE,
-    0x93_5A7064_0000_0001,
+    0x0093_A11C_E5EC_0FFE,
+    0x935A_7064_0000_0001,
 ];
 
 #[contract]
@@ -647,8 +647,7 @@ fn args(fixture: &Fixture) -> SorobanVec<Val> {
     SorobanVec::new(&fixture.env)
 }
 
-fn expected_record(
-    model: &Model,
+struct ExpectedRecordSpec {
     proof: u8,
     video: u8,
     metadata: u8,
@@ -656,18 +655,20 @@ fn expected_record(
     source: Option<ActorId>,
     issuer: Option<ActorId>,
     nullifier: Option<u8>,
-) -> ModelProof {
+}
+
+fn expected_record(model: &Model, spec: ExpectedRecordSpec) -> ModelProof {
     ModelProof {
-        proof: slot(proof),
-        video: slot(video),
-        metadata: slot(metadata),
-        tier,
+        proof: slot(spec.proof),
+        video: slot(spec.video),
+        metadata: slot(spec.metadata),
+        tier: spec.tier,
         status: STATUS_REGISTERED,
         created_at: model.now,
         expires_at: model.expected_expires_at(),
-        source,
-        issuer,
-        nullifier: nullifier.map(slot),
+        source: spec.source,
+        issuer: spec.issuer,
+        nullifier: spec.nullifier.map(slot),
     }
 }
 
@@ -784,13 +785,15 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             let expected = model.require_unique(proof, video).map(|_| {
                 expected_record(
                     model,
-                    proof,
-                    video,
-                    metadata,
-                    TIER_CONSISTENT_SOURCE,
-                    Some(source),
-                    None,
-                    None,
+                    ExpectedRecordSpec {
+                        proof,
+                        video,
+                        metadata,
+                        tier: TIER_CONSISTENT_SOURCE,
+                        source: Some(source),
+                        issuer: None,
+                        nullifier: None,
+                    },
                 )
             });
 
@@ -824,13 +827,15 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 if model.issuers[issuer.index()] == IssuerState::Active {
                     Ok(expected_record(
                         model,
-                        proof,
-                        video,
-                        metadata,
-                        TIER_PUBLIC_SEAL,
-                        None,
-                        Some(issuer),
-                        None,
+                        ExpectedRecordSpec {
+                            proof,
+                            video,
+                            metadata,
+                            tier: TIER_PUBLIC_SEAL,
+                            source: None,
+                            issuer: Some(issuer),
+                            nullifier: None,
+                        },
                     ))
                 } else {
                     Err(RegistryError::UnknownIssuer)
@@ -885,13 +890,15 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 .map(|_| {
                     expected_record(
                         model,
-                        proof,
-                        video,
-                        metadata,
-                        TIER_SILENT_WITNESS,
-                        None,
-                        None,
-                        Some(nullifier),
+                        ExpectedRecordSpec {
+                            proof,
+                            video,
+                            metadata,
+                            tier: TIER_SILENT_WITNESS,
+                            source: None,
+                            issuer: None,
+                            nullifier: Some(nullifier),
+                        },
                     )
                 });
 
@@ -934,7 +941,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
         } => {
             let expected = model
                 .require_unique(proof, video)
-                .and_then(|_| match input_mode {
+                .and(match input_mode {
                     SilentInputMode::Short | SilentInputMode::Oversized => {
                         Err(RegistryError::InvalidPublicInputs)
                     }
@@ -961,13 +968,15 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 .map(|_| {
                     expected_record(
                         model,
-                        proof,
-                        video,
-                        metadata,
-                        TIER_SILENT_WITNESS,
-                        None,
-                        None,
-                        Some(nullifier),
+                        ExpectedRecordSpec {
+                            proof,
+                            video,
+                            metadata,
+                            tier: TIER_SILENT_WITNESS,
+                            source: None,
+                            issuer: None,
+                            nullifier: Some(nullifier),
+                        },
                     )
                 });
 

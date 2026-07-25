@@ -899,13 +899,20 @@ fn parse_revocation_public_inputs(env: &Env, public_inputs: &Bytes) -> Revocatio
 }
 
 fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool {
-    proof.len() > 0 && credential_root.len() == 32
+    !proof.is_empty() && credential_root.len() == 32
 }
 
+#[cfg(test)]
 mod test;
+#[cfg(test)]
 mod test_auth;
+#[cfg(test)]
 mod test_budget;
+#[cfg(test)]
 mod test_expiry;
+#[cfg(test)]
 mod test_invariants;
+#[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
 mod test_state_machine;

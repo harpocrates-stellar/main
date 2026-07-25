@@ -1,53 +1,53 @@
-/// Revocation witness integration (#98)
-///
-/// ## Non-revocation semantics
-///
-/// The registry supports privacy-preserving **non-revocation** proofs through
-/// the `RevocationWitness` Noir circuit.  Rather than proving that a
-/// credential *is* revoked, the circuit proves that a credential is **not**
-/// in the published revocation tree.
-///
-/// ### How it works
-///
-/// 1. The admin publishes a Merkle root of revoked credential_roots via
-///    `set_revocation_root`.  The tree is depth‑3 (8 leaves) and uses
-///    Pedersen hashes, matching the Silent Witness circuit.
-///
-/// 2. A user who wants to prove their credential is still valid constructs a
-///    Noir proof using the `revocation_witness` circuit.  The circuit takes
-///    all 8 leaves of the tree as **private** inputs, recomputes the Merkle
-///    root, and asserts that the user's `credential_root` differs from every
-///    leaf.
-///
-/// 3. The user submits the proof to `check_non_revocation` along with
-///    `public_inputs` containing: revocation_root, nullifier,
-///    domain_separator, and credential_root.
-///
-/// 4. The contract:
-///    - Checks `domain_separator` matches the hardcoded version tag
-///    - Checks `revocation_root` matches the stored on‑chain root
-///    - Checks `credential_root` is registered and active
-///    - Checks `nullifier` has not been consumed
-///    - Calls the external UltraHonk verifier to validate the proof
-///    - Stores the nullifier to prevent replay
-///
-/// ### Privacy properties
-///
-/// - The revocation tree leaves are **private** — the verifier learns only
-///   the root, not which credentials are revoked.
-/// - `credential_root` is pseudonymous (a Pedersen hash of a secret).
-/// - `nullifier` is one‑use, preventing the same proof from being replayed.
-///
-/// ### Domain binding
-///
-/// `domain_separator` is a version tag (`"HARPOCRATES_REVOCATION_V1"`)
-/// that prevents proofs from one protocol version being accepted by another.
-/// Network binding is provided by the contract ID (different per network).
-///
-/// ### Shared conformance vectors
-///
-/// Test vectors are in `zk/noir/fixtures/revocation_vectors.json`.  Both the
-/// Noir circuit tests and these contract tests use the same fixture data.
+//! Revocation witness integration (#98)
+//!
+//! ## Non-revocation semantics
+//!
+//! The registry supports privacy-preserving **non-revocation** proofs through
+//! the `RevocationWitness` Noir circuit.  Rather than proving that a
+//! credential *is* revoked, the circuit proves that a credential is **not**
+//! in the published revocation tree.
+//!
+//! ### How it works
+//!
+//! 1. The admin publishes a Merkle root of revoked credential_roots via
+//!    `set_revocation_root`.  The tree is depth‑3 (8 leaves) and uses
+//!    Pedersen hashes, matching the Silent Witness circuit.
+//!
+//! 2. A user who wants to prove their credential is still valid constructs a
+//!    Noir proof using the `revocation_witness` circuit.  The circuit takes
+//!    all 8 leaves of the tree as **private** inputs, recomputes the Merkle
+//!    root, and asserts that the user's `credential_root` differs from every
+//!    leaf.
+//!
+//! 3. The user submits the proof to `check_non_revocation` along with
+//!    `public_inputs` containing: revocation_root, nullifier,
+//!    domain_separator, and credential_root.
+//!
+//! 4. The contract:
+//!    - Checks `domain_separator` matches the hardcoded version tag
+//!    - Checks `revocation_root` matches the stored on‑chain root
+//!    - Checks `credential_root` is registered and active
+//!    - Checks `nullifier` has not been consumed
+//!    - Calls the external UltraHonk verifier to validate the proof
+//!    - Stores the nullifier to prevent replay
+//!
+//! ### Privacy properties
+//!
+//! - The revocation tree leaves are **private** — the verifier learns only
+//!   the root, not which credentials are revoked.
+//! - `credential_root` is pseudonymous (a Pedersen hash of a secret).
+//! - `nullifier` is one‑use, preventing the same proof from being replayed.
+//!
+//! ### Domain binding
+//!
+//! `domain_separator` is a version tag (`"HARPOCRATES_REVOCATION_V1"`)
+//! that prevents proofs from one protocol version being accepted by another.
+//! Network binding is provided by the contract ID (different per network).
+//!
+//! ### Shared conformance vectors
+//!
+//! Test vectors are in `zk/noir/fixtures/revocation_vectors.json`.  Both the
+//! Noir circuit tests and these contract tests use the same fixture data.
 
 #[cfg(test)]
 use super::*;

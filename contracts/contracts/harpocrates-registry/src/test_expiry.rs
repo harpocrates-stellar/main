@@ -1,18 +1,18 @@
-/// Proof-expiration policy tests (#44)
-///
-/// Policy rules under test:
-///
-/// 1. `expires_at == 0` → proof never expires (default, backward-compat).
-/// 2. `expires_at > 0 && now <= expires_at` → `get_proof_status` returns `Valid`.
-/// 3. `expires_at > 0 && now  > expires_at` → `get_proof_status` returns `Expired`.
-/// 4. `status == REVOKED`                   → `get_proof_status` returns `Revoked`
-///    regardless of `expires_at`.
-/// 5. Non-existent proof_id                 → `get_proof_status` returns `NotFound`.
-/// 6. `set_proof_ttl` only affects *new* registrations; existing records are
-///    unaffected.
-/// 7. A TTL of `u64::MAX` is handled by saturating addition (no overflow).
-///
-/// The test harness controls ledger time via `env.ledger().set_timestamp()`.
+//! Proof-expiration policy tests (#44)
+//!
+//! Policy rules under test:
+//!
+//! 1. `expires_at == 0` → proof never expires (default, backward-compat).
+//! 2. `expires_at > 0 && now <= expires_at` → `get_proof_status` returns `Valid`.
+//! 3. `expires_at > 0 && now  > expires_at` → `get_proof_status` returns `Expired`.
+//! 4. `status == REVOKED`                   → `get_proof_status` returns `Revoked`
+//!    regardless of `expires_at`.
+//! 5. Non-existent proof_id                 → `get_proof_status` returns `NotFound`.
+//! 6. `set_proof_ttl` only affects *new* registrations; existing records are
+//!    unaffected.
+//! 7. A TTL of `u64::MAX` is handled by saturating addition (no overflow).
+//!
+//! The test harness controls ledger time via `env.ledger().set_timestamp()`.
 #[cfg(test)]
 use super::*;
 #[cfg(test)]

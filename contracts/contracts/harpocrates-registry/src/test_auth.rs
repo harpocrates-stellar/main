@@ -1,23 +1,23 @@
-/// Authorization matrix tests (#46)
-///
-/// Every privileged entry point is tested against each actor class:
-///
-/// | Actor          | Description                                      |
-/// |----------------|--------------------------------------------------|
-/// | admin          | the address stored as registry admin             |
-/// | pending_admin  | a different address that *would* be admin        |
-/// | issuer         | an address registered as an active issuer        |
-/// | source         | an arbitrary wallet (tier-2 registrant)          |
-///
-/// For each entry point the suite asserts:
-///   - The allowed caller succeeds.
-///   - Every disallowed caller produces the exact expected `RegistryError`.
-///
-/// Error codes (from `RegistryError` repr):
-///   #1  AlreadyInitialized
-///   #2  NotInitialized
-///   #3  Unauthorized
-///   #8  UnknownIssuer
+//! Authorization matrix tests (#46)
+//!
+//! Every privileged entry point is tested against each actor class:
+//!
+//! | Actor          | Description                                      |
+//! |----------------|--------------------------------------------------|
+//! | admin          | the address stored as registry admin             |
+//! | pending_admin  | a different address that *would* be admin        |
+//! | issuer         | an address registered as an active issuer        |
+//! | source         | an arbitrary wallet (tier-2 registrant)          |
+//!
+//! For each entry point the suite asserts:
+//!   - The allowed caller succeeds.
+//!   - Every disallowed caller produces the exact expected `RegistryError`.
+//!
+//! Error codes (from `RegistryError` repr):
+//!   #1  AlreadyInitialized
+//!   #2  NotInitialized
+//!   #3  Unauthorized
+//!   #8  UnknownIssuer
 #[cfg(test)]
 use super::*;
 #[cfg(test)]

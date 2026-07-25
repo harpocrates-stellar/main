@@ -1,20 +1,20 @@
-/// Duplicate-proof and video-hash invariant tests (#45)
-///
-/// Uniqueness rules enforced by the registry:
-///
-/// | Key             | Scope          | Error on collision    |
-/// |-----------------|----------------|-----------------------|
-/// | proof_id        | global         | DuplicateProof  (#4)  |
-/// | video_hash      | global         | DuplicateVideo  (#5)  |
-/// | nullifier       | global         | DuplicateNullifier(#6)|
-///
-/// These rules apply identically across all three identity tiers.
-///
-/// After every rejected call the suite verifies that:
-///   - The original record is unchanged in storage.
-///   - No new Video or Proof key was written.
-///
-/// Events are verified via `env.events().all()`.
+//! Duplicate-proof and video-hash invariant tests (#45)
+//!
+//! Uniqueness rules enforced by the registry:
+//!
+//! | Key             | Scope          | Error on collision    |
+//! |-----------------|----------------|-----------------------|
+//! | proof_id        | global         | DuplicateProof  (#4)  |
+//! | video_hash      | global         | DuplicateVideo  (#5)  |
+//! | nullifier       | global         | DuplicateNullifier(#6)|
+//!
+//! These rules apply identically across all three identity tiers.
+//!
+//! After every rejected call the suite verifies that:
+//!   - The original record is unchanged in storage.
+//!   - No new Video or Proof key was written.
+//!
+//! Events are verified via `env.events().all()`.
 #[cfg(test)]
 use super::*;
 #[cfg(test)]

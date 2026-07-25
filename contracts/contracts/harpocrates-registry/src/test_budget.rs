@@ -1,54 +1,54 @@
-/// Soroban resource-budget baseline tests (#94)
-///
-/// These tests capture CPU-instruction and memory-byte baselines for every
-/// high-cost registry operation and assert they stay within declared
-/// thresholds.  The baselines serve as regression guards: any commit that
-/// accidentally inflates resource consumption will fail CI.
-///
-/// Budget enforcement against Soroban host limits is tested implicitly:
-/// the host would reject any operation whose budget exceeded the default
-/// network limits; our threshold assertions catch regressions before they
-/// reach that point.  (Deliberate host-enforcement tests that set tight
-/// `reset_limits` were removed because the Soroban test environment can
-/// crash on budget-exhaustion destructors.)
-///
-/// ## Threshold design
-///
-/// Baselines are set with a generous multiplier (3×) above the measured
-/// worst-case inputs to absorb minor SDK/compiler variance while still
-/// catching real regressions.  Each test:
-///   1. Resets the budget before the target call.
-///   2. Executes the target call (with worst-case inputs where applicable).
-///   3. Reads `cpu_instruction_cost()` and `memory_bytes_cost()` from
-///      `env.cost_estimate().budget()`.
-///   4. Asserts both are below the declared maximum.
-///
-/// **Note:** These baselines may need calibration on first CI run as actual
-/// Soroban host overhead varies.  The thresholds include a 3× safety margin.
-///
-/// ## Operations under test
-///
-/// | Operation                    | Justification                              |
-/// |------------------------------|--------------------------------------------|
-/// | `init`                       | One-time setup; must be cheap.             |
-/// | `add_issuer`                 | Admin action; writes persistent storage.   |
-/// | `add_credential_root`        | Admin action; writes persistent storage.   |
-/// | `set_verifier`               | Admin action; writes persistent storage.   |
-/// | `register_source`            | Most common tier-2 path.                   |
-/// | `register_seal`              | Tier-3 path with issuer lookup.            |
-/// | `register_anonymous`         | Tier-1 path with nullifier + ZK boundary.  |
-/// | `register_anonymous_verified`| Tier-1 path with external verifier call.   |
-/// | `revoke_proof`               | Admin action; mutates existing record.     |
-/// | `get_proof_status`           | Read-only query; must be sub-linear.       |
-///
-/// ## Variance policy
-///
-/// - These tests run with `mock_all_auths()` so auth cost is excluded.
-/// - Budgets are reset immediately before the measured call, so setup
-///   costs (contract registration, earlier admin calls) are excluded.
-/// - The chosen baselines represent worst-case inputs (full 32-byte
-///   arrays, maximal metadata, presence of all optional fields).
-/// - Repeated-registration tests ensure no unbounded growth across calls.
+//! Soroban resource-budget baseline tests (#94)
+//!
+//! These tests capture CPU-instruction and memory-byte baselines for every
+//! high-cost registry operation and assert they stay within declared
+//! thresholds.  The baselines serve as regression guards: any commit that
+//! accidentally inflates resource consumption will fail CI.
+//!
+//! Budget enforcement against Soroban host limits is tested implicitly:
+//! the host would reject any operation whose budget exceeded the default
+//! network limits; our threshold assertions catch regressions before they
+//! reach that point.  (Deliberate host-enforcement tests that set tight
+//! `reset_limits` were removed because the Soroban test environment can
+//! crash on budget-exhaustion destructors.)
+//!
+//! ## Threshold design
+//!
+//! Baselines are set with a generous multiplier (3×) above the measured
+//! worst-case inputs to absorb minor SDK/compiler variance while still
+//! catching real regressions.  Each test:
+//!   1. Resets the budget before the target call.
+//!   2. Executes the target call (with worst-case inputs where applicable).
+//!   3. Reads `cpu_instruction_cost()` and `memory_bytes_cost()` from
+//!      `env.cost_estimate().budget()`.
+//!   4. Asserts both are below the declared maximum.
+//!
+//! **Note:** These baselines may need calibration on first CI run as actual
+//! Soroban host overhead varies.  The thresholds include a 3× safety margin.
+//!
+//! ## Operations under test
+//!
+//! | Operation                    | Justification                              |
+//! |------------------------------|--------------------------------------------|
+//! | `init`                       | One-time setup; must be cheap.             |
+//! | `add_issuer`                 | Admin action; writes persistent storage.   |
+//! | `add_credential_root`        | Admin action; writes persistent storage.   |
+//! | `set_verifier`               | Admin action; writes persistent storage.   |
+//! | `register_source`            | Most common tier-2 path.                   |
+//! | `register_seal`              | Tier-3 path with issuer lookup.            |
+//! | `register_anonymous`         | Tier-1 path with nullifier + ZK boundary.  |
+//! | `register_anonymous_verified`| Tier-1 path with external verifier call.   |
+//! | `revoke_proof`               | Admin action; mutates existing record.     |
+//! | `get_proof_status`           | Read-only query; must be sub-linear.       |
+//!
+//! ## Variance policy
+//!
+//! - These tests run with `mock_all_auths()` so auth cost is excluded.
+//! - Budgets are reset immediately before the measured call, so setup
+//!   costs (contract registration, earlier admin calls) are excluded.
+//! - The chosen baselines represent worst-case inputs (full 32-byte
+//!   arrays, maximal metadata, presence of all optional fields).
+//! - Repeated-registration tests ensure no unbounded growth across calls.
 #[cfg(test)]
 use super::*;
 #[cfg(test)]
