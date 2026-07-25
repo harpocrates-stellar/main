@@ -19,6 +19,7 @@ class MetricsCollector:
         self._requests_total: Dict[Tuple[str, str, str], int] = {}
         self._latency_histogram: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self._upload_histogram: Dict[Tuple[str, str], Dict[str, float]] = {}
+        self._deleted_events_total = 0
 
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
@@ -26,6 +27,11 @@ class MetricsCollector:
             self._requests_total.clear()
             self._latency_histogram.clear()
             self._upload_histogram.clear()
+            self._deleted_events_total = 0
+
+    def record_deleted_event(self) -> None:
+        with self._lock:
+            self._deleted_events_total += 1
 
     def record_request(
         self,
@@ -128,6 +134,12 @@ class MetricsCollector:
 
                 lines.append(f'harpocrates_upload_bytes_total_sum{{{label_prefix}}} {_format_float(stats["sum"])}')
                 lines.append(f'harpocrates_upload_bytes_total_count{{{label_prefix}}} {int(stats["count"])}')
+
+            # 4. Retention metrics
+            lines.append("")
+            lines.append("# HELP harpocrates_deleted_events_total Total count of events purged by retention.")
+            lines.append("# TYPE harpocrates_deleted_events_total counter")
+            lines.append(f"harpocrates_deleted_events_total {self._deleted_events_total}")
 
         lines.append("")
         return "\n".join(lines)

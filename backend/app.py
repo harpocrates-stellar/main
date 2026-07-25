@@ -25,8 +25,10 @@ from db import (
     list_proof_events,
     make_idempotency_key,
     upsert_register_event,
+    set_legal_hold,
     ConflictError,
 )
+from retention import init_retention_worker
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
@@ -52,7 +54,7 @@ def create_app() -> Flask:
         app,
         origins=config.cors_origins,
         methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Metrics-Token"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Metrics-Token", "X-Harpocrates-Retention-Class"],
         expose_headers=[
             "Content-Disposition",
             "X-Request-ID",
@@ -61,10 +63,12 @@ def create_app() -> Flask:
             "X-Harpocrates-Metadata-Hash",
             "X-Harpocrates-Db-Event",
             "X-Harpocrates-Metadata",
+            "X-Harpocrates-Retention-Class",
         ],
     )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+    init_retention_worker()
 
     @app.before_request
     def start_request_context():
@@ -197,6 +201,14 @@ def create_app() -> Flask:
             embedded_hash = sha256_file(output_path)
             metadata_hash = canonical_metadata_hash(metadata)
 
+        retention_class = request.headers.get("X-Harpocrates-Retention-Class") or metadata.get("retentionClass", "default")
+        if retention_class not in config.retention_classes:
+            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+        retention_days = config.retention_classes[retention_class]
+        expires_at = None
+        if retention_days >= 0:
+            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
         db_event = insert_proof_event(
             event_type="embed",
             file_name=safe_filename(video.filename),
@@ -205,6 +217,8 @@ def create_app() -> Flask:
             proof_id=metadata.get("proofId"),
             tier=metadata.get("tier"),
             embedded_hash=embedded_hash,
+            retention_class=retention_class,
+            expires_at=expires_at,
             metadata=redact_metadata(metadata),
         )
 
@@ -214,6 +228,7 @@ def create_app() -> Flask:
         response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
         response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
         response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+        response.headers["X-Harpocrates-Retention-Class"] = retention_class
         if config.expose_metadata_header:
             response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
                 json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -236,6 +251,14 @@ def create_app() -> Flask:
             video_hash = sha256_file(source_path)
             metadata_hash = canonical_metadata_hash(metadata) if metadata else None
 
+        retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
+        if retention_class not in config.retention_classes:
+            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+        retention_days = config.retention_classes[retention_class]
+        expires_at = None
+        if retention_days >= 0:
+            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
         db_event = insert_proof_event(
             event_type="extract",
             file_name=safe_filename(video.filename),
@@ -243,6 +266,8 @@ def create_app() -> Flask:
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId") if metadata else None,
             tier=metadata.get("tier") if metadata else None,
+            retention_class=retention_class,
+            expires_at=expires_at,
             metadata=redact_metadata(metadata),
         )
 
@@ -305,6 +330,14 @@ def create_app() -> Flask:
 
         idempotency_key = make_idempotency_key(video_hash, proof_id, normalized_tx_hash)
 
+        retention_class = payload.get("retentionClass", "default")
+        if retention_class not in config.retention_classes:
+            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+        retention_days = config.retention_classes[retention_class]
+        expires_at = None
+        if retention_days >= 0:
+            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
         try:
             db_event, created = upsert_register_event(
                 idempotency_key=idempotency_key,
@@ -317,6 +350,8 @@ def create_app() -> Flask:
                 tx_status=normalized_tx_status,
                 source_address=payload.get("sourceAddress"),
                 contract_id=payload.get("contractId"),
+                retention_class=retention_class,
+                expires_at=expires_at,
                 metadata=redact_metadata(payload),
             )
         except ConflictError as exc:
@@ -327,6 +362,20 @@ def create_app() -> Flask:
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+
+    @app.post("/api/proofs/<proof_id>/legal-hold")
+    def toggle_legal_hold(proof_id: str):
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+        hold = payload.get("hold")
+        if not isinstance(hold, bool):
+            return jsonify({"error": "hold must be a boolean"}), 400
+
+        updated = set_legal_hold(proof_id, hold)
+        if not updated:
+            return jsonify({"error": "proof not found"}), 404
+        return jsonify({"ok": True, "legal_hold": hold})
 
     @app.post("/api/noir/silent-witness")
     def silent_witness_proof():

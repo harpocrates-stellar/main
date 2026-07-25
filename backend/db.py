@@ -79,8 +79,30 @@ def init_db() -> None:
                 where idempotency_key is not null;
                 """
             )
+            # Retention and legal hold support
+            cursor.execute("alter table proof_events add column if not exists retention_class text;")
+            cursor.execute("alter table proof_events add column if not exists expires_at timestamptz;")
+            cursor.execute("alter table proof_events add column if not exists legal_hold boolean not null default false;")
+            cursor.execute(
+                """
+                create index if not exists proof_events_expires_at_idx
+                on proof_events (expires_at)
+                where expires_at is not null and legal_hold = false;
+                """
+            )
+            
+            cursor.execute(
+                """
+                create table if not exists deletion_receipts (
+                    id bigserial primary key,
+                    event_id bigint not null,
+                    video_hash text,
+                    proof_id text,
+                    deleted_at timestamptz not null default now()
+                );
+                """
+            )
         connection.commit()
-
 
 def check_db() -> bool:
     if not database_url():
@@ -106,6 +128,8 @@ def insert_proof_event(
     tx_status: str | None = None,
     source_address: str | None = None,
     contract_id: str | None = None,
+    retention_class: str | None = None,
+    expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not database_url():
@@ -127,9 +151,11 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     metadata
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at;
                 """,
                 (
@@ -144,6 +170,8 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     Jsonb(metadata) if metadata is not None else None,
                 ),
             )
@@ -174,6 +202,9 @@ def list_proof_events(limit: int = 25) -> list[dict[str, Any]]:
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at
                 from proof_events
@@ -206,6 +237,9 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at
                 from proof_events
@@ -244,6 +278,8 @@ def upsert_register_event(
     tx_status: str | None = None,
     source_address: str | None = None,
     contract_id: str | None = None,
+    retention_class: str | None = None,
+    expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Insert a register event idempotently.
@@ -271,6 +307,9 @@ def upsert_register_event(
             "tier": tier,
             "source_address": source_address,
             "contract_id": contract_id,
+            "retention_class": retention_class,
+            "expires_at": expires_at,
+            "legal_hold": False,
         }
         return stub, True
 
@@ -291,10 +330,12 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     metadata,
                     idempotency_key
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (idempotency_key)
                 where idempotency_key is not null
                 do nothing
@@ -311,6 +352,9 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at;
                 """,
@@ -325,6 +369,8 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     Jsonb(metadata) if metadata is not None else None,
                     idempotency_key,
                 ),
@@ -353,6 +399,9 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at
                 from proof_events
@@ -411,3 +460,53 @@ class ConflictError(Exception):
         self.field = field
         self.existing_value = existing_value
         self.incoming_value = incoming_value
+
+
+def set_legal_hold(proof_id: str, hold: bool) -> bool:
+    if not database_url():
+        return False
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update proof_events
+                set legal_hold = %s
+                where proof_id = %s
+                returning id;
+                """,
+                (hold, proof_id),
+            )
+            rows = cursor.fetchall()
+            connection.commit()
+            return len(rows) > 0
+
+
+def purge_expired_events(batch_size: int = 100) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # Delete expired events and return their identifying info
+            cursor.execute(
+                """
+                with deleted as (
+                    delete from proof_events
+                    where id in (
+                        select id from proof_events
+                        where expires_at < now() and legal_hold = false
+                        limit %s
+                    )
+                    returning id, video_hash, proof_id
+                )
+                insert into deletion_receipts (event_id, video_hash, proof_id)
+                select id, video_hash, proof_id from deleted
+                returning event_id, video_hash, proof_id, deleted_at;
+                """,
+                (batch_size,),
+            )
+            receipts = [dict(row) for row in cursor.fetchall()]
+        connection.commit()
+        return receipts
+
