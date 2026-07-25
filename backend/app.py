@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+from workspace import EncryptedWorkspace
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -199,15 +200,15 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            video.save(source_path)
+        with EncryptedWorkspace() as workspace:
+            source_url = workspace.get_url("source.video")
+            output_url = workspace.get_url("embedded.mp4")
+            workspace.write_encrypted("source.video", video.stream, size=video.content_length)
 
-            embed_metadata(source_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(source_path)
-            embedded_hash = sha256_file(output_path)
+            embed_metadata(source_url, output_url, metadata)
+            output_bytes = workspace.read_decrypted("embedded.mp4")
+            source_hash = workspace.sha256("source.video")
+            embedded_hash = workspace.sha256("embedded.mp4")
             metadata_hash = canonical_metadata_hash(metadata)
 
         db_event = insert_proof_event(
@@ -243,11 +244,11 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            video.save(source_path)
-            metadata = extract_metadata(source_path)
-            video_hash = sha256_file(source_path)
+        with EncryptedWorkspace() as workspace:
+            source_url = workspace.get_url("source.video")
+            workspace.write_encrypted("source.video", video.stream, size=video.content_length)
+            metadata = extract_metadata(source_url)
+            video_hash = workspace.sha256("source.video")
             metadata_hash = canonical_metadata_hash(metadata) if metadata else None
 
         db_event = insert_proof_event(

@@ -39,7 +39,7 @@ def canonical_metadata_hash(metadata: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(metadata)).hexdigest()
 
 
-def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any]) -> None:
+def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: dict[str, Any]) -> None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
     payload = _pack_payload(metadata)
@@ -80,7 +80,7 @@ def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any
         _close_process(process_out)
 
 
-def extract_metadata(source_path: Path) -> dict[str, Any] | None:
+def extract_metadata(source_path: Path | str) -> dict[str, Any] | None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
     process = _start_decode(ffmpeg, source_path, info)
@@ -243,7 +243,7 @@ def _unpack_progressive(bits: list[int]) -> dict[str, Any] | None:
     return _unpack_payload(_bits_to_bytes(bits[:total_bits]))
 
 
-def _probe_video(path: Path) -> VideoInfo:
+def _probe_video(path: Path | str) -> VideoInfo:
     ffprobe = _require("ffprobe")
     result = subprocess.run(
         [
@@ -276,7 +276,7 @@ def _probe_video(path: Path) -> VideoInfo:
     )
 
 
-def _start_decode(ffmpeg: str, source_path: Path, info: VideoInfo) -> subprocess.Popen[bytes]:
+def _start_decode(ffmpeg: str, source_path: Path | str, info: VideoInfo) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [
             ffmpeg,
@@ -297,7 +297,7 @@ def _start_decode(ffmpeg: str, source_path: Path, info: VideoInfo) -> subprocess
     )
 
 
-def _start_encode(ffmpeg: str, output_path: Path, info: VideoInfo) -> subprocess.Popen[bytes]:
+def _start_encode(ffmpeg: str, output_path: Path | str, info: VideoInfo) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [
             ffmpeg,
