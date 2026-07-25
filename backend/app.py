@@ -354,12 +354,27 @@ def create_app() -> Flask:
     @app.get("/api/proofs")
     def proofs():
         limit = request.args.get("limit", "25")
+        cursor_b64 = request.args.get("cursor")
         try:
             parsed_limit = int(limit)
         except ValueError:
             return jsonify({"error": "limit must be an integer"}), 400
 
-        return jsonify({"ok": True, "events": list_proof_events(parsed_limit)})
+        cursor_id = None
+        if cursor_b64:
+            try:
+                cursor_str = base64.urlsafe_b64decode(cursor_b64.encode("ascii")).decode("ascii")
+                cursor_id = int(cursor_str)
+            except (ValueError, TypeError, base64.binascii.Error):
+                return jsonify({"error": "invalid cursor"}), 400
+
+        events = list_proof_events(parsed_limit, cursor_id)
+        next_cursor = None
+        if events and len(events) == parsed_limit:
+            last_id = str(events[-1]["id"])
+            next_cursor = base64.urlsafe_b64encode(last_id.encode("ascii")).decode("ascii")
+
+        return jsonify({"ok": True, "events": events, "nextCursor": next_cursor})
 
     @app.get("/api/proofs/by-video/<video_hash>")
     def proof_by_video(video_hash: str):

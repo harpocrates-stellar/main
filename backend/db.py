@@ -152,36 +152,62 @@ def insert_proof_event(
         return dict(row) if row else None
 
 
-def list_proof_events(limit: int = 25) -> list[dict[str, Any]]:
+def list_proof_events(limit: int = 25, cursor_id: int | None = None) -> list[dict[str, Any]]:
     if not database_url():
         return []
 
     limit = max(1, min(limit, 100))
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                select
-                    id,
-                    event_type,
-                    file_name,
-                    video_hash,
-                    metadata_hash,
-                    proof_id,
-                    tier,
-                    embedded_hash,
-                    tx_hash,
-                    tx_status,
-                    source_address,
-                    contract_id,
-                    metadata,
-                    created_at
-                from proof_events
-                order by id desc
-                limit %s;
-                """,
-                (limit,),
-            )
+            if cursor_id is None:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        metadata,
+                        created_at
+                    from proof_events
+                    order by id desc
+                    limit %s;
+                    """,
+                    (limit,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        metadata,
+                        created_at
+                    from proof_events
+                    where id < %s
+                    order by id desc
+                    limit %s;
+                    """,
+                    (cursor_id, limit),
+                )
             return [dict(row) for row in cursor.fetchall()]
 
 
