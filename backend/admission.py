@@ -37,7 +37,15 @@ class AdmissionController:
             if self._identity_counts.get(identity, 0) >= self.max_per_identity:
                 return False, "identity_limit"
 
-            # 2. Queue limits
+            # Take an immediately available execution slot without consuming
+            # queue capacity. This keeps max_queue=0 useful as "no waiting".
+            if self._semaphore.acquire(blocking=False):
+                self._identity_counts[identity] = (
+                    self._identity_counts.get(identity, 0) + 1
+                )
+                return True, "ok"
+
+            # 2. Queue limits apply only when all execution slots are busy.
             if self._current_queue >= self.max_queue:
                 return False, "queue_full"
 
