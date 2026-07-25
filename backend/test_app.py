@@ -326,6 +326,44 @@ class AppHardeningTest(unittest.TestCase):
 
         self.assertEqual(redact_sensitive(value), value)
 
+    def test_embed_rejects_malformed_timestamp(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps({**valid_metadata(), "timestamp": "not-a-timestamp"}),
+                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ISO-8601", response.json["error"])
+
+    def test_embed_rejects_non_utc_timestamp(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps({**valid_metadata(), "timestamp": "2026-06-18T00:00:00.000"}),
+                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("timezone-aware", response.json["error"])
+
+    def test_embed_rejects_far_future_timestamp(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps({**valid_metadata(), "timestamp": "2126-06-18T00:00:00.000Z"}),
+                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unreasonably far", response.json["error"])
 
 
 def tracking_temporary_directory_factory(temp_root: Path, observed: list[Path]):
