@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request
@@ -427,6 +428,21 @@ def validate_embed_metadata(metadata: object) -> None:
         raise ValueError("metadata sourceHash must be a 32-byte hex string")
     if not is_hex_32(metadata.get("proofId")):
         raise ValueError("metadata proofId must be a 32-byte hex string")
+    _validate_timestamp(metadata.get("timestamp"))
+
+
+def _validate_timestamp(value: object) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("metadata timestamp must be a string")
+    ts = value.strip().replace("Z", "+00:00").replace("z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        raise ValueError("metadata timestamp must be a timezone-aware ISO-8601 string")
+    if dt.tzinfo is None:
+        raise ValueError("metadata timestamp must be timezone-aware")
+    if dt > datetime.now(timezone.utc) + timedelta(seconds=300):
+        raise ValueError("metadata timestamp is unreasonably far in the future")
 
 
 def safe_filename(value: object) -> str | None:
