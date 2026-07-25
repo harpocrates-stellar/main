@@ -286,6 +286,7 @@ def create_app() -> Flask:
         metadata_hash = payload.get("metadataHash")
         proof_id = payload.get("proofId")
         tx_hash = payload.get("txHash")
+        tx_status = payload.get("txStatus")
 
         for name, value in (
             ("videoHash", video_hash),
@@ -295,7 +296,13 @@ def create_app() -> Flask:
             if not is_hex_32(value):
                 return jsonify({"error": f"{name} must be a 32-byte hex string"}), 400
 
-        idempotency_key = make_idempotency_key(video_hash, proof_id, tx_hash)
+        try:
+            normalized_tx_hash = normalize_tx_hash(tx_hash)
+            normalized_tx_status = normalize_tx_status(tx_status)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        idempotency_key = make_idempotency_key(video_hash, proof_id, normalized_tx_hash)
 
         try:
             db_event, created = upsert_register_event(
@@ -305,8 +312,8 @@ def create_app() -> Flask:
                 metadata_hash=metadata_hash,
                 proof_id=proof_id,
                 tier=payload.get("tier"),
-                tx_hash=tx_hash,
-                tx_status=payload.get("txStatus"),
+                tx_hash=normalized_tx_hash,
+                tx_status=normalized_tx_status,
                 source_address=payload.get("sourceAddress"),
                 contract_id=payload.get("contractId"),
                 metadata=redact_metadata(payload),
@@ -394,6 +401,37 @@ def is_hex_32(value: object) -> bool:
     except ValueError:
         return False
     return True
+
+
+def normalize_tx_hash(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("txHash must be a 32-byte hex string")
+
+    normalized = value.strip().lower()
+    if not is_hex_32(normalized):
+        raise ValueError("txHash must be a 32-byte hex string")
+    return normalized
+
+
+def normalize_tx_status(value: object) -> str | None:
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        raise ValueError("txStatus must be one of: pending, confirmed, failed, missing")
+
+    normalized = value.strip().lower()
+    if normalized in {"pending", "confirmed", "failed", "missing"}:
+        return normalized
+    if normalized in {"success", "successful", "succeeded"}:
+        return "confirmed"
+    if normalized in {"failure", "failed", "error", "errored"}:
+        return "failed"
+    if normalized in {"not_found", "notfound"}:
+        return "missing"
+    raise ValueError("txStatus must be one of: pending, confirmed, failed, missing")
 
 
 def is_field_decimal(value: object) -> bool:

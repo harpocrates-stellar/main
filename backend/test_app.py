@@ -372,7 +372,7 @@ def valid_register_payload(**overrides) -> dict[str, object]:
         "proofId": "cc" * 32,
         "tier": "source",
         "txHash": "dd" * 32,
-        "txStatus": "SUCCESS",
+        "txStatus": "confirmed",
         "sourceAddress": "GDVRSXIO4SK2KSMUKJTQHMDDHBBFC7NGZZ6WLVOPKAG47GYPYAZCZR7G",
         "contractId": "CCKTQNMBLXZXMWVR2WG4HDDUI3QGJU5LV5NTLFPCB72UITWE5TEDK7BT",
     }
@@ -553,6 +553,32 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         payload = valid_register_payload(videoHash="not-hex")
         response = self.client.post("/api/proofs/register", json=payload)
         self.assertEqual(response.status_code, 400)
+
+    def test_register_normalizes_uppercase_tx_hash_and_status(self) -> None:
+        payload = valid_register_payload(txHash="DD" * 32, txStatus="SUCCESS")
+        db_row = _stub_event(payload)
+
+        with patch.object(app_module, "upsert_register_event", return_value=(db_row, True)) as upsert_mock:
+            response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(upsert_mock.call_args.kwargs["tx_hash"], "dd" * 32)
+        self.assertEqual(upsert_mock.call_args.kwargs["tx_status"], "confirmed")
+
+    def test_register_rejects_invalid_tx_status(self) -> None:
+        payload = valid_register_payload(txStatus="pending-ish")
+        response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("txStatus", response.get_json()["error"])
+
+    def test_register_rejects_tx_hash_outside_hex_length_boundary(self) -> None:
+        for tx_hash in ("d" * 63, "d" * 65):
+            with self.subTest(tx_hash=tx_hash):
+                payload = valid_register_payload(txHash=tx_hash)
+                response = self.client.post("/api/proofs/register", json=payload)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("txHash", response.get_json()["error"])
 
     # ------------------------------------------------------------------
     # Concurrent submissions
