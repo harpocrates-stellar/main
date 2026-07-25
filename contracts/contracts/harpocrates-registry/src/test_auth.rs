@@ -268,7 +268,12 @@ fn auth_revoke_proof_pending_admin_rejected() {
     let (env, contract_id, _, pending_admin, _, source) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let proof_id = bytes32(&env, 0x04);
-    client.register_source(&source, &bytes32(&env, 0x05), &bytes32(&env, 0x06), &proof_id);
+    client.register_source(
+        &source,
+        &bytes32(&env, 0x05),
+        &bytes32(&env, 0x06),
+        &proof_id,
+    );
     client.revoke_proof(&pending_admin, &proof_id);
 }
 
@@ -278,7 +283,12 @@ fn auth_revoke_proof_issuer_rejected() {
     let (env, contract_id, _, _, issuer, source) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let proof_id = bytes32(&env, 0x07);
-    client.register_source(&source, &bytes32(&env, 0x08), &bytes32(&env, 0x09), &proof_id);
+    client.register_source(
+        &source,
+        &bytes32(&env, 0x08),
+        &bytes32(&env, 0x09),
+        &proof_id,
+    );
     client.revoke_proof(&issuer, &proof_id);
 }
 
@@ -288,7 +298,12 @@ fn auth_revoke_proof_source_self_rejected() {
     let (env, contract_id, _, _, _, source) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let proof_id = bytes32(&env, 0x0A);
-    client.register_source(&source, &bytes32(&env, 0x0B), &bytes32(&env, 0x0C), &proof_id);
+    client.register_source(
+        &source,
+        &bytes32(&env, 0x0B),
+        &bytes32(&env, 0x0C),
+        &proof_id,
+    );
     // The source that registered cannot revoke its own proof
     client.revoke_proof(&source, &proof_id);
 }

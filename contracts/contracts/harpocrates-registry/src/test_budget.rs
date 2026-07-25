@@ -52,11 +52,7 @@
 #[cfg(test)]
 use super::*;
 #[cfg(test)]
-use soroban_sdk::{
-    contract, contractimpl,
-    testutils::Address as _,
-    Address, Bytes, Env,
-};
+use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Bytes, Env};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,7 +118,11 @@ fn measure<T>(env: &Env, f: impl FnOnce() -> T) -> (u64, u64, T) {
     env.cost_estimate().budget().reset_unlimited();
     let result = f();
     let budget = env.cost_estimate().budget();
-    (budget.cpu_instruction_cost(), budget.memory_bytes_cost(), result)
+    (
+        budget.cpu_instruction_cost(),
+        budget.memory_bytes_cost(),
+        result,
+    )
 }
 
 /// Assert that cpu and mem are within the given thresholds.
@@ -207,7 +207,13 @@ fn budget_add_issuer_baseline() {
     let (cpu, mem, _) = measure(&env, || {
         client.add_issuer(&admin, &issuer, &b32(&env, 0xAA))
     });
-    assert_within(cpu, mem, MAX_CPU_ADD_ISSUER, MAX_MEM_ADD_ISSUER, "add_issuer");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_ADD_ISSUER,
+        MAX_MEM_ADD_ISSUER,
+        "add_issuer",
+    );
 }
 
 #[test]
@@ -223,7 +229,13 @@ fn budget_add_credential_root_baseline() {
     let (cpu, mem, _) = measure(&env, || {
         client.add_credential_root(&admin, &b32(&env, 0xBB), &b32(&env, 0xCC))
     });
-    assert_within(cpu, mem, MAX_CPU_ADD_CREDENTIAL_ROOT, MAX_MEM_ADD_CREDENTIAL_ROOT, "add_credential_root");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_ADD_CREDENTIAL_ROOT,
+        MAX_MEM_ADD_CREDENTIAL_ROOT,
+        "add_credential_root",
+    );
 }
 
 #[test]
@@ -237,10 +249,14 @@ fn budget_set_verifier_baseline() {
     let verifier = Address::generate(&env);
     client.init(&admin);
 
-    let (cpu, mem, _) = measure(&env, || {
-        client.set_verifier(&admin, &verifier)
-    });
-    assert_within(cpu, mem, MAX_CPU_SET_VERIFIER, MAX_MEM_SET_VERIFIER, "set_verifier");
+    let (cpu, mem, _) = measure(&env, || client.set_verifier(&admin, &verifier));
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_SET_VERIFIER,
+        MAX_MEM_SET_VERIFIER,
+        "set_verifier",
+    );
 }
 
 #[test]
@@ -255,9 +271,20 @@ fn budget_register_source_baseline() {
     client.init(&admin);
 
     let (cpu, mem, _) = measure(&env, || {
-        client.register_source(&source, &b32(&env, 0x01), &b32(&env, 0x02), &b32(&env, 0x03))
+        client.register_source(
+            &source,
+            &b32(&env, 0x01),
+            &b32(&env, 0x02),
+            &b32(&env, 0x03),
+        )
     });
-    assert_within(cpu, mem, MAX_CPU_REGISTER_SOURCE, MAX_MEM_REGISTER_SOURCE, "register_source");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_SOURCE,
+        MAX_MEM_REGISTER_SOURCE,
+        "register_source",
+    );
 }
 
 #[test]
@@ -273,9 +300,20 @@ fn budget_register_seal_baseline() {
     client.add_issuer(&admin, &issuer, &b32(&env, 0xAA));
 
     let (cpu, mem, _) = measure(&env, || {
-        client.register_seal(&issuer, &b32(&env, 0x11), &b32(&env, 0x12), &b32(&env, 0x13))
+        client.register_seal(
+            &issuer,
+            &b32(&env, 0x11),
+            &b32(&env, 0x12),
+            &b32(&env, 0x13),
+        )
     });
-    assert_within(cpu, mem, MAX_CPU_REGISTER_SEAL, MAX_MEM_REGISTER_SEAL, "register_seal");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_SEAL,
+        MAX_MEM_REGISTER_SEAL,
+        "register_seal",
+    );
 }
 
 #[test]
@@ -299,7 +337,13 @@ fn budget_register_anonymous_baseline() {
             &proof_buf(&env),
         )
     });
-    assert_within(cpu, mem, MAX_CPU_REGISTER_ANONYMOUS, MAX_MEM_REGISTER_ANONYMOUS, "register_anonymous");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_ANONYMOUS,
+        MAX_MEM_REGISTER_ANONYMOUS,
+        "register_anonymous",
+    );
 }
 
 #[test]
@@ -328,7 +372,13 @@ fn budget_register_anonymous_verified_baseline() {
             &proof_buf(&env),
         )
     });
-    assert_within(cpu, mem, MAX_CPU_REGISTER_ANONYMOUS_VERIFIED, MAX_MEM_REGISTER_ANONYMOUS_VERIFIED, "register_anonymous_verified");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_ANONYMOUS_VERIFIED,
+        MAX_MEM_REGISTER_ANONYMOUS_VERIFIED,
+        "register_anonymous_verified",
+    );
 }
 
 #[test]
@@ -345,10 +395,14 @@ fn budget_revoke_proof_baseline() {
     client.init(&admin);
     client.register_source(&source, &b32(&env, 0x42), &b32(&env, 0x43), &proof_id);
 
-    let (cpu, mem, _) = measure(&env, || {
-        client.revoke_proof(&admin, &proof_id)
-    });
-    assert_within(cpu, mem, MAX_CPU_REVOKE_PROOF, MAX_MEM_REVOKE_PROOF, "revoke_proof");
+    let (cpu, mem, _) = measure(&env, || client.revoke_proof(&admin, &proof_id));
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REVOKE_PROOF,
+        MAX_MEM_REVOKE_PROOF,
+        "revoke_proof",
+    );
 }
 
 #[test]
@@ -365,11 +419,15 @@ fn budget_get_proof_status_baseline() {
     client.init(&admin);
     client.register_source(&source, &b32(&env, 0x52), &b32(&env, 0x53), &proof_id);
 
-    let (cpu, mem, status) = measure(&env, || {
-        client.get_proof_status(&proof_id)
-    });
+    let (cpu, mem, status) = measure(&env, || client.get_proof_status(&proof_id));
     assert_eq!(status, ProofVerificationStatus::Valid);
-    assert_within(cpu, mem, MAX_CPU_GET_PROOF_STATUS, MAX_MEM_GET_PROOF_STATUS, "get_proof_status");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_GET_PROOF_STATUS,
+        MAX_MEM_GET_PROOF_STATUS,
+        "get_proof_status",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -391,17 +449,35 @@ fn budget_consecutive_registrations_stable() {
 
     // First registration
     let (cpu_first, mem_first, _) = measure(&env, || {
-        client.register_source(&source, &b32(&env, 0x71), &b32(&env, 0x72), &b32(&env, 0x73))
+        client.register_source(
+            &source,
+            &b32(&env, 0x71),
+            &b32(&env, 0x72),
+            &b32(&env, 0x73),
+        )
     });
 
     // Second registration
     let (cpu_second, mem_second, _) = measure(&env, || {
-        client.register_source(&source, &b32(&env, 0x74), &b32(&env, 0x75), &b32(&env, 0x76))
+        client.register_source(
+            &source,
+            &b32(&env, 0x74),
+            &b32(&env, 0x75),
+            &b32(&env, 0x76),
+        )
     });
 
     // Budget should be stable; allow up to 20% variance
-    let cpu_ratio = if cpu_first == 0 { 1.0 } else { cpu_second as f64 / cpu_first as f64 };
-    let mem_ratio = if mem_first == 0 { 1.0 } else { mem_second as f64 / mem_first as f64 };
+    let cpu_ratio = if cpu_first == 0 {
+        1.0
+    } else {
+        cpu_second as f64 / cpu_first as f64
+    };
+    let mem_ratio = if mem_first == 0 {
+        1.0
+    } else {
+        mem_second as f64 / mem_first as f64
+    };
 
     assert!(
         (0.8..=1.2).contains(&cpu_ratio),
@@ -443,9 +519,20 @@ fn budget_sixth_registration_within_baseline() {
 
     // Measure the 6th
     let (cpu, mem, _) = measure(&env, || {
-        client.register_source(&source, &b32(&env, 0x90), &b32(&env, 0x91), &b32(&env, 0x92))
+        client.register_source(
+            &source,
+            &b32(&env, 0x90),
+            &b32(&env, 0x91),
+            &b32(&env, 0x92),
+        )
     });
-    assert_within(cpu, mem, MAX_CPU_REGISTER_SOURCE, MAX_MEM_REGISTER_SOURCE, "6th register_source");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_SOURCE,
+        MAX_MEM_REGISTER_SOURCE,
+        "6th register_source",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +556,18 @@ fn budget_register_seal_worst_case() {
     client.set_proof_ttl(&admin, &86_400u64);
 
     let (cpu, mem, _) = measure(&env, || {
-        client.register_seal(&issuer, &b32(&env, 0x61), &b32(&env, 0x62), &b32(&env, 0x63))
+        client.register_seal(
+            &issuer,
+            &b32(&env, 0x61),
+            &b32(&env, 0x62),
+            &b32(&env, 0x63),
+        )
     });
-    assert_within(cpu, mem, MAX_CPU_REGISTER_SEAL_WORST_CASE, MAX_MEM_REGISTER_SEAL_WORST_CASE, "register_seal worst-case");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_SEAL_WORST_CASE,
+        MAX_MEM_REGISTER_SEAL_WORST_CASE,
+        "register_seal worst-case",
+    );
 }

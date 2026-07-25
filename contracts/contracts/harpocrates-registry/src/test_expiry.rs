@@ -55,7 +55,10 @@ fn expiry_default_ttl_zero_never_expires() {
     let proof_id = b32(&env, 0x01);
 
     let rec = client.register_source(&source, &b32(&env, 0x02), &b32(&env, 0x03), &proof_id);
-    assert_eq!(rec.expires_at, 0, "default TTL must produce expires_at == 0");
+    assert_eq!(
+        rec.expires_at, 0,
+        "default TTL must produce expires_at == 0"
+    );
 
     // Advance ledger far into the future
     env.ledger().set_timestamp(u64::MAX / 2);
@@ -106,12 +109,7 @@ fn expiry_set_ttl_does_not_affect_existing_proofs() {
 
     // Register without TTL
     let proof_id = b32(&env, 0x20);
-    let rec_before = client.register_source(
-        &source,
-        &b32(&env, 0x21),
-        &b32(&env, 0x22),
-        &proof_id,
-    );
+    let rec_before = client.register_source(&source, &b32(&env, 0x21), &b32(&env, 0x22), &proof_id);
     assert_eq!(rec_before.expires_at, 0);
 
     // Now set a TTL
@@ -119,7 +117,10 @@ fn expiry_set_ttl_does_not_affect_existing_proofs() {
 
     // The existing record is still unchanged
     let stored = client.get_proof(&proof_id).unwrap();
-    assert_eq!(stored.expires_at, 0, "existing record must not be affected by TTL change");
+    assert_eq!(
+        stored.expires_at, 0,
+        "existing record must not be affected by TTL change"
+    );
 }
 
 // ---------------------------------------------------------------------------

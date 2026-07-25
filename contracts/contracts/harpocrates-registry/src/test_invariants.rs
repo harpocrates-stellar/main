@@ -224,12 +224,7 @@ fn invariant_duplicate_video_storage_unchanged() {
     let video_hash = b32(&env, 0x60);
     let original_proof_id = b32(&env, 0x61);
 
-    client.register_source(
-        &source,
-        &video_hash,
-        &b32(&env, 0x62),
-        &original_proof_id,
-    );
+    client.register_source(&source, &video_hash, &b32(&env, 0x62), &original_proof_id);
 
     // Try to overwrite with a different proof_id for the same video
     let result = env.try_invoke_contract::<Option<ProofRecord>, RegistryError>(
@@ -446,4 +441,3 @@ fn invariant_duplicate_rejection_emits_no_event() {
         "rejected call must not emit new events"
     );
 }
-
