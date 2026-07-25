@@ -191,6 +191,19 @@ pub struct AdminAccepted {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum SchemaVersion {
+    V1 = 1,
+}
+
+#[contractevent(topics = ["schema", "upgrade"])]
+pub struct SchemaUpgraded {
+    pub previous: u32,
+    pub current: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     Proof(BytesN<32>),
@@ -204,6 +217,8 @@ pub enum DataKey {
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
+    /// Tracks the current storage schema version.
+    SchemaVersion,
 }
 
 #[contracterror]
@@ -237,6 +252,35 @@ impl HarpocratesRegistry {
 
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion, &(SchemaVersion::V1 as u32));
+    }
+
+    pub fn upgrade_storage(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+
+        let current_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(SchemaVersion::V1 as u32);
+
+        let target_version = SchemaVersion::V1 as u32;
+
+        if current_version < target_version {
+            // Migrations will be added here when moving to V2, V3, etc.
+            
+            env.storage()
+                .persistent()
+                .set(&DataKey::SchemaVersion, &target_version);
+
+            SchemaUpgraded {
+                previous: current_version,
+                current: target_version,
+            }
+            .publish(&env);
+        }
     }
 
     pub fn propose_admin(env: Env, admin: Address, pending_admin: Address) {
