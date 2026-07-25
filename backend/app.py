@@ -229,6 +229,91 @@ def create_app() -> Flask:
             ).decode("ascii")
         return response
 
+    @app.post("/api/stego/upload-session")
+    def create_upload_session():
+        session_id = str(uuid.uuid4())
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return jsonify({"sessionId": session_id})
+
+    @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
+    def upload_chunk(session_id: str, chunk_index: int):
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        if not session_dir.exists():
+            return jsonify({"error": "session not found"}), 404
+        
+        chunk = request.files.get("chunk")
+        if chunk is None:
+            return jsonify({"error": "chunk is required"}), 400
+            
+        chunk_path = session_dir / f"chunk-{chunk_index}"
+        chunk.save(chunk_path)
+        return jsonify({"ok": True})
+
+    @app.post("/api/stego/upload-session/<session_id>/commit")
+    @require_capacity(admission_controller)
+    def commit_upload_session(session_id: str):
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        if not session_dir.exists():
+            return jsonify({"error": "session not found"}), 404
+
+        metadata_raw = request.form.get("metadata")
+        if metadata_raw is None:
+            return jsonify({"error": "metadata is required"}), 400
+
+        try:
+            metadata = json.loads(metadata_raw)
+        except json.JSONDecodeError:
+            return jsonify({"error": "metadata must be valid JSON"}), 400
+        try:
+            validate_embed_metadata(metadata)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        combined_path = session_dir / "combined.video"
+        chunk_files = sorted([f for f in session_dir.iterdir() if f.name.startswith("chunk-")], 
+                             key=lambda f: int(f.name.split("-")[1]))
+        
+        with open(combined_path, "wb") as combined_file:
+            for chunk_file in chunk_files:
+                with open(chunk_file, "rb") as cf:
+                    combined_file.write(cf.read())
+
+        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+            output_path = Path(tmp_dir) / "embedded.mp4"
+            embed_metadata(combined_path, output_path, metadata)
+            output_bytes = output_path.read_bytes()
+            source_hash = sha256_file(combined_path)
+            embedded_hash = sha256_file(output_path)
+            metadata_hash = canonical_metadata_hash(metadata)
+
+        db_event = insert_proof_event(
+            event_type="embed",
+            file_name=safe_filename(metadata.get("fileName", "unknown.mp4")),
+            video_hash=embedded_hash,
+            metadata_hash=metadata_hash,
+            proof_id=metadata.get("proofId"),
+            tier=metadata.get("tier"),
+            embedded_hash=embedded_hash,
+            metadata=redact_metadata(metadata),
+        )
+
+        response = Response(output_bytes, mimetype="video/mp4")
+        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+        response.headers["X-Harpocrates-Source-Hash"] = source_hash
+        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+        if config.expose_metadata_header:
+            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            ).decode("ascii")
+
+        import shutil
+        shutil.rmtree(session_dir, ignore_errors=True)
+
+        return response
+
     @app.post("/api/stego/extract")
     @require_capacity(admission_controller)
     def extract():
