@@ -56,7 +56,8 @@ class ReadinessManager:
                     to_run.append(dep)
         
         if to_run:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(to_run))) as executor:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(to_run)))
+            try:
                 future_to_dep = {executor.submit(self._run_probe, dep): dep for dep in to_run}
                 done, not_done = concurrent.futures.wait(
                     future_to_dep.keys(), timeout=self.timeout_seconds
@@ -70,14 +71,14 @@ class ReadinessManager:
                         except Exception:
                             self.cache[dep.name] = ProbeResult(False, "error", time.time())
                     
-                    # For timed out probes, we don't update the cache. 
-                    # If it's been a long time (e.g. 2x TTL), we could mark it stale.
+                    # Timed-out probes preserve the last known cache value.
+                    # In particular, a first probe remains "initializing".
                     for future in not_done:
-                        dep = future_to_dep[future]
-                        cached_res = self.cache[dep.name]
-                        if now - cached_res.timestamp > (self.cache_ttl_seconds * 2):
-                            # Mark as stale if we haven't got a fresh response in a while
-                            self.cache[dep.name] = ProbeResult(False, "timeout", cached_res.timestamp)
+                        future.cancel()
+            finally:
+                # A context manager waits for timed-out worker threads during
+                # shutdown, defeating the readiness endpoint's time bound.
+                executor.shutdown(wait=False, cancel_futures=True)
 
         # Build response
         with self._lock:
