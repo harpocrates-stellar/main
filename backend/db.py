@@ -54,6 +54,24 @@ def init_db() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists lineage_events (
+                    id bigserial primary key,
+                    manifest_digest text not null unique,
+                    manifest jsonb not null,
+                    actor_address text not null,
+                    parent_proof_ids text[] not null,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create index if not exists lineage_events_actor_idx
+                on lineage_events (actor_address);
+                """
+            )
+            cursor.execute(
+                """
                 create index if not exists proof_events_proof_id_idx
                 on proof_events (proof_id);
                 """
@@ -91,6 +109,107 @@ def check_db() -> bool:
             cursor.execute("select 1 as ok")
             row = cursor.fetchone()
             return bool(row and row["ok"] == 1)
+
+
+def insert_lineage_event(
+    *,
+    manifest_digest: str,
+    manifest: dict[str, Any],
+    actor_address: str,
+    parent_proof_ids: list[str],
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into lineage_events (manifest_digest, manifest, actor_address, parent_proof_ids)
+                values (%s, %s, %s, %s)
+                on conflict (manifest_digest) do nothing
+                returning id, manifest_digest, created_at;
+                """,
+                (manifest_digest, Jsonb(manifest), actor_address, parent_proof_ids),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_lineage_events(limit: int = 25) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                from lineage_events
+                order by id desc
+                limit %s;
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def find_lineage_by_output_digest(output_digest: str) -> dict[str, Any] | None:
+    """Find lineage record by the output digest of the derivative.
+    
+    Args:
+        output_digest: The output digest (32-byte hex string)
+    
+    Returns:
+        Lineage record or None if not found
+    """
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                from lineage_events
+                where (manifest ->> 'outputDigest') = %s
+                limit 1;
+                """,
+                (output_digest,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
+def find_lineage_by_actor(actor_address: str, limit: int = 25) -> list[dict[str, Any]]:
+    """Find lineage records by actor address with pagination.
+    
+    Args:
+        actor_address: The actor's address
+        limit: Maximum number of records to return (bounded to 100)
+    
+    Returns:
+        List of lineage records
+    """
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                from lineage_events
+                where actor_address = %s
+                order by id desc
+                limit %s;
+                """,
+                (actor_address, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
 
 def insert_proof_event(

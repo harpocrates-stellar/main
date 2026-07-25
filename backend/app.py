@@ -20,8 +20,12 @@ from config import load_config
 from db import (
     check_db,
     find_proof_events_by_video,
+    find_lineage_by_output_digest,
+    find_lineage_by_actor,
     init_db,
+    insert_lineage_event,
     insert_proof_event,
+    list_lineage_events,
     list_proof_events,
     make_idempotency_key,
     upsert_register_event,
@@ -33,6 +37,12 @@ from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
+from lineage import (
+    LineageValidationError,
+    canonical_lineage_manifest,
+    lineage_manifest_digest,
+    validate_lineage_graph,
+)
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -280,12 +290,81 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "events": list_proof_events(parsed_limit)})
 
+    @app.get("/api/proofs/lineage")
+    def lineage_events():
+        limit = request.args.get("limit", "25")
+        try:
+            parsed_limit = int(limit)
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+        return jsonify({"ok": True, "events": list_lineage_events(parsed_limit)})
+
     @app.get("/api/proofs/by-video/<video_hash>")
     def proof_by_video(video_hash: str):
         if not is_hex_32(video_hash):
             return jsonify({"error": "video_hash must be a 32-byte hex string"}), 400
 
         return jsonify({"ok": True, "events": find_proof_events_by_video(video_hash)})
+
+    @app.get("/api/lineage/by-actor/<actor_address>")
+    def lineage_by_actor(actor_address: str):
+        limit = request.args.get("limit", "25")
+        try:
+            parsed_limit = int(limit)
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+
+        return jsonify({"ok": True, "events": find_lineage_by_actor(actor_address, parsed_limit)})
+
+    @app.post("/api/proofs/lineage")
+    def register_lineage_event():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+
+        output_digest = payload.get("outputDigest")
+        if not output_digest:
+            return jsonify({"error": "outputDigest is required"}), 400
+        if not is_hex_32(output_digest):
+            return jsonify({"error": "outputDigest must be a 32-byte hex string"}), 400
+
+        try:
+            manifest_canonical = canonical_lineage_manifest(payload)
+            manifest_digest = lineage_manifest_digest(payload)
+            parent_ids = payload.get("parentProofIds", [])
+            actor_address = str(payload.get("actorAddress", ""))
+            
+            # Validate basic constraints
+            validate_lineage_graph(
+                parent_ids,
+                depth=1,
+                actor_address=actor_address,
+                output_digest=output_digest,
+                get_lineage_fn=find_lineage_by_output_digest,
+            )
+        except LineageValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        # Check for duplicate submission
+        existing = find_lineage_by_output_digest(output_digest)
+        if existing:
+            return jsonify({"error": "lineage already registered for this output digest"}), 409
+
+        # Insert into lineage_events table
+        db_event = insert_lineage_event(
+            manifest_digest=manifest_digest,
+            manifest=json.loads(manifest_canonical),
+            actor_address=actor_address,
+            parent_proof_ids=[str(parent) for parent in parent_ids],
+        )
+        
+        if not db_event:
+            return jsonify({"error": "failed to record lineage event"}), 500
+
+        return jsonify({"ok": True, "manifestDigest": manifest_digest, "db_event": db_event})
 
     @app.post("/api/proofs/register")
     def register_proof_event():

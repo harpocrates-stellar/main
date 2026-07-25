@@ -15,6 +15,10 @@ const TIER_PUBLIC_SEAL: u32 = 3;
 const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
 
+const MAX_LINEAGE_DEPTH: u32 = 4;
+const MAX_LINEAGE_FANOUT: u32 = 4;
+const MAX_LINEAGE_PAYLOAD_BYTES: u32 = 4096;
+
 // ---------------------------------------------------------------------------
 // Proof-expiration policy (#44)
 // ---------------------------------------------------------------------------
@@ -50,6 +54,17 @@ pub enum ProofVerificationStatus {
     Expired,
     /// No record found for the given proof_id.
     NotFound,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageRecord {
+    pub parent_proof_ids: SorobanVec<BytesN<32>>,
+    pub manifest_digest: BytesN<32>,
+    pub actor: Address,
+    pub operation_type: Symbol,
+    pub output_digest: BytesN<32>,
+    pub depth: u32,
 }
 
 #[contracttype]
@@ -204,6 +219,7 @@ pub enum DataKey {
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
+    Lineage(BytesN<32>),
 }
 
 #[contracterror]
@@ -223,6 +239,10 @@ pub enum RegistryError {
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
     NoPendingAdmin = 13,
+    InvalidLineage = 14,
+    LineageCycle = 15,
+    LineageTooDeep = 16,
+    LineageFanOutExceeded = 17,
 }
 
 #[contract]
@@ -625,6 +645,34 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
     }
 
+    pub fn register_lineage(
+        env: Env,
+        actor: Address,
+        parent_proof_ids: SorobanVec<BytesN<32>>,
+        manifest_digest: BytesN<32>,
+        operation_type: Symbol,
+        output_digest: BytesN<32>,
+        depth: u32,
+    ) -> LineageRecord {
+        actor.require_auth();
+        validate_lineage(&env, &parent_proof_ids, &output_digest, depth);
+
+        let record = LineageRecord {
+            parent_proof_ids: parent_proof_ids.clone(),
+            manifest_digest: manifest_digest.clone(),
+            actor: actor.clone(),
+            operation_type: operation_type.clone(),
+            output_digest: output_digest.clone(),
+            depth,
+        };
+        env.storage().persistent().set(&DataKey::Lineage(output_digest.clone()), &record);
+        record
+    }
+
+    pub fn get_lineage(env: Env, output_digest: BytesN<32>) -> Option<LineageRecord> {
+        env.storage().persistent().get(&DataKey::Lineage(output_digest))
+    }
+
     // -----------------------------------------------------------------------
     // Revocation-witness root management (#98)
     // -----------------------------------------------------------------------
@@ -796,6 +844,31 @@ fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     }
 }
 
+fn validate_lineage(
+    env: &Env,
+    parent_proof_ids: &SorobanVec<BytesN<32>>,
+    output_digest: &BytesN<32>,
+    depth: u32,
+) {
+    if parent_proof_ids.len() > MAX_LINEAGE_FANOUT as u32 {
+        panic_with_error!(env, RegistryError::LineageFanOutExceeded);
+    }
+    if depth > MAX_LINEAGE_DEPTH {
+        panic_with_error!(env, RegistryError::LineageTooDeep);
+    }
+
+    for parent in parent_proof_ids.iter() {
+        if parent == *output_digest {
+            panic_with_error!(env, RegistryError::LineageCycle);
+        }
+        let is_known_parent = env.storage().persistent().has(&DataKey::Proof(parent.clone()))
+            || env.storage().persistent().has(&DataKey::Lineage(parent.clone()));
+        if !is_known_parent {
+            panic_with_error!(env, RegistryError::InvalidLineage);
+        }
+    }
+}
+
 fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRecord {
     env.storage()
         .persistent()
@@ -912,6 +985,8 @@ mod test_budget;
 mod test_expiry;
 #[cfg(test)]
 mod test_invariants;
+#[cfg(test)]
+mod test_lineage;
 #[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
