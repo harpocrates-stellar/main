@@ -13,26 +13,33 @@ const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
 
 // ---------------------------------------------------------------------------
-// Proof-expiration policy (#44)
+// Bounded aggregation constants
 // ---------------------------------------------------------------------------
 //
-// Every proof record stores an `expires_at` epoch-second timestamp.
+// MAX_AGGREGATION_SIZE defines the maximum number of individual Silent
+// Witness proofs that can be bundled into a single aggregated proof.
 //
-// - `expires_at == 0`  → no expiration (backward-compatible with records that
-//   pre-date this field, which are deserialized with the Soroban SDK default
-//   of zero for missing u64 fields in persistent storage).
-// - `expires_at > 0`   → the proof is considered expired once
-//   `ledger.timestamp() > expires_at`.
+// This MUST match the value in zk/noir/silent_witness_aggregator/src/main.nr.
+pub const MAX_AGGREGATION_SIZE: u32 = 8;
+
+/// Size of each batch element's public input in bytes (4 × BN254 field
+/// elements: video_hash_hi, video_hash_lo, credential_root, nullifier).
+const BATCH_ELEMENT_PUBLIC_INPUT_SIZE: u32 = 128;
+
+/// Total public input size for a full aggregated batch.
+/// 1 shared domain header + (MAX_AGGREGATION_SIZE × 128 bytes per element)
 //
-// The registry admin can update the global TTL applied to *new* registrations
-// via `set_proof_ttl`.  Existing records are unaffected.
-//
-// `DEFAULT_PROOF_TTL_SECS = 0` means new proofs are eternal unless the admin
-// overrides the TTL, preserving the original behavior on a fresh deployment.
-//
-// Migration note: proofs registered before this field was added will have
-// `expires_at == 0` in persistent storage and will therefore be treated as
-// non-expiring by `get_proof_status`.
+// Layout:
+//   [   0..  32)  domain_separator  – versioned domain tag
+//   [  32.. 160)  element_0         – video_hash_hi, video_hash_lo, credential_root, nullifier
+//   [ 160.. 288)  element_1         – ...
+//   ...
+//   [ 928..1056)  element_7
+pub const AGGREGATED_PUBLIC_INPUT_SIZE: u32 = 32 + (MAX_AGGREGATION_SIZE * BATCH_ELEMENT_PUBLIC_INPUT_SIZE); // = 1056
+
+// ---------------------------------------------------------------------------
+// Proof-expiration policy (#44)
+// ---------------------------------------------------------------------------
 pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 
 /// Verification status returned by `get_proof_status`.
@@ -64,6 +71,9 @@ pub struct ProofRecord {
     pub source: Option<Address>,
     pub issuer: Option<Address>,
     pub nullifier: Option<BytesN<32>>,
+    /// Optional batch size when this proof was registered as part of an
+    /// aggregated batch (0 = not part of a batch).
+    pub batch_size: u32,
 }
 
 #[contracttype]
@@ -86,6 +96,17 @@ pub struct ProofRegistered {
     #[topic]
     pub proof_id: BytesN<32>,
     pub video_hash: BytesN<32>,
+    pub tier: u32,
+    pub status: u32,
+    pub batch_size: u32,
+}
+
+#[contractevent(topics = ["proof", "batch", "reg"])]
+pub struct BatchProofRegistered {
+    #[topic]
+    pub batch_id: BytesN<32>,
+    pub credential_root: BytesN<32>,
+    pub count: u32,
     pub tier: u32,
     pub status: u32,
 }
@@ -130,26 +151,22 @@ pub struct CredentialRootRevoked {
     pub credential_root: BytesN<32>,
 }
 
-/// Domain separator that binds non‑revocation proofs to the Harpocrates
-/// revocation witness circuit version.  Both the Noir circuit and this
-/// contract use the same constant.  Changing the circuit requires updating
-/// this value to prevent proof replay across protocol versions.
-///
-/// Format: 32‑byte big‑endian BN254 field element serialization of
-///   `0x484152504f4352415445535f5245564f434154494f4e5f5631`
-/// which represents the ASCII string "HARPOCRATES_REVOCATION_V1" as a
-/// 192‑bit integer.  The 8 leading zero bytes come from the BN254 field
-/// serialisation (field elements are padded to 32 bytes).
-///
-/// Layout:
-///   [ 0.. 8)  leading zeros (BN254 field padding)
-///   [ 8..32)  "HARPOCRATES_REVOCATION_V1" (24 ASCII bytes)
 const REVOCATION_DOMAIN_SEPARATOR: [u8; 32] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 7 leading zeros (BN254 padding)
     0x48, 0x41, 0x52, 0x50, 0x4f, 0x43, 0x52, 0x41, // HARPOCRA
     0x54, 0x45, 0x53, 0x5f, 0x52, 0x45, 0x56, 0x4f, // TES_REVO
     0x43, 0x41, 0x54, 0x49, 0x4f, 0x4e, 0x5f, 0x56, // CATION_V
     0x31, // 1
+];
+
+/// Domain separator for the aggregation circuit.
+/// Binds aggregated proofs to the protocol version to prevent replay across
+/// circuit versions.  The Noir circuit independently checks this value.
+const AGGREGATION_DOMAIN_SEPARATOR: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 7 leading zeros (BN254 padding)
+    0x48, 0x41, 0x52, 0x50, 0x4f, 0x43, 0x52, 0x41, // HARPOCRA
+    0x54, 0x45, 0x53, 0x5f, 0x41, 0x47, 0x47, 0x5f, // TES_AGG_
+    0x56, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // V1 + padding
 ];
 
 #[contractevent(topics = ["revroot", "set"])]
@@ -220,6 +237,12 @@ pub enum RegistryError {
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
     NoPendingAdmin = 13,
+    /// The batch proof exceeds the maximum aggregation size.
+    BatchSizeExceeded = 14,
+    /// The credential roots are not all identical within a batch.
+    BatchCredentialRootMismatch = 15,
+    /// The batch count does not match the declared batch size.
+    BatchCountMismatch = 16,
 }
 
 #[contract]
@@ -383,9 +406,6 @@ impl HarpocratesRegistry {
     // Expiration policy (#44)
     // -----------------------------------------------------------------------
 
-    /// Set the global TTL (in seconds) applied to new proof registrations.
-    /// `0` disables expiration for newly registered proofs.
-    /// Only the registry admin may call this.  Existing records are unaffected.
     pub fn set_proof_ttl(env: Env, admin: Address, ttl_secs: u64) {
         require_admin(&env, &admin);
         env.storage()
@@ -393,7 +413,6 @@ impl HarpocratesRegistry {
             .set(&DataKey::ProofTtl, &ttl_secs);
     }
 
-    /// Get the currently configured global proof TTL in seconds.
     pub fn get_proof_ttl(env: Env) -> u64 {
         env.storage()
             .persistent()
@@ -401,12 +420,6 @@ impl HarpocratesRegistry {
             .unwrap_or(DEFAULT_PROOF_TTL_SECS)
     }
 
-    /// Return the human-readable verification status of a proof at the current
-    /// ledger time without modifying any state.
-    ///
-    /// Clients should prefer this over reading the raw `ProofRecord` when they
-    /// need a definitive "is this proof still valid?" answer, because it
-    /// incorporates both the revocation flag and the expiration deadline.
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
         let record: Option<ProofRecord> =
             env.storage().persistent().get(&DataKey::Proof(proof_id));
@@ -470,6 +483,7 @@ impl HarpocratesRegistry {
                 source: None,
                 issuer: None,
                 nullifier: Some(nullifier),
+                batch_size: 0,
             },
         )
     }
@@ -523,8 +537,176 @@ impl HarpocratesRegistry {
                 source: None,
                 issuer: None,
                 nullifier: Some(parsed.nullifier),
+                batch_size: 0,
             },
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch aggregation registration
+    // -----------------------------------------------------------------------
+
+    /// Register multiple video hashes under the same credential using a
+    /// single aggregated UltraHonk proof produced by the Silent Witness
+    /// Aggregator circuit.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` – Soroban environment
+    /// * `batch_id` – Unique batch identifier (serves as the batch proof_id)
+    /// * `metadata_hash` – Shared metadata hash for all elements in the batch
+    /// * `public_inputs` – Aggregated public inputs (1 domain separator +
+    ///   MAX_AGGREGATION_SIZE × 4 field elements; see AGGREGATED_PUBLIC_INPUT_SIZE)
+    /// * `proof` – Aggregated UltraHonk proof bytes
+    /// * `video_hashes` – Ordered list of video hashes in the batch (must
+    ///   match the order in public_inputs)
+    ///
+    /// # Panics
+    ///
+    /// - `BatchSizeExceeded` if `video_hashes.len() > MAX_AGGREGATION_SIZE`
+    /// - `BatchCountMismatch` if the number of video hashes doesn't match
+    ///   the parsed batch count from public inputs
+    /// - `InvalidPublicInputs` if the domain separator or public input layout
+    ///   is wrong
+    /// - `UnknownCredentialRoot` if the credential root is not registered
+    /// - `RevokedCredentialRoot` if the credential root has been revoked
+    /// - `DuplicateNullifier` if any nullifier in the batch was already consumed
+    /// - `DuplicateProof` if the batch_id was already used
+    /// - `DuplicateVideo` if any video hash was already registered
+    /// - `VerifierNotSet` if no verifier contract is configured
+    /// - `InvalidProof` if the external UltraHonk verifier rejects the proof
+    pub fn register_batch_verified(
+        env: Env,
+        batch_id: BytesN<32>,
+        metadata_hash: BytesN<32>,
+        public_inputs: Bytes,
+        proof: Bytes,
+        video_hashes: SorobanVec<BytesN<32>>,
+    ) -> SorobanVec<ProofRecord> {
+        let batch_size = video_hashes.len();
+
+        if batch_size == 0 || batch_size > MAX_AGGREGATION_SIZE {
+            panic_with_error!(&env, RegistryError::BatchSizeExceeded);
+        }
+
+        // Parse the aggregated public inputs to extract domain separator and
+        // element public inputs.
+        let parsed = parse_aggregated_public_inputs(&env, &public_inputs, batch_size);
+
+        // 1. Domain binding — must match the expected aggregation version tag.
+        let expected_domain = BytesN::from_array(&env, &AGGREGATION_DOMAIN_SEPARATOR);
+        if parsed.domain_separator != expected_domain {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        // 2. Verify the aggregated UltraHonk proof through the configured
+        //    verifier contract.
+        let verifier: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Verifier)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
+        verify_external_proof(&env, &verifier, public_inputs, proof);
+
+        // 3. Credential root must be registered and active.
+        let shared_root = &parsed.elements[0].credential_root;
+        require_active_credential_root(&env, shared_root);
+
+        // 4. Verify batch integrity: credential roots must match and the
+        //    video hashes must match the parsed public inputs.
+        let expires_at = compute_expires_at(&env);
+        let now = env.ledger().timestamp();
+        let mut results: SorobanVec<ProofRecord> = SorobanVec::new(&env);
+
+        for i in 0..batch_size {
+            let element = &parsed.elements[i as usize];
+
+            // All credential roots in the batch must be identical.
+            if element.credential_root != *shared_root {
+                panic_with_error!(&env, RegistryError::BatchCredentialRootMismatch);
+            }
+
+            // Match video hash from the caller's input.
+            let video_hash = video_hashes.get(i).unwrap_or_else(|| {
+                panic_with_error!(&env, RegistryError::BatchCountMismatch);
+            });
+            if element.video_hash != video_hash {
+                panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            }
+
+            // Derive a deterministic sub-proof_id for each element.
+            let element_proof_id = derive_element_proof_id(&env, &batch_id, i);
+
+            // Check proof_id uniqueness within the batch scope.
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Proof(element_proof_id.clone()))
+            {
+                panic_with_error!(&env, RegistryError::DuplicateProof);
+            }
+
+            // Check video hash uniqueness.
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Video(video_hash.clone()))
+            {
+                panic_with_error!(&env, RegistryError::DuplicateVideo);
+            }
+
+            // Check nullifier uniqueness.
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Nullifier(element.nullifier.clone()))
+            {
+                panic_with_error!(&env, RegistryError::DuplicateNullifier);
+            }
+        }
+
+        // All checks passed — persist every element.
+        for i in 0..batch_size {
+            let element = &parsed.elements[i as usize];
+            let video_hash = video_hashes.get(i).unwrap();
+            let element_proof_id = derive_element_proof_id(&env, &batch_id, i);
+
+            // Consume the nullifier.
+            env.storage()
+                .persistent()
+                .set(&DataKey::Nullifier(element.nullifier.clone()), &true);
+
+            let record = save_record(
+                &env,
+                &element_proof_id,
+                ProofRecord {
+                    video_hash: video_hash.clone(),
+                    metadata_hash: metadata_hash.clone(),
+                    tier: TIER_SILENT_WITNESS,
+                    status: STATUS_REGISTERED,
+                    created_at: now,
+                    expires_at,
+                    source: None,
+                    issuer: None,
+                    nullifier: Some(element.nullifier.clone()),
+                    batch_size,
+                },
+            );
+
+            results.push_back(record);
+        }
+
+        // Emit a top-level batch event.
+        BatchProofRegistered {
+            batch_id,
+            credential_root: shared_root.clone(),
+            count: batch_size,
+            tier: TIER_SILENT_WITNESS,
+            status: STATUS_REGISTERED,
+        }
+        .publish(&env);
+
+        results
     }
 
     pub fn register_source(
@@ -551,6 +733,7 @@ impl HarpocratesRegistry {
                 source: Some(source),
                 issuer: None,
                 nullifier: None,
+                batch_size: 0,
             },
         )
     }
@@ -584,6 +767,7 @@ impl HarpocratesRegistry {
                 source: None,
                 issuer: Some(issuer),
                 nullifier: None,
+                batch_size: 0,
             },
         )
     }
@@ -627,8 +811,6 @@ impl HarpocratesRegistry {
     // Revocation-witness root management (#98)
     // -----------------------------------------------------------------------
 
-    /// Publish the current Merkle root of the credential-revocation tree.
-    /// Only the registry admin may call this.
     pub fn set_revocation_root(env: Env, admin: Address, revocation_root: BytesN<32>) {
         require_admin(&env, &admin);
         env.storage()
@@ -637,48 +819,20 @@ impl HarpocratesRegistry {
         RevocationRootSet { revocation_root }.publish(&env);
     }
 
-    /// Return the currently-published revocation tree root, if any.
     pub fn get_revocation_root(env: Env) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
             .get(&DataKey::RevocationRoot)
     }
 
-    /// Verify a non‑revocation proof produced by the `revocation_witness`
-    /// Noir circuit.
-    ///
-    /// The proof demonstrates that `credential_root` is **not** a member of
-    /// the currently‑published revocation tree (`revocation_root`) without
-    /// revealing which revoked credentials exist or which identity is acting.
-    ///
-    /// # Public input layout (128 bytes, 4 × BN254 field elements)
-    ///
-    /// ```text
-    /// [  0.. 32)  revocation_root   – must match the on‑chain stored root
-    /// [ 32.. 64)  nullifier         – one‑use replay guard
-    /// [ 64.. 96)  domain_separator  – must match REVOCATION_DOMAIN_SEPARATOR
-    /// [ 96..128)  credential_root   – must be registered & active on‑chain
-    /// ```
-    ///
-    /// # Reverts
-    ///
-    /// - `NotInitialized`      if no revocation root has been published yet
-    /// - `VerifierNotSet`       if no external verifier contract is configured
-    /// - `InvalidPublicInputs`  if the domain separator or layout is wrong
-    /// - `UnknownCredentialRoot` if the credential has not been registered
-    /// - `RevokedCredentialRoot` if the credential root has been revoked
-    /// - `DuplicateNullifier`   if this nullifier was already consumed
-    /// - `InvalidProof`         if the external verifier rejects the proof
     pub fn check_non_revocation(env: Env, public_inputs: Bytes, proof: Bytes) {
         let parsed = parse_revocation_public_inputs(&env, &public_inputs);
 
-        // 1. Domain binding — must match the expected version tag.
         let expected_domain = BytesN::from_array(&env, &REVOCATION_DOMAIN_SEPARATOR);
         if parsed.domain_separator != expected_domain {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         }
 
-        // 2. Revocation root — must match the currently published root.
         let stored_root: BytesN<32> = env
             .storage()
             .persistent()
@@ -688,10 +842,8 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         }
 
-        // 3. Credential must be registered and active.
         require_active_credential_root(&env, &parsed.credential_root);
 
-        // 4. Nullifier must be fresh (prevents replay of this proof).
         if env
             .storage()
             .persistent()
@@ -700,7 +852,6 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::DuplicateNullifier);
         }
 
-        // 5. Verify the Noir proof through the external UltraHonk verifier.
         let verifier: Address = env
             .storage()
             .persistent()
@@ -708,7 +859,6 @@ impl HarpocratesRegistry {
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
         verify_external_proof(&env, &verifier, public_inputs, proof);
 
-        // 6. Consume the nullifier so this proof cannot be replayed.
         env.storage()
             .persistent()
             .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
@@ -732,11 +882,6 @@ fn require_admin(env: &Env, candidate: &Address) {
     }
 }
 
-/// Compute the `expires_at` value for a freshly registered proof.
-///
-/// Returns `created_at + ttl` when a non-zero TTL is configured, or `0`
-/// (no expiration) otherwise.  Uses saturating addition to avoid overflow on
-/// extreme inputs.
 fn compute_expires_at(env: &Env) -> u64 {
     let ttl: u64 = env
         .storage()
@@ -808,9 +953,29 @@ fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRe
         video_hash: record.video_hash.clone(),
         tier: record.tier,
         status: record.status,
+        batch_size: record.batch_size,
     }
     .publish(env);
     record
+}
+
+/// Derive a deterministic sub-proof_id for an element within a batch.
+///
+/// XORs the batch_id with a position-dependent mask across all 32 bytes
+/// to minimise the risk of accidental sub-proof_id collisions between
+/// different batches.  The mask is derived from the element index.
+fn derive_element_proof_id(env: &Env, batch_id: &BytesN<32>, index: u32) -> BytesN<32> {
+    let mut bytes = [0u8; 32];
+    batch_id.copy_into_slice(&mut bytes);
+
+    // Spread the index across all 32 bytes using a simple linear function.
+    // MAX_AGGREGATION_SIZE = 8, so index is in [0..7].
+    let index_byte = (index & 0xFF) as u8;
+    for j in 0..32 {
+        bytes[j] ^= index_byte.wrapping_mul((j as u8).wrapping_add(1));
+    }
+
+    BytesN::from_array(env, &bytes)
 }
 
 struct SilentWitnessInputs {
@@ -861,14 +1026,6 @@ struct RevocationPublicInputs {
     credential_root: BytesN<32>,
 }
 
-/// Parse the 128‑byte public‑input blob produced by the revocation_witness
-/// Noir circuit.
-///
-/// Layout (4 × BN254 field elements, 32 bytes each):
-///   [  0.. 32)  revocation_root
-///   [ 32.. 64)  nullifier
-///   [ 64.. 96)  domain_separator
-///   [ 96..128)  credential_root
 fn parse_revocation_public_inputs(
     env: &Env,
     public_inputs: &Bytes,
@@ -880,7 +1037,6 @@ fn parse_revocation_public_inputs(
     let mut bytes = [0u8; 128];
     public_inputs.copy_into_slice(&mut bytes);
 
-    // Each field is a contiguous 32‑byte slice.
     let mut revocation_root = [0u8; 32];
     revocation_root.copy_from_slice(&bytes[0..32]);
 
@@ -901,6 +1057,100 @@ fn parse_revocation_public_inputs(
     }
 }
 
+/// Parsed element of an aggregated batch proof.
+///
+/// NOTE: This struct derives `Copy` so it can be used with `[value; N]`
+/// array initialization syntax in the parsing function below.
+#[derive(Clone, Copy)]
+struct AggregatedBatchElement {
+    video_hash: BytesN<32>,
+    credential_root: BytesN<32>,
+    nullifier: BytesN<32>,
+}
+
+/// Parsed aggregated batch public inputs.
+struct AggregatedPublicInputs {
+    domain_separator: BytesN<32>,
+    elements: [AggregatedBatchElement; MAX_AGGREGATION_SIZE as usize],
+}
+
+/// Parse aggregated batch public inputs.
+///
+/// Avoids large stack allocations by parsing elements directly from the
+/// `Bytes` reference element-by-element, using a small 128-byte temp buffer.
+///
+/// Layout:
+///   [   0..  32)  domain_separator      – 32 bytes
+///   [  32.. 160)  element_0             – 128 bytes (4 × 32 byte fields)
+///   [ 160.. 288)  element_1
+///   ...
+///   [ 928..1056)  element_7
+///
+/// Each element is 128 bytes with the same layout as `single_witness`:
+///   [  0.. 32)  video_hash_hi     → reconstructed into video_hash (hi 16 bytes → [0..16], lo 16 bytes → [16..32])
+///   [ 32.. 64)  video_hash_lo
+///   [ 64.. 96)  credential_root
+///   [ 96..128)  nullifier
+fn parse_aggregated_public_inputs(
+    env: &Env,
+    public_inputs: &Bytes,
+    batch_size: u32,
+) -> AggregatedPublicInputs {
+    let expected_len = 32 + (batch_size * 128);
+    if public_inputs.len() != expected_len {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+
+    // Parse domain separator from the first 32 bytes (small stack buffer).
+    // NOTE: We must slice first because Bytes.copy_into_slice expects the
+    // destination to match the full Bytes length.
+    let domain_slice = public_inputs.slice(0, 32);
+    let mut domain_bytes = [0u8; 32];
+    domain_slice.copy_into_slice(&mut domain_bytes);
+    let domain_separator = BytesN::from_array(env, &domain_bytes);
+
+    // Initialize default elements.  Since AggregatedBatchElement is Copy we
+    // can use the `[value; N]` syntax safely.
+    let default_element = AggregatedBatchElement {
+        video_hash: BytesN::from_array(env, &[0u8; 32]),
+        credential_root: BytesN::from_array(env, &[0u8; 32]),
+        nullifier: BytesN::from_array(env, &[0u8; 32]),
+    };
+    let mut elements = [default_element; MAX_AGGREGATION_SIZE as usize];
+
+    // Parse each batch element using a small 128-byte temp buffer.
+    // We slice the Bytes at the element offset to avoid allocating a full
+    // buffer for the entire public input blob.
+    let mut element_bytes = [0u8; 128];
+    for i in 0..batch_size {
+        let element_start = 32 + (i * 128);
+        let element_slice = public_inputs.slice(element_start, element_start + 128);
+        element_slice.copy_into_slice(&mut element_bytes);
+
+        // Reconstruct video hash from the two limbs (same as silent witness parsing).
+        let mut video_hash = [0u8; 32];
+        video_hash[..16].copy_from_slice(&element_bytes[16..32]);
+        video_hash[16..].copy_from_slice(&element_bytes[48..64]);
+
+        let mut credential_root = [0u8; 32];
+        credential_root.copy_from_slice(&element_bytes[64..96]);
+
+        let mut nullifier = [0u8; 32];
+        nullifier.copy_from_slice(&element_bytes[96..128]);
+
+        elements[i as usize] = AggregatedBatchElement {
+            video_hash: BytesN::from_array(env, &video_hash),
+            credential_root: BytesN::from_array(env, &credential_root),
+            nullifier: BytesN::from_array(env, &nullifier),
+        };
+    }
+
+    AggregatedPublicInputs {
+        domain_separator,
+        elements,
+    }
+}
+
 fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool {
     proof.len() > 0 && credential_root.len() == 32
 }
@@ -911,3 +1161,4 @@ mod test_budget;
 mod test_invariants;
 mod test_expiry;
 mod test_revocation;
+mod test_aggregation;
