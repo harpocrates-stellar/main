@@ -14,10 +14,11 @@ import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stel
 import { fieldSecret, hasSeeds } from './seedVault'
 import type { VerificationEvent } from './verificationFlow'
 import EvilEye from './components/EvilEye'
+import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
 import './App.css'
 
 type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
-type View = 'landing' | 'studio' | 'verify'
+type View = 'landing' | 'studio' | 'verify' | 'batch'
 
 type SilentWitnessProof = {
   credentialRoot: string
@@ -90,7 +91,7 @@ function shortHash(value: string) {
 
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
-  return hash === 'studio' || hash === 'verify' ? hash : 'landing'
+  return hash === 'studio' || hash === 'verify' || hash === 'batch' ? hash : 'landing'
 }
 
 function App() {
@@ -430,6 +431,9 @@ function App() {
           </button>
           <button className={currentView === 'verify' ? 'active' : ''} type="button" onClick={() => openView('verify')}>
             Verify
+          </button>
+          <button className={currentView === 'batch' ? 'active' : ''} type="button" onClick={() => openView('batch')}>
+            Batch Workspace
           </button>
         </div>
         <div className="network-pill">Stellar Testnet</div>
@@ -785,6 +789,12 @@ function App() {
               </div>
             </div>
           </aside>
+        </section>
+      ) : null}
+
+      {currentView === 'batch' ? (
+        <section className="workspace app-page verify-page" id="batch">
+          <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet} />
         </section>
       ) : null}
     </main>
