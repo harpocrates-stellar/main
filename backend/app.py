@@ -34,6 +34,7 @@ from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
+from webhook import WebhookWorker, queue_webhook_deliveries
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -222,6 +223,9 @@ def create_app() -> Flask:
             metadata=redact_metadata(metadata),
         )
 
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
+
         response = Response(output_bytes, mimetype="video/mp4")
         response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
         response.headers["X-Harpocrates-Source-Hash"] = source_hash
@@ -260,6 +264,9 @@ def create_app() -> Flask:
             tier=metadata.get("tier") if metadata else None,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         return jsonify(
             {
@@ -340,6 +347,9 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        if db_event and db_event.get("id") and created:
+            queue_webhook_deliveries(db_event["id"])
+
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
 
@@ -375,6 +385,12 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"ok": True, "proof": proof})
+
+    # Start webhook worker if DB is enabled
+    if database_url():
+        webhook_worker = WebhookWorker()
+        webhook_worker.start()
+        app.webhook_worker = webhook_worker
 
     return app
 
