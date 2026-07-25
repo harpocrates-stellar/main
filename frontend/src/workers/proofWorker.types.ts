@@ -11,6 +11,7 @@ export type ProofErrorCode =
   | 'INVALID_INPUT'
   | 'CIRCUIT_LOAD_FAILED'
   | 'PROOF_GENERATION_FAILED'
+  | 'TIMEOUT'
 
 export type TransferableProofInput = {
   videoHash: string

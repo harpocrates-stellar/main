@@ -4,6 +4,24 @@ import type {
   SilentWitnessProof,
   ProofErrorCode,
 } from './proofWorker.types'
+const PROOF_TIMEOUT_MS = 60_000
+const HEX64 = /^[0-9a-fA-F]{64}$/
+const MAX_SECRET_BYTES = 256
+
+function validateInput(input: GenerateSilentWitnessInput): ProofWorkerError | null {
+  if (!HEX64.test(input.videoHash)) {
+    return new ProofWorkerError('INVALID_INPUT', 'videoHash must be a 64-character hex string.')
+  }
+  if (!input.credentialSecret || !input.nullifierSecret) {
+    return new ProofWorkerError('INVALID_INPUT', 'credentialSecret and nullifierSecret are required.')
+  }
+  const credBytes = new TextEncoder().encode(input.credentialSecret).length
+  const nullBytes = new TextEncoder().encode(input.nullifierSecret).length
+  if (credBytes > MAX_SECRET_BYTES || nullBytes > MAX_SECRET_BYTES) {
+    return new ProofWorkerError('INVALID_INPUT', 'Secret input exceeds maximum allowed size.')
+  }
+  return null
+}
 
 export type GenerateSilentWitnessInput = {
   videoHash: string
@@ -67,17 +85,44 @@ export class ProofWorkerClient {
     this.worker.terminate()
     this.worker = this.spawn()
   }
+  private timeoutJob(requestId: string) {
+    const job = this.pending.get(requestId)
+    if (!job) return
+    this.pending.delete(requestId)
+    job.reject(new ProofWorkerError('TIMEOUT', 'Proof generation timed out.'))
+    this.worker.terminate()
+    this.worker = this.spawn()
+  }
 
-  generate(
+generate(
     input: GenerateSilentWitnessInput,
     onProgress?: (stage: string) => void,
   ): { requestId: string; result: Promise<SilentWitnessProof> } {
+    const validationError = validateInput(input)
+    if (validationError) {
+      return { requestId: '', result: Promise.reject(validationError) }
+    }
     const requestId = crypto.randomUUID()
     const credentialSecret = new TextEncoder().encode(input.credentialSecret).buffer
     const nullifierSecret = new TextEncoder().encode(input.nullifierSecret).buffer
 
-    const result = new Promise<SilentWitnessProof>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject, onProgress })
+const result = new Promise<SilentWitnessProof>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.timeoutJob(requestId)
+      }, PROOF_TIMEOUT_MS)
+
+      this.pending.set(requestId, {
+        resolve: (proof) => {
+          clearTimeout(timeoutId)
+          resolve(proof)
+        },
+        reject: (err) => {
+          clearTimeout(timeoutId)
+          reject(err)
+        },
+        onProgress,
+      })
+
       const msg: WorkerRequest = {
         type: 'GENERATE_PROOF',
         requestId,

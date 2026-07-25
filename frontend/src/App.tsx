@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BadgeCheck,
   Building2,
@@ -10,6 +10,7 @@ import {
   Upload,
   Wallet,
 } from 'lucide-react'
+import { ProofWorkerClient, ProofWorkerError } from './workers/proofWorkerClient'
 import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stellar'
 import { fieldSecret, hasSeeds } from './seedVault'
 import EvilEye from './components/EvilEye'
@@ -122,6 +123,15 @@ function App() {
   const [events, setEvents] = useState<ProofEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+
+  const proofWorkerRef = useRef<ProofWorkerClient | null>(null)
+  const activeProofRequestId = useRef<string | null>(null)
+  if (!proofWorkerRef.current) {
+    proofWorkerRef.current = new ProofWorkerClient()
+  }
+  useEffect(() => {
+    return () => proofWorkerRef.current?.destroy()
+  }, [])
 
   const selectedTierMeta = useMemo(
     () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
@@ -406,19 +416,37 @@ function App() {
       fieldSecret('nullifier', rawNullifierSeed),
     ])
 
-    const { generateSilentWitnessProof } = await import('./noirClient')
-    const silentWitness = await generateSilentWitnessProof({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
-
+    
+const { requestId, result } = proofWorkerRef.current!.generate(
+      { videoHash: nextProof.videoHash, credentialSecret, nullifierSecret },
+      (proofStage) => setMessage(`Generating proof: ${proofStage.replace(/_/g, ' ')}.`),
+    )
+    activeProofRequestId.current = requestId
+    let silentWitness
+    try {
+      silentWitness = await result
+    } catch (err) {
+      if (err instanceof ProofWorkerError && err.code === 'CANCELLED') {
+        setStage('embedding')
+        setMessage('Proof generation cancelled.')
+        throw err
+      }
+      throw err
+    } finally {
+      activeProofRequestId.current = null
+    }
     const nextWithProof = {
       ...nextProof,
       silentWitness,
     }
     setProof(nextWithProof)
     return nextWithProof
+  }
+
+  function cancelProofGeneration() {
+    if (activeProofRequestId.current) {
+      proofWorkerRef.current?.cancel(activeProofRequestId.current)
+    }
   }
 
   function clearSeeds() {
@@ -678,7 +706,18 @@ function App() {
               <BadgeCheck size={18} aria-hidden="true" />
             )}
             Register proof
+          
           </button>
+          {stage === 'proving' ? (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={cancelProofGeneration}
+            >
+              Cancel proof generation
+            </button>
+          ) : null}
+        
         </div>
 
         <aside className="side-rail">
