@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
     Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
@@ -408,8 +411,7 @@ impl HarpocratesRegistry {
     /// need a definitive "is this proof still valid?" answer, because it
     /// incorporates both the revocation flag and the expiration deadline.
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
-        let record: Option<ProofRecord> =
-            env.storage().persistent().get(&DataKey::Proof(proof_id));
+        let record: Option<ProofRecord> = env.storage().persistent().get(&DataKey::Proof(proof_id));
         match record {
             None => ProofVerificationStatus::NotFound,
             Some(r) => {
@@ -639,9 +641,7 @@ impl HarpocratesRegistry {
 
     /// Return the currently-published revocation tree root, if any.
     pub fn get_revocation_root(env: Env) -> Option<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::RevocationRoot)
+        env.storage().persistent().get(&DataKey::RevocationRoot)
     }
 
     /// Verify a non‑revocation proof produced by the `revocation_witness`
@@ -869,10 +869,7 @@ struct RevocationPublicInputs {
 ///   [ 32.. 64)  nullifier
 ///   [ 64.. 96)  domain_separator
 ///   [ 96..128)  credential_root
-fn parse_revocation_public_inputs(
-    env: &Env,
-    public_inputs: &Bytes,
-) -> RevocationPublicInputs {
+fn parse_revocation_public_inputs(env: &Env, public_inputs: &Bytes) -> RevocationPublicInputs {
     if public_inputs.len() != 128 {
         panic_with_error!(env, RegistryError::InvalidPublicInputs);
     }
@@ -908,6 +905,7 @@ fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool 
 mod test;
 mod test_auth;
 mod test_budget;
-mod test_invariants;
 mod test_expiry;
+mod test_invariants;
 mod test_revocation;
+mod test_state_machine;
