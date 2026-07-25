@@ -18,6 +18,10 @@ class AppConfig:
     metrics_enabled: bool
     metrics_token: str | None
     metrics_path: str
+    max_concurrent_requests: int
+    max_queue_size: int
+    max_concurrent_per_identity: int
+    admission_timeout_seconds: float
 
 
 def load_config() -> AppConfig:
@@ -42,6 +46,10 @@ def load_config() -> AppConfig:
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
         metrics_token=_str_env("METRICS_TOKEN"),
         metrics_path=os.getenv("METRICS_PATH", "/metrics").strip(),
+        max_concurrent_requests=_int_env("MAX_CONCURRENT_REQUESTS", 50),
+        max_queue_size=_int_env("MAX_QUEUE_SIZE", 100),
+        max_concurrent_per_identity=_int_env("MAX_CONCURRENT_PER_IDENTITY", 5),
+        admission_timeout_seconds=_float_env("ADMISSION_TIMEOUT_SECONDS", 5.0),
     )
 
 
@@ -72,4 +80,15 @@ def _str_env(name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise RuntimeError(f"{name} must be positive")
+    return parsed
+
 
