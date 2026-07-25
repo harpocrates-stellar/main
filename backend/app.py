@@ -31,6 +31,15 @@ from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
 
+# Import analytics system
+try:
+    from analytics.middleware import AnalyticsMiddleware
+    from analytics.routes import setup_analytics_routes
+    from analytics.config import load_analytics_config
+    ANALYTICS_AVAILABLE = True
+except ImportError:
+    ANALYTICS_AVAILABLE = False
+
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
 REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
@@ -64,6 +73,20 @@ def create_app() -> Flask:
     )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+
+    # Initialize analytics system if available
+    analytics_middleware = None
+    if ANALYTICS_AVAILABLE:
+        try:
+            analytics_config = load_analytics_config()
+            if analytics_config.enabled:
+                analytics_middleware = AnalyticsMiddleware(app, analytics_config)
+                setup_analytics_routes(app, analytics_middleware.analytics_engine)
+        except Exception as e:
+            # Don't fail app startup if analytics initialization fails
+            import logging
+            logger = logging.getLogger("harpocrates.startup")
+            logger.warning(f"Analytics system initialization failed: {e}")
 
     @app.before_request
     def start_request_context():
@@ -166,58 +189,120 @@ def create_app() -> Flask:
 
     @app.post("/api/stego/embed")
     def embed():
-        video = request.files.get("video")
-        metadata_raw = request.form.get("metadata")
-        if video is None or metadata_raw is None:
-            return jsonify({"error": "video and metadata are required"}), 400
-        if not _enforce_video_size(video):
-            return jsonify({"error": "video payload exceeds size limit"}), 413
-        validate_video_upload(video)
-        if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "metadata is too large"}), 413
+        from analytics.middleware import monitor_operation
+        
+        @monitor_operation("steganography_embed")
+        def _embed_operation():
+            video = request.files.get("video")
+            metadata_raw = request.form.get("metadata")
+            if video is None or metadata_raw is None:
+                return jsonify({"error": "video and metadata are required"}), 400
+            if not _enforce_video_size(video):
+                return jsonify({"error": "video payload exceeds size limit"}), 413
+            validate_video_upload(video)
+            if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
+                return jsonify({"error": "metadata is too large"}), 413
 
-        try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return jsonify({"error": "metadata must be valid JSON"}), 400
-        try:
-            validate_embed_metadata(metadata)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                return jsonify({"error": "metadata must be valid JSON"}), 400
+            try:
+                validate_embed_metadata(metadata)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            video.save(source_path)
+            with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+                source_path = Path(tmp_dir) / "source.video"
+                output_path = Path(tmp_dir) / "embedded.mp4"
+                video.save(source_path)
 
-            embed_metadata(source_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(source_path)
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+                embed_metadata(source_path, output_path, metadata)
+                output_bytes = output_path.read_bytes()
+                source_hash = sha256_file(source_path)
+                embedded_hash = sha256_file(output_path)
+                metadata_hash = canonical_metadata_hash(metadata)
 
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=safe_filename(video.filename),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=safe_filename(video.filename),
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                metadata=redact_metadata(metadata),
+            )
 
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-        return response
+            response = Response(output_bytes, mimetype="video/mp4")
+            response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+            response.headers["X-Harpocrates-Source-Hash"] = source_hash
+            response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+            response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+            response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+            if config.expose_metadata_header:
+                response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                ).decode("ascii")
+            return response
+        
+        # Execute with analytics monitoring if available
+        if ANALYTICS_AVAILABLE and analytics_middleware:
+            return _embed_operation()
+        else:
+            # Fallback to original implementation without analytics
+            video = request.files.get("video")
+            metadata_raw = request.form.get("metadata")
+            if video is None or metadata_raw is None:
+                return jsonify({"error": "video and metadata are required"}), 400
+            if not _enforce_video_size(video):
+                return jsonify({"error": "video payload exceeds size limit"}), 413
+            validate_video_upload(video)
+            if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
+                return jsonify({"error": "metadata is too large"}), 413
+
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                return jsonify({"error": "metadata must be valid JSON"}), 400
+            try:
+                validate_embed_metadata(metadata)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+
+            with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+                source_path = Path(tmp_dir) / "source.video"
+                output_path = Path(tmp_dir) / "embedded.mp4"
+                video.save(source_path)
+
+                embed_metadata(source_path, output_path, metadata)
+                output_bytes = output_path.read_bytes()
+                source_hash = sha256_file(source_path)
+                embedded_hash = sha256_file(output_path)
+                metadata_hash = canonical_metadata_hash(metadata)
+
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=safe_filename(video.filename),
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                metadata=redact_metadata(metadata),
+            )
+
+            response = Response(output_bytes, mimetype="video/mp4")
+            response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+            response.headers["X-Harpocrates-Source-Hash"] = source_hash
+            response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+            response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+            response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+            if config.expose_metadata_header:
+                response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                ).decode("ascii")
+            return response
 
     @app.post("/api/stego/extract")
     def extract():
