@@ -1,4 +1,4 @@
-import { SeedPair } from './seedVault'
+import type { SeedPair } from './seedVault'
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
@@ -16,7 +16,7 @@ function bufToHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-function hexToBuf(hex: string): Uint8Array {
+function hexToBuf(hex: string): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(Math.ceil(hex.length / 2))
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
@@ -72,7 +72,7 @@ export class CredentialVault {
 
   async setup(password: string, seeds: SeedPair): Promise<void> {
     const salt = crypto.getRandomValues(new Uint8Array(16))
-    const key = await deriveKey(password, salt)
+    const key = await deriveKey(password, salt as unknown as ArrayBuffer)
 
     const iv = crypto.getRandomValues(new Uint8Array(12))
     const enc = new TextEncoder()
@@ -81,7 +81,7 @@ export class CredentialVault {
     const ct = await crypto.subtle.encrypt(
       {
         name: 'AES-GCM',
-        iv: iv,
+        iv: iv as unknown as ArrayBuffer,
       },
       key,
       pt
@@ -89,8 +89,8 @@ export class CredentialVault {
 
     const envelope: VaultEnvelope = {
       v: VAULT_VERSION,
-      salt: bufToHex(salt),
-      iv: bufToHex(iv),
+      salt: bufToHex(salt as unknown as ArrayBuffer),
+      iv: bufToHex(iv as unknown as ArrayBuffer),
       ct: bufToHex(ct),
     }
 
@@ -120,14 +120,14 @@ export class CredentialVault {
     const ct = hexToBuf(envelope.ct)
 
     try {
-      const key = await deriveKey(password, salt)
+      const key = await deriveKey(password, salt as unknown as ArrayBuffer)
       const pt = await crypto.subtle.decrypt(
         {
           name: 'AES-GCM',
-          iv: iv,
+          iv: iv as unknown as ArrayBuffer,
         },
         key,
-        ct
+        ct as unknown as ArrayBuffer
       )
 
       const dec = new TextDecoder()

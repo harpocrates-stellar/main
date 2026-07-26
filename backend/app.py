@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import tempfile
+from workspace import EncryptedWorkspace
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ from werkzeug.utils import secure_filename
 from config import load_config
 from db import (
     check_db,
+    database_url,
     find_proof_events_by_video,
     init_db,
     insert_proof_event,
@@ -37,8 +39,8 @@ from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
-from quarantine import isolate_upload, QuarantineError
-from storage import get_job_input_path, get_job_output_path
+from webhook import WebhookWorker, queue_webhook_deliveries
+from quarantine import QuarantineError, isolate_upload
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -206,13 +208,50 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         try:
-            with isolate_upload(video) as safe_source:
-                job_id = enqueue_job("embed", {"metadata": metadata, "filename": video.filename})
-                shutil.copy2(safe_source, get_job_input_path(job_id))
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                output_url = workspace.get_url("embedded.mp4")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
+
+                embed_metadata(source_url, output_url, metadata)
+                output_bytes = workspace.read_decrypted("embedded.mp4")
+                source_hash = workspace.sha256("source.video")
+                embedded_hash = workspace.sha256("embedded.mp4")
+                metadata_hash = canonical_metadata_hash(metadata)
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        return jsonify({"job_id": job_id, "status": "pending"}), 202
+        db_event = insert_proof_event(
+            event_type="embed",
+            file_name=safe_filename(video.filename),
+            video_hash=embedded_hash,
+            metadata_hash=metadata_hash,
+            proof_id=metadata.get("proofId"),
+            tier=metadata.get("tier"),
+            embedded_hash=embedded_hash,
+            metadata=redact_metadata(metadata),
+        )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
+
+        response = Response(output_bytes, mimetype="video/mp4")
+        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+        response.headers["X-Harpocrates-Source-Hash"] = source_hash
+        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+        if config.expose_metadata_header:
+            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            ).decode("ascii")
+        return response
 
     @app.post("/api/stego/extract")
     @require_capacity(admission_controller)
@@ -225,13 +264,43 @@ def create_app() -> Flask:
         validate_video_upload(video)
 
         try:
-            with isolate_upload(video) as safe_source:
-                job_id = enqueue_job("extract", {"filename": video.filename})
-                shutil.copy2(safe_source, get_job_input_path(job_id))
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
+                metadata = extract_metadata(source_url)
+                video_hash = workspace.sha256("source.video")
+                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        return jsonify({"job_id": job_id, "status": "pending"}), 202
+        db_event = insert_proof_event(
+            event_type="extract",
+            file_name=safe_filename(video.filename),
+            video_hash=video_hash,
+            metadata_hash=metadata_hash,
+            proof_id=metadata.get("proofId") if metadata else None,
+            tier=metadata.get("tier") if metadata else None,
+            metadata=redact_metadata(metadata),
+        )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
+
+        return jsonify(
+            {
+                "ok": True,
+                "video_hash": video_hash,
+                "metadata_hash": metadata_hash,
+                "metadata": metadata,
+                "db_event": db_event,
+            }
+        )
 
     @app.get("/api/proofs")
     def proofs():
@@ -301,6 +370,9 @@ def create_app() -> Flask:
                 "error": "idempotency key reused with conflicting payload",
                 "conflict_field": exc.field,
             }), 409
+
+        if db_event and db_event.get("id") and created:
+            queue_webhook_deliveries(db_event["id"])
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
@@ -372,6 +444,12 @@ def create_app() -> Flask:
         if cancel_job(job_id):
             return jsonify({"ok": True, "message": "Job cancelled"})
         return jsonify({"error": "Job cannot be cancelled or not found"}), 400
+
+    # Start webhook worker if DB is enabled
+    if database_url():
+        webhook_worker = WebhookWorker()
+        webhook_worker.start()
+        app.webhook_worker = webhook_worker
 
     return app
 

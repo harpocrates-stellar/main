@@ -79,22 +79,28 @@ def init_db() -> None:
                 where idempotency_key is not null;
                 """
             )
-            
-            # Queue for async jobs
             cursor.execute(
                 """
-                create table if not exists jobs (
+                create table if not exists webhook_subscriptions (
                     id bigserial primary key,
-                    type text not null,
+                    url text not null,
+                    secret_key text not null,
+                    is_active boolean not null default true,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists webhook_deliveries (
+                    id bigserial primary key,
+                    subscription_id bigint not null references webhook_subscriptions(id) on delete cascade,
+                    event_id bigint not null references proof_events(id) on delete cascade,
                     status text not null default 'pending',
-                    payload jsonb not null,
-                    result jsonb,
-                    error text,
-                    progress float default 0.0,
-                    attempts int not null default 0,
-                    max_attempts int not null default 3,
-                    worker_id text,
+                    retry_count integer not null default 0,
+                    next_retry_at timestamptz not null default now(),
                     lease_expires_at timestamptz,
+                    last_response_code integer,
                     created_at timestamptz not null default now(),
                     updated_at timestamptz not null default now()
                 );
@@ -102,11 +108,10 @@ def init_db() -> None:
             )
             cursor.execute(
                 """
-                create index if not exists jobs_status_idx
-                on jobs (status) where status in ('pending', 'processing');
+                create index if not exists webhook_deliveries_status_idx
+                on webhook_deliveries (status, next_retry_at);
                 """
             )
-            
         connection.commit()
 
 

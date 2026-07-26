@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import shutil
 import struct
 import subprocess
@@ -41,17 +42,7 @@ def canonical_metadata_hash(metadata: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(metadata)).hexdigest()
 
 
-def _kill_after_timeout(process: subprocess.Popen, timeout: float) -> threading.Timer:
-    def _kill():
-        if process.poll() is None:
-            process.kill()
-    timer = threading.Timer(timeout, _kill)
-    timer.daemon = True
-    timer.start()
-    return timer
-
-
-def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any]) -> None:
+def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: dict[str, Any]) -> None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
     payload = _pack_payload(metadata)
@@ -96,7 +87,7 @@ def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any
         _close_process(process_out)
 
 
-def extract_metadata(source_path: Path) -> dict[str, Any] | None:
+def extract_metadata(source_path: Path | str) -> dict[str, Any] | None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
     process = _start_decode(ffmpeg, source_path, info)
@@ -261,7 +252,7 @@ def _unpack_progressive(bits: list[int]) -> dict[str, Any] | None:
     return _unpack_payload(_bits_to_bytes(bits[:total_bits]))
 
 
-def _probe_video(path: Path) -> VideoInfo:
+def _probe_video(path: Path | str) -> VideoInfo:
     ffprobe = _require("ffprobe")
     try:
         result = subprocess.run(
@@ -307,7 +298,7 @@ def _probe_video(path: Path) -> VideoInfo:
     )
 
 
-def _start_decode(ffmpeg: str, source_path: Path, info: VideoInfo) -> subprocess.Popen[bytes]:
+def _start_decode(ffmpeg: str, source_path: Path | str, info: VideoInfo) -> subprocess.Popen[bytes]:
     kwargs: dict[str, Any] = {}
     if os.name != "nt":
         kwargs["start_new_session"] = True
@@ -332,7 +323,7 @@ def _start_decode(ffmpeg: str, source_path: Path, info: VideoInfo) -> subprocess
     )
 
 
-def _start_encode(ffmpeg: str, output_path: Path, info: VideoInfo) -> subprocess.Popen[bytes]:
+def _start_encode(ffmpeg: str, output_path: Path | str, info: VideoInfo) -> subprocess.Popen[bytes]:
     kwargs: dict[str, Any] = {}
     if os.name != "nt":
         kwargs["start_new_session"] = True
@@ -374,6 +365,24 @@ def _require(binary: str) -> str:
     if not found:
         raise RuntimeError(f"{binary} is required for steganography processing")
     return found
+
+
+def _kill_after_timeout(
+    process: subprocess.Popen[bytes],
+    timeout_seconds: float,
+) -> threading.Timer:
+    def kill_process() -> None:
+        if process.poll() is not None:
+            return
+        if os.name != "nt":
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:
+            process.kill()
+
+    timer = threading.Timer(timeout_seconds, kill_process)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def _close_process(process: subprocess.Popen[bytes]) -> None:
