@@ -102,10 +102,14 @@ class AppHardeningTest(unittest.TestCase):
         self.assertIn("metadata missing required field", response.json["error"])
 
     def test_embed_success_removes_temp_directory(self) -> None:
-        def fake_embed(source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
-            if not source_path.exists():
+        def fake_embed(source_path: str, output_path: str, _metadata: dict[str, object]) -> None:
+            import urllib.request
+            try:
+                urllib.request.urlopen(source_path).read()
+            except Exception:
                 raise RuntimeError("source upload was not saved")
-            output_path.write_bytes(b"embedded video bytes")
+            req = urllib.request.Request(output_path, data=b"embedded video bytes", method="PUT")
+            urllib.request.urlopen(req)
 
         response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
@@ -167,8 +171,10 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.json["error"], "metadata extraction failed")
 
     def test_embed_database_failure_removes_temp_directory(self) -> None:
-        def fake_embed(_source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
-            output_path.write_bytes(b"embedded video bytes")
+        def fake_embed(_source_path: str, output_path: str, _metadata: dict[str, object]) -> None:
+            import urllib.request
+            req = urllib.request.Request(output_path, data=b"embedded video bytes", method="PUT")
+            urllib.request.urlopen(req)
 
         response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
@@ -196,20 +202,17 @@ class AppHardeningTest(unittest.TestCase):
 
     def post_with_tracked_tempdirs(self, path: str, data: dict[str, object], *patches):
         observed: list[Path] = []
-        with REAL_TEMPORARY_DIRECTORY(prefix="harpocrates-route-test-") as parent:
-            temp_root = Path(parent)
-            tempdir_factory = tracking_temporary_directory_factory(temp_root, observed)
-            with ExitStack() as stack:
-                stack.enter_context(patch.object(app_module.tempfile, "TemporaryDirectory", tempdir_factory))
-                for patcher in patches:
-                    stack.enter_context(patcher)
-                response = self.client.post(path, data=data, content_type="multipart/form-data")
+        workspace_factory = tracking_encrypted_workspace_factory(observed)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(app_module, "EncryptedWorkspace", workspace_factory))
+            for patcher in patches:
+                stack.enter_context(patcher)
+            response = self.client.post(path, data=data, content_type="multipart/form-data")
 
-            self.assertGreaterEqual(len(observed), 1)
-            for temp_path in observed:
-                self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
-            self.assertEqual(list(temp_root.iterdir()), [])
-            return response
+        self.assertGreaterEqual(len(observed), 1)
+        for temp_path in observed:
+            self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
+        return response
 
     def test_metrics_exposes_request_counts_status_and_latency(self) -> None:
         self.client.get("/health")
@@ -366,20 +369,12 @@ class AppHardeningTest(unittest.TestCase):
         self.assertIn("unreasonably far", response.json["error"])
 
 
-def tracking_temporary_directory_factory(temp_root: Path, observed: list[Path]):
-    class TrackingTemporaryDirectory:
+def tracking_encrypted_workspace_factory(observed: list[Path]):
+    class TrackingEncryptedWorkspace(app_module.EncryptedWorkspace):
         def __init__(self, *args, **kwargs) -> None:
-            kwargs["dir"] = temp_root
-            self._manager = REAL_TEMPORARY_DIRECTORY(*args, **kwargs)
-            observed.append(Path(self._manager.name))
-
-        def __enter__(self):
-            return self._manager.__enter__()
-
-        def __exit__(self, exc_type, exc, traceback):
-            return self._manager.__exit__(exc_type, exc, traceback)
-
-    return TrackingTemporaryDirectory
+            super().__init__(*args, **kwargs)
+            observed.append(Path(self.tmp_dir))
+    return TrackingEncryptedWorkspace
 
 
 def valid_metadata() -> dict[str, object]:

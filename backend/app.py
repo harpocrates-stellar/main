@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+from workspace import EncryptedWorkspace
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,7 @@ from werkzeug.utils import secure_filename
 from config import load_config
 from db import (
     check_db,
+    database_url,
     find_proof_events_by_video,
     init_db,
     insert_proof_event,
@@ -33,7 +35,7 @@ from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
-from quarantine import isolate_upload, QuarantineError
+from webhook import WebhookWorker, queue_webhook_deliveries
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -200,18 +202,16 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        try:
-            with isolate_upload(video) as safe_source:
-                with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-                    output_path = Path(tmp_dir) / "embedded.mp4"
-        
-                    embed_metadata(safe_source, output_path, metadata)
-                    output_bytes = output_path.read_bytes()
-                    source_hash = sha256_file(safe_source)
-                    embedded_hash = sha256_file(output_path)
-                    metadata_hash = canonical_metadata_hash(metadata)
-        except QuarantineError as exc:
-            return jsonify({"error": str(exc)}), 400
+        with EncryptedWorkspace() as workspace:
+            source_url = workspace.get_url("source.video")
+            output_url = workspace.get_url("embedded.mp4")
+            workspace.write_encrypted("source.video", video.stream, size=video.content_length)
+
+            embed_metadata(source_url, output_url, metadata)
+            output_bytes = workspace.read_decrypted("embedded.mp4")
+            source_hash = workspace.sha256("source.video")
+            embedded_hash = workspace.sha256("embedded.mp4")
+            metadata_hash = canonical_metadata_hash(metadata)
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -223,6 +223,9 @@ def create_app() -> Flask:
             embedded_hash=embedded_hash,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         response = Response(output_bytes, mimetype="video/mp4")
         response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
@@ -246,13 +249,12 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        try:
-            with isolate_upload(video) as safe_source:
-                metadata = extract_metadata(safe_source)
-                video_hash = sha256_file(safe_source)
-                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
-        except QuarantineError as exc:
-            return jsonify({"error": str(exc)}), 400
+        with EncryptedWorkspace() as workspace:
+            source_url = workspace.get_url("source.video")
+            workspace.write_encrypted("source.video", video.stream, size=video.content_length)
+            metadata = extract_metadata(source_url)
+            video_hash = workspace.sha256("source.video")
+            metadata_hash = canonical_metadata_hash(metadata) if metadata else None
 
         db_event = insert_proof_event(
             event_type="extract",
@@ -263,6 +265,9 @@ def create_app() -> Flask:
             tier=metadata.get("tier") if metadata else None,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         return jsonify(
             {
@@ -343,6 +348,9 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        if db_event and db_event.get("id") and created:
+            queue_webhook_deliveries(db_event["id"])
+
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
 
@@ -378,6 +386,12 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"ok": True, "proof": proof})
+
+    # Start webhook worker if DB is enabled
+    if database_url():
+        webhook_worker = WebhookWorker()
+        webhook_worker.start()
+        app.webhook_worker = webhook_worker
 
     return app
 

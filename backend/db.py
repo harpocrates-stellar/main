@@ -79,6 +79,39 @@ def init_db() -> None:
                 where idempotency_key is not null;
                 """
             )
+            cursor.execute(
+                """
+                create table if not exists webhook_subscriptions (
+                    id bigserial primary key,
+                    url text not null,
+                    secret_key text not null,
+                    is_active boolean not null default true,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists webhook_deliveries (
+                    id bigserial primary key,
+                    subscription_id bigint not null references webhook_subscriptions(id) on delete cascade,
+                    event_id bigint not null references proof_events(id) on delete cascade,
+                    status text not null default 'pending',
+                    retry_count integer not null default 0,
+                    next_retry_at timestamptz not null default now(),
+                    lease_expires_at timestamptz,
+                    last_response_code integer,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create index if not exists webhook_deliveries_status_idx
+                on webhook_deliveries (status, next_retry_at);
+                """
+            )
         connection.commit()
 
 
