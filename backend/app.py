@@ -4,13 +4,14 @@ import base64
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -26,6 +27,9 @@ from db import (
     make_idempotency_key,
     upsert_register_event,
     ConflictError,
+    enqueue_job,
+    get_job,
+    cancel_job,
 )
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness
@@ -34,6 +38,7 @@ from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from quarantine import isolate_upload, QuarantineError
+from storage import get_job_input_path, get_job_output_path
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -202,39 +207,12 @@ def create_app() -> Flask:
 
         try:
             with isolate_upload(video) as safe_source:
-                with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-                    output_path = Path(tmp_dir) / "embedded.mp4"
-        
-                    embed_metadata(safe_source, output_path, metadata)
-                    output_bytes = output_path.read_bytes()
-                    source_hash = sha256_file(safe_source)
-                    embedded_hash = sha256_file(output_path)
-                    metadata_hash = canonical_metadata_hash(metadata)
+                job_id = enqueue_job("embed", {"metadata": metadata, "filename": video.filename})
+                shutil.copy2(safe_source, get_job_input_path(job_id))
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=safe_filename(video.filename),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
-
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-        return response
+        return jsonify({"job_id": job_id, "status": "pending"}), 202
 
     @app.post("/api/stego/extract")
     @require_capacity(admission_controller)
@@ -248,31 +226,12 @@ def create_app() -> Flask:
 
         try:
             with isolate_upload(video) as safe_source:
-                metadata = extract_metadata(safe_source)
-                video_hash = sha256_file(safe_source)
-                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+                job_id = enqueue_job("extract", {"filename": video.filename})
+                shutil.copy2(safe_source, get_job_input_path(job_id))
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        db_event = insert_proof_event(
-            event_type="extract",
-            file_name=safe_filename(video.filename),
-            video_hash=video_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId") if metadata else None,
-            tier=metadata.get("tier") if metadata else None,
-            metadata=redact_metadata(metadata),
-        )
-
-        return jsonify(
-            {
-                "ok": True,
-                "video_hash": video_hash,
-                "metadata_hash": metadata_hash,
-                "metadata": metadata,
-                "db_event": db_event,
-            }
-        )
+        return jsonify({"job_id": job_id, "status": "pending"}), 202
 
     @app.get("/api/proofs")
     def proofs():
@@ -368,16 +327,51 @@ def create_app() -> Flask:
         if not is_field_decimal(nullifier_secret):
             return jsonify({"error": "nullifierSecret must be a decimal field string"}), 400
 
-        try:
-            proof = generate_silent_witness(
-                video_hash,
-                credential_secret,
-                nullifier_secret,
-            )
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 500
+        job_id = enqueue_job("silent_witness", {
+            "video_hash": video_hash,
+            "credential_secret": credential_secret,
+            "nullifier_secret": nullifier_secret
+        })
 
-        return jsonify({"ok": True, "proof": proof})
+        return jsonify({"job_id": job_id, "status": "pending"}), 202
+
+    @app.get("/api/jobs/<int:job_id>")
+    def get_job_status(job_id: int):
+        job = get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        return jsonify({"ok": True, "job": job})
+
+    @app.get("/api/jobs/<int:job_id>/download")
+    def download_job_result(job_id: int):
+        job = get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        if job["type"] != "embed" or job["status"] != "completed":
+            return jsonify({"error": "No output available for download"}), 400
+            
+        output_path = get_job_output_path(job_id)
+        if not output_path.exists():
+            return jsonify({"error": "Output file missing"}), 404
+            
+        result = job.get("result", {})
+        response = send_file(output_path, mimetype="video/mp4", as_attachment=True, download_name="harpocrates-evidence.mp4")
+        if result.get("source_hash"):
+            response.headers["X-Harpocrates-Source-Hash"] = result["source_hash"]
+        if result.get("embedded_hash"):
+            response.headers["X-Harpocrates-Embedded-Hash"] = result["embedded_hash"]
+        if result.get("metadata_hash"):
+            response.headers["X-Harpocrates-Metadata-Hash"] = result["metadata_hash"]
+        if result.get("db_event"):
+            response.headers["X-Harpocrates-Db-Event"] = str(result["db_event"])
+            
+        return response
+
+    @app.post("/api/jobs/<int:job_id>/cancel")
+    def cancel_job_endpoint(job_id: int):
+        if cancel_job(job_id):
+            return jsonify({"ok": True, "message": "Job cancelled"})
+        return jsonify({"error": "Job cannot be cancelled or not found"}), 400
 
     return app
 

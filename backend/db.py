@@ -79,6 +79,34 @@ def init_db() -> None:
                 where idempotency_key is not null;
                 """
             )
+            
+            # Queue for async jobs
+            cursor.execute(
+                """
+                create table if not exists jobs (
+                    id bigserial primary key,
+                    type text not null,
+                    status text not null default 'pending',
+                    payload jsonb not null,
+                    result jsonb,
+                    error text,
+                    progress float default 0.0,
+                    attempts int not null default 0,
+                    max_attempts int not null default 3,
+                    worker_id text,
+                    lease_expires_at timestamptz,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create index if not exists jobs_status_idx
+                on jobs (status) where status in ('pending', 'processing');
+                """
+            )
+            
         connection.commit()
 
 
@@ -411,3 +439,175 @@ class ConflictError(Exception):
         self.field = field
         self.existing_value = existing_value
         self.incoming_value = incoming_value
+
+
+def enqueue_job(job_type: str, payload: dict, max_attempts: int = 3) -> int:
+    if not database_url():
+        return -1
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into jobs (type, payload, max_attempts)
+                values (%s, %s, %s)
+                returning id;
+                """,
+                (job_type, Jsonb(payload), max_attempts),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return row["id"]
+
+
+def get_job(job_id: int) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id, type, status, payload, result, error, progress,
+                    attempts, max_attempts, worker_id, lease_expires_at, created_at, updated_at
+                from jobs
+                where id = %s;
+                """,
+                (job_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
+def lease_job(worker_id: str, job_types: list[str], lease_duration: int = 300) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # Find a pending job or a processing job with expired lease.
+            cursor.execute(
+                """
+                update jobs
+                set
+                    status = 'processing',
+                    worker_id = %s,
+                    lease_expires_at = now() + interval '%s seconds',
+                    attempts = attempts + 1,
+                    updated_at = now()
+                where id = (
+                    select id
+                    from jobs
+                    where
+                        type = any(%s)
+                        and (
+                            status = 'pending'
+                            or (status = 'processing' and lease_expires_at < now())
+                        )
+                    order by created_at asc
+                    for update skip locked
+                    limit 1
+                )
+                returning id, type, payload, attempts, max_attempts;
+                """,
+                (worker_id, lease_duration, job_types),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def heartbeat_job(job_id: int, progress: float, lease_duration: int = 300) -> bool:
+    if not database_url():
+        return False
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update jobs
+                set
+                    progress = %s,
+                    lease_expires_at = now() + interval '%s seconds',
+                    updated_at = now()
+                where id = %s and status = 'processing'
+                returning id;
+                """,
+                (progress, lease_duration, job_id),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return row is not None
+
+
+def complete_job(job_id: int, result: dict) -> None:
+    if not database_url():
+        return
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update jobs
+                set
+                    status = 'completed',
+                    result = %s,
+                    progress = 1.0,
+                    updated_at = now(),
+                    lease_expires_at = null,
+                    worker_id = null
+                where id = %s;
+                """,
+                (Jsonb(result), job_id),
+            )
+        connection.commit()
+
+
+def fail_job(job_id: int, error: str, is_fatal: bool) -> None:
+    if not database_url():
+        return
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            if is_fatal:
+                status = 'failed'
+            else:
+                cursor.execute("select attempts, max_attempts from jobs where id = %s;", (job_id,))
+                row = cursor.fetchone()
+                if row and row["attempts"] >= row["max_attempts"]:
+                    status = 'failed'
+                else:
+                    status = 'pending'
+
+            cursor.execute(
+                """
+                update jobs
+                set
+                    status = %s,
+                    error = %s,
+                    updated_at = now(),
+                    lease_expires_at = null,
+                    worker_id = null
+                where id = %s;
+                """,
+                (status, error, job_id),
+            )
+        connection.commit()
+
+
+def cancel_job(job_id: int) -> bool:
+    if not database_url():
+        return False
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update jobs
+                set
+                    status = 'cancelled',
+                    updated_at = now(),
+                    lease_expires_at = null,
+                    worker_id = null
+                where id = %s and status in ('pending', 'processing')
+                returning id;
+                """,
+                (job_id,),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return row is not None
