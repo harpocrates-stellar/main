@@ -285,9 +285,33 @@ export async function getProofHistory(
   contractId: string,
   proofId: string,
   sourceAddress?: string,
-  limit = 50,
-  offset = 0,
+  limit = 256,
 ): Promise<ProofHistoryResult> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const count = await getProofHistoryCount(contractId, proofId, sourceAddress)
+  const cappedLimit = Math.min(limit, count)
+  const entries: ProofHistoryEntry[] = []
+
+  for (let seq = 1; seq <= cappedLimit; seq += 1) {
+    const entry = await getProofHistoryAt(contractId, proofId, sourceAddress, seq)
+    if (entry) {
+      entries.push(entry)
+    }
+  }
+
+  return { entries, count }
+}
+
+export async function getProofHistoryAt(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+  seq = 1,
+): Promise<ProofHistoryEntry | null> {
   const source = sourceAddress || READONLY_SOURCE
   if (!source) {
     throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
@@ -302,10 +326,9 @@ export async function getProofHistory(
   })
     .addOperation(
       contract.call(
-        'get_proof_history' satisfies RegistryMethod,
+        'get_proof_history_at' satisfies RegistryMethod,
         scBytes32(asHex32(proofId, 'proofId')),
-        scU32(offset),
-        scU32(Math.min(limit, 256)),
+        scU32(seq),
       ),
     )
     .setTimeout(30)
@@ -316,21 +339,18 @@ export async function getProofHistory(
     throw new Error(simulation.error)
   }
   if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return { entries: [], count: 0 }
+    return null
   }
 
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : []
-  const entries: ProofHistoryEntry[] = Array.isArray(native)
-    ? native.map((entry: { action: unknown; timestamp: unknown; actor: unknown; reason_code: unknown }) => ({
-        action: Number(entry.action) as ProofHistoryEntry['action'],
-        timestamp: entry.timestamp?.toString?.() ?? String(entry.timestamp),
-        actor: entry.actor == null ? null : String(entry.actor),
-        reasonCode: Number(entry.reason_code),
-      }))
-    : []
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
 
-  const countResponse = await getProofHistoryCount(contractId, proofId, sourceAddress)
-  return { entries, count: countResponse }
+  return {
+    action: Number(native.action) as ProofHistoryEntry['action'],
+    timestamp: native.timestamp?.toString?.() ?? String(native.timestamp),
+    actor: native.actor == null ? null : String(native.actor),
+    reasonCode: Number(native.reason_code),
+  }
 }
 
 export async function getProofHistoryCount(

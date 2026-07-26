@@ -16,6 +16,8 @@ const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
 const STATUS_EXPIRED: u32 = 3;
 
+pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
+
 // ---------------------------------------------------------------------------
 // Proof-history bounds (#90)
 // ---------------------------------------------------------------------------
@@ -722,37 +724,24 @@ impl HarpocratesRegistry {
         );
     }
 
-    pub fn get_proof_history(
+    pub fn get_proof_history_at(
         env: Env,
         proof_id: BytesN<32>,
-        offset: u32,
-        limit: u32,
-    ) -> SorobanVec<ProofHistoryEntry> {
-        if limit > MAX_HISTORY_LIMIT {
-            panic_with_error!(&env, RegistryError::HistoryLimitExceeded);
+        seq: u32,
+    ) -> Option<ProofHistoryEntry> {
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+            .unwrap_or(0);
+
+        if seq == 0 || seq > total {
+            return None;
         }
 
-        let seq_key = DataKey::ProofHistorySeq(proof_id.clone());
-        let total: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
-
-        if total == 0 || offset >= total {
-            return SorobanVec::new(&env);
-        }
-
-        let limit = limit.min(total - offset);
-        let start = offset + 1;
-        let mut entries = SorobanVec::new(&env);
-
-        for seq in start..(start + limit) {
-            let entry: ProofHistoryEntry = env
-                .storage()
-                .persistent()
-                .get(&DataKey::ProofHistoryEntry(proof_id.clone(), seq))
-                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::HistoryCorruption));
-            entries.push_back(entry);
-        }
-
-        entries
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofHistoryEntry(proof_id, seq))
     }
 
     pub fn get_proof_history_count(env: Env, proof_id: BytesN<32>) -> u32 {
