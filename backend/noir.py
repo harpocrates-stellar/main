@@ -15,6 +15,8 @@ def generate_silent_witness(
     video_hash: str,
     credential_secret: str,
     nullifier_secret: str,
+    verifier_scope: str = "0",
+    epoch: int = 0,
 ) -> dict[str, Any]:
     completed = subprocess.run(
         [
@@ -30,6 +32,10 @@ def generate_silent_witness(
             credential_secret,
             "-NullifierSecret",
             nullifier_secret,
+            "-VerifierScope",
+            verifier_scope,
+            "-Epoch",
+            str(epoch),
         ],
         cwd=ROOT_DIR,
         check=False,

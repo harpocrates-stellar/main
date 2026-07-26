@@ -15,6 +15,10 @@ type GenerateSilentWitnessInput = {
   videoHash: string
   credentialSecret: string
   nullifierSecret: string
+  /** Scope field element (BN254). Pass '0' for global/unscoped. */
+  verifierScope?: string
+  /** Epoch number. Pass 0 for unscoped or legacy proofs. */
+  epoch?: number
 }
 
 let helperCircuitPromise: Promise<CompiledCircuit> | null = null
@@ -24,15 +28,21 @@ export async function generateSilentWitnessProof({
   videoHash,
   credentialSecret,
   nullifierSecret,
+  verifierScope = '0',
+  epoch = 0,
 }: GenerateSilentWitnessInput): Promise<SilentWitnessProof> {
   const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
   const video_hash_hi = BigInt(`0x${videoHash.slice(0, 32)}`).toString(10)
   const video_hash_lo = BigInt(`0x${videoHash.slice(32)}`).toString(10)
+  const scope_field = BigInt(verifierScope).toString(10)
+  const epoch_field = BigInt(epoch).toString(10)
   const privateInputs = {
     credential_secret: credentialSecret,
     nullifier_secret: nullifierSecret,
     video_hash_hi,
     video_hash_lo,
+    verifier_scope: scope_field,
+    epoch: epoch_field,
   }
 
   const helperResult = await new Noir(helperCircuit).execute(privateInputs)
@@ -40,6 +50,8 @@ export async function generateSilentWitnessProof({
   const publicInputs = {
     credential_root: credentialRoot,
     nullifier,
+    verifier_scope: scope_field,
+    epoch: epoch_field,
   }
 
   const { witness } = await new Noir(mainCircuit).execute({

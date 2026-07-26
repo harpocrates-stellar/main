@@ -38,6 +38,13 @@ const STATUS_REVOKED: u32 = 2;
 // non-expiring by `get_proof_status`.
 pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 
+/// Default epoch for unscoped or legacy proofs.
+pub const DEFAULT_SCOPE_EPOCH: u64 = 0;
+
+/// Maximum scope string length (bytes) accepted by `register_scoped_proof`.
+/// Prevents abuse through arbitrarily large scope identifiers.
+pub const MAX_SCOPE_LENGTH: u32 = 64;
+
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -133,15 +140,15 @@ pub struct CredentialRootRevoked {
     pub credential_root: BytesN<32>,
 }
 
-/// Domain separator that binds non‑revocation proofs to the Harpocrates
+/// Domain separator that binds non-revocation proofs to the Harpocrates
 /// revocation witness circuit version.  Both the Noir circuit and this
 /// contract use the same constant.  Changing the circuit requires updating
 /// this value to prevent proof replay across protocol versions.
 ///
-/// Format: 32‑byte big‑endian BN254 field element serialization of
+/// Format: 32-byte big-endian BN254 field element serialization of
 ///   `0x484152504f4352415445535f5245564f434154494f4e5f5631`
 /// which represents the ASCII string "HARPOCRATES_REVOCATION_V1" as a
-/// 192‑bit integer.  The 8 leading zero bytes come from the BN254 field
+/// 192-bit integer.  The 8 leading zero bytes come from the BN254 field
 /// serialisation (field elements are padded to 32 bytes).
 ///
 /// Layout:
@@ -154,6 +161,24 @@ const REVOCATION_DOMAIN_SEPARATOR: [u8; 32] = [
     0x43, 0x41, 0x54, 0x49, 0x4f, 0x4e, 0x5f, 0x56, // CATION_V
     0x31, // 1
 ];
+
+/// Domain separator for the scoped nullifier v1 circuit.
+/// "HARPOCRATES_SCOPED_NULLIFIER_V1" encoded as a 32-byte BN254 field element
+/// (31 ASCII bytes with a leading 0x00 pad).
+#[allow(dead_code)]
+const SCOPED_NULLIFIER_V1_DOMAIN: [u8; 32] = [
+    0x00, // leading zero (BN254 field padding)
+    0x48, 0x41, 0x52, 0x50, 0x4f, 0x43, 0x52, 0x41, // HARPOCRA
+    0x54, 0x45, 0x53, 0x5f, 0x53, 0x43, 0x4f, 0x50, // TES_SCOP
+    0x45, 0x44, 0x5f, 0x4e, 0x55, 0x4c, 0x4c, 0x49, // ED_NULLI
+    0x46, 0x49, 0x45, 0x52, 0x5f, 0x56, 0x31, // FIER_V1
+];
+
+/// Expected length of v1 public inputs (4 × 32 = 128 bytes).
+const SILENT_WITNESS_V1_INPUT_LEN: u32 = 128;
+
+/// Expected length of v2 scoped public inputs (6 × 32 = 192 bytes).
+const SILENT_WITNESS_V2_INPUT_LEN: u32 = 192;
 
 #[contractevent(topics = ["revroot", "set"])]
 pub struct RevocationRootSet {
@@ -190,6 +215,13 @@ pub struct AdminAccepted {
     pub previous_admin: Address,
 }
 
+#[contractevent(topics = ["scope", "epoch"])]
+pub struct ScopeEpochSet {
+    #[topic]
+    pub scope: BytesN<32>,
+    pub epoch: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -204,6 +236,8 @@ pub enum DataKey {
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
+    /// Per-scope epoch counter for scoped nullifier replay prevention.
+    ScopeEpoch(BytesN<32>),
 }
 
 #[contracterror]
@@ -223,6 +257,10 @@ pub enum RegistryError {
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
     NoPendingAdmin = 13,
+    /// The epoch in the scoped proof does not match the current epoch for that scope.
+    StaleEpoch = 14,
+    /// The scope identifier is invalid (empty, too long, or not registered).
+    InvalidScope = 15,
 }
 
 #[contract]
@@ -427,6 +465,38 @@ impl HarpocratesRegistry {
     }
 
     // -----------------------------------------------------------------------
+    // Scope epoch management (scoped nullifier v1)
+    // -----------------------------------------------------------------------
+
+    /// Set the current epoch for a given scope identifier.
+    ///
+    /// When the admin advances the epoch for a scope, all proofs generated
+    /// under the previous epoch for that scope will have stale epoch values
+    /// and will be rejected by `register_anonymous_verified`.
+    ///
+    /// The scope is a 32-byte identifier derived from the scope string
+    /// (e.g., SHA-256 hash mod BN254 field).  An empty (zero) scope
+    /// represents the global/unscoped context.
+    ///
+    /// Only the registry admin may call this.
+    pub fn set_scope_epoch(env: Env, admin: Address, scope: BytesN<32>, epoch: u64) {
+        require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ScopeEpoch(scope.clone()), &epoch);
+        ScopeEpochSet { scope, epoch }.publish(&env);
+    }
+
+    /// Get the current epoch for a given scope.
+    /// Returns `DEFAULT_SCOPE_EPOCH` (0) if no epoch has been set.
+    pub fn get_scope_epoch(env: Env, scope: BytesN<32>) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ScopeEpoch(scope))
+            .unwrap_or(DEFAULT_SCOPE_EPOCH)
+    }
+
+    // -----------------------------------------------------------------------
     // Registration entry points
     // -----------------------------------------------------------------------
 
@@ -486,47 +556,103 @@ impl HarpocratesRegistry {
     ) -> ProofRecord {
         require_unique(&env, &proof_id, &video_hash);
 
-        let parsed = parse_silent_witness_public_inputs(&env, &public_inputs);
-        if parsed.video_hash != video_hash {
+        let input_len = public_inputs.len();
+
+        if input_len == SILENT_WITNESS_V2_INPUT_LEN {
+            // v2 scoped nullifier path
+            let parsed = parse_scoped_silent_witness_public_inputs(&env, &public_inputs);
+            if parsed.video_hash != video_hash {
+                panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            }
+            require_active_credential_root(&env, &parsed.credential_root);
+
+            // Epoch validation: the proof's epoch must match the current epoch for its scope.
+            let current_epoch = get_scope_epoch_raw(&env, &parsed.verifier_scope);
+            if parsed.epoch != current_epoch {
+                panic_with_error!(&env, RegistryError::StaleEpoch);
+            }
+
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Nullifier(parsed.nullifier.clone()))
+            {
+                panic_with_error!(&env, RegistryError::DuplicateNullifier);
+            }
+
+            let verifier: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Verifier)
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
+            verify_external_proof(&env, &verifier, public_inputs, proof);
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
+
+            let expires_at = compute_expires_at(&env);
+            save_record(
+                &env,
+                &proof_id,
+                ProofRecord {
+                    video_hash,
+                    metadata_hash,
+                    tier: TIER_SILENT_WITNESS,
+                    status: STATUS_REGISTERED,
+                    created_at: env.ledger().timestamp(),
+                    expires_at,
+                    source: None,
+                    issuer: None,
+                    nullifier: Some(parsed.nullifier),
+                },
+            )
+        } else if input_len == SILENT_WITNESS_V1_INPUT_LEN {
+            // v1 legacy path (backward compatible)
+            let parsed = parse_silent_witness_public_inputs(&env, &public_inputs);
+            if parsed.video_hash != video_hash {
+                panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            }
+            require_active_credential_root(&env, &parsed.credential_root);
+
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Nullifier(parsed.nullifier.clone()))
+            {
+                panic_with_error!(&env, RegistryError::DuplicateNullifier);
+            }
+
+            let verifier: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Verifier)
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
+            verify_external_proof(&env, &verifier, public_inputs, proof);
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
+
+            let expires_at = compute_expires_at(&env);
+            save_record(
+                &env,
+                &proof_id,
+                ProofRecord {
+                    video_hash,
+                    metadata_hash,
+                    tier: TIER_SILENT_WITNESS,
+                    status: STATUS_REGISTERED,
+                    created_at: env.ledger().timestamp(),
+                    expires_at,
+                    source: None,
+                    issuer: None,
+                    nullifier: Some(parsed.nullifier),
+                },
+            )
+        } else {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         }
-        require_active_credential_root(&env, &parsed.credential_root);
-
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Nullifier(parsed.nullifier.clone()))
-        {
-            panic_with_error!(&env, RegistryError::DuplicateNullifier);
-        }
-
-        let verifier: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Verifier)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-        verify_external_proof(&env, &verifier, public_inputs, proof);
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
-
-        let expires_at = compute_expires_at(&env);
-        save_record(
-            &env,
-            &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_SILENT_WITNESS,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: None,
-                nullifier: Some(parsed.nullifier),
-            },
-        )
     }
 
     pub fn register_source(
@@ -644,20 +770,20 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::RevocationRoot)
     }
 
-    /// Verify a non‑revocation proof produced by the `revocation_witness`
+    /// Verify a non-revocation proof produced by the `revocation_witness`
     /// Noir circuit.
     ///
     /// The proof demonstrates that `credential_root` is **not** a member of
-    /// the currently‑published revocation tree (`revocation_root`) without
+    /// the currently-published revocation tree (`revocation_root`) without
     /// revealing which revoked credentials exist or which identity is acting.
     ///
-    /// # Public input layout (128 bytes, 4 × BN254 field elements)
+    /// # Public input layout (128 bytes, 4 x BN254 field elements)
     ///
     /// ```text
-    /// [  0.. 32)  revocation_root   – must match the on‑chain stored root
-    /// [ 32.. 64)  nullifier         – one‑use replay guard
-    /// [ 64.. 96)  domain_separator  – must match REVOCATION_DOMAIN_SEPARATOR
-    /// [ 96..128)  credential_root   – must be registered & active on‑chain
+    /// [  0.. 32)  revocation_root   - must match the on-chain stored root
+    /// [ 32.. 64)  nullifier         - one-use replay guard
+    /// [ 64.. 96)  domain_separator  - must match REVOCATION_DOMAIN_SEPARATOR
+    /// [ 96..128)  credential_root   - must be registered & active on-chain
     /// ```
     ///
     /// # Reverts
@@ -672,13 +798,13 @@ impl HarpocratesRegistry {
     pub fn check_non_revocation(env: Env, public_inputs: Bytes, proof: Bytes) {
         let parsed = parse_revocation_public_inputs(&env, &public_inputs);
 
-        // 1. Domain binding — must match the expected version tag.
+        // 1. Domain binding - must match the expected version tag.
         let expected_domain = BytesN::from_array(&env, &REVOCATION_DOMAIN_SEPARATOR);
         if parsed.domain_separator != expected_domain {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         }
 
-        // 2. Revocation root — must match the currently published root.
+        // 2. Revocation root - must match the currently published root.
         let stored_root: BytesN<32> = env
             .storage()
             .persistent()
@@ -813,14 +939,26 @@ fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRe
     record
 }
 
+// ---------------------------------------------------------------------------
+// Silent Witness v1 public input parsing (backward compatible)
+// ---------------------------------------------------------------------------
+
 struct SilentWitnessInputs {
     video_hash: BytesN<32>,
     credential_root: BytesN<32>,
     nullifier: BytesN<32>,
 }
 
+/// Parse the 128-byte public-input blob produced by the v1 silent_witness
+/// Noir circuit.
+///
+/// Layout (4 x BN254 field elements, 32 bytes each):
+///   [  0.. 32)  video_hash_hi + video_hash_lo (packed)
+///   [ 32.. 64)  video_hash_lo continued
+///   [ 64.. 96)  credential_root
+///   [ 96..128)  nullifier
 fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> SilentWitnessInputs {
-    if public_inputs.len() != 128 {
+    if public_inputs.len() != SILENT_WITNESS_V1_INPUT_LEN {
         panic_with_error!(env, RegistryError::InvalidPublicInputs);
     }
 
@@ -844,6 +982,90 @@ fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> Silen
     }
 }
 
+// ---------------------------------------------------------------------------
+// Silent Witness v2 (scoped) public input parsing
+// ---------------------------------------------------------------------------
+
+struct ScopedSilentWitnessInputs {
+    video_hash: BytesN<32>,
+    credential_root: BytesN<32>,
+    nullifier: BytesN<32>,
+    verifier_scope: BytesN<32>,
+    epoch: u64,
+}
+
+/// Parse the 192-byte public-input blob produced by the v2 scoped
+/// silent_witness Noir circuit.
+///
+/// Layout (6 x BN254 field elements, 32 bytes each):
+///   [  0.. 32)  video_hash_hi + video_hash_lo (packed)
+///   [ 32.. 64)  video_hash_lo continued
+///   [ 64.. 96)  credential_root
+///   [ 96..128)  nullifier
+///   [128..160)  verifier_scope
+///   [160..192)  epoch
+fn parse_scoped_silent_witness_public_inputs(
+    env: &Env,
+    public_inputs: &Bytes,
+) -> ScopedSilentWitnessInputs {
+    if public_inputs.len() != SILENT_WITNESS_V2_INPUT_LEN {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+
+    let mut bytes = [0u8; 192];
+    public_inputs.copy_into_slice(&mut bytes);
+
+    let mut video_hash = [0u8; 32];
+    video_hash[..16].copy_from_slice(&bytes[16..32]);
+    video_hash[16..].copy_from_slice(&bytes[48..64]);
+
+    let mut credential_root = [0u8; 32];
+    credential_root.copy_from_slice(&bytes[64..96]);
+
+    let mut nullifier = [0u8; 32];
+    nullifier.copy_from_slice(&bytes[96..128]);
+
+    let mut verifier_scope = [0u8; 32];
+    verifier_scope.copy_from_slice(&bytes[128..160]);
+
+    let mut epoch_bytes = [0u8; 32];
+    epoch_bytes.copy_from_slice(&bytes[160..192]);
+    let epoch = bytes_to_u64_be(&epoch_bytes);
+
+    ScopedSilentWitnessInputs {
+        video_hash: BytesN::from_array(env, &video_hash),
+        credential_root: BytesN::from_array(env, &credential_root),
+        nullifier: BytesN::from_array(env, &nullifier),
+        verifier_scope: BytesN::from_array(env, &verifier_scope),
+        epoch,
+    }
+}
+
+/// Convert a 32-byte big-endian value to a u64.
+/// Only the last 8 bytes are used; upper bytes must be zero for valid epochs.
+fn bytes_to_u64_be(bytes: &[u8; 32]) -> u64 {
+    // Check that upper bytes are zero (epoch must fit in u64)
+    for b in &bytes[..24] {
+        if *b != 0 {
+            // Epoch value overflows u64 — treat as invalid (max)
+            return u64::MAX;
+        }
+    }
+    let mut val: u64 = 0;
+    for b in &bytes[24..32] {
+        val = (val << 8) | (*b as u64);
+    }
+    val
+}
+
+/// Get the raw scope epoch value for a scope field element.
+fn get_scope_epoch_raw(env: &Env, scope: &BytesN<32>) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ScopeEpoch(scope.clone()))
+        .unwrap_or(DEFAULT_SCOPE_EPOCH)
+}
+
 fn verify_external_proof(env: &Env, verifier: &Address, public_inputs: Bytes, proof: Bytes) {
     let mut args: SorobanVec<Val> = SorobanVec::new(env);
     args.push_back(public_inputs.into_val(env));
@@ -861,10 +1083,10 @@ struct RevocationPublicInputs {
     credential_root: BytesN<32>,
 }
 
-/// Parse the 128‑byte public‑input blob produced by the revocation_witness
+/// Parse the 128-byte public-input blob produced by the revocation_witness
 /// Noir circuit.
 ///
-/// Layout (4 × BN254 field elements, 32 bytes each):
+/// Layout (4 x BN254 field elements, 32 bytes each):
 ///   [  0.. 32)  revocation_root
 ///   [ 32.. 64)  nullifier
 ///   [ 64.. 96)  domain_separator
@@ -877,7 +1099,7 @@ fn parse_revocation_public_inputs(env: &Env, public_inputs: &Bytes) -> Revocatio
     let mut bytes = [0u8; 128];
     public_inputs.copy_into_slice(&mut bytes);
 
-    // Each field is a contiguous 32‑byte slice.
+    // Each field is a contiguous 32-byte slice.
     let mut revocation_root = [0u8; 32];
     revocation_root.copy_from_slice(&bytes[0..32]);
 
@@ -914,5 +1136,7 @@ mod test_expiry;
 mod test_invariants;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_scoped_nullifier;
 #[cfg(test)]
 mod test_state_machine;

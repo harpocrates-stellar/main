@@ -1,4 +1,4 @@
-import { SeedPair } from './seedVault'
+import type { SeedPair } from './seedVault'
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1

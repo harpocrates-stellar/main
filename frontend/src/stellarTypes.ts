@@ -79,3 +79,17 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'set_scope_epoch'
+  | 'get_scope_epoch'
+
+export type ScopedProofScope = {
+  /** Field element derived from the scope string (SHA-256 mod BN254). */
+  scopeField: string
+  /** Human-readable scope name (for manifest only, not sent on-chain). */
+  scopeName: string
+}
+
+export type ScopedProofEpoch = {
+  /** Epoch number matching the on-chain scope epoch. */
+  epoch: number
+}

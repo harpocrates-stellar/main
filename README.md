@@ -114,6 +114,13 @@ Done:
 - Typed frontend registry client and manual production chunking for Stellar, Noir, React, and proof runtime bundles.
 - Backend production hardening: security headers, readiness checks, stricter upload/metadata validation, safer CORS config, and production-gated local Noir worker.
 - Typed Soroban contract events with `#[contractevent]` for proof, issuer, verifier, and credential-root lifecycle events.
+- Scoped nullifier derivation with verifier/purpose scope and bounded epoch (#scoped-nullifier-v1).
+- Epoch management (`set_scope_epoch` / `get_scope_epoch`) for time-bound nullifier validity.
+- Cross-scope unlinkability and epoch-boundary replay protection.
+- Backward-compatible v1/v2 public input parsing in the registry contract.
+- Formal nullifier derivation spec (`NULLIFIER_DERIVATION_SPEC.md`).
+- Shared test vectors (`zk/noir/fixtures/scoped_nullifier_vectors.json`).
+- Migration and rollout guidance (`MIGRATION_GUIDE.md`).
 
 Next:
 

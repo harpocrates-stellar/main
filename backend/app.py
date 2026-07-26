@@ -364,11 +364,20 @@ def create_app() -> Flask:
         if not is_field_decimal(nullifier_secret):
             return jsonify({"error": "nullifierSecret must be a decimal field string"}), 400
 
+        verifier_scope = payload.get("verifierScope", "0")
+        if not is_field_decimal(verifier_scope):
+            return jsonify({"error": "verifierScope must be a decimal field string"}), 400
+        epoch = payload.get("epoch", 0)
+        if not isinstance(epoch, int) or epoch < 0:
+            return jsonify({"error": "epoch must be a non-negative integer"}), 400
+
         try:
             proof = generate_silent_witness(
                 video_hash,
                 credential_secret,
                 nullifier_secret,
+                verifier_scope,
+                epoch,
             )
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 500

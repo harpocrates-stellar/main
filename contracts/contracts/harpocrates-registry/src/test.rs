@@ -13,7 +13,8 @@ struct MockNoirVerifier;
 #[contractimpl]
 impl MockNoirVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
