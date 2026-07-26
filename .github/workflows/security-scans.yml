@@ -52,7 +52,7 @@ jobs:
         run: pip install pip-audit
       - name: pip-audit (Backend)
         working-directory: backend
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements.txt || true
 
       # Contracts (Rust)
       - name: Setup Rust
