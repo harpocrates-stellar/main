@@ -19,11 +19,6 @@ class MetricsCollector:
         self._requests_total: Dict[Tuple[str, str, str], int] = {}
         self._latency_histogram: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self._upload_histogram: Dict[Tuple[str, str], Dict[str, float]] = {}
-        # Streaming upload metrics
-        self._upload_bytes_received_total: int = 0
-        self._upload_active_gauge: int = 0
-        self._upload_errors_total: Dict[str, int] = {}
-        self._upload_duration_histogram: Dict[str, float] = {}
 
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
@@ -31,11 +26,6 @@ class MetricsCollector:
             self._requests_total.clear()
             self._latency_histogram.clear()
             self._upload_histogram.clear()
-            # Reset streaming upload metrics
-            self._upload_bytes_received_total = 0
-            self._upload_active_gauge = 0
-            self._upload_errors_total.clear()
-            self._upload_duration_histogram.clear()
 
     def record_request(
         self,
@@ -90,63 +80,6 @@ class MetricsCollector:
                     if upload_bytes <= bucket:
                         up_stats[f"le_{bucket}"] += 1.0
 
-    def record_upload_bytes_received(self, bytes_count: int) -> None:
-        """Record bytes received for streaming uploads.
-        
-        Args:
-            bytes_count: Number of bytes received (must be non-negative)
-        """
-        with self._lock:
-            self._upload_bytes_received_total += max(0, bytes_count)
-
-    def record_upload_active(self, active_count: int) -> None:
-        """Update the active upload gauge.
-        
-        Args:
-            active_count: Current number of active uploads
-        """
-        with self._lock:
-            self._upload_active_gauge = max(0, active_count)
-
-    def record_upload_error(self, error_type: str) -> None:
-        """Record an upload error by type.
-        
-        Args:
-            error_type: Type of error (size_limit, timeout, parse_error, storage_error, contract_error, unknown)
-        """
-        # Validate error type to prevent injection
-        valid_error_types = {
-            "size_limit", "timeout", "parse_error", "storage_error", "contract_error", "unknown"
-        }
-        if error_type not in valid_error_types:
-            error_type = "unknown"
-        
-        with self._lock:
-            self._upload_errors_total[error_type] = self._upload_errors_total.get(error_type, 0) + 1
-
-    def record_upload_duration(self, duration_seconds: float) -> None:
-        """Record upload completion duration.
-        
-        Args:
-            duration_seconds: Time taken to complete the upload
-        """
-        duration = max(0.0, float(duration_seconds))
-        
-        with self._lock:
-            # Initialize histogram buckets if not present
-            if "sum" not in self._upload_duration_histogram:
-                hist_entry = {f"le_{b}": 0.0 for b in LATENCY_BUCKETS}
-                hist_entry["sum"] = 0.0
-                hist_entry["count"] = 0.0
-                self._upload_duration_histogram = hist_entry
-
-            # Update histogram
-            self._upload_duration_histogram["sum"] += duration
-            self._upload_duration_histogram["count"] += 1.0
-            for bucket in LATENCY_BUCKETS:
-                if duration <= bucket:
-                    self._upload_duration_histogram[f"le_{bucket}"] += 1.0
-
     def generate_prometheus_metrics(self) -> str:
         """Format metrics into Prometheus text format (version 0.0.4)."""
         lines: List[str] = []
@@ -195,37 +128,6 @@ class MetricsCollector:
 
                 lines.append(f'harpocrates_upload_bytes_total_sum{{{label_prefix}}} {_format_float(stats["sum"])}')
                 lines.append(f'harpocrates_upload_bytes_total_count{{{label_prefix}}} {int(stats["count"])}')
-
-            # 4. Streaming upload metrics
-            lines.append("")
-            lines.append("# HELP harpocrates_streaming_upload_bytes_received_total Total bytes received across all streaming uploads.")
-            lines.append("# TYPE harpocrates_streaming_upload_bytes_received_total counter")
-            lines.append(f'harpocrates_streaming_upload_bytes_received_total {self._upload_bytes_received_total}')
-
-            lines.append("")
-            lines.append("# HELP harpocrates_streaming_upload_active Number of streaming uploads currently in progress.")
-            lines.append("# TYPE harpocrates_streaming_upload_active gauge")
-            lines.append(f'harpocrates_streaming_upload_active {self._upload_active_gauge}')
-
-            lines.append("")
-            lines.append("# HELP harpocrates_streaming_upload_errors_total Total count of streaming upload errors by type.")
-            lines.append("# TYPE harpocrates_streaming_upload_errors_total counter")
-            for error_type in sorted(self._upload_errors_total.keys()):
-                error_count = self._upload_errors_total[error_type]
-                lines.append(f'harpocrates_streaming_upload_errors_total{{error_type="{_escape_label(error_type)}"}} {error_count}')
-
-            # 5. Upload duration histogram
-            lines.append("")
-            lines.append("# HELP harpocrates_streaming_upload_duration_seconds Time to complete streaming uploads.")
-            lines.append("# TYPE harpocrates_streaming_upload_duration_seconds histogram")
-            if self._upload_duration_histogram:
-                for bucket in LATENCY_BUCKETS:
-                    le_str = "+Inf" if bucket == float("inf") else _format_float(bucket)
-                    bucket_count = int(self._upload_duration_histogram.get(f"le_{bucket}", 0))
-                    lines.append(f'harpocrates_streaming_upload_duration_seconds_bucket{{le="{le_str}"}} {bucket_count}')
-
-                lines.append(f'harpocrates_streaming_upload_duration_seconds_sum {_format_float(self._upload_duration_histogram.get("sum", 0.0))}')
-                lines.append(f'harpocrates_streaming_upload_duration_seconds_count {int(self._upload_duration_histogram.get("count", 0))}')
 
         lines.append("")
         return "\n".join(lines)
