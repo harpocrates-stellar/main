@@ -31,9 +31,37 @@ export type NormalizedRegisterProofInput = {
   silentWitness?: SilentWitnessArtifacts
 }
 
+export type TxState = 'idle' | 'submitting' | 'awaiting_confirmation' | 'confirmed' | 'failed' | 'timeout'
+
+export type TxStatusLabel =
+  | 'Not submitted'
+  | 'Pending'
+  | 'Confirmed'
+  | 'Failed'
+  | 'Rejected by wallet'
+  | 'Timed out'
+
+export function describeTxState(state: TxState): TxStatusLabel {
+  switch (state) {
+    case 'idle':
+      return 'Not submitted'
+    case 'submitting':
+      return 'Pending'
+    case 'awaiting_confirmation':
+      return 'Pending'
+    case 'confirmed':
+      return 'Confirmed'
+    case 'failed':
+      return 'Failed'
+    case 'timeout':
+      return 'Timed out'
+  }
+}
+
 export type RegisterProofResult = {
   hash: string
   status: string
+  txState: TxState
 }
 
 export type ChainProofRecord = {

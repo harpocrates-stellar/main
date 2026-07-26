@@ -5,7 +5,9 @@ export type {
   IdentityTier,
   RegisterProofInput,
   RegisterProofResult,
+  TxState,
 } from './stellarTypes'
+export { describeTxState } from './stellarTypes'
 export { getProofByVideoHash, registerProofOnStellar, CONTRACT_NETWORK_PASSPHRASE } from './harpocratesRegistry'
 
 export async function connectFreighter() {
