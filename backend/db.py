@@ -92,6 +92,21 @@ def init_db() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists proof_history_events (
+                    id bigserial primary key,
+                    proof_id text not null,
+                    action text not null,
+                    actor text,
+                    reason_code integer not null,
+                    contract_id text,
+                    tx_hash text,
+                    tx_status text,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
                 create table if not exists webhook_deliveries (
                     id bigserial primary key,
                     subscription_id bigint not null references webhook_subscriptions(id) on delete cascade,
@@ -110,6 +125,12 @@ def init_db() -> None:
                 """
                 create index if not exists webhook_deliveries_status_idx
                 on webhook_deliveries (status, next_retry_at);
+                """
+            )
+            cursor.execute(
+                """
+                create index if not exists proof_history_events_proof_id_idx
+                on proof_history_events (proof_id);
                 """
             )
         connection.commit()
@@ -444,3 +465,79 @@ class ConflictError(Exception):
         self.field = field
         self.existing_value = existing_value
         self.incoming_value = incoming_value
+
+
+def insert_proof_history_event(
+    *,
+    proof_id: str,
+    action: str,
+    actor: str | None = None,
+    reason_code: int,
+    contract_id: str | None = None,
+    tx_hash: str | None = None,
+    tx_status: str | None = None,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into proof_history_events (
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status
+                )
+                values (%s, %s, %s, %s, %s, %s, %s)
+                returning id, created_at;
+                """,
+                (
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_proof_history_events(
+    proof_id: str, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status,
+                    created_at
+                from proof_history_events
+                where proof_id = %s
+                order by id asc
+                limit %s offset %s;
+                """,
+                (proof_id, limit, offset),
+            )
+            return [dict(row) for row in cursor.fetchall()]

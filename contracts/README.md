@@ -145,6 +145,13 @@ get_issuer
 set_revocation_root
 get_revocation_root
 check_non_revocation
+get_proof_status
+get_proof_history
+get_proof_history_at
+get_proof_history_count
+verify_proof
+expire_proof
+correct_proof
 ```
 
 ## Admin Transfer
@@ -199,10 +206,67 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["verif", "set", verifier]        => {}
 ["credroot", "add", root]         => metadata_hash, issued_at
 ["credroot", "revoke", root]      => {}
+["proof", "history", proof_id]    => action, timestamp, actor, reason_code
 ["admin", "propose", pending]     => current_admin
 ["admin", "cancel", pending]      => current_admin
 ["admin", "accept", new_admin]    => previous_admin
 ```
+
+## Lifecycle History (#90)
+
+Every proof carries an append-only history of lifecycle transitions. History
+entries are privacy-safe: they contain only `proof_id`, `action`, `timestamp`,
+`actor`, and `reason_code`. No `video_hash`, `metadata_hash`, `nullifier`, or
+proof bytes are ever stored in history or emitted in history events.
+
+### Actions
+
+```text
+Registered  = 1
+Verified    = 2
+Revoked     = 3
+Expired     = 4
+Corrected   = 5
+TtlUpdated  = 6
+```
+
+### Bounds
+
+- `MAX_HISTORY_ENTRIES_PER_PROOF = 256` caps total entries per proof.
+- `MAX_HISTORY_LIMIT = 50` caps the maximum number of entries returned by a
+  single `get_proof_history` call.
+
+### Query
+
+```text
+get_proof_history(proof_id, offset, limit) -> Vec<ProofHistoryEntry>
+get_proof_history_count(proof_id) -> u32
+```
+
+`offset` is zero-based. `limit` must be `<= MAX_HISTORY_LIMIT`. Entries are
+returned in chronological order.
+
+### State Transitions
+
+| Function | Authorization | Effect |
+|----------|---------------|--------|
+| `verify_proof` | Admin | Records a verification event in history. |
+| `expire_proof` | Admin | Sets `status = STATUS_EXPIRED` and records history. Rejects if already expired. |
+| `correct_proof` | Admin | Updates `metadata_hash` and records history. Rejects if metadata is unchanged. |
+
+All registration functions and `revoke_proof` automatically record history.
+
+### Privacy Properties
+
+- History entries contain no sensitive proof material.
+- Reason codes are bounded `u32` values (`0..=255`); free-text reasons are not accepted.
+- The `actor` field records the address that authorized the transition, or `None` for anonymous registrations.
+- On-chain history events use the topic `["proof", "history", proof_id]` so indexers can filter without reading contract storage.
+
+### Backward Compatibility
+
+Proofs registered before this feature have zero history entries. `get_proof_history`
+returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
 
 ## Scripts
 

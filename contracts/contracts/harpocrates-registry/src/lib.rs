@@ -14,41 +14,29 @@ const TIER_PUBLIC_SEAL: u32 = 3;
 
 const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
+const STATUS_EXPIRED: u32 = 3;
 
 // ---------------------------------------------------------------------------
-// Proof-expiration policy (#44)
+// Proof-history bounds (#90)
 // ---------------------------------------------------------------------------
 //
-// Every proof record stores an `expires_at` epoch-second timestamp.
+// Every proof carries an append-only history of lifecycle transitions.
+// Each entry is bounded in size and the total number of entries per proof
+// is capped to prevent storage exhaustion under hostile inputs.
 //
-// - `expires_at == 0`  → no expiration (backward-compatible with records that
-//   pre-date this field, which are deserialized with the Soroban SDK default
-//   of zero for missing u64 fields in persistent storage).
-// - `expires_at > 0`   → the proof is considered expired once
-//   `ledger.timestamp() > expires_at`.
-//
-// The registry admin can update the global TTL applied to *new* registrations
-// via `set_proof_ttl`.  Existing records are unaffected.
-//
-// `DEFAULT_PROOF_TTL_SECS = 0` means new proofs are eternal unless the admin
-// overrides the TTL, preserving the original behavior on a fresh deployment.
-//
-// Migration note: proofs registered before this field was added will have
-// `expires_at == 0` in persistent storage and will therefore be treated as
-// non-expiring by `get_proof_status`.
-pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
+// - MAX_HISTORY_ENTRIES_PER_PROOF limits total entries per proof.
+// - MAX_HISTORY_LIMIT bounds the maximum number of entries returned by a
+//   single query, protecting callers from unbounded iteration costs.
+pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
+pub const MAX_HISTORY_LIMIT: u32 = 50;
 
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProofVerificationStatus {
-    /// Proof is registered and has not expired.
     Valid,
-    /// Proof was explicitly revoked by the admin.
     Revoked,
-    /// Proof has passed its `expires_at` deadline.
     Expired,
-    /// No record found for the given proof_id.
     NotFound,
 }
 
@@ -60,9 +48,6 @@ pub struct ProofRecord {
     pub tier: u32,
     pub status: u32,
     pub created_at: u64,
-    /// Epoch-second deadline after which this proof is considered expired.
-    /// `0` means no expiration.  See the expiration-policy comment at the top
-    /// of this file.
     pub expires_at: u64,
     pub source: Option<Address>,
     pub issuer: Option<Address>,
@@ -82,6 +67,27 @@ pub struct CredentialRootRecord {
     pub metadata_hash: BytesN<32>,
     pub active: bool,
     pub issued_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ProofLifecycleAction {
+    Registered = 1,
+    Verified = 2,
+    Revoked = 3,
+    Expired = 4,
+    Corrected = 5,
+    TtlUpdated = 6,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofHistoryEntry {
+    pub action: u32,
+    pub timestamp: u64,
+    pub actor: Option<Address>,
+    pub reason_code: u32,
 }
 
 #[contractevent(topics = ["proof", "reg"])]
@@ -188,6 +194,14 @@ pub struct AdminAccepted {
     #[topic]
     pub new_admin: Address,
     pub previous_admin: Address,
+#[contractevent(topics = ["proof", "history"])]
+pub struct ProofHistoryEvent {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub action: u32,
+    pub timestamp: u64,
+    pub actor: Option<Address>,
+    pub reason_code: u32,
 }
 
 #[contracttype]
@@ -199,11 +213,12 @@ pub enum DataKey {
     CredentialRoot(BytesN<32>),
     Issuer(Address),
     Verifier,
-    /// Global proof TTL in seconds (set by admin via `set_proof_ttl`).
     ProofTtl,
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
+    ProofHistorySeq(BytesN<32>),
+    ProofHistoryEntry(BytesN<32>, u32),
 }
 
 #[contracterror]
@@ -222,7 +237,14 @@ pub enum RegistryError {
     InvalidPublicInputs = 10,
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
-    NoPendingAdmin = 13,
+    HistorySaturated = 13,
+    InvalidHistoryAction = 14,
+    InvalidReasonCode = 15,
+    HistoryLimitExceeded = 16,
+    AlreadyExpired = 17,
+    NoCorrectionChange = 18,
+    HistoryCorruption = 19,
+    NoPendingAdmin = 20,
 }
 
 #[contract]
@@ -386,9 +408,6 @@ impl HarpocratesRegistry {
     // Expiration policy (#44)
     // -----------------------------------------------------------------------
 
-    /// Set the global TTL (in seconds) applied to new proof registrations.
-    /// `0` disables expiration for newly registered proofs.
-    /// Only the registry admin may call this.  Existing records are unaffected.
     pub fn set_proof_ttl(env: Env, admin: Address, ttl_secs: u64) {
         require_admin(&env, &admin);
         env.storage()
@@ -396,7 +415,6 @@ impl HarpocratesRegistry {
             .set(&DataKey::ProofTtl, &ttl_secs);
     }
 
-    /// Get the currently configured global proof TTL in seconds.
     pub fn get_proof_ttl(env: Env) -> u64 {
         env.storage()
             .persistent()
@@ -404,12 +422,6 @@ impl HarpocratesRegistry {
             .unwrap_or(DEFAULT_PROOF_TTL_SECS)
     }
 
-    /// Return the human-readable verification status of a proof at the current
-    /// ledger time without modifying any state.
-    ///
-    /// Clients should prefer this over reading the raw `ProofRecord` when they
-    /// need a definitive "is this proof still valid?" answer, because it
-    /// incorporates both the revocation flag and the expiration deadline.
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
         let record: Option<ProofRecord> = env.storage().persistent().get(&DataKey::Proof(proof_id));
         match record {
@@ -417,6 +429,9 @@ impl HarpocratesRegistry {
             Some(r) => {
                 if r.status == STATUS_REVOKED {
                     return ProofVerificationStatus::Revoked;
+                }
+                if r.status == STATUS_EXPIRED {
+                    return ProofVerificationStatus::Expired;
                 }
                 if r.expires_at > 0 && env.ledger().timestamp() > r.expires_at {
                     return ProofVerificationStatus::Expired;
@@ -459,21 +474,26 @@ impl HarpocratesRegistry {
             .set(&DataKey::Nullifier(nullifier.clone()), &true);
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_SILENT_WITNESS,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: None,
+            nullifier: Some(nullifier),
+        };
+        save_record(&env, &proof_id, record.clone(), None);
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_SILENT_WITNESS,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: None,
-                nullifier: Some(nullifier),
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            None,
+            record.tier,
+        );
+        record
     }
 
     pub fn register_anonymous_verified(
@@ -512,21 +532,26 @@ impl HarpocratesRegistry {
             .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_SILENT_WITNESS,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: None,
+            nullifier: Some(parsed.nullifier),
+        };
+        save_record(&env, &proof_id, record.clone(), None);
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_SILENT_WITNESS,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: None,
-                nullifier: Some(parsed.nullifier),
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            None,
+            record.tier,
+        );
+        record
     }
 
     pub fn register_source(
@@ -540,21 +565,26 @@ impl HarpocratesRegistry {
         require_unique(&env, &proof_id, &video_hash);
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_CONSISTENT_SOURCE,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: Some(source.clone()),
+            issuer: None,
+            nullifier: None,
+        };
+        save_record(&env, &proof_id, record.clone(), Some(source.clone()));
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_CONSISTENT_SOURCE,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: Some(source),
-                issuer: None,
-                nullifier: None,
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            Some(source),
+            record.tier,
+        );
+        record
     }
 
     pub fn register_seal(
@@ -573,21 +603,26 @@ impl HarpocratesRegistry {
         }
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_PUBLIC_SEAL,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: Some(issuer.clone()),
+            nullifier: None,
+        };
+        save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_PUBLIC_SEAL,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: Some(issuer),
-                nullifier: None,
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            Some(issuer),
+            record.tier,
+        );
+        record
     }
 
     pub fn revoke_proof(env: Env, admin: Address, proof_id: BytesN<32>) {
@@ -599,10 +634,132 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Proof(proof_id.clone()), &record);
         ProofRevoked {
-            proof_id,
+            proof_id: proof_id.clone(),
             status: STATUS_REVOKED,
         }
         .publish(&env);
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Revoked as u32,
+            Some(admin),
+            1,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle history (#90)
+    // -----------------------------------------------------------------------
+
+    pub fn verify_proof(env: Env, actor: Address, proof_id: BytesN<32>, reason_code: u32) {
+        require_admin(&env, &actor);
+
+        let _record = get_proof_record(&env, &proof_id);
+
+        if reason_code > 255 {
+            panic_with_error!(&env, RegistryError::InvalidReasonCode);
+        }
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Verified as u32,
+            Some(actor),
+            reason_code,
+        );
+    }
+
+    pub fn expire_proof(env: Env, admin: Address, proof_id: BytesN<32>, reason_code: u32) {
+        require_admin(&env, &admin);
+
+        let mut record = get_proof_record(&env, &proof_id);
+        if record.status == STATUS_REVOKED {
+            panic_with_error!(&env, RegistryError::Unauthorized);
+        }
+        if record.status == STATUS_EXPIRED {
+            panic_with_error!(&env, RegistryError::AlreadyExpired);
+        }
+
+        record.status = STATUS_EXPIRED;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proof(proof_id.clone()), &record);
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Expired as u32,
+            Some(admin),
+            reason_code,
+        );
+    }
+
+    pub fn correct_proof(
+        env: Env,
+        admin: Address,
+        proof_id: BytesN<32>,
+        new_metadata_hash: BytesN<32>,
+        reason_code: u32,
+    ) {
+        require_admin(&env, &admin);
+
+        let mut record = get_proof_record(&env, &proof_id);
+        if record.metadata_hash == new_metadata_hash {
+            panic_with_error!(&env, RegistryError::NoCorrectionChange);
+        }
+
+        record.metadata_hash = new_metadata_hash;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proof(proof_id.clone()), &record);
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Corrected as u32,
+            Some(admin),
+            reason_code,
+        );
+    }
+
+    pub fn get_proof_history(
+        env: Env,
+        proof_id: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> SorobanVec<ProofHistoryEntry> {
+        if limit > MAX_HISTORY_LIMIT {
+            panic_with_error!(&env, RegistryError::HistoryLimitExceeded);
+        }
+
+        let seq_key = DataKey::ProofHistorySeq(proof_id.clone());
+        let total: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+
+        if total == 0 || offset >= total {
+            return SorobanVec::new(&env);
+        }
+
+        let limit = limit.min(total - offset);
+        let start = offset + 1;
+        let mut entries = SorobanVec::new(&env);
+
+        for seq in start..(start + limit) {
+            let entry: ProofHistoryEntry = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ProofHistoryEntry(proof_id.clone(), seq))
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::HistoryCorruption));
+            entries.push_back(entry);
+        }
+
+        entries
+    }
+
+    pub fn get_proof_history_count(env: Env, proof_id: BytesN<32>) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id))
+            .unwrap_or(0)
     }
 
     pub fn get_proof(env: Env, proof_id: BytesN<32>) -> Option<ProofRecord> {
@@ -732,11 +889,6 @@ fn require_admin(env: &Env, candidate: &Address) {
     }
 }
 
-/// Compute the `expires_at` value for a freshly registered proof.
-///
-/// Returns `created_at + ttl` when a non-zero TTL is configured, or `0`
-/// (no expiration) otherwise.  Uses saturating addition to avoid overflow on
-/// extreme inputs.
 fn compute_expires_at(env: &Env) -> u64 {
     let ttl: u64 = env
         .storage()
@@ -796,7 +948,12 @@ fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     }
 }
 
-fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRecord {
+fn save_record(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    record: ProofRecord,
+    actor: Option<Address>,
+) -> ProofRecord {
     env.storage()
         .persistent()
         .set(&DataKey::Proof(proof_id.clone()), &record);
@@ -811,6 +968,49 @@ fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRe
     }
     .publish(env);
     record
+}
+
+fn record_proof_history(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    action: u32,
+    actor: Option<Address>,
+    reason_code: u32,
+) {
+    if !(1..=6).contains(&action) {
+        panic_with_error!(env, RegistryError::InvalidHistoryAction);
+    }
+    if reason_code > 255 {
+        panic_with_error!(env, RegistryError::InvalidReasonCode);
+    }
+
+    let seq_key = DataKey::ProofHistorySeq(proof_id.clone());
+    let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+
+    if seq >= MAX_HISTORY_ENTRIES_PER_PROOF {
+        panic_with_error!(env, RegistryError::HistorySaturated);
+    }
+
+    let next_seq = seq + 1;
+    env.storage().persistent().set(
+        &DataKey::ProofHistoryEntry(proof_id.clone(), next_seq),
+        &ProofHistoryEntry {
+            action,
+            timestamp: env.ledger().timestamp(),
+            actor: actor.clone(),
+            reason_code,
+        },
+    );
+    env.storage().persistent().set(&seq_key, &next_seq);
+
+    ProofHistoryEvent {
+        proof_id: proof_id.clone(),
+        action,
+        timestamp: env.ledger().timestamp(),
+        actor,
+        reason_code,
+    }
+    .publish(env);
 }
 
 struct SilentWitnessInputs {
@@ -916,3 +1116,4 @@ mod test_invariants;
 mod test_revocation;
 #[cfg(test)]
 mod test_state_machine;
+mod test_lifecycle;
