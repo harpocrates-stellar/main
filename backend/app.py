@@ -33,6 +33,7 @@ from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
+from quarantine import isolate_upload, QuarantineError
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -199,16 +200,18 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            video.save(source_path)
-
-            embed_metadata(source_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(source_path)
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+        try:
+            with isolate_upload(video) as safe_source:
+                with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+                    output_path = Path(tmp_dir) / "embedded.mp4"
+        
+                    embed_metadata(safe_source, output_path, metadata)
+                    output_bytes = output_path.read_bytes()
+                    source_hash = sha256_file(safe_source)
+                    embedded_hash = sha256_file(output_path)
+                    metadata_hash = canonical_metadata_hash(metadata)
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -243,12 +246,13 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            video.save(source_path)
-            metadata = extract_metadata(source_path)
-            video_hash = sha256_file(source_path)
-            metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        try:
+            with isolate_upload(video) as safe_source:
+                metadata = extract_metadata(safe_source)
+                video_hash = sha256_file(safe_source)
+                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="extract",

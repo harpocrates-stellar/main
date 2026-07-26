@@ -600,6 +600,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Request IDs for tracing | T6 | `app.py` → `start_request_context` |
 | Steganographic MAGIC header + SHA-256 checksum on payload | T7 | `stego.py` → `_pack_payload`, `_unpack_payload` |
 | Dual-channel embedding (border + LSB) | T7 | `stego.py` → `embed_metadata` |
+| Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
+| Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
+
 
 ### 7.3 React Frontend
 

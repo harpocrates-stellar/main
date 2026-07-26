@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import struct
 import subprocess
+import threading
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +41,16 @@ def canonical_metadata_hash(metadata: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(metadata)).hexdigest()
 
 
+def _kill_after_timeout(process: subprocess.Popen, timeout: float) -> threading.Timer:
+    def _kill():
+        if process.poll() is None:
+            process.kill()
+    timer = threading.Timer(timeout, _kill)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any]) -> None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
@@ -52,6 +64,8 @@ def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any
 
     process_in = _start_decode(ffmpeg, source_path, info)
     process_out = _start_encode(ffmpeg, output_path, info)
+    timer_in = _kill_after_timeout(process_in, 60.0)
+    timer_out = _kill_after_timeout(process_out, 60.0)
     frame_size = info.width * info.height * 3
     bit_cursor = 0
 
@@ -76,6 +90,8 @@ def embed_metadata(source_path: Path, output_path: Path, metadata: dict[str, Any
         if encode_status != 0:
             raise RuntimeError("ffmpeg failed while encoding the steganographic video")
     finally:
+        timer_in.cancel()
+        timer_out.cancel()
         _close_process(process_in)
         _close_process(process_out)
 
@@ -84,6 +100,7 @@ def extract_metadata(source_path: Path) -> dict[str, Any] | None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
     process = _start_decode(ffmpeg, source_path, info)
+    timer = _kill_after_timeout(process, 60.0)
     frame_size = info.width * info.height * 3
     frames: list[np.ndarray] = []
 
@@ -101,6 +118,7 @@ def extract_metadata(source_path: Path) -> dict[str, Any] | None:
 
         return _extract_from_lsb(frames)
     finally:
+        timer.cancel()
         _close_process(process)
 
 
@@ -245,24 +263,37 @@ def _unpack_progressive(bits: list[int]) -> dict[str, Any] | None:
 
 def _probe_video(path: Path) -> VideoInfo:
     ffprobe = _require("ffprobe")
-    result = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,r_frame_rate,nb_frames",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    streams = json.loads(result.stdout).get("streams", [])
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-probesize",
+                "5000000",
+                "-analyzeduration",
+                "5000000",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,r_frame_rate,nb_frames",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise RuntimeError("ffprobe failed to parse the video file")
+    
+    try:
+        streams = json.loads(result.stdout).get("streams", [])
+    except json.JSONDecodeError:
+        raise RuntimeError("ffprobe returned invalid json")
+        
     if not streams:
         raise ValueError("uploaded file does not contain a video stream")
 
@@ -277,6 +308,9 @@ def _probe_video(path: Path) -> VideoInfo:
 
 
 def _start_decode(ffmpeg: str, source_path: Path, info: VideoInfo) -> subprocess.Popen[bytes]:
+    kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
     return subprocess.Popen(
         [
             ffmpeg,
@@ -294,10 +328,14 @@ def _start_decode(ffmpeg: str, source_path: Path, info: VideoInfo) -> subprocess
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        **kwargs,
     )
 
 
 def _start_encode(ffmpeg: str, output_path: Path, info: VideoInfo) -> subprocess.Popen[bytes]:
+    kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
     return subprocess.Popen(
         [
             ffmpeg,
@@ -327,6 +365,7 @@ def _start_encode(ffmpeg: str, output_path: Path, info: VideoInfo) -> subprocess
         ],
         stdin=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        **kwargs,
     )
 
 
