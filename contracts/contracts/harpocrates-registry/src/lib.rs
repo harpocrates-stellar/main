@@ -1104,8 +1104,8 @@ mod test_expiry;
 #[cfg(test)]
 mod test_invariants;
 #[cfg(test)]
+mod test_lifecycle;
+#[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
 mod test_state_machine;
-#[cfg(test)]
-mod test_lifecycle;
