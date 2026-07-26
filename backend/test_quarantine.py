@@ -43,7 +43,8 @@ class TestQuarantine(unittest.TestCase):
         mock_file = MockFile()
         with isolate_upload(mock_file) as safe_path:
             self.assertTrue(safe_path.exists())
-            self.assertEqual(os.stat(safe_path).st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual(os.stat(safe_path).st_mode & 0o777, 0o600)
             self.assertEqual(safe_path.read_bytes()[:8], b"\x00\x00\x00\x18ftyp")
 
     def test_isolate_upload_failure(self):

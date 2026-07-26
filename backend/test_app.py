@@ -88,6 +88,37 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json["error"], "video upload must use a video content type")
 
+    def test_embed_rejects_invalid_video_signature_before_ffmpeg(self) -> None:
+        with patch.object(app_module, "embed_metadata") as embed:
+            response = self.client.post(
+                "/api/stego/embed",
+                data={
+                    "metadata": json.dumps(valid_metadata()),
+                    "video": (io.BytesIO(b"not really an mp4"), "evidence.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        embed.assert_not_called()
+
+    def test_extract_rejects_invalid_video_signature_before_ffmpeg(self) -> None:
+        with patch.object(app_module, "extract_metadata") as extract:
+            response = self.client.post(
+                "/api/stego/extract",
+                data={
+                    "video": (io.BytesIO(b"not really an mp4"), "evidence.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        extract.assert_not_called()
+        self.assertEqual(
+            response.json["error"],
+            "uploaded file failed signature scan; invalid video format",
+        )
+
     def test_embed_rejects_missing_metadata_fields(self) -> None:
         response = self.client.post(
             "/api/stego/embed",
@@ -389,7 +420,11 @@ def valid_metadata() -> dict[str, object]:
 
 
 def video_upload() -> tuple[io.BytesIO, str, str]:
-    return io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"
+    return (
+        io.BytesIO(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 10),
+        "evidence.mp4",
+        "video/mp4",
+    )
 
 
 # ---------------------------------------------------------------------------

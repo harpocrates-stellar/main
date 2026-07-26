@@ -36,6 +36,7 @@ from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
+from quarantine import QuarantineError, isolate_upload
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -202,16 +203,25 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        with EncryptedWorkspace() as workspace:
-            source_url = workspace.get_url("source.video")
-            output_url = workspace.get_url("embedded.mp4")
-            workspace.write_encrypted("source.video", video.stream, size=video.content_length)
+        try:
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                output_url = workspace.get_url("embedded.mp4")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
 
-            embed_metadata(source_url, output_url, metadata)
-            output_bytes = workspace.read_decrypted("embedded.mp4")
-            source_hash = workspace.sha256("source.video")
-            embedded_hash = workspace.sha256("embedded.mp4")
-            metadata_hash = canonical_metadata_hash(metadata)
+                embed_metadata(source_url, output_url, metadata)
+                output_bytes = workspace.read_decrypted("embedded.mp4")
+                source_hash = workspace.sha256("source.video")
+                embedded_hash = workspace.sha256("embedded.mp4")
+                metadata_hash = canonical_metadata_hash(metadata)
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -249,12 +259,21 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        with EncryptedWorkspace() as workspace:
-            source_url = workspace.get_url("source.video")
-            workspace.write_encrypted("source.video", video.stream, size=video.content_length)
-            metadata = extract_metadata(source_url)
-            video_hash = workspace.sha256("source.video")
-            metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        try:
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
+                metadata = extract_metadata(source_url)
+                video_hash = workspace.sha256("source.video")
+                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="extract",
