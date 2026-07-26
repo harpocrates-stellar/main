@@ -484,11 +484,14 @@ function App() {
     ])
 
     const { generateSilentWitnessProof } = await import('./noirClient')
-    const silentWitness = await generateSilentWitnessProof({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
+    const silentWitness = await generateSilentWitnessProof(
+      {
+        videoHash: nextProof.videoHash,
+        credentialSecret,
+        nullifierSecret,
+      },
+      AbortSignal.timeout(180_000), // 3-minute timeout
+    )
 
     const nextWithProof = {
       ...nextProof,

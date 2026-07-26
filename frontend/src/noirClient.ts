@@ -1,7 +1,3 @@
-import { UltraHonkBackend } from '@aztec/bb.js'
-import { Noir } from '@noir-lang/noir_js'
-import type { CompiledCircuit } from '@noir-lang/types'
-
 type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
@@ -73,37 +69,32 @@ export async function generateSilentWitnessProof({
       proofBytes: proofData.proof.length,
       publicInputBytes: publicInputHex.length / 2,
     }
-  } finally {
-    await backend.destroy()
-  }
-}
 
-async function loadHelperCircuit() {
-  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
-  return helperCircuitPromise
-}
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
 
-async function loadMainCircuit() {
-  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
-  return mainCircuitPromise
-}
+    signal?.addEventListener('abort', onAbort)
 
-async function loadCircuit(path: string) {
-  const response = await fetch(path)
-  if (!response.ok) {
-    throw new Error(`Unable to load Noir circuit artifact: ${path}`)
-  }
-  return (await response.json()) as CompiledCircuit
-}
+    worker.addEventListener('message', (event) => {
+      signal?.removeEventListener('abort', onAbort)
+      worker.terminate() // Forceful explicit memory clearing immediately upon completion.
+      
+      const { type, proof, message } = event.data
+      if (type === 'success') {
+        resolve(proof as SilentWitnessProof)
+      } else {
+        reject(new Error(message || 'Worker proof generation failed.'))
+      }
+    })
 
-function fieldToBytes32Hex(value: string) {
-  const normalized = value.startsWith('0x') ? value.slice(2) : BigInt(value).toString(16)
-  if (normalized.length > 64) {
-    throw new Error('Noir field is larger than 32 bytes.')
-  }
-  return normalized.padStart(64, '0')
-}
+    worker.addEventListener('error', (error) => {
+      signal?.removeEventListener('abort', onAbort)
+      worker.terminate()
+      reject(new Error(`Worker execution failed: ${error.message}`))
+    })
 
-function bytesToHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    worker.postMessage(input)
+  })
 }

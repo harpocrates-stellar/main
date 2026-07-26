@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { TransactionStateMachine, type TransactionMachineState, type TxEvent } from '../transactionStateMachine'
 
 export function useTransactionState() {
-  const machineRef = useRef<TransactionStateMachine>()
+  const machineRef = useRef<TransactionStateMachine | null>(null)
   if (!machineRef.current) {
     machineRef.current = new TransactionStateMachine()
   }
