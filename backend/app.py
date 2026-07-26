@@ -182,7 +182,8 @@ def create_app() -> Flask:
 
     def _enable_streaming_for_large_uploads():
         """Replace large file uploads with streaming versions."""
-        if request.content_length and request.content_length > config.upload_max_bytes:
+        upload_max_bytes = getattr(config, "upload_max_bytes", config.max_video_bytes)
+        if request.content_length and request.content_length > upload_max_bytes:
             # Store config for streaming file creation
             g.upload_config = config
             

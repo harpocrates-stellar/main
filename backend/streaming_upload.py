@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -35,7 +36,8 @@ class StreamingFileStorage(FileStorage):
         if self._temp_file is not None:
             # Already processed, just move the temp file
             self._temp_file.close()
-            Path(self._temp_path).rename(dst)
+            shutil.copyfile(self._temp_path, dst)
+            self._temp_path.unlink(missing_ok=True)
             return
             
         # Create temp file and stream content
@@ -61,7 +63,8 @@ class StreamingFileStorage(FileStorage):
             self._temp_file = temp_file
         
         # Move to final destination
-        self._temp_path.rename(dst)
+        shutil.copyfile(self._temp_path, dst)
+        self._temp_path.unlink(missing_ok=True)
         self._hash_computed = True
     
     @property
@@ -79,7 +82,11 @@ class StreamingFileStorage(FileStorage):
 def create_streaming_file_storage(field_storage) -> StreamingFileStorage:
     """Convert werkzeug FieldStorage to StreamingFileStorage."""
     config = g.get('upload_config')
-    max_size = config.upload_max_bytes if config else 0
+    max_size = (
+        getattr(config, "upload_max_bytes", config.max_video_bytes)
+        if config
+        else 0
+    )
     
     return StreamingFileStorage(
         stream=field_storage.stream,

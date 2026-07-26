@@ -3,6 +3,7 @@ Focused test demonstrating Flask endpoints actually stream without whole-body bu
 """
 
 import io
+import os
 import json
 import tempfile
 import unittest
@@ -116,8 +117,9 @@ class TestStreamingFocused(unittest.TestCase):
             max_size=1000
         )
         
-        with tempfile.NamedTemporaryFile() as tmp:
-            streaming_file.save(tmp.name)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            destination = os.path.join(tmp_dir, "streamed.mp4")
+            streaming_file.save(destination)
             
             # Verify hash was computed correctly
             self.assertEqual(streaming_file.computed_hash, expected_hash)
