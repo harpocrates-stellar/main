@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import shutil
 import struct
 import subprocess
@@ -298,6 +299,9 @@ def _probe_video(path: Path | str) -> VideoInfo:
 
 
 def _start_decode(ffmpeg: str, source_path: Path | str, info: VideoInfo) -> subprocess.Popen[bytes]:
+    kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
     return subprocess.Popen(
         [
             ffmpeg,
@@ -320,6 +324,9 @@ def _start_decode(ffmpeg: str, source_path: Path | str, info: VideoInfo) -> subp
 
 
 def _start_encode(ffmpeg: str, output_path: Path | str, info: VideoInfo) -> subprocess.Popen[bytes]:
+    kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
     return subprocess.Popen(
         [
             ffmpeg,
@@ -358,6 +365,24 @@ def _require(binary: str) -> str:
     if not found:
         raise RuntimeError(f"{binary} is required for steganography processing")
     return found
+
+
+def _kill_after_timeout(
+    process: subprocess.Popen[bytes],
+    timeout_seconds: float,
+) -> threading.Timer:
+    def kill_process() -> None:
+        if process.poll() is not None:
+            return
+        if os.name != "nt":
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:
+            process.kill()
+
+    timer = threading.Timer(timeout_seconds, kill_process)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def _close_process(process: subprocess.Popen[bytes]) -> None:
