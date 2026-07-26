@@ -19,18 +19,23 @@ class AppConfig:
     metrics_enabled: bool
     metrics_token: str | None
     metrics_path: str
-    # Streaming upload configuration
-    upload_max_bytes: int
-    upload_temp_dir: str
-    upload_timeout_seconds: int
-    upload_max_concurrent: int
+    max_concurrent_requests: int
+    max_queue_size: int
+    max_concurrent_per_identity: int
+    admission_timeout_seconds: float
+    verifier_cache_max_size: int
+    verifier_cache_positive_ttl_seconds: float
+    verifier_cache_negative_ttl_seconds: float
 
 
 def load_config() -> AppConfig:
     app_env = os.getenv("APP_ENV", "development").strip().lower()
     cors_origins = _csv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
-    if "*" in cors_origins and os.getenv("ALLOW_WILDCARD_CORS") != "true":
-        raise RuntimeError("Wildcard CORS requires ALLOW_WILDCARD_CORS=true")
+    if "*" in cors_origins:
+        if app_env == "production":
+            raise RuntimeError("Wildcard CORS origins are not permitted in production")
+        if os.getenv("ALLOW_WILDCARD_CORS") != "true":
+            raise RuntimeError("Wildcard CORS requires ALLOW_WILDCARD_CORS=true")
 
     return AppConfig(
         app_env=app_env,
@@ -45,11 +50,13 @@ def load_config() -> AppConfig:
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
         metrics_token=_str_env("METRICS_TOKEN"),
         metrics_path=os.getenv("METRICS_PATH", "/metrics").strip(),
-        # Streaming upload configuration
-        upload_max_bytes=_int_env("UPLOAD_MAX_BYTES", 262_144_000),
-        upload_temp_dir=os.getenv("UPLOAD_TEMP_DIR", "").strip() or tempfile.gettempdir(),
-        upload_timeout_seconds=_int_env("UPLOAD_TIMEOUT_SECONDS", 300),
-        upload_max_concurrent=_int_env("UPLOAD_MAX_CONCURRENT", 10),
+        max_concurrent_requests=_int_env("MAX_CONCURRENT_REQUESTS", 50),
+        max_queue_size=_int_env("MAX_QUEUE_SIZE", 100),
+        max_concurrent_per_identity=_int_env("MAX_CONCURRENT_PER_IDENTITY", 5),
+        admission_timeout_seconds=_float_env("ADMISSION_TIMEOUT_SECONDS", 5.0),
+        verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
+        verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
+        verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
     )
 
 
@@ -80,4 +87,15 @@ def _str_env(name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise RuntimeError(f"{name} must be positive")
+    return parsed
+
 

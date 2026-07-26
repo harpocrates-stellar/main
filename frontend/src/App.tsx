@@ -1,17 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  AlertCircle,
   BadgeCheck,
   Building2,
   CheckCircle2,
+  Clock,
+  Copy,
   Fingerprint,
   KeyRound,
   Loader2,
   Shield,
   Upload,
   Wallet,
+  XCircle,
 } from 'lucide-react'
-import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stellar'
+import type { ChainProofRecord, IdentityTier, RegisterProofResult, TxState } from './stellar'
+import { describeTxState } from './stellar'
 import { fieldSecret, hasSeeds } from './seedVault'
+import type { VerificationEvent } from './verificationFlow'
 import EvilEye from './components/EvilEye'
 import './App.css'
 
@@ -36,18 +42,6 @@ type ProofPackage = {
   timestamp: string
   tier: IdentityTier
   silentWitness?: SilentWitnessProof
-}
-
-type ProofEvent = {
-  id: number
-  event_type: string
-  file_name: string | null
-  video_hash: string | null
-  proof_id: string | null
-  tier: string | null
-  tx_hash?: string | null
-  tx_status?: string | null
-  created_at: string
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
@@ -99,6 +93,65 @@ function shortHash(value: string) {
   return `${value.slice(0, 12)}...${value.slice(-10)}`
 }
 
+function TxStatusBadge({ state, hash }: { state: TxState; hash: string }) {
+  const [copyStatus, setCopyStatus] = useState('')
+
+  if (state === 'idle') return null
+
+  const config: Record<TxState, { icon: typeof Loader2; label: string; className: string }> = {
+    idle: { icon: Loader2, label: 'Idle', className: '' },
+    submitting: { icon: Loader2, label: 'Submitting…', className: 'tx-submitting' },
+    awaiting_confirmation: { icon: Clock, label: 'Awaiting confirmation…', className: 'tx-pending' },
+    confirmed: { icon: CheckCircle2, label: 'Confirmed', className: 'tx-confirmed' },
+    failed: { icon: XCircle, label: 'Failed', className: 'tx-failed' },
+    timeout: { icon: AlertCircle, label: 'Timed out', className: 'tx-timeout' },
+  }
+
+  const { icon: Icon, label, className } = config[state]
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(hash)
+      setCopyStatus('Copied!')
+      setTimeout(() => setCopyStatus(''), 2000)
+    } catch {
+      setCopyStatus('Failed')
+    }
+  }
+
+  return (
+    <div className={`tx-status-badge ${className}`} role="status" aria-live="polite">
+      <Icon size={14} className={state === 'submitting' ? 'spin' : undefined} aria-hidden="true" />
+      <span>{label}</span>
+      {hash && (
+        <div className="tx-hash-actions">
+          <button
+            className="tx-hash-copy"
+            type="button"
+            onClick={() => void handleCopy()}
+            title="Copy transaction hash"
+            aria-label={`Copy transaction hash: ${hash}`}
+          >
+            <Copy size={11} aria-hidden="true" />
+            {copyStatus || shortHash(hash)}
+          </button>
+          <a
+            className="tx-hash-copy"
+            href={`https://stellar.expert/explorer/testnet/tx/${hash}`}
+            target="_blank"
+            rel="noreferrer"
+            title="View on Stellar Expert"
+          >
+            Explorer ↗
+          </a>
+        </div>
+      )}
+    </div>
+  )
+}
+
+import { useTransactionState } from './hooks/useTransactionState'
+
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
   return hash === 'studio' || hash === 'verify' ? hash : 'landing'
@@ -118,10 +171,34 @@ function App() {
   const [message, setMessage] = useState('Upload evidence to begin.')
   const [verifyHash, setVerifyHash] = useState('')
   const [verifyResult, setVerifyResult] = useState('')
-  const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
-  const [events, setEvents] = useState<ProofEvent[]>([])
+  const { state: txState, send: sendTxEvent } = useTransactionState()
+  const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (txState.status === 'awaiting_confirmation' && txState.hash) {
+      setMessage('Recovered pending transaction. Polling for finality...')
+      const pollStellar = async () => {
+        const { pollTransactionStatus } = await import('./transactionVerifier')
+        const result = await pollTransactionStatus(txState.hash!, CONTRACT_ID, {
+          maxAttempts: 20,
+          intervalMs: 3000,
+        })
+        if (result.status === 'confirmed') {
+          sendTxEvent({ type: 'CONFIRMED' })
+          setMessage('Registration confirmed on Stellar. Evidence is now on-chain.')
+        } else if (result.status === 'failed') {
+          sendTxEvent({ type: 'FAILED', error: 'Transaction failed on network' })
+          setMessage('Registration failed on network.')
+        } else {
+          sendTxEvent({ type: 'TIMEOUT' })
+          setMessage('Polling timed out. The transaction may still complete.')
+        }
+      }
+      void pollStellar()
+    }
+  }, [txState.status, txState.hash])
 
   const selectedTierMeta = useMemo(
     () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
@@ -254,6 +331,9 @@ function App() {
       return
     }
 
+    sendTxEvent({ type: 'SUBMIT' })
+    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet...`)
+
     // Re-check network immediately before submission – the user may have
     // switched networks in Freighter after connecting.
     try {
@@ -262,18 +342,18 @@ function App() {
       const walletPassphrase = await getWalletNetwork()
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
+        sendTxEvent({ type: 'FAILED', error: 'Network mismatch' })
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
         return
       }
       setNetworkMismatch(null)
     } catch {
+      sendTxEvent({ type: 'FAILED', error: 'Could not verify wallet network' })
       // If we cannot query the network, abort rather than submit to the wrong chain.
       setMessage('Could not verify wallet network before submitting. Reconnect Freighter and try again.')
       return
     }
-
-    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
     try {
       const proofForRegistration =
@@ -294,13 +374,23 @@ function App() {
               proof: proofForRegistration.silentWitness.proof,
             }
           : undefined,
-      })
+      }, false) // don't wait for confirmation internally
+      
+      if (result.txState === 'failed') {
+          sendTxEvent({ type: 'FAILED', error: result.status })
+          setMessage(`Registration failed: ${result.status}`)
+          return
+      }
+      
+      if (result.hash) {
+          sendTxEvent({ type: 'TX_HASH_RECEIVED', hash: result.hash })
+          setMessage(`Transaction submitted. Awaiting confirmation... Hash: ${shortHash(result.hash)}`)
+      }
+      
+      // The useEffect will pick up the awaiting_confirmation state and poll for it.
       await persistRegistration(proofForRegistration, result)
-      setRegistration(result)
-      setStage('registered')
-      setMessage(`Registration submitted with Stellar status: ${result.status}.`)
     } catch (error) {
-      setStage('error')
+      sendTxEvent({ type: 'FAILED', error: error instanceof Error ? error.message : 'Stellar registration failed.' })
       setMessage(error instanceof Error ? error.message : 'Stellar registration failed.')
     }
   }
@@ -317,31 +407,18 @@ function App() {
       setVerifyHash(videoHash)
       hasLocalHash = true
 
-      const form = new FormData()
-      form.append('video', nextFile)
-
-      const response = await fetch(`${API_BASE}/api/stego/extract`, {
-        method: 'POST',
-        body: form,
+      const { verifyArtifact } = await import('./verificationFlow')
+      const result = await verifyArtifact({
+        apiBase: API_BASE,
+        contractId: CONTRACT_ID,
+        file: nextFile,
+        videoHash,
+        wallet: wallet || undefined,
       })
-      const data = await response.json()
-      const dbMatches = await fetchProofEventsByVideo(videoHash)
-      const { getProofByVideoHash } = await import('./stellar')
-      const onChain = CONTRACT_ID
-        ? await getProofByVideoHash(CONTRACT_ID, videoHash, wallet || undefined)
-        : null
 
-      setVerifyResult(
-        data.metadata?.protocol === 'harpocrates'
-          ? `Harpocrates metadata found. NeonDB has ${dbMatches.length} event(s). Chain registry: ${
-              onChain ? 'confirmed' : 'not found'
-            }.`
-          : `No embedded Harpocrates metadata found. NeonDB has ${dbMatches.length} event(s). Chain registry: ${
-              onChain ? 'confirmed' : 'not found'
-            }.`,
-      )
-      setEvents(dbMatches)
-      setChainProof(onChain)
+      setVerifyResult(result.message)
+      setEvents(result.events)
+      setChainProof(result.chainProof)
     } catch {
       setVerifyResult(
         hasLocalHash
@@ -407,11 +484,14 @@ function App() {
     ])
 
     const { generateSilentWitnessProof } = await import('./noirClient')
-    const silentWitness = await generateSilentWitnessProof({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
+    const silentWitness = await generateSilentWitnessProof(
+      {
+        videoHash: nextProof.videoHash,
+        credentialSecret,
+        nullifierSecret,
+      },
+      AbortSignal.timeout(180_000), // 3-minute timeout
+    )
 
     const nextWithProof = {
       ...nextProof,
@@ -424,12 +504,6 @@ function App() {
   function clearSeeds() {
     setCredentialSeed('')
     setNullifierSeed('')
-  }
-
-  async function fetchProofEventsByVideo(videoHash: string) {
-    const response = await fetch(`${API_BASE}/api/proofs/by-video/${videoHash}`)
-    const data = await response.json()
-    return (data.events ?? []) as ProofEvent[]
   }
 
   return (
@@ -588,7 +662,8 @@ function App() {
         <div className="studio">
           <header className="page-header">
             <h2>Evidence Studio</h2>
-            <p>{message}</p>
+            <p aria-live="polite">{message}</p>
+            <TxStatusBadge state={txState.status} hash={txState.hash ?? ''} />
           </header>
 
           {networkMismatch ? (
@@ -609,7 +684,7 @@ function App() {
           </label>
 
           <div className="tier-tabs" role="group" aria-label="Identity tier">
-            {tiers.map((tier) => {
+{tiers.map((tier) => {
               const Icon = tier.icon
               return (
                 <button
@@ -656,8 +731,8 @@ function App() {
             <div><dt>Tier</dt><dd>{selectedTierMeta.title}</dd></div>
             <div><dt>Nullifier</dt><dd>{shortHash(proof?.silentWitness?.nullifier ?? '')}</dd></div>
             <div><dt>Credential Root</dt><dd>{shortHash(proof?.silentWitness?.credentialRoot ?? '')}</dd></div>
-            <div><dt>Stellar Tx</dt><dd>{shortHash(registration?.hash ?? '')}</dd></div>
-            <div><dt>Tx Status</dt><dd>{registration?.status ?? 'Not submitted'}</dd></div>
+            <div><dt>Stellar Tx</dt><dd>{shortHash(txState.hash ?? '')}</dd></div>
+            <div><dt>Tx Status</dt><dd>{txState.status !== 'idle' ? describeTxState(txState.status) : 'Not submitted'}</dd></div>
           </dl>
 
           {processedVideoUrl ? (
@@ -669,10 +744,10 @@ function App() {
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving'}
+            disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState.status === 'submitting' || txState.status === 'awaiting_confirmation'}
             onClick={() => void registerProof()}
           >
-            {stage === 'hashing' || stage === 'embedding' || stage === 'proving' ? (
+            {stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState.status === 'submitting' || txState.status === 'awaiting_confirmation' ? (
               <Loader2 className="spin" size={18} aria-hidden="true" />
             ) : (
               <BadgeCheck size={18} aria-hidden="true" />
@@ -768,7 +843,10 @@ function App() {
             </div>
             <dl className="data-list">
               <div><dt>Received Hash</dt><dd>{shortHash(verifyHash)}</dd></div>
-              <div><dt>Chain Status</dt><dd>{chainProof ? 'Confirmed' : 'Not loaded'}</dd></div>
+              <div>
+                <dt>Chain Status</dt>
+                <dd>{chainProof ? (chainProof.status === 2 ? 'Revoked' : 'Confirmed') : 'Not loaded'}</dd>
+              </div>
             </dl>
           </div>
 

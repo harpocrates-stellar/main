@@ -6,8 +6,10 @@ import logging
 import os
 import shutil
 import tempfile
+from workspace import EncryptedWorkspace
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request
@@ -19,10 +21,13 @@ from werkzeug.utils import secure_filename
 from config import load_config
 from db import (
     check_db,
+    database_url,
     find_proof_events_by_video,
     init_db,
     insert_proof_event,
+    insert_proof_history_event,
     list_proof_events,
+    list_proof_history_events,
     make_idempotency_key,
     upsert_register_event,
     ConflictError,
@@ -31,7 +36,10 @@ from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
-from streaming_upload import create_streaming_file_storage
+from readiness import ReadinessManager
+from admission import AdmissionController, require_capacity
+from webhook import WebhookWorker, queue_webhook_deliveries
+from quarantine import QuarantineError, isolate_upload
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -49,9 +57,34 @@ def create_app() -> Flask:
     load_dotenv()
     config = load_config()
     app = Flask(__name__)
-    CORS(app, origins=config.cors_origins)
+    CORS(
+        app,
+        origins=config.cors_origins,
+        methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Metrics-Token"],
+        expose_headers=[
+            "Content-Disposition",
+            "X-Request-ID",
+            "X-Harpocrates-Source-Hash",
+            "X-Harpocrates-Embedded-Hash",
+            "X-Harpocrates-Metadata-Hash",
+            "X-Harpocrates-Db-Event",
+            "X-Harpocrates-Metadata",
+        ],
+    )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+
+    readiness_manager = ReadinessManager(timeout_seconds=1.0, cache_ttl_seconds=5.0)
+    readiness_manager.add_dependency("database", check_db, critical=True)
+    readiness_manager.add_dependency("video_tools", video_tooling_ready, critical=True)
+
+    admission_controller = AdmissionController(
+        max_concurrent=config.max_concurrent_requests,
+        max_queue=config.max_queue_size,
+        max_per_identity=config.max_concurrent_per_identity,
+        timeout_seconds=config.admission_timeout_seconds,
+    )
 
     @app.before_request
     def start_request_context():
@@ -130,17 +163,16 @@ def create_app() -> Flask:
 
     @app.get("/ready")
     def ready():
-        database_ready = check_db()
-        video_tools_ready = video_tooling_ready()
+        status = readiness_manager.check()
         return jsonify(
             {
-                "ok": database_ready and video_tools_ready,
+                "ok": status["ok"],
                 "service": "harpocrates-stego",
-                "database": "connected" if database_ready else "not_configured",
-                "video_tools": "available" if video_tools_ready else "missing",
+                "database": status.get("database", "not_configured"),
+                "video_tools": status.get("video_tools", "missing"),
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
             }
-        ), 200 if database_ready and video_tools_ready else 503
+        ), 200 if status["ok"] else 503
 
     def _enforce_video_size(video) -> bool:
         video.seek(0, 2)
@@ -167,6 +199,7 @@ def create_app() -> Flask:
         return len(raw) if raw else 0
 
     @app.post("/api/stego/embed")
+    @require_capacity(admission_controller)
     def embed():
         # Enable streaming for large uploads
         _enable_streaming_for_large_uploads()
@@ -190,22 +223,25 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            video.save(source_path)
+        try:
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                output_url = workspace.get_url("embedded.mp4")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
 
-            embed_metadata(source_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            
-            # Use computed hash if available from streaming upload
-            if hasattr(video, 'computed_hash') and video.computed_hash:
-                source_hash = video.computed_hash
-            else:
-                source_hash = sha256_file(source_path)
-                
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+                embed_metadata(source_url, output_url, metadata)
+                output_bytes = workspace.read_decrypted("embedded.mp4")
+                source_hash = workspace.sha256("source.video")
+                embedded_hash = workspace.sha256("embedded.mp4")
+                metadata_hash = canonical_metadata_hash(metadata)
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -217,6 +253,9 @@ def create_app() -> Flask:
             embedded_hash=embedded_hash,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         response = Response(output_bytes, mimetype="video/mp4")
         response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
@@ -231,6 +270,7 @@ def create_app() -> Flask:
         return response
 
     @app.post("/api/stego/extract")
+    @require_capacity(admission_controller)
     def extract():
         # Enable streaming for large uploads
         _enable_streaming_for_large_uploads()
@@ -242,18 +282,21 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            video.save(source_path)
-            metadata = extract_metadata(source_path)
-            
-            # Use computed hash if available from streaming upload
-            if hasattr(video, 'computed_hash') and video.computed_hash:
-                video_hash = video.computed_hash
-            else:
-                video_hash = sha256_file(source_path)
-                
-            metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        try:
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
+                metadata = extract_metadata(source_url)
+                video_hash = workspace.sha256("source.video")
+                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="extract",
@@ -264,6 +307,9 @@ def create_app() -> Flask:
             tier=metadata.get("tier") if metadata else None,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         return jsonify(
             {
@@ -306,6 +352,7 @@ def create_app() -> Flask:
         metadata_hash = payload.get("metadataHash")
         proof_id = payload.get("proofId")
         tx_hash = payload.get("txHash")
+        tx_status = payload.get("txStatus")
 
         for name, value in (
             ("videoHash", video_hash),
@@ -315,7 +362,13 @@ def create_app() -> Flask:
             if not is_hex_32(value):
                 return jsonify({"error": f"{name} must be a 32-byte hex string"}), 400
 
-        idempotency_key = make_idempotency_key(video_hash, proof_id, tx_hash)
+        try:
+            normalized_tx_hash = normalize_tx_hash(tx_hash)
+            normalized_tx_status = normalize_tx_status(tx_status)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        idempotency_key = make_idempotency_key(video_hash, proof_id, normalized_tx_hash)
 
         try:
             db_event, created = upsert_register_event(
@@ -325,8 +378,8 @@ def create_app() -> Flask:
                 metadata_hash=metadata_hash,
                 proof_id=proof_id,
                 tier=payload.get("tier"),
-                tx_hash=tx_hash,
-                tx_status=payload.get("txStatus"),
+                tx_hash=normalized_tx_hash,
+                tx_status=normalized_tx_status,
                 source_address=payload.get("sourceAddress"),
                 contract_id=payload.get("contractId"),
                 metadata=redact_metadata(payload),
@@ -337,10 +390,62 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        if db_event and db_event.get("id") and created:
+            queue_webhook_deliveries(db_event["id"])
+
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
 
+    @app.get("/api/proofs/history/<proof_id>")
+    def proof_history(proof_id: str):
+        if not is_hex_32(proof_id):
+            return jsonify({"error": "proof_id must be a 32-byte hex string"}), 400
+
+        limit = request.args.get("limit", "50")
+        offset = request.args.get("offset", "0")
+        try:
+            parsed_limit = int(limit)
+            parsed_offset = int(offset)
+        except ValueError:
+            return jsonify({"error": "limit and offset must be integers"}), 400
+
+        return jsonify(
+            {"ok": True, "events": list_proof_history_events(proof_id, parsed_limit, parsed_offset)}
+        )
+
+    @app.post("/api/proofs/history")
+    def register_proof_history_event():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+
+        proof_id = payload.get("proofId")
+        action = payload.get("action")
+        actor = payload.get("actor")
+        reason_code = payload.get("reasonCode")
+        contract_id = payload.get("contractId")
+        tx_hash = payload.get("txHash")
+
+        if not is_hex_32(proof_id):
+            return jsonify({"error": "proofId must be a 32-byte hex string"}), 400
+        if not isinstance(action, str) or not action:
+            return jsonify({"error": "action is required"}), 400
+        if reason_code is None or not isinstance(reason_code, int):
+            return jsonify({"error": "reasonCode is required"}), 400
+
+        db_event = insert_proof_history_event(
+            proof_id=proof_id,
+            action=action,
+            actor=actor,
+            reason_code=reason_code,
+            contract_id=contract_id,
+            tx_hash=tx_hash,
+        )
+
+        return jsonify({"ok": True, "db_event": db_event})
+
     @app.post("/api/noir/silent-witness")
+    @require_capacity(admission_controller)
     def silent_witness_proof():
         if _enforce_json_size() > config.max_json_bytes:
             return jsonify({"error": "JSON payload exceeds size limit"}), 413
@@ -371,6 +476,12 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"ok": True, "proof": proof})
+
+    # Start webhook worker if DB is enabled
+    if database_url():
+        webhook_worker = WebhookWorker()
+        webhook_worker.start()
+        app.webhook_worker = webhook_worker
 
     return app
 
@@ -416,6 +527,37 @@ def is_hex_32(value: object) -> bool:
     return True
 
 
+def normalize_tx_hash(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("txHash must be a 32-byte hex string")
+
+    normalized = value.strip().lower()
+    if not is_hex_32(normalized):
+        raise ValueError("txHash must be a 32-byte hex string")
+    return normalized
+
+
+def normalize_tx_status(value: object) -> str | None:
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        raise ValueError("txStatus must be one of: pending, confirmed, failed, missing")
+
+    normalized = value.strip().lower()
+    if normalized in {"pending", "confirmed", "failed", "missing"}:
+        return normalized
+    if normalized in {"success", "successful", "succeeded"}:
+        return "confirmed"
+    if normalized in {"failure", "failed", "error", "errored"}:
+        return "failed"
+    if normalized in {"not_found", "notfound"}:
+        return "missing"
+    raise ValueError("txStatus must be one of: pending, confirmed, failed, missing")
+
+
 def is_field_decimal(value: object) -> bool:
     if not isinstance(value, str) or not value or not value.isdecimal():
         return False
@@ -447,6 +589,21 @@ def validate_embed_metadata(metadata: object) -> None:
         raise ValueError("metadata sourceHash must be a 32-byte hex string")
     if not is_hex_32(metadata.get("proofId")):
         raise ValueError("metadata proofId must be a 32-byte hex string")
+    _validate_timestamp(metadata.get("timestamp"))
+
+
+def _validate_timestamp(value: object) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("metadata timestamp must be a string")
+    ts = value.strip().replace("Z", "+00:00").replace("z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        raise ValueError("metadata timestamp must be a timezone-aware ISO-8601 string")
+    if dt.tzinfo is None:
+        raise ValueError("metadata timestamp must be timezone-aware")
+    if dt > datetime.now(timezone.utc) + timedelta(seconds=300):
+        raise ValueError("metadata timestamp is unreasonably far in the future")
 
 
 def safe_filename(value: object) -> str | None:
