@@ -73,23 +73,15 @@ export async function verifyArtifact({
   }
 }
 
-async function extractMetadata(apiBase: string, file: File): Promise<unknown> {
-  const form = new FormData()
-  form.append('video', file)
-
-  const response = await fetch(`${apiBase}/api/stego/extract`, {
-    method: 'POST',
-    body: form,
-  })
-  if (!response.ok) {
-    throw new MalformedEvidenceError()
-  }
-
+async function extractMetadata(_apiBase: string, file: File): Promise<unknown> {
+  const { extractMetadata: extractMetadataLocal, MalformedEvidenceError: StegoError } = await import('./stego')
   try {
-    const data = (await response.json()) as { metadata?: unknown }
-    return data.metadata
-  } catch {
-    throw new MalformedEvidenceError()
+    return await extractMetadataLocal(file)
+  } catch (err) {
+    if (err instanceof StegoError) {
+      throw new MalformedEvidenceError()
+    }
+    throw err
   }
 }
 
