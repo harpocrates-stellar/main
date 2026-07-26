@@ -20,6 +20,7 @@ from werkzeug.utils import secure_filename
 from config import load_config
 from db import (
     check_db,
+    database_url,
     find_proof_events_by_video,
     init_db,
     insert_proof_event,
