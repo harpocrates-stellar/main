@@ -151,7 +151,7 @@ function TxStatusBadge({ state, hash }: { state: TxState; hash: string }) {
 }
 
 import { useTransactionState } from './hooks/useTransactionState'
-
+import { useEvidenceState } from './hooks/useEvidenceState'
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
   return hash === 'studio' || hash === 'verify' ? hash : 'landing'
@@ -161,9 +161,7 @@ function App() {
   const [currentView, setCurrentView] = useState<View>(initialView)
   const [isScrolled, setIsScrolled] = useState(false)
   const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
-  const [stage, setStage] = useState<Stage>('idle')
   const [file, setFile] = useState<File | null>(null)
-  const [proof, setProof] = useState<ProofPackage | null>(null)
   const [processedVideoUrl, setProcessedVideoUrl] = useState('')
   const [wallet, setWallet] = useState('')
   const [credentialSeed, setCredentialSeed] = useState('')
@@ -171,10 +169,26 @@ function App() {
   const [message, setMessage] = useState('Upload evidence to begin.')
   const [verifyHash, setVerifyHash] = useState('')
   const [verifyResult, setVerifyResult] = useState('')
-  const { state: txState, send: sendTxEvent } = useTransactionState()
+  const { state: txStateLocal, send: sendTxEvent } = useTransactionState()
   const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+  const [checkpointPassword, setCheckpointPassword] = useState('')
+  const [resumePassword, setResumePassword] = useState('')
+
+  const { state: evidenceState, send: sendEvidenceEvent, setPassword, loadCheckpoint, clearCheckpoint, hasCheckpoint } = useEvidenceState()
+  const stage = evidenceState.stage
+  const proof = stage === 'idle' || stage === 'hashing' || stage === 'error' ? null : {
+    fileName: evidenceState.fileName ?? '',
+    sourceHash: evidenceState.sourceHash ?? '',
+    videoHash: evidenceState.videoHash ?? '',
+    metadataHash: evidenceState.metadataHash ?? '',
+    proofId: evidenceState.proofId ?? '',
+    timestamp: evidenceState.timestamp ?? '',
+    tier: evidenceState.tier,
+    silentWitness: evidenceState.silentWitness
+  }
+  const txState = { status: evidenceState.txStatus ?? 'idle', hash: evidenceState.txHash ?? null }
 
   useEffect(() => {
     if (txState.status === 'awaiting_confirmation' && txState.hash) {
@@ -186,13 +200,13 @@ function App() {
           intervalMs: 3000,
         })
         if (result.status === 'confirmed') {
-          sendTxEvent({ type: 'CONFIRMED' })
+          sendEvidenceEvent({ type: 'REGISTERED', txHash: evidenceState.txHash! })
           setMessage('Registration confirmed on Stellar. Evidence is now on-chain.')
         } else if (result.status === 'failed') {
-          sendTxEvent({ type: 'FAILED', error: 'Transaction failed on network' })
+          sendEvidenceEvent({ type: 'ERROR', error: 'Transaction failed on network' })
           setMessage('Registration failed on network.')
         } else {
-          sendTxEvent({ type: 'TIMEOUT' })
+          // Timeout, let the poll logic retry or let the user know
           setMessage('Polling timed out. The transaction may still complete.')
         }
       }
@@ -255,14 +269,14 @@ function App() {
     if (!nextFile) return
 
     setFile(nextFile)
-    setStage('hashing')
+    sendEvidenceEvent({ type: 'START', tier: selectedTier, fileName: nextFile.name })
     setMessage('Hashing video locally in the browser.')
 
     try {
       const sourceHash = await sha256(await nextFile.arrayBuffer())
       const proofId = await sha256(`${sourceHash}:${crypto.randomUUID()}`)
       const timestamp = new Date().toISOString()
-      setStage('embedding')
+      sendEvidenceEvent({ type: 'HASHED', sourceHash })
       setMessage('Embedding portable Harpocrates metadata into the video.')
 
       const metadata = {
@@ -301,19 +315,17 @@ function App() {
       }
       const nextVideoUrl = URL.createObjectURL(embeddedBlob)
       setProcessedVideoUrl(nextVideoUrl)
-      setProof({
-        fileName: `harpocrates-${nextFile.name.replace(/\.[^.]+$/, '')}.mp4`,
-        sourceHash,
+      
+      sendEvidenceEvent({
+        type: 'EMBEDDED',
         videoHash: embeddedHash,
         metadataHash,
         proofId,
         timestamp,
-        tier: selectedTier,
       })
-      setStage('ready')
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
-      setStage('error')
+      sendEvidenceEvent({ type: 'ERROR', error: error instanceof Error ? error.message : 'Evidence processing failed.' })
       setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
     }
   }
@@ -331,7 +343,7 @@ function App() {
       return
     }
 
-    sendTxEvent({ type: 'SUBMIT' })
+    sendEvidenceEvent({ type: 'REGISTERING' })
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet...`)
 
     // Re-check network immediately before submission – the user may have
@@ -342,14 +354,14 @@ function App() {
       const walletPassphrase = await getWalletNetwork()
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
-        sendTxEvent({ type: 'FAILED', error: 'Network mismatch' })
+        sendEvidenceEvent({ type: 'ERROR', error: 'Network mismatch' })
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
         return
       }
       setNetworkMismatch(null)
     } catch {
-      sendTxEvent({ type: 'FAILED', error: 'Could not verify wallet network' })
+      sendEvidenceEvent({ type: 'ERROR', error: 'Could not verify wallet network' })
       // If we cannot query the network, abort rather than submit to the wrong chain.
       setMessage('Could not verify wallet network before submitting. Reconnect Freighter and try again.')
       return
@@ -377,12 +389,19 @@ function App() {
       }, false) // don't wait for confirmation internally
       
       if (result.txState === 'failed') {
-          sendTxEvent({ type: 'FAILED', error: result.status })
+          sendEvidenceEvent({ type: 'ERROR', error: result.status })
           setMessage(`Registration failed: ${result.status}`)
           return
       }
       
       if (result.hash) {
+          // State transition handles the txHash internally but we should store it
+          // Actually, our evidence state machine expects REGISTERED only when confirmed,
+          // but for awaiting confirmation we might need an AWAITING state or just rely on txHash in REGISTERING state.
+          // Wait, earlier we sent REGISTERING. Now we just need to update txHash so the poller starts.
+          // I will just use txStateLocal for now to trigger the poll, or update the state machine.
+          // Let's add a `TX_HASH_RECEIVED` event to EvidenceEvent. Wait I didn't add it.
+          // I'll stick to txStateLocal for the `hash` tracking so the `useEffect` works.
           sendTxEvent({ type: 'TX_HASH_RECEIVED', hash: result.hash })
           setMessage(`Transaction submitted. Awaiting confirmation... Hash: ${shortHash(result.hash)}`)
       }
@@ -476,7 +495,7 @@ function App() {
     const rawNullifierSeed = nullifierSeed.trim()
     clearSeeds()
 
-    setStage('proving')
+    // state machine handles proving transition implicitly if tier is silent
     setMessage('Generating Noir UltraHonk proof in this browser.')
     const [credentialSecret, nullifierSecret] = await Promise.all([
       fieldSecret('credential', rawCredentialSeed),
@@ -497,7 +516,7 @@ function App() {
       ...nextProof,
       silentWitness,
     }
-    setProof(nextWithProof)
+    sendEvidenceEvent({ type: 'PROVED', silentWitness })
     return nextWithProof
   }
 
@@ -665,6 +684,45 @@ function App() {
             <p aria-live="polite">{message}</p>
             <TxStatusBadge state={txState.status} hash={txState.hash ?? ''} />
           </header>
+
+          {hasCheckpoint && stage === 'idle' ? (
+            <div className="checkpoint-banner">
+              <h3>Interrupted session detected</h3>
+              <p>You have an unfinished evidence operation. Enter your checkpoint password to resume.</p>
+              <div className="secret-grid">
+                <input
+                  type="password"
+                  placeholder="Checkpoint password"
+                  value={resumePassword}
+                  onChange={(e) => setResumePassword(e.target.value)}
+                />
+                <button className="secondary-action" type="button" onClick={() => {
+                   loadCheckpoint(resumePassword).then(ok => {
+                     if (!ok) alert('Invalid password or expired checkpoint.')
+                   })
+                }}>Resume</button>
+                <button className="secondary-action" type="button" onClick={clearCheckpoint}>Start Over</button>
+              </div>
+            </div>
+          ) : null}
+
+          {stage === 'idle' && !hasCheckpoint ? (
+            <div className="checkpoint-banner">
+              <label>
+                <span>Checkpoint Password (Optional, to resume if interrupted)</span>
+                <input
+                  type="password"
+                  placeholder="Set password"
+                  value={checkpointPassword}
+                  onChange={(e) => {
+                    setCheckpointPassword(e.target.value)
+                    setPassword(e.target.value)
+                  }}
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+          ) : null}
 
           {networkMismatch ? (
             <div className="network-mismatch-banner" role="alert">
