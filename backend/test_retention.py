@@ -8,7 +8,7 @@ from retention import init_retention_worker, stop_retention_worker, _worker
 
 @pytest.fixture(autouse=True)
 def setup_db(monkeypatch):
-    db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5432/postgres")
+    db_url = os.environ.get("TEST_DATABASE_URL") or "postgresql://postgres:password@localhost:5432/postgres"
     monkeypatch.setenv("DATABASE_URL", db_url)
     try:
         init_db()

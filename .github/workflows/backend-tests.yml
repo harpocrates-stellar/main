@@ -45,7 +45,7 @@ jobs:
     env:
       APP_ENV: testing
       CORS_ORIGINS: http://localhost
-      DATABASE_URL: "postgresql://postgres:password@localhost:5432/postgres"
+      DATABASE_URL: ""
       NOIR_WORKER_ENABLED: "false"
 
     steps:
