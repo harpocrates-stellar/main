@@ -32,6 +32,53 @@ pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
 pub const MAX_HISTORY_LIMIT: u32 = 50;
 
+// ---------------------------------------------------------------------------
+// Scoped emergency pause controls (#87)
+// ---------------------------------------------------------------------------
+//
+// Pauses are scoped per registration domain (one bit per identity tier) so a
+// compromised path can be contained without freezing unaffected tiers or any
+// read entry point. Reads (`get_proof`, `get_proof_status`, `get_by_video`,
+// `has_nullifier`, `get_issuer`, `get_credential_root`, `get_verifier`,
+// `is_paused`, `get_pause_state`) are never gated by pause state. Admin
+// remediation entry points (`revoke_proof`, `revoke_issuer`,
+// `revoke_credential_root`, `set_verifier`) also stay callable while paused,
+// since incident response depends on them.
+//
+// Every pause is bounded: callers supply a `duration_secs` capped by
+// `MAX_PAUSE_DURATION_SECS` (admin) or `MAX_GUARDIAN_PAUSE_DURATION_SECS`
+// (guardian). A pause auto-expires once `ledger().timestamp() >=
+// expires_at`, so a lost admin/guardian key cannot brick registration
+// forever. `pause` is idempotent (re-pausing overwrites/extends the
+// existing record); `unpause` on an already-unpaused domain is a no-op.
+// Only the admin can lift a pause early — a compromised guardian key can
+// raise the alarm but cannot stand it down before the bounded expiry.
+//
+// Migration: `Guardian` and `Pause(domain)` are new, additive storage keys.
+// Existing deployments read as "no guardian set" / "nothing paused" until
+// the admin opts in, so upgrading is backward compatible and requires no
+// migration step. Rolling back to a pre-#87 wasm simply ignores these keys.
+pub const PAUSE_DOMAIN_TIER1_REGISTRATION: u32 = 1 << 0;
+pub const PAUSE_DOMAIN_TIER2_REGISTRATION: u32 = 1 << 1;
+pub const PAUSE_DOMAIN_TIER3_REGISTRATION: u32 = 1 << 2;
+/// Convenience alias that expands to all three registration domains at once.
+pub const PAUSE_DOMAIN_ALL_REGISTRATION: u32 = PAUSE_DOMAIN_TIER1_REGISTRATION
+    | PAUSE_DOMAIN_TIER2_REGISTRATION
+    | PAUSE_DOMAIN_TIER3_REGISTRATION;
+
+const PAUSE_DOMAIN_SINGLE_BITS: [u32; 3] = [
+    PAUSE_DOMAIN_TIER1_REGISTRATION,
+    PAUSE_DOMAIN_TIER2_REGISTRATION,
+    PAUSE_DOMAIN_TIER3_REGISTRATION,
+];
+
+/// Maximum pause duration an admin may set in a single call (7 days).
+pub const MAX_PAUSE_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
+/// Maximum pause duration a guardian may set in a single call (24 hours).
+/// Kept shorter than the admin cap so a compromised guardian key cannot
+/// freeze registration for longer than a day without admin involvement.
+pub const MAX_GUARDIAN_PAUSE_DURATION_SECS: u64 = 24 * 60 * 60;
+
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +116,18 @@ pub struct CredentialRootRecord {
     pub metadata_hash: BytesN<32>,
     pub active: bool,
     pub issued_at: u64,
+}
+
+/// Pause record for a single registration domain bit. Presence of a record
+/// does not by itself mean "paused" — see `domain_is_paused`, which also
+/// checks `expires_at` against the current ledger time so pauses expire on
+/// their own without requiring a follow-up transaction.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseRecord {
+    pub paused_by: Address,
+    pub paused_at: u64,
+    pub expires_at: u64,
 }
 
 #[contracttype]
@@ -177,6 +236,29 @@ pub struct NonRevocationChecked {
     pub revocation_root: BytesN<32>,
 }
 
+#[contractevent(topics = ["pause", "set"])]
+pub struct DomainPaused {
+    #[topic]
+    pub domain: u32,
+    pub paused_by: Address,
+    pub paused_at: u64,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["pause", "clear"])]
+pub struct DomainUnpaused {
+    #[topic]
+    pub domain: u32,
+    pub unpaused_by: Address,
+    pub unpaused_at: u64,
+}
+
+#[contractevent(topics = ["guardian", "set"])]
+pub struct GuardianSet {
+    #[topic]
+    pub guardian: Address,
+}
+
 #[contractevent(topics = ["admin", "propose"])]
 pub struct AdminProposed {
     #[topic]
@@ -218,6 +300,10 @@ pub enum DataKey {
     Issuer(Address),
     Verifier,
     ProofTtl,
+    /// Optional emergency-pause guardian, distinct from admin (#87).
+    Guardian,
+    /// Pause record for a single registration domain bit (#87).
+    Pause(u32),
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
@@ -249,6 +335,12 @@ pub enum RegistryError {
     NoCorrectionChange = 18,
     HistoryCorruption = 19,
     NoPendingAdmin = 20,
+    /// The requested operation is blocked by an active domain pause (#87).
+    Paused = 21,
+    /// `domain` was zero or contained bits outside the known pause domains.
+    InvalidPauseDomain = 22,
+    /// `duration_secs` was zero or exceeded the caller's role cap.
+    InvalidPauseDuration = 23,
 }
 
 #[contract]
@@ -458,6 +550,7 @@ impl HarpocratesRegistry {
         credential_root: BytesN<32>,
         proof: Bytes,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
         if env
@@ -508,6 +601,7 @@ impl HarpocratesRegistry {
         public_inputs: Bytes,
         proof: Bytes,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
         let parsed = parse_silent_witness_public_inputs(&env, &public_inputs);
@@ -565,6 +659,7 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         proof_id: BytesN<32>,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER2_REGISTRATION);
         source.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
@@ -598,6 +693,7 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         proof_id: BytesN<32>,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER3_REGISTRATION);
         issuer.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
@@ -868,6 +964,114 @@ impl HarpocratesRegistry {
         }
         .publish(&env);
     }
+
+    // -----------------------------------------------------------------------
+    // Scoped emergency pause controls (#87)
+    // -----------------------------------------------------------------------
+
+    /// Assign the address permitted to trigger emergency pauses without
+    /// holding the admin key. Admin-only. Pass the admin's own address to
+    /// revoke the guardian role.
+    pub fn set_guardian(env: Env, admin: Address, guardian: Address) {
+        require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardian, &guardian);
+        GuardianSet { guardian }.publish(&env);
+    }
+
+    /// The currently configured guardian, if any.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Guardian)
+    }
+
+    /// Pause one or more registration domains (`PAUSE_DOMAIN_*`, or their
+    /// bitwise-OR combination) for `duration_secs`. Callable by the admin or
+    /// the guardian; the admin is capped at `MAX_PAUSE_DURATION_SECS`, the
+    /// guardian at `MAX_GUARDIAN_PAUSE_DURATION_SECS`. Re-pausing an
+    /// already-paused domain extends (overwrites) its expiry rather than
+    /// erroring, so retries are idempotent. Reads and non-registration admin
+    /// entry points are never affected. Returns the epoch-second timestamp
+    /// at which the pause auto-expires.
+    pub fn pause(env: Env, caller: Address, domain: u32, duration_secs: u64) -> u64 {
+        validate_domain(&env, domain);
+        let is_admin = require_pauser(&env, &caller);
+        let max_duration = if is_admin {
+            MAX_PAUSE_DURATION_SECS
+        } else {
+            MAX_GUARDIAN_PAUSE_DURATION_SECS
+        };
+        if duration_secs == 0 || duration_secs > max_duration {
+            panic_with_error!(&env, RegistryError::InvalidPauseDuration);
+        }
+
+        let paused_at = env.ledger().timestamp();
+        let expires_at = paused_at.saturating_add(duration_secs);
+
+        for bit in domain_bits(domain) {
+            env.storage().persistent().set(
+                &DataKey::Pause(bit),
+                &PauseRecord {
+                    paused_by: caller.clone(),
+                    paused_at,
+                    expires_at,
+                },
+            );
+        }
+
+        DomainPaused {
+            domain,
+            paused_by: caller,
+            paused_at,
+            expires_at,
+        }
+        .publish(&env);
+
+        expires_at
+    }
+
+    /// Lift a pause early. Admin-only — a guardian can raise the alarm but
+    /// only the admin can stand it down before the bounded expiry. Unpausing
+    /// a domain that is not currently stored as paused is a no-op.
+    pub fn unpause(env: Env, admin: Address, domain: u32) {
+        validate_domain(&env, domain);
+        require_admin(&env, &admin);
+
+        let unpaused_at = env.ledger().timestamp();
+        let mut changed = false;
+        for bit in domain_bits(domain) {
+            if env.storage().persistent().has(&DataKey::Pause(bit)) {
+                env.storage().persistent().remove(&DataKey::Pause(bit));
+                changed = true;
+            }
+        }
+
+        if changed {
+            DomainUnpaused {
+                domain,
+                unpaused_by: admin,
+                unpaused_at,
+            }
+            .publish(&env);
+        }
+    }
+
+    /// Read-only: is any bit of `domain` currently paused (i.e. has an
+    /// unexpired pause record)? A domain past its `expires_at` is treated as
+    /// unpaused even if a stale record has not yet been cleared.
+    pub fn is_paused(env: Env, domain: u32) -> bool {
+        validate_domain(&env, domain);
+        let now = env.ledger().timestamp();
+        domain_bits(domain).any(|bit| domain_is_paused(&env, bit, now))
+    }
+
+    /// Read-only: the raw pause record for a single domain bit, if one is
+    /// currently stored (including a stale record past its `expires_at`
+    /// that has not yet been cleared by `unpause`).
+    pub fn get_pause_state(env: Env, domain: u32) -> Option<PauseRecord> {
+        validate_single_domain(&env, domain);
+        env.storage().persistent().get(&DataKey::Pause(domain))
+    }
 }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -880,6 +1084,73 @@ fn require_admin(env: &Env, candidate: &Address) {
     }
 }
 
+/// Require that `caller` is either the admin or the configured guardian, and
+/// authorize the call. Returns `true` when the caller is the admin, so
+/// callers can apply role-specific limits (e.g. pause duration caps).
+fn require_pauser(env: &Env, caller: &Address) -> bool {
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+
+    caller.require_auth();
+
+    if caller == &admin {
+        return true;
+    }
+
+    let guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
+    match guardian {
+        Some(g) if &g == caller => false,
+        _ => panic_with_error!(env, RegistryError::Unauthorized),
+    }
+}
+
+/// Reject `domain` unless it is nonzero and composed only of known
+/// `PAUSE_DOMAIN_*` bits. Accepts single domains and their bitwise-OR
+/// combination (e.g. `PAUSE_DOMAIN_ALL_REGISTRATION`).
+fn validate_domain(env: &Env, domain: u32) {
+    if domain == 0 || domain & !PAUSE_DOMAIN_ALL_REGISTRATION != 0 {
+        panic_with_error!(env, RegistryError::InvalidPauseDomain);
+    }
+}
+
+/// Reject `domain` unless it is exactly one known `PAUSE_DOMAIN_*` bit.
+fn validate_single_domain(env: &Env, domain: u32) {
+    if !PAUSE_DOMAIN_SINGLE_BITS.contains(&domain) {
+        panic_with_error!(env, RegistryError::InvalidPauseDomain);
+    }
+}
+
+/// Iterate the single-bit domains present in `domain` (already validated by
+/// `validate_domain`/`validate_single_domain`).
+fn domain_bits(domain: u32) -> impl Iterator<Item = u32> {
+    PAUSE_DOMAIN_SINGLE_BITS
+        .into_iter()
+        .filter(move |bit| domain & bit != 0)
+}
+
+fn domain_is_paused(env: &Env, domain_bit: u32, now: u64) -> bool {
+    let record: Option<PauseRecord> = env.storage().persistent().get(&DataKey::Pause(domain_bit));
+    match record {
+        Some(r) => now < r.expires_at,
+        None => false,
+    }
+}
+
+fn require_domain_unpaused(env: &Env, domain_bit: u32) {
+    let now = env.ledger().timestamp();
+    if domain_is_paused(env, domain_bit, now) {
+        panic_with_error!(env, RegistryError::Paused);
+    }
+}
+
+/// Compute the `expires_at` value for a freshly registered proof.
+///
+/// Returns `created_at + ttl` when a non-zero TTL is configured, or `0`
+/// (no expiration) otherwise.  Uses saturating addition to avoid overflow on
+/// extreme inputs.
 fn compute_expires_at(env: &Env) -> u64 {
     let ttl: u64 = env
         .storage()
@@ -1103,6 +1374,8 @@ mod test_budget;
 mod test_expiry;
 #[cfg(test)]
 mod test_invariants;
+#[cfg(test)]
+mod test_pause;
 #[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
