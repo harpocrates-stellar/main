@@ -26,6 +26,7 @@
    - [T8 ZK Circuit and Proof Integrity](#t8-zk-circuit-and-proof-integrity)
    - [T9 Admin Key Compromise](#t9-admin-key-compromise)
    - [T10 NeonDB Persistence Integrity](#t10-neondb-persistence-integrity)
+   - [T11 Local Credential Vault Compromise](#t11-local-credential-vault-compromise)
 7. [Mitigations by Component](#7-mitigations-by-component)
 8. [Open Risks and Follow-up Issues](#8-open-risks-and-follow-up-issues)
 9. [Non-Goals](#9-non-goals)
@@ -539,6 +540,29 @@ must be reconciled against on-chain data for any security-sensitive decision.
 
 ---
 
+### T11 Local Credential Vault Compromise
+
+**Description:** An attacker with local access to the user's device attempts to extract credential or nullifier seeds from `localStorage` or memory, potentially decrypting them to spoof the identity.
+
+**Attack vector:** Malicious browser extension, cross-site scripting (XSS), or physical device access.
+
+**Affected assets:** A1, A2.
+
+**Existing mitigations:**
+
+| Mitigation | Location |
+|------------|----------|
+| Seeds are encrypted in `localStorage` via AES-GCM and PBKDF2 | `credentialVault.ts` → `setup` |
+| Vault automatically locks after 15 minutes of inactivity | `credentialVault.ts` → `resetTimeout` |
+| Explicit zeroization when locking or destroying the vault | `credentialVault.ts` → `lock`, `destroy` |
+| Only the encrypted envelope is persisted, not plaintext seeds | `safeStorage.ts` |
+
+**Residual risk:** Memory scraping by highly privileged malware or malicious browser extensions could potentially read the derived `CryptoKey` or decrypted seeds while the vault is temporarily unlocked. XSS could invoke the vault's unlock method if the password was somehow intercepted (e.g. keylogger).
+
+**Severity:** Low (relies on broader device/browser compromise which is out of scope).
+
+---
+
 ## 7. Mitigations by Component
 
 ### 7.1 Soroban Contract (`harpocrates-registry`)
@@ -581,8 +605,8 @@ must be reconciled against on-chain data for any security-sensitive decision.
 
 | Mitigation | Threats addressed | Code reference |
 |------------|------------------|----------------|
-| Secrets held only in React state; never written to persistent storage | T4, T5 | `seedVault.ts` → `createClearSeeds` |
-| Secrets cleared after proof generation | T4, T5 | `seedVault.ts` → `createClearSeeds` |
+| Seeds held only in React state or encrypted Vault; plaintext never written to persistent storage | T4, T5, T11 | `seedVault.ts`, `credentialVault.ts` |
+| Seeds cleared after proof generation or vault inactivity | T4, T5, T11 | `seedVault.ts`, `credentialVault.ts` |
 | BN254 field modulus reduction on credential/nullifier secrets | T4 | `seedVault.ts` → `fieldSecret` |
 | Browser-side Noir proving — secrets never sent to server in production | T4, T5 | `noirClient.ts` → `generateSilentWitnessProof` |
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |

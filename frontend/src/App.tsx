@@ -124,20 +124,33 @@ function TxStatusBadge({ state, hash }: { state: TxState; hash: string }) {
       <Icon size={14} className={state === 'submitting' ? 'spin' : undefined} aria-hidden="true" />
       <span>{label}</span>
       {hash && (
-        <button
-          className="tx-hash-copy"
-          type="button"
-          onClick={() => void handleCopy()}
-          title="Copy transaction hash"
-          aria-label={`Copy transaction hash: ${hash}`}
-        >
-          <Copy size={11} aria-hidden="true" />
-          {copyStatus || shortHash(hash)}
-        </button>
+        <div className="tx-hash-actions">
+          <button
+            className="tx-hash-copy"
+            type="button"
+            onClick={() => void handleCopy()}
+            title="Copy transaction hash"
+            aria-label={`Copy transaction hash: ${hash}`}
+          >
+            <Copy size={11} aria-hidden="true" />
+            {copyStatus || shortHash(hash)}
+          </button>
+          <a
+            className="tx-hash-copy"
+            href={`https://stellar.expert/explorer/testnet/tx/${hash}`}
+            target="_blank"
+            rel="noreferrer"
+            title="View on Stellar Expert"
+          >
+            Explorer ↗
+          </a>
+        </div>
       )}
     </div>
   )
 }
+
+import { useTransactionState } from './hooks/useTransactionState'
 
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
@@ -158,11 +171,34 @@ function App() {
   const [message, setMessage] = useState('Upload evidence to begin.')
   const [verifyHash, setVerifyHash] = useState('')
   const [verifyResult, setVerifyResult] = useState('')
-  const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
-  const [txState, setTxState] = useState<TxState>('idle')
+  const { state: txState, send: sendTxEvent } = useTransactionState()
   const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (txState.status === 'awaiting_confirmation' && txState.hash) {
+      setMessage('Recovered pending transaction. Polling for finality...')
+      const pollStellar = async () => {
+        const { pollTransactionStatus } = await import('./transactionVerifier')
+        const result = await pollTransactionStatus(txState.hash!, CONTRACT_ID, {
+          maxAttempts: 20,
+          intervalMs: 3000,
+        })
+        if (result.status === 'confirmed') {
+          sendTxEvent({ type: 'CONFIRMED' })
+          setMessage('Registration confirmed on Stellar. Evidence is now on-chain.')
+        } else if (result.status === 'failed') {
+          sendTxEvent({ type: 'FAILED', error: 'Transaction failed on network' })
+          setMessage('Registration failed on network.')
+        } else {
+          sendTxEvent({ type: 'TIMEOUT' })
+          setMessage('Polling timed out. The transaction may still complete.')
+        }
+      }
+      void pollStellar()
+    }
+  }, [txState.status, txState.hash])
 
   const selectedTierMeta = useMemo(
     () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
@@ -295,8 +331,7 @@ function App() {
       return
     }
 
-    setTxState('submitting')
-    setRegistration(null)
+    sendTxEvent({ type: 'SUBMIT' })
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet...`)
 
     // Re-check network immediately before submission – the user may have
@@ -307,20 +342,18 @@ function App() {
       const walletPassphrase = await getWalletNetwork()
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
-        setTxState('idle')
+        sendTxEvent({ type: 'FAILED', error: 'Network mismatch' })
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
         return
       }
       setNetworkMismatch(null)
     } catch {
-      setTxState('idle')
+      sendTxEvent({ type: 'FAILED', error: 'Could not verify wallet network' })
       // If we cannot query the network, abort rather than submit to the wrong chain.
       setMessage('Could not verify wallet network before submitting. Reconnect Freighter and try again.')
       return
     }
-
-    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
     try {
       const proofForRegistration =
@@ -341,22 +374,23 @@ function App() {
               proof: proofForRegistration.silentWitness.proof,
             }
           : undefined,
-      })
-      await persistRegistration(proofForRegistration, result)
-      setRegistration(result)
-      setTxState(result.txState)
-
-      const messages: Record<TxState, string> = {
-        idle: 'Registration not started.',
-        submitting: 'Submitting proof to Stellar Testnet...',
-        awaiting_confirmation: `Transaction submitted. Awaiting confirmation on Stellar Testnet. Hash: ${shortHash(result.hash)}`,
-        confirmed: 'Registration confirmed on Stellar. Evidence is now on-chain.',
-        failed: `Registration failed. Check the transaction hash for details.`,
-        timeout: 'Registration timed out waiting for confirmation. The transaction may still complete — save the hash and check later.',
+      }, false) // don't wait for confirmation internally
+      
+      if (result.txState === 'failed') {
+          sendTxEvent({ type: 'FAILED', error: result.status })
+          setMessage(`Registration failed: ${result.status}`)
+          return
       }
-      setMessage(messages[result.txState])
+      
+      if (result.hash) {
+          sendTxEvent({ type: 'TX_HASH_RECEIVED', hash: result.hash })
+          setMessage(`Transaction submitted. Awaiting confirmation... Hash: ${shortHash(result.hash)}`)
+      }
+      
+      // The useEffect will pick up the awaiting_confirmation state and poll for it.
+      await persistRegistration(proofForRegistration, result)
     } catch (error) {
-      setTxState('failed')
+      sendTxEvent({ type: 'FAILED', error: error instanceof Error ? error.message : 'Stellar registration failed.' })
       setMessage(error instanceof Error ? error.message : 'Stellar registration failed.')
     }
   }
@@ -626,7 +660,7 @@ function App() {
           <header className="page-header">
             <h2>Evidence Studio</h2>
             <p aria-live="polite">{message}</p>
-            <TxStatusBadge state={txState} hash={registration?.hash ?? ''} />
+            <TxStatusBadge state={txState.status} hash={txState.hash ?? ''} />
           </header>
 
           {networkMismatch ? (
@@ -694,8 +728,8 @@ function App() {
             <div><dt>Tier</dt><dd>{selectedTierMeta.title}</dd></div>
             <div><dt>Nullifier</dt><dd>{shortHash(proof?.silentWitness?.nullifier ?? '')}</dd></div>
             <div><dt>Credential Root</dt><dd>{shortHash(proof?.silentWitness?.credentialRoot ?? '')}</dd></div>
-            <div><dt>Stellar Tx</dt><dd>{shortHash(registration?.hash ?? '')}</dd></div>
-            <div><dt>Tx Status</dt><dd>{registration ? describeTxState(txState) : 'Not submitted'}</dd></div>
+            <div><dt>Stellar Tx</dt><dd>{shortHash(txState.hash ?? '')}</dd></div>
+            <div><dt>Tx Status</dt><dd>{txState.status !== 'idle' ? describeTxState(txState.status) : 'Not submitted'}</dd></div>
           </dl>
 
           {processedVideoUrl ? (
@@ -707,10 +741,10 @@ function App() {
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation'}
+            disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState.status === 'submitting' || txState.status === 'awaiting_confirmation'}
             onClick={() => void registerProof()}
           >
-            {stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState === 'submitting' || txState === 'awaiting_confirmation' ? (
+            {stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState.status === 'submitting' || txState.status === 'awaiting_confirmation' ? (
               <Loader2 className="spin" size={18} aria-hidden="true" />
             ) : (
               <BadgeCheck size={18} aria-hidden="true" />

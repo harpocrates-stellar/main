@@ -33,6 +33,8 @@ from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
+from readiness import ReadinessManager
+from admission import AdmissionController, require_capacity
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -69,6 +71,17 @@ def create_app() -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
     init_retention_worker()
+
+    readiness_manager = ReadinessManager(timeout_seconds=1.0, cache_ttl_seconds=5.0)
+    readiness_manager.add_dependency("database", check_db, critical=True)
+    readiness_manager.add_dependency("video_tools", video_tooling_ready, critical=True)
+
+    admission_controller = AdmissionController(
+        max_concurrent=config.max_concurrent_requests,
+        max_queue=config.max_queue_size,
+        max_per_identity=config.max_concurrent_per_identity,
+        timeout_seconds=config.admission_timeout_seconds,
+    )
 
     @app.before_request
     def start_request_context():
@@ -147,17 +160,16 @@ def create_app() -> Flask:
 
     @app.get("/ready")
     def ready():
-        database_ready = check_db()
-        video_tools_ready = video_tooling_ready()
+        status = readiness_manager.check()
         return jsonify(
             {
-                "ok": database_ready and video_tools_ready,
+                "ok": status["ok"],
                 "service": "harpocrates-stego",
-                "database": "connected" if database_ready else "not_configured",
-                "video_tools": "available" if video_tools_ready else "missing",
+                "database": status.get("database", "not_configured"),
+                "video_tools": status.get("video_tools", "missing"),
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
             }
-        ), 200 if database_ready and video_tools_ready else 503
+        ), 200 if status["ok"] else 503
 
     def _enforce_video_size(video) -> bool:
         video.seek(0, 2)
@@ -170,6 +182,7 @@ def create_app() -> Flask:
         return len(raw) if raw else 0
 
     @app.post("/api/stego/embed")
+    @require_capacity(admission_controller)
     def embed():
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
@@ -236,6 +249,7 @@ def create_app() -> Flask:
         return response
 
     @app.post("/api/stego/extract")
+    @require_capacity(admission_controller)
     def extract():
         video = request.files.get("video")
         if video is None:
@@ -378,6 +392,7 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "legal_hold": hold})
 
     @app.post("/api/noir/silent-witness")
+    @require_capacity(admission_controller)
     def silent_witness_proof():
         if _enforce_json_size() > config.max_json_bytes:
             return jsonify({"error": "JSON payload exceeds size limit"}), 413

@@ -19,7 +19,7 @@ class MetricsCollector:
         self._requests_total: Dict[Tuple[str, str, str], int] = {}
         self._latency_histogram: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self._upload_histogram: Dict[Tuple[str, str], Dict[str, float]] = {}
-        self._deleted_events_total = 0
+        self._rejections_total: Dict[Tuple[str, str], int] = {}
 
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
@@ -27,11 +27,7 @@ class MetricsCollector:
             self._requests_total.clear()
             self._latency_histogram.clear()
             self._upload_histogram.clear()
-            self._deleted_events_total = 0
-
-    def record_deleted_event(self) -> None:
-        with self._lock:
-            self._deleted_events_total += 1
+            self._rejections_total.clear()
 
     def record_request(
         self,
@@ -86,6 +82,14 @@ class MetricsCollector:
                     if upload_bytes <= bucket:
                         up_stats[f"le_{bucket}"] += 1.0
 
+    def record_rejection(self, reason: str, endpoint: str) -> None:
+        """Record a rejected request due to admission control."""
+        clean_endpoint = endpoint if endpoint else "unmatched"
+        clean_reason = reason or "unknown"
+        with self._lock:
+            key = (clean_reason, clean_endpoint)
+            self._rejections_total[key] = self._rejections_total.get(key, 0) + 1
+
     def generate_prometheus_metrics(self) -> str:
         """Format metrics into Prometheus text format (version 0.0.4)."""
         lines: List[str] = []
@@ -135,11 +139,16 @@ class MetricsCollector:
                 lines.append(f'harpocrates_upload_bytes_total_sum{{{label_prefix}}} {_format_float(stats["sum"])}')
                 lines.append(f'harpocrates_upload_bytes_total_count{{{label_prefix}}} {int(stats["count"])}')
 
-            # 4. Retention metrics
-            lines.append("")
-            lines.append("# HELP harpocrates_deleted_events_total Total count of events purged by retention.")
-            lines.append("# TYPE harpocrates_deleted_events_total counter")
-            lines.append(f"harpocrates_deleted_events_total {self._deleted_events_total}")
+            # 4. Rejections total counter
+            if self._rejections_total:
+                lines.append("")
+                lines.append("# HELP harpocrates_admission_rejected_total Total count of requests rejected by admission control.")
+                lines.append("# TYPE harpocrates_admission_rejected_total counter")
+                for (reason, endpoint), count in sorted(self._rejections_total.items()):
+                    lines.append(
+                        f'harpocrates_admission_rejected_total{{endpoint="{_escape_label(endpoint)}",'
+                        f'reason="{_escape_label(reason)}"}} {count}'
+                    )
 
         lines.append("")
         return "\n".join(lines)
