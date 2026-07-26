@@ -1,3 +1,4 @@
+import os
 import pytest
 import time
 from datetime import datetime, timedelta, timezone
@@ -5,17 +6,25 @@ from db import init_db, insert_proof_event, set_legal_hold, purge_expired_events
 from config import load_config
 from retention import init_retention_worker, stop_retention_worker, _worker
 
-# Need a fixture to setup test DB
 @pytest.fixture(autouse=True)
 def setup_db(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
-    init_db()
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("truncate table proof_events cascade;")
-            cursor.execute("truncate table deletion_receipts cascade;")
-        conn.commit()
+    db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5432/postgres")
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    try:
+        init_db()
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("truncate table proof_events cascade;")
+                cursor.execute("truncate table deletion_receipts cascade;")
+            conn.commit()
+    except Exception as e:
+        pytest.skip(f"Database connection failed: {e}")
+    
+    yield
+    
+    stop_retention_worker()
 
+@pytest.mark.integration
 def test_purge_expired_events():
     # Insert an event that is expired
     expired_time = datetime.now(timezone.utc) - timedelta(days=1)
@@ -51,16 +60,15 @@ def test_purge_expired_events():
             in_receipts = [r["proof_id"] for r in cursor.fetchall()]
     assert in_receipts == ["a"*64]
 
+@pytest.mark.integration
 def test_retention_worker(monkeypatch):
     monkeypatch.setenv("RETENTION_INTERVAL_SECONDS", "1")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
     
     expired_time = datetime.now(timezone.utc) - timedelta(days=1)
     insert_proof_event(event_type="test", video_hash="5"*64, proof_id="e"*64, expires_at=expired_time)
     
     init_retention_worker()
     time.sleep(2)  # Wait for worker to run at least once
-    stop_retention_worker()
     
     with get_connection() as conn:
         with conn.cursor() as cursor:
