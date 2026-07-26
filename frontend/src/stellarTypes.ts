@@ -51,3 +51,17 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'approve_seal'
+  | 'finalize_seal'
+  | 'get_active_seal_policy'
+  | 'get_seal_approval_count'
+  | 'get_seal_approval'
+
+export type SealPolicyRecord = {
+  version: number
+  requiredApprovals: number
+  maxSigners: number
+  approvalTtl: string
+  expiresAt: string
+  status: number
+}

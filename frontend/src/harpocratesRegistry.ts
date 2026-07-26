@@ -9,6 +9,7 @@ import type {
   RegisterProofInput,
   RegisterProofResult,
   RegistryMethod,
+  SealPolicyRecord,
 } from './stellarTypes'
 
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
@@ -146,4 +147,88 @@ function argsForTier(input: NormalizedRegisterProofInput) {
   }
 
   return [address, videoHash, metadataHash, proofId]
+}
+
+/**
+ * Read the active threshold seal policy from the contract.
+ * Returns null if no policy exists or the policy is inactive.
+ */
+export async function getActiveSealPolicy(
+  contractId: string,
+  sourceAddress?: string,
+): Promise<SealPolicyRecord | null> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain reads.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_active_seal_policy'))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  // native is Option<SealPolicy> - unwrap the Some variant
+  const val = native?.value ?? native
+  if (!val) return null
+
+  return {
+    version: Number(val.version),
+    requiredApprovals: Number(val.required_approvals),
+    maxSigners: Number(val.max_signers),
+    approvalTtl: val.approval_ttl?.toString?.() ?? String(val.approval_ttl),
+    expiresAt: val.expires_at?.toString?.() ?? String(val.expires_at),
+    status: Number(val.status),
+  }
+}
+
+/**
+ * Read the number of active approvals for a proof under the active seal policy.
+ */
+export async function getSealApprovalCount(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+): Promise<number> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain reads.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call('get_seal_approval_count', scBytes32(asHex32(proofId, 'proofId'))),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  return native ? Number(native) : 0
 }

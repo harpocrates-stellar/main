@@ -740,6 +740,31 @@ privileged contract event is emitted.
 
 ---
 
+### OR-10 Threshold Seal Policy Governance
+
+**Severity:** Medium  
+**Component:** Soroban contract  
+**Description:** The m-of-n threshold seal policy introduces a governance layer
+where multiple independent institutional issuers must approve a proof before
+finalization. Risks include:
+- A compromised admin key can create a policy with `required_approvals = 1`,
+  bypassing the threshold requirement entirely.
+- Approval TTL expiry windows may allow stale approvals to be counted if not
+  properly validated.
+- Issuer revocation between approval and finalization must be handled atomically
+  to prevent partial-threshold seals.
+**Mitigations implemented:**
+- Policies are admin-only (inherits OR-6 admin trust assumption).
+- Approvals from revoked issuers are excluded from the active count.
+- Expired approvals are excluded by timestamp comparison.
+- Finalization is atomic: threshold check and proof registration occur in a
+  single Soroban transaction.
+- `MAX_SIGNERS = 16` bounds storage consumption per policy.
+- `DEFAULT_APPROVAL_TTL_SECS = 86_400` (1 day) provides a safe default.
+- Backward compatibility: existing single-issuer `register_seal` is preserved.
+
+---
+
 ## 9. Non-Goals
 
 The following are explicitly outside the scope of this threat model:
@@ -787,3 +812,4 @@ add a one-line change summary below:
 | Version | Date | Summary |
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
+| 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
