@@ -22,6 +22,9 @@ class AppConfig:
     max_queue_size: int
     max_concurrent_per_identity: int
     admission_timeout_seconds: float
+    verifier_cache_max_size: int
+    verifier_cache_positive_ttl_seconds: float
+    verifier_cache_negative_ttl_seconds: float
 
 
 def load_config() -> AppConfig:
@@ -50,6 +53,9 @@ def load_config() -> AppConfig:
         max_queue_size=_int_env("MAX_QUEUE_SIZE", 100),
         max_concurrent_per_identity=_int_env("MAX_CONCURRENT_PER_IDENTITY", 5),
         admission_timeout_seconds=_float_env("ADMISSION_TIMEOUT_SECONDS", 5.0),
+        verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
+        verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
+        verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
     )
 
 
