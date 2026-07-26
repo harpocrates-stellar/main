@@ -38,6 +38,12 @@ const STATUS_REVOKED: u32 = 2;
 // non-expiring by `get_proof_status`.
 pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 
+/// Threshold in ledgers below which we extend the TTL of records (approx 14 days)
+pub const BUMP_THRESHOLD_LEDGERS: u32 = 241_920;
+
+/// Target TTL in ledgers when extending the TTL of records (approx 30 days)
+pub const BUMP_TARGET_LEDGERS: u32 = 518_400;
+
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,6 +195,14 @@ pub struct AdminAccepted {
     pub new_admin: Address,
     pub previous_admin: Address,
 }
+
+#[contractevent(topics = ["ttl", "maintain"])]
+pub struct TTLMaintained {
+    pub count: u32,
+}
+
+#[contractevent(topics = ["ttl", "instance"])]
+pub struct InstanceTTLMaintained;
 
 #[contracttype]
 pub enum DataKey {
@@ -720,7 +734,38 @@ impl HarpocratesRegistry {
         }
         .publish(&env);
     }
+
+    // -----------------------------------------------------------------------
+    // TTL Maintenance (#44)
+    // -----------------------------------------------------------------------
+
+    /// Extend the TTL of the contract's instance storage.
+    /// This should be called periodically to prevent the instance from being archived.
+    pub fn extend_instance_ttl(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        InstanceTTLMaintained.publish(&env);
+    }
+
+    /// Extend the TTL of a batch of persistent storage keys.
+    /// Reverts if the batch is empty or exceeds 50 keys to prevent resource limits.
+    pub fn extend_persistent_ttls(env: Env, keys: SorobanVec<DataKey>) {
+        let count = keys.len();
+        if count == 0 || count > 50 {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        for key in keys.into_iter() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        }
+
+        TTLMaintained { count }.publish(&env);
+    }
 }
+
 
 fn require_admin(env: &Env, candidate: &Address) {
     let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
@@ -916,3 +961,5 @@ mod test_invariants;
 mod test_revocation;
 #[cfg(test)]
 mod test_state_machine;
+#[cfg(test)]
+mod test_ttl;
