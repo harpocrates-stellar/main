@@ -430,6 +430,7 @@ export async function verifyProof(
   return {
     hash: submitted.hash,
     status: submitted.status,
+    txState: initialTxState(submitted.status),
   }
 }
 
@@ -477,6 +478,7 @@ export async function expireProof(
   return {
     hash: submitted.hash,
     status: submitted.status,
+    txState: initialTxState(submitted.status),
   }
 }
 
@@ -526,5 +528,6 @@ export async function correctProof(
   return {
     hash: submitted.hash,
     status: submitted.status,
+    txState: initialTxState(submitted.status),
   }
 }

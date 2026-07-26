@@ -9,8 +9,8 @@ export type {
   RegisterProofResult,
   TxState,
 } from './stellarTypes'
+export { describeTxState } from './stellarTypes'
 export {
-  describeTxState,
   correctProof,
   expireProof,
   getProofByVideoHash,

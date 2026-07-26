@@ -196,6 +196,8 @@ pub struct AdminAccepted {
     #[topic]
     pub new_admin: Address,
     pub previous_admin: Address,
+}
+
 #[contractevent(topics = ["proof", "history"])]
 pub struct ProofHistoryEvent {
     #[topic]
@@ -1105,4 +1107,5 @@ mod test_invariants;
 mod test_revocation;
 #[cfg(test)]
 mod test_state_machine;
+#[cfg(test)]
 mod test_lifecycle;
