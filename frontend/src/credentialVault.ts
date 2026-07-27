@@ -140,7 +140,7 @@ export class CredentialVault {
       }
       this.resetTimeout()
       return true
-    } catch (e) {
+    } catch {
       // Typically an OperationError if decryption fails due to bad password
       return false
     }

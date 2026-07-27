@@ -152,6 +152,12 @@ get_proof_history_count
 verify_proof
 expire_proof
 correct_proof
+set_guardian
+get_guardian
+pause
+unpause
+is_paused
+get_pause_state
 ```
 
 ## Admin Transfer
@@ -173,6 +179,12 @@ unchanged. `DataKey::PendingAdmin` is appended as a new, independent persistent
 storage key, so upgrading an initialized contract preserves its current admin
 and all existing registry data. An upgraded contract starts with no pending
 admin proposal.
+
+## Emergency Pause
+
+Registration can be paused per identity tier without affecting reads or
+unaffected tiers. See `EMERGENCY_PAUSE.md` for the domain model, authorization
+matrix, event schema, migration/rollback notes, and troubleshooting.
 
 ## Tier 1 Verifier
 
@@ -210,6 +222,11 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["admin", "propose", pending]     => current_admin
 ["admin", "cancel", pending]      => current_admin
 ["admin", "accept", new_admin]    => previous_admin
+["revroot", "set", root]          => {}
+["nonrev", "check", root]         => nullifier, revocation_root
+["pause", "set", domain]          => paused_by, paused_at, expires_at
+["pause", "clear", domain]        => unpaused_by, unpaused_at
+["guardian", "set", guardian]     => {}
 ```
 
 ## Lifecycle History (#90)

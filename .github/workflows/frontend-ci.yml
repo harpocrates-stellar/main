@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'frontend/**'
+      - 'zk/vectors/**'
       - '.github/workflows/frontend-ci.yml'
   push:
     branches:
       - main
     paths:
       - 'frontend/**'
+      - 'zk/vectors/**'
       - '.github/workflows/frontend-ci.yml'
 
 jobs:

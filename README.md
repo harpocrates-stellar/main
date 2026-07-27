@@ -12,9 +12,23 @@ Harpocrates is a Stellar Testnet evidence protocol for sensitive video. It regis
 frontend/   React app for Evidence Studio and Verification Portal
 backend/    Flask video metadata service
 contracts/  Soroban contract workspace
-project.md  Product and architecture spec
+zk/         Noir circuits, toolchain lock, conformance vectors, build tooling
+docs/       Protocol and operations documentation
+DEPLOY.md   Hosted deployment guide (Docker Compose, Railway, Render, Fly.io)
 DESIGN.md   Visual design source
 ```
+
+### Documentation
+
+| Document | Covers |
+| --- | --- |
+| [docs/zk-reproducible-builds.md](docs/zk-reproducible-builds.md) | Toolchain pinning, hermetic builds, artifact digest manifests, drift detection |
+| [docs/zk-conformance-vectors.md](docs/zk-conformance-vectors.md) | The `hpx-vi/1` verifier-input codec and the cross-layer conformance corpus |
+| [docs/zk-fuzzing.md](docs/zk-fuzzing.md) | Structured fuzzing of malformed proofs and public inputs |
+| [docs/contract-delegation.md](docs/contract-delegation.md) | Constrained, expiring issuer and source delegation |
+| [docs/streaming-uploads.md](docs/streaming-uploads.md) | Bounded streaming upload path |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | Protocol threat model |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting |
 
 ## Quick Start
 
@@ -114,10 +128,9 @@ Done:
 - Typed frontend registry client and manual production chunking for Stellar, Noir, React, and proof runtime bundles.
 - Backend production hardening: security headers, readiness checks, stricter upload/metadata validation, safer CORS config, and production-gated local Noir worker.
 - Typed Soroban contract events with `#[contractevent]` for proof, issuer, verifier, and credential-root lifecycle events.
+- Hosted deployment packaging: Docker Compose, Railway, Render, and Fly.io guides; `.dockerignore` files; frontend Dockerfile build-arg wiring for `VITE_*` vars; nginx CSP and cross-origin isolation headers; GitHub Actions release workflow for `ghcr.io` image publishing.
 
-Next:
-
-- Hosted deployment packaging for frontend/backend environments.
+See [DEPLOY.md](DEPLOY.md) for full deployment instructions.
 
 ## E2E Smoke Test
 
@@ -205,10 +218,31 @@ GET  /health
 POST /api/stego/embed
 POST /api/stego/extract
 POST /api/noir/silent-witness
-GET  /api/proofs?limit=25
+GET  /api/proofs?limit=25&cursor=<opaque>
 GET  /api/proofs/by-video/:video_hash
 POST /api/proofs/register
 ```
+
+`GET /api/proofs` uses keyset (cursor) pagination so pages stay stable as new
+evidence events arrive:
+
+- `limit` — page size (default `25`, clamped to `1..100`)
+- `cursor` — optional opaque token from a previous `nextCursor`
+- Ordering — `id DESC` (primary key is the unique tie-breaker)
+- Malformed `cursor` values return HTTP `400` with `{"error":"invalid cursor"}`
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "events": [ /* up to `limit` proof_events rows */ ],
+  "nextCursor": "opaque-token-or-null"
+}
+```
+
+When `nextCursor` is non-null, pass it as `cursor` on the next request to
+continue. When it is `null`, there are no further pages.
 
 `/api/stego/embed` returns an embedded `video/mp4` artifact. The response
 headers include:

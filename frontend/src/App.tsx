@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AlertCircle,
   BadgeCheck,
@@ -9,7 +9,6 @@ import {
   Fingerprint,
   KeyRound,
   Loader2,
-  Shield,
   Upload,
   Wallet,
   XCircle,
@@ -19,11 +18,12 @@ import { describeTxState } from './stellar'
 import { fieldSecret, hasSeeds } from './seedVault'
 import type { VerificationEvent } from './verificationFlow'
 import EvilEye from './components/EvilEye'
+import { LandingView } from './views/LandingView'
+import { useWallet } from './hooks/useWallet'
+import type { View } from './types'
 import './App.css'
 
 type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
-type View = 'landing' | 'studio' | 'verify'
-
 type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
@@ -161,9 +161,10 @@ function App() {
   const [currentView, setCurrentView] = useState<View>(initialView)
   const [isScrolled, setIsScrolled] = useState(false)
   const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
+  const selectedTierMeta = tiers.find((tier) => tier.id === selectedTier) ?? tiers[0]
+  const [stage, setStage] = useState<Stage>('idle')
   const [file, setFile] = useState<File | null>(null)
   const [processedVideoUrl, setProcessedVideoUrl] = useState('')
-  const [wallet, setWallet] = useState('')
   const [credentialSeed, setCredentialSeed] = useState('')
   const [nullifierSeed, setNullifierSeed] = useState('')
   const [message, setMessage] = useState('Upload evidence to begin.')
@@ -172,28 +173,11 @@ function App() {
   const { state: txStateLocal, send: sendTxEvent } = useTransactionState()
   const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
-  const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
-  const [checkpointPassword, setCheckpointPassword] = useState('')
-  const [resumePassword, setResumePassword] = useState('')
-
-  const { state: evidenceState, send: sendEvidenceEvent, setPassword, loadCheckpoint, clearCheckpoint, hasCheckpoint } = useEvidenceState()
-  const stage = evidenceState.stage
-  const proof = stage === 'idle' || stage === 'hashing' || stage === 'error' ? null : {
-    fileName: evidenceState.fileName ?? '',
-    sourceHash: evidenceState.sourceHash ?? '',
-    videoHash: evidenceState.videoHash ?? '',
-    metadataHash: evidenceState.metadataHash ?? '',
-    proofId: evidenceState.proofId ?? '',
-    timestamp: evidenceState.timestamp ?? '',
-    tier: evidenceState.tier,
-    silentWitness: evidenceState.silentWitness
-  }
-  const txState = { status: evidenceState.txStatus ?? 'idle', hash: evidenceState.txHash ?? null }
 
   useEffect(() => {
     if (txState.status === 'awaiting_confirmation' && txState.hash) {
-      setMessage('Recovered pending transaction. Polling for finality...')
       const pollStellar = async () => {
+        setMessage('Recovered pending transaction. Polling for finality...')
         const { pollTransactionStatus } = await import('./transactionVerifier')
         const result = await pollTransactionStatus(txState.hash!, CONTRACT_ID, {
           maxAttempts: 20,
@@ -212,12 +196,9 @@ function App() {
       }
       void pollStellar()
     }
-  }, [txState.status, txState.hash])
+  }, [txState.status, txState.hash, sendTxEvent])
 
-  const selectedTierMeta = useMemo(
-    () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
-    [selectedTier],
-  )
+  const { wallet, networkMismatch, connectWallet } = useWallet()
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)
@@ -239,30 +220,12 @@ function App() {
       setNullifierSeed('')
     }
     setCurrentView(view)
-    const nextHash = view === 'landing' ? window.location.pathname : `${window.location.pathname}#${view}`
+    const nextHash =
+      view === 'landing'
+        ? window.location.pathname
+        : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
-  async function connectWallet() {
-    try {
-      const { connectFreighter, getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('./stellar')
-      const { checkNetworkMatch } = await import('./networkGuard')
-      const publicKey = await connectFreighter()
-      setWallet(publicKey)
-
-      const walletPassphrase = await getWalletNetwork()
-      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
-      if (check.ok) {
-        setNetworkMismatch(null)
-        setMessage('Wallet connected on Stellar Testnet.')
-      } else {
-        setNetworkMismatch(`${check.reason} ${check.remediation}`)
-        setMessage(check.reason)
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Freighter is not available.')
-    }
   }
 
   async function handleEvidence(nextFile: File | null) {
@@ -354,12 +317,10 @@ function App() {
       const walletPassphrase = await getWalletNetwork()
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
-        sendEvidenceEvent({ type: 'ERROR', error: 'Network mismatch' })
-        setNetworkMismatch(`${check.reason} ${check.remediation}`)
-        setMessage(check.reason)
+        sendTxEvent({ type: 'FAILED', error: 'Network mismatch' })
+        setMessage(`${check.reason} ${check.remediation}`)
         return
       }
-      setNetworkMismatch(null)
     } catch {
       sendEvidenceEvent({ type: 'ERROR', error: 'Could not verify wallet network' })
       // If we cannot query the network, abort rather than submit to the wrong chain.
@@ -449,9 +410,7 @@ function App() {
 
   async function loadEvents() {
     try {
-      const response = await fetch(`${API_BASE}/api/proofs?limit=6`)
-      const data = await response.json()
-      setEvents(data.events ?? [])
+      await connectWallet()
     } catch {
       setMessage('Database event feed is unavailable.')
     }
@@ -548,132 +507,35 @@ function App() {
           Harpocrates
         </button>
         <div className="navlinks" aria-label="Primary">
-          <button className={currentView === 'studio' ? 'active' : ''} type="button" onClick={() => openView('studio')}>
+          <button
+            className={currentView === 'studio' ? 'active' : ''}
+            type="button"
+            onClick={() => openView('studio')}
+          >
             Evidence
           </button>
-          <button className={currentView === 'verify' ? 'active' : ''} type="button" onClick={() => openView('verify')}>
+          <button
+            className={currentView === 'verify' ? 'active' : ''}
+            type="button"
+            onClick={() => openView('verify')}
+          >
             Verify
           </button>
         </div>
         <div className="network-pill">Stellar Testnet</div>
-        <button className="icon-button" type="button" onClick={connectWallet} title="Connect wallet">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={() => void connectWallet()}
+          title="Connect wallet"
+        >
           <Wallet size={18} aria-hidden="true" />
           <span>{wallet ? `${wallet.slice(0, 5)}...${wallet.slice(-4)}` : 'Connect'}</span>
         </button>
       </nav>
 
       {currentView === 'landing' ? (
-        <>
-      <section className="hero-band">
-        <div className="hero-copy">
-          <h1>Evidence integrity for silent witnesses.</h1>
-          <p className="lede">
-            Steganographic video, Noir privacy proofs, Stellar registry — one verifiable chain of custody.
-          </p>
-          <div className="hero-actions">
-            <button className="hero-primary" type="button" onClick={() => openView('studio')}>
-              Begin evidence flow
-            </button>
-            <button className="hero-secondary" type="button" onClick={() => openView('verify')}>
-              Verify an artifact
-            </button>
-          </div>
-        </div>
-        <div className="signal-panel" aria-label="Protocol status">
-          <span>Integrity</span>
-          <strong>SHA-256</strong>
-          <span>Privacy</span>
-          <strong>3 tiers</strong>
-          <span>Registry</span>
-          <strong>Soroban</strong>
-        </div>
-      </section>
-
-      <section className="tech-strip">
-        <dl className="tech-specs" aria-label="Technical specification">
-          <div><dt>Proof system</dt><dd>Noir UltraHonk</dd></div>
-          <div><dt>Hash commitment</dt><dd>SHA-256</dd></div>
-          <div><dt>On-chain registry</dt><dd>Soroban</dd></div>
-          <div><dt>Identity tiers</dt><dd>3 levels</dd></div>
-        </dl>
-      </section>
-
-      <section className="workflow-band" id="workflow">
-        <div className="workflow-heading">
-          <h2>How it works</h2>
-          <p>From raw video to chain-verifiable evidence in four steps.</p>
-        </div>
-        <div className="workflow-diagram" aria-label="Harpocrates protocol workflow">
-          <svg viewBox="0 0 1120 240" role="img" preserveAspectRatio="xMidYMid meet">
-            <defs>
-              <marker
-                id="flowArrow"
-                viewBox="0 0 10 10"
-                refX="7"
-                refY="5"
-                markerWidth="6"
-                markerHeight="6"
-                orient="auto-start-reverse"
-              >
-                <path d="M0 0 L10 5 L0 10 z" fill="rgba(255,255,255,0.4)" />
-              </marker>
-            </defs>
-
-            <line className="flow-connector" x1="280" y1="120" x2="320" y2="120" markerEnd="url(#flowArrow)" />
-            <line className="flow-connector" x1="560" y1="120" x2="600" y2="120" markerEnd="url(#flowArrow)" />
-            <line className="flow-connector" x1="840" y1="120" x2="880" y2="120" markerEnd="url(#flowArrow)" />
-
-            <g className="diagram-node" transform="translate(40 60)">
-              <rect width="240" height="120" rx="10" />
-              <text className="node-step" x="216" y="34">01</text>
-              <text className="node-title" x="24" y="40">Video</text>
-              <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
-              <text className="node-sub" x="24" y="82">Steganography</text>
-              <text className="node-sub" x="24" y="104">SHA-256</text>
-            </g>
-            <g className="diagram-node" transform="translate(320 60)">
-              <rect width="240" height="120" rx="10" />
-              <text className="node-step" x="216" y="34">02</text>
-              <text className="node-title" x="24" y="40">Browser</text>
-              <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
-              <text className="node-sub" x="24" y="82">Noir Proof</text>
-              <text className="node-sub" x="24" y="104">Nullifier</text>
-            </g>
-            <g className="diagram-node" transform="translate(600 60)">
-              <rect width="240" height="120" rx="10" />
-              <text className="node-step" x="216" y="34">03</text>
-              <text className="node-title" x="24" y="40">Soroban</text>
-              <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
-              <text className="node-sub" x="24" y="82">Verifier</text>
-              <text className="node-sub" x="24" y="104">Registry</text>
-            </g>
-            <g className="diagram-node" transform="translate(880 60)">
-              <rect width="240" height="120" rx="10" />
-              <text className="node-step" x="216" y="34">04</text>
-              <text className="node-title" x="24" y="40">Portal</text>
-              <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
-              <text className="node-sub" x="24" y="82">Extract</text>
-              <text className="node-sub" x="24" y="104">Confirm</text>
-            </g>
-          </svg>
-        </div>
-      </section>
-
-      <footer className="site-footer">
-        <div className="footer-inner">
-          <div className="footer-brand">
-            <Shield size={16} aria-hidden="true" />
-            <span>Harpocrates</span>
-          </div>
-          <p className="footer-tagline">Privacy-first evidence integrity on Stellar.</p>
-          <div className="footer-stack">
-            <span>Noir ZK</span>
-            <span>SHA-256</span>
-            <span>Soroban</span>
-          </div>
-        </div>
-      </footer>
-        </>
+        <LandingView onOpenStudio={() => openView('studio')} onOpenVerify={() => openView('verify')} />
       ) : null}
 
       {currentView === 'studio' ? (

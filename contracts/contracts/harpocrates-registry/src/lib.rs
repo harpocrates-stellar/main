@@ -8,6 +8,14 @@ use soroban_sdk::{
     Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
 };
 
+pub mod verifier_inputs;
+
+use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN};
+
+/// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
+pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
+pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
+
 const TIER_SILENT_WITNESS: u32 = 1;
 const TIER_CONSISTENT_SOURCE: u32 = 2;
 const TIER_PUBLIC_SEAL: u32 = 3;
@@ -31,6 +39,154 @@ pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 //   single query, protecting callers from unbounded iteration costs.
 pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
 pub const MAX_HISTORY_LIMIT: u32 = 50;
+
+// ---------------------------------------------------------------------------
+// Scoped emergency pause controls (#87)
+// ---------------------------------------------------------------------------
+//
+// Pauses are scoped per registration domain (one bit per identity tier) so a
+// compromised path can be contained without freezing unaffected tiers or any
+// read entry point. Reads (`get_proof`, `get_proof_status`, `get_by_video`,
+// `has_nullifier`, `get_issuer`, `get_credential_root`, `get_verifier`,
+// `is_paused`, `get_pause_state`) are never gated by pause state. Admin
+// remediation entry points (`revoke_proof`, `revoke_issuer`,
+// `revoke_credential_root`, `set_verifier`) also stay callable while paused,
+// since incident response depends on them.
+//
+// Every pause is bounded: callers supply a `duration_secs` capped by
+// `MAX_PAUSE_DURATION_SECS` (admin) or `MAX_GUARDIAN_PAUSE_DURATION_SECS`
+// (guardian). A pause auto-expires once `ledger().timestamp() >=
+// expires_at`, so a lost admin/guardian key cannot brick registration
+// forever. `pause` is idempotent (re-pausing overwrites/extends the
+// existing record); `unpause` on an already-unpaused domain is a no-op.
+// Only the admin can lift a pause early — a compromised guardian key can
+// raise the alarm but cannot stand it down before the bounded expiry.
+//
+// Migration: `Guardian` and `Pause(domain)` are new, additive storage keys.
+// Existing deployments read as "no guardian set" / "nothing paused" until
+// the admin opts in, so upgrading is backward compatible and requires no
+// migration step. Rolling back to a pre-#87 wasm simply ignores these keys.
+pub const PAUSE_DOMAIN_TIER1_REGISTRATION: u32 = 1 << 0;
+pub const PAUSE_DOMAIN_TIER2_REGISTRATION: u32 = 1 << 1;
+pub const PAUSE_DOMAIN_TIER3_REGISTRATION: u32 = 1 << 2;
+/// Convenience alias that expands to all three registration domains at once.
+pub const PAUSE_DOMAIN_ALL_REGISTRATION: u32 = PAUSE_DOMAIN_TIER1_REGISTRATION
+    | PAUSE_DOMAIN_TIER2_REGISTRATION
+    | PAUSE_DOMAIN_TIER3_REGISTRATION;
+
+const PAUSE_DOMAIN_SINGLE_BITS: [u32; 3] = [
+    PAUSE_DOMAIN_TIER1_REGISTRATION,
+    PAUSE_DOMAIN_TIER2_REGISTRATION,
+    PAUSE_DOMAIN_TIER3_REGISTRATION,
+];
+
+/// Maximum pause duration an admin may set in a single call (7 days).
+pub const MAX_PAUSE_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
+/// Maximum pause duration a guardian may set in a single call (24 hours).
+/// Kept shorter than the admin cap so a compromised guardian key cannot
+/// freeze registration for longer than a day without admin involvement.
+pub const MAX_GUARDIAN_PAUSE_DURATION_SECS: u64 = 24 * 60 * 60;
+
+// ---------------------------------------------------------------------------
+// Constrained issuer and source delegation (#192)
+// ---------------------------------------------------------------------------
+//
+// A source or issuer often needs an assistant, a scheduler, or a CI job to
+// register on its behalf without handing over the key. A delegation grants
+// exactly one capability, for a bounded time, and nothing else.
+//
+// What a delegation is NOT:
+//
+// - It is not issuer or source authority. A delegate cannot add or revoke
+//   issuers, cannot add or revoke credential roots, cannot set the verifier,
+//   pause a domain, or touch admin state. Those paths still require the
+//   grantor's own key.
+// - It is not transitive. `grant_delegation` requires the grantor's own
+//   signature, and the delegated registration entry points are not grant entry
+//   points, so there is no call path by which a delegate can re-delegate the
+//   authority it received. A delegate that grants to a third party grants only
+//   *its own* authority; the third party still cannot act for the original
+//   grantor. This is enforced by construction, not by a runtime scan, so it
+//   holds without bounding a delegation graph walk.
+// - It is not attribution laundering. The registered `ProofRecord` still names
+//   the grantor as source/issuer; the delegate appears only in the proof's
+//   lifecycle history, so an auditor can see who actually acted.
+//
+// Bounds. `scope` must be a non-empty subset of the known scope bits.
+// `duration_secs` must be non-zero and at most `MAX_DELEGATION_DURATION_SECS`.
+// A grantor may hold at most `MAX_DELEGATIONS_PER_GRANTOR` distinct delegate
+// addresses; re-granting to an existing delegate overwrites its record and does
+// not consume another slot, so retries and renewals are idempotent in storage.
+//
+// Expiry. A delegation lapses on its own at `expires_at` — a forgotten grant
+// cannot become permanent authority. An expired record still occupies its slot
+// until `revoke_delegation` prunes it, which keeps the cap a simple, auditable
+// count of distinct delegates rather than a time-dependent quantity.
+//
+// Migration. `Delegation` and `DelegationCount` are new, additive storage keys
+// and the delegated entry points are new functions. Existing deployments read
+// as "no delegations" until a grantor opts in; no migration step is required.
+// Rolling back to a pre-#192 wasm ignores these keys, which fails closed: the
+// delegated entry points disappear and only direct-key registration remains.
+
+/// A delegate may call `register_source_delegated` for the grantor.
+pub const DELEGATION_SCOPE_REGISTER_SOURCE: u32 = 1 << 0;
+/// A delegate may call `register_seal_delegated` for the grantor.
+pub const DELEGATION_SCOPE_REGISTER_SEAL: u32 = 1 << 1;
+/// Every known scope bit. Used to reject unknown bits in `scope`.
+pub const DELEGATION_SCOPE_ALL: u32 =
+    DELEGATION_SCOPE_REGISTER_SOURCE | DELEGATION_SCOPE_REGISTER_SEAL;
+
+/// Longest delegation a grantor may issue in a single call (30 days).
+pub const MAX_DELEGATION_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Maximum number of distinct delegate addresses a single grantor may hold.
+/// Bounds per-grantor storage growth under a hostile or buggy client.
+pub const MAX_DELEGATIONS_PER_GRANTOR: u32 = 32;
+
+/// A narrowly scoped, expiring authority to act for `grantor`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegationRecord {
+    pub grantor: Address,
+    pub delegate: Address,
+    /// Bitwise-OR of `DELEGATION_SCOPE_*`.
+    pub scope: u32,
+    pub granted_at: u64,
+    /// Epoch seconds after which the delegation is inert. Never zero.
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["deleg", "grant"])]
+pub struct DelegationGranted {
+    #[topic]
+    pub grantor: Address,
+    #[topic]
+    pub delegate: Address,
+    pub scope: u32,
+    pub granted_at: u64,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["deleg", "revoke"])]
+pub struct DelegationRevoked {
+    #[topic]
+    pub grantor: Address,
+    #[topic]
+    pub delegate: Address,
+    pub revoked_by: Address,
+    pub revoked_at: u64,
+}
+
+#[contractevent(topics = ["deleg", "used"])]
+pub struct DelegationUsed {
+    #[topic]
+    pub grantor: Address,
+    #[topic]
+    pub delegate: Address,
+    pub scope: u32,
+    pub proof_id: BytesN<32>,
+}
 
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
@@ -69,6 +225,18 @@ pub struct CredentialRootRecord {
     pub metadata_hash: BytesN<32>,
     pub active: bool,
     pub issued_at: u64,
+}
+
+/// Pause record for a single registration domain bit. Presence of a record
+/// does not by itself mean "paused" — see `domain_is_paused`, which also
+/// checks `expires_at` against the current ledger time so pauses expire on
+/// their own without requiring a follow-up transaction.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseRecord {
+    pub paused_by: Address,
+    pub paused_at: u64,
+    pub expires_at: u64,
 }
 
 #[contracttype]
@@ -177,6 +345,29 @@ pub struct NonRevocationChecked {
     pub revocation_root: BytesN<32>,
 }
 
+#[contractevent(topics = ["pause", "set"])]
+pub struct DomainPaused {
+    #[topic]
+    pub domain: u32,
+    pub paused_by: Address,
+    pub paused_at: u64,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["pause", "clear"])]
+pub struct DomainUnpaused {
+    #[topic]
+    pub domain: u32,
+    pub unpaused_by: Address,
+    pub unpaused_at: u64,
+}
+
+#[contractevent(topics = ["guardian", "set"])]
+pub struct GuardianSet {
+    #[topic]
+    pub guardian: Address,
+}
+
 #[contractevent(topics = ["admin", "propose"])]
 pub struct AdminProposed {
     #[topic]
@@ -218,11 +409,19 @@ pub enum DataKey {
     Issuer(Address),
     Verifier,
     ProofTtl,
+    /// Optional emergency-pause guardian, distinct from admin (#87).
+    Guardian,
+    /// Pause record for a single registration domain bit (#87).
+    Pause(u32),
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
     ProofHistorySeq(BytesN<32>),
     ProofHistoryEntry(BytesN<32>, u32),
+    /// Scoped, expiring delegation from a grantor to a delegate (#192).
+    Delegation(Address, Address),
+    /// Count of distinct delegate addresses held by a grantor (#192).
+    DelegationCount(Address),
 }
 
 #[contracterror]
@@ -249,6 +448,27 @@ pub enum RegistryError {
     NoCorrectionChange = 18,
     HistoryCorruption = 19,
     NoPendingAdmin = 20,
+    /// The requested operation is blocked by an active domain pause (#87).
+    Paused = 21,
+    /// `domain` was zero or contained bits outside the known pause domains.
+    InvalidPauseDomain = 22,
+    /// `duration_secs` was zero or exceeded the caller's role cap.
+    InvalidPauseDuration = 23,
+    /// `scope` was zero or contained bits outside `DELEGATION_SCOPE_ALL` (#192).
+    InvalidDelegationScope = 24,
+    /// `duration_secs` was zero or above `MAX_DELEGATION_DURATION_SECS` (#192).
+    InvalidDelegationDuration = 25,
+    /// No delegation exists from the named grantor to the caller (#192).
+    DelegationNotFound = 26,
+    /// The delegation exists but its `expires_at` has passed (#192).
+    DelegationExpired = 27,
+    /// The delegation exists and is live, but does not carry the scope the
+    /// attempted operation requires (#192).
+    DelegationScopeExceeded = 28,
+    /// The grantor already holds `MAX_DELEGATIONS_PER_GRANTOR` delegates (#192).
+    DelegationsSaturated = 29,
+    /// A grantor may not delegate to itself (#192).
+    SelfDelegation = 30,
 }
 
 #[contract]
@@ -458,6 +678,7 @@ impl HarpocratesRegistry {
         credential_root: BytesN<32>,
         proof: Bytes,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
         if env
@@ -508,6 +729,7 @@ impl HarpocratesRegistry {
         public_inputs: Bytes,
         proof: Bytes,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
         let parsed = parse_silent_witness_public_inputs(&env, &public_inputs);
@@ -565,6 +787,7 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         proof_id: BytesN<32>,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER2_REGISTRATION);
         source.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
@@ -598,6 +821,7 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         proof_id: BytesN<32>,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER3_REGISTRATION);
         issuer.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
@@ -626,6 +850,280 @@ impl HarpocratesRegistry {
             Some(issuer),
             record.tier,
         );
+        record
+    }
+
+    // -----------------------------------------------------------------------
+    // Constrained issuer and source delegation (#192)
+    // -----------------------------------------------------------------------
+
+    /// Grant `delegate` a narrowly scoped, expiring authority to register on
+    /// the caller's behalf.
+    ///
+    /// Requires the grantor's own signature — a delegate can never create or
+    /// extend a delegation, which is what makes the mechanism non-transitive.
+    ///
+    /// `scope` is a non-empty subset of `DELEGATION_SCOPE_ALL`.
+    /// `duration_secs` is non-zero and at most `MAX_DELEGATION_DURATION_SECS`.
+    ///
+    /// Idempotent: re-granting to an existing delegate overwrites that
+    /// delegate's record — narrowing or widening scope, extending or shortening
+    /// expiry — and does not consume another storage slot. Returns the epoch
+    /// second at which the delegation lapses on its own.
+    ///
+    /// # Reverts
+    ///
+    /// - `SelfDelegation`              if `grantor == delegate`
+    /// - `InvalidDelegationScope`      if `scope` is zero or has unknown bits
+    /// - `InvalidDelegationDuration`   if `duration_secs` is zero or over the cap
+    /// - `DelegationsSaturated`        if the grantor already holds the maximum
+    pub fn grant_delegation(
+        env: Env,
+        grantor: Address,
+        delegate: Address,
+        scope: u32,
+        duration_secs: u64,
+    ) -> u64 {
+        grantor.require_auth();
+
+        if grantor == delegate {
+            panic_with_error!(&env, RegistryError::SelfDelegation);
+        }
+        validate_delegation_scope(&env, scope);
+        if duration_secs == 0 || duration_secs > MAX_DELEGATION_DURATION_SECS {
+            panic_with_error!(&env, RegistryError::InvalidDelegationDuration);
+        }
+
+        let key = DataKey::Delegation(grantor.clone(), delegate.clone());
+        let is_new = !env.storage().persistent().has(&key);
+
+        if is_new {
+            let count = delegation_count(&env, &grantor);
+            if count >= MAX_DELEGATIONS_PER_GRANTOR {
+                panic_with_error!(&env, RegistryError::DelegationsSaturated);
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::DelegationCount(grantor.clone()), &(count + 1));
+        }
+
+        let granted_at = env.ledger().timestamp();
+        let expires_at = granted_at.saturating_add(duration_secs);
+
+        env.storage().persistent().set(
+            &key,
+            &DelegationRecord {
+                grantor: grantor.clone(),
+                delegate: delegate.clone(),
+                scope,
+                granted_at,
+                expires_at,
+            },
+        );
+
+        DelegationGranted {
+            grantor,
+            delegate,
+            scope,
+            granted_at,
+            expires_at,
+        }
+        .publish(&env);
+
+        expires_at
+    }
+
+    /// Revoke a delegation ahead of its expiry.
+    ///
+    /// Callable by the grantor (withdrawing authority it issued) or by the
+    /// admin (incident response against a compromised delegate). Revoking a
+    /// delegation that does not exist is a no-op rather than an error, so
+    /// retries and concurrent revocations converge.
+    pub fn revoke_delegation(env: Env, revoker: Address, grantor: Address, delegate: Address) {
+        revoker.require_auth();
+
+        if revoker != grantor {
+            let admin: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Admin)
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+            if revoker != admin {
+                panic_with_error!(&env, RegistryError::Unauthorized);
+            }
+        }
+
+        let key = DataKey::Delegation(grantor.clone(), delegate.clone());
+        if !env.storage().persistent().has(&key) {
+            return;
+        }
+
+        env.storage().persistent().remove(&key);
+
+        // Free the slot so the grantor can delegate to someone else. Saturating
+        // so a corrupted counter can never underflow into a huge allowance.
+        let count = delegation_count(&env, &grantor);
+        env.storage().persistent().set(
+            &DataKey::DelegationCount(grantor.clone()),
+            &count.saturating_sub(1),
+        );
+
+        DelegationRevoked {
+            grantor,
+            delegate,
+            revoked_by: revoker,
+            revoked_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
+    }
+
+    /// Read-only: the raw delegation record, if one is stored. A record past
+    /// its `expires_at` is still returned so operators can see and prune it;
+    /// use `is_delegation_active` to ask whether it currently grants anything.
+    pub fn get_delegation(
+        env: Env,
+        grantor: Address,
+        delegate: Address,
+    ) -> Option<DelegationRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Delegation(grantor, delegate))
+    }
+
+    /// Read-only: does a live delegation from `grantor` to `delegate` carry
+    /// every bit of `scope`? Returns `false` for unknown, expired, or
+    /// insufficiently scoped delegations rather than erroring, so callers can
+    /// pre-flight without a trial transaction.
+    pub fn is_delegation_active(
+        env: Env,
+        grantor: Address,
+        delegate: Address,
+        scope: u32,
+    ) -> bool {
+        if scope == 0 || scope & !DELEGATION_SCOPE_ALL != 0 {
+            return false;
+        }
+        let record: Option<DelegationRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Delegation(grantor, delegate));
+        match record {
+            Some(record) => {
+                env.ledger().timestamp() < record.expires_at && record.scope & scope == scope
+            }
+            None => false,
+        }
+    }
+
+    /// Read-only: how many distinct delegates a grantor currently holds,
+    /// against `MAX_DELEGATIONS_PER_GRANTOR`.
+    pub fn get_delegation_count(env: Env, grantor: Address) -> u32 {
+        delegation_count(&env, &grantor)
+    }
+
+    /// Register a Tier 2 consistent-source proof on `source`'s behalf.
+    ///
+    /// Authorizes the *delegate*, not the source: the source's key is never
+    /// required at call time. The stored `ProofRecord` still names `source`,
+    /// while the delegate is recorded in the proof's lifecycle history, so the
+    /// audit trail distinguishes authority from actor.
+    ///
+    /// Subject to the same Tier 2 pause domain and uniqueness rules as
+    /// `register_source`.
+    pub fn register_source_delegated(
+        env: Env,
+        delegate: Address,
+        source: Address,
+        video_hash: BytesN<32>,
+        metadata_hash: BytesN<32>,
+        proof_id: BytesN<32>,
+    ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER2_REGISTRATION);
+        delegate.require_auth();
+        require_delegation(&env, &source, &delegate, DELEGATION_SCOPE_REGISTER_SOURCE);
+        require_unique(&env, &proof_id, &video_hash);
+
+        let expires_at = compute_expires_at(&env);
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_CONSISTENT_SOURCE,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: Some(source.clone()),
+            issuer: None,
+            nullifier: None,
+        };
+        save_record(&env, &proof_id, record.clone(), Some(source.clone()));
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Registered as u32,
+            Some(delegate.clone()),
+            record.tier,
+        );
+        DelegationUsed {
+            grantor: source,
+            delegate,
+            scope: DELEGATION_SCOPE_REGISTER_SOURCE,
+            proof_id,
+        }
+        .publish(&env);
+        record
+    }
+
+    /// Register a Tier 3 public-seal proof on `issuer`'s behalf.
+    ///
+    /// The issuer must still be a registered, active issuer — a delegation
+    /// never substitutes for issuer standing, it only lets someone else
+    /// exercise it. Subject to the same Tier 3 pause domain and uniqueness
+    /// rules as `register_seal`.
+    pub fn register_seal_delegated(
+        env: Env,
+        delegate: Address,
+        issuer: Address,
+        video_hash: BytesN<32>,
+        metadata_hash: BytesN<32>,
+        proof_id: BytesN<32>,
+    ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER3_REGISTRATION);
+        delegate.require_auth();
+        require_delegation(&env, &issuer, &delegate, DELEGATION_SCOPE_REGISTER_SEAL);
+        require_unique(&env, &proof_id, &video_hash);
+
+        let issuer_record = get_issuer_record(&env, &issuer);
+        if !issuer_record.active {
+            panic_with_error!(&env, RegistryError::UnknownIssuer);
+        }
+
+        let expires_at = compute_expires_at(&env);
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_PUBLIC_SEAL,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: Some(issuer.clone()),
+            nullifier: None,
+        };
+        save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Registered as u32,
+            Some(delegate.clone()),
+            record.tier,
+        );
+        DelegationUsed {
+            grantor: issuer,
+            delegate,
+            scope: DELEGATION_SCOPE_REGISTER_SEAL,
+            proof_id,
+        }
+        .publish(&env);
         record
     }
 
@@ -868,6 +1366,175 @@ impl HarpocratesRegistry {
         }
         .publish(&env);
     }
+
+    // -----------------------------------------------------------------------
+    // Scoped emergency pause controls (#87)
+    // -----------------------------------------------------------------------
+
+    /// Assign the address permitted to trigger emergency pauses without
+    /// holding the admin key. Admin-only. Pass the admin's own address to
+    /// revoke the guardian role.
+    pub fn set_guardian(env: Env, admin: Address, guardian: Address) {
+        require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardian, &guardian);
+        GuardianSet { guardian }.publish(&env);
+    }
+
+    /// The currently configured guardian, if any.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Guardian)
+    }
+
+    /// Pause one or more registration domains (`PAUSE_DOMAIN_*`, or their
+    /// bitwise-OR combination) for `duration_secs`. Callable by the admin or
+    /// the guardian; the admin is capped at `MAX_PAUSE_DURATION_SECS`, the
+    /// guardian at `MAX_GUARDIAN_PAUSE_DURATION_SECS`. Re-pausing an
+    /// already-paused domain extends (overwrites) its expiry rather than
+    /// erroring, so retries are idempotent. Reads and non-registration admin
+    /// entry points are never affected. Returns the epoch-second timestamp
+    /// at which the pause auto-expires.
+    pub fn pause(env: Env, caller: Address, domain: u32, duration_secs: u64) -> u64 {
+        validate_domain(&env, domain);
+        let is_admin = require_pauser(&env, &caller);
+        let max_duration = if is_admin {
+            MAX_PAUSE_DURATION_SECS
+        } else {
+            MAX_GUARDIAN_PAUSE_DURATION_SECS
+        };
+        if duration_secs == 0 || duration_secs > max_duration {
+            panic_with_error!(&env, RegistryError::InvalidPauseDuration);
+        }
+
+        let paused_at = env.ledger().timestamp();
+        let expires_at = paused_at.saturating_add(duration_secs);
+
+        for bit in domain_bits(domain) {
+            env.storage().persistent().set(
+                &DataKey::Pause(bit),
+                &PauseRecord {
+                    paused_by: caller.clone(),
+                    paused_at,
+                    expires_at,
+                },
+            );
+        }
+
+        DomainPaused {
+            domain,
+            paused_by: caller,
+            paused_at,
+            expires_at,
+        }
+        .publish(&env);
+
+        expires_at
+    }
+
+    /// Lift a pause early. Admin-only — a guardian can raise the alarm but
+    /// only the admin can stand it down before the bounded expiry. Unpausing
+    /// a domain that is not currently stored as paused is a no-op.
+    pub fn unpause(env: Env, admin: Address, domain: u32) {
+        validate_domain(&env, domain);
+        require_admin(&env, &admin);
+
+        let unpaused_at = env.ledger().timestamp();
+        let mut changed = false;
+        for bit in domain_bits(domain) {
+            if env.storage().persistent().has(&DataKey::Pause(bit)) {
+                env.storage().persistent().remove(&DataKey::Pause(bit));
+                changed = true;
+            }
+        }
+
+        if changed {
+            DomainUnpaused {
+                domain,
+                unpaused_by: admin,
+                unpaused_at,
+            }
+            .publish(&env);
+        }
+    }
+
+    /// Read-only: is any bit of `domain` currently paused (i.e. has an
+    /// unexpired pause record)? A domain past its `expires_at` is treated as
+    /// unpaused even if a stale record has not yet been cleared.
+    pub fn is_paused(env: Env, domain: u32) -> bool {
+        validate_domain(&env, domain);
+        let now = env.ledger().timestamp();
+        domain_bits(domain).any(|bit| domain_is_paused(&env, bit, now))
+    }
+
+    /// Read-only: the raw pause record for a single domain bit, if one is
+    /// currently stored (including a stale record past its `expires_at`
+    /// that has not yet been cleared by `unpause`).
+    pub fn get_pause_state(env: Env, domain: u32) -> Option<PauseRecord> {
+        validate_single_domain(&env, domain);
+        env.storage().persistent().get(&DataKey::Pause(domain))
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-layer verifier-input conformance
+    // -----------------------------------------------------------------------
+
+    /// Classify verifier material against the canonical `hpx-vi/1` codec.
+    ///
+    /// Read-only, side-effect free, and bounded: the work is O(1) in the frame
+    /// size and no storage is touched, so it is safe to expose publicly and
+    /// safe to call while any domain is paused.
+    ///
+    /// `schema_id` is [`SCHEMA_ID_SILENT_WITNESS`] or
+    /// [`SCHEMA_ID_REVOCATION_WITNESS`]. `proof_len` is the length of the proof
+    /// blob the caller intends to submit — passed as a length rather than the
+    /// blob itself so classification never transports proof material.
+    ///
+    /// Returns [`verifier_inputs::ACCEPTED_CODE`] (`0`) when the material is
+    /// canonical, otherwise the stable [`RejectCode::as_code`] value. This is
+    /// the on-chain half of the cross-layer conformance corpus in
+    /// `zk/vectors/verifier_conformance_v1.json`.
+    ///
+    /// Compatibility: this entry point is purely additive. The registration
+    /// paths still apply the v1-lenient rules described in
+    /// `docs/zk-conformance-vectors.md`; promoting the codec to enforcement is
+    /// a separate, versioned migration.
+    pub fn classify_public_inputs(
+        env: Env,
+        schema_id: u32,
+        public_inputs: Bytes,
+        proof_len: u32,
+    ) -> u32 {
+        // Schema dispatch precedes the length check, matching the Python and
+        // TypeScript layers: an unrecognised schema is reported as such even
+        // when the frame is also the wrong length.
+        if schema_id != SCHEMA_ID_SILENT_WITNESS && schema_id != SCHEMA_ID_REVOCATION_WITNESS {
+            return RejectCode::UnknownSchema.as_code();
+        }
+
+        if public_inputs.len() as usize != PUBLIC_INPUTS_LEN {
+            return RejectCode::Length.as_code();
+        }
+
+        let mut frame = [0u8; PUBLIC_INPUTS_LEN];
+        public_inputs.copy_into_slice(&mut frame);
+
+        let parsed = if schema_id == SCHEMA_ID_SILENT_WITNESS {
+            verifier_inputs::parse_silent_witness(&frame).map(|_| ())
+        } else {
+            verifier_inputs::parse_revocation_witness(&frame, &REVOCATION_DOMAIN_SEPARATOR)
+                .map(|_| ())
+        };
+
+        if let Err(code) = parsed {
+            return code.as_code();
+        }
+
+        match verifier_inputs::check_proof_bounds(proof_len) {
+            Ok(()) => verifier_inputs::ACCEPTED_CODE,
+            Err(code) => code.as_code(),
+        }
+    }
 }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -880,6 +1547,113 @@ fn require_admin(env: &Env, candidate: &Address) {
     }
 }
 
+/// Require that `caller` is either the admin or the configured guardian, and
+/// authorize the call. Returns `true` when the caller is the admin, so
+/// callers can apply role-specific limits (e.g. pause duration caps).
+fn require_pauser(env: &Env, caller: &Address) -> bool {
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+
+    caller.require_auth();
+
+    if caller == &admin {
+        return true;
+    }
+
+    let guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
+    match guardian {
+        Some(g) if &g == caller => false,
+        _ => panic_with_error!(env, RegistryError::Unauthorized),
+    }
+}
+
+/// Reject `scope` unless it is nonzero and composed only of known
+/// `DELEGATION_SCOPE_*` bits.
+fn validate_delegation_scope(env: &Env, scope: u32) {
+    if scope == 0 || scope & !DELEGATION_SCOPE_ALL != 0 {
+        panic_with_error!(env, RegistryError::InvalidDelegationScope);
+    }
+}
+
+fn delegation_count(env: &Env, grantor: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DelegationCount(grantor.clone()))
+        .unwrap_or(0)
+}
+
+/// Require a live delegation from `grantor` to `delegate` carrying every bit of
+/// `scope`, and authorize the call.
+///
+/// The three failure modes are kept distinct — absent, expired, and
+/// insufficiently scoped — because an operator responding to a failed
+/// registration needs to know which one happened, and none of the three
+/// discloses anything about the media or the proof.
+fn require_delegation(env: &Env, grantor: &Address, delegate: &Address, scope: u32) {
+    validate_delegation_scope(env, scope);
+
+    let record: DelegationRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Delegation(grantor.clone(), delegate.clone()))
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::DelegationNotFound));
+
+    if env.ledger().timestamp() >= record.expires_at {
+        panic_with_error!(env, RegistryError::DelegationExpired);
+    }
+
+    if record.scope & scope != scope {
+        panic_with_error!(env, RegistryError::DelegationScopeExceeded);
+    }
+}
+
+/// Reject `domain` unless it is nonzero and composed only of known
+/// `PAUSE_DOMAIN_*` bits. Accepts single domains and their bitwise-OR
+/// combination (e.g. `PAUSE_DOMAIN_ALL_REGISTRATION`).
+fn validate_domain(env: &Env, domain: u32) {
+    if domain == 0 || domain & !PAUSE_DOMAIN_ALL_REGISTRATION != 0 {
+        panic_with_error!(env, RegistryError::InvalidPauseDomain);
+    }
+}
+
+/// Reject `domain` unless it is exactly one known `PAUSE_DOMAIN_*` bit.
+fn validate_single_domain(env: &Env, domain: u32) {
+    if !PAUSE_DOMAIN_SINGLE_BITS.contains(&domain) {
+        panic_with_error!(env, RegistryError::InvalidPauseDomain);
+    }
+}
+
+/// Iterate the single-bit domains present in `domain` (already validated by
+/// `validate_domain`/`validate_single_domain`).
+fn domain_bits(domain: u32) -> impl Iterator<Item = u32> {
+    PAUSE_DOMAIN_SINGLE_BITS
+        .into_iter()
+        .filter(move |bit| domain & bit != 0)
+}
+
+fn domain_is_paused(env: &Env, domain_bit: u32, now: u64) -> bool {
+    let record: Option<PauseRecord> = env.storage().persistent().get(&DataKey::Pause(domain_bit));
+    match record {
+        Some(r) => now < r.expires_at,
+        None => false,
+    }
+}
+
+fn require_domain_unpaused(env: &Env, domain_bit: u32) {
+    let now = env.ledger().timestamp();
+    if domain_is_paused(env, domain_bit, now) {
+        panic_with_error!(env, RegistryError::Paused);
+    }
+}
+
+/// Compute the `expires_at` value for a freshly registered proof.
+///
+/// Returns `created_at + ttl` when a non-zero TTL is configured, or `0`
+/// (no expiration) otherwise.  Uses saturating addition to avoid overflow on
+/// extreme inputs.
 fn compute_expires_at(env: &Env) -> u64 {
     let ttl: u64 = env
         .storage()
@@ -1010,23 +1784,37 @@ struct SilentWitnessInputs {
     nullifier: BytesN<32>,
 }
 
-fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> SilentWitnessInputs {
-    if public_inputs.len() != 128 {
+/// Read a 128-byte public-input frame out of `Bytes`, rejecting any other
+/// length before allocating.
+fn read_public_input_frame(env: &Env, public_inputs: &Bytes) -> [u8; PUBLIC_INPUTS_LEN] {
+    if public_inputs.len() as usize != PUBLIC_INPUTS_LEN {
         panic_with_error!(env, RegistryError::InvalidPublicInputs);
     }
+    let mut frame = [0u8; PUBLIC_INPUTS_LEN];
+    public_inputs.copy_into_slice(&mut frame);
+    frame
+}
 
-    let mut bytes = [0u8; 128];
-    public_inputs.copy_into_slice(&mut bytes);
+/// Parse the legacy (v1-lenient) silent-witness layout.
+///
+/// Behaviour is unchanged from the pre-codec implementation: only the frame
+/// length is enforced. Field-level canonicity, half padding, and zero-field
+/// rules are defined by [`verifier_inputs`] and surfaced through
+/// [`HarpocratesRegistry::classify_public_inputs`]; see
+/// `docs/zk-conformance-vectors.md` for the migration that promotes them to
+/// enforcement on this path.
+fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> SilentWitnessInputs {
+    let frame = read_public_input_frame(env, public_inputs);
 
     let mut video_hash = [0u8; 32];
-    video_hash[..16].copy_from_slice(&bytes[16..32]);
-    video_hash[16..].copy_from_slice(&bytes[48..64]);
-
-    let mut nullifier = [0u8; 32];
-    nullifier.copy_from_slice(&bytes[96..128]);
+    video_hash[..16].copy_from_slice(&frame[16..32]);
+    video_hash[16..].copy_from_slice(&frame[48..64]);
 
     let mut credential_root = [0u8; 32];
-    credential_root.copy_from_slice(&bytes[64..96]);
+    credential_root.copy_from_slice(&frame[64..96]);
+
+    let mut nullifier = [0u8; 32];
+    nullifier.copy_from_slice(&frame[96..128]);
 
     SilentWitnessInputs {
         video_hash: BytesN::from_array(env, &video_hash),
@@ -1061,25 +1849,19 @@ struct RevocationPublicInputs {
 ///   [ 64.. 96)  domain_separator
 ///   [ 96..128)  credential_root
 fn parse_revocation_public_inputs(env: &Env, public_inputs: &Bytes) -> RevocationPublicInputs {
-    if public_inputs.len() != 128 {
-        panic_with_error!(env, RegistryError::InvalidPublicInputs);
-    }
+    let frame = read_public_input_frame(env, public_inputs);
 
-    let mut bytes = [0u8; 128];
-    public_inputs.copy_into_slice(&mut bytes);
-
-    // Each field is a contiguous 32‑byte slice.
     let mut revocation_root = [0u8; 32];
-    revocation_root.copy_from_slice(&bytes[0..32]);
+    revocation_root.copy_from_slice(&frame[0..32]);
 
     let mut nullifier = [0u8; 32];
-    nullifier.copy_from_slice(&bytes[32..64]);
+    nullifier.copy_from_slice(&frame[32..64]);
 
     let mut domain_separator = [0u8; 32];
-    domain_separator.copy_from_slice(&bytes[64..96]);
+    domain_separator.copy_from_slice(&frame[64..96]);
 
     let mut credential_root = [0u8; 32];
-    credential_root.copy_from_slice(&bytes[96..128]);
+    credential_root.copy_from_slice(&frame[96..128]);
 
     RevocationPublicInputs {
         revocation_root: BytesN::from_array(env, &revocation_root),
@@ -1100,9 +1882,17 @@ mod test_auth;
 #[cfg(test)]
 mod test_budget;
 #[cfg(test)]
+mod test_conformance;
+#[cfg(test)]
+mod test_delegation;
+#[cfg(test)]
 mod test_expiry;
 #[cfg(test)]
+mod test_fuzz;
+#[cfg(test)]
 mod test_invariants;
+#[cfg(test)]
+mod test_pause;
 #[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
