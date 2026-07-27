@@ -17,6 +17,8 @@ fn main(
     video_hash_lo: pub Field,
     credential_root: pub Field,
     nullifier: pub Field,
+    verifier_scope: pub Field,
+    epoch: pub Field,
 ) {
     // Commit to the complete canonical evidence digest: algorithm identifier
     // plus the full 256-bit digest (split across two BN254 field elements).
@@ -40,7 +42,7 @@ fn main(
 }
 
 // ---------------------------------------------------------------------------
-// Test corpus -- Silent Witness circuit
+// Test corpus -- Silent Witness circuit (scoped nullifier v1)
 //
 // ALL SECRETS BELOW ARE SYNTHETIC AND FOR TESTING ONLY.
 // Do not use these values in any production credential or proof.
@@ -64,7 +66,6 @@ fn main(
 // Edge-case secrets:
 //   zero_credential_secret      = 0
 //   max_field_credential_secret = BN254 prime - 1
-//     = 21888242871839275222246405745257275088548364400416034343698204186575808495616
 //   zero_video_hash: hi = 0, lo = 0
 // ---------------------------------------------------------------------------
 
@@ -73,13 +74,29 @@ fn main(
 //   [1] video_hash_lo
 //   [2] credential_root
 //   [3] nullifier
+//   [4] verifier_scope
+//   [5] epoch
 // ---------------------------------------------------------------------------
+
+/// Compute the scoped nullifier for given inputs.
+/// Exported for test vector computation.
+fn compute_scoped_nullifier(
+    cs: Field,
+    ns: Field,
+    vhi: Field,
+    vlo: Field,
+    scope: Field,
+    ep: Field,
+) -> Field {
+    let scope_hash = pedersen_hash([SCOPED_NULLIFIER_V1, scope, ep]);
+    pedersen_hash([cs, ns, vhi, vlo, scope_hash])
+}
 
 // ============================================================
 // Positive: well-formed witness -- all assertions must pass
 // ============================================================
 
-// All inputs correct: proves the circuit accepts a valid witness.
+// All inputs correct: global scope (0), epoch 0.
 #[test]
 fn test_valid_witness() {
     let cs: Field = 12345;
@@ -93,7 +110,6 @@ fn test_valid_witness() {
 }
 
 // Edge: zero credential_secret is a valid field element.
-// The circuit must accept it when the public root is derived correctly.
 #[test]
 fn test_zero_credential_secret() {
     let cs: Field = 0;
@@ -106,7 +122,7 @@ fn test_zero_credential_secret() {
     main(cs, ns, vhi, vlo, root, null);
 }
 
-// Edge: max-field credential_secret (BN254 prime - 1) is a valid field element.
+// Edge: max-field credential_secret (BN254 prime - 1).
 #[test]
 fn test_max_field_credential_secret() {
     let cs: Field = 21888242871839275222246405745257275088548364400416034343698204186575808495616;
@@ -137,165 +153,189 @@ fn test_zero_video_hash() {
 // Negative -- wrong private inputs
 // ============================================================
 
-// Wrong credential_secret: derived root does not match the correct public root.
-// Both asserts are wrong but the first fires first.
 #[test(should_fail_with = "credential root mismatch")]
 fn test_wrong_credential_secret() {
-    main(
-        99999, // wrong -- root(99999) != root(12345)
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(99999, ns, vhi, vlo, root, nul, scope, ep);
 }
 
-// Wrong nullifier_secret: credential root is still correct but the
-// nullifier derivation changes, so the second assert must fail.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_wrong_nullifier_secret() {
-    main(
-        12345,
-        11111, // wrong -- nullifier changes
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, 11111, vhi, vlo, root, nul, scope, ep);
 }
 
 // ============================================================
 // Negative -- wrong video hash (public inputs)
 // ============================================================
 
-// Wrong video_hash_hi: the nullifier was computed over the correct hash
-// but the circuit re-derives over a different hi value.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_wrong_video_hash_hi() {
-    main(
-        12345,
-        67890,
-        99999999999999999999999999999999999999, // wrong hi
-        45370982256125128461783280990902428194,
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, 99999999999999999999999999999999999999, vlo, root, nul, scope, ep);
 }
 
-// Wrong video_hash_lo: only the lo half of the video hash is changed.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_wrong_video_hash_lo() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        99999999999999999999999999999999999999, // wrong lo
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, 99999999999999999999999999999999999999, root, nul, scope, ep);
 }
 
-// Both halves of the video hash are wrong (completely different video).
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_wrong_video_hash_both_halves() {
-    main(
-        12345,
-        67890,
-        11111111111111111111111111111111111111, // wrong hi
-        22222222222222222222222222222222222222, // wrong lo
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, 11111111111111111111111111111111111111, 22222222222222222222222222222222222222, root, nul, scope, ep);
 }
 
 // ============================================================
 // Negative -- tampered public inputs (replay / substitution)
 // ============================================================
 
-// Tampered credential_root: prover supplies the correct private secret
-// but the verifier-visible public root has been altered.
-// Simulates an attacker substituting a different identity's root.
 #[test(should_fail_with = "credential root mismatch")]
 fn test_tampered_credential_root_public_input() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x08a63a1f3b518e91eae95ee0622f50843a446d420e6334088738db4e29c425b2, // root(99999)
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([99999]); // wrong root
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep);
 }
 
-// Tampered nullifier: correct secrets, but the public nullifier has been
-// replaced with one derived from a different witness.
-// Simulates a nullifier replay attack with a wrong value.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_tampered_nullifier_public_input() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x10700bc6111604ff306d4c749253d5ad0f7b65d6352883a766382a02bfe1e2d6, // nullifier(99999,...)
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    // Nullifier for a different credential
+    let nul = compute_scoped_nullifier(99999, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep);
 }
 
-// Both public inputs are from a different identity (credential root + nullifier
-// of cs=99999), but private inputs belong to cs=12345.
-// Catches a full-substitution attack where both public outputs are forged.
 #[test(should_fail_with = "credential root mismatch")]
 fn test_both_public_inputs_wrong_identity() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x08a63a1f3b518e91eae95ee0622f50843a446d420e6334088738db4e29c425b2, // root(99999)
-        0x10700bc6111604ff306d4c749253d5ad0f7b65d6352883a766382a02bfe1e2d6, // nullifier(99999,...)
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([99999]);
+    let nul = compute_scoped_nullifier(99999, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep);
 }
 
 // ============================================================
 // Negative -- public input ordering / swap attacks
 // ============================================================
 
-// credential_root and nullifier are swapped in the public inputs.
-// The Soroban verifier contract fixes input ordering as
-// [video_hash_hi, video_hash_lo, credential_root, nullifier].
-// Swapping them must cause the circuit to reject.
 #[test(should_fail_with = "credential root mismatch")]
 fn test_swapped_credential_root_and_nullifier() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        // nullifier passed as credential_root position
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-        // credential_root passed as nullifier position
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    // Swap: nullifier passed as credential_root, root passed as nullifier
+    main(cs, ns, vhi, vlo, nul, root, scope, ep);
 }
 
-// video_hash_hi and video_hash_lo are swapped.
-// hash(lo_as_hi, hi_as_lo) != hash(hi, lo) so the nullifier fails.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_swapped_video_hash_halves() {
-    main(
-        12345,
-        67890,
-        45370982256125128461783280990902428194, // lo in hi slot
-        22685491128062564230891640495451214097, // hi in lo slot
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x266fe0dec6dc9e1a4a7b0b3c71876074eaca128b05b371cf6677d2e62f795fe6,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    // Swap: lo in hi slot, hi in lo slot
+    main(cs, ns, vlo, vhi, root, nul, scope, ep);
 }
 
 // ============================================================
-// Negative -- nullifier/video binding
+// Negative -- scope binding
+// ============================================================
+
+// A valid proof for scope=0 must NOT satisfy scope=999.
+// Proves the nullifier binds to the specific verifier_scope.
+#[test(should_fail_with = "nullifier mismatch")]
+fn test_nullifier_from_different_scope() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    // Nullifier computed for scope=999 (different scope)
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, 999, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+}
+
+// A valid proof for epoch=1 must NOT satisfy epoch=2.
+// Proves the nullifier binds to the specific epoch.
+#[test(should_fail_with = "nullifier mismatch")]
+fn test_nullifier_from_different_epoch() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 42;
+    let ep: Field = 1;
+    let root = pedersen_hash([cs]);
+    // Nullifier computed for epoch=2 (different epoch, same scope)
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, 2);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+}
+
+// ============================================================
+// Negative -- nullifier/video binding (unchanged from v1)
 // ============================================================
 
 // A valid proof for one video must not satisfy a different video's nullifier.

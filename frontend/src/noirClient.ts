@@ -11,23 +11,63 @@ type GenerateSilentWitnessInput = {
   videoHash: string
   credentialSecret: string
   nullifierSecret: string
+  /** Scope field element (BN254). Pass '0' for global/unscoped. */
+  verifierScope?: string
+  /** Epoch number. Pass 0 for unscoped or legacy proofs. */
+  epoch?: number
 }
 
-export async function generateSilentWitnessProof(
-  input: GenerateSilentWitnessInput,
-  signal?: AbortSignal,
-): Promise<SilentWitnessProof> {
-  return new Promise((resolve, reject) => {
-    // Spawn an isolated Web Worker to run the heavy proof logic.
-    // This provides explicit ownership over the memory isolate, which
-    // allows us to mitigate secret lifetimes by forcefully terminating the worker.
-    const worker = new Worker(new URL('./proveWorker.ts', import.meta.url), {
-      type: 'module',
-    })
+let helperCircuitPromise: Promise<CompiledCircuit> | null = null
+let mainCircuitPromise: Promise<CompiledCircuit> | null = null
 
-    const onAbort = () => {
-      worker.terminate() // Hardware-level reclaim of memory.
-      reject(new Error('Proof generation was cancelled or timed out.'))
+export async function generateSilentWitnessProof({
+  videoHash,
+  credentialSecret,
+  nullifierSecret,
+  verifierScope = '0',
+  epoch = 0,
+}: GenerateSilentWitnessInput): Promise<SilentWitnessProof> {
+  const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
+  const video_hash_hi = BigInt(`0x${videoHash.slice(0, 32)}`).toString(10)
+  const video_hash_lo = BigInt(`0x${videoHash.slice(32)}`).toString(10)
+  const scope_field = BigInt(verifierScope).toString(10)
+  const epoch_field = BigInt(epoch).toString(10)
+  const privateInputs = {
+    credential_secret: credentialSecret,
+    nullifier_secret: nullifierSecret,
+    video_hash_hi,
+    video_hash_lo,
+    verifier_scope: scope_field,
+    epoch: epoch_field,
+  }
+
+  const helperResult = await new Noir(helperCircuit).execute(privateInputs)
+  const [credentialRoot, nullifier] = helperResult.returnValue as string[]
+  const publicInputs = {
+    credential_root: credentialRoot,
+    nullifier,
+    verifier_scope: scope_field,
+    epoch: epoch_field,
+  }
+
+  const { witness } = await new Noir(mainCircuit).execute({
+    ...privateInputs,
+    ...publicInputs,
+  })
+
+  const backend = new UltraHonkBackend(mainCircuit.bytecode)
+  try {
+    const proofData = await backend.generateProof(witness, { keccak: true })
+    const proofHex = bytesToHex(proofData.proof)
+    const publicInputHex = proofData.publicInputs.map(fieldToBytes32Hex).join('')
+
+    return {
+      credentialRoot: fieldToBytes32Hex(credentialRoot),
+      nullifier: fieldToBytes32Hex(nullifier),
+      proof: proofHex,
+      publicInputs: publicInputHex,
+      proofBytes: proofData.proof.length,
+      publicInputBytes: publicInputHex.length / 2,
     }
 
     if (signal?.aborted) {

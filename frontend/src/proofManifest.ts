@@ -1,6 +1,6 @@
 import type { IdentityTier } from './stellarTypes'
 
-const MANIFEST_VERSION = 1
+const MANIFEST_VERSION = 2
 
 export type ProofManifest = {
   protocol: 'harpocrates'
@@ -14,9 +14,15 @@ export type ProofManifest = {
   metadataHash: string
   sourceHash: string
   timestamp: string
+  /** Scope field element (BN254) for scoped nullifier derivation. '0' = global. */
+  verifierScope: string
+  /** Epoch number for scoped nullifier. 0 = unscoped/legacy. */
+  epoch: number
+  /** Human-readable scope name (optional, for display only). */
+  scopeName?: string
 }
 
-type ProofManifestInput = {
+export type ProofManifestInput = {
   proofId: string
   tier: IdentityTier
   network: string
@@ -26,6 +32,12 @@ type ProofManifestInput = {
   metadataHash: string
   sourceHash: string
   timestamp: string
+  /** Scope field element. Defaults to '0' (global) for backward compatibility. */
+  verifierScope?: string
+  /** Epoch number. Defaults to 0 for backward compatibility. */
+  epoch?: number
+  /** Human-readable scope name (optional, for display only). */
+  scopeName?: string
 }
 
 /**
@@ -49,6 +61,12 @@ export function createProofManifest(input: ProofManifestInput): ProofManifest {
     metadataHash: input.metadataHash,
     sourceHash: input.sourceHash,
     timestamp: input.timestamp,
+    verifierScope: input.verifierScope ?? '0',
+    epoch: input.epoch ?? 0,
+  }
+
+  if (input.scopeName) {
+    manifest.scopeName = input.scopeName
   }
 
   return manifest
@@ -62,4 +80,12 @@ export function createProofManifest(input: ProofManifestInput): ProofManifest {
  */
 export function serializeManifest(manifest: ProofManifest): string {
   return JSON.stringify(manifest, Object.keys(manifest).sort())
+}
+
+/**
+ * Check whether a manifest is a v1 (legacy) or v2+ (scoped) manifest.
+ * V1 manifests do not have verifierScope or epoch fields.
+ */
+export function isLegacyManifest(manifest: ProofManifest): boolean {
+  return manifest.version < 2
 }

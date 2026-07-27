@@ -79,25 +79,17 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
-  | 'get_proof'
-  | 'get_proof_status'
-  | 'get_proof_history_at'
-  | 'get_proof_history_count'
-  | 'revoke_proof'
-  | 'verify_proof'
-  | 'expire_proof'
-  | 'correct_proof'
+  | 'set_scope_epoch'
+  | 'get_scope_epoch'
 
-export type ProofLifecycleAction = 1 | 2 | 3 | 4 | 5 | 6
-
-export type ProofHistoryEntry = {
-  action: ProofLifecycleAction
-  timestamp: string
-  actor: string | null
-  reasonCode: number
+export type ScopedProofScope = {
+  /** Field element derived from the scope string (SHA-256 mod BN254). */
+  scopeField: string
+  /** Human-readable scope name (for manifest only, not sent on-chain). */
+  scopeName: string
 }
 
-export type ProofHistoryResult = {
-  entries: ProofHistoryEntry[]
-  count: number
+export type ScopedProofEpoch = {
+  /** Epoch number matching the on-chain scope epoch. */
+  epoch: number
 }
