@@ -23,6 +23,7 @@ DESIGN.md   Visual design source
 | Document | Covers |
 | --- | --- |
 | [docs/zk-reproducible-builds.md](docs/zk-reproducible-builds.md) | Toolchain pinning, hermetic builds, artifact digest manifests, drift detection |
+| [docs/zk-benchmarks.md](docs/zk-benchmarks.md) | Proof generate/verify baselines across browser, native, CI, and Soroban-adjacent targets |
 | [docs/zk-conformance-vectors.md](docs/zk-conformance-vectors.md) | The `hpx-vi/1` verifier-input codec and the cross-layer conformance corpus |
 | [docs/zk-fuzzing.md](docs/zk-fuzzing.md) | Structured fuzzing of malformed proofs and public inputs |
 | [docs/contract-delegation.md](docs/contract-delegation.md) | Constrained, expiring issuer and source delegation |
