@@ -28,6 +28,27 @@ source ~/.bashrc
 bbup
 ```
 
+## Reproducible builds
+
+Toolchain versions, the hermetic environment, artifact normalization rules, and
+resource limits are pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json).
+The double-build reproducibility check is:
+
+```bash
+zk/noir/scripts/reproducible-build.sh          # build twice, compare, write manifest
+zk/noir/scripts/reproducible-build.sh --verify # build once, compare to the committed manifest
+python -m pytest zk/tools -q                   # tooling unit tests, no toolchain needed
+```
+
+See [docs/zk-reproducible-builds.md](../../docs/zk-reproducible-builds.md).
+
+## Cross-layer conformance
+
+The public-input codec shared by the backend, browser, and Soroban registry is
+pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_conformance_v1.json).
+See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
+[docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
+
 ## Build
 
 For the full local build with the checked-in prover file:
