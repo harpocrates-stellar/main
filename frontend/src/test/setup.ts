@@ -10,10 +10,9 @@ const mockDigest = vi.fn(
       throw new Error(`${name} is not supported by the test crypto polyfill`);
     }
 
-    const bytes =
-      data instanceof ArrayBuffer
-        ? new Uint8Array(data)
-        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const bytes = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data);
     const digest = createHash("sha256").update(bytes).digest();
 
     return digest.buffer.slice(
@@ -23,11 +22,11 @@ const mockDigest = vi.fn(
   },
 );
 
-const subtle: any = {}
+const subtle: Record<string, unknown> = {}
 for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(webcrypto.subtle))) {
-  const value = (webcrypto.subtle as any)[key]
+  const value = (webcrypto.subtle as Record<string, unknown>)[key]
   if (typeof value === 'function') {
-    subtle[key] = value.bind(webcrypto.subtle)
+    subtle[key] = (value as (...args: unknown[]) => unknown).bind(webcrypto.subtle)
   }
 }
 subtle.digest = mockDigest;
