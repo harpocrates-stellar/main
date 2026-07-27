@@ -157,6 +157,16 @@ function initialView(): View {
   return hash === 'studio' || hash === 'verify' ? hash : 'landing'
 }
 
+/** Strip values that could leak private evidence data from announcement text. */
+function sanitizeMsg(raw: string): string {
+  return raw
+    .replace(/\b[GC][A-Z2-7]{55}\b/g, '[address]')
+    .replace(/\b[0-9a-f]{9,}\b/gi, '[redacted]')
+    .replace(/(\/[\w.-]+){2,}/g, '[path]')
+    .replace(/[A-Za-z]:\\[\S]+/g, '[path]')
+    .trim()
+}
+
 function App() {
   const [currentView, setCurrentView] = useState<View>(initialView)
   const [isScrolled, setIsScrolled] = useState(false)
@@ -226,6 +236,10 @@ function App() {
         : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)
     window.scrollTo({ top: 0, behavior: 'smooth' })
+    setTimeout(() => {
+      if (view === 'studio') studioHeadingRef.current?.focus()
+      else if (view === 'verify') verifyHeadingRef.current?.focus()
+    }, 50)
   }
 
   async function handleEvidence(nextFile: File | null) {
@@ -320,12 +334,16 @@ function App() {
     if (!proof) return
 
     if (!CONTRACT_ID) {
-      setMessage('Set VITE_HARPOCRATES_REGISTRY_ID after deploying the Soroban contract.')
+      const msg = 'Set VITE_HARPOCRATES_REGISTRY_ID after deploying the Soroban contract.'
+      setMessage(msg)
+      announceLive(sanitizeMsg(msg))
       return
     }
 
     if (!wallet) {
-      setMessage('Connect Freighter before registering evidence.')
+      const msg = 'Connect Freighter before registering evidence.'
+      setMessage(msg)
+      announceLive(sanitizeMsg(msg))
       return
     }
 
@@ -435,7 +453,9 @@ function App() {
     try {
       await connectWallet()
     } catch {
-      setMessage('Database event feed is unavailable.')
+      const msg = 'Database event feed is unavailable.'
+      setMessage(msg)
+      announceLive(sanitizeMsg(msg))
     }
   }
 
@@ -684,8 +704,9 @@ function App() {
             </a>
           ) : null}
 
+        <nav className={isScrolled ? 'topbar scrolled' : 'topbar'} aria-label="Site navigation">
           <button
-            className="primary-action"
+            className="brand"
             type="button"
             disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving' || txState.status === 'submitting' || txState.status === 'awaiting_confirmation'}
             onClick={() => void registerProof()}
@@ -697,145 +718,443 @@ function App() {
             )}
             Register proof
           </button>
-        </div>
-
-        <aside className="side-rail">
-          <div className="rail-block">
-            <h3>{selectedTierMeta.title}</h3>
-            <p>{selectedTierMeta.description}</p>
-          </div>
-
-          <div className="rail-block">
-            <h3>Quick Verify</h3>
-            <label className="verify-input">
-              <input
-                type="file"
-                accept="video/*"
-                onChange={(event) => void verifyEvidence(event.target.files?.[0] ?? null)}
-              />
-              <span>Choose received video</span>
-            </label>
-            <div className="verify-result">
-              <CheckCircle2 size={14} aria-hidden="true" />
-              <p>{verifyResult || 'No verification run yet.'}</p>
-            </div>
-            <code>{shortHash(verifyHash)}</code>
-          </div>
-
-          <div className="rail-block">
-            <h3>Chain Registry</h3>
-            {chainProof ? (
-              <div className="chain-grid">
-                <span>Tier</span>
-                <strong>{chainProof.tier}</strong>
-                <span>Status</span>
-                <strong>{chainProof.status}</strong>
-                <span>Source</span>
-                <code>{chainProof.source ? shortHash(chainProof.source) : 'None'}</code>
-                <span>Metadata</span>
-                <code>{shortHash(chainProof.metadataHash)}</code>
-              </div>
-            ) : (
-              <p className="muted">No on-chain match loaded.</p>
-            )}
-          </div>
-
-          <div className="rail-block">
-            <h3>Events</h3>
-            <button className="verify-input" type="button" onClick={() => void loadEvents()}>
-              Refresh NeonDB feed
+          <div className="navlinks" aria-label="Primary">
+            <button
+              className={currentView === 'studio' ? 'active' : ''}
+              type="button"
+              onClick={() => openView('studio')}
+              aria-current={currentView === 'studio' ? 'page' : undefined}
+            >
+              Evidence
             </button>
-            <div className="event-list">
-              {events.length === 0 ? (
-                <p>No events loaded.</p>
-              ) : (
-                events.map((event) => (
-                  <div className="event-row" key={event.id}>
-                    <strong>{event.event_type}</strong>
-                    <span>{event.tx_status ?? event.tier ?? 'untiered'}</span>
-                    <code>{shortHash(event.video_hash ?? event.proof_id ?? '')}</code>
-                    {event.tx_hash ? <code>{shortHash(event.tx_hash)}</code> : null}
-                  </div>
-                ))
-              )}
-            </div>
+            <button
+              className={currentView === 'verify' ? 'active' : ''}
+              type="button"
+              onClick={() => openView('verify')}
+              aria-current={currentView === 'verify' ? 'page' : undefined}
+            >
+              Verify
+            </button>
           </div>
-        </aside>
-      </section>
-      ) : null}
-
-      {currentView === 'verify' ? (
-        <section className="workspace app-page verify-page" id="verify">
-          <div className="studio verify-studio">
-            <header className="page-header">
-              <h2>Verify Artifact</h2>
-              <p>Inspect a received video against embedded metadata and the Stellar registry.</p>
-            </header>
-            <label className="dropzone">
-              <Upload size={20} aria-hidden="true" />
-              <span>Drop or choose a received video</span>
-              <input
-                type="file"
-                accept="video/*"
-                onChange={(event) => void verifyEvidence(event.target.files?.[0] ?? null)}
-              />
-            </label>
-            <div className="verify-result large">
-              <CheckCircle2 size={14} aria-hidden="true" />
-              <p>{verifyResult || 'No verification run yet.'}</p>
-            </div>
-            <dl className="data-list">
-              <div><dt>Received Hash</dt><dd>{shortHash(verifyHash)}</dd></div>
-              <div>
-                <dt>Chain Status</dt>
-                <dd>{chainProof ? (chainProof.status === 2 ? 'Revoked' : 'Confirmed') : 'Not loaded'}</dd>
-              </div>
-            </dl>
+          <div className="network-pill" role="status" aria-label="Connected network">
+            Stellar Testnet
           </div>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={connectWallet}
+            aria-label={wallet ? `Wallet connected: ${wallet.slice(0, 5)}\u2026${wallet.slice(-4)}` : 'Connect Freighter wallet'}
+            aria-pressed={!!wallet}
+          >
+            <Wallet size={18} aria-hidden="true" />
+            <span aria-hidden="true">{wallet ? `${wallet.slice(0, 5)}...${wallet.slice(-4)}` : 'Connect'}</span>
+          </button>
+        </nav>
 
-          <aside className="side-rail">
-            <div className="rail-block">
-              <h3>Chain Registry</h3>
-              {chainProof ? (
-                <div className="chain-grid">
-                  <span>Tier</span>
-                  <strong>{chainProof.tier}</strong>
-                  <span>Status</span>
-                  <strong>{chainProof.status}</strong>
-                  <span>Source</span>
-                  <code>{chainProof.source ? shortHash(chainProof.source) : 'None'}</code>
-                  <span>Metadata</span>
-                  <code>{shortHash(chainProof.metadataHash)}</code>
+        {currentView === 'landing' ? (
+          <>
+            <section className="hero-band" aria-labelledby="hero-heading">
+              <div className="hero-copy">
+                <h1 id="hero-heading">Evidence integrity for silent witnesses.</h1>
+                <p className="lede">
+                  Steganographic video, Noir privacy proofs, Stellar registry — one verifiable chain of custody.
+                </p>
+                <div className="hero-actions">
+                  <button className="hero-primary" type="button" onClick={() => openView('studio')}>
+                    Begin evidence flow
+                  </button>
+                  <button className="hero-secondary" type="button" onClick={() => openView('verify')}>
+                    Verify an artifact
+                  </button>
                 </div>
-              ) : (
-                <p className="muted">No on-chain match loaded.</p>
-              )}
+              </div>
+              <div className="signal-panel" aria-label="Protocol status">
+                <span>Integrity</span>
+                <strong>SHA-256</strong>
+                <span>Privacy</span>
+                <strong>3 tiers</strong>
+                <span>Registry</span>
+                <strong>Soroban</strong>
+              </div>
+            </section>
+
+            <section className="tech-strip">
+              <dl className="tech-specs" aria-label="Technical specification">
+                <div><dt>Proof system</dt><dd>Noir UltraHonk</dd></div>
+                <div><dt>Hash commitment</dt><dd>SHA-256</dd></div>
+                <div><dt>On-chain registry</dt><dd>Soroban</dd></div>
+                <div><dt>Identity tiers</dt><dd>3 levels</dd></div>
+              </dl>
+            </section>
+
+            <section className="workflow-band" id="workflow">
+              <div className="workflow-heading">
+                <h2>How it works</h2>
+                <p>From raw video to chain-verifiable evidence in four steps.</p>
+              </div>
+              <div className="workflow-diagram">
+                <svg viewBox="0 0 1120 240" role="img" aria-labelledby="workflow-title" preserveAspectRatio="xMidYMid meet">
+                  <title id="workflow-title">Harpocrates protocol workflow: Video → Browser → Soroban → Portal</title>
+                  <defs>
+                    <marker
+                      id="flowArrow"
+                      viewBox="0 0 10 10"
+                      refX="7"
+                      refY="5"
+                      markerWidth="6"
+                      markerHeight="6"
+                      orient="auto-start-reverse"
+                    >
+                      <path d="M0 0 L10 5 L0 10 z" fill="rgba(255,255,255,0.4)" />
+                    </marker>
+                  </defs>
+
+                  <line className="flow-connector" x1="280" y1="120" x2="320" y2="120" markerEnd="url(#flowArrow)" />
+                  <line className="flow-connector" x1="560" y1="120" x2="600" y2="120" markerEnd="url(#flowArrow)" />
+                  <line className="flow-connector" x1="840" y1="120" x2="880" y2="120" markerEnd="url(#flowArrow)" />
+
+                  <g className="diagram-node" transform="translate(40 60)">
+                    <rect width="240" height="120" rx="10" />
+                    <text className="node-step" x="216" y="34">01</text>
+                    <text className="node-title" x="24" y="40">Video</text>
+                    <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
+                    <text className="node-sub" x="24" y="82">Steganography</text>
+                    <text className="node-sub" x="24" y="104">SHA-256</text>
+                  </g>
+                  <g className="diagram-node" transform="translate(320 60)">
+                    <rect width="240" height="120" rx="10" />
+                    <text className="node-step" x="216" y="34">02</text>
+                    <text className="node-title" x="24" y="40">Browser</text>
+                    <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
+                    <text className="node-sub" x="24" y="82">Noir Proof</text>
+                    <text className="node-sub" x="24" y="104">Nullifier</text>
+                  </g>
+                  <g className="diagram-node" transform="translate(600 60)">
+                    <rect width="240" height="120" rx="10" />
+                    <text className="node-step" x="216" y="34">03</text>
+                    <text className="node-title" x="24" y="40">Soroban</text>
+                    <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
+                    <text className="node-sub" x="24" y="82">Verifier</text>
+                    <text className="node-sub" x="24" y="104">Registry</text>
+                  </g>
+                  <g className="diagram-node" transform="translate(880 60)">
+                    <rect width="240" height="120" rx="10" />
+                    <text className="node-step" x="216" y="34">04</text>
+                    <text className="node-title" x="24" y="40">Portal</text>
+                    <line className="node-divider" x1="24" y1="58" x2="216" y2="58" />
+                    <text className="node-sub" x="24" y="82">Extract</text>
+                    <text className="node-sub" x="24" y="104">Confirm</text>
+                  </g>
+                </svg>
+              </div>
+            </section>
+
+            <footer className="site-footer" aria-label="Site footer">
+              <div className="footer-inner">
+                <div className="footer-brand">
+                  <Shield size={16} aria-hidden="true" />
+                  <span>Harpocrates</span>
+                </div>
+                <p className="footer-tagline">Privacy-first evidence integrity on Stellar.</p>
+                <div className="footer-stack">
+                  <span>Noir ZK</span>
+                  <span>SHA-256</span>
+                  <span>Soroban</span>
+                </div>
+              </div>
+            </footer>
+          </>
+        ) : null}
+
+        {currentView === 'studio' ? (
+          <section
+            className="workspace app-page"
+            id="studio"
+            aria-busy={isBusy}
+            aria-label="Evidence Studio workflow"
+          >
+            <div className="studio">
+              <header className="page-header">
+                <h2 ref={studioHeadingRef} tabIndex={-1}>Evidence Studio</h2>
+                <p
+                  id="studio-status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  {message}
+                </p>
+              </header>
+
+              {networkMismatch ? (
+                <div className="network-mismatch-banner" role="alert" aria-atomic="true" aria-live="assertive">
+                  <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+                  <span>{networkMismatch}</span>
+                </div>
+              ) : null}
+
+              <label className="dropzone" htmlFor="evidence-file-input">
+                <Upload size={20} aria-hidden="true" />
+                <span id="evidence-file-label">
+                  {file ? `Selected: ${file.name}` : 'Drop or choose a video file'}
+                </span>
+                <input
+                  id="evidence-file-input"
+                  type="file"
+                  accept="video/*"
+                  aria-labelledby="evidence-file-label"
+                  aria-describedby="studio-status"
+                  onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+                />
+              </label>
+
+              <div
+                className="tier-tabs"
+                role="group"
+                aria-label="Identity tier"
+                aria-describedby="tier-description"
+              >
+                {tiers.map((tier) => {
+                  const Icon = tier.icon
+                  const isSelected = tier.id === selectedTier
+                  return (
+                    <button
+                      className={isSelected ? 'tier-tab active' : 'tier-tab'}
+                      key={tier.id}
+                      type="button"
+                      aria-pressed={isSelected}
+                      onClick={() => setSelectedTier(tier.id)}
+                    >
+                      <Icon size={14} aria-hidden="true" />
+                      {tier.title}
+                    </button>
+                  )
+                })}
+              </div>
+              <p id="tier-description" className="sr-only">
+                Select the identity tier for your evidence registration
+              </p>
+
+              {selectedTier === 'silent' ? (
+                <div className="secret-grid">
+                  <label htmlFor="credential-seed-input">
+                    <span>Credential Seed</span>
+                    <input
+                      id="credential-seed-input"
+                      type="password"
+                      value={credentialSeed}
+                      onChange={(event) => setCredentialSeed(event.target.value)}
+                      autoComplete="off"
+                      aria-describedby="seed-hint"
+                    />
+                  </label>
+                  <label htmlFor="nullifier-seed-input">
+                    <span>Nullifier Seed</span>
+                    <input
+                      id="nullifier-seed-input"
+                      type="password"
+                      value={nullifierSeed}
+                      onChange={(event) => setNullifierSeed(event.target.value)}
+                      autoComplete="off"
+                      aria-describedby="seed-hint"
+                    />
+                  </label>
+                  <p id="seed-hint" className="sr-only">
+                    Seeds are used locally to generate a zero-knowledge proof and are never transmitted.
+                  </p>
+                </div>
+              ) : null}
+
+              <dl className="data-list" aria-label="Evidence proof details">
+                <div><dt>Source Hash</dt><dd>{shortHash(proof?.sourceHash ?? '')}</dd></div>
+                <div><dt>Video Hash</dt><dd>{shortHash(proof?.videoHash ?? '')}</dd></div>
+                <div><dt>Metadata Hash</dt><dd>{shortHash(proof?.metadataHash ?? '')}</dd></div>
+                <div><dt>Proof ID</dt><dd>{shortHash(proof?.proofId ?? '')}</dd></div>
+                <div><dt>Tier</dt><dd>{selectedTierMeta.title}</dd></div>
+                <div><dt>Nullifier</dt><dd>{shortHash(proof?.silentWitness?.nullifier ?? '')}</dd></div>
+                <div><dt>Credential Root</dt><dd>{shortHash(proof?.silentWitness?.credentialRoot ?? '')}</dd></div>
+                <div><dt>Stellar Tx</dt><dd>{shortHash(registration?.hash ?? '')}</dd></div>
+                <div><dt>Tx Status</dt><dd>{registration?.status ?? 'Not submitted'}</dd></div>
+              </dl>
+
+              {processedVideoUrl ? (
+                <a
+                  className="download-link"
+                  href={processedVideoUrl}
+                  download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
+                  aria-label={`Download embedded evidence video: ${proof?.fileName ?? 'harpocrates-evidence.mp4'}`}
+                >
+                  Download embedded evidence video
+                </a>
+              ) : null}
+
+              <button
+                className="primary-action"
+                type="button"
+                disabled={!proof || !!networkMismatch || stage === 'hashing' || stage === 'embedding' || stage === 'proving'}
+                onClick={() => void registerProof()}
+                aria-describedby="studio-status"
+                aria-busy={isBusy}
+              >
+                {stage === 'hashing' || stage === 'embedding' || stage === 'proving' ? (
+                  <Loader2 className="spin" size={18} aria-hidden="true" />
+                ) : (
+                  <BadgeCheck size={18} aria-hidden="true" />
+                )}
+                Register proof
+              </button>
             </div>
 
-            <div className="rail-block">
-              <h3>Events</h3>
-              <button className="verify-input" type="button" onClick={() => void loadEvents()}>
-                Refresh NeonDB feed
-              </button>
-              <div className="event-list">
-                {events.length === 0 ? (
-                  <p>No events loaded.</p>
+            <aside className="side-rail" aria-label="Evidence details and verification">
+              <div className="rail-block">
+                <h3>{selectedTierMeta.title}</h3>
+                <p>{selectedTierMeta.description}</p>
+              </div>
+
+              <div className="rail-block">
+                <h3>Quick Verify</h3>
+                <label className="verify-input" htmlFor="quick-verify-input">
+                  <input
+                    id="quick-verify-input"
+                    type="file"
+                    accept="video/*"
+                    onChange={(event) => void verifyEvidence(event.target.files?.[0] ?? null)}
+                  />
+                  <span>Choose received video</span>
+                </label>
+                <div
+                  className="verify-result"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  role="status"
+                >
+                  <CheckCircle2 size={14} aria-hidden="true" />
+                  <p>{verifyResult || 'No verification run yet.'}</p>
+                </div>
+                <code>{shortHash(verifyHash)}</code>
+              </div>
+
+              <div className="rail-block">
+                <h3>Chain Registry</h3>
+                {chainProof ? (
+                  <div className="chain-grid">
+                    <span>Tier</span>
+                    <strong>{chainProof.tier}</strong>
+                    <span>Status</span>
+                    <strong>{chainProof.status}</strong>
+                    <span>Source</span>
+                    <code>{chainProof.source ? shortHash(chainProof.source) : 'None'}</code>
+                    <span>Metadata</span>
+                    <code>{shortHash(chainProof.metadataHash)}</code>
+                  </div>
                 ) : (
-                  events.map((event) => (
-                    <div className="event-row" key={event.id}>
-                      <strong>{event.event_type}</strong>
-                      <span>{event.tx_status ?? event.tier ?? 'untiered'}</span>
-                      <code>{shortHash(event.video_hash ?? event.proof_id ?? '')}</code>
-                      {event.tx_hash ? <code>{shortHash(event.tx_hash)}</code> : null}
-                    </div>
-                  ))
+                  <p className="muted">No on-chain match loaded.</p>
                 )}
               </div>
+
+              <div className="rail-block">
+                <h3>Events</h3>
+                <button className="verify-input" type="button" onClick={() => void loadEvents()}>
+                  Refresh NeonDB feed
+                </button>
+                <div className="event-list" role="list" aria-label="Registration events">
+                  {events.length === 0 ? (
+                    <p role="listitem">No events loaded.</p>
+                  ) : (
+                    events.map((event) => (
+                      <div className="event-row" key={event.id} role="listitem">
+                        <strong>{event.event_type}</strong>
+                        <span>{event.tx_status ?? event.tier ?? 'untiered'}</span>
+                        <code>{shortHash(event.video_hash ?? event.proof_id ?? '')}</code>
+                        {event.tx_hash ? <code>{shortHash(event.tx_hash)}</code> : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </aside>
+          </section>
+        ) : null}
+
+        {currentView === 'verify' ? (
+          <section
+            className="workspace app-page verify-page"
+            id="verify"
+            aria-label="Verify artifact workflow"
+          >
+            <div className="studio verify-studio">
+              <header className="page-header">
+                <h2 ref={verifyHeadingRef} tabIndex={-1}>Verify Artifact</h2>
+                <p>Inspect a received video against embedded metadata and the Stellar registry.</p>
+              </header>
+              <label className="dropzone" htmlFor="verify-file-input">
+                <Upload size={20} aria-hidden="true" />
+                <span id="verify-file-label">Drop or choose a received video</span>
+                <input
+                  id="verify-file-input"
+                  type="file"
+                  accept="video/*"
+                  aria-labelledby="verify-file-label"
+                  onChange={(event) => void verifyEvidence(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <div className="verify-result large">
+                <CheckCircle2 size={14} aria-hidden="true" />
+                <p>{verifyResult || 'No verification run yet.'}</p>
+              </div>
+              <dl className="data-list">
+                <div><dt>Received Hash</dt><dd>{shortHash(verifyHash)}</dd></div>
+                <div>
+                  <dt>Chain Status</dt>
+                  <dd>{chainProof ? (chainProof.status === 2 ? 'Revoked' : 'Confirmed') : 'Not loaded'}</dd>
+                </div>
+              </dl>
             </div>
-          </aside>
-        </section>
-      ) : null}
-    </main>
+
+            <aside className="side-rail" aria-label="Evidence details and verification">
+              <div className="rail-block">
+                <h3>Chain Registry</h3>
+                {chainProof ? (
+                  <div className="chain-grid">
+                    <span>Tier</span>
+                    <strong>{chainProof.tier}</strong>
+                    <span>Status</span>
+                    <strong>{chainProof.status}</strong>
+                    <span>Source</span>
+                    <code>{chainProof.source ? shortHash(chainProof.source) : 'None'}</code>
+                    <span>Metadata</span>
+                    <code>{shortHash(chainProof.metadataHash)}</code>
+                  </div>
+                ) : (
+                  <p className="muted">No on-chain match loaded.</p>
+                )}
+              </div>
+
+              <div className="rail-block">
+                <h3>Events</h3>
+                <button className="verify-input" type="button" onClick={() => void loadEvents()}>
+                  Refresh NeonDB feed
+                </button>
+                <div className="event-list" role="list" aria-label="Registration events">
+                  {events.length === 0 ? (
+                    <p role="listitem">No events loaded.</p>
+                  ) : (
+                    events.map((event) => (
+                      <div className="event-row" key={event.id} role="listitem">
+                        <strong>{event.event_type}</strong>
+                        <span>{event.tx_status ?? event.tier ?? 'untiered'}</span>
+                        <code>{shortHash(event.video_hash ?? event.proof_id ?? '')}</code>
+                        {event.tx_hash ? <code>{shortHash(event.tx_hash)}</code> : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </aside>
+          </section>
+        ) : null}
+
+      </main>
+    </>
   )
 }
 
