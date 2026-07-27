@@ -64,7 +64,7 @@ jobs:
 
       - name: Upload test failure log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-test-failure-${{ github.run_id }}
           path: backend/backend-test.log

@@ -75,7 +75,7 @@ jobs:
           echo "Backup created: $BACKUP_FILE"
 
       - name: Upload backup artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backup-drill-encrypted-${{ github.run_id }}
           path: /tmp/backup-drill/*.gpg
