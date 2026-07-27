@@ -522,6 +522,12 @@ function App() {
     return nextWithProof
   }
 
+  function cancelProofGeneration() {
+    if (activeProofRequestId.current) {
+      proofWorkerRef.current?.cancel(activeProofRequestId.current)
+    }
+  }
+
   function clearSeeds() {
     setCredentialSeed('')
     setNullifierSeed('')
@@ -720,6 +726,7 @@ function App() {
               <BadgeCheck size={18} aria-hidden="true" />
             )}
             Register proof
+          
           </button>
           <div className="navlinks" aria-label="Primary">
             <button
