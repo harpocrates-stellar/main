@@ -194,6 +194,12 @@ pub struct DelegationUsed {
     pub proof_id: BytesN<32>,
 }
 
+/// Threshold in ledgers below which we extend the TTL of records (approx 14 days)
+pub const BUMP_THRESHOLD_LEDGERS: u32 = 241_920;
+
+/// Target TTL in ledgers when extending the TTL of records (approx 30 days)
+pub const BUMP_TARGET_LEDGERS: u32 = 518_400;
+
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1640,6 +1646,7 @@ impl HarpocratesRegistry {
         }
     }
 }
+
 
 fn require_admin(env: &Env, candidate: &Address) {
     let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);

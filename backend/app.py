@@ -33,6 +33,9 @@ from db import (
     make_idempotency_key,
     upsert_register_event,
     ConflictError,
+    enqueue_job,
+    get_job,
+    cancel_job,
 )
 from idempotency import idempotent
 from metrics import collector as metrics_collector
@@ -586,7 +589,45 @@ def create_app() -> Flask:
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 500
 
-        return jsonify({"ok": True, "proof": proof})
+        return jsonify({"job_id": job_id, "status": "pending"}), 202
+
+    @app.get("/api/jobs/<int:job_id>")
+    def get_job_status(job_id: int):
+        job = get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        return jsonify({"ok": True, "job": job})
+
+    @app.get("/api/jobs/<int:job_id>/download")
+    def download_job_result(job_id: int):
+        job = get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        if job["type"] != "embed" or job["status"] != "completed":
+            return jsonify({"error": "No output available for download"}), 400
+            
+        output_path = get_job_output_path(job_id)
+        if not output_path.exists():
+            return jsonify({"error": "Output file missing"}), 404
+            
+        result = job.get("result", {})
+        response = send_file(output_path, mimetype="video/mp4", as_attachment=True, download_name="harpocrates-evidence.mp4")
+        if result.get("source_hash"):
+            response.headers["X-Harpocrates-Source-Hash"] = result["source_hash"]
+        if result.get("embedded_hash"):
+            response.headers["X-Harpocrates-Embedded-Hash"] = result["embedded_hash"]
+        if result.get("metadata_hash"):
+            response.headers["X-Harpocrates-Metadata-Hash"] = result["metadata_hash"]
+        if result.get("db_event"):
+            response.headers["X-Harpocrates-Db-Event"] = str(result["db_event"])
+            
+        return response
+
+    @app.post("/api/jobs/<int:job_id>/cancel")
+    def cancel_job_endpoint(job_id: int):
+        if cancel_job(job_id):
+            return jsonify({"ok": True, "message": "Job cancelled"})
+        return jsonify({"error": "Job cannot be cancelled or not found"}), 400
 
     # Start webhook worker if DB is enabled
     if database_url():
