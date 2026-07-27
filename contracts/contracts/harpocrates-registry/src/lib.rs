@@ -26,6 +26,12 @@ const STATUS_EXPIRED: u32 = 3;
 
 pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 
+const STATUS_POLICY_ACTIVE: u32 = 1;
+const STATUS_POLICY_CANCELLED: u32 = 2;
+
+const MAX_SIGNERS: u32 = 16;
+const DEFAULT_APPROVAL_TTL_SECS: u64 = 86_400;
+
 // ---------------------------------------------------------------------------
 // Proof-history bounds (#90)
 // ---------------------------------------------------------------------------
