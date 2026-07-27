@@ -170,13 +170,13 @@ jobs:
           path: ${{ env.SBOM_DIR }}
 
       - name: Generate Docker provenance (backend)
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: backend/Dockerfile
           subject-name: harpocrates-backend
 
       - name: Generate Docker provenance (frontend)
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: frontend/Dockerfile
           subject-name: harpocrates-frontend
