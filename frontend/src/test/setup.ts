@@ -31,6 +31,27 @@ for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(webcrypto.sub
   }
 }
 subtle.digest = mockDigest;
+const asNodeBuffer = (data: BufferSource) =>
+  ArrayBuffer.isView(data)
+    ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+    : Buffer.from(new Uint8Array(data));
+subtle.sign = (
+  algorithm: AlgorithmIdentifier,
+  key: CryptoKey,
+  data: BufferSource,
+) => webcrypto.subtle.sign(algorithm, key, asNodeBuffer(data));
+subtle.verify = (
+  algorithm: AlgorithmIdentifier,
+  key: CryptoKey,
+  signature: BufferSource,
+  data: BufferSource,
+) =>
+  webcrypto.subtle.verify(
+    algorithm,
+    key,
+    asNodeBuffer(signature),
+    asNodeBuffer(data),
+  );
 
 const testCrypto = {
   getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
