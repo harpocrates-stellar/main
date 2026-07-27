@@ -252,13 +252,36 @@ function App() {
         fileName: nextFile.name,
       }
 
-      const form = new FormData()
-      form.append('video', nextFile)
-      form.append('metadata', JSON.stringify(metadata))
-
-      const response = await fetch(`${API_BASE}/api/stego/embed`, {
+      const sessionRes = await fetch(`${API_BASE}/api/stego/upload-session`, {
         method: 'POST',
-        body: form,
+      })
+      if (!sessionRes.ok) throw new Error('Failed to start upload session.')
+      const { sessionId } = await sessionRes.json()
+
+      const chunkSize = 5 * 1024 * 1024
+      const totalChunks = Math.ceil(nextFile.size / chunkSize)
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkSize
+        const end = Math.min(start + chunkSize, nextFile.size)
+        const chunk = nextFile.slice(start, end)
+
+        const chunkForm = new FormData()
+        chunkForm.append('chunk', chunk)
+
+        const chunkRes = await fetch(`${API_BASE}/api/stego/upload-session/${sessionId}/chunk/${i}`, {
+          method: 'PUT',
+          body: chunkForm,
+        })
+        if (!chunkRes.ok) throw new Error(`Failed to upload chunk ${i + 1} of ${totalChunks}.`)
+      }
+
+      const commitForm = new FormData()
+      commitForm.append('metadata', JSON.stringify(metadata))
+
+      const response = await fetch(`${API_BASE}/api/stego/upload-session/${sessionId}/commit`, {
+        method: 'POST',
+        body: commitForm,
       })
 
       if (!response.ok) {
