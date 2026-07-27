@@ -379,6 +379,25 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        # Handle time attestation if provided
+        time_attestation_data = None
+        claimed_capture_time = None
+        if "timeAttestation" in payload:
+            from time_attestation import decode_time_attestation, validate_time_attestation, encode_time_attestation
+            try:
+                time_att = decode_time_attestation(payload["timeAttestation"])
+                errors = validate_time_attestation(time_att, video_hash)
+                if errors:
+                    return jsonify({"error": "Invalid time attestation", "details": errors}), 400
+                time_attestation_data = encode_time_attestation(time_att)
+                if time_att.claimed_time:
+                    from datetime import datetime, timezone
+                    claimed_capture_time = datetime.fromtimestamp(
+                        time_att.claimed_time.unix_ms / 1000, tz=timezone.utc
+                    ).isoformat()
+            except (ValueError, TypeError) as exc:
+                return jsonify({"error": f"Time attestation error: {str(exc)}"}), 400
+
         idempotency_key = make_idempotency_key(video_hash, proof_id, normalized_tx_hash)
 
         try:
@@ -394,6 +413,8 @@ def create_app() -> Flask:
                 source_address=payload.get("sourceAddress"),
                 contract_id=payload.get("contractId"),
                 metadata=redact_metadata(payload),
+                time_attestation=time_attestation_data,
+                claimed_capture_time=claimed_capture_time,
             )
         except ConflictError as exc:
             return jsonify({
@@ -406,6 +427,141 @@ def create_app() -> Flask:
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+
+    @app.post("/api/time-attestation/create")
+    def create_time_attestation_endpoint():
+        """Create a new time attestation envelope."""
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+        
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+        
+        evidence_digest = payload.get("evidenceDigest")
+        if not is_hex_32(evidence_digest):
+            return jsonify({"error": "evidenceDigest must be a 32-byte hex string"}), 400
+        
+        from time_attestation import create_time_attestation, encode_time_attestation, check_backdating_risk
+        
+        claimed_time_ms = payload.get("claimedTimeMs")
+        claimed_source_label = payload.get("claimedSourceLabel", "device_clock")
+        uncertainty_ms = payload.get("uncertaintyMs", 0)
+        
+        try:
+            attestation = create_time_attestation(
+                evidence_digest=evidence_digest,
+                claimed_time_ms=claimed_time_ms,
+                claimed_source_label=claimed_source_label,
+                uncertainty_ms=uncertainty_ms,
+            )
+            
+            encoded = encode_time_attestation(attestation)
+            risk_assessment = check_backdating_risk(attestation)
+            
+            return jsonify({
+                "ok": True,
+                "timeAttestation": encoded,
+                "riskAssessment": risk_assessment,
+            })
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/time-attestation/anchor")
+    def anchor_time_attestation():
+        """Add anchors to an existing time attestation."""
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+        
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+        
+        from time_attestation import (
+            decode_time_attestation,
+            add_stellar_anchor,
+            add_rfc3161_anchor,
+            encode_time_attestation,
+            check_backdating_risk,
+        )
+        
+        try:
+            attestation = decode_time_attestation(payload.get("timeAttestation", {}))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid time attestation: {str(exc)}"}), 400
+        
+        # Add Stellar anchor if provided
+        if "stellarAnchor" in payload:
+            stellar = payload["stellarAnchor"]
+            try:
+                attestation = add_stellar_anchor(
+                    attestation,
+                    ledger_sequence=stellar["ledgerSequence"],
+                    ledger_timestamp=stellar["ledgerTimestamp"],
+                    transaction_hash=stellar["transactionHash"],
+                    network_passphrase=stellar["networkPassphrase"],
+                )
+            except (ValueError, KeyError) as exc:
+                return jsonify({"error": f"Invalid Stellar anchor: {str(exc)}"}), 400
+        
+        # Add RFC 3161 anchor if provided
+        if "rfc3161Anchor" in payload:
+            rfc3161 = payload["rfc3161Anchor"]
+            try:
+                attestation = add_rfc3161_anchor(
+                    attestation,
+                    token_bytes=rfc3161["tokenBytes"],
+                    tsa_url=rfc3161["tsaUrl"],
+                    gen_time=rfc3161["genTime"],
+                    policy_oid=rfc3161.get("policyOid"),
+                    cert_fingerprint=rfc3161.get("certFingerprint"),
+                    verification_status=rfc3161.get("verificationStatus", "unverified"),
+                    verification_error=rfc3161.get("verificationError"),
+                )
+            except (ValueError, KeyError) as exc:
+                return jsonify({"error": f"Invalid RFC 3161 anchor: {str(exc)}"}), 400
+        
+        encoded = encode_time_attestation(attestation)
+        risk_assessment = check_backdating_risk(attestation)
+        
+        return jsonify({
+            "ok": True,
+            "timeAttestation": encoded,
+            "riskAssessment": risk_assessment,
+        })
+
+    @app.post("/api/time-attestation/validate")
+    def validate_time_attestation_endpoint():
+        """Validate a time attestation envelope."""
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+        
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+        
+        evidence_digest = payload.get("evidenceDigest")
+        if not is_hex_32(evidence_digest):
+            return jsonify({"error": "evidenceDigest must be a 32-byte hex string"}), 400
+        
+        from time_attestation import (
+            decode_time_attestation,
+            validate_time_attestation,
+            check_backdating_risk,
+        )
+        
+        try:
+            attestation = decode_time_attestation(payload.get("timeAttestation", {}))
+            errors = validate_time_attestation(attestation, evidence_digest)
+            risk_assessment = check_backdating_risk(attestation)
+            
+            return jsonify({
+                "ok": len(errors) == 0,
+                "errors": errors,
+                "riskAssessment": risk_assessment,
+            })
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid time attestation: {str(exc)}"}), 400
 
     @app.get("/api/proofs/history/<proof_id>")
     def proof_history(proof_id: str):

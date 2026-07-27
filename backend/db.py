@@ -169,6 +169,15 @@ def init_db() -> None:
                 on proof_history_events (proof_id);
                 """
             )
+            # Time attestation support: add fields for time anchoring
+            cursor.execute("alter table proof_events add column if not exists time_attestation jsonb;")
+            cursor.execute("alter table proof_events add column if not exists claimed_capture_time timestamptz;")
+            cursor.execute(
+                """
+                create index if not exists proof_events_claimed_capture_time_idx
+                on proof_events (claimed_capture_time);
+                """
+            )
         connection.commit()
 
 
@@ -197,6 +206,8 @@ def insert_proof_event(
     source_address: str | None = None,
     contract_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    time_attestation: dict[str, Any] | None = None,
+    claimed_capture_time: str | None = None,
 ) -> dict[str, Any] | None:
     if not database_url():
         return None
@@ -217,9 +228,11 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
-                    metadata
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at;
                 """,
                 (
@@ -235,6 +248,8 @@ def insert_proof_event(
                     source_address,
                     contract_id,
                     Jsonb(metadata) if metadata is not None else None,
+                    Jsonb(time_attestation) if time_attestation is not None else None,
+                    claimed_capture_time,
                 ),
             )
             row = cursor.fetchone()
@@ -278,6 +293,8 @@ def list_proof_events(
                         source_address,
                         contract_id,
                         metadata,
+                        time_attestation,
+                        claimed_capture_time,
                         created_at
                     from proof_events
                     order by id desc
@@ -302,6 +319,8 @@ def list_proof_events(
                         source_address,
                         contract_id,
                         metadata,
+                        time_attestation,
+                        claimed_capture_time,
                         created_at
                     from proof_events
                     where id < %s
@@ -341,6 +360,8 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
                     source_address,
                     contract_id,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     created_at
                 from proof_events
                 where video_hash = %s
@@ -379,6 +400,8 @@ def upsert_register_event(
     source_address: str | None = None,
     contract_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    time_attestation: dict[str, Any] | None = None,
+    claimed_capture_time: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Insert a register event idempotently.
 
@@ -405,6 +428,8 @@ def upsert_register_event(
             "tier": tier,
             "source_address": source_address,
             "contract_id": contract_id,
+            "time_attestation": time_attestation,
+            "claimed_capture_time": claimed_capture_time,
         }
         return stub, True
 
@@ -426,9 +451,11 @@ def upsert_register_event(
                     source_address,
                     contract_id,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     idempotency_key
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (idempotency_key)
                 where idempotency_key is not null
                 do nothing
@@ -446,6 +473,8 @@ def upsert_register_event(
                     source_address,
                     contract_id,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     created_at;
                 """,
                 (
@@ -460,6 +489,8 @@ def upsert_register_event(
                     source_address,
                     contract_id,
                     Jsonb(metadata) if metadata is not None else None,
+                    Jsonb(time_attestation) if time_attestation is not None else None,
+                    claimed_capture_time,
                     idempotency_key,
                 ),
             )
@@ -488,6 +519,8 @@ def upsert_register_event(
                     source_address,
                     contract_id,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     created_at
                 from proof_events
                 where idempotency_key = %s;

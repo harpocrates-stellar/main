@@ -7,6 +7,7 @@
 
 import type { IdentityTier, ProofPackage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
+import type { TimeAttestation } from '../timeAttestation'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
@@ -75,30 +76,81 @@ export async function persistRegistration(
   result: RegisterProofResult,
   sourceAddress: string,
 ): Promise<void> {
+  const payload: any = {
+    fileName: proof.fileName,
+    videoHash: proof.videoHash,
+    metadataHash: proof.metadataHash,
+    proofId: proof.proofId,
+    tier: proof.tier,
+    txHash: result.hash,
+    txStatus: result.status,
+    sourceAddress,
+    contractId: CONTRACT_ID,
+    silentWitness:
+      proof.silentWitness && proof.tier === 'silent'
+        ? {
+            credentialRoot: proof.silentWitness.credentialRoot,
+            nullifier: proof.silentWitness.nullifier,
+            proofBytes: proof.silentWitness.proofBytes,
+            publicInputBytes: proof.silentWitness.publicInputBytes,
+          }
+        : undefined,
+  }
+
+  // Include time attestation if present
+  if (proof.timeAttestation) {
+    payload.timeAttestation = proof.timeAttestation
+  }
+
   await fetch(`${API_BASE}/api/proofs/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      fileName: proof.fileName,
-      videoHash: proof.videoHash,
-      metadataHash: proof.metadataHash,
-      proofId: proof.proofId,
-      tier: proof.tier,
-      txHash: result.hash,
-      txStatus: result.status,
-      sourceAddress,
-      contractId: CONTRACT_ID,
-      silentWitness:
-        proof.silentWitness && proof.tier === 'silent'
-          ? {
-              credentialRoot: proof.silentWitness.credentialRoot,
-              nullifier: proof.silentWitness.nullifier,
-              proofBytes: proof.silentWitness.proofBytes,
-              publicInputBytes: proof.silentWitness.publicInputBytes,
-            }
-          : undefined,
-    }),
+    body: JSON.stringify(payload),
   })
+}
+
+/**
+ * Create a time attestation for evidence with claimed capture time.
+ */
+export async function createEvidenceTimeAttestation(
+  videoHash: string,
+  claimedTimeMs?: number,
+): Promise<TimeAttestation> {
+  const { createTimeAttestation } = await import('../timeAttestation')
+  
+  const response = await createTimeAttestation({
+    evidenceDigest: videoHash,
+    claimedTimeMs,
+    claimedSourceLabel: 'device_clock',
+    uncertaintyMs: 1000,
+  })
+
+  return response.timeAttestation
+}
+
+/**
+ * Add Stellar anchor to time attestation after transaction confirmation.
+ */
+export async function addStellarAnchorToAttestation(
+  attestation: TimeAttestation,
+  txHash: string,
+  ledgerSequence: number,
+  ledgerTimestamp: number,
+  networkPassphrase: string,
+): Promise<TimeAttestation> {
+  const { anchorTimeAttestation } = await import('../timeAttestation')
+  
+  const response = await anchorTimeAttestation({
+    timeAttestation: attestation,
+    stellarAnchor: {
+      ledgerSequence,
+      ledgerTimestamp,
+      transactionHash: txHash,
+      networkPassphrase,
+    },
+  })
+
+  return response.timeAttestation
 }
 
 /** Fetch recent proof events from NeonDB (up to `limit`). */
