@@ -32,6 +32,10 @@ const STATUS_POLICY_CANCELLED: u32 = 2;
 const MAX_SIGNERS: u32 = 16;
 const DEFAULT_APPROVAL_TTL_SECS: u64 = 86_400;
 
+const MAX_LINEAGE_DEPTH: u32 = 4;
+const MAX_LINEAGE_FANOUT: u32 = 4;
+const MAX_LINEAGE_PAYLOAD_BYTES: u32 = 4096;
+
 // ---------------------------------------------------------------------------
 // Proof-history bounds (#90)
 // ---------------------------------------------------------------------------
@@ -208,6 +212,17 @@ pub enum ProofVerificationStatus {
     Revoked,
     Expired,
     NotFound,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageRecord {
+    pub parent_proof_ids: SorobanVec<BytesN<32>>,
+    pub manifest_digest: BytesN<32>,
+    pub actor: Address,
+    pub operation_type: Symbol,
+    pub output_digest: BytesN<32>,
+    pub depth: u32,
 }
 
 #[contracttype]
@@ -1379,6 +1394,34 @@ impl HarpocratesRegistry {
 
     pub fn get_issuer(env: Env, issuer: Address) -> Option<IssuerRecord> {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
+    }
+
+    pub fn register_lineage(
+        env: Env,
+        actor: Address,
+        parent_proof_ids: SorobanVec<BytesN<32>>,
+        manifest_digest: BytesN<32>,
+        operation_type: Symbol,
+        output_digest: BytesN<32>,
+        depth: u32,
+    ) -> LineageRecord {
+        actor.require_auth();
+        validate_lineage(&env, &parent_proof_ids, &output_digest, depth);
+
+        let record = LineageRecord {
+            parent_proof_ids: parent_proof_ids.clone(),
+            manifest_digest: manifest_digest.clone(),
+            actor: actor.clone(),
+            operation_type: operation_type.clone(),
+            output_digest: output_digest.clone(),
+            depth,
+        };
+        env.storage().persistent().set(&DataKey::Lineage(output_digest.clone()), &record);
+        record
+    }
+
+    pub fn get_lineage(env: Env, output_digest: BytesN<32>) -> Option<LineageRecord> {
+        env.storage().persistent().get(&DataKey::Lineage(output_digest))
     }
 
     // -----------------------------------------------------------------------

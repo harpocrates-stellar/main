@@ -131,6 +131,7 @@ Done:
 - Browser-side Noir JS and bb.js prover for user-seeded, video-specific Silent Witness proofs.
 - Soroban registry with all three identity paths.
 - Soroban registry hook for a dedicated Noir UltraHonk verifier contract.
+- **Lineage feature**: Verifiable derivatives with cycle detection, bounded depth/fan-out, and paginated queries (see [LINEAGE_IMPLEMENTATION.md](LINEAGE_IMPLEMENTATION.md)).
 - Credential-root allowlist/revocation, issuer registry, and nullifier protection.
 - Contract tests for all tiers.
 - One-command E2E smoke test for steganography, browser-compatible Noir proving, NeonDB, and optional Stellar Testnet registration.
