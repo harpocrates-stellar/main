@@ -189,7 +189,6 @@ def init_db() -> None:
             )
         connection.commit()
 
-
 def check_db() -> bool:
     if not database_url():
         return False
@@ -315,6 +314,8 @@ def insert_proof_event(
     tx_status: str | None = None,
     source_address: str | None = None,
     contract_id: str | None = None,
+    retention_class: str | None = None,
+    expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not database_url():
@@ -336,9 +337,11 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     metadata
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at;
                 """,
                 (
@@ -353,6 +356,8 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     Jsonb(metadata) if metadata is not None else None,
                 ),
             )
@@ -459,6 +464,9 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at
                 from proof_events
@@ -497,6 +505,8 @@ def upsert_register_event(
     tx_status: str | None = None,
     source_address: str | None = None,
     contract_id: str | None = None,
+    retention_class: str | None = None,
+    expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Insert a register event idempotently.
@@ -524,6 +534,9 @@ def upsert_register_event(
             "tier": tier,
             "source_address": source_address,
             "contract_id": contract_id,
+            "retention_class": retention_class,
+            "expires_at": expires_at,
+            "legal_hold": False,
         }
         return stub, True
 
@@ -544,10 +557,12 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     metadata,
                     idempotency_key
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (idempotency_key)
                 where idempotency_key is not null
                 do nothing
@@ -564,6 +579,9 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at;
                 """,
@@ -578,6 +596,8 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     Jsonb(metadata) if metadata is not None else None,
                     idempotency_key,
                 ),
@@ -606,6 +626,9 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
                     created_at
                 from proof_events
