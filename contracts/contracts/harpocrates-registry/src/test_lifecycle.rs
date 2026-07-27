@@ -55,12 +55,7 @@ fn proof_buf(env: &Env) -> Bytes {
 }
 
 #[cfg(test)]
-fn make_pi(
-    env: &Env,
-    vh: &BytesN<32>,
-    cr: &BytesN<32>,
-    nu: &BytesN<32>,
-) -> Bytes {
+fn make_pi(env: &Env, vh: &BytesN<32>, cr: &BytesN<32>, nu: &BytesN<32>) -> Bytes {
     let mut v = [0u8; 32];
     vh.copy_into_slice(&mut v);
     let mut c = [0u8; 32];
@@ -104,7 +99,11 @@ fn init_with_verifier() -> (Env, Address, Address, Address) {
 }
 
 #[cfg(test)]
-fn collect_history(env: &Env, client: &HarpocratesRegistryClient, proof_id: &BytesN<32>) -> SorobanVec<ProofHistoryEntry> {
+fn collect_history(
+    env: &Env,
+    client: &HarpocratesRegistryClient,
+    proof_id: &BytesN<32>,
+) -> SorobanVec<ProofHistoryEntry> {
     let count = client.get_proof_history_count(proof_id);
     let mut out = SorobanVec::new(env);
     for seq in 1..=count {
@@ -143,7 +142,10 @@ fn lifecycle_anonymous_emits_history() {
     assert_eq!(client.get_proof_history_count(&proof_id), 1);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().action, ProofLifecycleAction::Registered as u32);
+    assert_eq!(
+        history.get(0).unwrap().action,
+        ProofLifecycleAction::Registered as u32
+    );
     assert_eq!(history.get(0).unwrap().actor, None);
     assert_eq!(history.get(0).unwrap().reason_code, TIER_SILENT_WITNESS);
 }
@@ -175,7 +177,10 @@ fn lifecycle_anonymous_verified_emits_history() {
     assert_eq!(client.get_proof_history_count(&proof_id), 1);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().action, ProofLifecycleAction::Registered as u32);
+    assert_eq!(
+        history.get(0).unwrap().action,
+        ProofLifecycleAction::Registered as u32
+    );
     assert_eq!(history.get(0).unwrap().actor, None);
     assert_eq!(history.get(0).unwrap().reason_code, TIER_SILENT_WITNESS);
 }
@@ -196,7 +201,10 @@ fn lifecycle_source_emits_history() {
     assert_eq!(client.get_proof_history_count(&proof_id), 1);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().action, ProofLifecycleAction::Registered as u32);
+    assert_eq!(
+        history.get(0).unwrap().action,
+        ProofLifecycleAction::Registered as u32
+    );
     assert_eq!(history.get(0).unwrap().actor, Some(source));
     assert_eq!(history.get(0).unwrap().reason_code, TIER_CONSISTENT_SOURCE);
 }
@@ -219,7 +227,10 @@ fn lifecycle_seal_emits_history() {
     assert_eq!(client.get_proof_history_count(&proof_id), 1);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().action, ProofLifecycleAction::Registered as u32);
+    assert_eq!(
+        history.get(0).unwrap().action,
+        ProofLifecycleAction::Registered as u32
+    );
     assert_eq!(history.get(0).unwrap().actor, Some(issuer));
     assert_eq!(history.get(0).unwrap().reason_code, TIER_PUBLIC_SEAL);
 }
@@ -245,8 +256,14 @@ fn lifecycle_revoke_emits_history() {
     assert_eq!(client.get_proof_history_count(&proof_id), 2);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 2);
-    assert_eq!(history.get(0).unwrap().action, ProofLifecycleAction::Registered as u32);
-    assert_eq!(history.get(1).unwrap().action, ProofLifecycleAction::Revoked as u32);
+    assert_eq!(
+        history.get(0).unwrap().action,
+        ProofLifecycleAction::Registered as u32
+    );
+    assert_eq!(
+        history.get(1).unwrap().action,
+        ProofLifecycleAction::Revoked as u32
+    );
     assert_eq!(history.get(1).unwrap().actor, Some(admin));
 }
 
@@ -271,7 +288,10 @@ fn lifecycle_verify_emits_history() {
     assert_eq!(client.get_proof_history_count(&proof_id), 2);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 2);
-    assert_eq!(history.get(1).unwrap().action, ProofLifecycleAction::Verified as u32);
+    assert_eq!(
+        history.get(1).unwrap().action,
+        ProofLifecycleAction::Verified as u32
+    );
     assert_eq!(history.get(1).unwrap().actor, Some(admin));
     assert_eq!(history.get(1).unwrap().reason_code, 1);
 }
@@ -297,7 +317,10 @@ fn lifecycle_expire_emits_history_and_updates_status() {
     assert_eq!(client.get_proof_history_count(&proof_id), 2);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 2);
-    assert_eq!(history.get(1).unwrap().action, ProofLifecycleAction::Expired as u32);
+    assert_eq!(
+        history.get(1).unwrap().action,
+        ProofLifecycleAction::Expired as u32
+    );
     assert_eq!(history.get(1).unwrap().actor, Some(admin));
     assert_eq!(history.get(1).unwrap().reason_code, 2);
 
@@ -329,7 +352,10 @@ fn lifecycle_correct_emits_history_and_updates_metadata() {
     assert_eq!(client.get_proof_history_count(&proof_id), 2);
     let history = collect_history(&env, &client, &proof_id);
     assert_eq!(history.len(), 2);
-    assert_eq!(history.get(1).unwrap().action, ProofLifecycleAction::Corrected as u32);
+    assert_eq!(
+        history.get(1).unwrap().action,
+        ProofLifecycleAction::Corrected as u32
+    );
     assert_eq!(history.get(1).unwrap().actor, Some(admin));
     assert_eq!(history.get(1).unwrap().reason_code, 3);
 

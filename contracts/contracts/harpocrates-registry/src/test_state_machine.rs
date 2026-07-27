@@ -1028,7 +1028,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 if let Some(record) = model
                     .proofs
                     .iter_mut()
-                     .find(|record| record.proof == slot(proof))
+                    .find(|record| record.proof == slot(proof))
                 {
                     record.status = STATUS_REVOKED;
                 }

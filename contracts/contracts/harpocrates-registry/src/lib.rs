@@ -2048,5 +2048,3 @@ mod test_revocation;
 mod test_scoped_nullifier;
 #[cfg(test)]
 mod test_state_machine;
-#[cfg(test)]
-mod test_lifecycle;

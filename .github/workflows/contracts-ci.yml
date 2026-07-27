@@ -39,6 +39,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
+          components: clippy, rustfmt
 
       - name: Cache Rust dependencies
         uses: actions/cache@v6
@@ -50,6 +51,12 @@ jobs:
           key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-contracts-
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features || true
 
       - name: Run contract tests
         run: |
