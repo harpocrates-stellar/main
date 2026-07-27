@@ -119,6 +119,13 @@ Next:
 
 - Hosted deployment packaging for frontend/backend environments.
 
+```markdown
+## Contributing
+
+We welcome contributions across all workspaces (Frontend, Backend, Soroban Contracts, and Noir Circuits)!
+
+Please read our [Contributing Guide](CONTRIBUTING.md) for details on setting up your environment, running tests across all workspaces, commit message standards, and PR requirements.
+
 ## E2E Smoke Test
 
 Run the local E2E path:
