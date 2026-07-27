@@ -12,9 +12,23 @@ Harpocrates is a Stellar Testnet evidence protocol for sensitive video. It regis
 frontend/   React app for Evidence Studio and Verification Portal
 backend/    Flask video metadata service
 contracts/  Soroban contract workspace
+zk/         Noir circuits, toolchain lock, conformance vectors, build tooling
+docs/       Protocol and operations documentation
 DEPLOY.md   Hosted deployment guide (Docker Compose, Railway, Render, Fly.io)
 DESIGN.md   Visual design source
 ```
+
+### Documentation
+
+| Document | Covers |
+| --- | --- |
+| [docs/zk-reproducible-builds.md](docs/zk-reproducible-builds.md) | Toolchain pinning, hermetic builds, artifact digest manifests, drift detection |
+| [docs/zk-conformance-vectors.md](docs/zk-conformance-vectors.md) | The `hpx-vi/1` verifier-input codec and the cross-layer conformance corpus |
+| [docs/zk-fuzzing.md](docs/zk-fuzzing.md) | Structured fuzzing of malformed proofs and public inputs |
+| [docs/contract-delegation.md](docs/contract-delegation.md) | Constrained, expiring issuer and source delegation |
+| [docs/streaming-uploads.md](docs/streaming-uploads.md) | Bounded streaming upload path |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | Protocol threat model |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting |
 
 ## Quick Start
 
