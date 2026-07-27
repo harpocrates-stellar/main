@@ -4,3 +4,4 @@ python-dotenv==1.2.1
 psycopg[binary]==3.3.2
 numpy==2.3.4
 gunicorn==23.0.0
+cryptography==42.0.5

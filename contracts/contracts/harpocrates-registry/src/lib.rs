@@ -14,41 +14,78 @@ const TIER_PUBLIC_SEAL: u32 = 3;
 
 const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
+const STATUS_EXPIRED: u32 = 3;
+
+pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
 
 // ---------------------------------------------------------------------------
-// Proof-expiration policy (#44)
+// Proof-history bounds (#90)
 // ---------------------------------------------------------------------------
 //
-// Every proof record stores an `expires_at` epoch-second timestamp.
+// Every proof carries an append-only history of lifecycle transitions.
+// Each entry is bounded in size and the total number of entries per proof
+// is capped to prevent storage exhaustion under hostile inputs.
 //
-// - `expires_at == 0`  → no expiration (backward-compatible with records that
-//   pre-date this field, which are deserialized with the Soroban SDK default
-//   of zero for missing u64 fields in persistent storage).
-// - `expires_at > 0`   → the proof is considered expired once
-//   `ledger.timestamp() > expires_at`.
+// - MAX_HISTORY_ENTRIES_PER_PROOF limits total entries per proof.
+// - MAX_HISTORY_LIMIT bounds the maximum number of entries returned by a
+//   single query, protecting callers from unbounded iteration costs.
+pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
+pub const MAX_HISTORY_LIMIT: u32 = 50;
+
+// ---------------------------------------------------------------------------
+// Scoped emergency pause controls (#87)
+// ---------------------------------------------------------------------------
 //
-// The registry admin can update the global TTL applied to *new* registrations
-// via `set_proof_ttl`.  Existing records are unaffected.
+// Pauses are scoped per registration domain (one bit per identity tier) so a
+// compromised path can be contained without freezing unaffected tiers or any
+// read entry point. Reads (`get_proof`, `get_proof_status`, `get_by_video`,
+// `has_nullifier`, `get_issuer`, `get_credential_root`, `get_verifier`,
+// `is_paused`, `get_pause_state`) are never gated by pause state. Admin
+// remediation entry points (`revoke_proof`, `revoke_issuer`,
+// `revoke_credential_root`, `set_verifier`) also stay callable while paused,
+// since incident response depends on them.
 //
-// `DEFAULT_PROOF_TTL_SECS = 0` means new proofs are eternal unless the admin
-// overrides the TTL, preserving the original behavior on a fresh deployment.
+// Every pause is bounded: callers supply a `duration_secs` capped by
+// `MAX_PAUSE_DURATION_SECS` (admin) or `MAX_GUARDIAN_PAUSE_DURATION_SECS`
+// (guardian). A pause auto-expires once `ledger().timestamp() >=
+// expires_at`, so a lost admin/guardian key cannot brick registration
+// forever. `pause` is idempotent (re-pausing overwrites/extends the
+// existing record); `unpause` on an already-unpaused domain is a no-op.
+// Only the admin can lift a pause early — a compromised guardian key can
+// raise the alarm but cannot stand it down before the bounded expiry.
 //
-// Migration note: proofs registered before this field was added will have
-// `expires_at == 0` in persistent storage and will therefore be treated as
-// non-expiring by `get_proof_status`.
-pub const DEFAULT_PROOF_TTL_SECS: u64 = 0;
+// Migration: `Guardian` and `Pause(domain)` are new, additive storage keys.
+// Existing deployments read as "no guardian set" / "nothing paused" until
+// the admin opts in, so upgrading is backward compatible and requires no
+// migration step. Rolling back to a pre-#87 wasm simply ignores these keys.
+pub const PAUSE_DOMAIN_TIER1_REGISTRATION: u32 = 1 << 0;
+pub const PAUSE_DOMAIN_TIER2_REGISTRATION: u32 = 1 << 1;
+pub const PAUSE_DOMAIN_TIER3_REGISTRATION: u32 = 1 << 2;
+/// Convenience alias that expands to all three registration domains at once.
+pub const PAUSE_DOMAIN_ALL_REGISTRATION: u32 = PAUSE_DOMAIN_TIER1_REGISTRATION
+    | PAUSE_DOMAIN_TIER2_REGISTRATION
+    | PAUSE_DOMAIN_TIER3_REGISTRATION;
+
+const PAUSE_DOMAIN_SINGLE_BITS: [u32; 3] = [
+    PAUSE_DOMAIN_TIER1_REGISTRATION,
+    PAUSE_DOMAIN_TIER2_REGISTRATION,
+    PAUSE_DOMAIN_TIER3_REGISTRATION,
+];
+
+/// Maximum pause duration an admin may set in a single call (7 days).
+pub const MAX_PAUSE_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
+/// Maximum pause duration a guardian may set in a single call (24 hours).
+/// Kept shorter than the admin cap so a compromised guardian key cannot
+/// freeze registration for longer than a day without admin involvement.
+pub const MAX_GUARDIAN_PAUSE_DURATION_SECS: u64 = 24 * 60 * 60;
 
 /// Verification status returned by `get_proof_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProofVerificationStatus {
-    /// Proof is registered and has not expired.
     Valid,
-    /// Proof was explicitly revoked by the admin.
     Revoked,
-    /// Proof has passed its `expires_at` deadline.
     Expired,
-    /// No record found for the given proof_id.
     NotFound,
 }
 
@@ -60,9 +97,6 @@ pub struct ProofRecord {
     pub tier: u32,
     pub status: u32,
     pub created_at: u64,
-    /// Epoch-second deadline after which this proof is considered expired.
-    /// `0` means no expiration.  See the expiration-policy comment at the top
-    /// of this file.
     pub expires_at: u64,
     pub source: Option<Address>,
     pub issuer: Option<Address>,
@@ -82,6 +116,39 @@ pub struct CredentialRootRecord {
     pub metadata_hash: BytesN<32>,
     pub active: bool,
     pub issued_at: u64,
+}
+
+/// Pause record for a single registration domain bit. Presence of a record
+/// does not by itself mean "paused" — see `domain_is_paused`, which also
+/// checks `expires_at` against the current ledger time so pauses expire on
+/// their own without requiring a follow-up transaction.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseRecord {
+    pub paused_by: Address,
+    pub paused_at: u64,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ProofLifecycleAction {
+    Registered = 1,
+    Verified = 2,
+    Revoked = 3,
+    Expired = 4,
+    Corrected = 5,
+    TtlUpdated = 6,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofHistoryEntry {
+    pub action: u32,
+    pub timestamp: u64,
+    pub actor: Option<Address>,
+    pub reason_code: u32,
 }
 
 #[contractevent(topics = ["proof", "reg"])]
@@ -169,6 +236,29 @@ pub struct NonRevocationChecked {
     pub revocation_root: BytesN<32>,
 }
 
+#[contractevent(topics = ["pause", "set"])]
+pub struct DomainPaused {
+    #[topic]
+    pub domain: u32,
+    pub paused_by: Address,
+    pub paused_at: u64,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["pause", "clear"])]
+pub struct DomainUnpaused {
+    #[topic]
+    pub domain: u32,
+    pub unpaused_by: Address,
+    pub unpaused_at: u64,
+}
+
+#[contractevent(topics = ["guardian", "set"])]
+pub struct GuardianSet {
+    #[topic]
+    pub guardian: Address,
+}
+
 #[contractevent(topics = ["admin", "propose"])]
 pub struct AdminProposed {
     #[topic]
@@ -190,6 +280,16 @@ pub struct AdminAccepted {
     pub previous_admin: Address,
 }
 
+#[contractevent(topics = ["proof", "history"])]
+pub struct ProofHistoryEvent {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub action: u32,
+    pub timestamp: u64,
+    pub actor: Option<Address>,
+    pub reason_code: u32,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -199,11 +299,16 @@ pub enum DataKey {
     CredentialRoot(BytesN<32>),
     Issuer(Address),
     Verifier,
-    /// Global proof TTL in seconds (set by admin via `set_proof_ttl`).
     ProofTtl,
+    /// Optional emergency-pause guardian, distinct from admin (#87).
+    Guardian,
+    /// Pause record for a single registration domain bit (#87).
+    Pause(u32),
     PendingAdmin,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
+    ProofHistorySeq(BytesN<32>),
+    ProofHistoryEntry(BytesN<32>, u32),
 }
 
 #[contracterror]
@@ -222,7 +327,20 @@ pub enum RegistryError {
     InvalidPublicInputs = 10,
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
-    NoPendingAdmin = 13,
+    HistorySaturated = 13,
+    InvalidHistoryAction = 14,
+    InvalidReasonCode = 15,
+    HistoryLimitExceeded = 16,
+    AlreadyExpired = 17,
+    NoCorrectionChange = 18,
+    HistoryCorruption = 19,
+    NoPendingAdmin = 20,
+    /// The requested operation is blocked by an active domain pause (#87).
+    Paused = 21,
+    /// `domain` was zero or contained bits outside the known pause domains.
+    InvalidPauseDomain = 22,
+    /// `duration_secs` was zero or exceeded the caller's role cap.
+    InvalidPauseDuration = 23,
 }
 
 #[contract]
@@ -386,9 +504,6 @@ impl HarpocratesRegistry {
     // Expiration policy (#44)
     // -----------------------------------------------------------------------
 
-    /// Set the global TTL (in seconds) applied to new proof registrations.
-    /// `0` disables expiration for newly registered proofs.
-    /// Only the registry admin may call this.  Existing records are unaffected.
     pub fn set_proof_ttl(env: Env, admin: Address, ttl_secs: u64) {
         require_admin(&env, &admin);
         env.storage()
@@ -396,7 +511,6 @@ impl HarpocratesRegistry {
             .set(&DataKey::ProofTtl, &ttl_secs);
     }
 
-    /// Get the currently configured global proof TTL in seconds.
     pub fn get_proof_ttl(env: Env) -> u64 {
         env.storage()
             .persistent()
@@ -404,12 +518,6 @@ impl HarpocratesRegistry {
             .unwrap_or(DEFAULT_PROOF_TTL_SECS)
     }
 
-    /// Return the human-readable verification status of a proof at the current
-    /// ledger time without modifying any state.
-    ///
-    /// Clients should prefer this over reading the raw `ProofRecord` when they
-    /// need a definitive "is this proof still valid?" answer, because it
-    /// incorporates both the revocation flag and the expiration deadline.
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
         let record: Option<ProofRecord> = env.storage().persistent().get(&DataKey::Proof(proof_id));
         match record {
@@ -417,6 +525,9 @@ impl HarpocratesRegistry {
             Some(r) => {
                 if r.status == STATUS_REVOKED {
                     return ProofVerificationStatus::Revoked;
+                }
+                if r.status == STATUS_EXPIRED {
+                    return ProofVerificationStatus::Expired;
                 }
                 if r.expires_at > 0 && env.ledger().timestamp() > r.expires_at {
                     return ProofVerificationStatus::Expired;
@@ -439,6 +550,7 @@ impl HarpocratesRegistry {
         credential_root: BytesN<32>,
         proof: Bytes,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
         if env
@@ -459,21 +571,26 @@ impl HarpocratesRegistry {
             .set(&DataKey::Nullifier(nullifier.clone()), &true);
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_SILENT_WITNESS,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: None,
+            nullifier: Some(nullifier),
+        };
+        save_record(&env, &proof_id, record.clone(), None);
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_SILENT_WITNESS,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: None,
-                nullifier: Some(nullifier),
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            None,
+            record.tier,
+        );
+        record
     }
 
     pub fn register_anonymous_verified(
@@ -484,6 +601,7 @@ impl HarpocratesRegistry {
         public_inputs: Bytes,
         proof: Bytes,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
         let parsed = parse_silent_witness_public_inputs(&env, &public_inputs);
@@ -512,21 +630,26 @@ impl HarpocratesRegistry {
             .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_SILENT_WITNESS,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: None,
+            nullifier: Some(parsed.nullifier),
+        };
+        save_record(&env, &proof_id, record.clone(), None);
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_SILENT_WITNESS,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: None,
-                nullifier: Some(parsed.nullifier),
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            None,
+            record.tier,
+        );
+        record
     }
 
     pub fn register_source(
@@ -536,25 +659,31 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         proof_id: BytesN<32>,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER2_REGISTRATION);
         source.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_CONSISTENT_SOURCE,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: Some(source.clone()),
+            issuer: None,
+            nullifier: None,
+        };
+        save_record(&env, &proof_id, record.clone(), Some(source.clone()));
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_CONSISTENT_SOURCE,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: Some(source),
-                issuer: None,
-                nullifier: None,
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            Some(source),
+            record.tier,
+        );
+        record
     }
 
     pub fn register_seal(
@@ -564,6 +693,7 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         proof_id: BytesN<32>,
     ) -> ProofRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER3_REGISTRATION);
         issuer.require_auth();
         require_unique(&env, &proof_id, &video_hash);
 
@@ -573,21 +703,26 @@ impl HarpocratesRegistry {
         }
 
         let expires_at = compute_expires_at(&env);
-        save_record(
+        let record = ProofRecord {
+            video_hash,
+            metadata_hash,
+            tier: TIER_PUBLIC_SEAL,
+            status: STATUS_REGISTERED,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            source: None,
+            issuer: Some(issuer.clone()),
+            nullifier: None,
+        };
+        save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
+        record_proof_history(
             &env,
             &proof_id,
-            ProofRecord {
-                video_hash,
-                metadata_hash,
-                tier: TIER_PUBLIC_SEAL,
-                status: STATUS_REGISTERED,
-                created_at: env.ledger().timestamp(),
-                expires_at,
-                source: None,
-                issuer: Some(issuer),
-                nullifier: None,
-            },
-        )
+            ProofLifecycleAction::Registered as u32,
+            Some(issuer),
+            record.tier,
+        );
+        record
     }
 
     pub fn revoke_proof(env: Env, admin: Address, proof_id: BytesN<32>) {
@@ -599,10 +734,119 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Proof(proof_id.clone()), &record);
         ProofRevoked {
-            proof_id,
+            proof_id: proof_id.clone(),
             status: STATUS_REVOKED,
         }
         .publish(&env);
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Revoked as u32,
+            Some(admin),
+            1,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle history (#90)
+    // -----------------------------------------------------------------------
+
+    pub fn verify_proof(env: Env, actor: Address, proof_id: BytesN<32>, reason_code: u32) {
+        require_admin(&env, &actor);
+
+        let _record = get_proof_record(&env, &proof_id);
+
+        if reason_code > 255 {
+            panic_with_error!(&env, RegistryError::InvalidReasonCode);
+        }
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Verified as u32,
+            Some(actor),
+            reason_code,
+        );
+    }
+
+    pub fn expire_proof(env: Env, admin: Address, proof_id: BytesN<32>, reason_code: u32) {
+        require_admin(&env, &admin);
+
+        let mut record = get_proof_record(&env, &proof_id);
+        if record.status == STATUS_REVOKED {
+            panic_with_error!(&env, RegistryError::Unauthorized);
+        }
+        if record.status == STATUS_EXPIRED {
+            panic_with_error!(&env, RegistryError::AlreadyExpired);
+        }
+
+        record.status = STATUS_EXPIRED;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proof(proof_id.clone()), &record);
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Expired as u32,
+            Some(admin),
+            reason_code,
+        );
+    }
+
+    pub fn correct_proof(
+        env: Env,
+        admin: Address,
+        proof_id: BytesN<32>,
+        new_metadata_hash: BytesN<32>,
+        reason_code: u32,
+    ) {
+        require_admin(&env, &admin);
+
+        let mut record = get_proof_record(&env, &proof_id);
+        if record.metadata_hash == new_metadata_hash {
+            panic_with_error!(&env, RegistryError::NoCorrectionChange);
+        }
+
+        record.metadata_hash = new_metadata_hash;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proof(proof_id.clone()), &record);
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Corrected as u32,
+            Some(admin),
+            reason_code,
+        );
+    }
+
+    pub fn get_proof_history_at(
+        env: Env,
+        proof_id: BytesN<32>,
+        seq: u32,
+    ) -> Option<ProofHistoryEntry> {
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+            .unwrap_or(0);
+
+        if seq == 0 || seq > total {
+            return None;
+        }
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofHistoryEntry(proof_id, seq))
+    }
+
+    pub fn get_proof_history_count(env: Env, proof_id: BytesN<32>) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id))
+            .unwrap_or(0)
     }
 
     pub fn get_proof(env: Env, proof_id: BytesN<32>) -> Option<ProofRecord> {
@@ -720,6 +964,114 @@ impl HarpocratesRegistry {
         }
         .publish(&env);
     }
+
+    // -----------------------------------------------------------------------
+    // Scoped emergency pause controls (#87)
+    // -----------------------------------------------------------------------
+
+    /// Assign the address permitted to trigger emergency pauses without
+    /// holding the admin key. Admin-only. Pass the admin's own address to
+    /// revoke the guardian role.
+    pub fn set_guardian(env: Env, admin: Address, guardian: Address) {
+        require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardian, &guardian);
+        GuardianSet { guardian }.publish(&env);
+    }
+
+    /// The currently configured guardian, if any.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Guardian)
+    }
+
+    /// Pause one or more registration domains (`PAUSE_DOMAIN_*`, or their
+    /// bitwise-OR combination) for `duration_secs`. Callable by the admin or
+    /// the guardian; the admin is capped at `MAX_PAUSE_DURATION_SECS`, the
+    /// guardian at `MAX_GUARDIAN_PAUSE_DURATION_SECS`. Re-pausing an
+    /// already-paused domain extends (overwrites) its expiry rather than
+    /// erroring, so retries are idempotent. Reads and non-registration admin
+    /// entry points are never affected. Returns the epoch-second timestamp
+    /// at which the pause auto-expires.
+    pub fn pause(env: Env, caller: Address, domain: u32, duration_secs: u64) -> u64 {
+        validate_domain(&env, domain);
+        let is_admin = require_pauser(&env, &caller);
+        let max_duration = if is_admin {
+            MAX_PAUSE_DURATION_SECS
+        } else {
+            MAX_GUARDIAN_PAUSE_DURATION_SECS
+        };
+        if duration_secs == 0 || duration_secs > max_duration {
+            panic_with_error!(&env, RegistryError::InvalidPauseDuration);
+        }
+
+        let paused_at = env.ledger().timestamp();
+        let expires_at = paused_at.saturating_add(duration_secs);
+
+        for bit in domain_bits(domain) {
+            env.storage().persistent().set(
+                &DataKey::Pause(bit),
+                &PauseRecord {
+                    paused_by: caller.clone(),
+                    paused_at,
+                    expires_at,
+                },
+            );
+        }
+
+        DomainPaused {
+            domain,
+            paused_by: caller,
+            paused_at,
+            expires_at,
+        }
+        .publish(&env);
+
+        expires_at
+    }
+
+    /// Lift a pause early. Admin-only — a guardian can raise the alarm but
+    /// only the admin can stand it down before the bounded expiry. Unpausing
+    /// a domain that is not currently stored as paused is a no-op.
+    pub fn unpause(env: Env, admin: Address, domain: u32) {
+        validate_domain(&env, domain);
+        require_admin(&env, &admin);
+
+        let unpaused_at = env.ledger().timestamp();
+        let mut changed = false;
+        for bit in domain_bits(domain) {
+            if env.storage().persistent().has(&DataKey::Pause(bit)) {
+                env.storage().persistent().remove(&DataKey::Pause(bit));
+                changed = true;
+            }
+        }
+
+        if changed {
+            DomainUnpaused {
+                domain,
+                unpaused_by: admin,
+                unpaused_at,
+            }
+            .publish(&env);
+        }
+    }
+
+    /// Read-only: is any bit of `domain` currently paused (i.e. has an
+    /// unexpired pause record)? A domain past its `expires_at` is treated as
+    /// unpaused even if a stale record has not yet been cleared.
+    pub fn is_paused(env: Env, domain: u32) -> bool {
+        validate_domain(&env, domain);
+        let now = env.ledger().timestamp();
+        domain_bits(domain).any(|bit| domain_is_paused(&env, bit, now))
+    }
+
+    /// Read-only: the raw pause record for a single domain bit, if one is
+    /// currently stored (including a stale record past its `expires_at`
+    /// that has not yet been cleared by `unpause`).
+    pub fn get_pause_state(env: Env, domain: u32) -> Option<PauseRecord> {
+        validate_single_domain(&env, domain);
+        env.storage().persistent().get(&DataKey::Pause(domain))
+    }
 }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -729,6 +1081,68 @@ fn require_admin(env: &Env, candidate: &Address) {
     candidate.require_auth();
     if &admin != candidate {
         panic_with_error!(env, RegistryError::Unauthorized);
+    }
+}
+
+/// Require that `caller` is either the admin or the configured guardian, and
+/// authorize the call. Returns `true` when the caller is the admin, so
+/// callers can apply role-specific limits (e.g. pause duration caps).
+fn require_pauser(env: &Env, caller: &Address) -> bool {
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+
+    caller.require_auth();
+
+    if caller == &admin {
+        return true;
+    }
+
+    let guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
+    match guardian {
+        Some(g) if &g == caller => false,
+        _ => panic_with_error!(env, RegistryError::Unauthorized),
+    }
+}
+
+/// Reject `domain` unless it is nonzero and composed only of known
+/// `PAUSE_DOMAIN_*` bits. Accepts single domains and their bitwise-OR
+/// combination (e.g. `PAUSE_DOMAIN_ALL_REGISTRATION`).
+fn validate_domain(env: &Env, domain: u32) {
+    if domain == 0 || domain & !PAUSE_DOMAIN_ALL_REGISTRATION != 0 {
+        panic_with_error!(env, RegistryError::InvalidPauseDomain);
+    }
+}
+
+/// Reject `domain` unless it is exactly one known `PAUSE_DOMAIN_*` bit.
+fn validate_single_domain(env: &Env, domain: u32) {
+    if !PAUSE_DOMAIN_SINGLE_BITS.contains(&domain) {
+        panic_with_error!(env, RegistryError::InvalidPauseDomain);
+    }
+}
+
+/// Iterate the single-bit domains present in `domain` (already validated by
+/// `validate_domain`/`validate_single_domain`).
+fn domain_bits(domain: u32) -> impl Iterator<Item = u32> {
+    PAUSE_DOMAIN_SINGLE_BITS
+        .into_iter()
+        .filter(move |bit| domain & bit != 0)
+}
+
+fn domain_is_paused(env: &Env, domain_bit: u32, now: u64) -> bool {
+    let record: Option<PauseRecord> = env.storage().persistent().get(&DataKey::Pause(domain_bit));
+    match record {
+        Some(r) => now < r.expires_at,
+        None => false,
+    }
+}
+
+fn require_domain_unpaused(env: &Env, domain_bit: u32) {
+    let now = env.ledger().timestamp();
+    if domain_is_paused(env, domain_bit, now) {
+        panic_with_error!(env, RegistryError::Paused);
     }
 }
 
@@ -796,7 +1210,12 @@ fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     }
 }
 
-fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRecord {
+fn save_record(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    record: ProofRecord,
+    actor: Option<Address>,
+) -> ProofRecord {
     env.storage()
         .persistent()
         .set(&DataKey::Proof(proof_id.clone()), &record);
@@ -811,6 +1230,49 @@ fn save_record(env: &Env, proof_id: &BytesN<32>, record: ProofRecord) -> ProofRe
     }
     .publish(env);
     record
+}
+
+fn record_proof_history(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    action: u32,
+    actor: Option<Address>,
+    reason_code: u32,
+) {
+    if !(1..=6).contains(&action) {
+        panic_with_error!(env, RegistryError::InvalidHistoryAction);
+    }
+    if reason_code > 255 {
+        panic_with_error!(env, RegistryError::InvalidReasonCode);
+    }
+
+    let seq_key = DataKey::ProofHistorySeq(proof_id.clone());
+    let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+
+    if seq >= MAX_HISTORY_ENTRIES_PER_PROOF {
+        panic_with_error!(env, RegistryError::HistorySaturated);
+    }
+
+    let next_seq = seq + 1;
+    env.storage().persistent().set(
+        &DataKey::ProofHistoryEntry(proof_id.clone(), next_seq),
+        &ProofHistoryEntry {
+            action,
+            timestamp: env.ledger().timestamp(),
+            actor: actor.clone(),
+            reason_code,
+        },
+    );
+    env.storage().persistent().set(&seq_key, &next_seq);
+
+    ProofHistoryEvent {
+        proof_id: proof_id.clone(),
+        action,
+        timestamp: env.ledger().timestamp(),
+        actor,
+        reason_code,
+    }
+    .publish(env);
 }
 
 struct SilentWitnessInputs {
@@ -913,6 +1375,10 @@ mod test_expiry;
 #[cfg(test)]
 mod test_invariants;
 #[cfg(test)]
+mod test_pause;
+#[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
 mod test_state_machine;
+#[cfg(test)]
+mod test_lifecycle;

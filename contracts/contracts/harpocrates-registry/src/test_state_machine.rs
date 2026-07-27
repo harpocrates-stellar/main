@@ -812,7 +812,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_source",
             )? {
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -857,7 +857,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_seal",
             )? {
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -925,7 +925,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -1000,7 +1000,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -1027,11 +1027,11 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 if let Some(record) = model
                     .proofs
                     .iter_mut()
-                    .find(|record| record.proof == slot(proof))
+                     .find(|record| record.proof == slot(proof))
                 {
                     record.status = STATUS_REVOKED;
                 }
-                1
+                2
             } else {
                 0
             }

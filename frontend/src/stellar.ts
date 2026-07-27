@@ -3,12 +3,24 @@ import { getNetwork, requestAccess } from '@stellar/freighter-api'
 export type {
   ChainProofRecord,
   IdentityTier,
+  ProofHistoryEntry,
+  ProofHistoryResult,
   RegisterProofInput,
   RegisterProofResult,
   TxState,
 } from './stellarTypes'
 export { describeTxState } from './stellarTypes'
-export { getProofByVideoHash, registerProofOnStellar, CONTRACT_NETWORK_PASSPHRASE } from './harpocratesRegistry'
+export {
+  correctProof,
+  expireProof,
+  getProofByVideoHash,
+  getProofHistory,
+  getProofHistoryAt,
+  getProofHistoryCount,
+  registerProofOnStellar,
+  verifyProof,
+  CONTRACT_NETWORK_PASSPHRASE,
+} from './harpocratesRegistry'
 
 export async function connectFreighter() {
   const result = await requestAccess()

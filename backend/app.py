@@ -4,7 +4,9 @@ import base64
 import json
 import logging
 import os
+import shutil
 import tempfile
+from workspace import EncryptedWorkspace
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -19,10 +21,14 @@ from werkzeug.utils import secure_filename
 from config import load_config
 from db import (
     check_db,
+    database_url,
+    decode_proof_events_cursor,
     find_proof_events_by_video,
     init_db,
     insert_proof_event,
+    insert_proof_history_event,
     list_proof_events,
+    list_proof_history_events,
     make_idempotency_key,
     upsert_register_event,
     ConflictError,
@@ -33,6 +39,8 @@ from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
+from webhook import WebhookWorker, queue_webhook_deliveries
+from quarantine import QuarantineError, isolate_upload
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
@@ -173,6 +181,21 @@ def create_app() -> Flask:
         video.seek(0)
         return size <= config.max_video_bytes
 
+    def _enable_streaming_for_large_uploads():
+        """Replace large file uploads with streaming versions."""
+        upload_max_bytes = getattr(config, "upload_max_bytes", config.max_video_bytes)
+        if request.content_length and request.content_length > upload_max_bytes:
+            # Store config for streaming file creation
+            g.upload_config = config
+            
+            # Replace file uploads with streaming versions
+            new_files = {}
+            for field_name, field_storage in request.files.items():
+                new_files[field_name] = create_streaming_file_storage(field_storage)
+            
+            # Replace the files in the request
+            request.files = type(request.files)(new_files)
+
     def _enforce_json_size() -> int:
         raw = request.get_data()
         return len(raw) if raw else 0
@@ -180,6 +203,9 @@ def create_app() -> Flask:
     @app.post("/api/stego/embed")
     @require_capacity(admission_controller)
     def embed():
+        # Enable streaming for large uploads
+        _enable_streaming_for_large_uploads()
+        
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
         if video is None or metadata_raw is None:
@@ -199,16 +225,25 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            video.save(source_path)
+        try:
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                output_url = workspace.get_url("embedded.mp4")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
 
-            embed_metadata(source_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(source_path)
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+                embed_metadata(source_url, output_url, metadata)
+                output_bytes = workspace.read_decrypted("embedded.mp4")
+                source_hash = workspace.sha256("source.video")
+                embedded_hash = workspace.sha256("embedded.mp4")
+                metadata_hash = canonical_metadata_hash(metadata)
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -220,6 +255,9 @@ def create_app() -> Flask:
             embedded_hash=embedded_hash,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         response = Response(output_bytes, mimetype="video/mp4")
         response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
@@ -236,6 +274,9 @@ def create_app() -> Flask:
     @app.post("/api/stego/extract")
     @require_capacity(admission_controller)
     def extract():
+        # Enable streaming for large uploads
+        _enable_streaming_for_large_uploads()
+        
         video = request.files.get("video")
         if video is None:
             return jsonify({"error": "video is required"}), 400
@@ -243,12 +284,21 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            source_path = Path(tmp_dir) / "source.video"
-            video.save(source_path)
-            metadata = extract_metadata(source_path)
-            video_hash = sha256_file(source_path)
-            metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        try:
+            quarantine_context = isolate_upload(video)
+            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                source_url = workspace.get_url("source.video")
+                with quarantined_path.open("rb") as quarantined:
+                    workspace.write_encrypted(
+                        "source.video",
+                        quarantined,
+                        size=quarantined_path.stat().st_size,
+                    )
+                metadata = extract_metadata(source_url)
+                video_hash = workspace.sha256("source.video")
+                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        except QuarantineError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         db_event = insert_proof_event(
             event_type="extract",
@@ -259,6 +309,9 @@ def create_app() -> Flask:
             tier=metadata.get("tier") if metadata else None,
             metadata=redact_metadata(metadata),
         )
+
+        if db_event and db_event.get("id"):
+            queue_webhook_deliveries(db_event["id"])
 
         return jsonify(
             {
@@ -273,12 +326,21 @@ def create_app() -> Flask:
     @app.get("/api/proofs")
     def proofs():
         limit = request.args.get("limit", "25")
+        cursor_token = request.args.get("cursor")
         try:
             parsed_limit = int(limit)
         except ValueError:
             return jsonify({"error": "limit must be an integer"}), 400
 
-        return jsonify({"ok": True, "events": list_proof_events(parsed_limit)})
+        cursor_id = None
+        if cursor_token is not None and cursor_token != "":
+            try:
+                cursor_id = decode_proof_events_cursor(cursor_token)
+            except ValueError:
+                return jsonify({"error": "invalid cursor"}), 400
+
+        events, next_cursor = list_proof_events(parsed_limit, cursor_id=cursor_id)
+        return jsonify({"ok": True, "events": events, "nextCursor": next_cursor})
 
     @app.get("/api/proofs/by-video/<video_hash>")
     def proof_by_video(video_hash: str):
@@ -339,8 +401,59 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        if db_event and db_event.get("id") and created:
+            queue_webhook_deliveries(db_event["id"])
+
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+
+    @app.get("/api/proofs/history/<proof_id>")
+    def proof_history(proof_id: str):
+        if not is_hex_32(proof_id):
+            return jsonify({"error": "proof_id must be a 32-byte hex string"}), 400
+
+        limit = request.args.get("limit", "50")
+        offset = request.args.get("offset", "0")
+        try:
+            parsed_limit = int(limit)
+            parsed_offset = int(offset)
+        except ValueError:
+            return jsonify({"error": "limit and offset must be integers"}), 400
+
+        return jsonify(
+            {"ok": True, "events": list_proof_history_events(proof_id, parsed_limit, parsed_offset)}
+        )
+
+    @app.post("/api/proofs/history")
+    def register_proof_history_event():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+
+        proof_id = payload.get("proofId")
+        action = payload.get("action")
+        actor = payload.get("actor")
+        reason_code = payload.get("reasonCode")
+        contract_id = payload.get("contractId")
+        tx_hash = payload.get("txHash")
+
+        if not is_hex_32(proof_id):
+            return jsonify({"error": "proofId must be a 32-byte hex string"}), 400
+        if not isinstance(action, str) or not action:
+            return jsonify({"error": "action is required"}), 400
+        if reason_code is None or not isinstance(reason_code, int):
+            return jsonify({"error": "reasonCode is required"}), 400
+
+        db_event = insert_proof_history_event(
+            proof_id=proof_id,
+            action=action,
+            actor=actor,
+            reason_code=reason_code,
+            contract_id=contract_id,
+            tx_hash=tx_hash,
+        )
+
+        return jsonify({"ok": True, "db_event": db_event})
 
     @app.post("/api/noir/silent-witness")
     @require_capacity(admission_controller)
@@ -374,6 +487,12 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"ok": True, "proof": proof})
+
+    # Start webhook worker if DB is enabled
+    if database_url():
+        webhook_worker = WebhookWorker()
+        webhook_worker.start()
+        app.webhook_worker = webhook_worker
 
     return app
 

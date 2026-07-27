@@ -600,6 +600,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Request IDs for tracing | T6 | `app.py` → `start_request_context` |
 | Steganographic MAGIC header + SHA-256 checksum on payload | T7 | `stego.py` → `_pack_payload`, `_unpack_payload` |
 | Dual-channel embedding (border + LSB) | T7 | `stego.py` → `embed_metadata` |
+| Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
+| Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
+
 
 ### 7.3 React Frontend
 
@@ -609,6 +612,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Seeds cleared after proof generation or vault inactivity | T4, T5, T11 | `seedVault.ts`, `credentialVault.ts` |
 | BN254 field modulus reduction on credential/nullifier secrets | T4 | `seedVault.ts` → `fieldSecret` |
 | Browser-side Noir proving — secrets never sent to server in production | T4, T5 | `noirClient.ts` → `generateSilentWitnessProof` |
+| **Worker-isolated proving** — Noir proving runs in a dedicated Web Worker which is explicitly terminated upon success, failure, timeout, or cancellation. This guarantees the browser reclaims the memory hardware-isolate and drops all secrets reliably, rather than depending on GC. | T4, T5 | `proveWorker.ts`, `noirClient.ts` |
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |

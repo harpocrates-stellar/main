@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import os
 from contextlib import contextmanager
@@ -8,6 +10,40 @@ from typing import Any, Iterator
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+# Max page size for GET /api/proofs cursor pagination.
+PROOF_EVENTS_MAX_LIMIT = 100
+PROOF_EVENTS_DEFAULT_LIMIT = 25
+
+
+def encode_proof_events_cursor(event_id: int) -> str:
+    """Return a stable opaque cursor for the given proof_events.id."""
+    return base64.urlsafe_b64encode(str(event_id).encode("ascii")).decode("ascii")
+
+
+def decode_proof_events_cursor(cursor: str) -> int:
+    """Decode an opaque proof-events cursor.
+
+    Raises ValueError when the cursor is malformed.
+    """
+    if not isinstance(cursor, str) or not cursor.strip():
+        raise ValueError("invalid cursor")
+
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        text = raw.decode("ascii")
+        event_id = int(text)
+    except (ValueError, UnicodeDecodeError, binascii.Error, TypeError) as exc:
+        raise ValueError("invalid cursor") from exc
+
+    if event_id < 1:
+        raise ValueError("invalid cursor")
+    return event_id
+
+
+def clamp_proof_events_limit(limit: int) -> int:
+    return max(1, min(limit, PROOF_EVENTS_MAX_LIMIT))
 
 
 def database_url() -> str | None:
@@ -77,6 +113,60 @@ def init_db() -> None:
                 create unique index if not exists proof_events_idempotency_key_idx
                 on proof_events (idempotency_key)
                 where idempotency_key is not null;
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists webhook_subscriptions (
+                    id bigserial primary key,
+                    url text not null,
+                    secret_key text not null,
+                    is_active boolean not null default true,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists proof_history_events (
+                    id bigserial primary key,
+                    proof_id text not null,
+                    action text not null,
+                    actor text,
+                    reason_code integer not null,
+                    contract_id text,
+                    tx_hash text,
+                    tx_status text,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists webhook_deliveries (
+                    id bigserial primary key,
+                    subscription_id bigint not null references webhook_subscriptions(id) on delete cascade,
+                    event_id bigint not null references proof_events(id) on delete cascade,
+                    status text not null default 'pending',
+                    retry_count integer not null default 0,
+                    next_retry_at timestamptz not null default now(),
+                    lease_expires_at timestamptz,
+                    last_response_code integer,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create index if not exists webhook_deliveries_status_idx
+                on webhook_deliveries (status, next_retry_at);
+                """
+            )
+            cursor.execute(
+                """
+                create index if not exists proof_history_events_proof_id_idx
+                on proof_history_events (proof_id);
                 """
             )
         connection.commit()
@@ -152,37 +242,81 @@ def insert_proof_event(
         return dict(row) if row else None
 
 
-def list_proof_events(limit: int = 25) -> list[dict[str, Any]]:
-    if not database_url():
-        return []
+def list_proof_events(
+    limit: int = PROOF_EVENTS_DEFAULT_LIMIT,
+    *,
+    cursor_id: int | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """List proof events with stable keyset (cursor) pagination.
 
-    limit = max(1, min(limit, 100))
+    Ordering is deterministic: ``id DESC`` (primary key is the unique tie-breaker).
+    Returns ``(events, next_cursor)`` where ``next_cursor`` is an opaque token for
+    the next page, or ``None`` when there are no further rows.
+    """
+    if not database_url():
+        return [], None
+
+    page_size = clamp_proof_events_limit(limit)
+    fetch_size = page_size + 1
+
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                select
-                    id,
-                    event_type,
-                    file_name,
-                    video_hash,
-                    metadata_hash,
-                    proof_id,
-                    tier,
-                    embedded_hash,
-                    tx_hash,
-                    tx_status,
-                    source_address,
-                    contract_id,
-                    metadata,
-                    created_at
-                from proof_events
-                order by id desc
-                limit %s;
-                """,
-                (limit,),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+            if cursor_id is None:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        metadata,
+                        created_at
+                    from proof_events
+                    order by id desc
+                    limit %s;
+                    """,
+                    (fetch_size,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        metadata,
+                        created_at
+                    from proof_events
+                    where id < %s
+                    order by id desc
+                    limit %s;
+                    """,
+                    (cursor_id, fetch_size),
+                )
+            rows = [dict(row) for row in cursor.fetchall()]
+
+    next_cursor: str | None = None
+    if len(rows) > page_size:
+        rows = rows[:page_size]
+        next_cursor = encode_proof_events_cursor(int(rows[-1]["id"]))
+    return rows, next_cursor
 
 
 def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
@@ -411,3 +545,79 @@ class ConflictError(Exception):
         self.field = field
         self.existing_value = existing_value
         self.incoming_value = incoming_value
+
+
+def insert_proof_history_event(
+    *,
+    proof_id: str,
+    action: str,
+    actor: str | None = None,
+    reason_code: int,
+    contract_id: str | None = None,
+    tx_hash: str | None = None,
+    tx_status: str | None = None,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into proof_history_events (
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status
+                )
+                values (%s, %s, %s, %s, %s, %s, %s)
+                returning id, created_at;
+                """,
+                (
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_proof_history_events(
+    proof_id: str, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status,
+                    created_at
+                from proof_history_events
+                where proof_id = %s
+                order by id asc
+                limit %s offset %s;
+                """,
+                (proof_id, limit, offset),
+            )
+            return [dict(row) for row in cursor.fetchall()]

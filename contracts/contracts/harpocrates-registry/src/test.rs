@@ -230,7 +230,7 @@ fn transfers_admin_after_proposal_is_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")]
+#[should_panic(expected = "Error(Contract, #20)")]
 fn cancelled_admin_transfer_cannot_be_accepted() {
     let env = Env::default();
     env.mock_all_auths();
