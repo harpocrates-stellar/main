@@ -6,6 +6,14 @@ Harpocrates is a Stellar Testnet evidence protocol for sensitive video. It regis
 - Consistent Source: pseudonymous Stellar wallet source.
 - Public Seal: verified institutional issuer.
 
+## Architecture & Design Documentation
+
+For in-depth details on system boundaries, trust models, design tokens, and UI layout:
+
+* **[System Architecture & Boundaries](project.md)**: Details component interactions (Frontend, Backend, Noir, Soroban, NeonDB) and the end-to-end evidence verification lifecycle.
+* **[Visual Design System](DESIGN.md)**: Outlines design tokens, layout grids, responsive breakpoints, and accessibility standards.
+* **[Contributing Guide](CONTRIBUTING.md)**: Developer setup, workspace commands, branch naming, and pull request requirements.
+
 ## Workspace
 
 ```text
