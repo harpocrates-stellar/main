@@ -2024,6 +2024,94 @@ fn verify_demo_zk_boundary(proof: &Bytes, credential_root: &BytesN<32>) -> bool 
     !proof.is_empty() && credential_root.len() == 32
 }
 
+// ---------------------------------------------------------------------------
+// Dispute helper functions
+// ---------------------------------------------------------------------------
+
+/// Retrieve a dispute record, panicking with `DisputeNotFound` if absent.
+fn get_dispute_record(env: &Env, dispute_id: &BytesN<32>) -> DisputeRecord {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Dispute(dispute_id.clone()))
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::DisputeNotFound))
+}
+
+/// Decrement the open-dispute counter for a proof.  Saturates at 0 to avoid
+/// underflow on double-close (which should never happen under correct logic
+/// but is defended against for safety).
+fn decrement_open_dispute_count(env: &Env, proof_id: &BytesN<32>) {
+    let key = DataKey::ProofOpenDisputeCount(proof_id.clone());
+    let count: u32 = env.storage().persistent().get(&key).unwrap_or(0u32);
+    let new_count = count.saturating_sub(1);
+    if new_count == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &new_count);
+    }
+}
+
+/// Depth-1 cycle guard for supersession.
+///
+/// Returns `true` if allowing `superseding_proof_id` to supersede
+/// `disputed_proof_id` would create a cycle.  We detect:
+/// - Any existing dispute for `superseding_proof_id` that itself has
+///   `superseded_by == disputed_proof_id` (i.e. there is already a supersession
+///   arrow from `superseding_proof_id` back to the disputed proof).
+///
+/// The reverse index key is:
+///   SHA-256("harp_sup_rev" ‖ superseding_proof_id_bytes)
+/// stored as DataKey::Dispute(key_hash) → disputed_proof_id.
+fn check_supersession_cycle(
+    env: &Env,
+    disputed_proof_id: &BytesN<32>,
+    superseding_proof_id: &BytesN<32>,
+) -> bool {
+    let rev_key_hash = supersession_reverse_key(env, superseding_proof_id);
+
+    if let Some(recorded_original) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, BytesN<32>>(&DataKey::Dispute(rev_key_hash))
+    {
+        if recorded_original == *disputed_proof_id {
+            return true;
+        }
+    }
+    false
+}
+
+/// Record the supersession direction in the reverse index.
+/// Called from `supersede_dispute` after all guards pass.
+fn record_supersession_direction(
+    env: &Env,
+    disputed_proof_id: &BytesN<32>,
+    superseding_proof_id: &BytesN<32>,
+) {
+    let rev_key_hash = supersession_reverse_key(env, superseding_proof_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Dispute(rev_key_hash), disputed_proof_id);
+}
+
+/// Compute the reverse-index key for a supersession:
+///   SHA-256("harp_sup_rev" ‖ superseding_proof_id_bytes)
+///
+/// "harp_sup_rev" is a 12-byte domain prefix that avoids key collisions with
+/// legitimate dispute_id keys.  The 12-byte prefix + 32-byte suffix = 44
+/// bytes of pre-image, hashed to a 32-byte key.
+fn supersession_reverse_key(env: &Env, superseding_proof_id: &BytesN<32>) -> BytesN<32> {
+    // domain prefix: ASCII "harp_sup_rev" = 12 bytes
+    const PREFIX: [u8; 12] = *b"harp_sup_rev";
+
+    // Build a 44-byte pre-image: [PREFIX (12)] ‖ [superseding_proof_id (32)]
+    let mut pre_image = [0u8; 44];
+    pre_image[..12].copy_from_slice(&PREFIX);
+    superseding_proof_id.copy_into_slice(&mut pre_image[12..]);
+
+    let pre_image_bytes = Bytes::from_array(env, &pre_image);
+    env.crypto().sha256(&pre_image_bytes)
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -2048,3 +2136,5 @@ mod test_revocation;
 mod test_scoped_nullifier;
 #[cfg(test)]
 mod test_state_machine;
+#[cfg(test)]
+mod test_dispute;
