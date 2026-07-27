@@ -43,7 +43,7 @@ from db import (
 )
 from idempotency import idempotent
 from metrics import collector as metrics_collector
-from noir import generate_silent_witness
+from noir import generate_silent_witness, generate_aggregated_proof
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
@@ -51,6 +51,12 @@ from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload
 
+# ---------------------------------------------------------------------------
+# Bounded aggregation constants
+# ---------------------------------------------------------------------------
+# These MUST match the values in the Noir circuit and the Soroban contract.
+MAX_AGGREGATION_SIZE = 8
+AGGREGATION_ELEMENT_COST = 128  # bytes per aggregated public-input element
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
 REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
@@ -183,6 +189,8 @@ def create_app() -> Flask:
                 "database": status.get("database", "not_configured"),
                 "video_tools": status.get("video_tools", "missing"),
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
+                "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
+                "max_aggregation_size": MAX_AGGREGATION_SIZE,
             }
         ), 200 if status["ok"] else 503
 
@@ -825,6 +833,79 @@ def create_app() -> Flask:
         webhook_worker = WebhookWorker()
         webhook_worker.start()
         app.webhook_worker = webhook_worker
+
+    @app.post("/api/noir/silent-witness/aggregate")
+    def silent_witness_aggregate():
+        """Generate a bounded aggregated proof for multiple video hashes.
+
+        Accepts up to ``MAX_AGGREGATION_SIZE`` (8) video hashes and produces
+        a single UltraHonk proof that covers all of them under the same
+        credential identity.
+
+        Request body:
+        ```json
+        {
+            "videoHashes": ["32-byte-hex", ...],  // 1-8 video hashes
+            "credentialSecret": "decimal-field",
+            "nullifierSecret": "decimal-field"
+        }
+        ```
+
+        Response (200):
+        ```json
+        {
+            "ok": true,
+            "proof": { ... aggregated proof artifacts ... }
+        }
+        ```
+        """
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+        if not config.noir_worker_enabled:
+            return jsonify({"error": "local Noir worker is disabled"}), 404
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+
+        video_hashes = payload.get("videoHashes")
+        if not isinstance(video_hashes, list) or len(video_hashes) == 0:
+            return jsonify({"error": "videoHashes must be a non-empty array"}), 400
+
+        if len(video_hashes) > MAX_AGGREGATION_SIZE:
+            return jsonify({
+                "error": f"videoHashes exceeds maximum aggregation size ({MAX_AGGREGATION_SIZE})"
+            }), 400
+
+        for i, video_hash in enumerate(video_hashes):
+            if not is_hex_32(video_hash):
+                return jsonify({"error": f"videoHashes[{i}] must be a 32-byte hex string"}), 400
+
+        credential_secret = payload.get("credentialSecret")
+        nullifier_secret = payload.get("nullifierSecret")
+        if not is_field_decimal(credential_secret):
+            return jsonify({"error": "credentialSecret must be a decimal field string"}), 400
+        if not is_field_decimal(nullifier_secret):
+            return jsonify({"error": "nullifierSecret must be a decimal field string"}), 400
+
+        # Redact secrets from logs before calling the generator.
+        safe_fields = {
+            "event": "aggregate_proof_request",
+            "request_id": request_id(),
+            "batch_size": len(video_hashes),
+        }
+        log_structured(LOGGER, logging.INFO, safe_fields)
+
+        try:
+            proof = generate_aggregated_proof(
+                video_hashes,
+                credential_secret,
+                nullifier_secret,
+            )
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 500
+
+        return jsonify({"ok": True, "proof": proof})
 
     return app
 

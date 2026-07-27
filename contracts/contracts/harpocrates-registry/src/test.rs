@@ -179,6 +179,8 @@ fn registers_silent_witness_through_external_verifier() {
     assert_eq!(record.video_hash, video_hash);
     assert_eq!(record.nullifier, Some(nullifier.clone()));
     assert!(client.has_nullifier(&nullifier));
+    // Non-batch registration has batch_size = 0
+    assert_eq!(record.batch_size, 0);
 }
 
 #[test]

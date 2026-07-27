@@ -7,6 +7,20 @@ type SilentWitnessProof = {
   publicInputBytes: number
 }
 
+type AggregatedProof = {
+  protocol: string
+  version: number
+  type: string
+  batchId: string
+  batchSize: number
+  maxBatchSize: number
+  videoHashes: string[]
+  proof: string
+  publicInputs: string
+  proofBytes: number
+  publicInputBytes: number
+}
+
 type GenerateSilentWitnessInput = {
   videoHash: string
   credentialSecret: string
@@ -17,8 +31,16 @@ type GenerateSilentWitnessInput = {
   epoch?: number
 }
 
+type GenerateAggregatedProofInput = {
+  videoHashes: string[]
+  credentialSecret: string
+  nullifierSecret: string
+}
+
 let helperCircuitPromise: Promise<CompiledCircuit> | null = null
 let mainCircuitPromise: Promise<CompiledCircuit> | null = null
+let aggregatorCircuitPromise: Promise<CompiledCircuit> | null = null
+let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
 
 export async function generateSilentWitnessProof({
   videoHash,
@@ -97,4 +119,10 @@ export async function generateSilentWitnessProof({
 
     worker.postMessage(input)
   })
+}
+
+async function sha256(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input)
+  const hash = await crypto.subtle.digest('SHA-256', bytes)
+  return bytesToHex(new Uint8Array(hash))
 }
