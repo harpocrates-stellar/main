@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
 from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -33,6 +34,7 @@ from db import (
     upsert_register_event,
     ConflictError,
 )
+from idempotency import idempotent
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
@@ -202,6 +204,7 @@ def create_app() -> Flask:
 
     @app.post("/api/stego/embed")
     @require_capacity(admission_controller)
+    @idempotent("embed")
     def embed():
         # Enable streaming for large uploads
         _enable_streaming_for_large_uploads()
@@ -273,6 +276,7 @@ def create_app() -> Flask:
 
     @app.post("/api/stego/extract")
     @require_capacity(admission_controller)
+    @idempotent("extract")
     def extract():
         # Enable streaming for large uploads
         _enable_streaming_for_large_uploads()
@@ -350,6 +354,7 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "events": find_proof_events_by_video(video_hash)})
 
     @app.post("/api/proofs/register")
+    @idempotent("register")
     def register_proof_event():
         if _enforce_json_size() > config.max_json_bytes:
             return jsonify({"error": "JSON payload exceeds size limit"}), 413
@@ -457,6 +462,7 @@ def create_app() -> Flask:
 
     @app.post("/api/noir/silent-witness")
     @require_capacity(admission_controller)
+    @idempotent("silent-witness")
     def silent_witness_proof():
         if _enforce_json_size() > config.max_json_bytes:
             return jsonify({"error": "JSON payload exceeds size limit"}), 413
