@@ -64,6 +64,30 @@ export type RegisterProofResult = {
   txState: TxState
 }
 
+export type VerifierRotationInput = {
+  contractId: string
+  publicKey: string
+  verifier: string
+  activationLedger: number | bigint
+  overlapWindow: number | bigint
+  rollbackWindow: number | bigint
+}
+
+export type VerifierRotationActionInput = {
+  contractId: string
+  publicKey: string
+}
+
+export type ChainVerifierState = {
+  activeVerifier: string | null
+  pendingVerifier: string | null
+  previousVerifier: string | null
+  activationLedger: string
+  overlapWindow: string
+  rollbackWindow: string
+  rollbackWindowEnd: string
+}
+
 export type ChainProofRecord = {
   videoHash: string
   metadataHash: string

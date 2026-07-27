@@ -18,6 +18,7 @@ import {
 } from './stellarEncoding'
 import type {
   ChainProofRecord,
+  ChainVerifierState,
   IdentityTier,
   NormalizedRegisterProofInput,
   ProofHistoryEntry,

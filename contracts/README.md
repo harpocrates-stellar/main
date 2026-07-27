@@ -160,6 +160,31 @@ is_paused
 get_pause_state
 ```
 
+## Staged verifier rotation
+
+The registry now supports a staged verifier transition so a new verifier can be introduced without an unsafe instant cutover:
+
+1. The admin schedules a pending verifier with an activation ledger and rollback window.
+2. Once the ledger reaches the activation threshold, the admin activates the pending verifier.
+3. During the rollback window, the admin can revert to the previous verifier if the new verifier misbehaves or fails validation.
+
+The rotation state is persisted and can be inspected via `get_verifier_state`.
+
+### Operational flow
+
+```powershell
+./scripts/schedule-verifier-rotation.ps1 -ContractId YOUR_REGISTRY -Admin harpocrates-admin -Verifier YOUR_NEW_VERIFIER -ActivationLedger 1000 -OverlapWindow 100 -RollbackWindow 200
+./scripts/activate-verifier-rotation.ps1 -ContractId YOUR_REGISTRY -Admin harpocrates-admin
+./scripts/rollback-verifier-rotation.ps1 -ContractId YOUR_REGISTRY -Admin harpocrates-admin
+```
+
+### Rollback and troubleshooting
+
+- Activation is rejected before the configured activation ledger.
+- Rollback is rejected once the rollback window closes.
+- If the pending verifier fails validation or causes operational issues, revert to the previous verifier within the rollback window.
+- If you need to reconfigure the verifier after the rotation completes, call `set_verifier` again to reset the rotation state and install a fresh verifier.
+
 ## Admin Transfer
 
 Admin control uses a two-step transfer:
@@ -297,4 +322,7 @@ register-source.ps1
 register-seal.ps1
 revoke-credential-root.ps1
 set-verifier.ps1
+schedule-verifier-rotation.ps1
+activate-verifier-rotation.ps1
+rollback-verifier-rotation.ps1
 ```

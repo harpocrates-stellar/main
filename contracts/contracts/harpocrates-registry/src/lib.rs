@@ -660,14 +660,100 @@ impl HarpocratesRegistry {
     pub fn set_verifier(env: Env, admin: Address, verifier: Address) {
         require_admin(&env, &admin);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Verifier, &verifier);
+        env.storage().persistent().set(&DataKey::Verifier, &verifier);
+        env.storage().persistent().remove(&DataKey::VerifierState);
         VerifierSet { verifier }.publish(&env);
     }
 
     pub fn get_verifier(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Verifier)
+    }
+
+    pub fn schedule_verifier_rotation(
+        env: Env,
+        admin: Address,
+        verifier: Address,
+        activation_ledger: u64,
+        overlap_window: u64,
+        rollback_window: u64,
+    ) {
+        require_admin(&env, &admin);
+
+        let active_verifier = get_active_verifier(&env);
+        let state = VerifierState {
+            active_verifier: Some(active_verifier.clone()),
+            pending_verifier: Some(verifier.clone()),
+            previous_verifier: Some(active_verifier.clone()),
+            activation_ledger,
+            overlap_window,
+            rollback_window,
+            rollback_window_end: activation_ledger.saturating_add(rollback_window),
+        };
+        env.storage().persistent().set(&DataKey::VerifierState, &state);
+        VerifierRotationScheduled {
+            active_verifier: active_verifier.clone(),
+            pending_verifier: verifier.clone(),
+            activation_ledger,
+            overlap_window,
+            rollback_window,
+        }
+        .publish(&env);
+    }
+
+    pub fn activate_verifier_rotation(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+
+        let mut state = get_verifier_rotation_state(&env);
+        let pending_verifier = state.pending_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let active_verifier = state.active_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let current_ledger = u64::from(env.ledger().sequence());
+        if current_ledger < state.activation_ledger {
+            panic_with_error!(&env, RegistryError::RotationNotReady);
+        }
+
+        state.active_verifier = Some(pending_verifier.clone());
+        state.pending_verifier = None;
+        state.rollback_window_end = current_ledger.saturating_add(state.rollback_window.max(0));
+        env.storage().persistent().set(&DataKey::VerifierState, &state);
+        env.storage().persistent().set(&DataKey::Verifier, &pending_verifier);
+        VerifierRotationActivated {
+            active_verifier: pending_verifier,
+            previous_verifier: active_verifier,
+            rollback_window_end: state.rollback_window_end,
+        }
+        .publish(&env);
+    }
+
+    pub fn rollback_verifier_rotation(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+
+        let state = get_verifier_rotation_state(&env);
+        let active_verifier = state.active_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let previous_verifier = state.previous_verifier.clone().unwrap_or_else(|| {
+            panic_with_error!(&env, RegistryError::RotationNotScheduled)
+        });
+        let current_ledger = u64::from(env.ledger().sequence());
+        if state.rollback_window_end == 0 || current_ledger > state.rollback_window_end {
+            panic_with_error!(&env, RegistryError::RotationWindowClosed);
+        }
+
+        env.storage().persistent().set(&DataKey::Verifier, &previous_verifier);
+        env.storage().persistent().remove(&DataKey::VerifierState);
+        VerifierRotationRolledBack {
+            active_verifier: previous_verifier.clone(),
+            previous_verifier: active_verifier,
+        }
+        .publish(&env);
+    }
+
+    pub fn get_verifier_state(env: Env) -> VerifierState {
+        get_verifier_rotation_state(&env)
     }
 
     pub fn add_credential_root(
@@ -2094,6 +2180,28 @@ fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> Creden
         .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownCredentialRoot))
 }
 
+fn get_active_verifier(env: &Env) -> Address {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Verifier)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::VerifierNotSet))
+}
+
+fn get_verifier_rotation_state(env: &Env) -> VerifierState {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VerifierState)
+        .unwrap_or(VerifierState {
+            active_verifier: env.storage().persistent().get(&DataKey::Verifier),
+            pending_verifier: None,
+            previous_verifier: None,
+            activation_ledger: 0,
+            overlap_window: 0,
+            rollback_window: 0,
+            rollback_window_end: 0,
+        })
+}
+
 fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     let record = get_credential_root_record(env, credential_root);
     if !record.active {
@@ -2262,9 +2370,10 @@ fn verify_external_proof(env: &Env, verifier: &Address, public_inputs: Bytes, pr
     args.push_back(public_inputs.into_val(env));
     args.push_back(proof.into_val(env));
 
-    env.try_invoke_contract::<(), InvokeError>(verifier, &Symbol::new(env, "verify_proof"), args)
-        .unwrap_or_else(|_| panic_with_error!(env, RegistryError::InvalidProof))
-        .unwrap_or_else(|_| panic_with_error!(env, RegistryError::InvalidProof));
+    match env.try_invoke_contract::<(), InvokeError>(verifier, &Symbol::new(env, "verify_proof"), args) {
+        Ok(Ok(_)) => true,
+        _ => false,
+    }
 }
 
 struct RevocationPublicInputs {
