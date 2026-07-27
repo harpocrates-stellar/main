@@ -91,11 +91,8 @@ async function loadMainCircuit() {
 }
 
 async function loadCircuit(path: string) {
-  const response = await fetch(path, { cache: 'no-store' }) // cache prohibition
-  if (!response.ok) {
-    throw new Error(`Unable to load Noir circuit artifact: ${path}`)
-  }
-  return (await response.json()) as CompiledCircuit
+  const { loadVerifiedCircuit } = await import('./artifactIntegrity')
+  return loadVerifiedCircuit(path)
 }
 
 function fieldToBytes32Hex(value: string) {

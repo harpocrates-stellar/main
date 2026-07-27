@@ -1,0 +1,17 @@
+{
+  "protocol": "harpocrates",
+  "version": 1,
+  "circuitVersion": "1.0.0-beta.9+6abff2f16e1c1314ba30708d1cf032a536de3d19",
+  "network": "Test SDF Network ; September 2015",
+  "createdAt": "2026-07-27T00:00:00.000Z",
+  "artifacts": {
+    "/noir/silent_witness.json": {
+      "sha256": "26c306df107269cce78e21bdedafe0444a54691131e825d44ce350dcf8b97e79",
+      "size": 24329
+    },
+    "/noir/silent_witness_helper.json": {
+      "sha256": "95a629e7a094d8ddfe6bc92d2455f500eb9ce1f4dec37d51b9c5ed3b4a55ddb4",
+      "size": 24149
+    }
+  }
+}
