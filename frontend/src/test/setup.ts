@@ -23,11 +23,11 @@ const mockDigest = vi.fn(
   },
 );
 
-const subtle: any = {}
+const subtle: Record<string, unknown> = {}
 for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(webcrypto.subtle))) {
-  const value = (webcrypto.subtle as any)[key]
+  const value = (webcrypto.subtle as Record<string, unknown>)[key]
   if (typeof value === 'function') {
-    subtle[key] = value.bind(webcrypto.subtle)
+    subtle[key] = (value as (...args: unknown[]) => unknown).bind(webcrypto.subtle)
   }
 }
 subtle.digest = mockDigest;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AlertCircle,
   BadgeCheck,
@@ -9,7 +9,6 @@ import {
   Fingerprint,
   KeyRound,
   Loader2,
-  Shield,
   Upload,
   Wallet,
   XCircle,
@@ -20,11 +19,7 @@ import { fieldSecret, hasSeeds } from './seedVault'
 import type { VerificationEvent } from './verificationFlow'
 import EvilEye from './components/EvilEye'
 import { LandingView } from './views/LandingView'
-import { StudioView } from './views/StudioView'
-import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
-import { useEvidence } from './hooks/useEvidence'
-import { useVerification } from './hooks/useVerification'
 import type { View } from './types'
 import './App.css'
 
@@ -172,7 +167,6 @@ function App() {
   const [file, setFile] = useState<File | null>(null)
   const [proof, setProof] = useState<ProofPackage | null>(null)
   const [processedVideoUrl, setProcessedVideoUrl] = useState('')
-  const [wallet, setWallet] = useState('')
   const [credentialSeed, setCredentialSeed] = useState('')
   const [nullifierSeed, setNullifierSeed] = useState('')
   const [message, setMessage] = useState('Upload evidence to begin.')
@@ -181,12 +175,11 @@ function App() {
   const { state: txState, send: sendTxEvent } = useTransactionState()
   const [events, setEvents] = useState<VerificationEvent[]>([])
   const [chainProof, setChainProof] = useState<ChainProofRecord | null>(null)
-  const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
 
   useEffect(() => {
     if (txState.status === 'awaiting_confirmation' && txState.hash) {
-      setMessage('Recovered pending transaction. Polling for finality...')
       const pollStellar = async () => {
+        setMessage('Recovered pending transaction. Polling for finality...')
         const { pollTransactionStatus } = await import('./transactionVerifier')
         const result = await pollTransactionStatus(txState.hash!, CONTRACT_ID, {
           maxAttempts: 20,
@@ -205,11 +198,9 @@ function App() {
       }
       void pollStellar()
     }
-  }, [txState.status, txState.hash])
+  }, [txState.status, txState.hash, sendTxEvent])
 
   const { wallet, networkMismatch, connectWallet } = useWallet()
-  const evidence = useEvidence()
-  const verification = useVerification()
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)
@@ -237,27 +228,6 @@ function App() {
         : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
-  async function connectWallet() {
-    try {
-      const { connectFreighter, getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('./stellar')
-      const { checkNetworkMatch } = await import('./networkGuard')
-      const publicKey = await connectFreighter()
-      setWallet(publicKey)
-
-      const walletPassphrase = await getWalletNetwork()
-      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
-      if (check.ok) {
-        setNetworkMismatch(null)
-        setMessage('Wallet connected on Stellar Testnet.')
-      } else {
-        setNetworkMismatch(`${check.reason} ${check.remediation}`)
-        setMessage(check.reason)
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Freighter is not available.')
-    }
   }
 
   async function handleEvidence(nextFile: File | null) {
@@ -352,11 +322,9 @@ function App() {
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
         sendTxEvent({ type: 'FAILED', error: 'Network mismatch' })
-        setNetworkMismatch(`${check.reason} ${check.remediation}`)
-        setMessage(check.reason)
+        setMessage(`${check.reason} ${check.remediation}`)
         return
       }
-      setNetworkMismatch(null)
     } catch {
       sendTxEvent({ type: 'FAILED', error: 'Could not verify wallet network' })
       // If we cannot query the network, abort rather than submit to the wrong chain.
@@ -555,7 +523,7 @@ function App() {
         <button
           className="icon-button"
           type="button"
-          onClick={() => void handleConnectWallet()}
+          onClick={() => void connectWallet()}
           title="Connect wallet"
         >
           <Wallet size={18} aria-hidden="true" />
