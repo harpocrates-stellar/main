@@ -118,6 +118,8 @@ def create_app() -> Flask:
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
             response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("X-Harpocrates-Release", config.release_id)
+        response.headers.setdefault("X-Harpocrates-Network", config.release_network)
 
         if config.metrics_enabled and request.path != config.metrics_path:
             start_time = getattr(g, "start_time", None)
@@ -177,7 +179,14 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health():
-        return jsonify({"ok": True, "service": "harpocrates-stego"})
+        return jsonify(
+            {
+                "ok": True,
+                "service": "harpocrates-stego",
+                "release_id": config.release_id,
+                "network": config.release_network,
+            }
+        )
 
     @app.get("/ready")
     def ready():

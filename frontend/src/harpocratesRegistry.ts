@@ -157,6 +157,7 @@ export async function getProofByVideoHash(
   videoHash: string,
   sourceAddress?: string,
 ): Promise<ChainProofRecord | null> {
+  assertReleaseCompatibility()
   const source = sourceAddress || READONLY_SOURCE
   if (!source) {
     throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
