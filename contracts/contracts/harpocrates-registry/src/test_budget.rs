@@ -431,6 +431,48 @@ fn budget_get_proof_status_baseline() {
     );
 }
 
+const MAX_CPU_GET_PROOF_STATUSES: u64 = 4_000_000;
+const MAX_MEM_GET_PROOF_STATUSES: u64 = 3_000_000;
+
+#[test]
+fn budget_get_proof_statuses_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+    
+    // Register 10 proofs
+    let mut proof_ids = SorobanVec::new(&env);
+    for i in 0..10u8 {
+        let proof_id = b32(&env, 0xA0 + i);
+        client.register_source(&source, &b32(&env, 0xB0 + i), &b32(&env, 0xC0 + i), &proof_id);
+        proof_ids.push_back(proof_id);
+    }
+    
+    // Pad to 100 ids for worst-case read (90 will be missing/not found)
+    for i in 10..100u8 {
+        proof_ids.push_back(b32(&env, 0xD0 + i));
+    }
+
+    let (cpu, mem, statuses) = measure(&env, || client.get_proof_statuses(&proof_ids));
+    assert_eq!(statuses.len(), 100);
+    assert_eq!(statuses.get(0).unwrap(), ProofVerificationStatus::Valid);
+    assert_eq!(statuses.get(10).unwrap(), ProofVerificationStatus::NotFound);
+    
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_GET_PROOF_STATUSES,
+        MAX_MEM_GET_PROOF_STATUSES,
+        "get_proof_statuses",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Consecutive registration budget stability
 // ---------------------------------------------------------------------------

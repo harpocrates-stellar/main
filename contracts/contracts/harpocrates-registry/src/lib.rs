@@ -707,6 +707,24 @@ impl HarpocratesRegistry {
         }
     }
 
+    /// Return the human-readable verification status of multiple proofs in a single
+    /// batch query, efficiently retrieving them without exceeding Soroban read budgets.
+    ///
+    /// The maximum number of proof IDs in a single batch is bounded (e.g. 100) to
+    /// ensure the query always completes within resource limits.
+    pub fn get_proof_statuses(env: Env, proof_ids: SorobanVec<BytesN<32>>) -> SorobanVec<ProofVerificationStatus> {
+        let max_batch_size = 100;
+        if proof_ids.len() > max_batch_size {
+            panic_with_error!(&env, RegistryError::BatchTooLarge);
+        }
+        
+        let mut statuses = SorobanVec::new(&env);
+        for proof_id in proof_ids.iter() {
+            statuses.push_back(Self::get_proof_status(env.clone(), proof_id));
+        }
+        statuses
+    }
+
     // -----------------------------------------------------------------------
     // Scope epoch management (scoped nullifier v1)
     // -----------------------------------------------------------------------

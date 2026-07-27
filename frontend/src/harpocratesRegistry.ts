@@ -194,6 +194,45 @@ export async function getProofByVideoHash(
   }
 }
 
+export async function getBatchProofStatuses(
+  contractId: string,
+  proofIds: string[],
+  sourceAddress?: string,
+): Promise<number[] | null> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  
+  const scProofIds = proofIds.map(id => scBytes32(asHex32(id, 'proofId')))
+  
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_proof_statuses' as any, scProofIds))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native || !Array.isArray(native)) return null
+
+  // returns array of status enum values mapped to numbers
+  return native.map((val: any) => Number(val))
+}
+
 function normalizeRegisterProofInput(input: RegisterProofInput): NormalizedRegisterProofInput {
   return {
     ...input,
