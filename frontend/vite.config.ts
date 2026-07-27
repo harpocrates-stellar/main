@@ -1,10 +1,9 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import type { PluginOption } from 'vite'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react() as PluginOption],
+const config = {
+  plugins: [react()],
   test: {
     environment: 'jsdom',
     globals: true,
@@ -14,7 +13,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 3600,
     rollupOptions: {
       output: {
-        manualChunks(id) {
+        manualChunks(id: string) {
           if (id.includes('@noir-lang')) return 'noir-runtime'
           if (id.includes('@stellar') || id.includes('@scure') || id.includes('@noble')) {
             return 'stellar'
@@ -24,4 +23,6 @@ export default defineConfig({
       },
     },
   },
-})
+}
+
+export default defineConfig(config)

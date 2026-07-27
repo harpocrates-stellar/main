@@ -24,8 +24,6 @@ import type { View } from './types'
 import './App.css'
 
 type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
-type View = 'landing' | 'studio' | 'verify'
-
 type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
@@ -163,6 +161,7 @@ function App() {
   const [currentView, setCurrentView] = useState<View>(initialView)
   const [isScrolled, setIsScrolled] = useState(false)
   const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
+  const selectedTierMeta = tiers.find((tier) => tier.id === selectedTier) ?? tiers[0]
   const [stage, setStage] = useState<Stage>('idle')
   const [file, setFile] = useState<File | null>(null)
   const [proof, setProof] = useState<ProofPackage | null>(null)
