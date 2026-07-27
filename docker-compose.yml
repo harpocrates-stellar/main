@@ -2,7 +2,7 @@
 #
 # Usage:
 #   1. Copy backend/.env.example  → backend/.env  and fill in all values.
-#   2. Copy frontend/.env.example → frontend/.env.build and fill in VITE_* values.
+#   2. Create a project-root .env file with the VITE_* build variables.
 #   3. docker compose up --build -d
 #
 # The frontend image bakes the VITE_* variables in at build time (Vite
