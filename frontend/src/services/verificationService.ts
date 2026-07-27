@@ -7,6 +7,7 @@
 
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
+import { parseApiError } from './apiError'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
@@ -24,6 +25,9 @@ export async function extractMetadata(file: File): Promise<ExtractResult> {
     method: 'POST',
     body: form,
   })
+  if (!response.ok) {
+    throw new Error(await parseApiError(response, 'Extraction service is unavailable.'))
+  }
   const data = await response.json()
   return {
     hasHarpocratesMetadata: data.metadata?.protocol === 'harpocrates',
@@ -33,6 +37,9 @@ export async function extractMetadata(file: File): Promise<ExtractResult> {
 /** Look up all NeonDB proof events for a given video hash. */
 export async function fetchProofEventsByVideo(videoHash: string): Promise<ProofEvent[]> {
   const response = await fetch(`${API_BASE}/api/proofs/by-video/${videoHash}`)
+  if (!response.ok) {
+    throw new Error(await parseApiError(response, 'Database lookup failed.'))
+  }
   const data = await response.json()
   return (data.events ?? []) as ProofEvent[]
 }

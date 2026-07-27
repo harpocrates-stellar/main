@@ -17,6 +17,7 @@ import type { ChainProofRecord, IdentityTier, RegisterProofResult, TxState } fro
 import { describeTxState } from './stellar'
 import { fieldSecret, hasSeeds } from './seedVault'
 import type { VerificationEvent } from './verificationFlow'
+import { parseApiError } from './services/apiError'
 import EvilEye from './components/EvilEye'
 import { LandingView } from './views/LandingView'
 import { useWallet } from './hooks/useWallet'
@@ -269,7 +270,7 @@ function App() {
       const sessionRes = await fetch(`${API_BASE}/api/stego/upload-session`, {
         method: 'POST',
       })
-      if (!sessionRes.ok) throw new Error('Failed to start upload session.')
+      if (!sessionRes.ok) throw new Error(await parseApiError(sessionRes, 'Failed to start upload session.'))
       const { sessionId } = await sessionRes.json()
 
       const chunkSize = 5 * 1024 * 1024
@@ -287,7 +288,7 @@ function App() {
           method: 'PUT',
           body: chunkForm,
         })
-        if (!chunkRes.ok) throw new Error(`Failed to upload chunk ${i + 1} of ${totalChunks}.`)
+        if (!chunkRes.ok) throw new Error(await parseApiError(chunkRes, `Failed to upload chunk ${i + 1} of ${totalChunks}.`))
       }
 
       const commitForm = new FormData()
@@ -299,7 +300,7 @@ function App() {
       })
 
       if (!response.ok) {
-        throw new Error('Steganography service did not accept the video.')
+        throw new Error(await parseApiError(response, 'Steganography service did not accept the video.'))
       }
 
       const embeddedBlob = await response.blob()
@@ -460,7 +461,7 @@ function App() {
   }
 
   async function persistRegistration(nextProof: ProofPackage, result: RegisterProofResult) {
-    await fetch(`${API_BASE}/api/proofs/register`, {
+    const res = await fetch(`${API_BASE}/api/proofs/register`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -486,6 +487,9 @@ function App() {
             : undefined,
       }),
     })
+    if (!res.ok) {
+      throw new Error(await parseApiError(res, 'Failed to persist registration.'))
+    }
   }
 
   async function attachSilentWitnessProof(nextProof: ProofPackage) {

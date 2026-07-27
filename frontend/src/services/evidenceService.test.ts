@@ -74,6 +74,26 @@ describe('embedVideo', () => {
     ).rejects.toThrow('Steganography service did not accept')
   })
 
+  it('surfaces the API error message on non-OK responses with a JSON body', async () => {
+    const blob = makeMockBlob('embedded-video-bytes')
+    const { hex } = await import('../utils')
+    const realHash = hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({ error: 'video payload exceeds size limit' }),
+        headers: { get: () => null },
+      }),
+    )
+
+    const file = makeFile()
+    await expect(
+      embedVideo(file, 'source', 'a'.repeat(64), 'b'.repeat(64), new Date().toISOString()),
+    ).rejects.toThrow('video payload exceeds size limit')
+  })
+
   it('throws when the header hash does not match the blob hash', async () => {
     const mockFetch = await makeEmbedFetchMock({ embeddedHashOverride: 'f'.repeat(64) })
     vi.stubGlobal('fetch', mockFetch)
@@ -136,6 +156,18 @@ describe('fetchRecentEvents', () => {
     )
 
     await expect(fetchRecentEvents()).rejects.toThrow('unavailable')
+  })
+
+  it('surfaces the API error message on non-OK responses with a JSON body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({ error: 'rate limit exceeded' }),
+      }),
+    )
+
+    await expect(fetchRecentEvents()).rejects.toThrow('rate limit exceeded')
   })
 })
 
