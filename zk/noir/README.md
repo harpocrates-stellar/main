@@ -42,6 +42,18 @@ python -m pytest zk/tools -q                   # tooling unit tests, no toolchai
 
 See [docs/zk-reproducible-builds.md](../../docs/zk-reproducible-builds.md).
 
+## Benchmarks
+
+Cold/warm proof generation and verification baselines (browser, native, CI,
+Soroban-adjacent) live under `zk/bench/`:
+
+```bash
+python -m pytest zk/bench -q
+zk/bench/run.sh run --target ci --synthetic
+```
+
+See [docs/zk-benchmarks.md](../../docs/zk-benchmarks.md).
+
 ## Cross-layer conformance
 
 The public-input codec shared by the backend, browser, and Soroban registry is

@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:noir-client": "node scripts/test-noir-client-prover.mjs",
-    "proof:noir-client": "node scripts/generate-noir-client-proof.mjs"
+    "proof:noir-client": "node scripts/generate-noir-client-proof.mjs",
+    "bench:noir": "node ../zk/bench/browser_runner.mjs"
   },
   "dependencies": {
     "@aztec/bb.js": "^0.87.0",

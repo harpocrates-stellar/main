@@ -55,6 +55,11 @@ jobs:
       - name: Unit-test the manifest tool
         run: python -m pytest zk/tools -q
 
+      - name: Unit-test the ZK benchmark harness
+        # No nargo/bb required: synthetic drivers exercise schema, privacy,
+        # cold/warm aggregation, and deterministic failure modes.
+        run: python -m pytest zk/bench -q
+
       - name: Check the toolchain lock parses and is self-consistent
         run: |
           python - <<'PY'
