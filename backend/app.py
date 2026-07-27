@@ -216,6 +216,50 @@ def create_app() -> Flask:
         )
         return response
 
+    def require_register_auth(fn):
+        """Decorator that enforces Bearer token auth on proof registration.
+
+        Behaviour:
+        - If REGISTER_API_KEY is not configured the endpoint is open (development
+          convenience identical to the previous behaviour).
+        - Otherwise the request must carry ``Authorization: Bearer <key>``.
+        - If REGISTER_API_KEY_EXPIRES is set and the current UTC time is at or
+          past that instant the key is treated as expired and the request is
+          rejected with 401.
+        """
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            expected_key = config.register_api_key
+            if expected_key is None:
+                # No key configured – allow the request (dev mode).
+                return fn(*args, **kwargs)
+
+            # Check expiry before validating the key so that an expired key
+            # is never accepted even if the token matches.
+            expires = config.register_api_key_expires
+            if expires is not None:
+                from datetime import datetime as _dt
+
+                now = _dt.now(tz=timezone.utc)
+                if now >= expires:
+                    return jsonify({"error": "API key has expired"}), 401
+
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return jsonify({"error": "Authorization header with Bearer token is required"}), 401
+
+            provided_key = auth_header[len("Bearer "):]
+            # Constant-time comparison to mitigate timing attacks.
+            import hmac as _hmac
+
+            if not _hmac.compare_digest(provided_key, expected_key):
+                return jsonify({"error": "Invalid API key"}), 401
+
+            return fn(*args, **kwargs)
+
+        return wrapper
+
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
         return jsonify({"error": "request body is too large"}), 413
