@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -15,6 +16,8 @@ from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
@@ -69,6 +72,48 @@ LOGGER.setLevel(logging.INFO)
 LOGGER.propagate = False
 
 
+def _make_key_func(config):
+    """Return a rate-limit key function that uses the real client IP.
+
+    If ``trusted_proxies`` is configured the leftmost *untrusted* address in
+    ``X-Forwarded-For`` is used, preventing spoofing by clients who inject
+    extra entries.  When no trusted proxies are configured the WSGI
+    ``REMOTE_ADDR`` is used unconditionally, which is always safe.
+    """
+
+    trusted = set()
+    for entry in config.trusted_proxies:
+        try:
+            trusted.add(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            pass
+
+    def _key_func() -> str:
+        if not trusted:
+            # No proxies trusted – use the direct peer address, cannot be spoofed.
+            return get_remote_address()
+
+        # Walk X-Forwarded-For right-to-left, skipping trusted proxy IPs.
+        # The first address that is NOT a trusted proxy is the real client.
+        xff = request.headers.get("X-Forwarded-For", "")
+        addrs = [a.strip() for a in xff.split(",") if a.strip()]
+        # Append the direct peer so we always have at least one candidate.
+        addrs.append(request.remote_addr or "127.0.0.1")
+
+        for addr in reversed(addrs):
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                continue
+            if not any(ip in net for net in trusted):
+                return str(ip)
+
+        # Fallback: direct peer (always safe).
+        return get_remote_address()
+
+    return _key_func
+
+
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
@@ -90,6 +135,27 @@ def create_app() -> Flask:
         ],
     )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
+
+    # ------------------------------------------------------------------ #
+    # Rate limiting                                                        #
+    # ------------------------------------------------------------------ #
+    limiter = Limiter(
+        key_func=_make_key_func(config),
+        app=app,
+        enabled=config.ratelimit_enabled,
+        # In-memory storage is fine for a single-process server; swap for
+        # Redis via RATELIMIT_STORAGE_URI env var in multi-worker deployments.
+        storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
+        default_limits=[],   # No global limit – each endpoint opts in explicitly.
+        headers_enabled=True,  # Emit X-RateLimit-* headers on every response.
+        swallow_errors=True,   # Never crash the app due to storage errors.
+    )
+
+    @limiter.request_filter
+    def _health_exempt():
+        """Health and readiness probes must never be rate-limited."""
+        return request.path in {"/health", "/ready"}
+
     init_db()
     init_retention_worker()
 
