@@ -154,7 +154,7 @@ import { useTransactionState } from './hooks/useTransactionState'
 import { useEvidenceState } from './hooks/useEvidenceState'
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
-  return hash === 'studio' || hash === 'verify' ? hash : 'landing'
+  return hash === 'studio' || hash === 'verify' || hash === 'batch' ? hash : 'landing'
 }
 
 /** Strip values that could leak private evidence data from announcement text. */
@@ -563,6 +563,9 @@ function App() {
             onClick={() => openView('verify')}
           >
             Verify
+          </button>
+          <button className={currentView === 'batch' ? 'active' : ''} type="button" onClick={() => openView('batch')}>
+            Batch Workspace
           </button>
         </div>
         <div className="network-pill">Stellar Testnet</div>
