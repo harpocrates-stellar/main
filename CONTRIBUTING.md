@@ -129,3 +129,10 @@ Every Pull Request must satisfy the following checklist before being merged:
 ✅ Security Notes Required: If your PR modifies authentication logic, cryptography/key handling, Soroban contract storage/permissions, or Noir ZK circuit constraints, you MUST include a Security Notes section in your PR description explaining the safety implications.
 
 ✅ Test Evidence: Include terminal execution logs or test output showing that all impacted workspace tests pass.
+```
+
+## Code of Conduct
+
+This project and everyone participating in it is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold these standards. 
+
+Please report unacceptable behavior to `conduct@<your-organization-domain>.com`.
