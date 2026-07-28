@@ -12,6 +12,7 @@ from noir import generate_silent_witness
 from app import safe_filename, redact_metadata
 
 from storage import get_job_input_path, get_job_output_path
+from tx_verification import verify_transaction_status
 
 LOGGER = logging.getLogger("harpocrates.worker")
 if not LOGGER.handlers:
@@ -114,9 +115,59 @@ def heartbeat_loop(job_id: int, stop_event: threading.Event):
         heartbeat_job(job_id, progress=0.5, lease_duration=300)
         stop_event.wait(60)
 
+def tx_verification_loop(stop_event: threading.Event):
+    """
+    Polls the database for pending Stellar transactions and verifies them against Horizon.
+    """
+    LOGGER.info("Starting transaction verification loop")
+    while not stop_event.is_set():
+        try:
+            if not database_url():
+                stop_event.wait(10)
+                continue
+                
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, tx_hash 
+                        FROM proof_events 
+                        WHERE tx_hash IS NOT NULL AND tx_status = 'pending'
+                        LIMIT 50
+                        """
+                    )
+                    rows = [dict(row) for row in cur.fetchall()]
+            
+            for row in rows:
+                if stop_event.is_set():
+                    break
+                    
+                tx_hash = row["tx_hash"]
+                LOGGER.info(f"Verifying transaction {tx_hash}")
+                status = verify_transaction_status(tx_hash)
+                
+                # Update DB if terminal or missing
+                if status in ('confirmed', 'failed', 'missing'):
+                    LOGGER.info(f"Transaction {tx_hash} resolved to {status}")
+                    update_tx_status(tx_hash, status)
+                else:
+                    # Still pending, we will check again next loop
+                    pass
+
+        except Exception as e:
+            LOGGER.error(f"Error in tx verification loop: {e}")
+        
+        stop_event.wait(15)
+
+
 def run_worker():
     init_db()
     LOGGER.info(f"Starting worker {WORKER_ID}")
+    
+    stop_verification_event = threading.Event()
+    verification_thread = threading.Thread(target=tx_verification_loop, args=(stop_verification_event,))
+    verification_thread.daemon = True
+    verification_thread.start()
     
     while True:
         try:

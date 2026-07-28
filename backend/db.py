@@ -815,3 +815,18 @@ def list_proof_history_events(
                 (proof_id, limit, offset),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+def update_tx_status(tx_hash: str, status: str) -> None:
+    if not database_url():
+        return
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update proof_events
+                set tx_status = %s
+                where tx_hash = %s;
+                """,
+                (status, tx_hash)
+            )
+        connection.commit()
