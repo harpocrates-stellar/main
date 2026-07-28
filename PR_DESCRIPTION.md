@@ -1,53 +1,47 @@
-# feat(backend): streaming multipart upload with bounded memory
+# ci(zk): verify Noir circuit builds and generated artifacts
 
-Closes #62
+## Summary
 
-## What changed
+Adds deterministic CI enforcement that Noir circuits build cleanly and that
+committed artifacts match the circuit sources pinned in `zk/toolchain.lock.json`.
 
-| File | Change | Justification |
-|------|--------|---------------|
-| `backend/config.py` | Added 4 streaming upload configuration parameters | Size limits and timeouts for large uploads |
-| `backend/.env.example` | Documented new environment variables | Configuration documentation |
-| `backend/streaming_upload.py` | Core streaming implementation (~70 lines) | Custom FileStorage that streams to disk with concurrent hashing |
-| `backend/app.py` | Modified embed/extract to use streaming for large uploads | Enables streaming without breaking existing API |
-| `backend/test_streaming_focused.py` | Focused test demonstrating streaming behavior | Proves actual streaming without whole-body buffering |
-| `docs/streaming-uploads.md` | Simple implementation documentation | Architecture and usage guide |
+Closes #8
 
-## Architecture summary
+## Changes
 
-**StreamingFileStorage**: Writes uploaded data directly to temporary files using 8KB chunks while computing SHA-256 hash concurrently.
+### `zk/toolchain.lock.json`
+- Added artifact declarations for the `silent_witness_aggregator` and
+  `silent_witness_aggregator_helper` circuits (ACIR, VK, VK fields).
 
-**Integration**: Large uploads (>250MB) automatically use streaming. Smaller uploads continue using standard Flask parsing for compatibility.
+### `zk/noir/scripts/reproducible-build.sh`
+- Extended the `CIRCUITS` array to include `silent_witness_aggregator` and
+  `silent_witness_aggregator_helper`.
+- Generalized the `write_vk` block to also generate verification keys for
+  the aggregator circuit (`silent_witness_aggregator`).
 
-**Memory usage**: Reduces from 250MB+ RAM per upload to ~8KB (streaming chunks only).
+### `.github/workflows/zk-ci.yml`
+- Added new `circuit-build` job that:
+  - Installs the pinned `nargo` and `bb` toolchain versions from the lock file.
+  - Verifies installed versions match the lock.
+  - Runs `reproducible-build.sh --verify` to build all circuits from clean
+    targets and compare normalized digests against the committed manifest.
+  - Falls back to `--single` when no manifest is committed yet (inert until
+    first publication).
 
-## Configuration added
+### `docs/zk-reproducible-builds.md`
+- Added **Artifact update workflow** section documenting the full workflow
+  from editing circuits to publishing browser artifacts and committing.
+- Added **CI enforcement** subsection explaining the new `circuit-build` job.
+- Added **Adding a new circuit** subsection.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `UPLOAD_MAX_BYTES` | 262,144,000 (250MB) | Size threshold for enabling streaming |
-| `UPLOAD_TEMP_DIR` | OS temp directory | Temporary file location |
-| `UPLOAD_TIMEOUT_SECONDS` | 300 | Upload timeout |
-| `UPLOAD_MAX_CONCURRENT` | 10 | Max concurrent uploads |
+## Test Plan
 
-## Compatibility
-
-✅ **API unchanged**: Same endpoints, same request/response format  
-✅ **Backward compatible**: Small uploads use existing Flask parsing  
-✅ **Drop-in replacement**: No client changes required  
-
-## Test results
-
-```
-Ran 38 tests in 0.388s
-OK (skipped=1)
-```
-
-**Full backend suite**: 37/38 tests pass (1 skipped for missing ffmpeg)
-
-**Streaming proof**: Test demonstrates processing 5MB+ files using only 8KB of buffer memory, proving streaming behavior without whole-body buffering.
-
-## Memory impact
-
-**Before**: Each large upload buffers entire file in memory (250MB+ RAM usage)  
-**After**: Each upload uses only 8KB chunks (99.7% memory reduction for large files)
+1. **CI path from a clean checkout**: The `circuit-build` job installs nargo/bb,
+   builds all declared circuits, and runs the manifest check. A stale artifact
+   causes `EXIT_DRIFT` (code 1) and the job fails.
+2. **Existing checks**: `artifact-tooling` (unit tests, lock self-consistency)
+   and `conformance-vectors` remain unchanged and pass.
+3. **Local verification** (requires pinned toolchain):
+   ```bash
+   zk/noir/scripts/reproducible-build.sh --verify
+   ```

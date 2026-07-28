@@ -102,6 +102,8 @@ signal "toolchain.pinned" "nargo=${ACTUAL_NARGO} bb=${ACTUAL_BB}"
 CIRCUITS=(
   "silent_witness"
   "silent_witness_helper"
+  "silent_witness_aggregator"
+  "silent_witness_aggregator_helper"
   "revocation_witness"
   "revocation_witness_helper"
 )
@@ -123,29 +125,33 @@ build_once() {
     signal "circuit.compiled" "$circuit"
   done
 
-  # Verification key for the primary circuit. The VK is what the on-chain
-  # verifier is bound to, so it is part of the reproducibility surface.
-  local sw="${REPO_ROOT}/zk/noir/silent_witness"
-  if [[ -f "${sw}/target/silent_witness.json" ]]; then
-    ( cd "$sw" && bb write_vk \
-        --scheme "$SCHEME" \
-        --oracle_hash "$ORACLE" \
-        --bytecode_path ./target/silent_witness.json \
-        --output_path ./target \
-        --output_format bytes_and_fields ) \
-      || die "bb write_vk failed"
+  # --- write_vk: verification keys for the primary circuits ---
+  # The VK is what the on-chain verifier is bound to, so it is part of
+  # the reproducibility surface.
+  for circuit in silent_witness silent_witness_aggregator; do
+    local dir="${REPO_ROOT}/zk/noir/${circuit}"
+    local json="${dir}/target/${circuit}.json"
+    if [[ -f "$json" ]]; then
+      ( cd "$dir" && bb write_vk \
+          --scheme "$SCHEME" \
+          --oracle_hash "$ORACLE" \
+          --bytecode_path "./target/${circuit}.json" \
+          --output_path ./target \
+          --output_format bytes_and_fields ) \
+        || die "bb write_vk failed for ${circuit}"
 
-    # bb has shipped both file and directory layouts for these outputs;
-    # normalize to the file layout so the manifest paths stay stable.
-    for name in vk vk_fields.json; do
-      if [[ -d "${sw}/target/${name}" && -f "${sw}/target/${name}/${name}" ]]; then
-        mv "${sw}/target/${name}/${name}" "${sw}/target/${name}.tmp"
-        rmdir "${sw}/target/${name}"
-        mv "${sw}/target/${name}.tmp" "${sw}/target/${name}"
-      fi
-    done
-    signal "vk.written" "silent_witness"
-  fi
+      # bb has shipped both file and directory layouts for these outputs;
+      # normalize to the file layout so the manifest paths stay stable.
+      for name in vk vk_fields.json; do
+        if [[ -d "${dir}/target/${name}" && -f "${dir}/target/${name}/${name}" ]]; then
+          mv "${dir}/target/${name}/${name}" "${dir}/target/${name}.tmp"
+          rmdir "${dir}/target/${name}"
+          mv "${dir}/target/${name}.tmp" "${dir}/target/${name}"
+        fi
+      done
+      signal "vk.written" "${circuit}"
+    fi
+  done
 
   signal "build.done" "$label"
 }

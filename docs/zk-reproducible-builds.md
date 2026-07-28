@@ -184,6 +184,70 @@ Nothing here mutates tracked source. To roll back:
 
 No undocumented repair step is required in any of these cases.
 
+## Artifact update workflow
+
+When circuit sources change (e.g., editing `src/main.nr` or `Nargo.toml`), the
+artifacts must be regenerated and the manifest updated in the same commit. The
+workflow is:
+
+1. **Edit circuit sources.** Make changes in `zk/noir/*/src/main.nr` or other
+   tracked source files.
+
+2. **Install the pinned toolchain** on a host with `nargo` and `bb`:
+   ```bash
+   noirup --version 1.0.0-beta.9
+   bbup   --version 0.87.0
+   ```
+
+3. **Rebuild and write the manifest:**
+   ```bash
+   zk/noir/scripts/reproducible-build.sh --single
+   ```
+   This compiles all circuits from clean target directories, generates
+   verification keys, and writes `zk/artifacts.manifest.json`.
+
+4. **Publish browser artifacts** by copying the compiled ACIR files to the
+   frontend's public directory:
+   ```bash
+   cp zk/noir/silent_witness/target/silent_witness.json frontend/public/noir/
+   cp zk/noir/silent_witness_helper/target/silent_witness_helper.json frontend/public/noir/
+   cp zk/noir/silent_witness_aggregator/target/silent_witness_aggregator.json frontend/public/noir/
+   cp zk/noir/silent_witness_aggregator_helper/target/silent_witness_aggregator_helper.json frontend/public/noir/
+   ```
+
+5. **Run the full double-build** to confirm reproducibility:
+   ```bash
+   zk/noir/scripts/reproducible-build.sh
+   ```
+
+6. **Commit everything together** — circuit sources, the regenerated manifest,
+   and the updated browser artifacts — in a single commit. CI will then
+   rebuild and verify that the committed artifacts match.
+
+### CI enforcement
+
+When a pull request touches `zk/**`, the `circuit-build` job in CI:
+1. Installs the pinned `nargo` and `bb` versions from `zk/toolchain.lock.json`.
+2. Runs `zk/noir/scripts/reproducible-build.sh --verify`, which builds all
+   circuits from clean targets and compares the normalized digests against
+   the committed `zk/artifacts.manifest.json`.
+3. Fails with `EXIT_DRIFT` (code 1) if any artifact disagrees with the
+   manifest, preventing stale artifacts from merging.
+
+To run the same check locally:
+```bash
+zk/noir/scripts/reproducible-build.sh --verify
+```
+
+### Adding a new circuit
+
+1. Create the new Noir package under `zk/noir/<circuit-name>/`.
+2. Add its expected artifact paths to `zk/toolchain.lock.json`.
+3. Add the circuit name to `CIRCUITS` in `zk/noir/scripts/reproducible-build.sh`.
+4. Run `zk/noir/scripts/reproducible-build.sh --single` to generate artifacts.
+5. Copy any published ACIR to `frontend/public/noir/`.
+6. Run the double-build and commit the manifest.
+
 ## Troubleshooting
 
 **`nargo version drift` / `bb version drift`** — the installed toolchain does
