@@ -82,7 +82,6 @@ export async function generateSilentWitnessProof({
     const proofData = await backend.generateProof(witness, { keccak: true })
     const proofHex = bytesToHex(proofData.proof)
     const publicInputHex = proofData.publicInputs.map(fieldToBytes32Hex).join('')
-
     return {
       credentialRoot: fieldToBytes32Hex(credentialRoot),
       nullifier: fieldToBytes32Hex(nullifier),
@@ -91,34 +90,9 @@ export async function generateSilentWitnessProof({
       proofBytes: proofData.proof.length,
       publicInputBytes: publicInputHex.length / 2,
     }
-
-    if (signal?.aborted) {
-      onAbort()
-      return
-    }
-
-    signal?.addEventListener('abort', onAbort)
-
-    worker.addEventListener('message', (event) => {
-      signal?.removeEventListener('abort', onAbort)
-      worker.terminate() // Forceful explicit memory clearing immediately upon completion.
-      
-      const { type, proof, message } = event.data
-      if (type === 'success') {
-        resolve(proof as SilentWitnessProof)
-      } else {
-        reject(new Error(message || 'Worker proof generation failed.'))
-      }
-    })
-
-    worker.addEventListener('error', (error) => {
-      signal?.removeEventListener('abort', onAbort)
-      worker.terminate()
-      reject(new Error(`Worker execution failed: ${error.message}`))
-    })
-
-    worker.postMessage(input)
-  })
+  } finally {
+    await backend.destroy()
+  }
 }
 
 async function sha256(input: string): Promise<string> {
