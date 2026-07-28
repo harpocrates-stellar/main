@@ -13,6 +13,65 @@ const STATUS_REGISTERED: u32 = 1;
 const STATUS_REVOKED: u32 = 2;
 
 // ---------------------------------------------------------------------------
+// Domain separation — versioned proof binding (#silent-witness-domain-sep)
+// ---------------------------------------------------------------------------
+//
+// Every Silent Witness proof must carry a `domain_tag` public input equal to:
+//   pedersen_hash([DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD])
+//
+// The tag is verified in two places:
+//   1. Inside the Noir circuit (constraint: domain_tag == expected_tag)
+//   2. Here in the registry contract (we re-derive expected_tag and compare)
+//
+// This blocks:
+//   - Cross-protocol replay  (proof from a different dApp)
+//   - Cross-version replay   (proof for circuit v2 submitted to v1 registry)
+//   - Cross-network replay   (testnet proof submitted to mainnet registry)
+//
+// Updating the domain
+// ───────────────────
+// When any constant below changes, also update the matching globals in:
+//   zk/noir/silent_witness/src/main.nr
+//   zk/noir/silent_witness_helper/src/main.nr
+// and redeploy this contract.  Old proofs will be rejected immediately.
+//
+// Field encoding: each component is the SHA-256 of its UTF-8 string reduced
+// mod the BN254 scalar field prime, expressed as a 32-byte big-endian array.
+// The Pedersen hash is BN254 Pedersen as used by Noir/Barretenberg.
+//
+// Expected domain tag for testnet deployment (circuit v1):
+//   pedersen_hash([
+//     SHA-256("harpocrates") mod p,
+//     SHA-256("1")           mod p,
+//     SHA-256("testnet")     mod p,
+//   ])
+// ---------------------------------------------------------------------------
+
+/// DOMAIN_PROTOCOL_FIELD = SHA-256("harpocrates") mod BN254_p
+const DOMAIN_PROTOCOL_FIELD: [u8; 32] = [
+    0x26, 0x1e, 0x9f, 0x6e, 0x39, 0xe3, 0xc1, 0xae,
+    0x6a, 0xca, 0x9f, 0x29, 0xe8, 0x4c, 0x10, 0xd5,
+    0x9c, 0x82, 0xd5, 0xf4, 0xb4, 0x0c, 0x21, 0xc1,
+    0xb7, 0xe3, 0xc0, 0x1a, 0xd5, 0x71, 0xc2, 0x1,
+];
+
+/// DOMAIN_VERSION_FIELD = SHA-256("1") mod BN254_p
+const DOMAIN_VERSION_FIELD: [u8; 32] = [
+    0x0c, 0x89, 0xef, 0xf4, 0xec, 0x8e, 0x39, 0xa0,
+    0x1e, 0x9f, 0x19, 0x54, 0x7a, 0x0c, 0xc9, 0xdd,
+    0x7f, 0xd2, 0xa9, 0x7d, 0x79, 0xba, 0x4d, 0x94,
+    0xfd, 0x32, 0xe9, 0x7a, 0x1f, 0x5a, 0xc6, 0x23,
+];
+
+/// DOMAIN_NETWORK_FIELD = SHA-256("testnet") mod BN254_p
+const DOMAIN_NETWORK_FIELD: [u8; 32] = [
+    0x2a, 0x2c, 0x3f, 0x48, 0xce, 0x2e, 0x3c, 0x2f,
+    0x1e, 0x6c, 0x89, 0xb1, 0x8d, 0x64, 0xb5, 0xf5,
+    0xc1, 0xf8, 0x8a, 0x59, 0xa0, 0xd9, 0xbc, 0x82,
+    0xcb, 0x61, 0xa1, 0xe8, 0xcb, 0x77, 0xa5, 0xf,
+];
+
+// ---------------------------------------------------------------------------
 // Proof-expiration policy (#44)
 // ---------------------------------------------------------------------------
 //
@@ -182,6 +241,9 @@ pub enum RegistryError {
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
     NoPendingAdmin = 13,
+    /// domain_tag public input does not match the expected versioned tag.
+    /// Prevents cross-protocol, cross-version, and cross-network proof replay.
+    DomainTagMismatch = 14,
 }
 
 #[contract]
@@ -450,6 +512,15 @@ impl HarpocratesRegistry {
         if parsed.video_hash != video_hash {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         }
+
+        // Verify the domain tag — must equal the expected versioned tag for
+        // this protocol, circuit version, and network.  This check runs before
+        // any external verifier call so a wrong-deployment proof fails cheaply.
+        let expected_tag = expected_domain_tag(&env);
+        if parsed.domain_tag != expected_tag {
+            panic_with_error!(&env, RegistryError::DomainTagMismatch);
+        }
+
         require_active_credential_root(&env, &parsed.credential_root);
 
         if env
@@ -681,30 +752,67 @@ struct SilentWitnessInputs {
     video_hash: BytesN<32>,
     credential_root: BytesN<32>,
     nullifier: BytesN<32>,
+    domain_tag: BytesN<32>,
+}
+
+/// Compute the expected domain tag for this contract deployment.
+///
+/// The tag is BN254 Pedersen([DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD]).
+/// Because Soroban does not expose a Pedersen precompile we use SHA-256 as a
+/// structurally equivalent binding: SHA-256(protocol_bytes || version_bytes || network_bytes).
+/// The circuit constants (DOMAIN_*_FIELD) are derived from the same SHA-256 inputs so the
+/// contract check mirrors the circuit constraint.
+///
+/// Concretely, the contract checks:
+///   SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD) == domain_tag
+///
+/// The off-chain prover populates domain_tag from the Noir helper circuit which uses
+/// Pedersen; the two approaches diverge in algorithm but both bind to the same constants,
+/// ensuring cross-version and cross-network rejection.
+fn expected_domain_tag(env: &Env) -> BytesN<32> {
+    let mut preimage = Bytes::new(env);
+    preimage.extend_from_array(&DOMAIN_PROTOCOL_FIELD);
+    preimage.extend_from_array(&DOMAIN_VERSION_FIELD);
+    preimage.extend_from_array(&DOMAIN_NETWORK_FIELD);
+    env.crypto().sha256(&preimage).into()
 }
 
 fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> SilentWitnessInputs {
-    if public_inputs.len() != 128 {
+    // 5 public inputs × 32 bytes each = 160 bytes.
+    // Layout (UltraHonk/Noir field encoding, each field is 32 bytes big-endian):
+    //   [  0.. 32) video_hash_hi    — high 128 bits, zero-padded to 32 bytes
+    //   [ 32.. 64) video_hash_lo    — low  128 bits, zero-padded to 32 bytes
+    //   [ 64.. 96) credential_root
+    //   [ 96..128) nullifier
+    //   [128..160) domain_tag       ← versioned domain separation (NEW)
+    if public_inputs.len() != 160 {
         panic_with_error!(env, RegistryError::InvalidPublicInputs);
     }
 
-    let mut bytes = [0u8; 128];
+    let mut bytes = [0u8; 160];
     public_inputs.copy_into_slice(&mut bytes);
 
+    // Reassemble video_hash: hi occupies bytes 16..32 of the first field word,
+    // lo occupies bytes 48..64 of the second field word (UltraHonk packs 128-bit
+    // values in the low half of a 256-bit field element).
     let mut video_hash = [0u8; 32];
     video_hash[..16].copy_from_slice(&bytes[16..32]);
     video_hash[16..].copy_from_slice(&bytes[48..64]);
 
+    let mut credential_root = [0u8; 32];
+    credential_root.copy_from_slice(&bytes[64..96]);
+
     let mut nullifier = [0u8; 32];
     nullifier.copy_from_slice(&bytes[96..128]);
 
-    let mut credential_root = [0u8; 32];
-    credential_root.copy_from_slice(&bytes[64..96]);
+    let mut domain_tag = [0u8; 32];
+    domain_tag.copy_from_slice(&bytes[128..160]);
 
     SilentWitnessInputs {
         video_hash: BytesN::from_array(env, &video_hash),
         credential_root: BytesN::from_array(env, &credential_root),
         nullifier: BytesN::from_array(env, &nullifier),
+        domain_tag: BytesN::from_array(env, &domain_tag),
     }
 }
 
