@@ -1,4 +1,5 @@
 import type { IdentityTier } from './stellarTypes'
+import type { TimeAttestation } from './timeAttestation'
 
 export type { IdentityTier }
 
@@ -24,6 +25,7 @@ export type ProofPackage = {
   timestamp: string
   tier: IdentityTier
   silentWitness?: SilentWitnessProof
+  timeAttestation?: TimeAttestation
 }
 
 export type ProofEvent = {
@@ -36,4 +38,6 @@ export type ProofEvent = {
   tx_hash?: string | null
   tx_status?: string | null
   created_at: string
+  time_attestation?: TimeAttestation
+  claimed_capture_time?: string
 }
