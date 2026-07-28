@@ -135,6 +135,29 @@ def init_db() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists blobs (
+                    content_hash text primary key,
+                    encrypted_dek text not null,
+                    size_bytes bigint not null,
+                    storage_path text not null,
+                    created_at timestamptz not null default now()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists tenant_blob_refs (
+                    tenant_id text not null,
+                    content_hash text not null references blobs(content_hash) on delete cascade,
+                    ref_count integer not null default 1,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now(),
+                    primary key (tenant_id, content_hash)
+                );
+                """
+            )
+            cursor.execute(
+                """
                 create table if not exists webhook_subscriptions (
                     id bigserial primary key,
                     url text not null,
