@@ -154,6 +154,56 @@ pub const MAX_DELEGATION_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
 /// Bounds per-grantor storage growth under a hostile or buggy client.
 pub const MAX_DELEGATIONS_PER_GRANTOR: u32 = 32;
 
+// ---------------------------------------------------------------------------
+// Verifier rotation state
+// ---------------------------------------------------------------------------
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifierState {
+    pub active_verifier: Option<Address>,
+    pub pending_verifier: Option<Address>,
+    pub previous_verifier: Option<Address>,
+    pub activation_ledger: u64,
+    pub overlap_window: u64,
+    pub rollback_window: u64,
+    pub rollback_window_end: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Timelocked verifier and policy administration (#86)
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ProposalAction {
+    SetVerifier = 1,
+    RevokeIssuer = 2,
+    SetProofTtl = 3,
+    RevokeCredentialRoot = 4,
+}
+
+pub const DEFAULT_SCOPE_EPOCH: u64 = 0;
+pub const MAX_AGGREGATION_SIZE: u32 = 8;
+pub const AGGREGATION_DOMAIN_SEPARATOR: [u8; 32] = [0u8; 32];
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimelockProposal {
+    pub action: u32,
+    pub proposer: Address,
+    pub target: Address,
+    pub payload: BytesN<32>,
+    pub created_at: u64,
+    pub min_execution_at: u64,
+    pub executed: bool,
+    pub cancelled: bool,
+}
+
+pub const DEFAULT_TIMELOCK_MIN_DELAY_SECS: u64 = 86_400;
+pub const MAX_TIMELOCK_MIN_DELAY_SECS: u64 = 604_800;
+pub const MAX_PENDING_TIMELOCK_PROPOSALS: u32 = 16;
+
 /// A narrowly scoped, expiring authority to act for `grantor`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -455,6 +505,60 @@ pub struct ScopeEpochSet {
     pub epoch: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Timelock proposal events (#86)
+// ---------------------------------------------------------------------------
+
+#[contractevent(topics = ["timelock", "propose"])]
+pub struct TimelockProposalCreated {
+    #[topic]
+    pub proposal_id: u32,
+    pub action: u32,
+    #[topic]
+    pub proposer: Address,
+    pub target: Address,
+    pub created_at: u64,
+    pub min_execution_at: u64,
+}
+
+#[contractevent(topics = ["timelock", "cancel"])]
+pub struct TimelockProposalCancelled {
+    #[topic]
+    pub proposal_id: u32,
+    pub action: u32,
+    #[topic]
+    pub cancelled_by: Address,
+    pub cancelled_at: u64,
+}
+
+#[contractevent(topics = ["timelock", "exec"])]
+pub struct TimelockProposalExecuted {
+    #[topic]
+    pub proposal_id: u32,
+    pub action: u32,
+    #[topic]
+    pub executed_by: Address,
+    pub executed_at: u64,
+}
+
+#[contractevent(topics = ["timelock", "emergency"])]
+pub struct TimelockEmergencyExec {
+    #[topic]
+    pub proposal_id: u32,
+    pub action: u32,
+    #[topic]
+    pub executed_by: Address,
+    pub executed_at: u64,
+}
+
+#[contractevent(topics = ["timelock", "delay", "set"])]
+pub struct TimelockMinDelaySet {
+    pub previous_delay: u64,
+    pub new_delay: u64,
+    #[topic]
+    pub set_by: Address,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -491,6 +595,18 @@ pub enum DataKey {
     Delegation(Address, Address),
     /// Count of distinct delegate addresses held by a grantor (#192).
     DelegationCount(Address),
+    /// Verifier rotation state (schedule/activate/rollback).
+    VerifierState,
+    /// Storage schema version.
+    SchemaVersion,
+    /// Scope epoch for verifier-scope binding.
+    ScopeEpoch(BytesN<32>),
+    /// Sequential counter for timelock proposal IDs (#86).
+    ProposalSeq,
+    /// Timelock proposal by sequential ID (#86).
+    Proposal(u32),
+    /// Minimum timelock delay in seconds (#86).
+    TimelockMinDelay,
 }
 
 #[contracterror]
@@ -538,6 +654,25 @@ pub enum RegistryError {
     DelegationsSaturated = 29,
     /// A grantor may not delegate to itself (#192).
     SelfDelegation = 30,
+    /// The requested timelock proposal does not exist (#86).
+    ProposalNotFound = 31,
+    ProposalNotReady = 32,
+    ProposalAlreadyExecuted = 33,
+    ProposalCancelled = 34,
+    InvalidProposalAction = 35,
+    InvalidProposalPayload = 36,
+    ProposalsSaturated = 37,
+    InvalidTimelockDelay = 38,
+    AlreadyCancelled = 39,
+    RotationNotScheduled = 40,
+    RotationNotReady = 41,
+    RotationWindowClosed = 42,
+    BatchTooLarge = 43,
+    InvalidScopeEpoch = 44,
+    DisputeNotFound = 45,
+    DisputeAlreadyResolved = 46,
+    SupersessionCycleDetected = 47,
+    SupersessionNotFound = 48,
 }
 
 #[contract]
@@ -828,6 +963,124 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::ProofTtl)
             .unwrap_or(DEFAULT_PROOF_TTL_SECS)
+    }
+
+    // -----------------------------------------------------------------------
+    // Timelocked verifier and policy administration (#86)
+    // -----------------------------------------------------------------------
+
+    pub fn propose_timelocked_action(
+        env: Env, admin: Address, action: u32, target: Address, payload: BytesN<32>,
+    ) -> u32 {
+        require_admin(&env, &admin);
+        if action == 0 || action > 4 {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
+        let pending_count: u32 = count_pending_proposals(&env);
+        if pending_count >= MAX_PENDING_TIMELOCK_PROPOSALS {
+            panic_with_error!(&env, RegistryError::ProposalsSaturated);
+        }
+        let now = env.ledger().timestamp();
+        let min_delay = get_timelock_min_delay(&env);
+        let proposal_id = next_proposal_id(&env);
+        let proposal = TimelockProposal {
+            action, proposer: admin.clone(), target, payload,
+            created_at: now,
+            min_execution_at: now.saturating_add(min_delay),
+            executed: false, cancelled: false,
+        };
+        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        TimelockProposalCreated {
+            proposal_id, action, proposer: admin,
+            target: proposal.target, created_at: now,
+            min_execution_at: proposal.min_execution_at,
+        }.publish(&env);
+        proposal_id
+    }
+
+    pub fn cancel_timelocked_proposal(env: Env, admin: Address, proposal_id: u32) {
+        require_admin(&env, &admin);
+        let mut proposal = get_timelock_proposal_or_panic(&env, proposal_id);
+        if proposal.executed {
+            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            panic_with_error!(&env, RegistryError::AlreadyCancelled);
+        }
+        proposal.cancelled = true;
+        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        TimelockProposalCancelled {
+            proposal_id, action: proposal.action,
+            cancelled_by: admin, cancelled_at: env.ledger().timestamp(),
+        }.publish(&env);
+    }
+
+    pub fn execute_timelocked_proposal(env: Env, caller: Address, proposal_id: u32) {
+        let proposal = get_timelock_proposal_or_panic(&env, proposal_id);
+        if proposal.executed {
+            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            panic_with_error!(&env, RegistryError::ProposalCancelled);
+        }
+        let now = env.ledger().timestamp();
+        if now < proposal.min_execution_at {
+            panic_with_error!(&env, RegistryError::ProposalNotReady);
+        }
+        let mut mutable_proposal = proposal.clone();
+        mutable_proposal.executed = true;
+        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &mutable_proposal);
+        caller.require_auth();
+        dispatch_timelocked_action(&env, &proposal);
+        TimelockProposalExecuted {
+            proposal_id, action: proposal.action,
+            executed_by: caller, executed_at: now,
+        }.publish(&env);
+    }
+
+    pub fn emergency_execute_timelocked_proposal(
+        env: Env, admin: Address, proposal_id: u32,
+    ) {
+        require_admin(&env, &admin);
+        let proposal = get_timelock_proposal_or_panic(&env, proposal_id);
+        if proposal.executed {
+            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            panic_with_error!(&env, RegistryError::ProposalCancelled);
+        }
+        let mut mutable_proposal = proposal.clone();
+        mutable_proposal.executed = true;
+        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &mutable_proposal);
+        dispatch_timelocked_action(&env, &proposal);
+        TimelockEmergencyExec {
+            proposal_id, action: proposal.action,
+            executed_by: admin, executed_at: env.ledger().timestamp(),
+        }.publish(&env);
+    }
+
+    pub fn get_timelock_proposal(env: Env, proposal_id: u32) -> Option<TimelockProposal> {
+        env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+    }
+
+    pub fn get_timelock_proposal_count(env: Env) -> u32 {
+        env.storage().persistent().get(&DataKey::ProposalSeq).unwrap_or(0u32)
+    }
+
+    pub fn get_timelock_min_delay_secs(env: Env) -> u64 {
+        get_timelock_min_delay(&env)
+    }
+
+    pub fn set_timelock_min_delay_secs(env: Env, admin: Address, delay_secs: u64) {
+        require_admin(&env, &admin);
+        if delay_secs == 0 || delay_secs > MAX_TIMELOCK_MIN_DELAY_SECS {
+            panic_with_error!(&env, RegistryError::InvalidTimelockDelay);
+        }
+        let previous = get_timelock_min_delay(&env);
+        env.storage().persistent().set(&DataKey::TimelockMinDelay, &delay_secs);
+        TimelockMinDelaySet {
+            previous_delay: previous, new_delay: delay_secs, set_by: admin,
+        }.publish(&env);
     }
 
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
@@ -2600,6 +2853,68 @@ fn supersession_reverse_key(env: &Env, superseding_proof_id: &BytesN<32>) -> Byt
     env.crypto().sha256(&pre_image_bytes)
 }
 
+// ---------------------------------------------------------------------------
+// Timelock proposal helpers (#86)
+// ---------------------------------------------------------------------------
+
+fn get_timelock_min_delay(env: &Env) -> u64 {
+    env.storage().persistent().get(&DataKey::TimelockMinDelay)
+        .unwrap_or(DEFAULT_TIMELOCK_MIN_DELAY_SECS)
+}
+
+fn get_timelock_proposal_or_panic(env: &Env, proposal_id: u32) -> TimelockProposal {
+    env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::ProposalNotFound))
+}
+
+fn next_proposal_id(env: &Env) -> u32 {
+    let current: u32 = env.storage().persistent().get(&DataKey::ProposalSeq).unwrap_or(0u32);
+    let next = current.saturating_add(1);
+    env.storage().persistent().set(&DataKey::ProposalSeq, &next);
+    next
+}
+
+fn count_pending_proposals(env: &Env) -> u32 {
+    let count: u32 = env.storage().persistent().get(&DataKey::ProposalSeq).unwrap_or(0u32);
+    if count == 0 { return 0; }
+    let mut pending = 0u32;
+    for pid in 1..=count {
+        if let Some(proposal) = env.storage().persistent().get::<DataKey, TimelockProposal>(&DataKey::Proposal(pid)) {
+            if !proposal.executed && !proposal.cancelled { pending += 1; }
+        }
+    }
+    pending
+}
+
+fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
+    match proposal.action {
+        1 => {
+            env.storage().persistent().set(&DataKey::Verifier, &proposal.target);
+            env.storage().persistent().remove(&DataKey::VerifierState);
+            VerifierSet { verifier: proposal.target.clone() }.publish(env);
+        }
+        2 => {
+            let mut record = get_issuer_record(env, &proposal.target);
+            record.active = false;
+            env.storage().persistent().set(&DataKey::Issuer(proposal.target.clone()), &record);
+            IssuerRevoked { issuer: proposal.target.clone() }.publish(env);
+        }
+        3 => {
+            let mut ttl_bytes = [0u8; 8];
+            proposal.payload.copy_into_slice(&mut ttl_bytes);
+            let ttl_secs = u64::from_be_bytes(ttl_bytes);
+            env.storage().persistent().set(&DataKey::ProofTtl, &ttl_secs);
+        }
+        4 => {
+            let mut record = get_credential_root_record(env, &proposal.payload);
+            record.active = false;
+            env.storage().persistent().set(&DataKey::CredentialRoot(proposal.payload.clone()), &record);
+            CredentialRootRevoked { credential_root: proposal.payload.clone() }.publish(env);
+        }
+        _ => panic_with_error!(env, RegistryError::InvalidProposalAction),
+    }
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -2626,3 +2941,5 @@ mod test_scoped_nullifier;
 mod test_state_machine;
 #[cfg(test)]
 mod test_dispute;
+#[cfg(test)]
+pub mod test_timelock;
