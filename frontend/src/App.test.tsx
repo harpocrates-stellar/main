@@ -1,3 +1,4 @@
+
 import React from 'react'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -81,4 +82,14 @@ describe('App', () => {
     expect(fetch).not.toHaveBeenCalled()
     expect(screen.getByText(/received hash/i).nextElementSibling).toHaveTextContent(/not generated/i)
   })
+
+  it('opens the batch verification workspace from the navbar', async () => {
+    const user = userEvent.setup()
+
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: /batch workspace/i }))
+
+    expect(screen.getByRole('heading', { level: 2, name: /evidence batch verification workspace/i })).toBeInTheDocument()
+  })
 })
+

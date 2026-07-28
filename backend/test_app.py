@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import tempfile
@@ -11,6 +12,7 @@ from unittest.mock import patch
 
 import app as app_module
 import stego
+from config import load_config
 from db import ConflictError, make_idempotency_key
 from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
@@ -18,6 +20,97 @@ from metrics import collector as metrics_collector
 
 REAL_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
 
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+VALID_VIDEO_HASH = "aa" * 32
+VALID_METADATA_HASH = "bb" * 32
+VALID_PROOF_ID = "cc" * 32
+
+VALID_REGISTER_PAYLOAD: dict[str, object] = {
+    "fileName": "evidence.mp4",
+    "videoHash": VALID_VIDEO_HASH,
+    "metadataHash": VALID_METADATA_HASH,
+    "proofId": VALID_PROOF_ID,
+    "tier": "source",
+    "txHash": "deadbeef",
+    "txStatus": "PENDING",
+    "sourceAddress": "GDVRSXIO4SK2KSMUKJTQHMDDHBBFC7NGZZ6WLVOPKAG47GYPYAZCZR7G",
+    "contractId": "CCKTQNMBLXZXMWVR2WG4HDDUI3QGJU5LV5NTLFPCB72UITWE5TEDK7BT",
+}
+
+TEST_API_KEY = "test-secret-key-for-registration"
+
+
+# ---------------------------------------------------------------------------
+# Context manager: spin up a fresh Flask app with specific env vars
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def _app_env(extra: dict[str, str], clear: list[str] | None = None):
+    """Temporarily set *extra* env vars, optionally clearing *clear* keys,
+    then create a fresh Flask test client.  Restores the environment on exit.
+    """
+    clear = clear or []
+    saved = {k: os.environ.get(k) for k in list(extra) + clear}
+
+    for k in clear:
+        os.environ.pop(k, None)
+    os.environ.update(extra)
+
+    try:
+        fresh = _app_module.create_app()
+        yield fresh.test_client()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _client_no_key():
+    """Fresh test client with no REGISTER_API_KEY configured."""
+    return _app_env({}, clear=["REGISTER_API_KEY", "REGISTER_API_KEY_EXPIRES"])
+
+
+def _client_with_key(key: str, expires: str | None = None):
+    """Fresh test client with the given API key (and optional expiry)."""
+    extra: dict[str, str] = {"REGISTER_API_KEY": key}
+    if expires:
+        extra["REGISTER_API_KEY_EXPIRES"] = expires
+    clear = [] if expires else ["REGISTER_API_KEY_EXPIRES"]
+    return _app_env(extra, clear=clear)
+
+
+# ---------------------------------------------------------------------------
+# Helper: POST /api/proofs/register
+# ---------------------------------------------------------------------------
+
+def _post_register(
+    client,
+    *,
+    token: str | None = None,
+    auth_header: str | None = None,
+    payload: dict | None = None,
+):
+    headers = {"Content-Type": "application/json"}
+    if auth_header is not None:
+        headers["Authorization"] = auth_header
+    elif token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    return client.post(
+        "/api/proofs/register",
+        data=json.dumps(payload or VALID_REGISTER_PAYLOAD),
+        headers=headers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# General hardening tests (pre-existing)
+# ---------------------------------------------------------------------------
 
 class AppHardeningTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -31,6 +124,8 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.headers["X-Harpocrates-Release"], "harpocrates-1.0.0")
+        self.assertEqual(response.headers["X-Harpocrates-Network"], "testnet")
 
     def test_request_log_includes_correlation_fields(self) -> None:
         with self.assertLogs("harpocrates.requests", level="INFO") as logs:
@@ -87,6 +182,37 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json["error"], "video upload must use a video content type")
 
+    def test_embed_rejects_invalid_video_signature_before_ffmpeg(self) -> None:
+        with patch.object(app_module, "embed_metadata") as embed:
+            response = self.client.post(
+                "/api/stego/embed",
+                data={
+                    "metadata": json.dumps(valid_metadata()),
+                    "video": (io.BytesIO(b"not really an mp4"), "evidence.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        embed.assert_not_called()
+
+    def test_extract_rejects_invalid_video_signature_before_ffmpeg(self) -> None:
+        with patch.object(app_module, "extract_metadata") as extract:
+            response = self.client.post(
+                "/api/stego/extract",
+                data={
+                    "video": (io.BytesIO(b"not really an mp4"), "evidence.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        extract.assert_not_called()
+        self.assertEqual(
+            response.json["error"],
+            "uploaded file failed signature scan; invalid video format",
+        )
+
     def test_embed_rejects_missing_metadata_fields(self) -> None:
         response = self.client.post(
             "/api/stego/embed",
@@ -101,10 +227,14 @@ class AppHardeningTest(unittest.TestCase):
         self.assertIn("metadata missing required field", response.json["error"])
 
     def test_embed_success_removes_temp_directory(self) -> None:
-        def fake_embed(source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
-            if not source_path.exists():
+        def fake_embed(source_path: str, output_path: str, _metadata: dict[str, object]) -> None:
+            import urllib.request
+            try:
+                urllib.request.urlopen(source_path).read()
+            except Exception:
                 raise RuntimeError("source upload was not saved")
-            output_path.write_bytes(b"embedded video bytes")
+            req = urllib.request.Request(output_path, data=b"embedded video bytes", method="PUT")
+            urllib.request.urlopen(req)
 
         response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
@@ -166,8 +296,10 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.json["error"], "metadata extraction failed")
 
     def test_embed_database_failure_removes_temp_directory(self) -> None:
-        def fake_embed(_source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
-            output_path.write_bytes(b"embedded video bytes")
+        def fake_embed(_source_path: str, output_path: str, _metadata: dict[str, object]) -> None:
+            import urllib.request
+            req = urllib.request.Request(output_path, data=b"embedded video bytes", method="PUT")
+            urllib.request.urlopen(req)
 
         response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
@@ -195,20 +327,17 @@ class AppHardeningTest(unittest.TestCase):
 
     def post_with_tracked_tempdirs(self, path: str, data: dict[str, object], *patches):
         observed: list[Path] = []
-        with REAL_TEMPORARY_DIRECTORY(prefix="harpocrates-route-test-") as parent:
-            temp_root = Path(parent)
-            tempdir_factory = tracking_temporary_directory_factory(temp_root, observed)
-            with ExitStack() as stack:
-                stack.enter_context(patch.object(app_module.tempfile, "TemporaryDirectory", tempdir_factory))
-                for patcher in patches:
-                    stack.enter_context(patcher)
-                response = self.client.post(path, data=data, content_type="multipart/form-data")
+        workspace_factory = tracking_encrypted_workspace_factory(observed)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(app_module, "EncryptedWorkspace", workspace_factory))
+            for patcher in patches:
+                stack.enter_context(patcher)
+            response = self.client.post(path, data=data, content_type="multipart/form-data")
 
-            self.assertGreaterEqual(len(observed), 1)
-            for temp_path in observed:
-                self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
-            self.assertEqual(list(temp_root.iterdir()), [])
-            return response
+        self.assertGreaterEqual(len(observed), 1)
+        for temp_path in observed:
+            self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
+        return response
 
     def test_metrics_exposes_request_counts_status_and_latency(self) -> None:
         self.client.get("/health")
@@ -325,23 +454,143 @@ class AppHardeningTest(unittest.TestCase):
 
         self.assertEqual(redact_sensitive(value), value)
 
+    def test_embed_rejects_malformed_timestamp(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps({**valid_metadata(), "timestamp": "not-a-timestamp"}),
+                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ISO-8601", response.json["error"])
+
+    def test_embed_rejects_non_utc_timestamp(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps({**valid_metadata(), "timestamp": "2026-06-18T00:00:00.000"}),
+                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("timezone-aware", response.json["error"])
+
+    def test_embed_rejects_far_future_timestamp(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={
+                "metadata": json.dumps({**valid_metadata(), "timestamp": "2126-06-18T00:00:00.000Z"}),
+                "video": (io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unreasonably far", response.json["error"])
 
 
-def tracking_temporary_directory_factory(temp_root: Path, observed: list[Path]):
-    class TrackingTemporaryDirectory:
+def tracking_encrypted_workspace_factory(observed: list[Path]):
+    class TrackingEncryptedWorkspace(app_module.EncryptedWorkspace):
         def __init__(self, *args, **kwargs) -> None:
-            kwargs["dir"] = temp_root
-            self._manager = REAL_TEMPORARY_DIRECTORY(*args, **kwargs)
-            observed.append(Path(self._manager.name))
+            super().__init__(*args, **kwargs)
+            observed.append(Path(self.tmp_dir))
+    return TrackingEncryptedWorkspace
 
-        def __enter__(self):
-            return self._manager.__enter__()
 
-        def __exit__(self, exc_type, exc, traceback):
-            return self._manager.__exit__(exc_type, exc, traceback)
+# ---------------------------------------------------------------------------
+# Registration authentication tests
+# ---------------------------------------------------------------------------
 
-    return TrackingTemporaryDirectory
+class RegisterProofAuthTest(unittest.TestCase):
+    """Positive and negative tests for /api/proofs/register authentication."""
 
+    # --- Positive: open endpoint (no key configured) ---------------------
+
+    def test_open_when_no_key_configured(self) -> None:
+        """When REGISTER_API_KEY is not set the endpoint accepts any request."""
+        with _client_no_key() as client:
+            resp = _post_register(client)
+        # 200 if DB available, 500 if DATABASE_URL absent – both indicate auth
+        # was not the reason for failure.
+        self.assertIn(resp.status_code, {200, 500})
+
+    # --- Positive: valid Bearer token, no expiry -------------------------
+
+    def test_accepts_valid_bearer_token(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertIn(resp.status_code, {200, 500})
+
+    # --- Positive: valid Bearer token, future expiry ---------------------
+
+    def test_accepts_valid_token_with_future_expiry(self) -> None:
+        with _client_with_key(TEST_API_KEY, expires="2099-12-31T23:59:59Z") as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertIn(resp.status_code, {200, 500})
+
+    # --- Negative: missing Authorization header --------------------------
+
+    def test_rejects_missing_auth_header(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, token=None)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("Authorization", resp.json["error"])
+
+    # --- Negative: wrong token -------------------------------------------
+
+    def test_rejects_wrong_token(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, token="definitely-wrong")
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("Invalid", resp.json["error"])
+
+    # --- Negative: non-Bearer auth scheme --------------------------------
+
+    def test_rejects_non_bearer_scheme(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, auth_header=f"Basic {TEST_API_KEY}")
+        self.assertEqual(resp.status_code, 401)
+
+    # --- Negative: expired key -------------------------------------------
+
+    def test_rejects_expired_key(self) -> None:
+        with _client_with_key(TEST_API_KEY, expires="2000-06-01T00:00:00Z") as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("expired", resp.json["error"])
+
+    # --- Negative: empty Bearer value ------------------------------------
+
+    def test_rejects_empty_bearer_value(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, auth_header="Bearer ")
+        self.assertEqual(resp.status_code, 401)
+
+    # --- Negative: wrong token, future expiry ----------------------------
+
+    def test_rejects_wrong_token_with_future_expiry(self) -> None:
+        with _client_with_key(TEST_API_KEY, expires="2099-01-01T00:00:00Z") as client:
+            resp = _post_register(client, token="not-the-right-key")
+        self.assertEqual(resp.status_code, 401)
+
+    # --- Negative: expired even with correct token -----------------------
+
+    def test_rejects_correct_token_when_expired(self) -> None:
+        """Expiry check runs before token comparison; correct key still rejected."""
+        with _client_with_key(TEST_API_KEY, expires="2000-01-01T00:00:00Z") as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("expired", resp.json["error"])
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 def valid_metadata() -> dict[str, object]:
     return {
@@ -355,7 +604,11 @@ def valid_metadata() -> dict[str, object]:
 
 
 def video_upload() -> tuple[io.BytesIO, str, str]:
-    return io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"
+    return (
+        io.BytesIO(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 10),
+        "evidence.mp4",
+        "video/mp4",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +624,7 @@ def valid_register_payload(**overrides) -> dict[str, object]:
         "proofId": "cc" * 32,
         "tier": "source",
         "txHash": "dd" * 32,
-        "txStatus": "SUCCESS",
+        "txStatus": "confirmed",
         "sourceAddress": "GDVRSXIO4SK2KSMUKJTQHMDDHBBFC7NGZZ6WLVOPKAG47GYPYAZCZR7G",
         "contractId": "CCKTQNMBLXZXMWVR2WG4HDDUI3QGJU5LV5NTLFPCB72UITWE5TEDK7BT",
     }
@@ -553,6 +806,32 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         response = self.client.post("/api/proofs/register", json=payload)
         self.assertEqual(response.status_code, 400)
 
+    def test_register_normalizes_uppercase_tx_hash_and_status(self) -> None:
+        payload = valid_register_payload(txHash="DD" * 32, txStatus="SUCCESS")
+        db_row = _stub_event(payload)
+
+        with patch.object(app_module, "upsert_register_event", return_value=(db_row, True)) as upsert_mock:
+            response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(upsert_mock.call_args.kwargs["tx_hash"], "dd" * 32)
+        self.assertEqual(upsert_mock.call_args.kwargs["tx_status"], "confirmed")
+
+    def test_register_rejects_invalid_tx_status(self) -> None:
+        payload = valid_register_payload(txStatus="pending-ish")
+        response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("txStatus", response.get_json()["error"])
+
+    def test_register_rejects_tx_hash_outside_hex_length_boundary(self) -> None:
+        for tx_hash in ("d" * 63, "d" * 65):
+            with self.subTest(tx_hash=tx_hash):
+                payload = valid_register_payload(txHash=tx_hash)
+                response = self.client.post("/api/proofs/register", json=payload)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("txHash", response.get_json()["error"])
+
     # ------------------------------------------------------------------
     # Concurrent submissions
     # ------------------------------------------------------------------
@@ -623,5 +902,102 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         self.assertEqual(response.get_json()["conflict_field"], "metadata_hash")
 
 
+class CorsConfigurationTest(unittest.TestCase):
+    def test_production_rejects_wildcard_cors(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "production", "CORS_ORIGINS": "*", "ALLOW_WILDCARD_CORS": "true"}):
+            with self.assertRaises(RuntimeError) as ctx:
+                load_config()
+            self.assertIn("Wildcard CORS origins are not permitted in production", str(ctx.exception))
+
+    def test_production_accepts_explicit_cors_origins(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "production", "CORS_ORIGINS": "https://app.example.com"}):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["https://app.example.com"])
+
+    def test_development_allows_wildcard_cors_when_flag_enabled(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development", "CORS_ORIGINS": "*", "ALLOW_WILDCARD_CORS": "true"}):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["*"])
+
+    def test_development_rejects_wildcard_cors_without_flag(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development", "CORS_ORIGINS": "*"}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                load_config()
+            self.assertIn("Wildcard CORS requires ALLOW_WILDCARD_CORS=true", str(ctx.exception))
+
+    def test_default_local_development_origins(self) -> None:
+        with patch.dict("os.environ", {"APP_ENV": "development"}, clear=True):
+            cfg = load_config()
+            self.assertEqual(cfg.cors_origins, ["http://localhost:5173", "http://127.0.0.1:5173"])
+
+
+class CorsPreflightAndHeadersTest(unittest.TestCase):
+    def setUp(self) -> None:
+        metrics_collector.reset()
+        self.client = app_module.app.test_client()
+
+    def test_preflight_positive_allowed_origin_method_and_headers(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type, X-Request-ID",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+        self.assertIn("POST", allowed_methods)
+        allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+        self.assertIn("Content-Type", allowed_headers)
+        self.assertIn("X-Request-ID", allowed_headers)
+
+    def test_preflight_negative_disallowed_method(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "DELETE",
+            },
+        )
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+        self.assertNotIn("DELETE", allowed_methods)
+
+    def test_preflight_negative_disallowed_header(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-Forbidden-Header",
+            },
+        )
+        allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+        self.assertNotIn("X-Forbidden-Header", allowed_headers)
+
+    def test_preflight_negative_disallowed_origin(self) -> None:
+        response = self.client.options(
+            "/api/proofs/register",
+            headers={
+                "Origin": "http://unauthorized-domain.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        self.assertNotEqual(response.headers.get("Access-Control-Allow-Origin"), "http://unauthorized-domain.com")
+
+    def test_cors_exposes_required_response_headers(self) -> None:
+        response = self.client.get(
+            "/health",
+            headers={"Origin": "http://localhost:5173"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+        exposed = response.headers.get("Access-Control-Expose-Headers", "")
+        self.assertIn("X-Request-ID", exposed)
+        self.assertIn("X-Harpocrates-Source-Hash", exposed)
+
+
 if __name__ == "__main__":
     unittest.main()
+
