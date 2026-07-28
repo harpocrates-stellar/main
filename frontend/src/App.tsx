@@ -11,9 +11,13 @@ import {
   Wallet,
 } from 'lucide-react'
 import type { ChainProofRecord, IdentityTier, RegisterProofResult } from './stellar'
+import { CONTRACT_NETWORK_PASSPHRASE } from './stellar'
 import { fieldSecret, hasSeeds } from './seedVault'
+import { createProofManifest } from './proofManifest'
 import type { VerificationEvent } from './verificationFlow'
+import { buildProvenanceRecord } from './provenance/provenanceModel'
 import EvilEye from './components/EvilEye'
+import ProvenanceCard from './provenance/ProvenanceCard'
 import './App.css'
 
 type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
@@ -41,6 +45,7 @@ type ProofPackage = {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
+const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 
 const tiers = [
   {
@@ -88,6 +93,12 @@ function shortHash(value: string) {
   return `${value.slice(0, 12)}...${value.slice(-10)}`
 }
 
+function methodForTier(tier: IdentityTier) {
+  if (tier === 'silent') return 'register_anonymous_verified'
+  if (tier === 'seal') return 'register_seal'
+  return 'register_source'
+}
+
 function initialView(): View {
   const hash = window.location.hash.replace('#', '')
   return hash === 'studio' || hash === 'verify' ? hash : 'landing'
@@ -116,6 +127,26 @@ function App() {
     () => tiers.find((tier) => tier.id === selectedTier) ?? tiers[0],
     [selectedTier],
   )
+
+  const provenanceRecord = proof
+    ? buildProvenanceRecord({
+        manifest: createProofManifest({
+          proofId: proof.proofId,
+          tier: proof.tier,
+          network: CONTRACT_NETWORK_PASSPHRASE,
+          contractId: CONTRACT_ID,
+          transactionRef: registration?.hash ?? '',
+          videoHash: proof.videoHash,
+          metadataHash: proof.metadataHash,
+          sourceHash: proof.sourceHash,
+          timestamp: proof.timestamp,
+        }),
+        chainProof,
+        rpcUrl: RPC_URL,
+        transactionHash: registration?.hash ?? null,
+        method: methodForTier(proof.tier),
+      })
+    : null
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)
@@ -675,20 +706,13 @@ function App() {
           </div>
 
           <div className="rail-block">
-            <h3>Chain Registry</h3>
-            {chainProof ? (
-              <div className="chain-grid">
-                <span>Tier</span>
-                <strong>{chainProof.tier}</strong>
-                <span>Status</span>
-                <strong>{chainProof.status}</strong>
-                <span>Source</span>
-                <code>{chainProof.source ? shortHash(chainProof.source) : 'None'}</code>
-                <span>Metadata</span>
-                <code>{shortHash(chainProof.metadataHash)}</code>
-              </div>
+            {provenanceRecord ? (
+              <ProvenanceCard provenance={provenanceRecord} />
             ) : (
-              <p className="muted">No on-chain match loaded.</p>
+              <>
+                <h3>Chain Registry</h3>
+                <p className="muted">No proof manifest is available yet.</p>
+              </>
             )}
           </div>
 
@@ -747,20 +771,13 @@ function App() {
 
           <aside className="side-rail">
             <div className="rail-block">
-              <h3>Chain Registry</h3>
-              {chainProof ? (
-                <div className="chain-grid">
-                  <span>Tier</span>
-                  <strong>{chainProof.tier}</strong>
-                  <span>Status</span>
-                  <strong>{chainProof.status}</strong>
-                  <span>Source</span>
-                  <code>{chainProof.source ? shortHash(chainProof.source) : 'None'}</code>
-                  <span>Metadata</span>
-                  <code>{shortHash(chainProof.metadataHash)}</code>
-                </div>
+              {provenanceRecord ? (
+                <ProvenanceCard provenance={provenanceRecord} />
               ) : (
-                <p className="muted">No on-chain match loaded.</p>
+                <>
+                  <h3>Chain Registry</h3>
+                  <p className="muted">No proof manifest is available yet.</p>
+                </>
               )}
             </div>
 
