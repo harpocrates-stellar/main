@@ -54,6 +54,18 @@ describe('extractMetadata', () => {
     const result = await extractMetadata(makeVideoFile())
     expect(result.hasHarpocratesMetadata).toBe(false)
   })
+
+  it('throws with the API error message on non-OK responses', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({ error: 'video is required' }),
+      }),
+    )
+
+    await expect(extractMetadata(makeVideoFile())).rejects.toThrow('video is required')
+  })
 })
 
 // ── fetchProofEventsByVideo ───────────────────────────────────────────────
@@ -102,5 +114,29 @@ describe('fetchProofEventsByVideo', () => {
 
     const calledUrl = mockFetch.mock.calls[0][0] as string
     expect(calledUrl).toContain(hash)
+  })
+
+  it('throws with the API error message on non-OK responses', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({ error: 'video hash must be 32 bytes' }),
+      }),
+    )
+
+    await expect(fetchProofEventsByVideo('x'.repeat(64))).rejects.toThrow('video hash must be 32 bytes')
+  })
+
+  it('falls back to generic message when JSON parsing fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.reject(new SyntaxError('bad')),
+      }),
+    )
+
+    await expect(fetchProofEventsByVideo('a'.repeat(64))).rejects.toThrow('Database lookup failed')
   })
 })

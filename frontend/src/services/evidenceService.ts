@@ -49,7 +49,7 @@ export async function embedVideo(
   })
 
   if (!response.ok) {
-    throw new Error('Steganography service did not accept the video.')
+    throw new Error(await parseApiError(response, 'Steganography service did not accept the video.'))
   }
 
   const embeddedBlob = await response.blob()
@@ -156,7 +156,7 @@ export async function addStellarAnchorToAttestation(
 /** Fetch recent proof events from NeonDB (up to `limit`). */
 export async function fetchRecentEvents(limit = 6) {
   const response = await fetch(`${API_BASE}/api/proofs?limit=${limit}`)
-  if (!response.ok) throw new Error('Database event feed is unavailable.')
+  if (!response.ok) throw new Error(await parseApiError(response, 'Database event feed is unavailable.'))
   const data = await response.json()
   return data.events ?? []
 }
