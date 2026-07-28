@@ -132,9 +132,48 @@ describe('useVerification.verifyEvidence – no harpocrates metadata', () => {
 // ── verifyEvidence – service failure ─────────────────────────────────────
 
 describe('useVerification.verifyEvidence – service unavailable', () => {
-  it('falls back to local-hash-only message when services throw', async () => {
+  it('surfaces the API error message when service throws an Error', async () => {
     const vm = await getVerifMock()
-    vm.extractMetadata.mockRejectedValue(new Error('network error'))
+    vm.extractMetadata.mockRejectedValue(new Error('Extraction service is unavailable.'))
+
+    const { result } = renderHook(() => useVerification())
+
+    await act(async () => {
+      await result.current.verifyEvidence(makeVideoFile())
+    })
+
+    expect(result.current.verifyResult).toBe('Verification failed: Extraction service is unavailable.')
+  })
+
+  it('surfaces the error message from fetchProofEventsByVideo', async () => {
+    const vm = await getVerifMock()
+    vm.fetchProofEventsByVideo.mockRejectedValue(new Error('Database lookup failed.'))
+
+    const { result } = renderHook(() => useVerification())
+
+    await act(async () => {
+      await result.current.verifyEvidence(makeVideoFile())
+    })
+
+    expect(result.current.verifyResult).toBe('Verification failed: Database lookup failed.')
+  })
+
+  it('falls back to generic message when error is not an Error instance', async () => {
+    const vm = await getVerifMock()
+    vm.extractMetadata.mockRejectedValue('something weird')
+
+    const { result } = renderHook(() => useVerification())
+
+    await act(async () => {
+      await result.current.verifyEvidence(makeVideoFile())
+    })
+
+    expect(result.current.verifyResult).toContain('Verification services are unavailable')
+  })
+
+  it('falls back to generic message when error is undefined', async () => {
+    const vm = await getVerifMock()
+    vm.extractMetadata.mockRejectedValue(undefined)
 
     const { result } = renderHook(() => useVerification())
 

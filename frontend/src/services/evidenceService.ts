@@ -8,6 +8,7 @@
 import type { IdentityTier, ProofPackage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
 import type { TimeAttestation } from '../timeAttestation'
+import { parseApiError } from './apiError'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''

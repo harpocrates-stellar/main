@@ -53,8 +53,13 @@ export function useVerification(): UseVerificationReturn {
       )
       setEvents(dbMatches)
       setChainProof(onChain)
-    } catch {
-      setVerifyResult('Local hash complete. Verification services are unavailable.')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : ''
+      setVerifyResult(
+        detail
+          ? `Verification failed: ${detail}`
+          : 'Local hash complete. Verification services are unavailable.',
+      )
     }
   }
 
