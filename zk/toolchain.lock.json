@@ -89,6 +89,30 @@
       "required": true
     },
     {
+      "path": "zk/noir/silent_witness_aggregator/target/silent_witness_aggregator.json",
+      "kind": "json",
+      "role": "acir",
+      "required": true
+    },
+    {
+      "path": "zk/noir/silent_witness_aggregator/target/vk",
+      "kind": "binary",
+      "role": "verification_key",
+      "required": true
+    },
+    {
+      "path": "zk/noir/silent_witness_aggregator/target/vk_fields.json",
+      "kind": "json",
+      "role": "verification_key_fields",
+      "required": true
+    },
+    {
+      "path": "zk/noir/silent_witness_aggregator_helper/target/silent_witness_aggregator_helper.json",
+      "kind": "json",
+      "role": "acir",
+      "required": true
+    },
+    {
       "path": "zk/noir/revocation_witness/target/revocation_witness.json",
       "kind": "json",
       "role": "acir",
@@ -108,6 +132,18 @@
     },
     {
       "path": "frontend/public/noir/silent_witness_helper.json",
+      "kind": "json",
+      "role": "published_acir",
+      "required": false
+    },
+    {
+      "path": "frontend/public/noir/silent_witness_aggregator.json",
+      "kind": "json",
+      "role": "published_acir",
+      "required": false
+    },
+    {
+      "path": "frontend/public/noir/silent_witness_aggregator_helper.json",
       "kind": "json",
       "role": "published_acir",
       "required": false

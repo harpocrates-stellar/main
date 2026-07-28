@@ -84,6 +84,71 @@ jobs:
             echo "no committed manifest yet; drift check is inert on this branch"
           fi
 
+  circuit-build:
+    name: Build Noir circuits and verify artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_DATE_EPOCH: "0"
+      TZ: UTC
+      LC_ALL: C
+      PYTHONHASHSEED: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Nargo (Noir CLI)
+        run: |
+          NARGO_VERSION="$(python3 -c "import json; print(json.load(open('zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup --version "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Barretenberg (bb)
+        run: |
+          BB_VERSION="$(python3 -c "import json; print(json.load(open('zk/toolchain.lock.json'))['toolchain']['barretenberg']['version'])")"
+          curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install | bash
+          export PATH="$HOME/.bb:$PATH"
+          bbup --version "$BB_VERSION"
+          echo "$HOME/.bb" >> "$GITHUB_PATH"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain versions match lock file
+        run: |
+          python3 -c "
+import json
+lock = json.load(open('zk/toolchain.lock.json'))
+tc = lock['toolchain']
+expected_nargo = tc['nargo']['version']
+expected_bb = tc['barretenberg']['version']
+print(f'Expecting nargo {expected_nargo}, bb {expected_bb}')
+"
+          ACTUAL_NARGO="$(nargo --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' | head -n1 || true)"
+          ACTUAL_BB="$(bb --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+          echo "Installed: nargo ${ACTUAL_NARGO}, bb ${ACTUAL_BB}"
+
+      - name: Build circuits and verify against committed manifest
+        # Builds all circuits from clean target dirs, generates VKs, then
+        # compares against the committed manifest. Fails on any drift.
+        run: |
+          if [ -f zk/artifacts.manifest.json ]; then
+            echo "Committed manifest found; building and verifying..."
+            zk/noir/scripts/reproducible-build.sh --verify
+          else
+            echo "No committed manifest found; building once to generate artifacts..."
+            zk/noir/scripts/reproducible-build.sh --single
+          fi
+
   conformance-vectors:
     name: Cross-layer conformance vectors
     runs-on: ubuntu-latest
