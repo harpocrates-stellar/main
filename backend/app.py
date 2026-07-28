@@ -777,6 +777,8 @@ def create_app() -> Flask:
         try:
             normalized_tx_hash = normalize_tx_hash(tx_hash)
             normalized_tx_status = normalize_tx_status(tx_status)
+            if normalized_tx_hash:
+                normalized_tx_status = "pending"
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -814,6 +816,8 @@ def create_app() -> Flask:
 
         if db_event and db_event.get("id") and created:
             queue_webhook_deliveries(db_event["id"])
+            if normalized_tx_hash:
+                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": payload.get("contractId")})
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
