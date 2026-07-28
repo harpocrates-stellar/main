@@ -5,14 +5,17 @@ import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { shortHash } from '../utils'
+import ProvenanceCard from '../provenance/ProvenanceCard'
+import type { ProvenanceRecord } from '../provenance/provenanceModel'
 
 type Props = {
   wallet: string
   evidence: UseEvidenceReturn
   verification: UseVerificationReturn
+  provenanceRecord: ProvenanceRecord | null
 }
 
-export function StudioView({ wallet, evidence, verification }: Props) {
+export function StudioView({ wallet, evidence, verification, provenanceRecord }: Props) {
   const {
     selectedTier,
     setSelectedTier,
@@ -193,6 +196,7 @@ export function StudioView({ wallet, evidence, verification }: Props) {
         <div className="rail-block">
           <h3>Chain Registry</h3>
           <ChainProofPanel chainProof={chainProof} />
+          {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
         </div>
 
         <div className="rail-block">

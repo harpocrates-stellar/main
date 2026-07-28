@@ -3,13 +3,16 @@ import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { shortHash } from '../utils'
+import ProvenanceCard from '../provenance/ProvenanceCard'
+import type { ProvenanceRecord } from '../provenance/provenanceModel'
 
 type Props = {
   wallet: string
   verification: UseVerificationReturn
+  provenanceRecord: ProvenanceRecord | null
 }
 
-export function VerifyView({ wallet, verification }: Props) {
+export function VerifyView({ wallet, verification, provenanceRecord }: Props) {
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
 
   return (
@@ -53,6 +56,7 @@ export function VerifyView({ wallet, verification }: Props) {
         <div className="rail-block">
           <h3>Chain Registry</h3>
           <ChainProofPanel chainProof={chainProof} />
+          {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
         </div>
 
         <div className="rail-block">
