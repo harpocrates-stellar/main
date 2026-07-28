@@ -61,165 +61,36 @@ def get_connection() -> Iterator[psycopg.Connection]:
 
 
 def init_db() -> None:
-    if not database_url():
-        return
+    """Initialise the database schema via the versioned migration system.
 
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                create table if not exists proof_events (
-                    id bigserial primary key,
-                    event_type text not null,
-                    file_name text,
-                    video_hash text,
-                    metadata_hash text,
-                    proof_id text,
-                    tier text,
-                    embedded_hash text,
-                    metadata jsonb,
-                    created_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists proof_events_video_hash_idx
-                on proof_events (video_hash);
-                """
-            )
-            cursor.execute(
-                """
-                create table if not exists lineage_events (
-                    id bigserial primary key,
-                    manifest_digest text not null unique,
-                    manifest jsonb not null,
-                    actor_address text not null,
-                    parent_proof_ids text[] not null,
-                    created_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists lineage_events_actor_idx
-                on lineage_events (actor_address);
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists proof_events_proof_id_idx
-                on proof_events (proof_id);
-                """
-            )
-            cursor.execute("alter table proof_events add column if not exists tx_hash text;")
-            cursor.execute("alter table proof_events add column if not exists tx_status text;")
-            cursor.execute("alter table proof_events add column if not exists source_address text;")
-            cursor.execute("alter table proof_events add column if not exists contract_id text;")
-            cursor.execute(
-                """
-                create index if not exists proof_events_tx_hash_idx
-                on proof_events (tx_hash);
-                """
-            )
-            # Idempotency support: unique key for register events only.
-            cursor.execute("alter table proof_events add column if not exists idempotency_key text;")
-            # Partial unique index: only enforced when idempotency_key is non-null
-            # (i.e., only for 'register' events). embed/extract events are unaffected.
-            cursor.execute(
-                """
-                create unique index if not exists proof_events_idempotency_key_idx
-                on proof_events (idempotency_key)
-                where idempotency_key is not null;
-                """
-            )
-            cursor.execute(
-                """
-                create table if not exists blobs (
-                    content_hash text primary key,
-                    encrypted_dek text not null,
-                    size_bytes bigint not null,
-                    storage_path text not null,
-                    created_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create table if not exists tenant_blob_refs (
-                    tenant_id text not null,
-                    content_hash text not null references blobs(content_hash) on delete cascade,
-                    ref_count integer not null default 1,
-                    created_at timestamptz not null default now(),
-                    updated_at timestamptz not null default now(),
-                    primary key (tenant_id, content_hash)
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create table if not exists webhook_subscriptions (
-                    id bigserial primary key,
-                    url text not null,
-                    secret_key text not null,
-                    is_active boolean not null default true,
-                    created_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create table if not exists proof_history_events (
-                    id bigserial primary key,
-                    proof_id text not null,
-                    action text not null,
-                    actor text,
-                    reason_code integer not null,
-                    contract_id text,
-                    tx_hash text,
-                    tx_status text,
-                    created_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create table if not exists webhook_deliveries (
-                    id bigserial primary key,
-                    subscription_id bigint not null references webhook_subscriptions(id) on delete cascade,
-                    event_id bigint not null references proof_events(id) on delete cascade,
-                    status text not null default 'pending',
-                    retry_count integer not null default 0,
-                    next_retry_at timestamptz not null default now(),
-                    lease_expires_at timestamptz,
-                    last_response_code integer,
-                    created_at timestamptz not null default now(),
-                    updated_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists webhook_deliveries_status_idx
-                on webhook_deliveries (status, next_retry_at);
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists proof_history_events_proof_id_idx
-                on proof_history_events (proof_id);
-                """
-            )
-            # Time attestation support: add fields for time anchoring
-            cursor.execute("alter table proof_events add column if not exists time_attestation jsonb;")
-            cursor.execute("alter table proof_events add column if not exists claimed_capture_time timestamptz;")
-            cursor.execute(
-                """
-                create index if not exists proof_events_claimed_capture_time_idx
-                on proof_events (claimed_capture_time);
-                """
-            )
-        connection.commit()
+    This replaces the earlier inline ``CREATE TABLE IF NOT EXISTS`` approach
+    with an ordered, auditable migration ledger.  Safe to call repeatedly.
+    """
+    from migration import run_migrations  # late import to avoid cycles
+
+    run_migrations()
+
+
+def detect_drift() -> list[dict[str, str]]:
+    """Check for schema drift and return a list of issues.
+
+    Each dict has keys ``table_name``, ``issue``, ``detail``."""
+    from migration import detect_drift as _detect_drift
+
+    return [
+        {"table_name": d.table_name, "issue": d.issue, "detail": d.detail}
+        for d in _detect_drift()
+    ]
+
+
+def get_migration_report() -> list[dict[str, object]]:
+    """Return the list of migrations and their current status.
+
+    Useful for health-check endpoints and operational observability."""
+    from migration import run_migrations
+
+    return run_migrations()
+
 
 def check_db() -> bool:
     if not database_url():
