@@ -1,0 +1,120 @@
+name: ZK CI
+
+on:
+  pull_request:
+    paths:
+      - "zk/**"
+      - "backend/verifier_inputs.py"
+      - "backend/test_conformance_vectors.py"
+      - "backend/test_verifier_fuzz.py"
+      - ".github/workflows/zk-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "zk/**"
+      - "backend/verifier_inputs.py"
+      - "backend/test_conformance_vectors.py"
+      - "backend/test_verifier_fuzz.py"
+      - ".github/workflows/zk-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zk-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  artifact-tooling:
+    name: Artifact manifest tooling
+    runs-on: ubuntu-latest
+    # Bounded so a hung normalization pass cannot hold a runner indefinitely.
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_DATE_EPOCH: "0"
+      TZ: UTC
+      LC_ALL: C
+      PYTHONHASHSEED: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test runner
+        run: pip install pytest
+
+      - name: Unit-test the manifest tool
+        run: python -m pytest zk/tools -q
+
+      - name: Unit-test the ZK benchmark harness
+        # No nargo/bb required: synthetic drivers exercise schema, privacy,
+        # cold/warm aggregation, and deterministic failure modes.
+        run: python -m pytest zk/bench -q
+
+      - name: Check the toolchain lock parses and is self-consistent
+        run: |
+          python - <<'PY'
+          import json, sys
+          sys.path.insert(0, "zk/tools")
+          import artifact_manifest as am
+          lock = am.load_lock(am.DEFAULT_LOCK)
+          assert lock.artifacts, "lock declares no artifacts"
+          assert any(entry.get("required") for entry in lock.artifacts)
+          print(f"lock ok: {len(lock.artifacts)} artifacts, "
+                f"nargo {lock.toolchain['nargo']['version']}, "
+                f"bb {lock.toolchain['barretenberg']['version']}")
+          PY
+
+      - name: Verify committed artifacts against the manifest
+        # Skipped when no manifest has been committed yet: generated artifacts
+        # are not tracked, so this becomes enforcing once a build publishes one.
+        run: |
+          if [ -f zk/artifacts.manifest.json ]; then
+            python zk/tools/artifact_manifest.py verify
+          else
+            echo "no committed manifest yet; drift check is inert on this branch"
+          fi
+
+  conformance-vectors:
+    name: Cross-layer conformance vectors
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test runner
+        run: pip install pytest
+
+      - name: Vectors are byte-identical to their generator
+        # A hand-edited corpus would silently weaken every layer's assertions.
+        run: |
+          cp zk/vectors/verifier_conformance_v1.json /tmp/committed.json
+          python zk/vectors/generate_vectors.py
+          diff -u /tmp/committed.json zk/vectors/verifier_conformance_v1.json
+
+      - name: Python conformance runner
+        working-directory: backend
+        run: python -m pytest test_conformance_vectors.py -q
+
+      - name: Python fuzz harness
+        working-directory: backend
+        run: python -m pytest test_verifier_fuzz.py -q

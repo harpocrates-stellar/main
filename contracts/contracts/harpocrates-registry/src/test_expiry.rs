@@ -1,18 +1,18 @@
-/// Proof-expiration policy tests (#44)
-///
-/// Policy rules under test:
-///
-/// 1. `expires_at == 0` → proof never expires (default, backward-compat).
-/// 2. `expires_at > 0 && now <= expires_at` → `get_proof_status` returns `Valid`.
-/// 3. `expires_at > 0 && now  > expires_at` → `get_proof_status` returns `Expired`.
-/// 4. `status == REVOKED`                   → `get_proof_status` returns `Revoked`
-///    regardless of `expires_at`.
-/// 5. Non-existent proof_id                 → `get_proof_status` returns `NotFound`.
-/// 6. `set_proof_ttl` only affects *new* registrations; existing records are
-///    unaffected.
-/// 7. A TTL of `u64::MAX` is handled by saturating addition (no overflow).
-///
-/// The test harness controls ledger time via `env.ledger().set_timestamp()`.
+//! Proof-expiration policy tests (#44)
+//!
+//! Policy rules under test:
+//!
+//! 1. `expires_at == 0` → proof never expires (default, backward-compat).
+//! 2. `expires_at > 0 && now <= expires_at` → `get_proof_status` returns `Valid`.
+//! 3. `expires_at > 0 && now  > expires_at` → `get_proof_status` returns `Expired`.
+//! 4. `status == REVOKED`                   → `get_proof_status` returns `Revoked`
+//!    regardless of `expires_at`.
+//! 5. Non-existent proof_id                 → `get_proof_status` returns `NotFound`.
+//! 6. `set_proof_ttl` only affects *new* registrations; existing records are
+//!    unaffected.
+//! 7. A TTL of `u64::MAX` is handled by saturating addition (no overflow).
+//!
+//! The test harness controls ledger time via `env.ledger().set_timestamp()`.
 #[cfg(test)]
 use super::*;
 #[cfg(test)]
@@ -55,7 +55,10 @@ fn expiry_default_ttl_zero_never_expires() {
     let proof_id = b32(&env, 0x01);
 
     let rec = client.register_source(&source, &b32(&env, 0x02), &b32(&env, 0x03), &proof_id);
-    assert_eq!(rec.expires_at, 0, "default TTL must produce expires_at == 0");
+    assert_eq!(
+        rec.expires_at, 0,
+        "default TTL must produce expires_at == 0"
+    );
 
     // Advance ledger far into the future
     env.ledger().set_timestamp(u64::MAX / 2);
@@ -106,12 +109,7 @@ fn expiry_set_ttl_does_not_affect_existing_proofs() {
 
     // Register without TTL
     let proof_id = b32(&env, 0x20);
-    let rec_before = client.register_source(
-        &source,
-        &b32(&env, 0x21),
-        &b32(&env, 0x22),
-        &proof_id,
-    );
+    let rec_before = client.register_source(&source, &b32(&env, 0x21), &b32(&env, 0x22), &proof_id);
     assert_eq!(rec_before.expires_at, 0);
 
     // Now set a TTL
@@ -119,7 +117,10 @@ fn expiry_set_ttl_does_not_affect_existing_proofs() {
 
     // The existing record is still unchanged
     let stored = client.get_proof(&proof_id).unwrap();
-    assert_eq!(stored.expires_at, 0, "existing record must not be affected by TTL change");
+    assert_eq!(
+        stored.expires_at, 0,
+        "existing record must not be affected by TTL change"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +285,8 @@ struct MockVerifier3;
 #[contractimpl]
 impl MockVerifier3 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
             panic!("invalid proof");
         }
     }

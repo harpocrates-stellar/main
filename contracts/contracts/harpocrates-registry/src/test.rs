@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger},
     Address, Bytes, Env,
 };
 
@@ -13,9 +13,32 @@ struct MockNoirVerifier;
 #[contractimpl]
 impl MockNoirVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
+            panic!("invalid proof");
+        }
+    }
+}
+
+#[contract]
+struct MockNoirVerifierV2;
+
+#[contractimpl]
+impl MockNoirVerifierV2 {
+    pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         if public_inputs.len() != 128 || proof.is_empty() {
             panic!("invalid proof");
         }
+    }
+}
+
+#[contract]
+struct MockRejectingNoirVerifier;
+
+#[contractimpl]
+impl MockRejectingNoirVerifier {
+    pub fn verify_proof(_env: Env, _public_inputs: Bytes, _proof: Bytes) {
+        panic!("rejecting verifier");
     }
 }
 
@@ -178,6 +201,8 @@ fn registers_silent_witness_through_external_verifier() {
     assert_eq!(record.video_hash, video_hash);
     assert_eq!(record.nullifier, Some(nullifier.clone()));
     assert!(client.has_nullifier(&nullifier));
+    // Non-batch registration has batch_size = 0
+    assert_eq!(record.batch_size, 0);
 }
 
 #[test]
@@ -209,6 +234,132 @@ fn rejects_revoked_silent_witness_credential_root() {
 }
 
 #[test]
+fn stages_verifier_rotation_and_rolls_back_within_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let initial_verifier = env.register(MockNoirVerifier, ());
+    let replacement_verifier = env.register(MockNoirVerifierV2, ());
+
+    client.init(&admin);
+    client.set_verifier(&admin, &initial_verifier);
+    client.schedule_verifier_rotation(&admin, &replacement_verifier, &10u64, &5u64, &3u64);
+
+    let state = client.get_verifier_state();
+    assert_eq!(state.pending_verifier, Some(replacement_verifier.clone()));
+    assert_eq!(state.active_verifier, Some(initial_verifier.clone()));
+
+    env.ledger().set_sequence_number(15);
+    client.activate_verifier_rotation(&admin);
+
+    let state = client.get_verifier_state();
+    assert_eq!(state.active_verifier, Some(replacement_verifier.clone()));
+    assert!(state.rollback_window_end >= 15);
+
+    client.rollback_verifier_rotation(&admin);
+    let state = client.get_verifier_state();
+    assert_eq!(state.active_verifier, Some(initial_verifier.clone()));
+}
+
+#[test]
+fn verifier_rotation_activates_only_after_overlap_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let initial_verifier = env.register(MockNoirVerifier, ());
+    let replacement_verifier = env.register(MockNoirVerifierV2, ());
+
+    client.init(&admin);
+    client.set_verifier(&admin, &initial_verifier);
+    client.schedule_verifier_rotation(&admin, &replacement_verifier, &10u64, &5u64, &3u64);
+
+    env.ledger().set_sequence_number(14);
+    let state = client.get_verifier_state();
+    assert_eq!(state.pending_verifier, Some(replacement_verifier.clone()));
+
+    client.activate_verifier_rotation(&admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn verifier_rotation_cannot_activate_before_activation_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let initial_verifier = env.register(MockNoirVerifier, ());
+    let replacement_verifier = env.register(MockNoirVerifierV2, ());
+
+    client.init(&admin);
+    client.set_verifier(&admin, &initial_verifier);
+    client.schedule_verifier_rotation(&admin, &replacement_verifier, &100u64, &10u64, &5u64);
+
+    env.ledger().set_sequence_number(99);
+    client.activate_verifier_rotation(&admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn verifier_rotation_is_rejected_after_rollback_window_closes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let initial_verifier = env.register(MockNoirVerifier, ());
+    let replacement_verifier = env.register(MockNoirVerifierV2, ());
+
+    client.init(&admin);
+    client.set_verifier(&admin, &initial_verifier);
+    client.schedule_verifier_rotation(&admin, &replacement_verifier, &1u64, &1u64, &1u64);
+
+    env.ledger().set_sequence_number(1);
+    client.activate_verifier_rotation(&admin);
+
+    env.ledger().set_sequence_number(3);
+    client.rollback_verifier_rotation(&admin);
+}
+
+#[test]
+fn verifier_rotation_supports_overlap_with_previous_verifier() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let initial_verifier = env.register(MockNoirVerifier, ());
+    let replacement_verifier = env.register(MockRejectingNoirVerifier, ());
+
+    client.init(&admin);
+    client.set_verifier(&admin, &initial_verifier);
+    client.add_credential_root(&admin, &bytes32(&env, 9), &bytes32(&env, 10));
+    client.schedule_verifier_rotation(&admin, &replacement_verifier, &1u64, &1u64, &1u64);
+
+    env.ledger().set_sequence_number(1);
+    client.activate_verifier_rotation(&admin);
+
+    let record = client.register_anonymous_verified(
+        &bytes32(&env, 71),
+        &bytes32(&env, 72),
+        &bytes32(&env, 73),
+        &silent_public_inputs(&env, &bytes32(&env, 71), &bytes32(&env, 9), &bytes32(&env, 74)),
+        &proof_bytes(&env),
+    );
+
+    assert_eq!(record.tier, TIER_SILENT_WITNESS);
+}
+
+#[test]
 fn transfers_admin_after_proposal_is_accepted() {
     let env = Env::default();
     env.mock_all_auths();
@@ -230,7 +381,7 @@ fn transfers_admin_after_proposal_is_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")]
+#[should_panic(expected = "Error(Contract, #20)")]
 fn cancelled_admin_transfer_cannot_be_accepted() {
     let env = Env::default();
     env.mock_all_auths();

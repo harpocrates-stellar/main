@@ -1,20 +1,20 @@
-/// Duplicate-proof and video-hash invariant tests (#45)
-///
-/// Uniqueness rules enforced by the registry:
-///
-/// | Key             | Scope          | Error on collision    |
-/// |-----------------|----------------|-----------------------|
-/// | proof_id        | global         | DuplicateProof  (#4)  |
-/// | video_hash      | global         | DuplicateVideo  (#5)  |
-/// | nullifier       | global         | DuplicateNullifier(#6)|
-///
-/// These rules apply identically across all three identity tiers.
-///
-/// After every rejected call the suite verifies that:
-///   - The original record is unchanged in storage.
-///   - No new Video or Proof key was written.
-///
-/// Events are verified via `env.events().all()`.
+//! Duplicate-proof and video-hash invariant tests (#45)
+//!
+//! Uniqueness rules enforced by the registry:
+//!
+//! | Key             | Scope          | Error on collision    |
+//! |-----------------|----------------|-----------------------|
+//! | proof_id        | global         | DuplicateProof  (#4)  |
+//! | video_hash      | global         | DuplicateVideo  (#5)  |
+//! | nullifier       | global         | DuplicateNullifier(#6)|
+//!
+//! These rules apply identically across all three identity tiers.
+//!
+//! After every rejected call the suite verifies that:
+//!   - The original record is unchanged in storage.
+//!   - No new Video or Proof key was written.
+//!
+//! Events are verified via `env.events().all()`.
 #[cfg(test)]
 use super::*;
 #[cfg(test)]
@@ -35,7 +35,8 @@ struct MockVerifier2;
 #[contractimpl]
 impl MockVerifier2 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -224,12 +225,7 @@ fn invariant_duplicate_video_storage_unchanged() {
     let video_hash = b32(&env, 0x60);
     let original_proof_id = b32(&env, 0x61);
 
-    client.register_source(
-        &source,
-        &video_hash,
-        &b32(&env, 0x62),
-        &original_proof_id,
-    );
+    client.register_source(&source, &video_hash, &b32(&env, 0x62), &original_proof_id);
 
     // Try to overwrite with a different proof_id for the same video
     let result = env.try_invoke_contract::<Option<ProofRecord>, RegistryError>(
@@ -446,4 +442,3 @@ fn invariant_duplicate_rejection_emits_no_event() {
         "rejected call must not emit new events"
     );
 }
-
