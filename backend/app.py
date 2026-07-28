@@ -32,7 +32,9 @@ from db import (
     make_idempotency_key,
     upsert_register_event,
     ConflictError,
+    upsert_evidence_artifact,
 )
+from storage import ContentAddressableStorage
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
@@ -44,7 +46,6 @@ from quarantine import QuarantineError, isolate_upload
 
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
-REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
 LOGGER = logging.getLogger("harpocrates.requests")
 if not LOGGER.handlers:
     handler = logging.StreamHandler()
@@ -75,6 +76,11 @@ def create_app() -> Flask:
     )
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+
+    app.evidence_storage = ContentAddressableStorage(
+        base_path=config.storage_backend_path,
+        master_key_hex=config.master_key,
+    )
 
     readiness_manager = ReadinessManager(timeout_seconds=1.0, cache_ttl_seconds=5.0)
     readiness_manager.add_dependency("database", check_db, critical=True)
@@ -221,7 +227,8 @@ def create_app() -> Flask:
         except json.JSONDecodeError:
             return jsonify({"error": "metadata must be valid JSON"}), 400
         try:
-            validate_embed_metadata(metadata)
+            from envelope import validate
+            validate(metadata)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -242,6 +249,12 @@ def create_app() -> Flask:
                 source_hash = workspace.sha256("source.video")
                 embedded_hash = workspace.sha256("embedded.mp4")
                 metadata_hash = canonical_metadata_hash(metadata)
+                
+                tenant_id = metadata.get("proofId", "default")
+                import io
+                embedded_stream = io.BytesIO(output_bytes)
+                stored_hash, encrypted_dek = app.evidence_storage.write_stream(embedded_stream, tenant_id)
+                upsert_evidence_artifact(stored_hash, encrypted_dek.hex(), tenant_id)
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -586,35 +599,7 @@ def validate_video_upload(video) -> None:
         raise ValueError("video upload must use a video content type")
 
 
-def validate_embed_metadata(metadata: object) -> None:
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be a JSON object")
-    missing = REQUIRED_EMBED_METADATA - set(metadata.keys())
-    if missing:
-        raise ValueError(f"metadata missing required field: {sorted(missing)[0]}")
-    if metadata.get("protocol") != "harpocrates":
-        raise ValueError("metadata protocol must be harpocrates")
-    if metadata.get("tier") not in ALLOWED_TIERS:
-        raise ValueError("metadata tier is invalid")
-    if not is_hex_32(metadata.get("sourceHash")):
-        raise ValueError("metadata sourceHash must be a 32-byte hex string")
-    if not is_hex_32(metadata.get("proofId")):
-        raise ValueError("metadata proofId must be a 32-byte hex string")
-    _validate_timestamp(metadata.get("timestamp"))
 
-
-def _validate_timestamp(value: object) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("metadata timestamp must be a string")
-    ts = value.strip().replace("Z", "+00:00").replace("z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(ts)
-    except ValueError:
-        raise ValueError("metadata timestamp must be a timezone-aware ISO-8601 string")
-    if dt.tzinfo is None:
-        raise ValueError("metadata timestamp must be timezone-aware")
-    if dt > datetime.now(timezone.utc) + timedelta(seconds=300):
-        raise ValueError("metadata timestamp is unreasonably far in the future")
 
 
 def safe_filename(value: object) -> str | None:

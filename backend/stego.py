@@ -39,7 +39,8 @@ def sha256_file(path: Path) -> str:
 
 
 def canonical_metadata_hash(metadata: dict[str, Any]) -> str:
-    return hashlib.sha256(_canonical_json(metadata)).hexdigest()
+    from envelope import canonical_encode
+    return hashlib.sha256(canonical_encode(metadata)).hexdigest()
 
 
 def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: dict[str, Any]) -> None:
@@ -114,7 +115,8 @@ def extract_metadata(source_path: Path | str) -> dict[str, Any] | None:
 
 
 def _pack_payload(metadata: dict[str, Any]) -> bytes:
-    body = zlib.compress(_canonical_json(metadata), level=9)
+    from envelope import canonical_encode
+    body = zlib.compress(canonical_encode(metadata), level=9)
     if len(body) > MAX_PAYLOAD_BYTES:
         raise ValueError("metadata payload exceeds the 64 KiB steganography limit")
 
@@ -142,15 +144,13 @@ def _unpack_payload(data: bytes) -> dict[str, Any] | None:
         return None
 
     try:
-        value = json.loads(zlib.decompress(body).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, zlib.error):
+        decompressed = zlib.decompress(body)
+        from envelope import canonical_decode
+        value = canonical_decode(decompressed)
+    except Exception:
         return None
 
-    return value if isinstance(value, dict) else None
-
-
-def _canonical_json(metadata: dict[str, Any]) -> bytes:
-    return json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return value
 
 
 def _bytes_to_bits(data: bytes) -> list[int]:
