@@ -15,9 +15,15 @@ from typing import Any
 
 import numpy as np
 
+from envelope import (
+    MAGIC_V1,
+    MAGIC_V2,
+    MAX_PAYLOAD_BYTES,
+    pack_envelope,
+    unpack_envelope,
+    canonical_metadata_hash,
+)
 
-MAGIC = b"HRPSTG1"
-MAX_PAYLOAD_BYTES = 64 * 1024
 BORDER_BLOCK = 6
 BORDER_STRIDE = 2
 
@@ -38,14 +44,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def canonical_metadata_hash(metadata: dict[str, Any]) -> str:
-    return hashlib.sha256(_canonical_json(metadata)).hexdigest()
+def canonical_metadata_hash_compat(metadata: dict[str, Any]) -> str:
+    return canonical_metadata_hash(metadata)
 
 
 def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: dict[str, Any]) -> None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
-    payload = _pack_payload(metadata)
+    payload = pack_envelope(metadata)
     bits = _bytes_to_bits(payload)
 
     border_capacity = _border_capacity(info.width, info.height) * (info.frame_count or 1)
@@ -111,46 +117,6 @@ def extract_metadata(source_path: Path | str) -> dict[str, Any] | None:
     finally:
         timer.cancel()
         _close_process(process)
-
-
-def _pack_payload(metadata: dict[str, Any]) -> bytes:
-    body = zlib.compress(_canonical_json(metadata), level=9)
-    if len(body) > MAX_PAYLOAD_BYTES:
-        raise ValueError("metadata payload exceeds the 64 KiB steganography limit")
-
-    checksum = hashlib.sha256(body).digest()
-    return MAGIC + struct.pack(">I", len(body)) + checksum + body
-
-
-def _unpack_payload(data: bytes) -> dict[str, Any] | None:
-    if len(data) < len(MAGIC) + 4 + 32 or not data.startswith(MAGIC):
-        return None
-
-    size = struct.unpack(">I", data[len(MAGIC) : len(MAGIC) + 4])[0]
-    if size > MAX_PAYLOAD_BYTES:
-        return None
-
-    checksum_start = len(MAGIC) + 4
-    body_start = checksum_start + 32
-    body_end = body_start + size
-    if len(data) < body_end:
-        return None
-
-    checksum = data[checksum_start:body_start]
-    body = data[body_start:body_end]
-    if hashlib.sha256(body).digest() != checksum:
-        return None
-
-    try:
-        value = json.loads(zlib.decompress(body).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, zlib.error):
-        return None
-
-    return value if isinstance(value, dict) else None
-
-
-def _canonical_json(metadata: dict[str, Any]) -> bytes:
-    return json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _bytes_to_bits(data: bytes) -> list[int]:
@@ -233,23 +199,24 @@ def _extract_from_lsb(frames: list[np.ndarray]) -> dict[str, Any] | None:
 
 
 def _unpack_progressive(bits: list[int]) -> dict[str, Any] | None:
-    header_bits = (len(MAGIC) + 4 + 32) * 8
+    header_bits = (7 + 4 + 32) * 8
     if len(bits) < header_bits:
         return None
 
     header = _bits_to_bytes(bits[:header_bits])
-    if not header.startswith(MAGIC):
+    magic = header[:7]
+    if magic not in (MAGIC_V1, MAGIC_V2):
         return None
 
-    size = struct.unpack(">I", header[len(MAGIC) : len(MAGIC) + 4])[0]
+    size = struct.unpack(">I", header[7:11])[0]
     if size > MAX_PAYLOAD_BYTES:
         return None
 
-    total_bits = (len(MAGIC) + 4 + 32 + size) * 8
+    total_bits = (7 + 4 + 32 + size) * 8
     if len(bits) < total_bits:
         return None
 
-    return _unpack_payload(_bits_to_bytes(bits[:total_bits]))
+    return unpack_envelope(_bits_to_bytes(bits[:total_bits]))
 
 
 def _probe_video(path: Path | str) -> VideoInfo:

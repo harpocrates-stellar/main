@@ -47,6 +47,7 @@ from db import (
 from idempotency import idempotent
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness, generate_aggregated_proof
+from envelope import validate_v2 as validate_embed_metadata
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
@@ -62,7 +63,6 @@ MAX_AGGREGATION_SIZE = 8
 AGGREGATION_ELEMENT_COST = 128  # bytes per aggregated public-input element
 
 ALLOWED_TIERS = {"silent", "source", "seal"}
-REQUIRED_EMBED_METADATA = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
 LOGGER = logging.getLogger("harpocrates.requests")
 if not LOGGER.handlers:
     handler = logging.StreamHandler()
@@ -1118,35 +1118,6 @@ def validate_video_upload(video) -> None:
         raise ValueError("video upload must use a video content type")
 
 
-def validate_embed_metadata(metadata: object) -> None:
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be a JSON object")
-    missing = REQUIRED_EMBED_METADATA - set(metadata.keys())
-    if missing:
-        raise ValueError(f"metadata missing required field: {sorted(missing)[0]}")
-    if metadata.get("protocol") != "harpocrates":
-        raise ValueError("metadata protocol must be harpocrates")
-    if metadata.get("tier") not in ALLOWED_TIERS:
-        raise ValueError("metadata tier is invalid")
-    if not is_hex_32(metadata.get("sourceHash")):
-        raise ValueError("metadata sourceHash must be a 32-byte hex string")
-    if not is_hex_32(metadata.get("proofId")):
-        raise ValueError("metadata proofId must be a 32-byte hex string")
-    _validate_timestamp(metadata.get("timestamp"))
-
-
-def _validate_timestamp(value: object) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("metadata timestamp must be a string")
-    ts = value.strip().replace("Z", "+00:00").replace("z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(ts)
-    except ValueError:
-        raise ValueError("metadata timestamp must be a timezone-aware ISO-8601 string")
-    if dt.tzinfo is None:
-        raise ValueError("metadata timestamp must be timezone-aware")
-    if dt > datetime.now(timezone.utc) + timedelta(seconds=300):
-        raise ValueError("metadata timestamp is unreasonably far in the future")
 
 
 def safe_filename(value: object) -> str | None:

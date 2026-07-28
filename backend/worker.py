@@ -6,9 +6,11 @@ import traceback
 from pathlib import Path
 
 from db import lease_job, heartbeat_job, complete_job, fail_job, insert_proof_event, init_db
-from stego import embed_metadata, extract_metadata, sha256_file, canonical_metadata_hash
+from envelope import canonical_metadata_hash
+from stego import embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
 from app import safe_filename, redact_metadata
+
 from storage import get_job_input_path, get_job_output_path
 
 LOGGER = logging.getLogger("harpocrates.worker")
