@@ -169,6 +169,18 @@ def init_db() -> None:
                 on proof_history_events (proof_id);
                 """
             )
+            cursor.execute(
+                """
+                create table if not exists evidence_artifacts (
+                    video_hash text primary key,
+                    encrypted_dek text not null,
+                    tenant_id text not null,
+                    ref_count integer not null default 1,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                );
+                """
+            )
         connection.commit()
 
 
@@ -621,3 +633,75 @@ def list_proof_history_events(
                 (proof_id, limit, offset),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+def upsert_evidence_artifact(
+    video_hash: str,
+    encrypted_dek_hex: str,
+    tenant_id: str,
+) -> bool:
+    """Upsert an evidence artifact. Increments ref_count if it exists. Returns True if created."""
+    if not database_url():
+        return True
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into evidence_artifacts (video_hash, encrypted_dek, tenant_id, ref_count)
+                values (%s, %s, %s, 1)
+                on conflict (video_hash) do update
+                set ref_count = evidence_artifacts.ref_count + 1,
+                    updated_at = now()
+                returning (xmax = 0) as inserted;
+                """,
+                (video_hash, encrypted_dek_hex, tenant_id),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return bool(row and row["inserted"])
+
+def get_evidence_artifact(video_hash: str) -> dict[str, Any] | None:
+    """Fetch an evidence artifact by its hash."""
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select video_hash, encrypted_dek, tenant_id, ref_count
+                from evidence_artifacts
+                where video_hash = %s;
+                """,
+                (video_hash,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+def release_evidence_artifact(video_hash: str) -> bool:
+    """Decrements the ref_count of an artifact. Returns True if the ref_count reached 0 and it was deleted."""
+    if not database_url():
+        return False
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update evidence_artifacts
+                set ref_count = ref_count - 1,
+                    updated_at = now()
+                where video_hash = %s
+                returning ref_count;
+                """,
+                (video_hash,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            if row["ref_count"] <= 0:
+                cursor.execute("delete from evidence_artifacts where video_hash = %s;", (video_hash,))
+                deleted = True
+            else:
+                deleted = False
+        connection.commit()
+        return deleted

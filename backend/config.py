@@ -26,6 +26,8 @@ class AppConfig:
     verifier_cache_max_size: int
     verifier_cache_positive_ttl_seconds: float
     verifier_cache_negative_ttl_seconds: float
+    storage_backend_path: str
+    master_key: str | None
 
 
 def load_config() -> AppConfig:
@@ -57,6 +59,8 @@ def load_config() -> AppConfig:
         verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
         verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
         verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
+        storage_backend_path=_str_env("STORAGE_BACKEND_PATH") or os.path.join(tempfile.gettempdir(), "harpocrates_evidence"),
+        master_key=_str_env("HARPOCRATES_MASTER_KEY"),
     )
 
 
