@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -19,6 +19,15 @@ from db import (
     init_db,
     insert_proof_event,
     list_proof_events,
+)
+from errors import (
+    INTERNAL_ERROR,
+    NOT_FOUND,
+    PAYLOAD_TOO_LARGE,
+    VALIDATION_ERROR,
+    error_response,
+    init_request_id,
+    ok_response,
 )
 from noir import generate_silent_witness
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
@@ -36,6 +45,7 @@ def create_app() -> Flask:
     CORS(app, origins=config.cors_origins)
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     init_db()
+    init_request_id(app)
 
     @app.after_request
     def add_security_headers(response: Response):
@@ -44,37 +54,53 @@ def create_app() -> Flask:
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
             response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("X-Request-Id", getattr(g, "request_id", "unknown"))
         return response
 
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
-        return jsonify({"error": "request body is too large"}), 413
+        return error_response(
+            code=PAYLOAD_TOO_LARGE,
+            message="request body is too large",
+            status=413,
+        )
 
     @app.errorhandler(ValueError)
     def bad_request(error: ValueError):
-        return jsonify({"error": str(error)}), 400
+        return error_response(
+            code=VALIDATION_ERROR,
+            message=str(error),
+            status=400,
+        )
 
     @app.errorhandler(RuntimeError)
     def runtime_error(error: RuntimeError):
-        return jsonify({"error": str(error)}), 500
+        app.logger.error("Unhandled runtime error: %s", error, exc_info=True)
+        return error_response(
+            code=INTERNAL_ERROR,
+            message="internal server error",
+            status=500,
+        )
 
     @app.get("/health")
     def health():
-        return jsonify({"ok": True, "service": "harpocrates-stego"})
+        return ok_response({"service": "harpocrates-stego"})
 
     @app.get("/ready")
     def ready():
         database_ready = check_db()
         video_tools_ready = video_tooling_ready()
-        return jsonify(
+        all_ready = database_ready and video_tools_ready
+        return ok_response(
             {
-                "ok": database_ready and video_tools_ready,
                 "service": "harpocrates-stego",
                 "database": "connected" if database_ready else "not_configured",
                 "video_tools": "available" if video_tools_ready else "missing",
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
-            }
-        ), 200 if database_ready and video_tools_ready else 503
+            },
+            ok=all_ready,
+            status=200 if all_ready else 503,
+        )
 
     @app.post("/api/stego/embed")
     def embed():
@@ -82,19 +108,35 @@ def create_app() -> Flask:
         metadata_raw = request.form.get("metadata")
 
         if video is None or metadata_raw is None:
-            return jsonify({"error": "video and metadata are required"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="video and metadata are required",
+                status=400,
+            )
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "metadata is too large"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="metadata is too large",
+                status=400,
+            )
 
         try:
             metadata = json.loads(metadata_raw)
         except json.JSONDecodeError:
-            return jsonify({"error": "metadata must be valid JSON"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="metadata must be valid JSON",
+                status=400,
+            )
         try:
             validate_embed_metadata(metadata)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
 
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
             source_path = Path(tmp_dir) / "source.video"
@@ -135,7 +177,11 @@ def create_app() -> Flask:
         video = request.files.get("video")
 
         if video is None:
-            return jsonify({"error": "video is required"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="video is required",
+                status=400,
+            )
         validate_video_upload(video)
 
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
@@ -155,9 +201,8 @@ def create_app() -> Flask:
             metadata=redact_metadata(metadata),
         )
 
-        return jsonify(
+        return ok_response(
             {
-                "ok": True,
                 "video_hash": video_hash,
                 "metadata_hash": metadata_hash,
                 "metadata": metadata,
@@ -171,24 +216,40 @@ def create_app() -> Flask:
         try:
             parsed_limit = int(limit)
         except ValueError:
-            return jsonify({"error": "limit must be an integer"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="limit must be an integer",
+                status=400,
+            )
 
-        return jsonify({"ok": True, "events": list_proof_events(parsed_limit)})
+        return ok_response({"events": list_proof_events(parsed_limit)})
 
     @app.get("/api/proofs/by-video/<video_hash>")
     def proof_by_video(video_hash: str):
         if not is_hex_32(video_hash):
-            return jsonify({"error": "video_hash must be a 32-byte hex string"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="video_hash must be a 32-byte hex string",
+                status=400,
+            )
 
-        return jsonify({"ok": True, "events": find_proof_events_by_video(video_hash)})
+        return ok_response({"events": find_proof_events_by_video(video_hash)})
 
     @app.post("/api/proofs/register")
     def register_proof_event():
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
-            return jsonify({"error": "JSON body is required"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
         if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "registration payload is too large"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="registration payload is too large",
+                status=400,
+            )
 
         video_hash = payload.get("videoHash")
         metadata_hash = payload.get("metadataHash")
@@ -201,7 +262,11 @@ def create_app() -> Flask:
             ("proofId", proof_id),
         ):
             if not is_hex_32(value):
-                return jsonify({"error": f"{name} must be a 32-byte hex string"}), 400
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=f"{name} must be a 32-byte hex string",
+                    status=400,
+                )
 
         db_event = insert_proof_event(
             event_type="register",
@@ -217,26 +282,46 @@ def create_app() -> Flask:
             metadata=redact_metadata(payload),
         )
 
-        return jsonify({"ok": True, "db_event": db_event})
+        return ok_response({"db_event": db_event})
 
     @app.post("/api/noir/silent-witness")
     def silent_witness_proof():
         if not config.noir_worker_enabled:
-            return jsonify({"error": "local Noir worker is disabled"}), 404
+            return error_response(
+                code=NOT_FOUND,
+                message="local Noir worker is disabled",
+                status=404,
+            )
 
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
-            return jsonify({"error": "JSON body is required"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
 
         video_hash = payload.get("videoHash")
         if not is_hex_32(video_hash):
-            return jsonify({"error": "videoHash must be a 32-byte hex string"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="videoHash must be a 32-byte hex string",
+                status=400,
+            )
         credential_secret = payload.get("credentialSecret")
         nullifier_secret = payload.get("nullifierSecret")
         if not is_field_decimal(credential_secret):
-            return jsonify({"error": "credentialSecret must be a decimal field string"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="credentialSecret must be a decimal field string",
+                status=400,
+            )
         if not is_field_decimal(nullifier_secret):
-            return jsonify({"error": "nullifierSecret must be a decimal field string"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="nullifierSecret must be a decimal field string",
+                status=400,
+            )
 
         try:
             proof = generate_silent_witness(
@@ -245,9 +330,14 @@ def create_app() -> Flask:
                 nullifier_secret,
             )
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 500
+            app.logger.error("Noir proof generation failed: %s", exc, exc_info=True)
+            return error_response(
+                code=INTERNAL_ERROR,
+                message="Noir proof generation failed",
+                status=500,
+            )
 
-        return jsonify({"ok": True, "proof": proof})
+        return ok_response({"proof": proof})
 
     return app
 
