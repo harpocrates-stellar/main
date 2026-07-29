@@ -43,7 +43,8 @@ struct MockStateMachineVerifier;
 #[contractimpl]
 impl MockStateMachineVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
             panic!("invalid state-machine proof");
         }
     }
@@ -243,6 +244,9 @@ enum Command {
     Reinit {
         admin: ActorId,
     },
+    UpgradeStorage {
+        admin: ActorId,
+    },
     Abort {
         kind: AbortKind,
     },
@@ -275,6 +279,7 @@ struct Model {
     proof_ttl: u64,
     revocation_root: Option<u8>,
     now: u64,
+    schema_version: u32,
     proofs: StdVec<ModelProof>,
     nullifiers: StdVec<u8>,
 }
@@ -305,6 +310,7 @@ impl Model {
             proof_ttl: 0,
             revocation_root: None,
             now: START_TIMESTAMP,
+            schema_version: 1,
             proofs: StdVec::new(),
             nullifiers: StdVec::new(),
         }
@@ -812,7 +818,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_source",
             )? {
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -857,7 +863,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_seal",
             )? {
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -925,7 +931,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -1000,7 +1006,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                1
+                2
             } else {
                 0
             }
@@ -1031,7 +1037,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 {
                     record.status = STATUS_REVOKED;
                 }
-                1
+                2
             } else {
                 0
             }
@@ -1353,6 +1359,26 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
 
             compare_unit(invoke_unit(fixture, "init", call_args), expected, "init")?;
             0
+        }
+        Command::UpgradeStorage { admin } => {
+            let expected = model.require_admin(admin);
+            let mut call_args = args(fixture);
+            call_args.push_back(fixture.actor(admin).into_val(&fixture.env));
+
+            compare_unit(
+                invoke_unit(fixture, "upgrade_storage", call_args),
+                expected,
+                "upgrade_storage",
+            )?;
+            if expected.is_ok() {
+                let target_version = 1;
+                if model.schema_version < target_version {
+                    model.schema_version = target_version;
+                }
+                1
+            } else {
+                0
+            }
         }
         Command::Abort { kind } => {
             match kind {
@@ -1693,6 +1719,9 @@ fn generate_command(rng: &mut XorShift64) -> Command {
             proof_mode: proof_mode_from(rng.byte()),
         },
         98 => Command::Reinit {
+            admin: actor_from(rng.byte()),
+        },
+        99 => Command::UpgradeStorage {
             admin: actor_from(rng.byte()),
         },
         _ => Command::Abort {

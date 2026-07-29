@@ -600,6 +600,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Request IDs for tracing | T6 | `app.py` → `start_request_context` |
 | Steganographic MAGIC header + SHA-256 checksum on payload | T7 | `stego.py` → `_pack_payload`, `_unpack_payload` |
 | Dual-channel embedding (border + LSB) | T7 | `stego.py` → `embed_metadata` |
+| Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
+| Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
+
 
 ### 7.3 React Frontend
 
@@ -609,6 +612,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Seeds cleared after proof generation or vault inactivity | T4, T5, T11 | `seedVault.ts`, `credentialVault.ts` |
 | BN254 field modulus reduction on credential/nullifier secrets | T4 | `seedVault.ts` → `fieldSecret` |
 | Browser-side Noir proving — secrets never sent to server in production | T4, T5 | `noirClient.ts` → `generateSilentWitnessProof` |
+| **Worker-isolated proving** — Noir proving runs in a dedicated Web Worker which is explicitly terminated upon success, failure, timeout, or cancellation. This guarantees the browser reclaims the memory hardware-isolate and drops all secrets reliably, rather than depending on GC. | T4, T5 | `proveWorker.ts`, `noirClient.ts` |
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
@@ -764,6 +768,31 @@ privileged contract event is emitted.
 
 ---
 
+### OR-10 Threshold Seal Policy Governance
+
+**Severity:** Medium  
+**Component:** Soroban contract  
+**Description:** The m-of-n threshold seal policy introduces a governance layer
+where multiple independent institutional issuers must approve a proof before
+finalization. Risks include:
+- A compromised admin key can create a policy with `required_approvals = 1`,
+  bypassing the threshold requirement entirely.
+- Approval TTL expiry windows may allow stale approvals to be counted if not
+  properly validated.
+- Issuer revocation between approval and finalization must be handled atomically
+  to prevent partial-threshold seals.
+**Mitigations implemented:**
+- Policies are admin-only (inherits OR-6 admin trust assumption).
+- Approvals from revoked issuers are excluded from the active count.
+- Expired approvals are excluded by timestamp comparison.
+- Finalization is atomic: threshold check and proof registration occur in a
+  single Soroban transaction.
+- `MAX_SIGNERS = 16` bounds storage consumption per policy.
+- `DEFAULT_APPROVAL_TTL_SECS = 86_400` (1 day) provides a safe default.
+- Backward compatibility: existing single-issuer `register_seal` is preserved.
+
+---
+
 ## 9. Non-Goals
 
 The following are explicitly outside the scope of this threat model:
@@ -811,3 +840,4 @@ add a one-line change summary below:
 | Version | Date | Summary |
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
+| 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |

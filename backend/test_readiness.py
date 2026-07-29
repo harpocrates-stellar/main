@@ -1,6 +1,6 @@
 import time
 import unittest
-from backend.readiness import ReadinessManager, Dependency
+from readiness import ReadinessManager, Dependency
 
 class TestReadinessManager(unittest.TestCase):
     def test_all_healthy(self):
