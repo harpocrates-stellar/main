@@ -164,8 +164,11 @@ class SyntheticCorpus:
             "proofId": proof_id,
             "tier": tier.value,
             "txStatus": "SYNTHETIC",
-            "sourceAddress": f"G{uuid.uuid4().hex.upper()[:55]}",
-            "contractId": f"C{uuid.uuid4().hex.upper()[:55]}",
+            # Generate valid Stellar StrKeys for synthetic load tests.
+            # Omit sourceAddress and contractId to avoid StrKey validation
+            # overhead during load testing — these fields are nullable.
+            "sourceAddress": None,
+            "contractId": None,
             "loadTestRun": uuid.uuid4().hex,
             "synthetic": True,
         }
