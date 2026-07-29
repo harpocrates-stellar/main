@@ -39,13 +39,24 @@ fn main(
 
     assert(derived_root == credential_root, "credential root mismatch");
     assert(derived_nullifier == nullifier, "nullifier mismatch");
+
+    // --- domain separation constraint ---
+    // Bind this proof to the Harpocrates protocol, circuit version 1, and
+    // the target network.  A proof generated for a different protocol,
+    // version, or network will carry a different domain_tag value and the
+    // assertion below will fail, so the verifier contract will reject it.
+    let expected_domain_tag = std::hash::pedersen_hash([
+        DOMAIN_PROTOCOL_FIELD,
+        DOMAIN_VERSION_FIELD,
+        DOMAIN_NETWORK_FIELD,
+    ]);
+    assert(domain_tag == expected_domain_tag, "domain tag mismatch");
 }
 
 // ---------------------------------------------------------------------------
 // Test corpus -- Silent Witness circuit (scoped nullifier v1)
 //
-// ALL SECRETS BELOW ARE SYNTHETIC AND FOR TESTING ONLY.
-// Do not use these values in any production credential or proof.
+// ALL SECRETS ARE SYNTHETIC AND FOR TESTING ONLY.
 //
 // Base fixture (all values derived from these synthetic seeds):
 //   credential_secret   = 12345
@@ -68,6 +79,14 @@ fn main(
 //   max_field_credential_secret = BN254 prime - 1
 //   zero_video_hash: hi = 0, lo = 0
 // ---------------------------------------------------------------------------
+
+// Pre-compute the expected domain_tag from the embedded constants so tests
+// can reference it without repeating the derivation.
+global EXPECTED_DOMAIN_TAG: Field = std::hash::pedersen_hash([
+    DOMAIN_PROTOCOL_FIELD,
+    DOMAIN_VERSION_FIELD,
+    DOMAIN_NETWORK_FIELD,
+]);
 
 // Public input ordering expected by the Soroban verifier:
 //   [0] video_hash_hi
@@ -93,7 +112,7 @@ fn compute_scoped_nullifier(
 }
 
 // ============================================================
-// Positive: well-formed witness -- all assertions must pass
+// Positive: well-formed witness
 // ============================================================
 
 // All inputs correct: global scope (0), epoch 0.
@@ -150,7 +169,7 @@ fn test_zero_video_hash() {
 }
 
 // ============================================================
-// Negative -- wrong private inputs
+// Negative — wrong private inputs (existing)
 // ============================================================
 
 #[test(should_fail_with = "credential root mismatch")]
@@ -180,7 +199,7 @@ fn test_wrong_nullifier_secret() {
 }
 
 // ============================================================
-// Negative -- wrong video hash (public inputs)
+// Negative — wrong video hash (existing)
 // ============================================================
 
 #[test(should_fail_with = "nullifier mismatch")]
@@ -223,7 +242,7 @@ fn test_wrong_video_hash_both_halves() {
 }
 
 // ============================================================
-// Negative -- tampered public inputs (replay / substitution)
+// Negative — tampered public inputs (existing)
 // ============================================================
 
 #[test(should_fail_with = "credential root mismatch")]
@@ -267,7 +286,7 @@ fn test_both_public_inputs_wrong_identity() {
 }
 
 // ============================================================
-// Negative -- public input ordering / swap attacks
+// Negative — public input ordering attacks (existing)
 // ============================================================
 
 #[test(should_fail_with = "credential root mismatch")]
@@ -348,8 +367,26 @@ fn test_nullifier_from_different_video() {
     main(
         12345,
         67890,
-        22685491128062564230891640495451214097, // correct hi
-        45370982256125128461783280990902428194, // correct lo
+        22685491128062564230891640495451214097,
+        45370982256125128461783280990902428194,
+        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
+        0x123dc8f99a053fc5f5e93f89b04919746e0ce70ca49b0011617e48dd5f8090ce,
+        EXPECTED_DOMAIN_TAG,
+    );
+}
+
+// ============================================================
+// Negative — domain tag mismatch (NEW: domain separation tests)
+// ============================================================
+
+// Zero domain_tag — never equals the expected Pedersen hash.
+#[test(should_fail_with = "domain tag mismatch")]
+fn test_zero_domain_tag_rejected() {
+    main(
+        12345,
+        67890,
+        22685491128062564230891640495451214097,
+        45370982256125128461783280990902428194,
         0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
         0x123dc8f99a053fc5f5e93f89b04919746e0ce70ca49b0011617e48dd5f8090ce, // wrong nullifier (old derivation)
     );

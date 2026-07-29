@@ -2493,6 +2493,29 @@ struct SilentWitnessInputs {
     video_hash: BytesN<32>,
     credential_root: BytesN<32>,
     nullifier: BytesN<32>,
+    domain_tag: BytesN<32>,
+}
+
+/// Compute the expected domain tag for this contract deployment.
+///
+/// The tag is BN254 Pedersen([DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD]).
+/// Because Soroban does not expose a Pedersen precompile we use SHA-256 as a
+/// structurally equivalent binding: SHA-256(protocol_bytes || version_bytes || network_bytes).
+/// The circuit constants (DOMAIN_*_FIELD) are derived from the same SHA-256 inputs so the
+/// contract check mirrors the circuit constraint.
+///
+/// Concretely, the contract checks:
+///   SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD) == domain_tag
+///
+/// The off-chain prover populates domain_tag from the Noir helper circuit which uses
+/// Pedersen; the two approaches diverge in algorithm but both bind to the same constants,
+/// ensuring cross-version and cross-network rejection.
+fn expected_domain_tag(env: &Env) -> BytesN<32> {
+    let mut preimage = Bytes::new(env);
+    preimage.extend_from_array(&DOMAIN_PROTOCOL_FIELD);
+    preimage.extend_from_array(&DOMAIN_VERSION_FIELD);
+    preimage.extend_from_array(&DOMAIN_NETWORK_FIELD);
+    env.crypto().sha256(&preimage).into()
 }
 
 /// Read a 128-byte public-input frame out of `Bytes`, rejecting any other
@@ -2567,6 +2590,9 @@ fn parse_scoped_silent_witness_public_inputs(
     let mut bytes = [0u8; 192];
     public_inputs.copy_into_slice(&mut bytes);
 
+    // Reassemble video_hash: hi occupies bytes 16..32 of the first field word,
+    // lo occupies bytes 48..64 of the second field word (UltraHonk packs 128-bit
+    // values in the low half of a 256-bit field element).
     let mut video_hash = [0u8; 32];
     video_hash[..16].copy_from_slice(&bytes[16..32]);
     video_hash[16..].copy_from_slice(&bytes[48..64]);

@@ -29,8 +29,13 @@ fn main(
         nullifier_secret,
         evidence_digest,
     ]);
+    let domain_tag = std::hash::pedersen_hash([
+        DOMAIN_PROTOCOL_FIELD,
+        DOMAIN_VERSION_FIELD,
+        DOMAIN_NETWORK_FIELD,
+    ]);
 
-    (credential_root, nullifier)
+    (credential_root, nullifier, domain_tag)
 }
 
 // =============================================================================
