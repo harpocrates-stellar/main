@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 import psycopg
@@ -701,3 +702,98 @@ def update_tx_status(tx_hash: str, status: str) -> None:
                 (status, tx_hash)
             )
         connection.commit()
+
+
+def set_legal_hold(proof_id: str, hold: bool) -> None:
+    """Set or clear the legal-hold flag on a proof event."""
+    if not database_url():
+        return
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update proof_events
+                set legal_hold = %s
+                where proof_id = %s;
+                """,
+                (hold, proof_id),
+            )
+        connection.commit()
+
+
+def purge_expired_events() -> list[dict[str, Any]]:
+    """Delete proof events past their expiration that are not on legal hold.
+
+    Returns a list of deletion receipts (proof_id, deleted_at, etc.) for
+    each purged event.
+    """
+    if not database_url():
+        return []
+    now = datetime.now(timezone.utc)
+    receipts: list[dict[str, Any]] = []
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, proof_id, video_hash, metadata_hash,
+                       retention_class, tier
+                from proof_events
+                where expires_at is not null
+                  and expires_at <= %s
+                  and legal_hold = false;
+                """,
+                (now,),
+            )
+            expired = [dict(row) for row in cursor.fetchall()]
+            for event in expired:
+                cursor.execute(
+                    """
+                    insert into deletion_receipts (proof_id, video_hash, metadata_hash)
+                    values (%s, %s, %s)
+                    returning id, created_at;
+                    """,
+                    (event["proof_id"], event.get("video_hash"), event.get("metadata_hash")),
+                )
+                receipt = cursor.fetchone()
+                if receipt:
+                    receipts.append(dict(receipt))
+                cursor.execute(
+                    "delete from proof_events where id = %s;",
+                    (event["id"],),
+                )
+        connection.commit()
+    return receipts
+
+
+_JOBS: dict[int, dict[str, Any]] = {}
+_next_job_id = 1
+
+
+def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
+    """Enqueue a background job and return its job id."""
+    global _next_job_id
+    job_id = _next_job_id
+    _next_job_id += 1
+    _JOBS[job_id] = {
+        "id": job_id,
+        "type": job_type,
+        "payload": payload,
+        "status": "pending",
+        "result": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return job_id
+
+
+def get_job(job_id: int) -> dict[str, Any] | None:
+    """Return a job by id, or None."""
+    return _JOBS.get(job_id)
+
+
+def cancel_job(job_id: int) -> bool:
+    """Cancel a pending job. Returns True on success."""
+    job = _JOBS.get(job_id)
+    if job and job["status"] == "pending":
+        job["status"] = "cancelled"
+        return True
+    return False

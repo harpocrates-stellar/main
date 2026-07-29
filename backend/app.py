@@ -54,6 +54,7 @@ from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload
+from strkey import validate_source_address, validate_contract_id
 
 # ---------------------------------------------------------------------------
 # Bounded aggregation constants
@@ -782,6 +783,16 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        # Validate Stellar identifiers with StrKey semantics
+        try:
+            validated_source_address = validate_source_address(payload.get("sourceAddress"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        try:
+            validated_contract_id = validate_contract_id(payload.get("contractId"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
         # Handle time attestation if provided
         time_attestation_data = None
         claimed_capture_time = None
@@ -821,8 +832,8 @@ def create_app() -> Flask:
                 tier=payload.get("tier"),
                 tx_hash=normalized_tx_hash,
                 tx_status=normalized_tx_status,
-                source_address=payload.get("sourceAddress"),
-                contract_id=payload.get("contractId"),
+                source_address=validated_source_address,
+                contract_id=validated_contract_id,
                 retention_class=retention_class,
                 expires_at=expires_at,
                 metadata=redact_metadata(payload),
@@ -838,7 +849,7 @@ def create_app() -> Flask:
         if db_event and db_event.get("id") and created:
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": payload.get("contractId")})
+                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
