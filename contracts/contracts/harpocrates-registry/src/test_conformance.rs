@@ -198,11 +198,17 @@ fn codec_agrees_with_every_corpus_case() {
         // cheap and keeps proof material out of the test process.
         let proof_len = (case.proof_hex.len() / 2) as u32;
 
+        let expected_domain = if case.schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
+            &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+        } else {
+            &REVOCATION_DOMAIN_SEPARATOR
+        };
+
         let actual = match verifier_inputs::classify(
             &case.schema,
             &public_inputs,
             proof_len,
-            &REVOCATION_DOMAIN_SEPARATOR,
+            expected_domain,
         ) {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),

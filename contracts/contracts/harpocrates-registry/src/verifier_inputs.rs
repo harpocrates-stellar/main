@@ -18,8 +18,11 @@
 pub const CODEC_ID: &str = "hpx-vi/1";
 
 pub const FIELD_LEN: usize = 32;
-pub const FIELD_COUNT: usize = 4;
-pub const PUBLIC_INPUTS_LEN: usize = FIELD_LEN * FIELD_COUNT;
+pub const SILENT_WITNESS_FIELD_COUNT: usize = 5;
+pub const REVOCATION_FIELD_COUNT: usize = 4;
+pub const PUBLIC_INPUTS_LEN: usize = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT; // 160
+pub const SILENT_WITNESS_PUBLIC_INPUTS_LEN: usize = 160;
+pub const REVOCATION_PUBLIC_INPUTS_LEN: usize = 128;
 
 /// Accepted proof-blob size window. Matches the Python and TypeScript layers.
 pub const MIN_PROOF_BYTES: u32 = 64;
@@ -30,6 +33,12 @@ pub const MAX_PROOF_BYTES: u32 = 65_536;
 pub const BN254_SCALAR_FIELD_MODULUS_BE: [u8; FIELD_LEN] = [
     0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
     0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
+
+/// Expected Silent Witness domain tag SHA-256 digest.
+pub const SILENT_WITNESS_DOMAIN_TAG_BE: [u8; FIELD_LEN] = [
+    0x4a, 0xa0, 0x38, 0xf0, 0xa2, 0x7b, 0x66, 0x75, 0xd7, 0x12, 0x2a, 0xe2, 0xd4, 0xe1, 0x97, 0xc2,
+    0x1e, 0x83, 0xfb, 0xe3, 0x01, 0x43, 0xa5, 0xc8, 0x3f, 0xf3, 0x5c, 0x95, 0x14, 0xb9, 0x2c, 0x55,
 ];
 
 /// Stable rejection codes shared across circuit, backend, browser, and chain.
@@ -112,6 +121,7 @@ pub struct SilentWitnessFields {
     pub video_hash: [u8; FIELD_LEN],
     pub credential_root: [u8; FIELD_LEN],
     pub nullifier: [u8; FIELD_LEN],
+    pub domain_tag: [u8; FIELD_LEN],
 }
 
 /// Parsed `revocation_witness/v1` public inputs.
@@ -124,7 +134,7 @@ pub struct RevocationFields {
 }
 
 #[inline]
-fn field_at(frame: &[u8; PUBLIC_INPUTS_LEN], index: usize) -> [u8; FIELD_LEN] {
+fn field_at(frame: &[u8], index: usize) -> [u8; FIELD_LEN] {
     let mut out = [0u8; FIELD_LEN];
     out.copy_from_slice(&frame[index * FIELD_LEN..(index + 1) * FIELD_LEN]);
     out
@@ -174,13 +184,19 @@ pub fn check_proof_bounds(proof_len: u32) -> Result<(), RejectCode> {
 
 /// Parse `silent_witness/v1` public inputs in canonical check order.
 pub fn parse_silent_witness(
-    frame: &[u8; PUBLIC_INPUTS_LEN],
+    frame: &[u8],
+    expected_domain: &[u8; FIELD_LEN],
 ) -> Result<SilentWitnessFields, RejectCode> {
+    if frame.len() != SILENT_WITNESS_PUBLIC_INPUTS_LEN {
+        return Err(RejectCode::Length);
+    }
+
     let fields = [
         field_at(frame, 0),
         field_at(frame, 1),
         field_at(frame, 2),
         field_at(frame, 3),
+        field_at(frame, 4),
     ];
 
     if !has_half_padding(&fields[0]) || !has_half_padding(&fields[1]) {
@@ -193,8 +209,12 @@ pub fn parse_silent_witness(
         }
     }
 
-    if is_zero(&fields[2]) || is_zero(&fields[3]) {
+    if is_zero(&fields[2]) || is_zero(&fields[3]) || is_zero(&fields[4]) {
         return Err(RejectCode::ZeroField);
+    }
+
+    if &fields[4] != expected_domain {
+        return Err(RejectCode::DomainMismatch);
     }
 
     let mut video_hash = [0u8; FIELD_LEN];
@@ -205,6 +225,7 @@ pub fn parse_silent_witness(
         video_hash,
         credential_root: fields[2],
         nullifier: fields[3],
+        domain_tag: fields[4],
     })
 }
 
@@ -214,9 +235,13 @@ pub fn parse_silent_witness(
 /// `REVOCATION_DOMAIN_SEPARATOR` constant remains the one authority for the
 /// domain value.
 pub fn parse_revocation_witness(
-    frame: &[u8; PUBLIC_INPUTS_LEN],
+    frame: &[u8],
     expected_domain: &[u8; FIELD_LEN],
 ) -> Result<RevocationFields, RejectCode> {
+    if frame.len() != REVOCATION_PUBLIC_INPUTS_LEN {
+        return Err(RejectCode::Length);
+    }
+
     let fields = [
         field_at(frame, 0),
         field_at(frame, 1),
@@ -264,17 +289,12 @@ pub fn classify(
         return Err(RejectCode::UnknownSchema);
     }
 
-    if public_inputs.len() != PUBLIC_INPUTS_LEN {
-        return Err(RejectCode::Length);
-    }
-    let mut frame = [0u8; PUBLIC_INPUTS_LEN];
-    frame.copy_from_slice(public_inputs);
-
     if schema == SCHEMA_SILENT_WITNESS {
-        parse_silent_witness(&frame)?;
+        parse_silent_witness(public_inputs, expected_domain)?;
     } else {
-        parse_revocation_witness(&frame, expected_domain)?;
+        parse_revocation_witness(public_inputs, expected_domain)?;
     }
 
     check_proof_bounds(proof_len)
 }
+

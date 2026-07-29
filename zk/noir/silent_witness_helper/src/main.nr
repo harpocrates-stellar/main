@@ -3,6 +3,11 @@
 // Must match the constant in the silent_witness main circuit.
 // ---------------------------------------------------------------------------
 global DIGEST_ALGORITHM_SHA256: Field = 0;
+global SCOPED_NULLIFIER_V1: Field = 0x00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631;
+
+global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;
+global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
+global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
 
 fn main(
     credential_secret: Field,
@@ -11,7 +16,13 @@ fn main(
     video_hash_lo: Field,
     verifier_scope: Field,
     epoch: Field,
-) -> pub (Field, Field) {
+) -> pub (Field, Field, Field) {
+    let scope_hash = std::hash::pedersen_hash([
+        SCOPED_NULLIFIER_V1,
+        verifier_scope,
+        epoch,
+    ]);
+
     // Commit to the complete canonical evidence digest with algorithm binding.
     // This must match the derivation in the main silent_witness circuit so that
     // the off-chain helper produces the same credential_root and nullifier that
@@ -74,7 +85,7 @@ fn compute_merkle_root(
 fn test_compute_revocation_tree_params() {
     let cs: Field = 12345;
     let ns: Field = 67890;
-    let (credential_root, nullifier) = main(cs, ns, 0, 0, 0, 0);
+    let (credential_root, nullifier, domain_tag) = main(cs, ns, 0, 0, 0, 0);
 
     let l0: Field = 0;
     let l1 = std::hash::pedersen_hash([33333]);
@@ -91,11 +102,12 @@ fn test_compute_revocation_tree_params() {
     // Verify all computed values are non-zero (proof of work).
     assert(credential_root != 0);
     assert(nullifier != 0);
+    assert(domain_tag != 0);
     assert(tree_root != 0);
     assert(ds != 0);
     assert(l1 != 0);
     assert(l7 != 0);
 
     // Bind the values so the compiler doesn't optimize them away.
-    let _ = (credential_root, nullifier, tree_root, ds, l0, l1, l2, l3, l4, l5, l6, l7);
+    let _ = (credential_root, nullifier, domain_tag, tree_root, ds, l0, l1, l2, l3, l4, l5, l6, l7);
 }

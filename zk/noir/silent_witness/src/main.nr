@@ -9,6 +9,11 @@
 //   DIGEST_ALGORITHM_SHA256 = 0   — SHA-256 (FIPS 180-4)
 // ---------------------------------------------------------------------------
 global DIGEST_ALGORITHM_SHA256: Field = 0;
+global SCOPED_NULLIFIER_V1: Field = 0x00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631;
+
+global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;
+global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
+global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
 
 fn main(
     credential_secret: Field,
@@ -19,15 +24,21 @@ fn main(
     nullifier: pub Field,
     verifier_scope: pub Field,
     epoch: pub Field,
+    domain_tag: pub Field,
 ) {
-    // Commit to the complete canonical evidence digest: algorithm identifier
-    // plus the full 256-bit digest (split across two BN254 field elements).
-    // This binds the proof to the specific hash algorithm and prevents
-    // digest-swapping or algorithm-substitution attacks.
+    let scope_hash = std::hash::pedersen_hash([
+        SCOPED_NULLIFIER_V1,
+        verifier_scope,
+        epoch,
+    ]);
+
+    // Commit to the complete canonical evidence digest: algorithm identifier,
+    // video hash halves, and scope commitment hash.
     let evidence_digest = std::hash::pedersen_hash([
         DIGEST_ALGORITHM_SHA256,
         video_hash_hi,
         video_hash_lo,
+        scope_hash,
     ]);
 
     let derived_root = std::hash::pedersen_hash([credential_secret]);
@@ -42,9 +53,7 @@ fn main(
 
     // --- domain separation constraint ---
     // Bind this proof to the Harpocrates protocol, circuit version 1, and
-    // the target network.  A proof generated for a different protocol,
-    // version, or network will carry a different domain_tag value and the
-    // assertion below will fail, so the verifier contract will reject it.
+    // the target network.
     let expected_domain_tag = std::hash::pedersen_hash([
         DOMAIN_PROTOCOL_FIELD,
         DOMAIN_VERSION_FIELD,
@@ -95,6 +104,7 @@ global EXPECTED_DOMAIN_TAG: Field = std::hash::pedersen_hash([
 //   [3] nullifier
 //   [4] verifier_scope
 //   [5] epoch
+//   [6] domain_tag
 // ---------------------------------------------------------------------------
 
 /// Compute the scoped nullifier for given inputs.
@@ -107,8 +117,9 @@ fn compute_scoped_nullifier(
     scope: Field,
     ep: Field,
 ) -> Field {
-    let scope_hash = pedersen_hash([SCOPED_NULLIFIER_V1, scope, ep]);
-    pedersen_hash([cs, ns, vhi, vlo, scope_hash])
+    let scope_hash = std::hash::pedersen_hash([SCOPED_NULLIFIER_V1, scope, ep]);
+    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo, scope_hash]);
+    std::hash::pedersen_hash([cs, ns, evidence])
 }
 
 // ============================================================
@@ -122,10 +133,11 @@ fn test_valid_witness() {
     let ns: Field = 67890;
     let vhi: Field = 22685491128062564230891640495451214097;
     let vlo: Field = 45370982256125128461783280990902428194;
-    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo]);
+    let scope: Field = 0;
+    let ep: Field = 0;
     let root = std::hash::pedersen_hash([cs]);
-    let null = std::hash::pedersen_hash([cs, ns, evidence]);
-    main(cs, ns, vhi, vlo, root, null);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // Edge: zero credential_secret is a valid field element.
@@ -135,10 +147,11 @@ fn test_zero_credential_secret() {
     let ns: Field = 67890;
     let vhi: Field = 22685491128062564230891640495451214097;
     let vlo: Field = 45370982256125128461783280990902428194;
-    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo]);
+    let scope: Field = 0;
+    let ep: Field = 0;
     let root = std::hash::pedersen_hash([cs]);
-    let null = std::hash::pedersen_hash([cs, ns, evidence]);
-    main(cs, ns, vhi, vlo, root, null);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // Edge: max-field credential_secret (BN254 prime - 1).
@@ -148,10 +161,11 @@ fn test_max_field_credential_secret() {
     let ns: Field = 67890;
     let vhi: Field = 22685491128062564230891640495451214097;
     let vlo: Field = 45370982256125128461783280990902428194;
-    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo]);
+    let scope: Field = 0;
+    let ep: Field = 0;
     let root = std::hash::pedersen_hash([cs]);
-    let null = std::hash::pedersen_hash([cs, ns, evidence]);
-    main(cs, ns, vhi, vlo, root, null);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // Edge: all-zero video hash (e.g. blank-frame video) with correct secrets.
@@ -162,10 +176,11 @@ fn test_zero_video_hash() {
     let ns: Field = 67890;
     let vhi: Field = 0;
     let vlo: Field = 0;
-    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo]);
+    let scope: Field = 0;
+    let ep: Field = 0;
     let root = std::hash::pedersen_hash([cs]);
-    let null = std::hash::pedersen_hash([cs, ns, evidence]);
-    main(cs, ns, vhi, vlo, root, null);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
@@ -182,7 +197,7 @@ fn test_wrong_credential_secret() {
     let ep: Field = 0;
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
-    main(99999, ns, vhi, vlo, root, nul, scope, ep);
+    main(99999, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 #[test(should_fail_with = "nullifier mismatch")]
@@ -195,7 +210,7 @@ fn test_wrong_nullifier_secret() {
     let ep: Field = 0;
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
-    main(cs, 11111, vhi, vlo, root, nul, scope, ep);
+    main(cs, 11111, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
@@ -212,7 +227,7 @@ fn test_wrong_video_hash_hi() {
     let ep: Field = 0;
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
-    main(cs, ns, 99999999999999999999999999999999999999, vlo, root, nul, scope, ep);
+    main(cs, ns, 99999999999999999999999999999999999999, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 #[test(should_fail_with = "nullifier mismatch")]
@@ -225,7 +240,7 @@ fn test_wrong_video_hash_lo() {
     let ep: Field = 0;
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
-    main(cs, ns, vhi, 99999999999999999999999999999999999999, root, nul, scope, ep);
+    main(cs, ns, vhi, 99999999999999999999999999999999999999, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 #[test(should_fail_with = "nullifier mismatch")]
@@ -238,7 +253,7 @@ fn test_wrong_video_hash_both_halves() {
     let ep: Field = 0;
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
-    main(cs, ns, 11111111111111111111111111111111111111, 22222222222222222222222222222222222222, root, nul, scope, ep);
+    main(cs, ns, 11111111111111111111111111111111111111, 22222222222222222222222222222222222222, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
@@ -255,7 +270,7 @@ fn test_tampered_credential_root_public_input() {
     let ep: Field = 0;
     let root = pedersen_hash([99999]); // wrong root
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
-    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 #[test(should_fail_with = "nullifier mismatch")]
@@ -269,7 +284,7 @@ fn test_tampered_nullifier_public_input() {
     let root = pedersen_hash([cs]);
     // Nullifier for a different credential
     let nul = compute_scoped_nullifier(99999, ns, vhi, vlo, scope, ep);
-    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 #[test(should_fail_with = "credential root mismatch")]
@@ -282,7 +297,7 @@ fn test_both_public_inputs_wrong_identity() {
     let ep: Field = 0;
     let root = pedersen_hash([99999]);
     let nul = compute_scoped_nullifier(99999, ns, vhi, vlo, scope, ep);
-    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
@@ -300,7 +315,7 @@ fn test_swapped_credential_root_and_nullifier() {
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
     // Swap: nullifier passed as credential_root, root passed as nullifier
-    main(cs, ns, vhi, vlo, nul, root, scope, ep);
+    main(cs, ns, vhi, vlo, nul, root, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 #[test(should_fail_with = "nullifier mismatch")]
@@ -314,7 +329,7 @@ fn test_swapped_video_hash_halves() {
     let root = pedersen_hash([cs]);
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
     // Swap: lo in hi slot, hi in lo slot
-    main(cs, ns, vlo, vhi, root, nul, scope, ep);
+    main(cs, ns, vlo, vhi, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
@@ -334,7 +349,7 @@ fn test_nullifier_from_different_scope() {
     let root = pedersen_hash([cs]);
     // Nullifier computed for scope=999 (different scope)
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, 999, ep);
-    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // A valid proof for epoch=1 must NOT satisfy epoch=2.
@@ -350,29 +365,25 @@ fn test_nullifier_from_different_epoch() {
     let root = pedersen_hash([cs]);
     // Nullifier computed for epoch=2 (different epoch, same scope)
     let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, 2);
-    main(cs, ns, vhi, vlo, root, nul, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
 // Negative -- nullifier/video binding (unchanged from v1)
 // ============================================================
 
-// A valid proof for one video must not satisfy a different video's nullifier.
-// Proves the nullifier binds to the specific (video_hash_hi, video_hash_lo) pair
-// via the evidence digest commitment, which also includes the algorithm ID.
-// The supplied nullifier is intentionally from a different video (computed under
-// the old derivation) so the assertion must fail.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_nullifier_from_different_video() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x123dc8f99a053fc5f5e93f89b04919746e0ce70ca49b0011617e48dd5f8090ce,
-        EXPECTED_DOMAIN_TAG,
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    // Nullifier computed for a different video hash (vhi+1)
+    let nul = compute_scoped_nullifier(cs, ns, vhi + 1, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
@@ -382,31 +393,26 @@ fn test_nullifier_from_different_video() {
 // Zero domain_tag — never equals the expected Pedersen hash.
 #[test(should_fail_with = "domain tag mismatch")]
 fn test_zero_domain_tag_rejected() {
-    main(
-        12345,
-        67890,
-        22685491128062564230891640495451214097,
-        45370982256125128461783280990902428194,
-        0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9,
-        0x123dc8f99a053fc5f5e93f89b04919746e0ce70ca49b0011617e48dd5f8090ce, // wrong nullifier (old derivation)
-    );
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = pedersen_hash([cs]);
+    let nul = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, nul, scope, ep, 0);
 }
 
 // ============================================================
 // Negative -- evidence digest algorithm binding
 // ============================================================
 
-// A nullifier computed with DIGEST_ALGORITHM_ID=1 (unknown algorithm)
-// must not satisfy the circuit that uses DIGEST_ALGORITHM_ID=0.
-// This prevents an attacker from substituting a different hash algorithm
-// while claiming the proof was computed over the canonical SHA-256 digest.
-//
-// The supplied nullifier is derived with algorithm_id=1 but the circuit
-// commits with algorithm_id=0, so the evidence digest differs.
 fn nullifier_with_algorithm_id(
-    cs: Field, ns: Field, vhi: Field, vlo: Field, algo: Field,
+    cs: Field, ns: Field, vhi: Field, vlo: Field, algo: Field, scope: Field, ep: Field,
 ) -> Field {
-    let evidence = std::hash::pedersen_hash([algo, vhi, vlo]);
+    let scope_hash = std::hash::pedersen_hash([SCOPED_NULLIFIER_V1, scope, ep]);
+    let evidence = std::hash::pedersen_hash([algo, vhi, vlo, scope_hash]);
     std::hash::pedersen_hash([cs, ns, evidence])
 }
 
@@ -416,30 +422,29 @@ fn test_wrong_algorithm_id_in_nullifier() {
     let ns: Field = 67890;
     let vhi: Field = 22685491128062564230891640495451214097;
     let vlo: Field = 45370982256125128461783280990902428194;
-    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo]);
+    let scope: Field = 0;
+    let ep: Field = 0;
     let root = std::hash::pedersen_hash([cs]);
     // nullifier computed with algorithm_id=1 (substituted)
-    let wrong_null = nullifier_with_algorithm_id(cs, ns, vhi, vlo, 1);
-    main(cs, ns, vhi, vlo, root, wrong_null);
+    let wrong_null = nullifier_with_algorithm_id(cs, ns, vhi, vlo, 1, scope, ep);
+    main(cs, ns, vhi, vlo, root, wrong_null, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
 // ============================================================
 // Negative -- evidence digest commitment preimage
 // ============================================================
 
-// The evidence_digest is pedersen_hash([algorithm_id, video_hash_hi, video_hash_lo]).
-// An attacker cannot swap algorithm_id and video_hash_hi because all three are
-// committed as a positional tuple. This test verifies that swapping DOES change
-// the evidence digest and causes a nullifier mismatch.
 #[test(should_fail_with = "nullifier mismatch")]
 fn test_swapped_algorithm_id_and_video_hash_hi() {
     let cs: Field = 12345;
     let ns: Field = 67890;
     let vhi: Field = 22685491128062564230891640495451214097;
     let vlo: Field = 45370982256125128461783280990902428194;
-    // evidence with (vhi, 0, vlo) instead of (0, vhi, vlo) — algorithm id and hi swapped
-    let swapped_evidence = std::hash::pedersen_hash([vhi, DIGEST_ALGORITHM_SHA256, vlo]);
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let scope_hash = std::hash::pedersen_hash([SCOPED_NULLIFIER_V1, scope, ep]);
+    let swapped_evidence = std::hash::pedersen_hash([vhi, DIGEST_ALGORITHM_SHA256, vlo, scope_hash]);
     let root = std::hash::pedersen_hash([cs]);
     let swapped_null = std::hash::pedersen_hash([cs, ns, swapped_evidence]);
-    main(cs, ns, vhi, vlo, root, swapped_null);
+    main(cs, ns, vhi, vlo, root, swapped_null, scope, ep, EXPECTED_DOMAIN_TAG);
 }
