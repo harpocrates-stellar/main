@@ -387,7 +387,11 @@ def create_app() -> Flask:
             )
 
         try:
-            quarantine_context = isolate_upload(video)
+            quarantine_context = isolate_upload(
+                video,
+                filename=video.filename,
+                content_type=video.content_type,
+            )
             with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
                 source_url = workspace.get_url("source.video")
                 output_url = workspace.get_url("embedded.mp4")
@@ -628,7 +632,11 @@ def create_app() -> Flask:
         validate_video_upload(video)
 
         try:
-            quarantine_context = isolate_upload(video)
+            quarantine_context = isolate_upload(
+                video,
+                filename=video.filename,
+                content_type=video.content_type,
+            )
             with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
                 source_url = workspace.get_url("source.video")
                 with quarantined_path.open("rb") as quarantined:

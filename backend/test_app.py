@@ -289,7 +289,7 @@ class AppHardeningTest(unittest.TestCase):
         extract.assert_not_called()
         self.assertEqual(
             response.json["error"],
-            "uploaded file failed signature scan; invalid video format",
+            "uploaded file failed signature scan; invalid or unsupported video format",
         )
 
     def test_embed_rejects_missing_metadata_fields(self) -> None:
