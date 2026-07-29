@@ -81,31 +81,7 @@ fn silent_public_inputs(
 }
 
 fn expected_domain_tag_test(env: &Env) -> BytesN<32> {
-    // Compute SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD)
-    // This mirrors the registry contract's expected_domain_tag() function.
-    let protocol: [u8; 32] = [
-        0x26, 0x1e, 0x9f, 0x6e, 0x39, 0xe3, 0xc1, 0xae,
-        0x6a, 0xca, 0x9f, 0x29, 0xe8, 0x4c, 0x10, 0xd5,
-        0x9c, 0x82, 0xd5, 0xf4, 0xb4, 0x0c, 0x21, 0xc1,
-        0xb7, 0xe3, 0xc0, 0x1a, 0xd5, 0x71, 0xc2, 0x1,
-    ];
-    let version: [u8; 32] = [
-        0x0c, 0x89, 0xef, 0xf4, 0xec, 0x8e, 0x39, 0xa0,
-        0x1e, 0x9f, 0x19, 0x54, 0x7a, 0x0c, 0xc9, 0xdd,
-        0x7f, 0xd2, 0xa9, 0x7d, 0x79, 0xba, 0x4d, 0x94,
-        0xfd, 0x32, 0xe9, 0x7a, 0x1f, 0x5a, 0xc6, 0x23,
-    ];
-    let network: [u8; 32] = [
-        0x2a, 0x2c, 0x3f, 0x48, 0xce, 0x2e, 0x3c, 0x2f,
-        0x1e, 0x6c, 0x89, 0xb1, 0x8d, 0x64, 0xb5, 0xf5,
-        0xc1, 0xf8, 0x8a, 0x59, 0xa0, 0xd9, 0xbc, 0x82,
-        0xcb, 0x61, 0xa1, 0xe8, 0xcb, 0x77, 0xa5, 0xf,
-    ];
-    let mut preimage = Bytes::new(env);
-    preimage.extend_from_array(&protocol);
-    preimage.extend_from_array(&version);
-    preimage.extend_from_array(&network);
-    env.crypto().sha256(&preimage).into()
+    expected_domain_tag(env)
 }
 
 #[test]
@@ -503,7 +479,7 @@ fn non_admin_cannot_cancel_admin_transfer() {
 // ── Domain separation tests (NEW) ────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")]
+#[should_panic(expected = "Error(Contract, #49)")]
 fn rejects_wrong_domain_tag() {
     let env = Env::default();
     env.mock_all_auths();
@@ -531,7 +507,7 @@ fn rejects_wrong_domain_tag() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")]
+#[should_panic(expected = "Error(Contract, #49)")]
 fn rejects_zero_domain_tag() {
     let env = Env::default();
     env.mock_all_auths();

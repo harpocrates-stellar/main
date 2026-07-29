@@ -434,11 +434,35 @@ const SCOPED_NULLIFIER_V1_DOMAIN: [u8; 32] = [
     0x46, 0x49, 0x45, 0x52, 0x5f, 0x56, 0x31, // FIER_V1
 ];
 
-/// Expected length of v1 public inputs (4 × 32 = 128 bytes).
-const SILENT_WITNESS_V1_INPUT_LEN: u32 = 128;
+/// Protocol domain constant ("harpocrates" SHA-256 field element).
+pub const DOMAIN_PROTOCOL_FIELD: [u8; 32] = [
+    0x26, 0x1e, 0x9f, 0x6e, 0x39, 0xe3, 0xc1, 0xae,
+    0x6a, 0xca, 0x9f, 0x29, 0xe8, 0x4c, 0x10, 0xd5,
+    0x9c, 0x82, 0xd5, 0xf4, 0xb4, 0x0c, 0x21, 0xc1,
+    0xb7, 0xe3, 0xc0, 0x1a, 0xd5, 0x71, 0xc2, 0x01,
+];
 
-/// Expected length of v2 scoped public inputs (6 × 32 = 192 bytes).
-const SILENT_WITNESS_V2_INPUT_LEN: u32 = 192;
+/// Circuit version domain constant ("1" SHA-256 field element).
+pub const DOMAIN_VERSION_FIELD: [u8; 32] = [
+    0x0c, 0x89, 0xef, 0xf4, 0xec, 0x8e, 0x39, 0xa0,
+    0x1e, 0x9f, 0x19, 0x54, 0x7a, 0x0c, 0xc9, 0xdd,
+    0x7f, 0xd2, 0xa9, 0x7d, 0x79, 0xba, 0x4d, 0x94,
+    0xfd, 0x32, 0xe9, 0x7a, 0x1f, 0x5a, 0xc6, 0x23,
+];
+
+/// Target network domain constant ("testnet" SHA-256 field element).
+pub const DOMAIN_NETWORK_FIELD: [u8; 32] = [
+    0x2a, 0x2c, 0x3f, 0x48, 0xce, 0x2e, 0x3c, 0x2f,
+    0x1e, 0x6c, 0x89, 0xb1, 0x8d, 0x64, 0xb5, 0xf5,
+    0xc1, 0xf8, 0x8a, 0x59, 0xa0, 0xd9, 0xbc, 0x82,
+    0xcb, 0x61, 0xa1, 0xe8, 0xcb, 0x77, 0xa5, 0x0f,
+];
+
+/// Expected length of v1 public inputs (5 × 32 = 160 bytes, including domain_tag).
+const SILENT_WITNESS_V1_INPUT_LEN: u32 = 160;
+
+/// Expected length of v2 scoped public inputs (7 × 32 = 224 bytes, including domain_tag).
+const SILENT_WITNESS_V2_INPUT_LEN: u32 = 224;
 
 #[contractevent(topics = ["revroot", "set"])]
 pub struct RevocationRootSet {
@@ -673,6 +697,7 @@ pub enum RegistryError {
     DisputeAlreadyResolved = 46,
     SupersessionCycleDetected = 47,
     SupersessionNotFound = 48,
+    DomainTagMismatch = 49,
 }
 
 #[contract]
@@ -1227,6 +1252,9 @@ impl HarpocratesRegistry {
             if parsed.video_hash != video_hash {
                 panic_with_error!(&env, RegistryError::InvalidPublicInputs);
             }
+            if parsed.domain_tag != expected_domain_tag(&env) {
+                panic_with_error!(&env, RegistryError::DomainTagMismatch);
+            }
             require_active_credential_root(&env, &parsed.credential_root);
 
             // Epoch validation: the proof's epoch must match the current epoch for its scope.
@@ -1275,6 +1303,9 @@ impl HarpocratesRegistry {
             let parsed = parse_silent_witness_public_inputs(&env, &public_inputs);
             if parsed.video_hash != video_hash {
                 panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            }
+            if parsed.domain_tag != expected_domain_tag(&env) {
+                panic_with_error!(&env, RegistryError::DomainTagMismatch);
             }
             require_active_credential_root(&env, &parsed.credential_root);
 
@@ -2510,7 +2541,7 @@ struct SilentWitnessInputs {
 /// The off-chain prover populates domain_tag from the Noir helper circuit which uses
 /// Pedersen; the two approaches diverge in algorithm but both bind to the same constants,
 /// ensuring cross-version and cross-network rejection.
-fn expected_domain_tag(env: &Env) -> BytesN<32> {
+pub(crate) fn expected_domain_tag(env: &Env) -> BytesN<32> {
     let mut preimage = Bytes::new(env);
     preimage.extend_from_array(&DOMAIN_PROTOCOL_FIELD);
     preimage.extend_from_array(&DOMAIN_VERSION_FIELD);
@@ -2538,7 +2569,11 @@ fn read_public_input_frame(env: &Env, public_inputs: &Bytes) -> [u8; PUBLIC_INPU
 /// `docs/zk-conformance-vectors.md` for the migration that promotes them to
 /// enforcement on this path.
 fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> SilentWitnessInputs {
-    let frame = read_public_input_frame(env, public_inputs);
+    if public_inputs.len() != SILENT_WITNESS_V1_INPUT_LEN {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+    let mut frame = [0u8; 160];
+    public_inputs.copy_into_slice(&mut frame);
 
     let mut video_hash = [0u8; 32];
     video_hash[..16].copy_from_slice(&frame[16..32]);
@@ -2550,10 +2585,14 @@ fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> Silen
     let mut nullifier = [0u8; 32];
     nullifier.copy_from_slice(&frame[96..128]);
 
+    let mut domain_tag = [0u8; 32];
+    domain_tag.copy_from_slice(&frame[128..160]);
+
     SilentWitnessInputs {
         video_hash: BytesN::from_array(env, &video_hash),
         credential_root: BytesN::from_array(env, &credential_root),
         nullifier: BytesN::from_array(env, &nullifier),
+        domain_tag: BytesN::from_array(env, &domain_tag),
     }
 }
 
@@ -2567,18 +2606,20 @@ struct ScopedSilentWitnessInputs {
     nullifier: BytesN<32>,
     verifier_scope: BytesN<32>,
     epoch: u64,
+    domain_tag: BytesN<32>,
 }
 
-/// Parse the 192-byte public-input blob produced by the v2 scoped
+/// Parse the 224-byte public-input blob produced by the v2 scoped
 /// silent_witness Noir circuit.
 ///
-/// Layout (6 x BN254 field elements, 32 bytes each):
+/// Layout (7 x BN254 field elements, 32 bytes each):
 ///   [  0.. 32)  video_hash_hi + video_hash_lo (packed)
 ///   [ 32.. 64)  video_hash_lo continued
 ///   [ 64.. 96)  credential_root
 ///   [ 96..128)  nullifier
 ///   [128..160)  verifier_scope
 ///   [160..192)  epoch
+///   [192..224)  domain_tag
 fn parse_scoped_silent_witness_public_inputs(
     env: &Env,
     public_inputs: &Bytes,
@@ -2587,7 +2628,7 @@ fn parse_scoped_silent_witness_public_inputs(
         panic_with_error!(env, RegistryError::InvalidPublicInputs);
     }
 
-    let mut bytes = [0u8; 192];
+    let mut bytes = [0u8; 224];
     public_inputs.copy_into_slice(&mut bytes);
 
     // Reassemble video_hash: hi occupies bytes 16..32 of the first field word,
@@ -2610,12 +2651,16 @@ fn parse_scoped_silent_witness_public_inputs(
     epoch_bytes.copy_from_slice(&bytes[160..192]);
     let epoch = bytes_to_u64_be(&epoch_bytes);
 
+    let mut domain_tag = [0u8; 32];
+    domain_tag.copy_from_slice(&bytes[192..224]);
+
     ScopedSilentWitnessInputs {
         video_hash: BytesN::from_array(env, &video_hash),
         credential_root: BytesN::from_array(env, &credential_root),
         nullifier: BytesN::from_array(env, &nullifier),
         verifier_scope: BytesN::from_array(env, &verifier_scope),
         epoch,
+        domain_tag: BytesN::from_array(env, &domain_tag),
     }
 }
 

@@ -23,6 +23,7 @@ Design rules
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
@@ -30,8 +31,11 @@ from typing import Final
 CODEC_ID: Final[str] = "hpx-vi/1"
 
 FIELD_LEN: Final[int] = 32
-FIELD_COUNT: Final[int] = 4
-PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * FIELD_COUNT
+SILENT_WITNESS_FIELD_COUNT: Final[int] = 5
+REVOCATION_FIELD_COUNT: Final[int] = 4
+SILENT_WITNESS_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT  # 160
+REVOCATION_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * REVOCATION_FIELD_COUNT          # 128
+PUBLIC_INPUTS_LEN: Final[int] = SILENT_WITNESS_PUBLIC_INPUTS_LEN  # default (largest schema)
 
 MIN_PROOF_BYTES: Final[int] = 64
 MAX_PROOF_BYTES: Final[int] = 65_536
@@ -50,6 +54,23 @@ BN254_SCALAR_FIELD_MODULUS: Final[int] = (
 #: Byte-for-byte identical to ``REVOCATION_DOMAIN_SEPARATOR`` in the Soroban
 #: registry: seven bytes of BN254 padding followed by 25 ASCII bytes.
 REVOCATION_DOMAIN_SEPARATOR: Final[bytes] = (b"\x00" * 7) + b"HARPOCRATES_REVOCATION_V1"
+
+# Domain constants that must be byte-identical to the Noir circuit globals.
+DOMAIN_PROTOCOL_FIELD: Final[bytes] = bytes.fromhex(
+    "261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201"
+)
+DOMAIN_VERSION_FIELD: Final[bytes] = bytes.fromhex(
+    "0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623"
+)
+DOMAIN_NETWORK_FIELD: Final[bytes] = bytes.fromhex(
+    "2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f"
+)
+
+#: SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD)
+#: Mirrors the Soroban contract's expected_domain_tag() implementation.
+SILENT_WITNESS_DOMAIN_TAG: Final[bytes] = hashlib.sha256(
+    DOMAIN_PROTOCOL_FIELD + DOMAIN_VERSION_FIELD + DOMAIN_NETWORK_FIELD
+).digest()
 
 SCHEMA_SILENT_WITNESS: Final[str] = "silent_witness/v1"
 SCHEMA_REVOCATION_WITNESS: Final[str] = "revocation_witness/v1"
@@ -98,6 +119,7 @@ class SilentWitnessInputs:
     video_hash: bytes
     credential_root: bytes
     nullifier: bytes
+    domain_tag: bytes
 
 
 @dataclass(frozen=True)
@@ -154,12 +176,12 @@ def check_proof_bounds(proof: bytes) -> None:
         raise VerifierInputError(RejectCode.PROOF_OVERSIZE, "proof")
 
 
-def _split_fields(public_inputs: bytes) -> list[bytes]:
-    if len(public_inputs) != PUBLIC_INPUTS_LEN:
+def _split_fields(public_inputs: bytes, expected_len: int, count: int) -> list[bytes]:
+    if len(public_inputs) != expected_len:
         raise VerifierInputError(RejectCode.LENGTH, "public_inputs")
     return [
         public_inputs[index * FIELD_LEN : (index + 1) * FIELD_LEN]
-        for index in range(FIELD_COUNT)
+        for index in range(count)
     ]
 
 
@@ -188,6 +210,7 @@ _SILENT_WITNESS_FIELDS: Final[tuple[str, ...]] = (
     "video_hash_lo",
     "credential_root",
     "nullifier",
+    "domain_tag",
 )
 
 _REVOCATION_FIELDS: Final[tuple[str, ...]] = (
@@ -199,8 +222,18 @@ _REVOCATION_FIELDS: Final[tuple[str, ...]] = (
 
 
 def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
-    """Parse ``silent_witness/v1`` public inputs in canonical check order."""
-    fields = _split_fields(public_inputs)
+    """Parse ``silent_witness/v1`` public inputs in canonical check order.
+
+    Layout (5 × 32 bytes = 160 bytes):
+      [0] video_hash_hi  — 128-bit half (low 16 bytes only)
+      [1] video_hash_lo  — 128-bit half (low 16 bytes only)
+      [2] credential_root
+      [3] nullifier
+      [4] domain_tag     — SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD)
+    """
+    fields = _split_fields(
+        public_inputs, SILENT_WITNESS_PUBLIC_INPUTS_LEN, SILENT_WITNESS_FIELD_COUNT
+    )
 
     high = _require_half_padding(fields[0], "video_hash_hi")
     low = _require_half_padding(fields[1], "video_hash_lo")
@@ -209,17 +242,24 @@ def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
 
     _require_non_zero(fields[2], "credential_root")
     _require_non_zero(fields[3], "nullifier")
+    _require_non_zero(fields[4], "domain_tag")
+
+    if fields[4] != SILENT_WITNESS_DOMAIN_TAG:
+        raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_tag")
 
     return SilentWitnessInputs(
         video_hash=high + low,
         credential_root=fields[2],
         nullifier=fields[3],
+        domain_tag=fields[4],
     )
 
 
 def parse_revocation_witness_inputs(public_inputs: bytes) -> RevocationWitnessInputs:
     """Parse ``revocation_witness/v1`` public inputs in canonical check order."""
-    fields = _split_fields(public_inputs)
+    fields = _split_fields(
+        public_inputs, REVOCATION_PUBLIC_INPUTS_LEN, REVOCATION_FIELD_COUNT
+    )
 
     _require_canonical(fields, _REVOCATION_FIELDS)
 
