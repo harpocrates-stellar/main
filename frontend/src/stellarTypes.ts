@@ -31,9 +31,61 @@ export type NormalizedRegisterProofInput = {
   silentWitness?: SilentWitnessArtifacts
 }
 
+export type TxState = 'idle' | 'submitting' | 'awaiting_confirmation' | 'confirmed' | 'failed' | 'timeout'
+
+export type TxStatusLabel =
+  | 'Not submitted'
+  | 'Pending'
+  | 'Confirmed'
+  | 'Failed'
+  | 'Rejected by wallet'
+  | 'Timed out'
+
+export function describeTxState(state: TxState): TxStatusLabel {
+  switch (state) {
+    case 'idle':
+      return 'Not submitted'
+    case 'submitting':
+      return 'Pending'
+    case 'awaiting_confirmation':
+      return 'Pending'
+    case 'confirmed':
+      return 'Confirmed'
+    case 'failed':
+      return 'Failed'
+    case 'timeout':
+      return 'Timed out'
+  }
+}
+
 export type RegisterProofResult = {
   hash: string
   status: string
+  txState: TxState
+}
+
+export type VerifierRotationInput = {
+  contractId: string
+  publicKey: string
+  verifier: string
+  activationLedger: number | bigint
+  overlapWindow: number | bigint
+  rollbackWindow: number | bigint
+}
+
+export type VerifierRotationActionInput = {
+  contractId: string
+  publicKey: string
+}
+
+export type ChainVerifierState = {
+  activeVerifier: string | null
+  pendingVerifier: string | null
+  previousVerifier: string | null
+  activationLedger: string
+  overlapWindow: string
+  rollbackWindow: string
+  rollbackWindowEnd: string
 }
 
 export type ChainProofRecord = {
@@ -51,3 +103,17 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'set_scope_epoch'
+  | 'get_scope_epoch'
+
+export type ScopedProofScope = {
+  /** Field element derived from the scope string (SHA-256 mod BN254). */
+  scopeField: string
+  /** Human-readable scope name (for manifest only, not sent on-chain). */
+  scopeName: string
+}
+
+export type ScopedProofEpoch = {
+  /** Epoch number matching the on-chain scope epoch. */
+  epoch: number
+}

@@ -19,4 +19,32 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/safeStorage.ts', 'src/credentialVault.ts', 'src/transactionStateMachine.ts', 'src/**/*.test.{ts,tsx}', 'src/test/**'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "MemberExpression[property.name='localStorage']",
+          message: 'Use safeLocalStorage from safeStorage.ts.',
+        },
+        {
+          selector: "MemberExpression[property.name='sessionStorage']",
+          message: 'Use safeSessionStorage from safeStorage.ts.',
+        },
+      ],
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'localStorage',
+          message: 'Use safeLocalStorage from safeStorage.ts.',
+        },
+        {
+          name: 'sessionStorage',
+          message: 'Use safeSessionStorage from safeStorage.ts.',
+        },
+      ],
+    },
+  },
 ])
