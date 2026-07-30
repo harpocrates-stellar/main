@@ -20,6 +20,19 @@ export type ProofManifest = {
   epoch: number
   /** Human-readable scope name (optional, for display only). */
   scopeName?: string
+  /** Selective disclosure proof (optional, added by holder when proving predicates). */
+  selectiveDisclosure?: SelectiveDisclosureManifest
+}
+
+/**
+ * Selective disclosure manifest: embedded in a ProofManifest when the holder
+ * proves bounded predicates over issuer-certified attributes.
+ */
+export type SelectiveDisclosureManifest = {
+  schemaHash: string
+  publicInputs: string
+  predicateCommitment: string
+  circuitVersion: number
 }
 
 export type ProofManifestInput = {
@@ -38,6 +51,8 @@ export type ProofManifestInput = {
   epoch?: number
   /** Human-readable scope name (optional, for display only). */
   scopeName?: string
+  /** Selective disclosure proof (optional, added by holder when proving predicates). */
+  selectiveDisclosure?: SelectiveDisclosureManifest
 }
 
 /**
@@ -67,6 +82,10 @@ export function createProofManifest(input: ProofManifestInput): ProofManifest {
 
   if (input.scopeName) {
     manifest.scopeName = input.scopeName
+  }
+
+  if (input.selectiveDisclosure) {
+    manifest.selectiveDisclosure = input.selectiveDisclosure
   }
 
   return manifest

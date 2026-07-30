@@ -237,4 +237,18 @@ describe('manifest round-trip', () => {
     expect(parsed.epoch).toBe(42)
     expect(parsed.scopeName).toBe('round-trip-test')
   })
+
+  it('supports optional selectiveDisclosure field', () => {
+    const manifest: ProofManifest = {
+      ...createProofManifest(VALID_INPUT),
+      selectiveDisclosure: {
+        schemaHash: 'aa'.repeat(32),
+        publicInputs: 'bb'.repeat(352),
+        predicateCommitment: 'cc'.repeat(32),
+        circuitVersion: 1,
+      },
+    }
+    expect(manifest.selectiveDisclosure?.schemaHash).toBe('aa'.repeat(32))
+    expect(manifest.selectiveDisclosure?.circuitVersion).toBe(1)
+  })
 })
