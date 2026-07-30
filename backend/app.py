@@ -48,6 +48,7 @@ from idempotency import idempotent
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness, generate_aggregated_proof
 from envelope import validate_v2 as validate_embed_metadata
+from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
 from readiness import ReadinessManager
@@ -1265,6 +1266,43 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"ok": True, "proof": proof})
+
+    # -------------------------------------------------------------------
+    # Schema discovery and selective disclosure
+    # -------------------------------------------------------------------
+
+    @app.get("/api/schemas")
+    def list_schemas():
+        schemas = discover_schemas()
+        return jsonify({"ok": True, "schemas": schemas})
+
+    @app.get("/api/schemas/<schema_hash>")
+    def get_schema(schema_hash: str):
+        if not is_hex_32(schema_hash):
+            return jsonify({"error": "schemaHash must be a 32-byte hex string"}), 400
+        schema = resolve_schema(schema_hash)
+        if schema is None:
+            return jsonify({"error": "schema not found"}), 404
+        return jsonify({"ok": True, "schema": schema})
+
+    @app.post("/api/verify/selective-disclosure")
+    def verify_selective_disclosure():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "JSON body is required"}), 400
+
+        err = validate_selective_disclosure_input(payload)
+        if err is not None:
+            return jsonify({"error": err}), 400
+
+        return jsonify({
+            "ok": True,
+            "message": "Selective disclosure proof submission accepted.",
+            "note": "On-chain verification must be performed via verify_selective_disclosure on the registry contract.",
+        })
 
     return app
 

@@ -400,6 +400,42 @@ pub struct CredentialRootRevoked {
     pub credential_root: BytesN<32>,
 }
 
+/// Schema record for issuer-certified attribute schemas.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaRecord {
+    pub schema_hash: BytesN<32>,
+    pub issuer_namespace: BytesN<32>,
+    pub version: u32,
+    pub active: bool,
+    pub attribute_count: u32,
+    pub created_at: u64,
+}
+
+#[contractevent(topics = ["schema", "add"])]
+pub struct SchemaAdded {
+    #[topic]
+    pub schema_hash: BytesN<32>,
+    pub issuer_namespace: BytesN<32>,
+    pub version: u32,
+    pub attribute_count: u32,
+}
+
+#[contractevent(topics = ["schema", "deprecate"])]
+pub struct SchemaDeprecated {
+    #[topic]
+    pub schema_hash: BytesN<32>,
+}
+
+#[contractevent(topics = ["seldisc", "verify"])]
+pub struct SelectiveDisclosureVerified {
+    #[topic]
+    pub schema_hash: BytesN<32>,
+    pub credential_root: BytesN<32>,
+    pub nullifier: BytesN<32>,
+    pub evidence_digest: BytesN<32>,
+}
+
 /// Domain separator that binds non-revocation proofs to the Harpocrates
 /// revocation witness circuit version.  Both the Noir circuit and this
 /// contract use the same constant.  Changing the circuit requires updating
@@ -631,6 +667,8 @@ pub enum DataKey {
     Proposal(u32),
     /// Minimum timelock delay in seconds (#86).
     TimelockMinDelay,
+    /// Schema definition by schema hash.
+    Schema(BytesN<32>),
 }
 
 #[contracterror]
@@ -698,6 +736,9 @@ pub enum RegistryError {
     SupersessionCycleDetected = 47,
     SupersessionNotFound = 48,
     DomainTagMismatch = 49,
+    UnknownSchema = 50,
+    InactiveSchema = 51,
+    SchemaVersionMismatch = 52,
 }
 
 #[contract]
@@ -2292,6 +2333,122 @@ impl HarpocratesRegistry {
             Err(code) => code.as_code(),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Schema management (issuer-certified attribute schemas)
+    // -----------------------------------------------------------------------
+
+    pub fn add_schema(
+        env: Env,
+        admin: Address,
+        schema_hash: BytesN<32>,
+        issuer_namespace: BytesN<32>,
+        version: u32,
+        attribute_count: u32,
+    ) {
+        require_admin(&env, &admin);
+
+        if env.storage().persistent().has(&DataKey::Schema(schema_hash.clone())) {
+            panic_with_error!(&env, RegistryError::DuplicateProof);
+        }
+
+        if attribute_count == 0 || attribute_count > 16 {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        let created_at = env.ledger().timestamp();
+        env.storage().persistent().set(
+            &DataKey::Schema(schema_hash.clone()),
+            &SchemaRecord {
+                schema_hash: schema_hash.clone(),
+                issuer_namespace: issuer_namespace.clone(),
+                version,
+                active: true,
+                attribute_count,
+                created_at,
+            },
+        );
+        SchemaAdded {
+            schema_hash,
+            issuer_namespace,
+            version,
+            attribute_count,
+        }
+        .publish(&env);
+    }
+
+    pub fn deprecate_schema(env: Env, admin: Address, schema_hash: BytesN<32>) {
+        require_admin(&env, &admin);
+
+        let mut record = get_schema_record(&env, &schema_hash);
+        record.active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Schema(schema_hash.clone()), &record);
+        SchemaDeprecated { schema_hash }.publish(&env);
+    }
+
+    pub fn get_schema(env: Env, schema_hash: BytesN<32>) -> Option<SchemaRecord> {
+        env.storage().persistent().get(&DataKey::Schema(schema_hash))
+    }
+
+    // -----------------------------------------------------------------------
+    // Selective disclosure verification
+    // -----------------------------------------------------------------------
+
+    pub fn verify_selective_disclosure(
+        env: Env,
+        public_inputs: Bytes,
+        proof: Bytes,
+    ) {
+        let parsed = parse_selective_disclosure_inputs(&env, &public_inputs);
+
+        if parsed.circuit_version != CURRENT_SELECTIVE_DISCLOSURE_VERSION as u32 {
+            panic_with_error!(&env, RegistryError::SchemaVersionMismatch);
+        }
+
+        let schema = get_schema_record(&env, &parsed.schema_hash);
+        if !schema.active {
+            panic_with_error!(&env, RegistryError::InactiveSchema);
+        }
+
+        if schema.version != parsed.schema_version {
+            panic_with_error!(&env, RegistryError::SchemaVersionMismatch);
+        }
+
+        if schema.issuer_namespace != parsed.issuer_namespace {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        require_active_credential_root(&env, &parsed.credential_root);
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Nullifier(parsed.nullifier.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DuplicateNullifier);
+        }
+
+        let verifier: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Verifier)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
+        verify_external_proof(&env, &verifier, public_inputs, proof);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Nullifier(parsed.nullifier.clone()), &true);
+
+        SelectiveDisclosureVerified {
+            schema_hash: parsed.schema_hash,
+            credential_root: parsed.credential_root,
+            nullifier: parsed.nullifier,
+            evidence_digest: parsed.evidence_digest,
+        }
+        .publish(&env);
+    }
 }
 
 
@@ -2986,6 +3143,86 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Selective disclosure helpers
+// ---------------------------------------------------------------------------
+
+/// Current version of the selective disclosure circuit.
+const CURRENT_SELECTIVE_DISCLOSURE_VERSION: u32 = 1;
+
+fn get_schema_record(env: &Env, schema_hash: &BytesN<32>) -> SchemaRecord {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Schema(schema_hash.clone()))
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownSchema))
+}
+
+struct SelectiveDisclosureInputs {
+    schema_hash: BytesN<32>,
+    issuer_namespace: BytesN<32>,
+    schema_version: u32,
+    credential_root: BytesN<32>,
+    nullifier: BytesN<32>,
+    video_hash_hi: BytesN<32>,
+    video_hash_lo: BytesN<32>,
+    verifier_digest: BytesN<32>,
+    circuit_version: u32,
+    evidence_digest: BytesN<32>,
+    predicate_commitment: BytesN<32>,
+}
+
+fn parse_selective_disclosure_inputs(
+    env: &Env,
+    public_inputs: &Bytes,
+) -> SelectiveDisclosureInputs {
+    if public_inputs.len() != 352 {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+
+    let mut bytes = [0u8; 352];
+    public_inputs.copy_into_slice(&mut bytes);
+
+    let schema_hash = BytesN::from_array(env, &read_32(&bytes[0..32]));
+    let issuer_namespace = BytesN::from_array(env, &read_32(&bytes[32..64]));
+    let schema_version = u32_from_be_bytes(&read_32(&bytes[64..96]));
+    let credential_root = BytesN::from_array(env, &read_32(&bytes[96..128]));
+    let nullifier = BytesN::from_array(env, &read_32(&bytes[128..160]));
+    let video_hash_hi = BytesN::from_array(env, &read_32(&bytes[160..192]));
+    let video_hash_lo = BytesN::from_array(env, &read_32(&bytes[192..224]));
+    let verifier_digest = BytesN::from_array(env, &read_32(&bytes[224..256]));
+    let circuit_version = u32_from_be_bytes(&read_32(&bytes[256..288]));
+    let evidence_digest = BytesN::from_array(env, &read_32(&bytes[288..320]));
+    let predicate_commitment = BytesN::from_array(env, &read_32(&bytes[320..352]));
+
+    SelectiveDisclosureInputs {
+        schema_hash,
+        issuer_namespace,
+        schema_version,
+        credential_root,
+        nullifier,
+        video_hash_hi,
+        video_hash_lo,
+        verifier_digest,
+        circuit_version,
+        evidence_digest,
+        predicate_commitment,
+    }
+}
+
+fn array_from_slice<const N: usize>(slice: &[u8]) -> [u8; N] {
+    let mut arr = [0u8; N];
+    arr.copy_from_slice(slice);
+    arr
+}
+
+fn read_32(slice: &[u8]) -> [u8; 32] {
+    array_from_slice(slice)
+}
+
+fn u32_from_be_bytes(bytes: &[u8; 32]) -> u32 {
+    u32::from_be_bytes([bytes[28], bytes[29], bytes[30], bytes[31]])
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -3014,3 +3251,7 @@ mod test_state_machine;
 mod test_dispute;
 #[cfg(test)]
 pub mod test_timelock;
+#[cfg(test)]
+mod test_schema;
+#[cfg(test)]
+mod test_selective_disclosure;
