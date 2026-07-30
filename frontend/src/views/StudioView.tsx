@@ -5,6 +5,7 @@ import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { shortHash } from '../utils'
+import { useA11yStage } from '../hooks/useA11y'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 
@@ -37,14 +38,15 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
 
-  const isBusy = stage === 'hashing' || stage === 'embedding' || stage === 'proving'
+  const { statusLabel, isBusy } = useA11yStage(stage)
 
   return (
-    <section className="workspace app-page" id="studio">
+    <section className="workspace app-page" id="studio" aria-busy={isBusy || undefined} aria-label="Evidence Studio workspace">
       <div className="studio">
         <header className="page-header">
-          <h2>Evidence Studio</h2>
-          <p>{message}</p>
+          <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
+          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
+          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
         </header>
 
         {networkMismatch ? (
@@ -70,6 +72,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             return (
               <button
                 className={tier.id === selectedTier ? 'tier-tab active' : 'tier-tab'}
+                aria-pressed={tier.id === selectedTier}
                 key={tier.id}
                 type="button"
                 onClick={() => setSelectedTier(tier.id)}
@@ -104,7 +107,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
-        <dl className="data-list">
+        <dl className="data-list" aria-label="Evidence data">
           <div>
             <dt>Source Hash</dt>
             <dd>{shortHash(proof?.sourceHash ?? '')}</dd>
@@ -148,6 +151,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             className="download-link"
             href={processedVideoUrl}
             download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
+            aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
           >
             Download embedded evidence video
           </a>
@@ -157,6 +161,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           className="primary-action"
           type="button"
           disabled={!proof || !!networkMismatch || isBusy}
+          aria-busy={isBusy || undefined}
           onClick={() => void registerProof(wallet)}
         >
           {isBusy ? (

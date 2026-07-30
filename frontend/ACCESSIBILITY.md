@@ -86,16 +86,16 @@ Order matters: the Stellar regex runs first so that base32 strings containing he
 
 ### Live regions in `App.tsx`
 
-Two hidden live regions are rendered unconditionally near the top of `<main>`:
+Two hidden live regions are rendered unconditionally before `<main>`:
 
 ```html
-<div role="status" aria-live="polite"   aria-atomic="true" class="sr-only" id="live-status">{liveMessage}</div>
-<div role="alert"  aria-live="assertive" aria-atomic="true" class="sr-only" id="live-alert">{alertMessage}</div>
+<div role="status" aria-live="polite"   aria-atomic="true" class="sr-only">{liveMessage}</div>
+<div role="alert"  aria-live="assertive" aria-atomic="true" class="sr-only">{alertMessage}</div>
 ```
 
-- Progress messages (hashing, embedding, proving, ready) → `announceLive()` → polite region  
-- Error messages (network, steganography, registration, wallet) → `setAlertMessage()` → assertive region  
-- The visible `#studio-status` paragraph also carries `aria-live="polite"` as a secondary announcement path
+- Progress messages (hashing, embedding, proving, ready) → `liveStatus.announce()` → polite region  
+- Error messages (network, steganography, registration, wallet) → `liveAlert.announce()` → assertive region  
+- The visible status `<p>` in the studio header also carries `role="status" aria-live="polite" aria-atomic="true"` as a secondary announcement path
 
 ---
 
@@ -235,11 +235,49 @@ No data migrations, localStorage schema changes, or contract state changes are i
 
 ---
 
+## On-Screen Status
+
+Each stage has two announcement paths:
+
+1. **Visible status paragraph** (`<p role="status" aria-live="polite" aria-atomic="true">`) — shown in the page header, readable by all users.
+2. **Hidden polite region** (`<div role="status" aria-live="polite" aria-atomic="true" class="sr-only">`) — duplicated in the `statusLabel` from `useA11yStage` for screen reader announcement.
+
+This dual-path ensures sighted users see the message while AT hears a distinct, stage-specific label.
+
+## Focus Management
+
+On view transition (`landing → studio`, `landing → verify`), focus moves to the view's `<h2>` heading after a 50ms `setTimeout` delay (allows the DOM to settle):
+
+- Studio heading: `<h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>`
+- Verify heading: `<h2 id="verify-heading" tabIndex={-1}>Verify Artifact</h2>`
+
+Focus is not moved on every stage transition — only on deliberate view changes.
+
+## aria-busy
+
+The `<section id="studio">` has `aria-busy` set to `true` during processing stages (`hashing`, `embedding`, `proving`). The "Register proof" button also carries `aria-busy` during these stages, and its CSS cursor becomes `wait` via `.primary-action[aria-busy="true"]`.
+
+## aria-pressed on Tier Tabs
+
+Each tier tab button has `aria-pressed` reflecting the selected state. This replaces a purely visual active class with a proper accessibility state.
+
+## aria-label on Data List
+
+The evidence data `<dl>` has `aria-label="Evidence data"` so screen readers can identify the list.
+
+## aria-current on Nav Buttons
+
+Each nav button (`Evidence`, `Verify`, `Batch Workspace`) has `aria-current="page"` when its view is active.
+
+---
+
 ## Files Changed
 
 | File | Change |
 |------|--------|
-| `src/hooks/useA11y.ts` | New: four accessibility hooks with privacy-safe sanitiser |
-| `src/hooks/useA11y.test.ts` | New: 27 unit tests for hook logic and negative paths |
-| `src/App.tsx` | Updated: full WCAG 2.2 AA ARIA + focus management implementation |
-| `src/App.css` | Updated: skip-link, sr-only, focus-visible rings, touch targets, contrast, reduced-motion |
+| `src/hooks/useA11y.ts` | Existing: four accessibility hooks with privacy-safe sanitiser |
+| `src/hooks/useA11y.test.ts` | Existing: 27 unit tests for hook logic and negative paths |
+| `src/App.tsx` | Updated: aria-live regions, skip link, focus management, aria-current on nav, aria-label on nav |
+| `src/App.css` | Existing: skip-link, sr-only, focus-visible rings, touch targets, contrast, reduced-motion |
+| `src/views/StudioView.tsx` | Updated: aria-busy on section, role="status" on status p, aria-pressed on tier tabs, aria-label on data-list, aria-label on studio section, aria-label on download link, visible sr-only statusLabel region |
+| `src/App.test.tsx` | Updated: 8 new integration tests for accessibility features |
