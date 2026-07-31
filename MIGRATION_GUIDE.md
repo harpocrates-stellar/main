@@ -235,7 +235,17 @@ The verifier contract address is stored on-chain and used to verify proofs. A pr
 
 ---
 
-## 8. References
+## 8. Redaction-lineage prototype compatibility note
+
+`redaction_witness/v1` is additive and intentionally disabled by default. It
+does not change silent-witness, revocation-witness, registry storage, or live
+Soroban verification. Before enabling it, publish pinned circuit artifacts,
+extend the shared hpx-vi/1 corpus in all three codec implementations, collect
+calibrated benchmark data, and deploy a verifier bound to the new verification
+key. Rollback is disabling the new route/artifact; existing lineage records
+remain immutable.
+
+## 9. References
 
 - [Nullifier Derivation Spec](NULLIFIER_DERIVATION_SPEC.md)
 - [Threat Model](THREAT_MODEL.md)

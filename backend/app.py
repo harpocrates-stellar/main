@@ -56,6 +56,13 @@ from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload
 from strkey import validate_source_address, validate_contract_id
+from lineage import (
+    LineageValidationError,
+    canonical_lineage_manifest,
+    lineage_manifest_digest,
+    validate_lineage_graph,
+    validate_redaction_witness_binding,
+)
 
 # ---------------------------------------------------------------------------
 # Bounded aggregation constants
@@ -766,6 +773,8 @@ def create_app() -> Flask:
                 output_digest=output_digest,
                 get_lineage_fn=find_lineage_by_output_digest,
             )
+            if "redactionWitness" in payload:
+                validate_redaction_witness_binding(payload, payload["redactionWitness"])
         except LineageValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -780,6 +789,7 @@ def create_app() -> Flask:
             manifest=json.loads(manifest_canonical),
             actor_address=actor_address,
             parent_proof_ids=[str(parent) for parent in parent_ids],
+            redaction_witness=payload.get("redactionWitness"),
         )
         
         if not db_event:

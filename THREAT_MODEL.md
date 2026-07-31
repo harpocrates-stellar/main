@@ -42,6 +42,7 @@ and portable proof metadata under one of three identity tiers:
 | Tier | Name | Identity model |
 |------|------|----------------|
 | 1 | Silent Witness | Anonymous ZK credential — Noir UltraHonk on BN254 |
+| 1 | Redaction Lineage (prototype) | Commitment-level proof that an allowed derivative operation was applied to registered evidence without exposing removed content. |
 | 2 | Consistent Source | Pseudonymous Stellar wallet address |
 | 3 | Public Seal | Verified institutional issuer address |
 
@@ -822,6 +823,22 @@ The following are explicitly outside the scope of this threat model:
 
 ---
 
+## 9.1 Redaction-lineage prototype delta
+
+The `redaction_lineage` prototype cryptographically binds an output commitment
+to an already registered parent commitment, an allowed operation, ordered
+committed chunks, a private parameters digest, and a claim-specific replay
+binding. It prevents reuse for reordered chunks, a substituted crop source,
+an altered visible slot, a different parent, or a different claim.
+
+It does not prove that a redaction was appropriate, that a decoder rendered
+pixels faithfully, that removed content is legally or ethically safe to hide,
+or that a private operation parameter has a real-world meaning. Unsupported
+transformations include arbitrary geometry, colour correction, interpolation,
+generative inpainting, and unbounded multi-parent composition. Private chunks,
+descriptors, parameters, and blinding factors must never be emitted in errors,
+telemetry, or proof-verification logs.
+
 ## 10. Review and Update Cadence
 
 | Trigger | Action |
@@ -841,3 +858,4 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
+| 1.2 | 2026-07-30 | Add the redaction-lineage prototype threat-model delta. |

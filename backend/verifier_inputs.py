@@ -33,8 +33,11 @@ CODEC_ID: Final[str] = "hpx-vi/1"
 FIELD_LEN: Final[int] = 32
 SILENT_WITNESS_FIELD_COUNT: Final[int] = 5
 REVOCATION_FIELD_COUNT: Final[int] = 4
+REDACTION_FIELD_COUNT: Final[int] = 5
+
 SILENT_WITNESS_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT  # 160
 REVOCATION_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * REVOCATION_FIELD_COUNT          # 128
+REDACTION_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * REDACTION_FIELD_COUNT            # 160
 PUBLIC_INPUTS_LEN: Final[int] = SILENT_WITNESS_PUBLIC_INPUTS_LEN  # default (largest schema)
 
 MIN_PROOF_BYTES: Final[int] = 64
@@ -55,6 +58,10 @@ BN254_SCALAR_FIELD_MODULUS: Final[int] = (
 #: registry: seven bytes of BN254 padding followed by 25 ASCII bytes.
 REVOCATION_DOMAIN_SEPARATOR: Final[bytes] = (b"\x00" * 7) + b"HARPOCRATES_REVOCATION_V1"
 
+#: Byte-for-byte identical to Noir domain tag in redaction lineage circuit:
+#: eight bytes of BN254 padding followed by 24 ASCII bytes.
+REDACTION_WITNESS_DOMAIN_TAG: Final[bytes] = (b"\x00" * 8) + b"HARPOCRATES_REDACTION_V1"
+
 # Domain constants that must be byte-identical to the Noir circuit globals.
 DOMAIN_PROTOCOL_FIELD: Final[bytes] = bytes.fromhex(
     "261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201"
@@ -74,6 +81,7 @@ SILENT_WITNESS_DOMAIN_TAG: Final[bytes] = hashlib.sha256(
 
 SCHEMA_SILENT_WITNESS: Final[str] = "silent_witness/v1"
 SCHEMA_REVOCATION_WITNESS: Final[str] = "revocation_witness/v1"
+SCHEMA_REDACTION_WITNESS: Final[str] = "redaction_witness/v1"
 
 _HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")
 
@@ -130,6 +138,17 @@ class RevocationWitnessInputs:
     nullifier: bytes
     domain_separator: bytes
     credential_root: bytes
+
+
+@dataclass(frozen=True)
+class RedactionWitnessInputs:
+    """Parsed ``redaction_witness/v1`` public inputs."""
+
+    parent_commitment: bytes
+    output_commitment: bytes
+    operation_type: bytes
+    replay_binding: bytes
+    domain_tag: bytes
 
 
 # ── Primitives ──────────────────────────────────────────────────────────────
@@ -220,17 +239,17 @@ _REVOCATION_FIELDS: Final[tuple[str, ...]] = (
     "credential_root",
 )
 
+_REDACTION_FIELDS: Final[tuple[str, ...]] = (
+    "parent_commitment",
+    "output_commitment",
+    "operation_type",
+    "replay_binding",
+    "domain_tag",
+)
+
 
 def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
-    """Parse ``silent_witness/v1`` public inputs in canonical check order.
-
-    Layout (5 × 32 bytes = 160 bytes):
-      [0] video_hash_hi  — 128-bit half (low 16 bytes only)
-      [1] video_hash_lo  — 128-bit half (low 16 bytes only)
-      [2] credential_root
-      [3] nullifier
-      [4] domain_tag     — SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD)
-    """
+    """Parse ``silent_witness/v1`` public inputs in canonical check order."""
     fields = _split_fields(
         public_inputs, SILENT_WITNESS_PUBLIC_INPUTS_LEN, SILENT_WITNESS_FIELD_COUNT
     )
@@ -278,14 +297,41 @@ def parse_revocation_witness_inputs(public_inputs: bytes) -> RevocationWitnessIn
     )
 
 
+def parse_redaction_witness_inputs(public_inputs: bytes) -> RedactionWitnessInputs:
+    """Parse ``redaction_witness/v1`` public inputs in canonical check order."""
+    fields = _split_fields(
+        public_inputs, REDACTION_PUBLIC_INPUTS_LEN, REDACTION_FIELD_COUNT
+    )
+
+    _require_canonical(fields, _REDACTION_FIELDS)
+
+    _require_non_zero(fields[0], "parent_commitment")
+    _require_non_zero(fields[1], "output_commitment")
+    _require_non_zero(fields[2], "operation_type")
+    _require_non_zero(fields[3], "replay_binding")
+
+    if fields[4] != REDACTION_WITNESS_DOMAIN_TAG:
+        raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_tag")
+
+    return RedactionWitnessInputs(
+        parent_commitment=fields[0],
+        output_commitment=fields[1],
+        operation_type=fields[2],
+        replay_binding=fields[3],
+        domain_tag=fields[4],
+    )
+
+
 def parse_public_inputs(
     schema: str, public_inputs: bytes
-) -> SilentWitnessInputs | RevocationWitnessInputs:
+) -> SilentWitnessInputs | RevocationWitnessInputs | RedactionWitnessInputs:
     """Dispatch to the parser for ``schema``."""
     if schema == SCHEMA_SILENT_WITNESS:
         return parse_silent_witness_inputs(public_inputs)
     if schema == SCHEMA_REVOCATION_WITNESS:
         return parse_revocation_witness_inputs(public_inputs)
+    if schema == SCHEMA_REDACTION_WITNESS:
+        return parse_redaction_witness_inputs(public_inputs)
     raise VerifierInputError(RejectCode.UNKNOWN_SCHEMA, "schema")
 
 

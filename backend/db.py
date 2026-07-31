@@ -110,6 +110,7 @@ def insert_lineage_event(
     manifest: dict[str, Any],
     actor_address: str,
     parent_proof_ids: list[str],
+    redaction_witness: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not database_url():
         return None
@@ -118,12 +119,12 @@ def insert_lineage_event(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                insert into lineage_events (manifest_digest, manifest, actor_address, parent_proof_ids)
-                values (%s, %s, %s, %s)
+                insert into lineage_events (manifest_digest, manifest, actor_address, parent_proof_ids, redaction_witness)
+                values (%s, %s, %s, %s, %s)
                 on conflict (manifest_digest) do nothing
                 returning id, manifest_digest, created_at;
                 """,
-                (manifest_digest, Jsonb(manifest), actor_address, parent_proof_ids),
+                (manifest_digest, Jsonb(manifest), actor_address, parent_proof_ids, Jsonb(redaction_witness) if redaction_witness else None),
             )
             row = cursor.fetchone()
         connection.commit()
@@ -139,7 +140,7 @@ def list_lineage_events(limit: int = 25) -> list[dict[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, redaction_witness, created_at
                 from lineage_events
                 order by id desc
                 limit %s;
@@ -165,7 +166,7 @@ def find_lineage_by_output_digest(output_digest: str) -> dict[str, Any] | None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, redaction_witness, created_at
                 from lineage_events
                 where (manifest ->> 'outputDigest') = %s
                 limit 1;
@@ -194,7 +195,7 @@ def find_lineage_by_actor(actor_address: str, limit: int = 25) -> list[dict[str,
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, redaction_witness, created_at
                 from lineage_events
                 where actor_address = %s
                 order by id desc

@@ -120,6 +120,7 @@ fn schema_id(schema: &str) -> u32 {
     match schema {
         "silent_witness/v1" => SCHEMA_ID_SILENT_WITNESS,
         "revocation_witness/v1" => SCHEMA_ID_REVOCATION_WITNESS,
+        "redaction_witness/v1" => SCHEMA_ID_REDACTION_WITNESS,
         other => panic!("corpus references unknown schema: {}", other),
     }
 }
@@ -200,8 +201,10 @@ fn codec_agrees_with_every_corpus_case() {
 
         let expected_domain = if case.schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
             &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
-        } else {
+        } else if case.schema == verifier_inputs::SCHEMA_REVOCATION_WITNESS {
             &REVOCATION_DOMAIN_SEPARATOR
+        } else {
+            &verifier_inputs::REDACTION_WITNESS_DOMAIN_TAG_BE
         };
 
         let actual = match verifier_inputs::classify(

@@ -265,6 +265,13 @@ MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    Migration(
+        id=10,
+        name="store redaction lineage proof envelopes",
+        sql="""
+        ALTER TABLE lineage_events ADD COLUMN IF NOT EXISTS redaction_witness JSONB;
+        """,
+    ),
 ]
 
 
@@ -339,6 +346,7 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "manifest", "type": "jsonb"},
         {"column": "actor_address", "type": "text"},
         {"column": "parent_proof_ids", "type": "text"},
+        {"column": "redaction_witness", "type": "jsonb"},
         {"column": "created_at", "type": "timestamp with time zone"},
     ],
     "blobs": [

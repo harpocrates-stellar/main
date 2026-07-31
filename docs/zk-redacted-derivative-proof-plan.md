@@ -2,12 +2,15 @@
 
 ## Status
 
-Planning scaffold for: `feat(zk): prove that a redacted derivative originates
-from registered evidence`. No circuit, contract, backend, or frontend code
-has been written yet. This document exists to scope the work before
-implementation begins in `zk/noir/redaction_lineage` and its integration
-points, following the pattern established by `silent_witness` and
-`selective_disclosure`.
+Planning and implementation status for: `feat(zk): prove that a redacted
+derivative originates from registered evidence`.
+
+The bounded Noir prototype in `zk/noir/redaction_lineage` and the
+`redaction_witness/v1` public-input codec in the backend, browser, and
+registry are implemented. The shared conformance corpus includes the new
+frame. Backend submission binding, browser proof generation, and deployment
+of a Soroban verifier remain deliberately deferred until a canonical media
+semantics and artifact-verification design is approved.
 
 ## Relationship to existing lineage work
 
@@ -20,7 +23,7 @@ feature adds that missing cryptographic binding, reusing the manifest shape
 and graph-validation rules in `validate_lineage_graph()` rather than
 introducing a parallel lineage representation.
 
-## Open design questions to resolve before circuit code is written
+## Deferred design questions
 
 1. Public inputs: which of the existing `hpx-vi/1` frame conventions
    (`docs/zk-conformance-vectors.md`) extend cleanly to a redaction proof —
@@ -39,14 +42,15 @@ introducing a parallel lineage representation.
 
 ## Phasing
 
-- Phase 0 (this doc): scope, threat-model delta, public/private input table.
+- Phase 0: scope, threat-model delta, and public/private input table — done.
 - Phase 1: Noir prototype circuit + unit tests (`nargo test`) + adversarial
-  vectors (crop substitution, reordered chunks, altered visible regions,
-  wrong parent, replay, malformed proof).
-- Phase 2: cross-layer conformance codec entry (backend, browser, contract)
-  following `docs/zk-conformance-vectors.md`'s one-codec-three-layers model.
-- Phase 3: backend endpoint + browser proving integration + artifact
-  versioning.
+  vectors — done for bounded commitment-level lineage.
+- Phase 2: `redaction_witness/v1` cross-layer conformance codec entry
+  (backend, browser, contract) — done; it follows
+  `docs/zk-conformance-vectors.md`'s one-codec-three-layers model.
+- Phase 3: backend endpoint, browser proving integration, compiled-artifact
+  versioning, and local proof verification — deferred. A structural codec
+  check must not be represented as cryptographic proof verification.
 - Phase 4: Soroban verification planning doc (not full deployment — see
   issue's out-of-scope section).
 - Phase 5: security docs (assumptions, unsupported transformations),

@@ -5,10 +5,28 @@ import json
 import os
 from typing import Any
 
+from verifier_inputs import (
+    BN254_SCALAR_FIELD_MODULUS,
+    REDACTION_PUBLIC_INPUTS_LEN,
+    SCHEMA_REDACTION_WITNESS,
+    VerifierInputError,
+    check_proof_bounds,
+    decode_hex,
+    parse_redaction_witness_inputs,
+)
+
 SUPPORTED_OPERATIONS = {"crop", "transcode", "blur", "redact", "compose"}
 MAX_LINEAGE_DEPTH = 4
 MAX_LINEAGE_FANOUT = 4
 MAX_LINEAGE_PAYLOAD_BYTES = 4096
+REDACTION_OPERATION_CODES = {
+    "crop": 1,
+    "transcode": 2,
+    "blur": 3,
+    "redact": 4,
+    "compose": 5,
+}
+REDACTION_REPLAY_DOMAIN = b"harpocrates:redaction-lineage:v1:"
 
 
 class LineageValidationError(ValueError):
@@ -71,6 +89,48 @@ def canonical_lineage_manifest(manifest: dict[str, Any]) -> str:
 
 def lineage_manifest_digest(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_lineage_manifest(manifest).encode("utf-8")).hexdigest()
+
+
+def redaction_replay_binding(manifest: dict[str, Any]) -> bytes:
+    """Derive the canonical field binding for a lineage claim.
+
+    The circuit receives only this fixed-width field.  The full canonical
+    manifest is never made public to the proof system and private parameters
+    therefore cannot leak through verifier inputs.
+    """
+    digest = hashlib.sha256(
+        REDACTION_REPLAY_DOMAIN + canonical_lineage_manifest(manifest).encode("utf-8")
+    ).digest()
+    return (int.from_bytes(digest, "big") % BN254_SCALAR_FIELD_MODULUS).to_bytes(32, "big")
+
+
+def validate_redaction_witness_binding(manifest: dict[str, Any], witness: Any) -> None:
+    """Validate a redaction proof's public frame against a lineage manifest.
+
+    This intentionally validates *only* the canonical wire frame and its
+    manifest binding. Cryptographic proof verification must be performed by a
+    pinned UltraHonk verification key in the browser or registry; callers must
+    never treat this boundary check as proof verification.
+    """
+    if not isinstance(witness, dict):
+        raise LineageValidationError("redactionWitness must be an object")
+    if witness.get("schema") != SCHEMA_REDACTION_WITNESS:
+        raise LineageValidationError("redactionWitness schema is invalid")
+    try:
+        public_inputs = decode_hex(witness.get("publicInputs"), field="public_inputs")
+        proof = decode_hex(witness.get("proof"), field="proof")
+        if len(public_inputs) != REDACTION_PUBLIC_INPUTS_LEN:
+            raise LineageValidationError("redactionWitness public inputs have invalid length")
+        parsed = parse_redaction_witness_inputs(public_inputs)
+        check_proof_bounds(proof)
+    except VerifierInputError as exc:
+        raise LineageValidationError(f"redactionWitness rejected: {exc.code.value}") from None
+
+    expected_operation = REDACTION_OPERATION_CODES[manifest["operationType"]]
+    if int.from_bytes(parsed.operation_type, "big") != expected_operation:
+        raise LineageValidationError("redactionWitness operation does not match lineage manifest")
+    if parsed.replay_binding != redaction_replay_binding(manifest):
+        raise LineageValidationError("redactionWitness replay binding does not match lineage manifest")
 
 
 def validate_lineage_graph(

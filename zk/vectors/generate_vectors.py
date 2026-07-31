@@ -44,6 +44,11 @@ BN254_R_HEX = "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001"
 # "HARPOCRATES_REVOCATION_V1".
 DOMAIN_HEX = ("00" * 7) + b"HARPOCRATES_REVOCATION_V1".hex()
 
+# Redaction witness domain tag constant:
+# 8 zero bytes of BN254 padding followed by the 24 ASCII bytes of
+# "HARPOCRATES_REDACTION_V1".
+REDACTION_DOMAIN_HEX = ("00" * 8) + b"HARPOCRATES_REDACTION_V1".hex()
+
 ZERO = "00" * FIELD_LEN
 ONES = "ff" * FIELD_LEN
 
@@ -55,6 +60,11 @@ VIDEO_LO = PAD16 + VIDEO_HASH[32:]
 CREDENTIAL_ROOT = "01" * FIELD_LEN
 NULLIFIER = "02" * FIELD_LEN
 REVOCATION_ROOT = "03" * FIELD_LEN
+
+PARENT_COMMITMENT = "04" * FIELD_LEN
+OUTPUT_COMMITMENT = "05" * FIELD_LEN
+OPERATION_CROP = "00" * 31 + "01"
+REPLAY_BINDING = "06" * FIELD_LEN
 
 PROOF_MIN = "ab" * MIN_PROOF_BYTES
 PROOF_TYPICAL = "cd" * 512
@@ -68,8 +78,15 @@ def revocation(root: str, nullifier: str, domain: str, credential: str) -> str:
     return root + nullifier + domain + credential
 
 
+def redaction(parent: str, output: str, operation: str, replay: str, domain: str) -> str:
+    return parent + output + operation + replay + domain
+
+
 SILENT_VALID = silent(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER)
 REVOCATION_VALID = revocation(REVOCATION_ROOT, NULLIFIER, DOMAIN_HEX, CREDENTIAL_ROOT)
+REDACTION_VALID = redaction(
+    PARENT_COMMITMENT, OUTPUT_COMMITMENT, OPERATION_CROP, REPLAY_BINDING, REDACTION_DOMAIN_HEX
+)
 
 
 def case(
@@ -153,6 +170,25 @@ def build_cases() -> list[dict[str, object]]:
             "ee" * MAX_PROOF_BYTES,
         )
     )
+    cases.append(
+        case(
+            "rd-pos-001-canonical",
+            "redaction_witness/v1",
+            "Canonical redaction lineage inputs with crop operation.",
+            REDACTION_VALID,
+            None,
+        )
+    )
+    cases.append(
+        case(
+            "rd-pos-002-typical-proof-size",
+            "redaction_witness/v1",
+            "Same redaction inputs with a typical proof size.",
+            REDACTION_VALID,
+            None,
+            PROOF_TYPICAL,
+        )
+    )
 
     # ---- length / framing -----------------------------------------------
     cases.append(
@@ -197,6 +233,33 @@ def build_cases() -> list[dict[str, object]]:
             "silent_witness/v1",
             "Two concatenated valid frames must not be accepted as one.",
             SILENT_VALID + SILENT_VALID,
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-001-empty",
+            "redaction_witness/v1",
+            "Empty redaction public inputs.",
+            "",
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-002-truncated",
+            "redaction_witness/v1",
+            "159 bytes: one byte short of a full redaction frame.",
+            REDACTION_VALID[:-2],
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-003-oversized",
+            "redaction_witness/v1",
+            "161 bytes: one trailing byte past the redaction frame.",
+            REDACTION_VALID + "00",
             "length",
         )
     )
@@ -249,6 +312,17 @@ def build_cases() -> list[dict[str, object]]:
             "non_canonical_field",
         )
     )
+    cases.append(
+        case(
+            "rd-neg-020-parent-commitment-non-canonical",
+            "redaction_witness/v1",
+            "Non-canonical parent commitment element above modulus.",
+            redaction(
+                ONES, OUTPUT_COMMITMENT, OPERATION_CROP, REPLAY_BINDING, REDACTION_DOMAIN_HEX
+            ),
+            "non_canonical_field",
+        )
+    )
 
     # ---- zero identity fields -------------------------------------------
     cases.append(
@@ -275,6 +349,39 @@ def build_cases() -> list[dict[str, object]]:
             "revocation_witness/v1",
             "A zero revocation root is not a valid published root.",
             revocation(ZERO, NULLIFIER, DOMAIN_HEX, CREDENTIAL_ROOT),
+            "zero_field",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-030-zero-parent-commitment",
+            "redaction_witness/v1",
+            "A zero parent commitment is invalid.",
+            redaction(
+                ZERO, OUTPUT_COMMITMENT, OPERATION_CROP, REPLAY_BINDING, REDACTION_DOMAIN_HEX
+            ),
+            "zero_field",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-031-zero-output-commitment",
+            "redaction_witness/v1",
+            "A zero output commitment is invalid.",
+            redaction(
+                PARENT_COMMITMENT, ZERO, OPERATION_CROP, REPLAY_BINDING, REDACTION_DOMAIN_HEX
+            ),
+            "zero_field",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-032-zero-replay-binding",
+            "redaction_witness/v1",
+            "A zero replay binding disables claim uniqueness.",
+            redaction(
+                PARENT_COMMITMENT, OUTPUT_COMMITMENT, OPERATION_CROP, ZERO, REDACTION_DOMAIN_HEX
+            ),
             "zero_field",
         )
     )
@@ -323,6 +430,17 @@ def build_cases() -> list[dict[str, object]]:
             "revocation_witness/v1",
             "Field order rotated by one element; caught by the domain check.",
             revocation(NULLIFIER, DOMAIN_HEX, CREDENTIAL_ROOT, REVOCATION_ROOT),
+            "domain_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "rd-neg-040-domain-mismatch",
+            "redaction_witness/v1",
+            "Domain tag mismatch on redaction witness frame.",
+            redaction(
+                PARENT_COMMITMENT, OUTPUT_COMMITMENT, OPERATION_CROP, REPLAY_BINDING, ZERO
+            ),
             "domain_mismatch",
         )
     )
@@ -384,6 +502,7 @@ def build_document() -> dict[str, object]:
             "max_proof_bytes": MAX_PROOF_BYTES,
             "bn254_scalar_field_modulus_hex": BN254_R_HEX,
             "revocation_domain_separator_hex": DOMAIN_HEX,
+            "redaction_domain_tag_hex": REDACTION_DOMAIN_HEX,
         },
         "schemas": {
             "silent_witness/v1": [
@@ -397,6 +516,13 @@ def build_document() -> dict[str, object]:
                 "nullifier",
                 "domain_separator",
                 "credential_root",
+            ],
+            "redaction_witness/v1": [
+                "parent_commitment",
+                "output_commitment",
+                "operation_type",
+                "replay_binding",
+                "domain_tag",
             ],
         },
         "reject_codes": [

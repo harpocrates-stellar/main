@@ -280,3 +280,11 @@ comment-only (rebuild and re-commit the manifest).
 - The lock file pins versions, not binary digests, of `nargo` and `bb`. Pinning
   installer digests would require an upstream distribution channel that
   publishes them.
+# Redaction-lineage artifact
+
+`zk/noir/redaction_lineage` is included in the reproducible build circuit set.
+Its generated ACIR is published only while the feature remains explicitly
+disabled by default and after the pinned Noir/Barretenberg toolchain has
+compiled it twice with matching normalized digests. The browser loads the
+artifact from `frontend/public/noir/redaction_lineage.json` and performs local
+UltraHonk verification before it can submit a lineage claim.
