@@ -1,0 +1,7 @@
+[package]
+name = "redaction_lineage"
+type = "bin"
+authors = ["Harpocrates"]
+compiler_version = ">=1.0.0"
+
+[dependencies]

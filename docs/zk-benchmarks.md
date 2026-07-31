@@ -22,6 +22,18 @@ rollout/rollback, and limitations.
 | `zk/bench/baselines.lock.json` | Optional committed thresholds (absent ⇒ compare is inert) |
 | `.github/workflows/zk-ci.yml` | Runs `pytest zk/bench` alongside artifact tooling |
 
+## Redaction-lineage feasibility (prototype)
+
+`redaction_lineage` is not enabled by default. It has `MAX_CHUNKS = 4` and
+therefore accepts at most four committed media chunks per proof; deployments
+must set a conservative media canonicalisation limit before enabling it. The
+prototype currently has no calibrated constraint count, proving time, or
+verification time because the pinned Noir toolchain is not available in this
+checkout. Record those values from `nargo info` and the native/browser bench
+harness with synthetic fixtures before promotion, and reject any candidate that
+cannot meet the configured timeout and memory ceilings. Never benchmark real
+source media or write witness material into reports.
+
 ## Targets
 
 | Target | What is measured |

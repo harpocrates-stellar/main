@@ -18,11 +18,13 @@
 pub const CODEC_ID: &str = "hpx-vi/1";
 
 pub const FIELD_LEN: usize = 32;
-pub const SILENT_WITNESS_FIELD_COUNT: usize = 5;
+pub const SILENT_WITNESS_FIELD_COUNT: usize = 4;
 pub const REVOCATION_FIELD_COUNT: usize = 4;
-pub const PUBLIC_INPUTS_LEN: usize = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT; // 160
-pub const SILENT_WITNESS_PUBLIC_INPUTS_LEN: usize = 160;
+pub const REDACTION_FIELD_COUNT: usize = 5;
+pub const PUBLIC_INPUTS_LEN: usize = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT; // 128
+pub const SILENT_WITNESS_PUBLIC_INPUTS_LEN: usize = 128;
 pub const REVOCATION_PUBLIC_INPUTS_LEN: usize = 128;
+pub const REDACTION_PUBLIC_INPUTS_LEN: usize = 160;
 
 /// Accepted proof-blob size window. Matches the Python and TypeScript layers.
 pub const MIN_PROOF_BYTES: u32 = 64;
@@ -39,6 +41,13 @@ pub const BN254_SCALAR_FIELD_MODULUS_BE: [u8; FIELD_LEN] = [
 pub const SILENT_WITNESS_DOMAIN_TAG_BE: [u8; FIELD_LEN] = [
     0x4a, 0xa0, 0x38, 0xf0, 0xa2, 0x7b, 0x66, 0x75, 0xd7, 0x12, 0x2a, 0xe2, 0xd4, 0xe1, 0x97, 0xc2,
     0x1e, 0x83, 0xfb, 0xe3, 0x01, 0x43, 0xa5, 0xc8, 0x3f, 0xf3, 0x5c, 0x95, 0x14, 0xb9, 0x2c, 0x55,
+];
+
+/// Expected Redaction Witness domain tag (8 zero bytes padding + HARPOCRATES_REDACTION_V1).
+pub const REDACTION_WITNESS_DOMAIN_TAG_BE: [u8; FIELD_LEN] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    b'H', b'A', b'R', b'P', b'O', b'C', b'R', b'A', b'T', b'E', b'S', b'_',
+    b'R', b'E', b'D', b'A', b'C', b'T', b'I', b'O', b'N', b'_', b'V', b'1',
 ];
 
 /// Stable rejection codes shared across circuit, backend, browser, and chain.
@@ -114,6 +123,7 @@ impl RejectCode {
 
 pub const SCHEMA_SILENT_WITNESS: &str = "silent_witness/v1";
 pub const SCHEMA_REVOCATION_WITNESS: &str = "revocation_witness/v1";
+pub const SCHEMA_REDACTION_WITNESS: &str = "redaction_witness/v1";
 
 /// Parsed `silent_witness/v1` public inputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,7 +131,6 @@ pub struct SilentWitnessFields {
     pub video_hash: [u8; FIELD_LEN],
     pub credential_root: [u8; FIELD_LEN],
     pub nullifier: [u8; FIELD_LEN],
-    pub domain_tag: [u8; FIELD_LEN],
 }
 
 /// Parsed `revocation_witness/v1` public inputs.
@@ -131,6 +140,16 @@ pub struct RevocationFields {
     pub nullifier: [u8; FIELD_LEN],
     pub domain_separator: [u8; FIELD_LEN],
     pub credential_root: [u8; FIELD_LEN],
+}
+
+/// Parsed `redaction_witness/v1` public inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RedactionFields {
+    pub parent_commitment: [u8; FIELD_LEN],
+    pub output_commitment: [u8; FIELD_LEN],
+    pub operation_type: [u8; FIELD_LEN],
+    pub replay_binding: [u8; FIELD_LEN],
+    pub domain_tag: [u8; FIELD_LEN],
 }
 
 #[inline]
@@ -183,9 +202,11 @@ pub fn check_proof_bounds(proof_len: u32) -> Result<(), RejectCode> {
 }
 
 /// Parse `silent_witness/v1` public inputs in canonical check order.
+///
+/// The schema has four 32-byte fields: video_hash_hi, video_hash_lo,
+/// credential_root, nullifier. No domain tag is included in the frame.
 pub fn parse_silent_witness(
     frame: &[u8],
-    expected_domain: &[u8; FIELD_LEN],
 ) -> Result<SilentWitnessFields, RejectCode> {
     if frame.len() != SILENT_WITNESS_PUBLIC_INPUTS_LEN {
         return Err(RejectCode::Length);
@@ -196,7 +217,6 @@ pub fn parse_silent_witness(
         field_at(frame, 1),
         field_at(frame, 2),
         field_at(frame, 3),
-        field_at(frame, 4),
     ];
 
     if !has_half_padding(&fields[0]) || !has_half_padding(&fields[1]) {
@@ -209,12 +229,8 @@ pub fn parse_silent_witness(
         }
     }
 
-    if is_zero(&fields[2]) || is_zero(&fields[3]) || is_zero(&fields[4]) {
+    if is_zero(&fields[2]) || is_zero(&fields[3]) {
         return Err(RejectCode::ZeroField);
-    }
-
-    if &fields[4] != expected_domain {
-        return Err(RejectCode::DomainMismatch);
     }
 
     let mut video_hash = [0u8; FIELD_LEN];
@@ -225,7 +241,6 @@ pub fn parse_silent_witness(
         video_hash,
         credential_root: fields[2],
         nullifier: fields[3],
-        domain_tag: fields[4],
     })
 }
 
@@ -271,11 +286,56 @@ pub fn parse_revocation_witness(
     })
 }
 
+/// Parse `redaction_witness/v1` public inputs in canonical check order.
+pub fn parse_redaction_witness(
+    frame: &[u8],
+    expected_domain: &[u8; FIELD_LEN],
+) -> Result<RedactionFields, RejectCode> {
+    if frame.len() != REDACTION_PUBLIC_INPUTS_LEN {
+        return Err(RejectCode::Length);
+    }
+
+    let fields = [
+        field_at(frame, 0),
+        field_at(frame, 1),
+        field_at(frame, 2),
+        field_at(frame, 3),
+        field_at(frame, 4),
+    ];
+
+    for element in fields.iter() {
+        if !is_canonical_field(element) {
+            return Err(RejectCode::NonCanonicalField);
+        }
+    }
+
+    if is_zero(&fields[0]) || is_zero(&fields[1]) || is_zero(&fields[2]) || is_zero(&fields[3]) {
+        return Err(RejectCode::ZeroField);
+    }
+
+    if &fields[4] != expected_domain {
+        return Err(RejectCode::DomainMismatch);
+    }
+
+    Ok(RedactionFields {
+        parent_commitment: fields[0],
+        output_commitment: fields[1],
+        operation_type: fields[2],
+        replay_binding: fields[3],
+        domain_tag: fields[4],
+    })
+}
+
 /// Classify one conformance case from already-decoded bytes.
 ///
 /// Returns `Ok(())` when the material is accepted. The check order — public
 /// inputs first, then the proof blob — is part of the codec contract and is
 /// mirrored by every layer.
+///
+/// `expected_domain` is used only for `revocation_witness/v1`; it is the
+/// REVOCATION_DOMAIN_SEPARATOR supplied by the caller (lib.rs). For the
+/// silent_witness schema the frame carries no domain tag. For the redaction
+/// schema the domain is hardcoded in this module.
 pub fn classify(
     schema: &str,
     public_inputs: &[u8],
@@ -285,16 +345,20 @@ pub fn classify(
     // Schema dispatch precedes the length check, matching the Python and
     // TypeScript layers: an unrecognised schema is reported as such even when
     // the frame is also the wrong length.
-    if schema != SCHEMA_SILENT_WITNESS && schema != SCHEMA_REVOCATION_WITNESS {
+    if schema != SCHEMA_SILENT_WITNESS
+        && schema != SCHEMA_REVOCATION_WITNESS
+        && schema != SCHEMA_REDACTION_WITNESS
+    {
         return Err(RejectCode::UnknownSchema);
     }
 
     if schema == SCHEMA_SILENT_WITNESS {
-        parse_silent_witness(public_inputs, expected_domain)?;
-    } else {
+        parse_silent_witness(public_inputs)?;
+    } else if schema == SCHEMA_REVOCATION_WITNESS {
         parse_revocation_witness(public_inputs, expected_domain)?;
+    } else {
+        parse_redaction_witness(public_inputs, &REDACTION_WITNESS_DOMAIN_TAG_BE)?;
     }
 
     check_proof_bounds(proof_len)
 }
-

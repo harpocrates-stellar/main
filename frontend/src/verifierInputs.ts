@@ -18,8 +18,14 @@
 export const CODEC_ID = 'hpx-vi/1'
 
 export const FIELD_LEN = 32
-export const FIELD_COUNT = 4
-export const PUBLIC_INPUTS_LEN = FIELD_LEN * FIELD_COUNT
+export const SILENT_WITNESS_FIELD_COUNT = 4
+export const REVOCATION_FIELD_COUNT = 4
+export const REDACTION_FIELD_COUNT = 5
+
+export const SILENT_WITNESS_PUBLIC_INPUTS_LEN = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT // 128
+export const REVOCATION_PUBLIC_INPUTS_LEN = FIELD_LEN * REVOCATION_FIELD_COUNT // 128
+export const REDACTION_PUBLIC_INPUTS_LEN = FIELD_LEN * REDACTION_FIELD_COUNT // 160
+export const PUBLIC_INPUTS_LEN = SILENT_WITNESS_PUBLIC_INPUTS_LEN // 128 — used by fuzz harness (smallest schema frame)
 
 export const MIN_PROOF_BYTES = 64
 export const MAX_PROOF_BYTES = 65536
@@ -42,12 +48,21 @@ export const BN254_SCALAR_FIELD_MODULUS =
 export const REVOCATION_DOMAIN_SEPARATOR_HEX =
   '00000000000000484152504f4352415445535f5245564f434154494f4e5f5631'
 
+/**
+ * Byte-for-byte identical to Noir domain tag in redaction lineage circuit:
+ * eight bytes of BN254 padding followed by 24 ASCII bytes.
+ */
+export const REDACTION_WITNESS_DOMAIN_TAG_HEX =
+  '0000000000000000484152504f4352415445535f524544414354494f4e5f5631'
+
 export const SCHEMA_SILENT_WITNESS = 'silent_witness/v1'
 export const SCHEMA_REVOCATION_WITNESS = 'revocation_witness/v1'
+export const SCHEMA_REDACTION_WITNESS = 'redaction_witness/v1'
 
 export type VerifierSchema =
   | typeof SCHEMA_SILENT_WITNESS
   | typeof SCHEMA_REVOCATION_WITNESS
+  | typeof SCHEMA_REDACTION_WITNESS
 
 export type RejectCode =
   | 'malformed_hex'
@@ -93,6 +108,14 @@ export type RevocationWitnessInputs = {
   nullifier: Uint8Array
   domainSeparator: Uint8Array
   credentialRoot: Uint8Array
+}
+
+export type RedactionWitnessInputs = {
+  parentCommitment: Uint8Array
+  outputCommitment: Uint8Array
+  operationType: Uint8Array
+  replayBinding: Uint8Array
+  domainTag: Uint8Array
 }
 
 const HEX_PATTERN = /^[0-9a-fA-F]*$/
@@ -146,12 +169,12 @@ export function checkProofBounds(proof: Uint8Array): void {
   }
 }
 
-function splitFields(publicInputs: Uint8Array): Uint8Array[] {
-  if (publicInputs.length !== PUBLIC_INPUTS_LEN) {
+function splitFields(publicInputs: Uint8Array, expectedLen: number, count: number): Uint8Array[] {
+  if (publicInputs.length !== expectedLen) {
     throw new VerifierInputError('length', 'public_inputs')
   }
   const fields: Uint8Array[] = []
-  for (let index = 0; index < FIELD_COUNT; index += 1) {
+  for (let index = 0; index < count; index += 1) {
     fields.push(publicInputs.slice(index * FIELD_LEN, (index + 1) * FIELD_LEN))
   }
   return fields
@@ -202,9 +225,17 @@ const REVOCATION_FIELDS = [
   'credential_root',
 ] as const
 
+const REDACTION_FIELDS = [
+  'parent_commitment',
+  'output_commitment',
+  'operation_type',
+  'replay_binding',
+  'domain_tag',
+] as const
+
 /** Parse `silent_witness/v1` public inputs in canonical check order. */
 export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnessInputs {
-  const fields = splitFields(publicInputs)
+  const fields = splitFields(publicInputs, SILENT_WITNESS_PUBLIC_INPUTS_LEN, SILENT_WITNESS_FIELD_COUNT)
 
   const high = requireHalfPadding(fields[0], 'video_hash_hi')
   const low = requireHalfPadding(fields[1], 'video_hash_lo')
@@ -225,7 +256,7 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
 export function parseRevocationWitnessInputs(
   publicInputs: Uint8Array,
 ): RevocationWitnessInputs {
-  const fields = splitFields(publicInputs)
+  const fields = splitFields(publicInputs, REVOCATION_PUBLIC_INPUTS_LEN, REVOCATION_FIELD_COUNT)
 
   requireCanonical(fields, REVOCATION_FIELDS)
 
@@ -249,16 +280,49 @@ export function parseRevocationWitnessInputs(
   }
 }
 
+/** Parse `redaction_witness/v1` public inputs in canonical check order. */
+export function parseRedactionWitnessInputs(
+  publicInputs: Uint8Array,
+): RedactionWitnessInputs {
+  const fields = splitFields(publicInputs, REDACTION_PUBLIC_INPUTS_LEN, REDACTION_FIELD_COUNT)
+
+  requireCanonical(fields, REDACTION_FIELDS)
+
+  requireNonZero(fields[0], 'parent_commitment')
+  requireNonZero(fields[1], 'output_commitment')
+  requireNonZero(fields[2], 'operation_type')
+  requireNonZero(fields[3], 'replay_binding')
+
+  const expectedDomain = decodeHex(REDACTION_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
+  const domain = fields[4]
+  for (let index = 0; index < FIELD_LEN; index += 1) {
+    if (domain[index] !== expectedDomain[index]) {
+      throw new VerifierInputError('domain_mismatch', 'domain_tag')
+    }
+  }
+
+  return {
+    parentCommitment: fields[0],
+    outputCommitment: fields[1],
+    operationType: fields[2],
+    replayBinding: fields[3],
+    domainTag: domain,
+  }
+}
+
 /** Dispatch to the parser for `schema`. */
 export function parsePublicInputs(
   schema: string,
   publicInputs: Uint8Array,
-): SilentWitnessInputs | RevocationWitnessInputs {
+): SilentWitnessInputs | RevocationWitnessInputs | RedactionWitnessInputs {
   if (schema === SCHEMA_SILENT_WITNESS) {
     return parseSilentWitnessInputs(publicInputs)
   }
   if (schema === SCHEMA_REVOCATION_WITNESS) {
     return parseRevocationWitnessInputs(publicInputs)
+  }
+  if (schema === SCHEMA_REDACTION_WITNESS) {
+    return parseRedactionWitnessInputs(publicInputs)
   }
   throw new VerifierInputError('unknown_schema', 'schema')
 }

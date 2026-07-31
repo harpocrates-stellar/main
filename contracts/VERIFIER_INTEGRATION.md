@@ -45,6 +45,16 @@ Done:
 
 Not done yet:
 
+- `register_lineage_verified(parent_commitment, output_commitment, operation_type,
+  replay_binding, public_inputs, proof)` should be added only after the
+  `redaction_witness/v1` verification key is pinned. It should mirror
+  `register_anonymous_verified` / `register_batch_verified`: classify the
+  canonical hpx-vi/1 frame first, require the parsed fields to match the
+  explicit arguments, call the configured verifier, then persist a unique
+  replay binding and a lineage event. It must not accept chunks, regions,
+  parameters, or blinding factors, and must remain separately versioned so it
+  cannot change existing silent-witness registration semantics.
+
 - Browser-side proof generation (including the aggregator circuit).
 
 ## Recommended Path

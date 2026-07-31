@@ -15,6 +15,7 @@ use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN};
 /// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
 pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
+pub const SCHEMA_ID_REDACTION_WITNESS: u32 = 3;
 
 const TIER_SILENT_WITNESS: u32 = 1;
 const TIER_CONSISTENT_SOURCE: u32 = 2;
@@ -2306,29 +2307,36 @@ impl HarpocratesRegistry {
         // Schema dispatch precedes the length check, matching the Python and
         // TypeScript layers: an unrecognised schema is reported as such even
         // when the frame is also the wrong length.
-        if schema_id != SCHEMA_ID_SILENT_WITNESS && schema_id != SCHEMA_ID_REVOCATION_WITNESS {
+        if schema_id != SCHEMA_ID_SILENT_WITNESS
+            && schema_id != SCHEMA_ID_REVOCATION_WITNESS
+            && schema_id != SCHEMA_ID_REDACTION_WITNESS
+        {
             return RejectCode::UnknownSchema.as_code();
         }
 
-        if public_inputs.len() as usize != PUBLIC_INPUTS_LEN {
-            return RejectCode::Length.as_code();
-        }
-
-        let mut frame = [0u8; PUBLIC_INPUTS_LEN];
-        public_inputs.copy_into_slice(&mut frame);
-
-        let parsed = if schema_id == SCHEMA_ID_SILENT_WITNESS {
-            verifier_inputs::parse_silent_witness(&frame).map(|_| ())
+        let expected_domain = if schema_id == SCHEMA_ID_SILENT_WITNESS {
+            &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+        } else if schema_id == SCHEMA_ID_REVOCATION_WITNESS {
+            &REVOCATION_DOMAIN_SEPARATOR
         } else {
-            verifier_inputs::parse_revocation_witness(&frame, &REVOCATION_DOMAIN_SEPARATOR)
-                .map(|_| ())
+            &verifier_inputs::REDACTION_WITNESS_DOMAIN_TAG_BE
+        };
+        let schema_name = if schema_id == SCHEMA_ID_SILENT_WITNESS {
+            verifier_inputs::SCHEMA_SILENT_WITNESS
+        } else if schema_id == SCHEMA_ID_REVOCATION_WITNESS {
+            verifier_inputs::SCHEMA_REVOCATION_WITNESS
+        } else {
+            verifier_inputs::SCHEMA_REDACTION_WITNESS
         };
 
-        if let Err(code) = parsed {
-            return code.as_code();
+        let mut frame_buf = [0u8; 160];
+        if public_inputs.len() as usize > 160 {
+            return RejectCode::Length.as_code();
         }
+        let frame_slice = &mut frame_buf[..public_inputs.len() as usize];
+        public_inputs.copy_into_slice(frame_slice);
 
-        match verifier_inputs::check_proof_bounds(proof_len) {
+        match verifier_inputs::classify(schema_name, frame_slice, proof_len, expected_domain) {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),
         }

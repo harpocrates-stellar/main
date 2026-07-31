@@ -125,6 +125,18 @@
       "required": false
     },
     {
+      "path": "zk/noir/redaction_lineage/target/redaction_lineage.json",
+      "kind": "json",
+      "role": "acir",
+      "required": false
+    },
+    {
+      "path": "frontend/public/noir/redaction_lineage.json",
+      "kind": "json",
+      "role": "published_acir",
+      "required": false
+    },
+    {
       "path": "frontend/public/noir/silent_witness.json",
       "kind": "json",
       "role": "published_acir",
