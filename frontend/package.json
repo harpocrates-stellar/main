@@ -15,7 +15,7 @@
     "bench:noir": "node ../zk/bench/browser_runner.mjs"
   },
   "dependencies": {
-    "@aztec/bb.js": "^0.87.0",
+    "@aztec/bb.js": "^5.1.0",
     "@noir-lang/noir_js": "^1.0.0-beta.9",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^15.1.0",
