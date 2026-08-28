@@ -866,6 +866,48 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         self.assertTrue(body["created"])
         self.assertEqual(body["db_event"]["video_hash"], payload["videoHash"])
 
+    def test_register_accepts_all_protocol_tiers(self) -> None:
+        for tier in ("silent", "source", "seal"):
+            with self.subTest(tier=tier):
+                payload = valid_register_payload(tier=tier)
+                db_row = _stub_event(payload)
+
+                with patch.object(app_module, "upsert_register_event", return_value=(db_row, True)) as upsert_mock:
+                    response = self.client.post("/api/proofs/register", json=payload)
+
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(upsert_mock.call_args.kwargs["tier"], tier)
+                self.assertEqual(response.get_json()["db_event"]["tier"], tier)
+
+    def test_register_rejects_missing_tier_with_stable_error(self) -> None:
+        payload = valid_register_payload()
+        del payload["tier"]
+
+        with patch.object(app_module, "upsert_register_event") as upsert_mock:
+            response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "tier must be one of: silent, source, seal",
+        )
+        upsert_mock.assert_not_called()
+
+    def test_register_rejects_invalid_tier_with_stable_error(self) -> None:
+        payload = valid_register_payload(tier="premium")
+
+        with patch.object(app_module, "upsert_register_event") as upsert_mock:
+            response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "tier must be one of: silent, source, seal",
+        )
+        upsert_mock.assert_not_called()
+
     # ------------------------------------------------------------------
     # Positive path: idempotent retry returns original record (200)
     # ------------------------------------------------------------------
@@ -1150,4 +1192,3 @@ class CorsPreflightAndHeadersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

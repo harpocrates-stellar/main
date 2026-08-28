@@ -47,7 +47,7 @@ from db import (
 from idempotency import idempotent
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness, generate_aggregated_proof
-from envelope import validate_v2 as validate_embed_metadata
+from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
@@ -64,7 +64,6 @@ from strkey import validate_source_address, validate_contract_id
 MAX_AGGREGATION_SIZE = 8
 AGGREGATION_ELEMENT_COST = 128  # bytes per aggregated public-input element
 
-ALLOWED_TIERS = {"silent", "source", "seal"}
 LOGGER = logging.getLogger("harpocrates.requests")
 if not LOGGER.handlers:
     handler = logging.StreamHandler()
@@ -820,6 +819,14 @@ def create_app() -> Flask:
                     status=400,
                 )
 
+        tier = payload.get("tier")
+        if tier not in ALLOWED_TIERS:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="tier must be one of: silent, source, seal",
+                status=400,
+            )
+
         try:
             normalized_tx_hash = normalize_tx_hash(tx_hash)
             normalized_tx_status = normalize_tx_status(tx_status)
@@ -874,7 +881,7 @@ def create_app() -> Flask:
                 video_hash=video_hash,
                 metadata_hash=metadata_hash,
                 proof_id=proof_id,
-                tier=payload.get("tier"),
+                tier=tier,
                 tx_hash=normalized_tx_hash,
                 tx_status=normalized_tx_status,
                 source_address=validated_source_address,
