@@ -624,6 +624,9 @@ pub struct TimelockMinDelaySet {
 #[repr(u32)]
 pub enum SchemaVersion {
     V1 = 1,
+    /// Enforces disjoint admin and issuer authority and migrates any active
+    /// issuer record that aliases the current admin.
+    V2 = 2,
 }
 
 #[contractevent(topics = ["schema", "upgrade"])]
@@ -739,6 +742,9 @@ pub enum RegistryError {
     UnknownSchema = 50,
     InactiveSchema = 51,
     SchemaVersionMismatch = 52,
+    /// An address cannot hold the active admin and issuer roles at the same
+    /// time. This stable error never includes media, proof, witness, or key data.
+    RoleConflict = 53,
 }
 
 #[contract]
@@ -755,9 +761,16 @@ impl HarpocratesRegistry {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
-            .set(&DataKey::SchemaVersion, &(SchemaVersion::V1 as u32));
+            .set(&DataKey::SchemaVersion, &(SchemaVersion::V2 as u32));
     }
 
+    /// Migrate legacy storage to the role-separated schema.
+    ///
+    /// V2 never rewrites proof records, nullifiers, verifier state, credential
+    /// roots, or other issuer records. If the current admin also has an active
+    /// issuer record, only that issuer authority is revoked. The migration is
+    /// idempotent and emits the existing typed `IssuerRevoked` and
+    /// `SchemaUpgraded` events.
     pub fn upgrade_storage(env: Env, admin: Address) {
         require_admin(&env, &admin);
 
@@ -767,11 +780,35 @@ impl HarpocratesRegistry {
             .get(&DataKey::SchemaVersion)
             .unwrap_or(SchemaVersion::V1 as u32);
 
-        let target_version = SchemaVersion::V1 as u32;
+        let target_version = SchemaVersion::V2 as u32;
 
         if current_version < target_version {
-            // Migrations will be added here when moving to V2, V3, etc.
-            
+            let current_admin: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Admin)
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+
+            if current_version < SchemaVersion::V2 as u32 {
+                let mut issuer_record: Option<IssuerRecord> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Issuer(current_admin.clone()));
+                if let Some(record) = issuer_record.as_mut() {
+                    if record.active {
+                        record.active = false;
+                        env.storage().persistent().set(
+                            &DataKey::Issuer(current_admin.clone()),
+                            record,
+                        );
+                        IssuerRevoked {
+                            issuer: current_admin,
+                        }
+                        .publish(&env);
+                    }
+                }
+            }
+
             env.storage()
                 .persistent()
                 .set(&DataKey::SchemaVersion, &target_version);
@@ -784,8 +821,18 @@ impl HarpocratesRegistry {
         }
     }
 
+    /// Return the active storage schema version. Legacy deployments that have
+    /// not called `upgrade_storage` report `V1`; fresh V2 deployments report `V2`.
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(SchemaVersion::V1 as u32)
+    }
+
     pub fn propose_admin(env: Env, admin: Address, pending_admin: Address) {
         require_admin(&env, &admin);
+        require_admin_role_available(&env, &pending_admin);
 
         env.storage()
             .persistent()
@@ -824,6 +871,7 @@ impl HarpocratesRegistry {
         if proposed_admin != pending_admin {
             panic_with_error!(&env, RegistryError::Unauthorized);
         }
+        require_admin_role_available(&env, &pending_admin);
 
         let previous_admin: Address = env
             .storage()
@@ -843,6 +891,16 @@ impl HarpocratesRegistry {
 
     pub fn add_issuer(env: Env, admin: Address, issuer: Address, metadata_hash: BytesN<32>) {
         require_admin(&env, &admin);
+        require_issuer_role_available(&env, &issuer);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .as_ref()
+            == Some(&issuer)
+        {
+            panic_with_error!(&env, RegistryError::RoleConflict);
+        }
 
         env.storage().persistent().set(
             &DataKey::Issuer(issuer.clone()),
@@ -1262,6 +1320,7 @@ impl HarpocratesRegistry {
             source: None,
             issuer: None,
             nullifier: Some(nullifier),
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), None);
         record_proof_history(
@@ -1337,6 +1396,7 @@ impl HarpocratesRegistry {
                     source: None,
                     issuer: None,
                     nullifier: Some(parsed.nullifier),
+                    batch_size: 0,
                 },
             )
         } else if input_len == SILENT_WITNESS_V1_INPUT_LEN {
@@ -1383,6 +1443,7 @@ impl HarpocratesRegistry {
                     source: None,
                     issuer: None,
                     nullifier: Some(parsed.nullifier),
+                    batch_size: 0,
                 },
             )
         } else {
@@ -1579,6 +1640,7 @@ impl HarpocratesRegistry {
             source: Some(source.clone()),
             issuer: None,
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
         record_proof_history(
@@ -1600,6 +1662,7 @@ impl HarpocratesRegistry {
     ) -> ProofRecord {
         require_domain_unpaused(&env, PAUSE_DOMAIN_TIER3_REGISTRATION);
         issuer.require_auth();
+        require_issuer_role_available(&env, &issuer);
         require_unique(&env, &proof_id, &video_hash);
 
         let issuer_record = get_issuer_record(&env, &issuer);
@@ -1618,6 +1681,7 @@ impl HarpocratesRegistry {
             source: None,
             issuer: Some(issuer.clone()),
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
         record_proof_history(
@@ -1831,6 +1895,7 @@ impl HarpocratesRegistry {
             source: Some(source.clone()),
             issuer: None,
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
         record_proof_history(
@@ -1867,6 +1932,7 @@ impl HarpocratesRegistry {
         require_domain_unpaused(&env, PAUSE_DOMAIN_TIER3_REGISTRATION);
         delegate.require_auth();
         require_delegation(&env, &issuer, &delegate, DELEGATION_SCOPE_REGISTER_SEAL);
+        require_issuer_role_available(&env, &issuer);
         require_unique(&env, &proof_id, &video_hash);
 
         let issuer_record = get_issuer_record(&env, &issuer);
@@ -1885,6 +1951,7 @@ impl HarpocratesRegistry {
             source: None,
             issuer: Some(issuer.clone()),
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
         record_proof_history(
@@ -2046,6 +2113,30 @@ impl HarpocratesRegistry {
 
     pub fn get_issuer(env: Env, issuer: Address) -> Option<IssuerRecord> {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
+    }
+
+    /// Return whether `address` currently holds registry administrator
+    /// authority. This is read-only and accepts untrusted addresses without
+    /// requiring authorization.
+    pub fn is_admin(env: Env, address: Address) -> bool {
+        let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        admin == Some(address)
+    }
+
+    /// Return whether `address` currently holds active issuer authority.
+    /// Revoked and unknown issuer records both return `false`.
+    pub fn is_issuer(env: Env, address: Address) -> bool {
+        let record: Option<IssuerRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Issuer(address));
+        matches!(
+            record,
+            Some(IssuerRecord {
+                active: true,
+                ..
+            })
+        )
     }
 
     pub fn register_lineage(
@@ -2459,6 +2550,40 @@ fn require_admin(env: &Env, candidate: &Address) {
     candidate.require_auth();
     if &admin != candidate {
         panic_with_error!(env, RegistryError::Unauthorized);
+    }
+}
+
+/// Reject issuer role assignment to an address that currently holds registry
+/// administrator authority. Callers that create pending state must separately
+/// check the pending address so a proposal cannot be used to stage a conflict.
+fn require_issuer_role_available(env: &Env, issuer: &Address) {
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+    if issuer == &admin {
+        panic_with_error!(env, RegistryError::RoleConflict);
+    }
+}
+
+/// Reject transferring admin authority to an address with active issuer
+/// authority. Revoked issuer records remain safe to transfer into and preserve
+/// the historical metadata returned by `get_issuer`.
+fn require_admin_role_available(env: &Env, candidate: &Address) {
+    require_issuer_role_available(env, candidate);
+    let issuer_record: Option<IssuerRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Issuer(candidate.clone()));
+    if matches!(
+        issuer_record,
+        Some(IssuerRecord {
+            active: true,
+            ..
+        })
+    ) {
+        panic_with_error!(env, RegistryError::RoleConflict);
     }
 }
 
@@ -3243,6 +3368,8 @@ mod test_invariants;
 mod test_pause;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_roles;
 #[cfg(test)]
 mod test_scoped_nullifier;
 #[cfg(test)]
