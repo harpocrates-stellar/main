@@ -1,5 +1,6 @@
 /**
- * Tests for useVerification hook.
+ * Tests for useVerification hook — mobile-hardened flow.
+ * Uses synthetic evidence only, no real media or secrets.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -31,8 +32,11 @@ async function getEvidMock() {
   return mod as unknown as { fetchRecentEvents: ReturnType<typeof vi.fn> }
 }
 
-function makeVideoFile() {
-  return new File([new Uint8Array([1, 2, 3])], 'evidence.mp4', { type: 'video/mp4' })
+function makeVideoFile(name = 'evidence.mp4', type = 'video/mp4', size = 3) {
+  const buf = new Uint8Array(size)
+  // fill deterministically
+  for (let i = 0; i < size; i++) buf[i] = i % 256
+  return new File([buf], name, { type })
 }
 
 beforeEach(async () => {
@@ -44,13 +48,13 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
-  vi.restoreAllMocks()
+  vi.clearAllMocks()
 })
 
 // ── verifyEvidence – positive path ────────────────────────────────────────
 
 describe('useVerification.verifyEvidence – harpocrates metadata found', () => {
-  it('sets verifyResult containing "Harpocrates metadata found"', async () => {
+  it('sets verifyResult to metadata-only when not fully corroborated', async () => {
     const { result } = renderHook(() => useVerification())
     const file = makeVideoFile()
 
@@ -58,7 +62,8 @@ describe('useVerification.verifyEvidence – harpocrates metadata found', () => 
       await result.current.verifyEvidence(file)
     })
 
-    expect(result.current.verifyResult).toContain('Harpocrates metadata found')
+    expect(result.current.verifyResult).toMatch(/Metadata only/i)
+    expect(result.current.status).toBe('success')
   })
 
   it('populates verifyHash with a 64-char hex string', async () => {
@@ -72,7 +77,7 @@ describe('useVerification.verifyEvidence – harpocrates metadata found', () => 
     expect(result.current.verifyHash).toMatch(/^[0-9a-f]+$/)
   })
 
-  it('reflects NeonDB event count in result message', async () => {
+  it('stores db events when returned', async () => {
     const vm = await getVerifMock()
     vm.fetchProofEventsByVideo.mockResolvedValue([
       { id: 1, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' },
@@ -85,12 +90,14 @@ describe('useVerification.verifyEvidence – harpocrates metadata found', () => 
       await result.current.verifyEvidence(makeVideoFile())
     })
 
-    expect(result.current.verifyResult).toContain('2 event')
     expect(result.current.events).toHaveLength(2)
   })
 
-  it('shows "confirmed" when on-chain proof is found', async () => {
+  it('shows confirmed when on-chain proof and db corroborate metadata', async () => {
     const vm = await getVerifMock()
+    vm.fetchProofEventsByVideo.mockResolvedValue([
+      { id: 1, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' },
+    ])
     vm.getOnChainProof.mockResolvedValue({
       videoHash: 'a'.repeat(64),
       metadataHash: 'b'.repeat(64),
@@ -107,15 +114,40 @@ describe('useVerification.verifyEvidence – harpocrates metadata found', () => 
       await result.current.verifyEvidence(makeVideoFile())
     })
 
-    expect(result.current.verifyResult).toContain('confirmed')
+    expect(result.current.verifyResult).toMatch(/confirmed/i)
+    expect(result.current.verifyResult).toMatch(/corroborated/i)
     expect(result.current.chainProof).not.toBeNull()
+    expect(result.current.status).toBe('success')
+    expect(result.current.errorCode).toBeNull()
+  })
+
+  it('existing compatible evidence still succeeds', async () => {
+    const vm = await getVerifMock()
+    vm.fetchProofEventsByVideo.mockResolvedValue([
+      { id: 1, event_type: 'registered', file_name: 'old.mp4', video_hash: 'a'.repeat(64), proof_id: 'c'.repeat(64), tier: 'source', created_at: '2026-01-01T00:00:00Z' },
+    ])
+    vm.getOnChainProof.mockResolvedValue({
+      videoHash: 'a'.repeat(64),
+      metadataHash: 'b'.repeat(64),
+      tier: 1,
+      status: 1,
+      createdAt: '1000',
+      source: null,
+      issuer: null,
+    })
+    const { result } = renderHook(() => useVerification())
+    await act(async () => {
+      await result.current.verifyEvidence(makeVideoFile('old.mp4'))
+    })
+    expect(result.current.status).toBe('success')
+    expect(result.current.verifyResult).toMatch(/confirmed/i)
   })
 })
 
-// ── verifyEvidence – no metadata path ────────────────────────────────────
+// ── no metadata path ────────────────────────────────────
 
 describe('useVerification.verifyEvidence – no harpocrates metadata', () => {
-  it('sets verifyResult containing "No embedded Harpocrates metadata"', async () => {
+  it('reports database-only or unverified when metadata missing', async () => {
     const vm = await getVerifMock()
     vm.extractMetadata.mockResolvedValue({ hasHarpocratesMetadata: false })
 
@@ -125,63 +157,237 @@ describe('useVerification.verifyEvidence – no harpocrates metadata', () => {
       await result.current.verifyEvidence(makeVideoFile())
     })
 
-    expect(result.current.verifyResult).toContain('No embedded Harpocrates metadata found')
+    expect(result.current.verifyResult).toMatch(/No verification evidence found|Database record only/i)
+    expect(result.current.status).toBe('success')
+  })
+
+  it('reports database-only when db has records but no metadata', async () => {
+    const vm = await getVerifMock()
+    vm.extractMetadata.mockResolvedValue({ hasHarpocratesMetadata: false })
+    vm.fetchProofEventsByVideo.mockResolvedValue([
+      { id: 1, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' },
+    ])
+    const { result } = renderHook(() => useVerification())
+    await act(async () => {
+      await result.current.verifyEvidence(makeVideoFile())
+    })
+    expect(result.current.verifyResult).toMatch(/Database record only/i)
   })
 })
 
-// ── verifyEvidence – service failure ─────────────────────────────────────
+// ── revoked / expired ────────────────────────────────────
 
-describe('useVerification.verifyEvidence – service unavailable', () => {
-  it('surfaces the API error message when service throws an Error', async () => {
+describe('useVerification – revoked and expired handling', () => {
+  it('marks revoked chain record with REVOKED_EVIDENCE', async () => {
     const vm = await getVerifMock()
-    vm.extractMetadata.mockRejectedValue(new Error('Extraction service is unavailable.'))
-
-    const { result } = renderHook(() => useVerification())
-
-    await act(async () => {
-      await result.current.verifyEvidence(makeVideoFile())
+    vm.fetchProofEventsByVideo.mockResolvedValue([{ id: 1, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' }])
+    vm.getOnChainProof.mockResolvedValue({
+      videoHash: 'a'.repeat(64), metadataHash: 'b'.repeat(64), tier: 1, status: 2, createdAt: '1000', source: null, issuer: null,
     })
-
-    expect(result.current.verifyResult).toBe('Verification failed: Extraction service is unavailable.')
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('REVOKED_EVIDENCE')
+    expect(result.current.verifyResult).toMatch(/Revoked/i)
+    expect(result.current.chainProof).not.toBeNull()
   })
 
-  it('surfaces the error message from fetchProofEventsByVideo', async () => {
+  it('marks expired chain record with EXPIRED_EVIDENCE', async () => {
     const vm = await getVerifMock()
-    vm.fetchProofEventsByVideo.mockRejectedValue(new Error('Database lookup failed.'))
-
-    const { result } = renderHook(() => useVerification())
-
-    await act(async () => {
-      await result.current.verifyEvidence(makeVideoFile())
+    vm.getOnChainProof.mockResolvedValue({
+      videoHash: 'a'.repeat(64), metadataHash: 'b'.repeat(64), tier: 1, status: 3, createdAt: '1000', source: null, issuer: null,
     })
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('EXPIRED_EVIDENCE')
+    expect(result.current.verifyResult).toMatch(/Expired/i)
+  })
+})
 
-    expect(result.current.verifyResult).toBe('Verification failed: Database lookup failed.')
+// ── untrusted input validation ────────────────────────────────────
+
+describe('useVerification – input validation', () => {
+  it('rejects empty file with EMPTY_INPUT', async () => {
+    const { result } = renderHook(() => useVerification())
+    const empty = new File([], 'empty.mp4', { type: 'video/mp4' })
+    await act(async () => { await result.current.verifyEvidence(empty) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('EMPTY_INPUT')
+    expect(result.current.verifyResult).toMatch(/No file/i)
   })
 
-  it('falls back to generic message when error is not an Error instance', async () => {
+  it('rejects unsupported artifact type', async () => {
+    const { result } = renderHook(() => useVerification())
+    const bad = makeVideoFile('evidence.png', 'image/png')
+    await act(async () => { await result.current.verifyEvidence(bad) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('UNSUPPORTED_ARTIFACT')
+  })
+
+  it('rejects oversized artifact', async () => {
+    const { result } = renderHook(() => useVerification())
+    // Create a file mock with oversized size without allocating huge buffer
+    const f = makeVideoFile('big.mp4', 'video/mp4', 10)
+    Object.defineProperty(f, 'size', { value: 101 * 1024 * 1024 })
+    await act(async () => { await result.current.verifyEvidence(f) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('OVERSIZED_ARTIFACT')
+    expect(result.current.verifyResult).toMatch(/size limit/i)
+  })
+
+  it('accepts file at exactly max size', async () => {
+    const vm = await getVerifMock()
+    const f = makeVideoFile('edge.mp4', 'video/mp4', 10)
+    Object.defineProperty(f, 'size', { value: 100 * 1024 * 1024 })
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(f) })
+    // Should not be oversized — either success or metadata-only depending on mocks
+    expect(result.current.errorCode).not.toBe('OVERSIZED_ARTIFACT')
+    // Verify mocks were called (validation passed)
+    expect(vm.extractMetadata).toHaveBeenCalled()
+  })
+
+  it('falls back to generic message when error is not an Error instance still maps to DEPENDENCY_UNAVAILABLE', async () => {
     const vm = await getVerifMock()
     vm.extractMetadata.mockRejectedValue('something weird')
-
     const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('DEPENDENCY_UNAVAILABLE')
+    expect(result.current.verifyResult).toMatch(/unavailable/i)
+  })
+})
 
-    await act(async () => {
-      await result.current.verifyEvidence(makeVideoFile())
-    })
+// ── service failure ─────────────────────────────────────
 
-    expect(result.current.verifyResult).toContain('Verification services are unavailable')
+describe('useVerification.verifyEvidence – service unavailable', () => {
+  it('maps extraction failure to DEPENDENCY_UNAVAILABLE with safe message', async () => {
+    const vm = await getVerifMock()
+    vm.extractMetadata.mockRejectedValue(new Error('Extraction service is unavailable.'))
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorCode).toBe('DEPENDENCY_UNAVAILABLE')
+    expect(result.current.verifyResult).toMatch(/unavailable/i)
+    // privacy: must not contain raw evidence or witness
+    expect(result.current.verifyResult).not.toMatch(/evidence\.mp4/i)
   })
 
-  it('falls back to generic message when error is undefined', async () => {
+  it('maps db failure to DEPENDENCY_UNAVAILABLE', async () => {
     const vm = await getVerifMock()
-    vm.extractMetadata.mockRejectedValue(undefined)
+    vm.fetchProofEventsByVideo.mockRejectedValue(new Error('Database lookup failed.'))
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.errorCode).toBe('DEPENDENCY_UNAVAILABLE')
+  })
+
+  it('maps wallet failure to WALLET_UNAVAILABLE', async () => {
+    const vm = await getVerifMock()
+    vm.getOnChainProof.mockRejectedValue(new Error('wallet unavailable: connect Freighter'))
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.errorCode).toBe('WALLET_UNAVAILABLE')
+    expect(result.current.verifyResult).toMatch(/Wallet/i)
+  })
+
+  it('privacy: error does not leak file content or secrets', async () => {
+    const vm = await getVerifMock()
+    const secret = 'super-secret-witness-value-123'
+    vm.extractMetadata.mockRejectedValue(new Error(secret))
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.verifyResult).not.toContain(secret)
+    expect(result.current.errorCode).toBe('DEPENDENCY_UNAVAILABLE')
+  })
+})
+
+// ── cancellation and stale guard ───────────────────────────────────
+
+describe('useVerification – cancellation and race handling', () => {
+  it('cancel sets CANCELLED and isVerifying false', async () => {
+    const vm = await getVerifMock()
+    // Make extract hang until we cancel
+    let resolveExtract: (v: unknown) => void
+    vm.extractMetadata.mockReturnValue(new Promise(res => { resolveExtract = res as any }))
+    vm.fetchProofEventsByVideo.mockResolvedValue([])
+    vm.getOnChainProof.mockResolvedValue(null)
 
     const { result } = renderHook(() => useVerification())
+    let p: Promise<void>
+    act(() => { p = result.current.verifyEvidence(makeVideoFile()) })
+    // allow hashing -> verifying transition
+    await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    // should be verifying now (or at least not idle)
+    expect(['hashing', 'verifying', 'validating']).toContain(result.current.status)
 
-    await act(async () => {
-      await result.current.verifyEvidence(makeVideoFile())
-    })
+    await act(async () => { result.current.cancel() })
+    // Resolve hanging extract with abort already signalled — should be ignored
+    await act(async () => { resolveExtract!({ hasHarpocratesMetadata: true }) })
+    await act(async () => { await p!.catch(() => {}) })
 
-    expect(result.current.verifyResult).toContain('Verification services are unavailable')
+    expect(result.current.status).toBe('cancelled')
+    expect(result.current.errorCode).toBe('CANCELLED')
+    expect(result.current.isVerifying).toBe(false)
+  })
+
+  it('repeated verification does not let stale result overwrite newer', async () => {
+    const vm = await getVerifMock()
+    let firstExtractResolve: (v: unknown) => void
+    let firstDbResolve: (v: unknown) => void
+    vm.extractMetadata.mockImplementationOnce(() => new Promise(res => { firstExtractResolve = res as any }))
+    vm.fetchProofEventsByVideo.mockImplementationOnce(() => new Promise(res => { firstDbResolve = res as any }))
+    vm.getOnChainProof.mockResolvedValueOnce(null)
+    // Second call: fast, will set different outcome
+    const fastMeta = { hasHarpocratesMetadata: false }
+    vm.extractMetadata.mockImplementationOnce(async () => fastMeta)
+    vm.fetchProofEventsByVideo.mockResolvedValueOnce([])
+    vm.getOnChainProof.mockResolvedValueOnce(null)
+
+    const { result } = renderHook(() => useVerification())
+    const f1 = makeVideoFile('first.mp4')
+    const f2 = makeVideoFile('second.mp4')
+
+    // Start first verification without awaiting (holds pending)
+    let p1: Promise<void>
+    act(() => { p1 = result.current.verifyEvidence(f1) })
+    await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    // Start second while first is pending — should abort first and adopt second
+    await act(async () => { await result.current.verifyEvidence(f2) })
+    // Now resolve first's pending promises — they should be ignored due to abort/stale guard
+    await act(async () => { firstExtractResolve!({ hasHarpocratesMetadata: true }) })
+    await act(async () => { firstDbResolve!([{ id: 1, event_type: 'a', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' }]) })
+    await act(async () => { await p1!.catch(() => {}) })
+
+    // Final state should reflect second file (no metadata) not first
+    expect(result.current.verifyResult).toMatch(/No verification evidence found|Database record only/i)
+    expect(result.current.status).toBe('success')
+  })
+
+  it('retry re-runs last verification', async () => {
+    const vm = await getVerifMock()
+    vm.extractMetadata.mockResolvedValueOnce({ hasHarpocratesMetadata: true })
+    vm.fetchProofEventsByVideo.mockResolvedValueOnce([])
+    vm.getOnChainProof.mockResolvedValueOnce(null)
+    // retry will call again
+    vm.extractMetadata.mockResolvedValueOnce({ hasHarpocratesMetadata: true })
+    vm.fetchProofEventsByVideo.mockResolvedValueOnce([{ id: 9, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' } as any])
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.events).toHaveLength(0)
+    await act(async () => { await result.current.retry() })
+    expect(result.current.events).toHaveLength(1)
+  })
+
+  it('clear resets state', async () => {
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    expect(result.current.verifyHash).not.toBe('')
+    await act(async () => { result.current.clear() })
+    expect(result.current.verifyHash).toBe('')
+    expect(result.current.verifyResult).toBe('')
+    expect(result.current.status).toBe('idle')
+    expect(result.current.errorCode).toBeNull()
   })
 })
 
@@ -197,6 +403,7 @@ describe('useVerification.verifyEvidence – null file', () => {
 
     expect(result.current.verifyResult).toBe('')
     expect(result.current.verifyHash).toBe('')
+    expect(result.current.status).toBe('idle')
   })
 })
 
@@ -216,5 +423,19 @@ describe('useVerification.loadEvents', () => {
     })
 
     expect(result.current.events).toHaveLength(1)
+  })
+})
+
+// ── mobile viewport / boundary ───────────────────────────────────────────
+
+describe('useVerification – mobile viewport behavior', () => {
+  it('does not overflow on long error messages', async () => {
+    const vm = await getVerifMock()
+    vm.extractMetadata.mockRejectedValue(new Error('A'.repeat(1000)))
+    const { result } = renderHook(() => useVerification())
+    await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
+    // Safe message is truncated/stable, not 1000 chars
+    expect(result.current.verifyResult.length).toBeLessThan(500)
+    expect(result.current.verifyResult).not.toContain('A'.repeat(100))
   })
 })

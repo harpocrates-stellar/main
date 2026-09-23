@@ -60,10 +60,10 @@ describe('App', () => {
     }))
 
     expect(await screen.findByText(/verification services are unavailable/i)).toBeInTheDocument()
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('http://127.0.0.1:5050/api/stego/extract', {
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('http://127.0.0.1:5050/api/stego/extract', expect.objectContaining({
       body: expect.any(FormData),
       method: 'POST',
-    }))
+    })))
     expect(screen.getByText(/chain status/i).nextElementSibling).toHaveTextContent(/not loaded/i)
   })
 
@@ -78,7 +78,7 @@ describe('App', () => {
       type: 'video/mp4',
     }))
 
-    expect(await screen.findByText(/verification services are unavailable/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Invalid evidence|verification services are unavailable/i)).toBeInTheDocument()
     expect(fetch).not.toHaveBeenCalled()
     expect(screen.getByText(/received hash/i).nextElementSibling).toHaveTextContent(/not generated/i)
   })

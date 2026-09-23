@@ -816,6 +816,47 @@ body::-webkit-scrollbar-thumb:hover,
   color: rgba(255, 255, 255, 0.56);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.verify-progress {
+  min-height: 22px;
+  margin: 6px 0 2px;
+}
+
+.verify-progress-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(200, 206, 255, 0.9);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.verify-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.verify-action-btn {
+  min-height: 44px;
+  min-width: 96px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.verify-error p {
+  color: rgba(255, 160, 120, 0.92);
+}
+
+.verify-cancelled p {
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .event-list {
@@ -1195,6 +1236,19 @@ code {
   .workflow-diagram svg {
     width: 920px;
     padding: 24px 20px;
+  }
+
+  .verify-actions {
+    flex-direction: column;
+  }
+
+  .verify-action-btn {
+    width: 100%;
+  }
+
+  .dropzone {
+    min-height: 160px;
+    padding: 18px 14px;
   }
 }
 
