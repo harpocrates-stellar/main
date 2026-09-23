@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { browserBuildTargets } from './browser-support.mjs'
 
 // https://vite.dev/config/
 const config = {
@@ -10,6 +11,7 @@ const config = {
     setupFiles: [],
   },
   build: {
+    target: [...browserBuildTargets],
     chunkSizeWarningLimit: 3600,
     rollupOptions: {
       output: {
