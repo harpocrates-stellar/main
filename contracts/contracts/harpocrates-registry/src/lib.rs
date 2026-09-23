@@ -386,6 +386,31 @@ pub struct VerifierSet {
     pub verifier: Address,
 }
 
+#[contractevent(topics = ["verif", "schedule"])]
+pub struct VerifierRotationScheduled {
+    #[topic]
+    pub active_verifier: Address,
+    pub pending_verifier: Address,
+    pub activation_ledger: u64,
+    pub overlap_window: u64,
+    pub rollback_window: u64,
+}
+
+#[contractevent(topics = ["verif", "activate"])]
+pub struct VerifierRotationActivated {
+    #[topic]
+    pub active_verifier: Address,
+    pub previous_verifier: Address,
+    pub rollback_window_end: u64,
+}
+
+#[contractevent(topics = ["verif", "rollback"])]
+pub struct VerifierRotationRolledBack {
+    #[topic]
+    pub active_verifier: Address,
+    pub previous_verifier: Address,
+}
+
 #[contractevent(topics = ["credroot", "add"])]
 pub struct CredentialRootAdded {
     #[topic]
@@ -398,6 +423,188 @@ pub struct CredentialRootAdded {
 pub struct CredentialRootRevoked {
     #[topic]
     pub credential_root: BytesN<32>,
+}
+
+/// Domain-separated, privacy-safe proof lifecycle history event (#90).
+///
+/// Topics: `["proof", "history", proof_id]`. The payload carries only bounded
+/// metadata (action, timestamp, actor, reason_code) — never media, proof bytes,
+/// witnesses, nullifiers, or metadata hashes.
+#[contractevent(topics = ["proof", "history"])]
+pub struct ProofHistoryEvent {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub action: u32,
+    pub timestamp: u64,
+    pub actor: Option<Address>,
+    pub reason_code: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Dispute / correction state machine (#dispute)
+// ---------------------------------------------------------------------------
+//
+// A dispute is a bounded, auditable record that challenges a proof's accuracy
+// without deleting or revoking the original proof. Disputes are separate from
+// revocation: a disputed proof may still be `Valid` under `get_proof_status`.
+//
+// States
+// ------
+// Open        - dispute submitted, response pending.
+// Responded   - issuer/source submitted a response commitment; admin decision pending.
+// Resolved    - admin resolved the dispute (corrective action taken or noted).
+// Dismissed   - admin dismissed the dispute (no corrective action).
+// Superseded  - the disputed proof was superseded by a corrected proof.
+//
+// Valid transitions
+// -----------------
+// Open -> Responded  (by issuer/source of the proof, within respond_deadline)
+// Open -> Dismissed  (by admin at any time)
+// Open -> Superseded (by admin when a correcting proof is linked)
+// Responded -> Resolved  (by admin, within resolve_deadline after response)
+// Responded -> Dismissed (by admin at any time after response)
+// Responded -> Superseded (by admin when a correcting proof is linked)
+//
+// Resolved, Dismissed, Superseded are terminal states.
+//
+// Spam / abuse controls
+// ---------------------
+// - MAX_OPEN_DISPUTES_PER_PROOF (4): cap on simultaneously Open disputes for
+//   a single proof. Prevents resource exhaustion.
+// - REPORTER_COOLDOWN_SECS (86400, 24 h): minimum interval between disputes
+//   opened by the same reporter_hash for the same proof.
+// - Deadlines stored in the record; callers / indexers can observe them.
+//
+// Privacy
+// -------
+// The reporter's identity is stored as a caller-supplied commitment
+// (reporter_hash = H(reporter_address || proof_id)) rather than in the clear.
+// This allows duplicate/spam detection without leaking the reporter address in
+// contract storage that is world-readable on-chain.
+
+/// Maximum number of simultaneously Open disputes allowed per proof.
+pub const MAX_OPEN_DISPUTES_PER_PROOF: u32 = 4;
+/// Minimum seconds between consecutive disputes by the same reporter on the
+/// same proof (24 hours).
+pub const REPORTER_COOLDOWN_SECS: u64 = 86_400;
+/// Seconds from dispute open until the issuer/source must respond (7 days).
+pub const RESPOND_DEADLINE_SECS: u64 = 604_800;
+/// Seconds from response until the admin must resolve or dismiss (14 days).
+pub const RESOLVE_DEADLINE_SECS: u64 = 1_209_600;
+
+/// Dispute state transitions. Numeric values are stable on-chain identifiers;
+/// do not renumber existing variants.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DisputeStatus {
+    Open = 1,
+    Responded = 2,
+    Resolved = 3,
+    Dismissed = 4,
+    Superseded = 5,
+}
+
+/// Categorised dispute reasons. Numeric values are stable on-chain; do not
+/// renumber.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DisputeReason {
+    ContentError = 1,
+    MetadataError = 2,
+    TierMismatch = 3,
+    CredentialLapsed = 4,
+    PrivacyViolation = 5,
+    Other = 6,
+}
+
+/// Immutable dispute record. Only `status`, `response_commitment`,
+/// `resolve_deadline`, `resolved_at`, and `superseded_by` are mutated after
+/// initial creation; the rest are set once at open time.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    /// Unique dispute identifier (caller-supplied, 32-byte opaque commitment).
+    pub dispute_id: BytesN<32>,
+    /// The proof this dispute challenges.
+    pub proof_id: BytesN<32>,
+    /// Categorised reason for the dispute.
+    pub reason: DisputeReason,
+    /// Privacy-safe commitment: H(reporter_address_bytes || proof_id_bytes).
+    /// The reporter's actual address is never stored on-chain.
+    pub reporter_hash: BytesN<32>,
+    /// Off-chain commitment to the reporter's full evidence submission.
+    pub commitment_hash: BytesN<32>,
+    /// Current lifecycle state.
+    pub status: DisputeStatus,
+    /// Ledger timestamp when the dispute was opened.
+    pub opened_at: u64,
+    /// Ledger timestamp by which the issuer/source must respond.
+    pub respond_deadline: u64,
+    /// Ledger timestamp by which the admin must decide after a response.
+    /// Set to 0 until a response is submitted.
+    pub resolve_deadline: u64,
+    /// Issuer/source commitment hash in response. None until Responded.
+    pub response_commitment: Option<BytesN<32>>,
+    /// Ledger timestamp of final resolution/dismissal. 0 while open.
+    pub resolved_at: u64,
+    /// Proof ID that supersedes the disputed proof, if Superseded.
+    pub superseded_by: Option<BytesN<32>>,
+}
+
+// ---------------------------------------------------------------------------
+// Dispute events (privacy-safe: commitments and timestamps only)
+// ---------------------------------------------------------------------------
+
+#[contractevent(topics = ["dispute", "open"])]
+pub struct DisputeOpened {
+    #[topic]
+    pub dispute_id: BytesN<32>,
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub reason: DisputeReason,
+    pub reporter_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub respond_deadline: u64,
+}
+
+#[contractevent(topics = ["dispute", "respond"])]
+pub struct DisputeResponded {
+    #[topic]
+    pub dispute_id: BytesN<32>,
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub response_commitment: BytesN<32>,
+    pub resolve_deadline: u64,
+}
+
+#[contractevent(topics = ["dispute", "resolve"])]
+pub struct DisputeResolved {
+    #[topic]
+    pub dispute_id: BytesN<32>,
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub resolved_at: u64,
+}
+
+#[contractevent(topics = ["dispute", "dismiss"])]
+pub struct DisputeDismissed {
+    #[topic]
+    pub dispute_id: BytesN<32>,
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub resolved_at: u64,
+}
+
+#[contractevent(topics = ["dispute", "supersede"])]
+pub struct DisputeSuperseded {
+    #[topic]
+    pub dispute_id: BytesN<32>,
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub superseded_by: BytesN<32>,
+    pub resolved_at: u64,
 }
 
 /// Schema record for issuer-certified attribute schemas.
@@ -669,6 +876,16 @@ pub enum DataKey {
     TimelockMinDelay,
     /// Schema definition by schema hash.
     Schema(BytesN<32>),
+    /// Verifiable derivative lineage record keyed by output digest.
+    Lineage(BytesN<32>),
+    /// Stores the `DisputeRecord` for a given dispute_id (#dispute).
+    Dispute(BytesN<32>),
+    /// Counts open (non-terminal) disputes for a proof_id (#dispute).
+    /// Used to enforce MAX_OPEN_DISPUTES_PER_PROOF.
+    ProofOpenDisputeCount(BytesN<32>),
+    /// Tracks the last-opened timestamp for a reporter_hash/proof pair.
+    /// Key is the caller-supplied `reporter_hash` (a 32-byte commitment).
+    ReporterCooldown(BytesN<32>),
 }
 
 #[contracterror]
@@ -739,6 +956,37 @@ pub enum RegistryError {
     UnknownSchema = 50,
     InactiveSchema = 51,
     SchemaVersionMismatch = 52,
+    // --- Restored feature errors (append-only; never renumber existing) ---
+    /// A scoped-nullifier proof was generated for a stale scope epoch.
+    StaleEpoch = 53,
+    /// Batch aggregation was requested with zero or too many elements.
+    BatchSizeExceeded = 54,
+    /// Credential roots in a batch were not all identical.
+    BatchCredentialRootMismatch = 55,
+    /// The batch element count did not match the supplied video-hash list.
+    BatchCountMismatch = 56,
+    /// A lineage parent proof/lineage record was not found.
+    InvalidLineage = 57,
+    /// A lineage edge would introduce a cycle.
+    LineageCycle = 58,
+    /// The requested lineage depth exceeds `MAX_LINEAGE_DEPTH`.
+    LineageTooDeep = 59,
+    /// The requested lineage fan-out exceeds `MAX_LINEAGE_FANOUT`.
+    LineageFanOutExceeded = 60,
+    /// The proof already has `MAX_OPEN_DISPUTES_PER_PROOF` open disputes.
+    TooManyOpenDisputes = 61,
+    /// The respond/resolve deadline for this dispute transition has passed.
+    DisputeWindowExpired = 62,
+    /// The dispute is already in a terminal state.
+    DisputeAlreadyClosed = 63,
+    /// Supersession would create a cycle (direct or depth-1).
+    DisputeCyclicSupersession = 64,
+    /// The caller is not the proof's issuer/source (or admin for Tier 1).
+    UnauthorizedResponder = 65,
+    /// The reporter must wait out `REPORTER_COOLDOWN_SECS` before re-reporting.
+    ReporterOnCooldown = 66,
+    /// The dispute is not in the state this transition requires.
+    InvalidDisputeTransition = 67,
 }
 
 #[contract]
@@ -1262,6 +1510,7 @@ impl HarpocratesRegistry {
             source: None,
             issuer: None,
             nullifier: Some(nullifier),
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), None);
         record_proof_history(
@@ -1287,7 +1536,7 @@ impl HarpocratesRegistry {
 
         let input_len = public_inputs.len();
 
-        if input_len == SILENT_WITNESS_V2_INPUT_LEN {
+        let record = if input_len == SILENT_WITNESS_V2_INPUT_LEN {
             // v2 scoped nullifier path
             let parsed = parse_scoped_silent_witness_public_inputs(&env, &public_inputs);
             if parsed.video_hash != video_hash {
@@ -1337,7 +1586,9 @@ impl HarpocratesRegistry {
                     source: None,
                     issuer: None,
                     nullifier: Some(parsed.nullifier),
+                    batch_size: 0,
                 },
+                None,
             )
         } else if input_len == SILENT_WITNESS_V1_INPUT_LEN {
             // v1 legacy path (backward compatible)
@@ -1383,11 +1634,22 @@ impl HarpocratesRegistry {
                     source: None,
                     issuer: None,
                     nullifier: Some(parsed.nullifier),
+                    batch_size: 0,
                 },
+                None,
             )
         } else {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
-        }
+        };
+
+        record_proof_history(
+            &env,
+            &proof_id,
+            ProofLifecycleAction::Registered as u32,
+            None,
+            record.tier,
+        );
+        record
     }
 
     // -----------------------------------------------------------------------
@@ -1539,6 +1801,7 @@ impl HarpocratesRegistry {
                     nullifier: Some(element.nullifier.clone()),
                     batch_size,
                 },
+                None,
             );
 
             results.push_back(record);
@@ -1579,6 +1842,7 @@ impl HarpocratesRegistry {
             source: Some(source.clone()),
             issuer: None,
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
         record_proof_history(
@@ -1618,6 +1882,7 @@ impl HarpocratesRegistry {
             source: None,
             issuer: Some(issuer.clone()),
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
         record_proof_history(
@@ -1831,6 +2096,7 @@ impl HarpocratesRegistry {
             source: Some(source.clone()),
             issuer: None,
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
         record_proof_history(
@@ -1885,6 +2151,7 @@ impl HarpocratesRegistry {
             source: None,
             issuer: Some(issuer.clone()),
             nullifier: None,
+            batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
         record_proof_history(
@@ -2449,6 +2716,370 @@ impl HarpocratesRegistry {
         }
         .publish(&env);
     }
+
+    // -----------------------------------------------------------------------
+    // Dispute / correction state machine (#dispute)
+    // -----------------------------------------------------------------------
+
+    /// Open a new dispute against a registered proof.
+    ///
+    /// # Parameters
+    /// - `reporter`:        The reporter's address (requires auth; proves liveness).
+    /// - `reporter_hash`:   Privacy-safe commitment H(reporter_address || proof_id),
+    ///   computed off-chain by the reporter. The raw reporter address is never
+    ///   stored in contract state or events.
+    /// - `dispute_id`:      Caller-chosen 32-byte unique identifier.
+    /// - `proof_id`:        The proof being challenged.
+    /// - `reason`:          Categorised dispute reason.
+    /// - `commitment_hash`: Off-chain commitment to the reporter's submission.
+    ///
+    /// # Guards
+    /// - Proof must exist.
+    /// - `dispute_id` must not already be used.
+    /// - Proof must have fewer than `MAX_OPEN_DISPUTES_PER_PROOF` open disputes.
+    /// - Reporter must not be on cooldown for this proof.
+    pub fn open_dispute(
+        env: Env,
+        reporter: Address,
+        reporter_hash: BytesN<32>,
+        dispute_id: BytesN<32>,
+        proof_id: BytesN<32>,
+        reason: DisputeReason,
+        commitment_hash: BytesN<32>,
+    ) -> DisputeRecord {
+        reporter.require_auth();
+
+        // 1. Proof must exist.
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Proof(proof_id.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DisputeNotFound);
+        }
+
+        // 2. dispute_id must be fresh.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Dispute(dispute_id.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DuplicateProof);
+        }
+
+        // 3. Cap open disputes per proof.
+        let open_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofOpenDisputeCount(proof_id.clone()))
+            .unwrap_or(0u32);
+        if open_count >= MAX_OPEN_DISPUTES_PER_PROOF {
+            panic_with_error!(&env, RegistryError::TooManyOpenDisputes);
+        }
+
+        // 4. Reporter cooldown (keyed by the privacy-safe reporter_hash).
+        let cooldown_key = DataKey::ReporterCooldown(reporter_hash.clone());
+        let last_open: u64 = env
+            .storage()
+            .persistent()
+            .get(&cooldown_key)
+            .unwrap_or(0u64);
+        let now = env.ledger().timestamp();
+        if last_open > 0 && now.saturating_sub(last_open) < REPORTER_COOLDOWN_SECS {
+            panic_with_error!(&env, RegistryError::ReporterOnCooldown);
+        }
+
+        // 5. Persist cooldown timestamp.
+        env.storage().persistent().set(&cooldown_key, &now);
+
+        // 6. Compute deadlines.
+        let respond_deadline = now.saturating_add(RESPOND_DEADLINE_SECS);
+
+        // 7. Build and store the dispute record.
+        let record = DisputeRecord {
+            dispute_id: dispute_id.clone(),
+            proof_id: proof_id.clone(),
+            reason,
+            reporter_hash: reporter_hash.clone(),
+            commitment_hash: commitment_hash.clone(),
+            status: DisputeStatus::Open,
+            opened_at: now,
+            respond_deadline,
+            resolve_deadline: 0,
+            response_commitment: None,
+            resolved_at: 0,
+            superseded_by: None,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+
+        // 8. Increment open-dispute counter.
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProofOpenDisputeCount(proof_id.clone()), &(open_count + 1));
+
+        // 9. Emit event.
+        DisputeOpened {
+            dispute_id,
+            proof_id,
+            reason,
+            reporter_hash,
+            commitment_hash,
+            respond_deadline,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Submit a response commitment to an open dispute.
+    ///
+    /// Only the issuer (Tier 3) or source (Tier 2) of the disputed proof may
+    /// respond. Tier 1 (Silent Witness) proofs have no on-chain identity, so
+    /// the admin acts as the sole responder for anonymous proofs.
+    ///
+    /// # Guards
+    /// - Dispute must be in `Open` state.
+    /// - Must be within `respond_deadline`.
+    /// - Caller must be the issuer, source, or (for anonymous proofs) admin.
+    pub fn respond_dispute(
+        env: Env,
+        responder: Address,
+        dispute_id: BytesN<32>,
+        response_commitment: BytesN<32>,
+    ) -> DisputeRecord {
+        responder.require_auth();
+
+        let mut record = get_dispute_record(&env, &dispute_id);
+
+        // Must be Open.
+        if record.status != DisputeStatus::Open {
+            panic_with_error!(&env, RegistryError::InvalidDisputeTransition);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Must be within respond_deadline.
+        if now > record.respond_deadline {
+            panic_with_error!(&env, RegistryError::DisputeWindowExpired);
+        }
+
+        // Authorise: issuer, source, or admin.
+        let proof: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proof(record.proof_id.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::DisputeNotFound));
+
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+
+        let is_authorised = match (proof.issuer.as_ref(), proof.source.as_ref()) {
+            (Some(issuer), _) => &responder == issuer || &responder == &admin,
+            (_, Some(source)) => &responder == source || &responder == &admin,
+            _ => &responder == &admin, // Tier 1: admin only
+        };
+
+        if !is_authorised {
+            panic_with_error!(&env, RegistryError::UnauthorizedResponder);
+        }
+
+        // Transition -> Responded.
+        record.status = DisputeStatus::Responded;
+        record.response_commitment = Some(response_commitment.clone());
+        record.resolve_deadline = now.saturating_add(RESOLVE_DEADLINE_SECS);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+
+        DisputeResponded {
+            dispute_id,
+            proof_id: record.proof_id.clone(),
+            response_commitment,
+            resolve_deadline: record.resolve_deadline,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Resolve a responded dispute (admin only).
+    ///
+    /// Resolution indicates that the admin has reviewed both the dispute and
+    /// the response commitments and has taken (or noted) any appropriate
+    /// corrective action. The original proof record is **not** modified.
+    ///
+    /// # Guards
+    /// - Dispute must be in `Responded` state.
+    /// - Must be within `resolve_deadline`.
+    pub fn resolve_dispute(env: Env, admin: Address, dispute_id: BytesN<32>) -> DisputeRecord {
+        require_admin(&env, &admin);
+
+        let mut record = get_dispute_record(&env, &dispute_id);
+
+        // Must be Responded.
+        if record.status != DisputeStatus::Responded {
+            panic_with_error!(&env, RegistryError::InvalidDisputeTransition);
+        }
+
+        let now = env.ledger().timestamp();
+
+        if now > record.resolve_deadline {
+            panic_with_error!(&env, RegistryError::DisputeWindowExpired);
+        }
+
+        // Transition -> Resolved.
+        record.status = DisputeStatus::Resolved;
+        record.resolved_at = now;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+
+        // Decrement open-dispute counter.
+        decrement_open_dispute_count(&env, &record.proof_id);
+
+        DisputeResolved {
+            dispute_id,
+            proof_id: record.proof_id.clone(),
+            resolved_at: now,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Dismiss a dispute (admin only).
+    ///
+    /// Dismissal is valid from both `Open` and `Responded` states. A dismissed
+    /// dispute is permanently closed with no corrective action.
+    pub fn dismiss_dispute(env: Env, admin: Address, dispute_id: BytesN<32>) -> DisputeRecord {
+        require_admin(&env, &admin);
+
+        let mut record = get_dispute_record(&env, &dispute_id);
+
+        // Must be non-terminal.
+        match record.status {
+            DisputeStatus::Open | DisputeStatus::Responded => {}
+            _ => panic_with_error!(&env, RegistryError::DisputeAlreadyClosed),
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Transition -> Dismissed.
+        record.status = DisputeStatus::Dismissed;
+        record.resolved_at = now;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+
+        // Decrement open-dispute counter.
+        decrement_open_dispute_count(&env, &record.proof_id);
+
+        DisputeDismissed {
+            dispute_id,
+            proof_id: record.proof_id.clone(),
+            resolved_at: now,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Supersede a disputed proof by linking a corrected proof (admin only).
+    ///
+    /// This marks the dispute as `Superseded` and records the correcting proof
+    /// ID. The original disputed proof is **not** revoked - callers should use
+    /// `revoke_proof` separately if revocation is also desired.
+    ///
+    /// # Guards
+    /// - Dispute must be in `Open` or `Responded` state.
+    /// - `superseding_proof_id` must exist in the registry.
+    /// - It must not equal the disputed `proof_id` (trivial cycle).
+    /// - It must not already point back to the disputed proof (depth-1 cycle).
+    pub fn supersede_dispute(
+        env: Env,
+        admin: Address,
+        dispute_id: BytesN<32>,
+        superseding_proof_id: BytesN<32>,
+    ) -> DisputeRecord {
+        require_admin(&env, &admin);
+
+        let mut record = get_dispute_record(&env, &dispute_id);
+
+        // Must be non-terminal.
+        match record.status {
+            DisputeStatus::Open | DisputeStatus::Responded => {}
+            _ => panic_with_error!(&env, RegistryError::DisputeAlreadyClosed),
+        }
+
+        // Superseding proof must exist.
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Proof(superseding_proof_id.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DisputeNotFound);
+        }
+
+        // Trivial self-cycle.
+        if superseding_proof_id == record.proof_id {
+            panic_with_error!(&env, RegistryError::DisputeCyclicSupersession);
+        }
+
+        // Depth-1 cycle guard via the compact reverse index.
+        if check_supersession_cycle(&env, &record.proof_id, &superseding_proof_id) {
+            panic_with_error!(&env, RegistryError::DisputeCyclicSupersession);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Transition -> Superseded.
+        record.status = DisputeStatus::Superseded;
+        record.superseded_by = Some(superseding_proof_id.clone());
+        record.resolved_at = now;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+
+        // Record the reverse supersession direction for cycle detection.
+        record_supersession_direction(&env, &record.proof_id, &superseding_proof_id);
+
+        // Decrement open-dispute counter.
+        decrement_open_dispute_count(&env, &record.proof_id);
+
+        DisputeSuperseded {
+            dispute_id,
+            proof_id: record.proof_id.clone(),
+            superseded_by: superseding_proof_id,
+            resolved_at: now,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Retrieve a dispute record by its dispute_id.
+    pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<DisputeRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))
+    }
+
+    /// Return the number of currently Open disputes for a given proof.
+    pub fn get_open_dispute_count(env: Env, proof_id: BytesN<32>) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofOpenDisputeCount(proof_id))
+            .unwrap_or(0u32)
+    }
 }
 
 
@@ -2671,6 +3302,99 @@ fn save_record(
     }
     .publish(env);
     record
+}
+
+/// Append a bounded, privacy-safe lifecycle entry to a proof's history (#90).
+///
+/// Enforces `MAX_HISTORY_ENTRIES_PER_PROOF`, rejects unknown actions and
+/// out-of-range reason codes, and emits only the `ProofHistoryEvent`
+/// (`["proof", "history", proof_id]`). No media, proof bytes, witnesses,
+/// nullifiers, or metadata hashes are written or emitted here.
+fn record_proof_history(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    action: u32,
+    actor: Option<Address>,
+    reason_code: u32,
+) {
+    if !(1..=6).contains(&action) {
+        panic_with_error!(env, RegistryError::InvalidHistoryAction);
+    }
+    if reason_code > 255 {
+        panic_with_error!(env, RegistryError::InvalidReasonCode);
+    }
+
+    let seq_key = DataKey::ProofHistorySeq(proof_id.clone());
+    let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+
+    if seq >= MAX_HISTORY_ENTRIES_PER_PROOF {
+        panic_with_error!(env, RegistryError::HistorySaturated);
+    }
+
+    let next_seq = seq + 1;
+    let now = env.ledger().timestamp();
+    env.storage().persistent().set(
+        &DataKey::ProofHistoryEntry(proof_id.clone(), next_seq),
+        &ProofHistoryEntry {
+            action,
+            timestamp: now,
+            actor: actor.clone(),
+            reason_code,
+        },
+    );
+    env.storage().persistent().set(&seq_key, &next_seq);
+
+    ProofHistoryEvent {
+        proof_id: proof_id.clone(),
+        action,
+        timestamp: now,
+        actor,
+        reason_code,
+    }
+    .publish(env);
+}
+
+/// Validate a lineage edge set: bounded fan-out and depth, no self-reference,
+/// and every parent must already be a known proof or lineage record.
+fn validate_lineage(
+    env: &Env,
+    parent_proof_ids: &SorobanVec<BytesN<32>>,
+    output_digest: &BytesN<32>,
+    depth: u32,
+) {
+    if parent_proof_ids.len() > MAX_LINEAGE_FANOUT as u32 {
+        panic_with_error!(env, RegistryError::LineageFanOutExceeded);
+    }
+    if depth > MAX_LINEAGE_DEPTH {
+        panic_with_error!(env, RegistryError::LineageTooDeep);
+    }
+
+    for parent in parent_proof_ids.iter() {
+        if parent == *output_digest {
+            panic_with_error!(env, RegistryError::LineageCycle);
+        }
+        let is_known_parent = env.storage().persistent().has(&DataKey::Proof(parent.clone()))
+            || env.storage().persistent().has(&DataKey::Lineage(parent.clone()));
+        if !is_known_parent {
+            panic_with_error!(env, RegistryError::InvalidLineage);
+        }
+    }
+}
+
+/// Derive the deterministic sub-proof_id for batch element `index`.
+///
+/// Uses a full 32-byte XOR spread of the batch id so sibling elements never
+/// collide while remaining reproducible from `(batch_id, index)` alone.
+fn derive_element_proof_id(env: &Env, batch_id: &BytesN<32>, index: u32) -> BytesN<32> {
+    let mut bytes = [0u8; 32];
+    batch_id.copy_into_slice(&mut bytes);
+
+    let index_byte = (index & 0xFF) as u8;
+    for j in 0..32 {
+        bytes[j] ^= index_byte.wrapping_mul((j as u8).wrapping_add(1));
+    }
+
+    BytesN::from_array(env, &bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -3022,30 +3746,45 @@ fn decrement_open_dispute_count(env: &Env, proof_id: &BytesN<32>) {
 /// Depth-1 cycle guard for supersession.
 ///
 /// Returns `true` if allowing `superseding_proof_id` to supersede
-/// `disputed_proof_id` would create a cycle.  We detect:
-/// - Any existing dispute for `superseding_proof_id` that itself has
-///   `superseded_by == disputed_proof_id` (i.e. there is already a supersession
-///   arrow from `superseding_proof_id` back to the disputed proof).
+/// `disputed_proof_id` would create a cycle. Two conditions are rejected:
 ///
-/// The reverse index key is:
-///   SHA-256("harp_sup_rev" ‖ superseding_proof_id_bytes)
-/// stored as DataKey::Dispute(key_hash) → disputed_proof_id.
+/// 1. **Duplicate edge** - an arrow `disputed_proof_id -> superseding_proof_id`
+///    already exists, so re-recording it is a no-op that could mask corruption.
+/// 2. **Reverse edge (2-cycle)** - an arrow `superseding_proof_id ->
+///    disputed_proof_id` already exists, so the proposed edge would close a
+///    length-2 cycle.
+///
+/// The reverse index maps a superseding proof to the proof it corrected:
+///   DataKey::Dispute(SHA-256("harp_sup_rev" ‖ superseding_proof_id)) -> disputed_proof_id
 fn check_supersession_cycle(
     env: &Env,
     disputed_proof_id: &BytesN<32>,
     superseding_proof_id: &BytesN<32>,
 ) -> bool {
-    let rev_key_hash = supersession_reverse_key(env, superseding_proof_id);
-
+    // 1. Duplicate edge: reverse[superseding] == disputed.
+    let forward_rev = supersession_reverse_key(env, superseding_proof_id);
     if let Some(recorded_original) = env
         .storage()
         .persistent()
-        .get::<DataKey, BytesN<32>>(&DataKey::Dispute(rev_key_hash))
+        .get::<DataKey, BytesN<32>>(&DataKey::Dispute(forward_rev))
     {
         if recorded_original == *disputed_proof_id {
             return true;
         }
     }
+
+    // 2. Reverse edge: reverse[disputed] == superseding.
+    let reverse_rev = supersession_reverse_key(env, disputed_proof_id);
+    if let Some(recorded_superseder) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, BytesN<32>>(&DataKey::Dispute(reverse_rev))
+    {
+        if recorded_superseder == *superseding_proof_id {
+            return true;
+        }
+    }
+
     false
 }
 

@@ -149,6 +149,13 @@ get_proof_status
 get_proof_history
 get_proof_history_at
 get_proof_history_count
+open_dispute
+respond_dispute
+resolve_dispute
+dismiss_dispute
+supersede_dispute
+get_dispute
+get_open_dispute_count
 verify_proof
 expire_proof
 correct_proof
@@ -252,6 +259,14 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["pause", "set", domain]          => paused_by, paused_at, expires_at
 ["pause", "clear", domain]        => unpaused_by, unpaused_at
 ["guardian", "set", guardian]     => {}
+["dispute", "open", dispute_id]   => proof_id, reason, reporter_hash, commitment_hash, respond_deadline
+["dispute", "respond", dispute_id] => proof_id, response_commitment, resolve_deadline
+["dispute", "resolve", dispute_id] => proof_id, resolved_at
+["dispute", "dismiss", dispute_id] => proof_id, resolved_at
+["dispute", "supersede", dispute_id] => proof_id, superseded_by, resolved_at
+["verif", "schedule"]             => active_verifier, pending_verifier, activation_ledger, overlap_window, rollback_window
+["verif", "activate"]             => active_verifier, previous_verifier, rollback_window_end
+["verif", "rollback"]             => active_verifier, previous_verifier
 ```
 
 ## Lifecycle History (#90)
@@ -309,6 +324,25 @@ All registration functions and `revoke_proof` automatically record history.
 
 Proofs registered before this feature have zero history entries. `get_proof_history`
 returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
+
+## Dispute And Supersession
+
+`open_dispute`, `respond_dispute`, `resolve_dispute`, `dismiss_dispute`,
+`supersede_dispute`, `get_dispute`, and `get_open_dispute_count` add a bounded,
+auditable dispute/correction state machine. Disputes never modify or delete the
+disputed proof and are independent of revocation - a disputed proof can still
+report `Valid` from `get_proof_status`. Reporter identity is stored only as a
+caller-supplied `reporter_hash` commitment, and events carry commitment hashes
+and timestamps only.
+
+Bounds: `MAX_OPEN_DISPUTES_PER_PROOF = 4`, `REPORTER_COOLDOWN_SECS = 86400`,
+`RESPOND_DEADLINE_SECS = 604800`, `RESOLVE_DEADLINE_SECS = 1209600`. All new
+storage keys (`Dispute`, `ProofOpenDisputeCount`, `ReporterCooldown`) are
+additive, so upgrading requires no migration and rollback is a plain wasm
+redeploy.
+
+See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
+and migration/rollback details.
 
 ## Scripts
 

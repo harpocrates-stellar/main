@@ -370,3 +370,245 @@ fn non_admin_cannot_resolve() {
     let result = client.try_resolve_dispute(&stranger, &dispute_id);
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// dismiss_dispute: open -> dismissed releases the open counter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dismiss_open_dispute_releases_counter() {
+    let (env, cid, admin, _source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x71);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x72), &dispute_id, &spid,
+        &DisputeReason::Other, &b32(&env, 0x73),
+    );
+    assert_eq!(client.get_open_dispute_count(&spid), 1);
+
+    let rec = client.dismiss_dispute(&admin, &dispute_id);
+    assert_eq!(rec.status, DisputeStatus::Dismissed);
+    assert!(rec.resolved_at > 0);
+    assert_eq!(client.get_open_dispute_count(&spid), 0);
+
+    // Dismissal never deletes or mutates the original proof.
+    let proof = client.get_proof(&spid).expect("proof deleted");
+    assert_eq!(proof.status, STATUS_REGISTERED);
+}
+
+// ---------------------------------------------------------------------------
+// dismiss_dispute: responded -> dismissed is also valid
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dismiss_responded_dispute_succeeds() {
+    let (env, cid, admin, source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x74);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x75), &dispute_id, &spid,
+        &DisputeReason::Other, &b32(&env, 0x76),
+    );
+    client.respond_dispute(&source, &dispute_id, &b32(&env, 0x77));
+
+    let rec = client.dismiss_dispute(&admin, &dispute_id);
+    assert_eq!(rec.status, DisputeStatus::Dismissed);
+    assert_eq!(client.get_open_dispute_count(&spid), 0);
+}
+
+// ---------------------------------------------------------------------------
+// dismiss_dispute: terminal disputes cannot be dismissed again (regression)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dismiss_closed_dispute_rejected() {
+    let (env, cid, admin, _source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x78);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x79), &dispute_id, &spid,
+        &DisputeReason::Other, &b32(&env, 0x7A),
+    );
+    client.dismiss_dispute(&admin, &dispute_id);
+
+    let result = client.try_dismiss_dispute(&admin, &dispute_id);
+    assert!(result.is_err());
+    // Counter must not go negative / wrap on the rejected retry.
+    assert_eq!(client.get_open_dispute_count(&spid), 0);
+}
+
+#[test]
+fn non_admin_cannot_dismiss() {
+    let (env, cid, _admin, _source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let stranger   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x7B);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x7C), &dispute_id, &spid,
+        &DisputeReason::Other, &b32(&env, 0x7D),
+    );
+    let result = client.try_dismiss_dispute(&stranger, &dispute_id);
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// supersede_dispute: links a correcting proof and records the direction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn supersede_links_correcting_proof() {
+    let (env, cid, admin, _source, _issuer, spid, sealid) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x81);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x82), &dispute_id, &spid,
+        &DisputeReason::ContentError, &b32(&env, 0x83),
+    );
+    assert_eq!(client.get_open_dispute_count(&spid), 1);
+
+    let rec = client.supersede_dispute(&admin, &dispute_id, &sealid);
+    assert_eq!(rec.status, DisputeStatus::Superseded);
+    assert_eq!(rec.superseded_by, Some(sealid.clone()));
+    assert!(rec.resolved_at > 0);
+    assert_eq!(client.get_open_dispute_count(&spid), 0);
+
+    // The superseding proof and the disputed proof both survive unchanged.
+    assert!(client.get_proof(&spid).is_some());
+    assert_eq!(
+        client.get_proof(&spid).unwrap().status,
+        STATUS_REGISTERED,
+    );
+    assert!(client.get_proof(&sealid).is_some());
+}
+
+#[test]
+fn supersede_unknown_proof_rejected() {
+    let (env, cid, admin, _source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x84);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x85), &dispute_id, &spid,
+        &DisputeReason::Other, &b32(&env, 0x86),
+    );
+
+    let result = client.try_supersede_dispute(&admin, &dispute_id, &b32(&env, 0xFF));
+    assert!(result.is_err());
+}
+
+#[test]
+fn supersede_self_cycle_rejected() {
+    let (env, cid, admin, _source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x87);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x88), &dispute_id, &spid,
+        &DisputeReason::Other, &b32(&env, 0x89),
+    );
+
+    let result = client.try_supersede_dispute(&admin, &dispute_id, &spid);
+    assert!(result.is_err());
+}
+
+// Regression: a supersession cannot be reversed into a 2-cycle.
+#[test]
+fn supersede_reverse_cycle_rejected() {
+    let (env, cid, admin, _source, _issuer, spid, sealid) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+
+    // Dispute on spid, corrected by sealid  =>  sealid supersedes spid.
+    let d1 = b32(&env, 0x8A);
+    client.open_dispute(
+        &Address::generate(&env), &b32(&env, 0x8B), &d1, &spid,
+        &DisputeReason::ContentError, &b32(&env, 0x8C),
+    );
+    client.supersede_dispute(&admin, &d1, &sealid);
+
+    // Attempting the reverse (spid supersedes sealid) must be rejected.
+    let d2 = b32(&env, 0x8D);
+    client.open_dispute(
+        &Address::generate(&env), &b32(&env, 0x8E), &d2, &sealid,
+        &DisputeReason::ContentError, &b32(&env, 0x8F),
+    );
+    let result = client.try_supersede_dispute(&admin, &d2, &spid);
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Disputes are separate from revocation: status is unaffected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dispute_does_not_change_proof_status() {
+    let (env, cid, _admin, _source, _issuer, spid, _) = make_env();
+    let client     = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter   = Address::generate(&env);
+    let dispute_id = b32(&env, 0x91);
+
+    client.open_dispute(
+        &reporter, &b32(&env, 0x92), &dispute_id, &spid,
+        &DisputeReason::MetadataError, &b32(&env, 0x93),
+    );
+
+    assert_eq!(
+        client.get_proof_status(&spid),
+        ProofVerificationStatus::Valid,
+    );
+}
+
+// Boundary: exactly MAX_OPEN_DISPUTES_PER_PROOF open disputes then a dismissal
+// frees a slot for a new dispute.
+#[test]
+fn dismiss_frees_open_dispute_slot() {
+    let (env, cid, admin, _source, _issuer, spid, _) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+    let mut first = b32(&env, 0xA0);
+
+    for i in 0..MAX_OPEN_DISPUTES_PER_PROOF {
+        let reporter   = Address::generate(&env);
+        let dispute_id = b32u(&env, 1, (0xA0 + i) as u8);
+        if i == 0 {
+            first = dispute_id.clone();
+        }
+        client.open_dispute(
+            &reporter,
+            &b32u(&env, 0, (0xB0 + i) as u8),
+            &dispute_id,
+            &spid,
+            &DisputeReason::Other,
+            &b32u(&env, 2, (0xC0 + i) as u8),
+        );
+    }
+    assert_eq!(client.get_open_dispute_count(&spid), MAX_OPEN_DISPUTES_PER_PROOF);
+
+    client.dismiss_dispute(&admin, &first);
+    assert_eq!(client.get_open_dispute_count(&spid), MAX_OPEN_DISPUTES_PER_PROOF - 1);
+
+    client.open_dispute(
+        &Address::generate(&env), &b32(&env, 0xBF), &b32(&env, 0xAF),
+        &spid, &DisputeReason::Other, &b32(&env, 0xCF),
+    );
+    assert_eq!(client.get_open_dispute_count(&spid), MAX_OPEN_DISPUTES_PER_PROOF);
+}
+
+// Boundary: omitted (`None`) reason codes / unknown dispute ids are safe reads.
+#[test]
+fn get_dispute_unknown_id_is_none() {
+    let (env, cid, _admin, _source, _issuer, _spid, _) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+    assert!(client.get_dispute(&b32(&env, 0xFE)).is_none());
+}
+
