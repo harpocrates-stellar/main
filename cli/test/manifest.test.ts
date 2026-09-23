@@ -22,7 +22,9 @@ describe('createProofManifest', () => {
   it('returns a manifest with protocol and version', () => {
     const manifest = createProofManifest(VALID_INPUT)
     expect(manifest.protocol).toBe('harpocrates')
-    expect(manifest.version).toBe(1)
+    expect(manifest.version).toBe(2)
+    expect(manifest.verifierScope).toBe('0')
+    expect(manifest.epoch).toBe(0)
   })
 
   it('copies all supplied fields', () => {
@@ -95,5 +97,28 @@ describe('parseManifest', () => {
   it('throws on non-harpocrates protocol', () => {
     const bad = serializeManifest({ ...createProofManifest(VALID_INPUT), protocol: 'other' as 'harpocrates' })
     expect(() => parseManifest(bad)).toThrow('protocol must be')
+  })
+
+  it('accepts legacy v1 and current v2 without changing the input version', () => {
+    const current = createProofManifest(VALID_INPUT)
+    expect(parseManifest(JSON.stringify({ ...current, version: 1 } )).version).toBe(1)
+    expect(parseManifest(JSON.stringify(current)).version).toBe(2)
+  })
+
+  it('rejects unsupported versions and malformed digests', () => {
+    const current = createProofManifest(VALID_INPUT)
+    expect(() => parseManifest(JSON.stringify({ ...current, version: 3 }))).toThrow('unsupported manifest version')
+    expect(() => parseManifest(JSON.stringify({ ...current, videoHash: 'not-a-hash' }))).toThrow('manifest.videoHash')
+  })
+
+  it('rejects extra fields that could leak private witness data in a receipt', () => {
+    const current = createProofManifest(VALID_INPUT)
+    expect(() => parseManifest(JSON.stringify({ ...current, witness: 'private' }))).toThrow('unsupported fields')
+  })
+
+  it('rejects invalid v2 scope and epoch', () => {
+    const current = createProofManifest(VALID_INPUT)
+    expect(() => parseManifest(JSON.stringify({ ...current, verifierScope: '-1' }))).toThrow('scope or epoch')
+    expect(() => parseManifest(JSON.stringify({ ...current, epoch: -1 }))).toThrow('scope or epoch')
   })
 })

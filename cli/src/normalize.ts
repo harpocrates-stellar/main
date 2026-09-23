@@ -1,4 +1,6 @@
 import type { VerificationResult } from './receipt.js'
+import type { ProofManifest } from './manifest.js'
+import type { ChainProofRecord, TransactionVerification } from './stellar-lookup.js'
 
 /**
  * Compute the overall verification result from a chain record's status
@@ -14,18 +16,36 @@ export function computeResult(
 
   if (!chainRecord) return 'not_found'
 
-  // Chain proof status values (matching the Soroban contract):
-  //   0 = Active, 1 = Revoked, 2 = Expired, 3 = Not Found
+  // Registry ProofRecord status values: 1 = registered, 2 = revoked, 3 = expired.
   switch (chainRecord.status) {
-    case 0:
-      return 'valid'
     case 1:
-      return 'revoked'
+      return 'valid'
     case 2:
+      return 'revoked'
+    case 3:
       return 'expired'
     default:
-      return 'not_found'
+      return 'error'
   }
+}
+
+/** Fail closed when the public manifest, transaction and registry disagree. */
+export function classifyVerification(
+  manifest: ProofManifest,
+  transaction: TransactionVerification,
+  chainRecord: ChainProofRecord | null,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): VerificationResult {
+  if (transaction.contractMatch === false) return 'contract_mismatch'
+  const result = computeResult(chainRecord, transaction.status)
+  if (!chainRecord) return result
+  if (chainRecord.videoHash.toLowerCase() !== manifest.videoHash.toLowerCase() ||
+      chainRecord.metadataHash.toLowerCase() !== manifest.metadataHash.toLowerCase() ||
+      chainRecord.tier !== { silent: 1, source: 2, seal: 3 }[manifest.tier]) return 'error'
+  if (result === 'valid' && chainRecord.expiresAt &&
+      BigInt(chainRecord.expiresAt) > 0n &&
+      BigInt(chainRecord.expiresAt) < BigInt(nowSeconds)) return 'expired'
+  return result
 }
 
 /**
