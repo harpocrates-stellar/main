@@ -310,7 +310,7 @@ impl Model {
             proof_ttl: 0,
             revocation_root: None,
             now: START_TIMESTAMP,
-            schema_version: 1,
+            schema_version: 2,
             proofs: StdVec::new(),
             nullifiers: StdVec::new(),
         }
@@ -321,6 +321,14 @@ impl Model {
             Ok(())
         } else {
             Err(RegistryError::Unauthorized)
+        }
+    }
+
+    fn require_issuer_role_available(&self, issuer: ActorId) -> Result<(), RegistryError> {
+        if issuer == self.admin || self.pending_admin == Some(issuer) {
+            Err(RegistryError::RoleConflict)
+        } else {
+            Ok(())
         }
     }
 
@@ -1047,7 +1055,9 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             issuer,
             metadata,
         } => {
-            let expected = model.require_admin(admin);
+            let expected = model
+                .require_admin(admin)
+                .and_then(|_| model.require_issuer_role_available(issuer));
 
             let mut call_args = args(fixture);
             call_args.push_back(fixture.actor(admin).into_val(&fixture.env));
@@ -1196,7 +1206,15 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             admin,
             pending_admin,
         } => {
-            let expected = model.require_admin(admin);
+            let expected = model
+                .require_admin(admin)
+                .and_then(|_| {
+                    if model.issuers[pending_admin.index()] == IssuerState::Active {
+                        Err(RegistryError::RoleConflict)
+                    } else {
+                        Ok(())
+                    }
+                });
 
             let mut call_args = args(fixture);
             call_args.push_back(fixture.actor(admin).into_val(&fixture.env));
@@ -1243,6 +1261,9 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 None => Err(RegistryError::NoPendingAdmin),
                 Some(expected_admin) if expected_admin != pending_admin => {
                     Err(RegistryError::Unauthorized)
+                }
+                Some(_) if model.issuers[pending_admin.index()] == IssuerState::Active => {
+                    Err(RegistryError::RoleConflict)
                 }
                 Some(_) => Ok(()),
             };
@@ -1370,11 +1391,11 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 expected,
                 "upgrade_storage",
             )?;
+            let migrated = expected.is_ok() && model.schema_version < SchemaVersion::V2 as u32;
             if expected.is_ok() {
-                let target_version = 1;
-                if model.schema_version < target_version {
-                    model.schema_version = target_version;
-                }
+                model.schema_version = SchemaVersion::V2 as u32;
+            }
+            if migrated {
                 1
             } else {
                 0

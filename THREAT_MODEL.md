@@ -88,8 +88,8 @@ of every open risk listed in Section 8.
 |-------|-------------|-------------|
 | **Silent Witness** | Untrusted input, ZK-verified identity | Anonymous user who proves credential membership without revealing identity. Secrets stay in the browser. |
 | **Consistent Source** | Partially trusted | Any Stellar wallet holder. Identity is pseudonymous; Freighter signs the XDR. |
-| **Public Seal Issuer** | Admin-delegated trust | Institutional address explicitly allow-listed by the registry admin. |
-| **Registry Admin** | Highest trusted | Holds the Soroban admin key. Controls issuer list, credential roots, verifier contract, proof revocation, and TTL. |
+| **Public Seal Issuer** | Admin-delegated trust | Institutional address explicitly allow-listed by the registry admin. Storage V2 forbids the active admin address from holding this role. |
+| **Registry Admin** | Highest trusted | Holds the Soroban admin key. Controls issuer list, credential roots, verifier contract, proof revocation, and TTL; storage V2 forbids the same active address from holding Tier 3 issuer authority. |
 | **Backend operator** | Infrastructure trust | Controls Flask config, `DATABASE_URL`, CORS origins, and `METRICS_TOKEN`. |
 | **Verifier / Relying party** | Untrusted consumer | Reads on-chain proof records or calls the Verification Portal. Must not be trusted to supply correct hashes without independent recomputation. |
 | **Attacker** | Zero trust | Any actor attempting to forge proofs, replay registrations, spoof metadata, or extract secrets. |
@@ -105,7 +105,7 @@ Each assumption is a potential attack surface if violated.
 |----|------------|-----------------|
 | D1 | The Soroban contract WASM deployed matches `RegistryWasmHash` in README. | Backdoored contract accepts forged proofs. |
 | D2 | The `SilentWitnessUltraHonkVerifier` contract address is correct and unmodified. | `register_anonymous_verified` calls the wrong verifier; ZK proofs are not actually checked. |
-| D3 | The admin key (`GDVRSXIO4SK2...`) is held by a single trusted operator. | Any admin key leak allows unrestricted contract control. |
+| D3 | The admin key (`GDVRSXIO4SK2...`) is held by a single trusted operator, and an upgraded registry reports storage V2 after `upgrade_storage`. | Any admin key leak allows protocol control; a pre-migration registry may temporarily permit admin/issuer role overlap. |
 | D4 | The Flask backend runs behind TLS in any non-localhost deployment. | Credential secrets sent to `/api/noir/silent-witness` (dev-only path) or metadata hashes in transit can be intercepted. |
 | D5 | `CORS_ORIGINS` is set to the exact frontend origin; wildcard is never used without `ALLOW_WILDCARD_CORS=true`. | CORS bypass from arbitrary origins. |
 | D6 | `DATABASE_URL` points to a private NeonDB instance not reachable from the public internet without authentication. | Any caller can read the full proof-event log. |
@@ -250,7 +250,9 @@ and `metadata_hash` for content they did not actually review.
 | Mitigation | Location |
 |------------|----------|
 | Issuer must be in the active allowlist (`add_issuer`) before any seal registration | `lib.rs` → `get_issuer_record` |
+| Storage V2 rejects admin/issuer role overlap at grant, transfer, and registration boundaries; V1-to-V2 migration revokes only a conflicting active issuer record | `lib.rs` → `require_issuer_role_available`, `upgrade_storage` |
 | Admin can revoke a compromised issuer at any time (`revoke_issuer`) | `lib.rs` → `revoke_issuer` |
+| `RoleConflict` (`#53`) prevents one address from simultaneously controlling protocol administration and Tier 3 issuance after storage V2 | `lib.rs` → `require_issuer_role_available` |
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
@@ -494,7 +496,12 @@ legitimate proofs, or transfer admin to themselves.
 | `require_admin` validates both that the stored admin matches and that the caller has signed | `lib.rs` → `require_admin` |
 
 **Residual risk:** The admin is a single Stellar keypair with no multisig or
-threshold signing. Any single-point compromise gives an attacker complete control.
+threshold signing. Any single-point compromise gives an attacker protocol
+control. Storage V2 limits role confusion by preventing the same active address
+from also acting as an issuer, but it does not make a compromised admin
+incapable of revoking issuers, credential roots, or evidence. An artifact
+rollback to a pre-V2 Wasm can re-enable admin/issuer overlap until the V2
+migration is run again.
 There is no time-lock or cooldown on admin operations — a compromised admin can
 immediately revoke all credential roots, replacing them with attacker-controlled
 roots, and set a malicious verifier contract.
@@ -575,6 +582,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Nullifier set on first use, `DuplicateNullifier` on replay | T2 | `lib.rs` → `DataKey::Nullifier` |
 | Credential root allowlist with active/revoked status | T1, T8 | `lib.rs` → `add_credential_root`, `revoke_credential_root` |
 | Issuer allowlist with active/revoked status | T3 | `lib.rs` → `add_issuer`, `revoke_issuer` |
+| Disjoint admin/issuer roles with idempotent storage V2 migration and preserved evidence | T3, T9 | `lib.rs` → `require_issuer_role_available`, `upgrade_storage`, `test_roles.rs` |
 | External verifier contract hook (`verify_external_proof`) | T8 | `lib.rs` → `verify_external_proof` |
 | Public input parsing with exact-length enforcement (128 bytes) | T8 | `lib.rs` → `parse_silent_witness_public_inputs` |
 | `video_hash` cross-check between public inputs and call argument | T8 | `lib.rs` → `register_anonymous_verified` |

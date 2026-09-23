@@ -66,6 +66,35 @@ Attach it to the registry:
   -Verifier YOUR_VERIFIER_CONTRACT_ID
 ```
 
+## Upgrade Existing Registries To Storage V2
+
+The role-separated registry artifact starts fresh deployments at storage V2 and adds
+strict separation between registry-admin and active-issuer authority. Before
+using an upgraded contract for issuer operations, the current admin must run
+the existing idempotent migration entry point:
+
+```powershell
+stellar contract invoke `
+  --id YOUR_REGISTRY_CONTRACT_ID `
+  --source harpocrates-admin `
+  --network testnet `
+  -- `
+  -- upgrade_storage `
+  --admin harpocrates-admin
+```
+
+Then query `get_schema_version`; it must return `2`. If the current admin also
+has an active legacy issuer record, migration emits `IssuerRevoked` for that
+address and `SchemaUpgraded` with `previous=1, current=2`. No proof, nullifier,
+credential-root, verifier, metadata, or media state is rewritten. Keep the
+admin and issuer keypairs distinct and verify `is_admin`/`is_issuer` before
+granting Tier 3 access.
+
+Rollback may restore the previous immutable Wasm, and all stored evidence
+remains readable. However, a pre-V2 artifact does not enforce role separation;
+if it is active, do not grant issuer authority until the V2 artifact is restored
+and `upgrade_storage` is confirmed idempotently complete.
+
 ## Register Tiers
 
 Tier 1 requires an active credential root before registration:
