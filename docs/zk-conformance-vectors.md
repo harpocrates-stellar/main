@@ -137,6 +137,13 @@ nullifier, and that an unknown `schema_id` returns a code rather than panicking.
 v1-lenient rules: only the frame length is enforced on chain, exactly as before
 this change. No existing proof, artifact, or client call is affected.
 
+The **prover runtime** (Web Worker vs the non-worker fallback) is not part of
+the `hpx-vi/1` codec, the proof bytes, or the public-input frame. Both
+`ProofWorkerClient` paths emit byte-identical `SilentWitnessProof` payloads, so
+conformance vectors are unaffected by which runtime produced a proof; the
+fallback only adds transport-level bounds (timeout, secret size, concurrency)
+that never touch the codec. See `docs/proof-worker.md`.
+
 Promoting the codec to enforcement on the registration paths is a separate,
 versioned migration, because the stricter rules reject frames that today's
 contract accepts. That migration must:

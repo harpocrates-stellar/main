@@ -1,5 +1,6 @@
 import type { BatchItemResult } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
+import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
   fileName: string
@@ -108,19 +109,19 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
     if (item.manifest) {
       manifests.push(item.manifest)
     } else if (item.status === 'confirmed' && item.videoHash && item.metadataHash && item.tier) {
-      manifests.push({
-        protocol: 'harpocrates',
-        version: 1,
-        proofId: item.chainProof?.metadataHash ?? item.videoHash,
-        tier: (item.tier as 'silent' | 'source' | 'seal') || 'source',
-        network: 'testnet',
-        contractId: item.chainProof?.issuer ?? '',
-        transactionRef: item.events[0]?.tx_hash ?? '',
-        videoHash: item.videoHash,
-        metadataHash: item.metadataHash,
-        sourceHash: item.sourceHash ?? item.videoHash,
-        timestamp: new Date().toISOString(),
-      })
+      manifests.push(
+        createProofManifest({
+          proofId: item.chainProof?.metadataHash ?? item.videoHash,
+          tier: (item.tier as 'silent' | 'source' | 'seal') || 'source',
+          network: 'testnet',
+          contractId: item.chainProof?.issuer ?? '',
+          transactionRef: item.events[0]?.tx_hash ?? '',
+          videoHash: item.videoHash,
+          metadataHash: item.metadataHash,
+          sourceHash: item.sourceHash ?? item.videoHash,
+          timestamp: new Date().toISOString(),
+        }),
+      )
     }
   }
 

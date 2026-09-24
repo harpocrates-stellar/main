@@ -195,16 +195,26 @@ export function useEvidence(): UseEvidenceReturn {
       fieldSecret('nullifier', nullifierSeed.trim()),
     ])
 
-    const { generateSilentWitnessProof } = await import('../noirClient')
-    const silentWitness = await generateSilentWitnessProof({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
-
-    const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
-    setProof(nextWithProof)
-    return nextWithProof
+    const { ProofWorkerClient } = await import('../workers/proofWorkerClient')
+    const client = new ProofWorkerClient()
+    try {
+      const { result, mode } = client.generate({
+        videoHash: nextProof.videoHash,
+        credentialSecret,
+        nullifierSecret,
+      })
+      const silentWitness = await result
+      if (mode === 'main-thread') {
+        setMessage(
+          'Web Worker unavailable — proving on the main thread. The page may be briefly unresponsive.',
+        )
+      }
+      const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
+      setProof(nextWithProof)
+      return nextWithProof
+    } finally {
+      client.destroy()
+    }
   }
 
   return {

@@ -1,4 +1,8 @@
-import pako from 'pako'
+import { inflate } from 'pako'
+
+type VideoWithFrameCallback = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: () => void) => number
+}
 
 const MAGIC = new TextEncoder().encode('HRPSTG1')
 const MAX_PAYLOAD_BYTES = 64 * 1024
@@ -13,7 +17,10 @@ export class MalformedEvidenceError extends Error {
 }
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  // TS 6.0 types digest()'s BufferSource against ArrayBuffer-backed views;
+  // u8 views over other buffer kinds need this explicit cast (same pattern as
+  // checkpointStorage).
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data as unknown as BufferSource)
   return new Uint8Array(hashBuffer)
 }
 
@@ -60,7 +67,7 @@ async function unpackPayload(data: Uint8Array): Promise<unknown | null> {
   if (!bytesEqual(checksum, actualChecksum)) return null
 
   try {
-    const decompressed = pako.inflate(body)
+    const decompressed = inflate(body)
     const jsonStr = new TextDecoder('utf-8').decode(decompressed)
     const value = JSON.parse(jsonStr)
     return typeof value === 'object' && value !== null ? value : null
@@ -174,7 +181,7 @@ export async function extractMetadata(file: File): Promise<unknown> {
           }
         } else {
           if ('requestVideoFrameCallback' in video) {
-            ;(video as any).requestVideoFrameCallback(processFrame)
+            ;(video as VideoWithFrameCallback).requestVideoFrameCallback?.(processFrame)
           } else {
             requestAnimationFrame(processFrame)
           }
@@ -185,7 +192,7 @@ export async function extractMetadata(file: File): Promise<unknown> {
         .play()
         .then(() => {
           if ('requestVideoFrameCallback' in video) {
-            ;(video as any).requestVideoFrameCallback(processFrame)
+            ;(video as VideoWithFrameCallback).requestVideoFrameCallback?.(processFrame)
           } else {
             requestAnimationFrame(processFrame)
           }

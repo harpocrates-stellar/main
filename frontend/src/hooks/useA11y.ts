@@ -31,7 +31,7 @@ export function useLiveRegion() {
   return { message, announce }
 }
 
-export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
+export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registering' | 'registered' | 'error'
 
 const STAGE_LABELS: Record<Stage, string> = {
   idle: 'Ready',
@@ -39,12 +39,13 @@ const STAGE_LABELS: Record<Stage, string> = {
   embedding: 'Embedding metadata\u2026',
   proving: 'Generating proof\u2026',
   ready: 'Evidence package ready',
+  registering: 'Registering evidence\u2026',
   registered: 'Registration submitted',
   error: 'An error occurred',
 }
 
 export function useA11yStage(stage: Stage) {
-  const isBusy = stage === 'hashing' || stage === 'embedding' || stage === 'proving'
+  const isBusy = stage === 'hashing' || stage === 'embedding' || stage === 'proving' || stage === 'registering'
   const statusLabel = STAGE_LABELS[stage]
   return { statusLabel, isBusy }
 }

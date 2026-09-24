@@ -3,7 +3,7 @@ import type { TimeAttestation } from './timeAttestation'
 
 export type { IdentityTier }
 
-export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
+export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registering' | 'registered' | 'error'
 
 export type View = 'landing' | 'studio' | 'verify'
 

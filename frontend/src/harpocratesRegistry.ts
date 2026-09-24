@@ -18,7 +18,6 @@ import {
 } from './stellarEncoding'
 import type {
   ChainProofRecord,
-  ChainVerifierState,
   IdentityTier,
   NormalizedRegisterProofInput,
   ProofHistoryEntry,
@@ -28,6 +27,7 @@ import type {
   RegistryMethod,
   TxState,
 } from './stellarTypes'
+import { assertReleaseCompatibility } from './releaseCompatibility'
 
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 
@@ -216,7 +216,7 @@ export async function getBatchProofStatuses(
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(contract.call('get_proof_statuses' as any, scProofIds))
+    .addOperation(contract.call('get_proof_statuses' satisfies RegistryMethod, ...scProofIds))
     .setTimeout(30)
     .build()
 
