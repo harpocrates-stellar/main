@@ -68,12 +68,12 @@
     {
       "component": "backend",
       "path": "backend/app.py",
-      "sha256": "9e67d812d5d117d04f64283a3671a1b696e653d3857fb412aab75e31c6c40f0e"
+      "sha256": "684b973836c69d6ed55289ca499f2ff6d84a90124874935fd834d73b7ccce5bc"
     },
     {
       "component": "backend",
       "path": "backend/config.py",
-      "sha256": "2471f22c3495fb54f932f046388fca6ef9a9ae0999b030c2c3dd2ab294fc58f3"
+      "sha256": "82d4985f8e4189228d6f621faa9bff6100510591c8d3f7be86d03a50aad3661b"
     },
     {
       "component": "backend",
@@ -98,12 +98,12 @@
     {
       "component": "registry",
       "path": "contracts/contracts/harpocrates-registry/src/lib.rs",
-      "sha256": "5f171d399d4d644cb2fdf8b0a1cb98f106f24401464e9bd3fb86c5b85f60697d"
+      "sha256": "e07c7168314af1181a247f45e8723082b3dab92d42e6eb6e63a114ebb19ff043"
     },
     {
       "component": "registry",
       "path": "contracts/contracts/harpocrates-registry/Cargo.toml",
-      "sha256": "2094c0519287f8cc93af29a392bbe509024cf7beb3022b9d6c347e7f48b4f065"
+      "sha256": "3b1d0f439836b589b8c7a6eed01a7df478301836c2e754bffb00e8efc52fe189"
     }
   ]
 }

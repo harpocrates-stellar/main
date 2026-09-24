@@ -2,6 +2,12 @@
 
 ## 1.0.0 — Unreleased
 
+- Added a fail-closed contract Wasm size budget (`MAX_WASM_SIZE_BYTES = 128_000`,
+  just under Soroban's 128 KiB upload cap, plus a minimum-size floor and 15%
+  regression band) enforced in Contracts CI against `devx/wasm_size_budget.json`,
+  with digest-recorded baselines and typed `WasmBudgetError` codes in
+  `contracts/harpocrates-registry/src/wasm_budget.rs` (#346).
+
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
   silence checks, and regression corpus entries `fz-011`–`fz-013` (#369).

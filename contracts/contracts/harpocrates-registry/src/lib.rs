@@ -10,6 +10,11 @@ use soroban_sdk::{
 
 pub mod verifier_inputs;
 
+// Wasm size-budget constants and helpers (#346). Host-side only so the
+// deployed artifact stays byte-identical to the pre-budget build.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod wasm_budget;
+
 use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN};
 
 /// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
