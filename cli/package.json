@@ -1,11 +1,15 @@
 {
   "name": "@harpocrates/cli",
-  "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "harpocrates": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -14,13 +18,34 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./dist/index.js",
-    "./hashing": "./dist/hashing.js",
-    "./metadata": "./dist/metadata.js",
-    "./manifest": "./dist/manifest.js",
-    "./stellar-lookup": "./dist/stellar-lookup.js",
-    "./receipt": "./dist/receipt.js",
-    "./normalize": "./dist/normalize.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./hashing": {
+      "types": "./dist/hashing.d.ts",
+      "import": "./dist/hashing.js"
+    },
+    "./metadata": {
+      "types": "./dist/metadata.d.ts",
+      "import": "./dist/metadata.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    },
+    "./stellar-lookup": {
+      "types": "./dist/stellar-lookup.d.ts",
+      "import": "./dist/stellar-lookup.js"
+    },
+    "./receipt": {
+      "types": "./dist/receipt.d.ts",
+      "import": "./dist/receipt.js"
+    },
+    "./normalize": {
+      "types": "./dist/normalize.d.ts",
+      "import": "./dist/normalize.js"
+    }
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^15.1.0"
