@@ -4,8 +4,9 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
+    contract, contracterror, contractevent, contractimpl, contracttype, crypto::Hash,
+    panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val,
+    Vec as SorobanVec,
 };
 
 pub mod verifier_inputs;
@@ -160,6 +161,72 @@ pub const MAX_DELEGATION_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
 /// Maximum number of distinct delegate addresses a single grantor may hold.
 /// Bounds per-grantor storage growth under a hostile or buggy client.
 pub const MAX_DELEGATIONS_PER_GRANTOR: u32 = 32;
+
+// ---------------------------------------------------------------------------
+// Signed receipt digest commitment (#337)
+// ---------------------------------------------------------------------------
+//
+// A verification receipt (the signed, canonical JSON object produced by the
+// CLI and frontend) is an off-chain artefact. This feature anchors it on
+// chain by committing only its digest, so the registry gains an auditable
+// "this receipt existed for this proof on this deployment" boundary without
+// ever receiving receipt contents — no media, no metadata hashes, no witness
+// values, no receipt bytes, and no private keys enter calldata or storage.
+//
+// Two distinct signatures stay separate on purpose:
+//
+// - The receipt's own ECDSA P-256 signature over its canonical unsigned
+//   payload. Produced and verified off-chain (CLI `verify-receipt`); the
+//   registry never sees it.
+// - The receipt attestation, verified on chain. An admin-approved
+//   receipt-signing key signs `sha256(RECEIPT_ATTEST_DOMAIN ||
+//   current_contract_address_xdr || proof_id || receipt_digest)`, which binds
+//   the commitment to one deployment and one proof so an attestation cannot
+//   be replayed onto another registry.
+//
+// `receipt_digest` itself is `sha256(canonical_json(signed_receipt))` using
+// the existing sorted-key canonicalisation already shipped in the CLI and
+// frontend — the registry reuses that protocol rather than defining a second
+// one. See `contracts/RECEIPT_COMMITMENT.md` for byte layouts and vectors.
+//
+// Authorization mirrors the identity tiers: the proof's own source (tier 2)
+// or issuer (tier 3) may commit, or the admin for any tier. Tier 1 proofs
+// carry no on-chain identity, so only the admin can commit for them (the same
+// precedent `respond_dispute` uses). Commits are immutable: a proof holds at
+// most one digest, an identical retry is an idempotent no-op, and a different
+// digest is rejected. Only `Valid` proofs accept commits — expired or revoked
+// proofs return `ReceiptProofUnavailable`, and previously committed digests
+// remain readable afterwards.
+//
+// Bounds. At most `MAX_RECEIPT_SIGNERS` receipt-signing keys are active at
+// once, revoking frees a slot, and `receipt_digest` must be non-zero. The
+// public key (65-byte SEC-1) and signature (64-byte r||s) sizes are fixed by
+// their types, so no caller-controlled payload length exists on this path.
+//
+// Pause. Receipt commits and signer management are not registration, so they
+// are intentionally not gated by `pause`; they remain available for incident
+// response and post-hoc anchoring.
+//
+// Migration. `ReceiptCommitment`, `ReceiptSigner`, and `ReceiptSignerCount`
+// are new, additive storage keys and the entry points are new functions.
+// Existing deployments read as "no signers, no commitments" until an admin
+// opts in, so no `SchemaVersion` bump or migration step is required. Rolling
+// back to a pre-#337 wasm ignores these keys, which fails closed: the commit
+// entry points disappear and no stored proof, video, or nullifier record is
+// touched.
+
+/// Domain tag prefixed to every on-chain receipt attestation preimage.
+/// Changing it invalidates previously issued attestations — bump the `v`
+/// suffix instead of editing this value in place.
+pub const RECEIPT_ATTEST_DOMAIN: [u8; 29] = *b"harpocrates:receipt-digest:v1";
+
+/// Total attestation preimage length in bytes:
+/// 29 domain + 36 contract address XDR + 32 proof_id + 32 receipt_digest.
+pub const RECEIPT_ATTEST_PREIMAGE_LEN: u32 = 129;
+
+/// Maximum number of active receipt-signing keys the registry will hold.
+/// Bounds per-key storage growth under a hostile or buggy admin client.
+pub const MAX_RECEIPT_SIGNERS: u32 = 8;
 
 // ---------------------------------------------------------------------------
 // Verifier rotation state
@@ -621,6 +688,71 @@ pub struct DisputeSuperseded {
     pub resolved_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Signed receipt digest commitment (#337)
+// ---------------------------------------------------------------------------
+
+/// Admin-managed receipt-signing key record. `public_key` is a SEC-1
+/// encoded uncompressed P-256 point (`0x04 || X || Y`); public keys are not
+/// secrets, and no private key material is ever stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiptSignerRecord {
+    pub public_key: BytesN<65>,
+    /// False once revoked. Revocation is recorded rather than deleted so an
+    /// operator can distinguish "revoked" from "never registered".
+    pub active: bool,
+    pub added_at: u64,
+    /// 0 while the signer is active.
+    pub revoked_at: u64,
+}
+
+/// Immutable commitment to a signed verification receipt for one proof.
+///
+/// Privacy: every field is a commitment, an address, an identifier, or a
+/// timestamp. No receipt bytes, media, metadata hashes, witness values,
+/// signatures, or private keys are stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiptCommitmentRecord {
+    pub proof_id: BytesN<32>,
+    /// `sha256(canonical_json(signed_verification_receipt))`.
+    pub receipt_digest: BytesN<32>,
+    /// Identity tier of the committed proof at commit time (1, 2, or 3).
+    pub tier: u32,
+    /// The attesting receipt-signing public key.
+    pub public_key: BytesN<65>,
+    /// Address that authorized the commit (proof subject or admin).
+    pub committed_by: Address,
+    pub committed_at: u64,
+}
+
+/// Emitted on the first successful commit for a proof. Idempotent retries
+/// emit nothing, so exactly one `["receipt", "commit"]` exists per proof.
+#[contractevent(topics = ["receipt", "commit"])]
+pub struct ReceiptDigestCommitted {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub receipt_digest: BytesN<32>,
+    pub tier: u32,
+    pub public_key: BytesN<65>,
+    pub committed_at: u64,
+}
+
+#[contractevent(topics = ["signer", "add"])]
+pub struct ReceiptSignerAdded {
+    #[topic]
+    pub public_key: BytesN<65>,
+    pub added_at: u64,
+}
+
+#[contractevent(topics = ["signer", "revoke"])]
+pub struct ReceiptSignerRevocation {
+    #[topic]
+    pub public_key: BytesN<65>,
+    pub revoked_at: u64,
+}
+
 /// Schema record for issuer-certified attribute schemas.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -898,6 +1030,12 @@ pub enum DataKey {
     /// Tracks the last-opened timestamp for a reporter_hash/proof pair.
     /// Key is the caller-supplied `reporter_hash` (a 32-byte commitment).
     ReporterCooldown(BytesN<32>),
+    /// Signed-receipt digest commitment for a proof, keyed by proof_id (#337).
+    ReceiptCommitment(BytesN<32>),
+    /// Admin-managed receipt-signing key record, keyed by SEC-1 public key (#337).
+    ReceiptSigner(BytesN<65>),
+    /// Number of active receipt-signing keys (#337).
+    ReceiptSignerCount,
 }
 
 #[contracterror]
@@ -999,6 +1137,24 @@ pub enum RegistryError {
     ReporterOnCooldown = 66,
     /// The dispute is not in the state this transition requires.
     InvalidDisputeTransition = 67,
+    // --- Signed receipt digest commitment (append-only; never renumber) ---
+    /// A receipt digest was committed for a proof that does not exist (#337).
+    ReceiptProofNotFound = 68,
+    /// The proof exists but is expired or revoked, so no digest may be
+    /// committed for it (#337).
+    ReceiptProofUnavailable = 69,
+    /// A different digest is already committed for this proof; commitments
+    /// are immutable once set (#337).
+    ReceiptAlreadyCommitted = 70,
+    /// The supplied receipt digest was all zero (#337).
+    InvalidReceiptDigest = 71,
+    /// The supplied receipt-signing public key is not registered (#337).
+    ReceiptSignerUnknown = 72,
+    /// The receipt-signing public key was revoked (#337).
+    ReceiptSignerRevoked = 73,
+    /// The registry already holds `MAX_RECEIPT_SIGNERS` active receipt
+    /// signers; revoke one before adding another (#337).
+    ReceiptSignersSaturated = 74,
 }
 
 #[contract]
@@ -3178,6 +3334,236 @@ impl HarpocratesRegistry {
             .get(&DataKey::ProofOpenDisputeCount(proof_id))
             .unwrap_or(0u32)
     }
+
+    // -----------------------------------------------------------------------
+    // Signed receipt digest commitment (#337)
+    // -----------------------------------------------------------------------
+
+    /// Register an admin-approved receipt-signing public key.
+    ///
+    /// # Guards
+    /// - Admin-only (`Unauthorized` for every other caller).
+    /// - At most `MAX_RECEIPT_SIGNERS` keys are active at once
+    ///   (`ReceiptSignersSaturated`).
+    ///
+    /// Idempotent: re-adding an already-active key returns the existing
+    /// record without emitting another event. Re-adding a revoked key
+    /// reactivates it (consuming a freed slot) and emits `["signer", "add"]`.
+    pub fn add_receipt_signer(
+        env: Env,
+        admin: Address,
+        public_key: BytesN<65>,
+    ) -> ReceiptSignerRecord {
+        require_admin(&env, &admin);
+
+        let key = DataKey::ReceiptSigner(public_key.clone());
+        let existing: Option<ReceiptSignerRecord> = env.storage().persistent().get(&key);
+        if let Some(record) = existing {
+            if record.active {
+                return record;
+            }
+        }
+
+        let count = receipt_signer_count(&env);
+        if count >= MAX_RECEIPT_SIGNERS {
+            panic_with_error!(&env, RegistryError::ReceiptSignersSaturated);
+        }
+
+        let now = env.ledger().timestamp();
+        let record = ReceiptSignerRecord {
+            public_key: public_key.clone(),
+            active: true,
+            added_at: now,
+            revoked_at: 0,
+        };
+        env.storage().persistent().set(&key, &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReceiptSignerCount, &(count + 1));
+
+        ReceiptSignerAdded {
+            public_key,
+            added_at: now,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Revoke a receipt-signing public key.
+    ///
+    /// Revocation is recorded (not deleted) so `get_receipt_signer`
+    /// distinguishes "revoked" from "never registered", and it frees one
+    /// `MAX_RECEIPT_SIGNERS` slot.
+    ///
+    /// # Guards
+    /// - Admin-only (`Unauthorized` for every other caller).
+    /// - The key must exist (`ReceiptSignerUnknown`).
+    ///
+    /// Idempotent: revoking an already-revoked key returns the record without
+    /// emitting another event. A digest attested before revocation remains
+    /// committed and readable — revocation never rewrites stored evidence.
+    pub fn revoke_receipt_signer(
+        env: Env,
+        admin: Address,
+        public_key: BytesN<65>,
+    ) -> ReceiptSignerRecord {
+        require_admin(&env, &admin);
+
+        let key = DataKey::ReceiptSigner(public_key.clone());
+        let record: ReceiptSignerRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::ReceiptSignerUnknown));
+
+        if !record.active {
+            return record;
+        }
+
+        let now = env.ledger().timestamp();
+        let revoked = ReceiptSignerRecord {
+            public_key: record.public_key.clone(),
+            active: false,
+            added_at: record.added_at,
+            revoked_at: now,
+        };
+        env.storage().persistent().set(&key, &revoked);
+
+        let count = receipt_signer_count(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReceiptSignerCount, &count.saturating_sub(1));
+
+        ReceiptSignerRevocation {
+            public_key: record.public_key,
+            revoked_at: now,
+        }
+        .publish(&env);
+
+        revoked
+    }
+
+    /// Return a receipt-signing key record, or `None` if never registered.
+    pub fn get_receipt_signer(env: Env, public_key: BytesN<65>) -> Option<ReceiptSignerRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ReceiptSigner(public_key))
+    }
+
+    /// Commit `sha256(canonical_json(signed_verification_receipt))` for an
+    /// existing, still-valid proof after verifying a receipt attestation.
+    ///
+    /// The registry stores only the digest plus bounded metadata — never the
+    /// receipt, its signature, or any receipt contents.
+    ///
+    /// # Guards (in order)
+    /// 1. `caller.require_auth()`.
+    /// 2. Proof exists (`ReceiptProofNotFound`).
+    /// 3. Caller is the admin or the proof's own tier-2 source / tier-3
+    ///    issuer; tier 1 is admin-only (`Unauthorized`).
+    /// 4. At most one digest per proof: an identical retry returns the stored
+    ///    record with no event; a different digest is rejected
+    ///    (`ReceiptAlreadyCommitted`).
+    /// 5. Proof status is `Valid` (`ReceiptProofUnavailable` when expired or
+    ///    revoked).
+    /// 6. Non-zero digest (`InvalidReceiptDigest`).
+    /// 7. Registered (`ReceiptSignerUnknown`) and active
+    ///    (`ReceiptSignerRevoked`) receipt signer.
+    /// 8. P-256 attestation signature over
+    ///    `sha256(RECEIPT_ATTEST_DOMAIN || contract_address_xdr || proof_id
+    ///    || receipt_digest)` verifies. A bad signature traps at the host
+    ///    crypto boundary: the call reverts deterministically and writes
+    ///    nothing.
+    pub fn commit_receipt_digest(
+        env: Env,
+        caller: Address,
+        proof_id: BytesN<32>,
+        receipt_digest: BytesN<32>,
+        public_key: BytesN<65>,
+        signature: BytesN<64>,
+    ) -> ReceiptCommitmentRecord {
+        caller.require_auth();
+
+        let record: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proof(proof_id.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::ReceiptProofNotFound));
+
+        require_receipt_actor(&env, &caller, &record);
+
+        let commitment_key = DataKey::ReceiptCommitment(proof_id.clone());
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, ReceiptCommitmentRecord>(&commitment_key)
+        {
+            if existing.receipt_digest == receipt_digest {
+                return existing;
+            }
+            panic_with_error!(&env, RegistryError::ReceiptAlreadyCommitted);
+        }
+
+        let now = env.ledger().timestamp();
+        if record.status == STATUS_REVOKED
+            || record.status == STATUS_EXPIRED
+            || (record.expires_at > 0 && now > record.expires_at)
+        {
+            panic_with_error!(&env, RegistryError::ReceiptProofUnavailable);
+        }
+
+        if receipt_digest == BytesN::from_array(&env, &[0u8; 32]) {
+            panic_with_error!(&env, RegistryError::InvalidReceiptDigest);
+        }
+
+        let signer: ReceiptSignerRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ReceiptSigner(public_key.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::ReceiptSignerUnknown));
+        if !signer.active {
+            panic_with_error!(&env, RegistryError::ReceiptSignerRevoked);
+        }
+
+        let attestation = receipt_attestation_digest(&env, &proof_id, &receipt_digest);
+        env.crypto()
+            .secp256r1_verify(&public_key, &attestation, &signature);
+
+        let commitment = ReceiptCommitmentRecord {
+            proof_id: proof_id.clone(),
+            receipt_digest: receipt_digest.clone(),
+            tier: record.tier,
+            public_key: public_key.clone(),
+            committed_by: caller.clone(),
+            committed_at: now,
+        };
+        env.storage().persistent().set(&commitment_key, &commitment);
+
+        ReceiptDigestCommitted {
+            proof_id,
+            receipt_digest,
+            tier: record.tier,
+            public_key,
+            committed_at: now,
+        }
+        .publish(&env);
+
+        commitment
+    }
+
+    /// Return the committed receipt digest record for a proof, if any.
+    ///
+    /// Commitments survive later revocation or expiry of the proof: they are
+    /// historical anchors, not validity assertions.
+    pub fn get_receipt_commitment(
+        env: Env,
+        proof_id: BytesN<32>,
+    ) -> Option<ReceiptCommitmentRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ReceiptCommitment(proof_id))
+    }
 }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -3211,6 +3597,79 @@ fn require_pauser(env: &Env, caller: &Address) -> bool {
         Some(g) if &g == caller => false,
         _ => panic_with_error!(env, RegistryError::Unauthorized),
     }
+}
+
+/// Require that `caller` may commit a receipt digest for `record`: either the
+/// registry admin (any tier) or the proof's own tier-2 source / tier-3 issuer.
+/// Tier 1 proofs carry no on-chain identity, so they are admin-only — the
+/// same precedent `respond_dispute` uses for anonymous proofs.
+///
+/// `caller.require_auth()` must already have run; this function only decides
+/// whether the (public) proof record names the caller.
+fn require_receipt_actor(env: &Env, caller: &Address, record: &ProofRecord) {
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+    if caller == &admin {
+        return;
+    }
+
+    let matches_subject = match record.tier {
+        TIER_CONSISTENT_SOURCE => record.source.as_ref() == Some(caller),
+        TIER_PUBLIC_SEAL => record.issuer.as_ref() == Some(caller),
+        _ => false,
+    };
+    if !matches_subject {
+        panic_with_error!(env, RegistryError::Unauthorized);
+    }
+}
+
+/// Number of currently active receipt-signing keys.
+fn receipt_signer_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ReceiptSignerCount)
+        .unwrap_or(0u32)
+}
+
+/// Domain-separated digest a receipt signer must sign for
+/// `commit_receipt_digest` to accept a commitment.
+///
+/// Preimage layout (129 bytes, see `RECEIPT_ATTEST_PREIMAGE_LEN`):
+///
+/// ```text
+/// [  0.. 29)  RECEIPT_ATTEST_DOMAIN  "harpocrates:receipt-digest:v1"
+/// [ 29.. 65)  XDR of the calling contract's address
+///             (4-byte big-endian discriminant 1 || 32-byte contract id)
+/// [ 65.. 97)  proof_id
+/// [ 97..129)  receipt_digest
+/// ```
+///
+/// Binding the contract address keeps an attestation issued for one
+/// deployment from being replayed against another registry that happens to
+/// register the same signer key.
+fn receipt_attestation_digest(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    receipt_digest: &BytesN<32>,
+) -> Hash<32> {
+    let mut preimage = Bytes::new(env);
+    preimage.extend_from_slice(&RECEIPT_ATTEST_DOMAIN);
+    // `to_xdr` serializes an Address as an ScVal: a 4-byte ScVal type tag
+    // followed by the ScAddress XDR (4-byte discriminant 1 || 32-byte
+    // contract id) that the attestation binds to. Keep only the ScAddress arm.
+    let contract_xdr = env.current_contract_address().to_xdr(env);
+    preimage.append(&contract_xdr.slice(4..40));
+    preimage.extend_from_slice(&proof_id.to_array());
+    preimage.extend_from_slice(&receipt_digest.to_array());
+
+    if preimage.len() != RECEIPT_ATTEST_PREIMAGE_LEN {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+
+    env.crypto().sha256(&preimage)
 }
 
 /// Reject `scope` unless it is nonzero and composed only of known
@@ -4200,6 +4659,8 @@ mod test_identity_tier_properties;
 mod test_invariants;
 #[cfg(test)]
 mod test_pause;
+#[cfg(test)]
+mod test_receipt;
 #[cfg(test)]
 mod test_registration_replay;
 #[cfg(test)]

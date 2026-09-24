@@ -630,3 +630,53 @@ fn budget_register_seal_worst_case() {
         "register_seal worst-case",
     );
 }
+
+const MAX_CPU_COMMIT_RECEIPT: u64 = 10_000_000;
+const MAX_MEM_COMMIT_RECEIPT: u64 = 300_000;
+
+/// Baseline for `commit_receipt_digest` (#337): sha256 preimage, host
+/// secp256r1 verification, one persistent write, one event.
+#[test]
+fn budget_receipt_commit_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_address = soroban_sdk::Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        crate::test_receipt::CONTRACT1_STRKEY,
+    ));
+    let contract_id = env.register_at(&contract_address, HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+    client.register_source(
+        &source,
+        &b32(&env, 0x61),
+        &b32(&env, 0x62),
+        &b32(&env, 0x11),
+    );
+    client.add_receipt_signer(
+        &admin,
+        &BytesN::from_array(&env, &crate::test_receipt::PUB1),
+    );
+
+    let (cpu, mem, record) = measure(&env, || {
+        client.commit_receipt_digest(
+            &source,
+            &b32(&env, 0x11),
+            &BytesN::from_array(&env, &crate::test_receipt::DIGEST1),
+            &BytesN::from_array(&env, &crate::test_receipt::PUB1),
+            &BytesN::from_array(&env, &crate::test_receipt::SIG_A),
+        )
+    });
+    assert_eq!(record.tier, TIER_CONSISTENT_SOURCE);
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_COMMIT_RECEIPT,
+        MAX_MEM_COMMIT_RECEIPT,
+        "commit_receipt_digest",
+    );
+}

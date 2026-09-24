@@ -222,6 +222,8 @@ the same identity.
 | Nullifier stored on first use; second use panics with `DuplicateNullifier` | `lib.rs` → `register_anonymous`, `register_anonymous_verified` |
 | Nullifier is bound to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)` in circuit | `silent_witness/src/main.nr` → `derived_nullifier` |
 | Proof TTL: admin can set a global `ProofTtl`; expired proofs return `ProofVerificationStatus::Expired` | `lib.rs` → `set_proof_ttl`, `get_proof_status` |
+| Receipt digest commitment stores one immutable digest per proof; a second, different digest panics `ReceiptAlreadyCommitted` | `lib.rs` → `commit_receipt_digest` |
+| Receipt attestation signs `sha256(domain ‖ contract address ‖ proof_id ‖ receipt_digest)` — a signature cannot be replayed for another deployment, proof, or digest | `lib.rs` → `receipt_attestation_digest` |
 
 **Residual risk:** Nullifier binding is only enforced for Tier 1
 (`register_anonymous_verified`). Tier 2 (`register_source`) and Tier 3
@@ -331,6 +333,7 @@ network traffic analysis.
 | No `source` address stored for Tier 1 registrations | `lib.rs` → `register_anonymous_verified` (source: None) |
 | Sensitive keys (`credentialSecret`, `nullifierSecret`, `proof`, `publicInputs`, `authorization`) are redacted from backend logs | `logging_utils.py` → `SENSITIVE_KEYS` |
 | `/api/noir/silent-witness` disabled in production (`NOIR_WORKER_ENABLED=false`) | `config.py` → `noir_worker_enabled` |
+| Signed verification receipts are anchored as `sha256(canonical_json(receipt))` only — the receipt JSON, its signature, and its contents are never stored on-chain | `lib.rs` → `commit_receipt_digest` |
 
 **Residual risk:** The `credential_root` value is stored on-chain and in NeonDB.
 If the same `credential_root` appears in multiple registrations across different
@@ -593,6 +596,8 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Proof TTL / expiration (`set_proof_ttl`, `get_proof_status`) | T2 | `lib.rs` → `compute_expires_at`, `get_proof_status` |
 | Admin proof revocation (`revoke_proof`) | T3 | `lib.rs` → `revoke_proof` |
 | Typed contract events for all lifecycle operations | T3, T9 | `lib.rs` → event structs |
+| Receipt attestation over `sha256(domain ‖ contract address ‖ proof_id ‖ receipt_digest)` verified with host P-256; only the digest is stored | T2, T5 | `lib.rs` → `receipt_attestation_digest`, `commit_receipt_digest` |
+| Admin-managed receipt-signer allowlist (`MAX_RECEIPT_SIGNERS = 8`, add/revoke records, saturation bound) | T9 | `lib.rs` → `add_receipt_signer`, `revoke_receipt_signer` |
 
 ### 7.2 Flask Backend
 

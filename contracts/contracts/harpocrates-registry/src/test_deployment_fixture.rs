@@ -732,3 +732,26 @@ fn deployment_fixture_custom_proof_ttl_is_stored() {
     client.set_proof_ttl(&f.admin, &ttl);
     assert_eq!(client.get_proof_ttl(), ttl);
 }
+
+// ---------------------------------------------------------------------------
+// Receipt signer management (#337) — privileged like every entry point above
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn deployment_fixture_non_admin_cannot_add_receipt_signer() {
+    let f = DeploymentFixture::new();
+    let stranger = Address::generate(&f.env);
+    f.client()
+        .add_receipt_signer(&stranger, &BytesN::from_array(&f.env, &[0xEE; 65]));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn deployment_fixture_non_admin_cannot_revoke_receipt_signer() {
+    let f = DeploymentFixture::new();
+    let key = BytesN::from_array(&f.env, &[0xEE; 65]);
+    f.client().add_receipt_signer(&f.admin, &key);
+    let stranger = Address::generate(&f.env);
+    f.client().revoke_receipt_signer(&stranger, &key);
+}

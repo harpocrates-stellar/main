@@ -309,6 +309,26 @@ Current Testnet verifier:
 CCP2EQPKT5XAYTOARX3LGHNMJ37A6W2WY3H54MRIHEZVTVAZZPUSGZQJ
 ```
 
+## Receipt Digest Commitment (#337)
+
+A signed verification receipt can be anchored on-chain without storing the
+receipt: the caller commits `sha256(canonical_json(receipt))` together with a
+P-256 attestation from an admin-managed receipt-signing key. The attestation
+signs a 129-byte domain-separated preimage that binds the contract address,
+`proof_id`, and the digest, so a signature cannot be replayed against another
+deployment, proof, or digest. One immutable commitment per proof; retries of
+the same digest are idempotent. Registration pauses do not gate receipt
+commits or signer management.
+
+| Function | Auth |
+|----------|------|
+| `add_receipt_signer` / `revoke_receipt_signer` | admin only (max 8 active keys) |
+| `commit_receipt_digest` | admin, the proof's tier-2 source, or its tier-3 issuer (tier 1: admin only) |
+| `get_receipt_commitment` / `get_receipt_signer` | public |
+
+See `RECEIPT_COMMITMENT.md` for the preimage layout, guard order, errors,
+events, and test-vector provenance.
+
 ## Events
 
 The registry emits typed Soroban events with `#[contractevent]`:
@@ -338,6 +358,9 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["verif", "schedule"]             => active_verifier, pending_verifier, activation_ledger, overlap_window, rollback_window
 ["verif", "activate"]             => active_verifier, previous_verifier, rollback_window_end
 ["verif", "rollback"]             => active_verifier, previous_verifier
+["receipt", "commit", proof_id]   => receipt_digest, tier, public_key, committed_at
+["signer", "add", public_key]     => added_at
+["signer", "revoke", public_key]  => revoked_at
 ```
 
 For every successful proof registration, `proof/reg` is emitted before the
