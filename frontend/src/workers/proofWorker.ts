@@ -25,12 +25,13 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
   const credentialSecret = bufToStr(input.credentialSecret)
   const nullifierSecret = bufToStr(input.nullifierSecret)
   try {
-    post({ type: 'PROGRESS', requestId, stage: 'loading_circuits' })
-    post({ type: 'PROGRESS', requestId, stage: 'executing_helper' })
     const proof = await generateSilentWitnessProof({
       videoHash: input.videoHash,
       credentialSecret,
       nullifierSecret,
+      // Forward only the canonical, privacy-safe phase identifier; the prover
+      // emits a stage at each real boundary so the UI stays truthful.
+      onStage: (stage) => post({ type: 'PROGRESS', requestId, stage }),
     })
     post({ type: 'RESULT', requestId, proof })
   } catch (err) {
