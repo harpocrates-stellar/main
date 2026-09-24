@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
+import { ApiClientError, toVerificationErrorCode } from '../services/apiError'
 
 export type VerificationStatus = 'idle' | 'validating' | 'hashing' | 'verifying' | 'success' | 'error' | 'cancelled'
 
@@ -240,7 +241,21 @@ export function useVerification(): UseVerificationReturn {
         return
       }
       if (seq !== seqRef.current) return
-      // Distinguish wallet vs generic dependency failures without leaking detail
+      // Map structured backend errors to actionable verification codes; keep wallet heuristic.
+      const mapped = toVerificationErrorCode(error)
+      if (mapped) {
+        setStatus('error')
+        setErrorCode(mapped)
+        // Prefer actionable API message for oversized/unsupported/invalid; else stable copy.
+        const apiMessage = error instanceof ApiClientError ? error.message : ''
+        const useApiMessage =
+          (mapped === 'OVERSIZED_ARTIFACT' ||
+            mapped === 'UNSUPPORTED_ARTIFACT' ||
+            mapped === 'INVALID_EVIDENCE') &&
+          apiMessage.length > 0
+        setVerifyResult(useApiMessage ? apiMessage : SAFE_MESSAGES[mapped])
+        return
+      }
       const msg = error instanceof Error ? error.message : ''
       const isWallet = /wallet|freighter|readonly|connect/i.test(msg)
       const code: VerificationErrorCode = isWallet ? 'WALLET_UNAVAILABLE' : 'DEPENDENCY_UNAVAILABLE'
