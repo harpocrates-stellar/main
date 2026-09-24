@@ -10,10 +10,11 @@ import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMeta
 import { lookupByVideoHash, verifyTransaction } from './stellar-lookup.js'
 import { createReceipt, formatReceipt, type VerificationReceipt } from './receipt.js'
 import { classifyVerification } from './normalize.js'
+import { verifyVerificationReceipt, decodeReceiptFromQr, type SignedVerificationReceipt } from './signed-receipt.js'
 
 // ── CLI argument parsing ──────────────────────────────────────────────────
 
-type Command = 'verify' | 'manifest' | 'hash' | 'help'
+type Command = 'verify' | 'manifest' | 'hash' | 'verify-receipt' | 'help'
 
 function parseArgs(argv: string[]): {
   command: Command
@@ -91,6 +92,8 @@ async function main(): Promise<void> {
       return await handleManifest(flags)
     case 'hash':
       return await handleHash(flags)
+    case 'verify-receipt':
+      return await handleVerifyReceipt(flags)
     case 'help':
     default:
       return printHelp()
@@ -269,6 +272,58 @@ async function handleHash(flags: Record<string, string>): Promise<void> {
   }
 }
 
+async function handleVerifyReceipt(flags: Record<string, string>): Promise<void> {
+  const receiptPath = flags.receipt || flags.r
+  const keysPath = flags.keys || flags.k
+  const network = flags.network
+  const proofId = flags['proof-id'] || flags.proofId
+
+  if (!receiptPath) exit(2, '--receipt is required')
+  if (!keysPath) exit(2, '--keys is required for verification')
+
+  let receipt: SignedVerificationReceipt
+  try {
+    const raw = await readText(receiptPath)
+    if (raw.trim().startsWith('{')) {
+      receipt = JSON.parse(raw)
+    } else {
+      receipt = decodeReceiptFromQr(raw.trim())
+    }
+  } catch {
+    exit(8, 'invalid or unreadable receipt')
+  }
+
+  let keys: Record<string, JsonWebKey>
+  try {
+    const rawKeys = await readText(keysPath)
+    keys = JSON.parse(rawKeys)
+  } catch {
+    exit(8, 'invalid or unreadable keys file')
+  }
+
+  const result = await verifyVerificationReceipt(receipt, {
+    keys,
+    expectedNetworkPassphrase: network,
+    expectedProofId: proofId,
+  })
+
+  if (result.valid) {
+    if (flags.output === 'json' || flags.o === 'json') {
+      printJson({ valid: true, receipt: result.receipt })
+    } else {
+      printText(`✅ Receipt is valid. Verified at: ${result.receipt.verifiedAt}, Result: ${result.receipt.result}`)
+    }
+    exit(0)
+  } else {
+    if (flags.output === 'json' || flags.o === 'json') {
+      printJson({ valid: false, reason: result.reason })
+    } else {
+      printText(`❌ Invalid receipt: ${result.reason}`)
+    }
+    exit(8)
+  }
+}
+
 function printHelp(): void {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -277,10 +332,18 @@ Usage:
   harpocrates <command> [options]
 
 Commands:
-  verify    Verify a proof against the Stellar network.
-  manifest  Create a proof manifest from metadata.
-  hash      Compute the SHA-256 hash of a file.
-  help      Show this help message.
+  verify         Verify a proof against the Stellar network.
+  manifest       Create a proof manifest from metadata.
+  hash           Compute the SHA-256 hash of a file.
+  verify-receipt Verify an offline signed receipt.
+  help           Show this help message.
+
+Verify Receipt options:
+  --receipt, -r     Path to signed receipt JSON or QR payload (use "-" for stdin).
+  --keys, -k        Path to JSON file mapping key IDs to JWKs.
+  --network         Optional expected network passphrase.
+  --proof-id        Optional expected proof ID.
+  --output, -o      Output format: "text" (default) or "json".
 
 Verify options:
   --contract-id     Contract ID on Stellar (required).
