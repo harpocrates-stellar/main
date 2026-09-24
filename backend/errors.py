@@ -49,6 +49,9 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 """The uploaded file has an unsupported content type (400)."""
 
+RATE_LIMITED = "RATE_LIMITED"
+"""The client exceeded a per-client request budget (429)."""
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
