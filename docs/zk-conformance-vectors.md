@@ -204,3 +204,7 @@ errors, so the on-chain error surface discloses nothing new.
   depends on the generator's stable key ordering; a structurally reordered
   corpus parses as zero cases, which `corpus_is_non_empty_and_versioned`
   rejects.
+
+## Protocol regression suite
+
+See `zk/regression/` for the protocol-level proof regression runner that reuses this corpus without introducing a second protocol truth.
