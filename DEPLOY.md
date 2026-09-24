@@ -332,6 +332,21 @@ The backend image is environment-agnostic and can be pulled and run directly.
 
 ---
 
+
+### Docker HEALTHCHECK
+
+Both images declare a Dockerfile `HEALTHCHECK` so standalone `docker run` and
+platforms that honor image-level healthchecks mark containers correctly:
+
+| Image | Probe | Purpose |
+|-------|-------|---------|
+| `harpocrates-backend` | `GET /health` on `:5050` | Process liveness (no dependency gate) |
+| `harpocrates-frontend` | `GET /` on `:8080` | nginx serving the SPA |
+
+Compose still uses `GET /ready` for the backend service readiness gate
+(`depends_on: condition: service_healthy`). Failures never log secrets,
+media, witness values, or private keys — probes are URL-only.
+
 ## Health and readiness endpoints
 
 | Endpoint | Description |
