@@ -18,7 +18,12 @@ from pathlib import Path
 from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 
-from http_security import apply_security_headers, cors_kwargs
+from http_security import (
+    CORS_EXEMPT_PATHS,
+    apply_security_headers,
+    cors_kwargs,
+    is_origin_allowed,
+)
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -27,6 +32,7 @@ from werkzeug.utils import secure_filename
 
 from config import load_config
 from errors import (
+    FORBIDDEN_ORIGIN,
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
@@ -203,6 +209,53 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+
+    @app.before_request
+    def enforce_cors_origins():
+        """Reject browser requests whose Origin is not on the configured allow-list.
+
+        flask-cors alone only *withholds* ``Access-Control-Allow-Origin`` on
+        disallowed origins; the request still executes server-side and its
+        response is readable by non-browser clients. This hook closes that gap
+        for real cross-origin browser traffic:
+
+        - Requests without an ``Origin`` header are same-origin/curl/server
+          callers and are never rejected (CORS does not apply to them).
+        - ``null``/opaque Origins are rejected — they are indistinguishable
+          from a sandboxed attacker context.
+        - Configured wildcard (``*``) short-circuits to allow, exactly matching
+          the flask-cors behavior and remaining gated by ``ALLOW_WILDCARD_CORS``.
+        - Health, readiness, and metrics paths are exempt: probes and scrapers
+          are server-to-server callers without an ``Origin``.
+
+        Rejections use the standardized, privacy-safe error envelope and are
+        counted in the admission-rejection metrics; the offending Origin value
+        is never logged.
+        """
+        origin = request.headers.get("Origin")
+        if origin is None or request.path in CORS_EXEMPT_PATHS:
+            return None
+        if is_origin_allowed(origin, config.cors_origins):
+            return None
+        metrics_collector.record_rejection(
+            "cors_origin_not_allowed",
+            request.url_rule.rule if request.url_rule else request.path,
+        )
+        log_structured(
+            LOGGER,
+            logging.INFO,
+            {
+                "event": "cors_origin_rejected",
+                "request_id": request_id(),
+                "method": request.method,
+                "path": request.path,
+            },
+        )
+        return error_response(
+            code=FORBIDDEN_ORIGIN,
+            message="request origin is not allowed",
+            status=403,
+        )
         # Privacy-safe trace fields for log correlation (no secrets/media/PII).
         g.trace_fields = build_trace_fields(
             request.headers,

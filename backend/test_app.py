@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -16,6 +17,7 @@ import stego
 from config import load_config
 from http_security import (
     CORS_ALLOW_HEADERS,
+    CORS_EXEMPT_PATHS,
     CORS_EXPOSE_HEADERS,
     CORS_METHODS,
     SECURITY_HEADERS,
@@ -24,7 +26,9 @@ from http_security import (
     is_cors_method_allowed,
     is_cors_request_header_allowed,
     is_origin_allowed,
+    normalize_origin,
 )
+from errors import FORBIDDEN_ORIGIN
 from db import ConflictError, make_idempotency_key
 from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
@@ -1307,6 +1311,182 @@ class SecurityHeadersToggleIntegrationTest(unittest.TestCase):
         self.assertEqual(ok.headers.get("Access-Control-Allow-Origin"), "https://wave.example")
         self.assertNotEqual(bad.headers.get("Access-Control-Allow-Origin"), "https://evil.example")
 
+
+
+class OriginEnforcementTest(unittest.TestCase):
+    """Server-side enforcement of configured CORS origins on live responses.
+
+    flask-cors only suppresses ``Access-Control-Allow-Origin`` headers for
+    disallowed origins; the request still executes server-side. These tests
+    pin the before_request hook that actually rejects non-allow-listed browser
+    origins (issue #266).
+    """
+
+    def test_real_route_rejects_disallowed_origin(self) -> None:
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "https://evil.example"})
+        self.assertEqual(response.status_code, 403)
+        body = response.get_json()
+        self.assertEqual(body["error"]["code"], FORBIDDEN_ORIGIN)
+        # Privacy-safe: the offending origin must never be echoed back.
+        self.assertNotIn("evil.example", response.get_data(as_text=True))
+        self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+    def test_real_route_allows_configured_origin(self) -> None:
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "http://localhost:5173"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+
+    def test_request_without_origin_is_never_rejected(self) -> None:
+        """Server-to-server and same-origin callers send no Origin header."""
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas")
+        self.assertEqual(response.status_code, 200)
+
+    def test_opaque_null_origin_is_rejected(self) -> None:
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "null"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error"]["code"], FORBIDDEN_ORIGIN)
+
+    def test_exempt_paths_bypass_origin_enforcement(self) -> None:
+        """Probes and scrapers must never be rejected for cross-origin headers.
+
+        /ready may legitimately answer 503 when the database is absent; the
+        assertion is that enforcement did not reject with 403.
+        """
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            health = client.get("/health", headers={"Origin": "https://evil.example"})
+            ready = client.get("/ready", headers={"Origin": "https://evil.example"})
+            metrics = client.get("/metrics", headers={"Origin": "https://evil.example"})
+        self.assertEqual(health.status_code, 200)
+        self.assertNotEqual(ready.status_code, 403)
+        self.assertEqual(metrics.status_code, 200)
+        for response in (health, ready, metrics):
+            body = response.get_data(as_text=True)
+            self.assertNotIn(FORBIDDEN_ORIGIN, body)
+        self.assertEqual(CORS_EXEMPT_PATHS, frozenset({"/health", "/ready", "/metrics"}))
+
+    def test_rejection_is_counted_in_metrics(self) -> None:
+        metrics_collector.reset()
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            client.get("/api/schemas", headers={"Origin": "https://evil.example"})
+            # /metrics must remain readable even after a rejected origin.
+            scrape = client.get("/metrics")
+        self.assertEqual(scrape.status_code, 200)
+        self.assertIn('reason="cors_origin_not_allowed"', scrape.get_data(as_text=True))
+
+    def test_rejection_log_is_privacy_safe(self) -> None:
+        """Regression: the rejected Origin value must never reach the logs."""
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        logger = logging.getLogger("harpocrates.requests")
+        old_handlers, old_level = logger.handlers[:], logger.level
+        logger.handlers = [handler]
+        try:
+            with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+                client.get("/api/schemas", headers={"Origin": "https://evil.example"})
+        finally:
+            logger.handlers, logger.level = old_handlers, old_level
+        output = stream.getvalue()
+        self.assertIn("cors_origin_rejected", output)
+        self.assertNotIn("evil.example", output)
+
+    def test_custom_origin_enforced_end_to_end(self) -> None:
+        """Boundary: configured origin allowed, sibling subdomain rejected."""
+        with _app_env(
+            {
+                "CORS_ORIGINS": "https://wave.example",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            ok = client.get("/api/schemas", headers={"Origin": "https://wave.example"})
+            evil = client.get("/api/schemas", headers={"Origin": "https://evil.wave.example"})
+            lookalike = client.get("/api/schemas", headers={"Origin": "https://wave.example.evil.io"})
+            path = client.get("/api/schemas", headers={"Origin": "https://wave.example/evil"})
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(evil.status_code, 403)
+        self.assertEqual(lookalike.status_code, 403)
+        # Path-bearing origin must never match the bare configured origin.
+        self.assertEqual(path.status_code, 403)
+
+    def test_case_insensitive_origin_match(self) -> None:
+        """Regression: scheme/host case differences still match the allow-list."""
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "HTTP://LOCALHOST:5173"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_wildcard_config_allows_any_origin_in_development(self) -> None:
+        """Boundary: wildcard CORS short-circuits enforcement, matching flask-cors."""
+        with _app_env(
+            {
+                "APP_ENV": "development",
+                "CORS_ORIGINS": "*",
+                "ALLOW_WILDCARD_CORS": "true",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            response = client.get("/api/schemas", headers={"Origin": "https://anything.example"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_preflight_with_disallowed_origin_is_rejected(self) -> None:
+        """Negative preflight: enforcement fires before flask-cors responds."""
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.options(
+                "/api/proofs/register",
+                headers={
+                    "Origin": "https://evil.example",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+        self.assertEqual(response.status_code, 403)
+
+
+class NormalizeOriginUnitTest(unittest.TestCase):
+    """Pure-unit coverage for origin canonicalization (no Flask app)."""
+
+    def test_positive_forms(self) -> None:
+        self.assertEqual(normalize_origin("https://app.example.com"), "https://app.example.com")
+        # Case-insensitive scheme/host, preserved port.
+        self.assertEqual(normalize_origin("HTTPS://APP.Example.COM:8443"), "https://app.example.com:8443")
+        # Surrounding whitespace is stripped.
+        self.assertEqual(normalize_origin("  https://app.example.com  "), "https://app.example.com")
+
+    def test_negative_forms(self) -> None:
+        cases = [
+            None,
+            "",
+            "   ",
+            "null",
+            "https://app.example.com/evil",
+            "https://app.example.com?x=1",
+            "https://app.example.com#f",
+            "https://user:pass@app.example.com",
+            "https://app.example.com:",
+            "https://app.example.com:port",
+            "https://app.example.com:0",
+            "https://app.example.com:99999",
+            "https://app.example.com:8443:extra",
+            "app.example.com",
+            "https://",
+            "https://app.example.com/path?query#frag",
+        ]
+        for case in cases:
+            self.assertIsNone(normalize_origin(case), msg=f"expected None for {case!r}")
+
+    def test_is_origin_allowed_normalizes_both_sides(self) -> None:
+        allowed = ["HTTPS://App.Example.Com"]
+        self.assertTrue(is_origin_allowed("https://app.example.com", allowed))
+        self.assertTrue(is_origin_allowed("  HTTPS://APP.EXAMPLE.COM ", allowed))
+        self.assertFalse(is_origin_allowed("https://app.example.com/evil", allowed))
+        self.assertFalse(is_origin_allowed("https://evil.example", allowed))
+        self.assertFalse(is_origin_allowed(None, allowed))
+
+    def test_is_origin_allowed_wildcard_short_circuit(self) -> None:
+        self.assertTrue(is_origin_allowed("https://any.example", ["*"]))
 
 
 if __name__ == "__main__":

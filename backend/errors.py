@@ -68,6 +68,13 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
+FORBIDDEN_ORIGIN = "FORBIDDEN_ORIGIN"
+"""The request's Origin is not on the configured CORS allow-list (403).
+
+The offending origin value is intentionally absent from the envelope: error
+payloads must stay privacy-safe and must not echo attacker-controlled input.
+"""
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------

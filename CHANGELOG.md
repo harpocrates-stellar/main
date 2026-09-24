@@ -2,6 +2,14 @@
 
 ## 1.0.0 — Unreleased
 
+- Enforced configured CORS origins server-side in the Flask backend: requests
+  carrying an `Origin` outside `CORS_ORIGINS` are now rejected with a privacy-safe
+  `403 FORBIDDEN_ORIGIN` envelope before route handlers execute, closing the gap
+  where flask-cors only withheld `Access-Control-Allow-Origin` headers (#266).
+  Requests without an `Origin` header and the `/health`, `/ready`, and `/metrics`
+  paths are exempt; rejections are counted in admission-rejection metrics and the
+  origin value is never logged.
+
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
   silence checks, and regression corpus entries `fz-011`–`fz-013` (#369).
