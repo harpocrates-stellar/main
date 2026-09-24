@@ -53,6 +53,25 @@ const here = dirname(fileURLToPath(import.meta.url))
 const corpusPath = resolve(here, '../../zk/vectors/verifier_conformance_v1.json')
 const corpus = JSON.parse(readFileSync(corpusPath, 'utf-8')) as Corpus
 
+type MalformedCase = {
+  id: string
+  field: string
+  description: string
+  value: string
+  expect: { reject_code: string }
+}
+
+type MalformedCorpus = {
+  format: string
+  version: number
+  codec: string
+  reject_codes: string[]
+  cases: MalformedCase[]
+}
+
+const malformedPath = resolve(here, '../../zk/vectors/malformed_public_inputs_v1.json')
+const malformedCorpus = JSON.parse(readFileSync(malformedPath, 'utf-8')) as MalformedCorpus
+
 describe('conformance corpus integrity', () => {
   it('is versioned and matches this codec', () => {
     expect(corpus.format).toBe('harpocrates.verifier-conformance')
@@ -107,14 +126,31 @@ describe('boundary behaviour outside the corpus', () => {
     )
   })
 
-  it.each(['0', '0x00', 'zz'.repeat(64), '00 11', '00\n11'])(
-    'rejects malformed hex: %j',
-    (value) => {
-      expect(() => decodeHex(value, 'public_inputs', 'length')).toThrow(VerifierInputError)
+  it('loads a versioned malformed public-input corpus for this codec', () => {
+    expect(malformedCorpus.format).toBe('harpocrates.malformed-public-inputs')
+    expect(malformedCorpus.version).toBe(1)
+    expect(malformedCorpus.codec).toBe(CODEC_ID)
+    expect(malformedCorpus.reject_codes).toEqual(['malformed_hex'])
+    expect(malformedCorpus.cases.length).toBeGreaterThanOrEqual(10)
+    expect(new Set(malformedCorpus.cases.map((entry) => entry.id)).size).toBe(
+      malformedCorpus.cases.length,
+    )
+  })
+
+  it.each(malformedCorpus.cases.map((entry) => [entry.id, entry] as const))(
+    'rejects malformed public-input hex %s',
+    (_id, entry) => {
+      expect(() => decodeHex(entry.value, entry.field, 'length')).toThrow(VerifierInputError)
       try {
-        decodeHex(value, 'public_inputs', 'length')
+        decodeHex(entry.value, entry.field, 'length')
       } catch (error) {
-        expect((error as VerifierInputError).code).toBe('malformed_hex')
+        const captured = error as VerifierInputError
+        expect(captured.code).toBe(entry.expect.reject_code)
+        expect(captured.field).toBe(entry.field)
+        const signal = captured.signal()
+        const rendered = JSON.stringify(signal)
+        expect(rendered).not.toContain(entry.value)
+        expect(Object.keys(signal).sort()).toEqual(['codec', 'field', 'rejectCode'])
       }
     },
   )

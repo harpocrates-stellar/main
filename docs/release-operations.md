@@ -23,6 +23,12 @@ non-active rollout. The workflow also runs each component's existing test and
 build path. A digest mismatch is deliberate: rebuild and review all dependent
 artifacts, then update one manifest in the same reviewed change.
 
+For an `active` release, `release/verifier-binding.json` must also identify the
+single verifier `.vk` artifact and repeat its SHA-256 digest in
+`verification_key_sha256`.
+The release gate rejects a missing, misnamed, or mismatched verifier-key
+binding before publication.
+
 
 ## Cross-layer compatibility report
 

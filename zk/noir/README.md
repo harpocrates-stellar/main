@@ -37,6 +37,27 @@ Key properties:
 Helper circuit that derives batch public inputs (`credential_root` and
 `nullifier` for each element) from private secrets and video hashes.
 
+
+### `revocation_witness`
+
+Non-membership circuit for the published revocation Merkle tree. Proves a
+`credential_root` is **not** among the private leaves while binding the public
+`revocation_root`, `nullifier`, and domain separator.
+
+Key properties:
+
+- **MAX_REVOCATION_WITNESS_DEPTH = 3**: fixed upper bound (`MAX_REVOCATION_LEAVES = 8`).
+  Enforced at circuit structure and mirrored in the registry / verifier codec /
+  `zk/tools/revocation_depth.py`. Depth changes require a new circuit version.
+- **Private leaves**: the verifier learns only the root, not which credentials
+  are revoked.
+- **Domain binding**: `HARPOCRATES_REVOCATION_V1` prevents cross-version replay.
+
+### `revocation_witness_helper`
+
+Helper circuit that derives `credential_root` / `nullifier` and Merkle root
+parameters for the depth-bounded revocation tree (same MAX constants).
+
 ## Tooling
 
 Noir's official installation path uses `noirup`/`nargo`. Barretenberg (`bb`) is the proving backend. On Windows, the official Noir docs recommend using WSL for the full toolchain.

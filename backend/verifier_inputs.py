@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Sequence
 from typing import Final
 
 CODEC_ID: Final[str] = "hpx-vi/1"
@@ -74,6 +75,12 @@ SILENT_WITNESS_DOMAIN_TAG: Final[bytes] = hashlib.sha256(
 
 SCHEMA_SILENT_WITNESS: Final[str] = "silent_witness/v1"
 SCHEMA_REVOCATION_WITNESS: Final[str] = "revocation_witness/v1"
+
+#: Protocol Merkle-depth bound for ``revocation_witness/v1`` (#357).
+#: Must match the Noir globals and the Soroban registry constants.
+MAX_REVOCATION_WITNESS_DEPTH: Final[int] = 3
+#: Leaf capacity implied by ``MAX_REVOCATION_WITNESS_DEPTH`` (``2**depth``).
+MAX_REVOCATION_LEAVES: Final[int] = 8
 
 _HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")
 
@@ -158,6 +165,43 @@ def decode_hex(
         return bytes.fromhex(value)
     except ValueError as exc:  # pragma: no cover - guarded above
         raise VerifierInputError(RejectCode.MALFORMED_HEX, field) from exc
+
+
+def _parse_field_value(value: int | str, field: str) -> int:
+    """Parse a decimal or ``0x``-prefixed field without reducing it."""
+    if isinstance(value, bool):
+        raise VerifierInputError(RejectCode.MALFORMED_HEX, field)
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str) or not value:
+        raise VerifierInputError(RejectCode.MALFORMED_HEX, field)
+    try:
+        return int(value, 16) if value.lower().startswith("0x") else int(value, 10)
+    except ValueError as exc:
+        raise VerifierInputError(RejectCode.MALFORMED_HEX, field) from exc
+
+
+def encode_field_to_bytes32_hex(value: int | str, field: str = "field") -> str:
+    """Encode one canonical BN254 field as a lowercase 32-byte hex string.
+
+    This is the backend counterpart to the browser's
+    ``encodeFieldToBytes32Hex``. Values are validated, never reduced modulo the
+    field, and rejection messages contain only the stable code and field name.
+    """
+    element = _parse_field_value(value, field)
+    if element < 0 or element >= BN254_SCALAR_FIELD_MODULUS:
+        raise VerifierInputError(RejectCode.NON_CANONICAL_FIELD, field)
+    return f"{element:064x}"
+
+
+def encode_public_inputs(
+    values: Sequence[int | str], fields: Sequence[str] = ()
+) -> str:
+    """Encode an ordered public-input vector using the canonical field codec."""
+    return "".join(
+        encode_field_to_bytes32_hex(value, fields[index] if index < len(fields) else f"field_{index}")
+        for index, value in enumerate(values)
+    )
 
 
 def is_canonical_field(element: bytes) -> bool:
@@ -313,3 +357,17 @@ def classify(schema: str, public_inputs_hex: str, proof_hex: str) -> str | None:
     except VerifierInputError as error:
         return error.code.value
     return None
+
+
+def check_revocation_witness_depth(depth: object) -> None:
+    """Reject a Merkle depth outside the protocol bound.
+
+    Privacy-safe: raises :class:`VerifierInputError` with a stable code and the
+    field name ``depth`` only — never leaves, secrets, or witness material.
+    """
+    if isinstance(depth, bool) or not isinstance(depth, int):
+        raise VerifierInputError(RejectCode.MALFORMED_HEX, "depth")
+    if depth < 1:
+        raise VerifierInputError(RejectCode.LENGTH, "depth")
+    if depth > MAX_REVOCATION_WITNESS_DEPTH:
+        raise VerifierInputError(RejectCode.PROOF_OVERSIZE, "depth")

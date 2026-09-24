@@ -1,14 +1,20 @@
+import { useMemo } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
+import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
+import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
+import type { VerificationShareLinkInput } from '../verificationShareLink'
+
+const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 
 type Props = {
   wallet: string
@@ -40,6 +46,19 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
 
   const { statusLabel, isBusy } = useA11yStage(stage)
+
+  const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
+    if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
+    return {
+      videoHash: proof.videoHash,
+      proofId: proof.proofId,
+      metadataHash: proof.metadataHash,
+      network: CONTRACT_NETWORK_PASSPHRASE,
+      contractId: CONTRACT_ID,
+      transactionRef: registration?.hash || undefined,
+      tier: proof.tier,
+    }
+  }, [proof, registration?.hash])
 
   return (
     <section className="workspace app-page" id="studio" aria-busy={isBusy || undefined} aria-label="Evidence Studio workspace">
@@ -181,6 +200,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           )}
           Register proof
         </button>
+
+        <ShareVerificationLink input={shareLinkInput} />
       </div>
 
       <aside className="side-rail">
