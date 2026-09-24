@@ -1,0 +1,20 @@
+# Redacted ancestry — synthetic prover inputs (TESTING ONLY).
+# Run `nargo test` in redacted_ancestry_helper to confirm derivation shape.
+
+parent_hash_hi = "11111"
+parent_hash_lo = "22222"
+parent_blinding = "33333"
+mask_commitment = "44444"
+redaction_seed = "55555"
+credential_secret = "12345"
+nullifier_secret = "67890"
+
+# Public inputs — placeholders until helper outputs are substituted.
+parent_commitment = "0x0000000000000000000000000000000000000000000000000000000000000000"
+derivative_digest = "0x0000000000000000000000000000000000000000000000000000000000000000"
+parameters_digest = "0x0000000000000000000000000000000000000000000000000000000000000000"
+operation_type = "3"
+ancestry_root = "0x0000000000000000000000000000000000000000000000000000000000000000"
+nullifier = "0x0000000000000000000000000000000000000000000000000000000000000000"
+depth = "1"
+domain_tag = "0x0000000000000000000000000000000000000000000000000000000000000000"

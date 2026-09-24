@@ -1,0 +1,8 @@
+parent_hash_hi = "11111"
+parent_hash_lo = "22222"
+parent_blinding = "33333"
+mask_commitment = "44444"
+redaction_seed = "55555"
+credential_secret = "12345"
+nullifier_secret = "67890"
+depth = "1"

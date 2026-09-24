@@ -106,6 +106,8 @@ CIRCUITS=(
   "silent_witness_aggregator_helper"
   "revocation_witness"
   "revocation_witness_helper"
+  "redacted_ancestry"
+  "redacted_ancestry_helper"
 )
 
 build_once() {
