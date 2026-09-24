@@ -138,3 +138,32 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}
           subject-digest: ${{ steps.push-frontend.outputs.digest }}
           push-to-registry: true
+
+  publish-sdk:
+    name: Publish SDK to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          
+      - name: Install dependencies
+        working-directory: ./cli
+        run: npm ci
+        
+      - name: Build SDK
+        working-directory: ./cli
+        run: npm run build
+        
+      - name: Publish to npm
+        working-directory: ./cli
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
