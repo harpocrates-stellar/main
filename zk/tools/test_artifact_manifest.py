@@ -453,3 +453,285 @@ def test_compare_command_exits_with_drift_code(tmp_path: Path):
 
 def test_verify_reports_a_missing_manifest_as_fatal(tmp_path: Path):
     assert am.main(["verify", "--manifest", str(tmp_path / "absent.json")]) == am.EXIT_FATAL
+
+
+
+# ── Browser published ACIR ──────────────────────────────────────────────────
+
+
+def test_published_to_build_target_pairs_by_stem():
+    assert (
+        am.published_to_build_target("frontend/public/noir/silent_witness.json")
+        == "zk/noir/silent_witness/target/silent_witness.json"
+    )
+
+
+@pytest.mark.parametrize(
+    "published_path",
+    [
+        "frontend/public/noir/../secret.json",
+        "frontend/public/noir/foo/bar.json",
+        "zk/noir/silent_witness/target/silent_witness.json",
+        "frontend/public/noir/bad-name.json",
+        "frontend/public/noir/.json",
+    ],
+)
+def test_published_to_build_target_rejects_path_injection(published_path: str):
+    with pytest.raises(am.BuildError, match="refusing"):
+        am.published_to_build_target(published_path)
+
+
+def test_build_browser_manifest_digests_only_published_acir(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    (tmp_path / "frontend/public/noir").mkdir(parents=True)
+    payload = b'{"bytecode":"AAA","debug_symbols":"host"}'
+    (tmp_path / "frontend/public/noir/silent_witness.json").write_bytes(payload)
+    (tmp_path / "frontend/public/noir/silent_witness_helper.json").write_bytes(payload)
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "frontend/public/noir/silent_witness.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            },
+            {
+                "path": "frontend/public/noir/silent_witness_helper.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            },
+            {
+                "path": "frontend/public/noir/silent_witness_aggregator.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            },
+            {
+                "path": "zk/noir/silent_witness/target/silent_witness.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            },
+        ],
+    )
+
+    manifest, run = am.build_browser_manifest(lock, tmp_path)
+
+    assert manifest["format"] == am.BROWSER_MANIFEST_FORMAT
+    assert len(manifest["artifacts"]) == 2
+    assert "frontend/public/noir/silent_witness_aggregator.json" in manifest["skipped"]
+    assert all(entry.state != am.ArtifactState.DIGESTED or "SECRET" not in str(entry)
+               for entry in run.entries)
+    rendered = am.serialize_manifest(manifest)
+    assert "host" not in rendered  # volatile key stripped before digest; content never embedded
+    assert "AAA" not in rendered
+
+
+def test_compare_published_to_targets_detects_mismatch(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    pub = tmp_path / "frontend/public/noir"
+    tgt = tmp_path / "zk/noir/silent_witness/target"
+    pub.mkdir(parents=True)
+    tgt.mkdir(parents=True)
+    pub.joinpath("silent_witness.json").write_bytes(b'{"bytecode":"PUB"}')
+    tgt.joinpath("silent_witness.json").write_bytes(b'{"bytecode":"TGT"}')
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "frontend/public/noir/silent_witness.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            }
+        ],
+    )
+
+    findings = am.compare_published_to_targets(lock, tmp_path)
+
+    assert len(findings) == 1
+    assert "disagrees with build target" in findings[0]
+    assert "PUB" not in findings[0]
+    assert "TGT" not in findings[0]
+
+
+def test_compare_published_to_targets_matches_when_equal(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    pub = tmp_path / "frontend/public/noir"
+    tgt = tmp_path / "zk/noir/silent_witness/target"
+    pub.mkdir(parents=True)
+    tgt.mkdir(parents=True)
+    body = b'{"bytecode":"SAME","debug_symbols":"a"}'
+    pub.joinpath("silent_witness.json").write_bytes(body)
+    tgt.joinpath("silent_witness.json").write_bytes(
+        b'{"debug_symbols":"b","bytecode":"SAME"}'
+    )
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "frontend/public/noir/silent_witness.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            }
+        ],
+    )
+
+    assert am.compare_published_to_targets(lock, tmp_path) == []
+
+
+def test_compare_browser_manifests_reports_digest_drift():
+    before = {
+        "format": am.BROWSER_MANIFEST_FORMAT,
+        "version": am.MANIFEST_VERSION,
+        "toolchain": {"nargo": "1.0.0-beta.9", "barretenberg": "0.87.0"},
+        "normalization_policy_sha256": "a" * 64,
+        "artifacts": [_artifact("frontend/public/noir/x.json", "c" * 64)],
+        "skipped": [],
+    }
+    after = {
+        **before,
+        "artifacts": [_artifact("frontend/public/noir/x.json", "d" * 64)],
+    }
+
+    findings = am.compare_browser_manifests(before, after)
+
+    assert len(findings) == 1
+    assert "normalized digest" in findings[0]
+    assert "c" * 64 not in findings[0]
+
+
+def test_compare_browser_manifests_reports_missing_and_unexpected():
+    before = {
+        "format": am.BROWSER_MANIFEST_FORMAT,
+        "version": am.MANIFEST_VERSION,
+        "toolchain": {"nargo": "1.0.0-beta.9"},
+        "normalization_policy_sha256": "a" * 64,
+        "artifacts": [_artifact("frontend/public/noir/a.json", "c" * 64)],
+        "skipped": [],
+    }
+    after = {
+        **before,
+        "artifacts": [_artifact("frontend/public/noir/b.json", "c" * 64)],
+    }
+
+    findings = am.compare_browser_manifests(before, after)
+    assert any("missing from frontend/public/noir" in f for f in findings)
+    assert any("unexpected publish" in f for f in findings)
+
+
+def test_write_and_verify_browser_round_trip(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    # Minimal lock file on disk for CLI --lock
+    artifacts = [
+        {
+            "path": "frontend/public/noir/silent_witness.json",
+            "kind": "json",
+            "role": "published_acir",
+            "required": False,
+        }
+    ]
+    _lock_for(tmp_path, artifacts)
+    lock_path = tmp_path / "lock.json"
+    pub = tmp_path / "frontend/public/noir"
+    pub.mkdir(parents=True)
+    pub.joinpath("silent_witness.json").write_bytes(
+        b'{"bytecode":"BROWSER","debug_symbols":"x"}'
+    )
+    manifest_path = tmp_path / "zk" / "browser.artifacts.manifest.json"
+
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "write-browser",
+                "--output",
+                str(manifest_path),
+            ]
+        )
+        == am.EXIT_OK
+    )
+    assert manifest_path.is_file()
+    loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert loaded["format"] == am.BROWSER_MANIFEST_FORMAT
+    assert len(loaded["artifacts"]) == 1
+    assert "BROWSER" not in manifest_path.read_text(encoding="utf-8")
+
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "verify-browser",
+                "--manifest",
+                str(manifest_path),
+            ]
+        )
+        == am.EXIT_OK
+    )
+
+    # Tamper with published bytes — verify must fail with drift, not leak content.
+    pub.joinpath("silent_witness.json").write_bytes(
+        b'{"bytecode":"TAMPERED-SECRET-WITNESS"}'
+    )
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "verify-browser",
+                "--manifest",
+                str(manifest_path),
+            ]
+        )
+        == am.EXIT_DRIFT
+    )
+
+
+def test_verify_browser_missing_manifest_is_fatal(tmp_path: Path):
+    assert (
+        am.main(["verify-browser", "--manifest", str(tmp_path / "absent.json")])
+        == am.EXIT_FATAL
+    )
+
+
+def test_oversized_browser_artifact_is_fatal_for_write(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    pub = tmp_path / "frontend/public/noir"
+    pub.mkdir(parents=True)
+    pub.joinpath("silent_witness.json").write_bytes(b"{" + b"x" * 100 + b"}")
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "frontend/public/noir/silent_witness.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            }
+        ],
+        max_artifact_bytes=16,
+    )
+    lock_path = tmp_path / "lock.json"
+    manifest_path = tmp_path / "browser.manifest.json"
+
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "write-browser",
+                "--output",
+                str(manifest_path),
+            ]
+        )
+        == am.EXIT_FATAL
+    )
+    assert not manifest_path.exists()

@@ -18,6 +18,7 @@ double-build check, and how to operate and roll back the pipeline.
 | `zk/tools/test_artifact_manifest.py` | Unit tests for normalization, the state machine, drift detection, and the privacy properties |
 | `zk/noir/scripts/reproducible-build.sh` | Hermetic double-build driver |
 | `zk/artifacts.manifest.json` | Committed manifest (written by a build; absent until first published) |
+| `zk/browser.artifacts.manifest.json` | Committed digests for published browser ACIR under `frontend/public/noir/` |
 | `.github/workflows/zk-ci.yml` | CI enforcement |
 
 ## Threat assumptions
@@ -105,6 +106,7 @@ zk/noir/scripts/reproducible-build.sh --verify
 # Tooling only — no toolchain required.
 python -m pytest zk/tools -q
 python zk/tools/artifact_manifest.py verify
+python zk/tools/artifact_manifest.py verify-browser
 ```
 
 ## Configuration
@@ -207,12 +209,14 @@ workflow is:
    verification keys, and writes `zk/artifacts.manifest.json`.
 
 4. **Publish browser artifacts** by copying the compiled ACIR files to the
-   frontend's public directory:
+   frontend's public directory, then refresh the browser manifest:
    ```bash
    cp zk/noir/silent_witness/target/silent_witness.json frontend/public/noir/
    cp zk/noir/silent_witness_helper/target/silent_witness_helper.json frontend/public/noir/
    cp zk/noir/silent_witness_aggregator/target/silent_witness_aggregator.json frontend/public/noir/
    cp zk/noir/silent_witness_aggregator_helper/target/silent_witness_aggregator_helper.json frontend/public/noir/
+   python zk/tools/artifact_manifest.py write-browser
+   python zk/tools/artifact_manifest.py verify-browser
    ```
 
 5. **Run the full double-build** to confirm reproducibility:
@@ -267,6 +271,34 @@ rather than the tool directly.
 **Drift in `provenance` only** — a circuit source changed but the artifacts did
 not. Either the artifacts are stale (rebuild) or the source change was
 comment-only (rebuild and re-commit the manifest).
+
+
+## Browser artifact manifest
+
+Published ACIR under `frontend/public/noir/` is the browser trust boundary: the
+Evidence Studio loads these bundles to prove in-browser. They must remain a
+publish of the compiled circuit, not a second protocol truth.
+
+| Command | Effect |
+| --- | --- |
+| `python zk/tools/artifact_manifest.py write-browser` | Digest every lock-declared `published_acir` file and write `zk/browser.artifacts.manifest.json` |
+| `python zk/tools/artifact_manifest.py verify-browser` | Re-digest the published tree and fail on drift from that manifest; when a matching `zk/noir/<name>/target/<name>.json` is also on disk, require an identical normalized digest |
+
+**Threat model.** A substituted or stale browser bundle could make the browser
+prove a different circuit than the on-chain verifier expects. `verify-browser`
+binds published digests to the pinned toolchain and normalization policy. When
+build targets are present (local or CI after `nargo compile`), it also proves
+the publish step did not rewrite bytecode.
+
+**Privacy.** Signals and findings name repo-relative paths and truncated digests
+only. ACIR bytes, witnesses, and private keys are never logged.
+
+**Migration.** Committing `zk/browser.artifacts.manifest.json` turns the CI
+check on. Existing callers are unchanged; this is an additive gate.
+
+**Rollback.** Delete `zk/browser.artifacts.manifest.json` to make the CI step
+inert again, or revert the publish under `frontend/public/noir/` and regenerate
+with `write-browser`.
 
 ## Limitations
 
