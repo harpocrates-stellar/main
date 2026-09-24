@@ -54,6 +54,15 @@ from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
+from errors import (
+    INTERNAL_ERROR,
+    NOT_FOUND,
+    PAYLOAD_TOO_LARGE,
+    VALIDATION_ERROR,
+    error_response,
+    ok_response,
+    register_request_id_propagation,
+)
 from trace_fields import (
     build_trace_fields,
     format_traceparent,
@@ -135,6 +144,8 @@ def create_app() -> Flask:
     app = Flask(__name__)
     CORS(app, **cors_kwargs(config.cors_origins))
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
+    # Propagate the request id through every response (header + JSON body).
+    register_request_id_propagation(app)
 
     # ------------------------------------------------------------------ #
     # Rate limiting                                                        #
@@ -188,7 +199,8 @@ def create_app() -> Flask:
 
     @app.after_request
     def process_response(response: Response):
-        response.headers["X-Request-ID"] = request_id()
+        # X-Request-ID and the body-level request_id are applied by the
+        # request-id propagation hook registered in create_app().
         trace = current_trace_fields()
         if trace.get("trace_id"):
             response.headers["X-Trace-ID"] = str(trace["trace_id"])
