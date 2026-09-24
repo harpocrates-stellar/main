@@ -758,9 +758,34 @@ impl HarpocratesRegistry {
             .set(&DataKey::SchemaVersion, &(SchemaVersion::V1 as u32));
     }
 
+    /// Return the persistent storage schema version.
+    ///
+    /// Missing keys (pre-#85 deployments) are treated as V1 so callers and
+    /// the upgrade harness stay compatible without a forced rewrite.
+    pub fn get_storage_schema_version(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(SchemaVersion::V1 as u32)
+    }
+
+    /// Apply sequential storage migrations up to the current target schema.
+    ///
+    /// - Admin-only; unauthorized callers fail with `Unauthorized`.
+    /// - Idempotent at the current target (V1): repeated calls are no-ops and
+    ///   do not emit `SchemaUpgraded`.
+    /// - Legacy deployments without `DataKey::SchemaVersion` are stamped to V1
+    ///   without emitting `SchemaUpgraded` (layout already matches V1).
+    /// - Future V2+ migrations land in the `current < target` branch and MUST
+    ///   preserve existing proof / video / nullifier records and never log
+    ///   media, secrets, witnesses, or private keys.
+    ///
+    /// Rollback: redeploying a prior wasm that ignores unknown keys leaves
+    /// stamped `SchemaVersion` intact; V1 readers treat it as authoritative.
     pub fn upgrade_storage(env: Env, admin: Address) {
         require_admin(&env, &admin);
 
+        let had_version = env.storage().persistent().has(&DataKey::SchemaVersion);
         let current_version: u32 = env
             .storage()
             .persistent()
@@ -769,9 +794,17 @@ impl HarpocratesRegistry {
 
         let target_version = SchemaVersion::V1 as u32;
 
+        // Legacy pre-#85 registries: stamp V1 without a SchemaUpgraded event.
+        if !had_version {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SchemaVersion, &target_version);
+            return;
+        }
+
         if current_version < target_version {
             // Migrations will be added here when moving to V2, V3, etc.
-            
+
             env.storage()
                 .persistent()
                 .set(&DataKey::SchemaVersion, &target_version);
@@ -3255,3 +3288,5 @@ pub mod test_timelock;
 mod test_schema;
 #[cfg(test)]
 mod test_selective_disclosure;
+#[cfg(test)]
+mod test_upgrade_compat;

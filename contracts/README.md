@@ -64,6 +64,44 @@ command list, and the expected/actual error code. It never prints proof bytes,
 public input bytes, witnesses, media, credentials, signatures, or raw metadata.
 The model uses deterministic slot numbers and synthetic hashes only.
 
+## Upgrade Compatibility Harness
+
+Issue #347 adds a focused upgrade compatibility harness in
+`contracts/harpocrates-registry/src/test_upgrade_compat.rs`. It drives the
+real `upgrade_storage` / `get_storage_schema_version` boundary with:
+
+- positive V1 init + idempotent upgrade calls
+- negative unauthorized upgrade attempts
+- legacy registries missing `DataKey::SchemaVersion` (stamp without event)
+- regression that Tier-2 source proofs and the verifier pointer survive upgrade
+
+```bash
+cd contracts
+cargo test -p harpocrates-registry upgrade_compat -- --nocapture
+```
+
+### Compatibility, Migration, And Rollback
+
+`upgrade_storage` is the only admin path that advances `DataKey::SchemaVersion`.
+At V1 the call is a no-op when the key is already present. Pre-#85 deployments
+that lack the key are stamped to V1 without emitting `SchemaUpgraded` because
+the on-disk layout is already V1-compatible. Future V2+ migrations must land
+in the sequential branch inside `upgrade_storage`, preserve existing proof /
+video / nullifier records, and must never log media, secrets, witnesses, or
+private keys.
+
+Rollback is redeploying a prior wasm: additive `SchemaVersion` keys are
+ignored by older readers, and no proof rewrite is required for the V1 stamp.
+Operators should call `get_storage_schema_version` after upgrade to confirm
+the stamped version before rotating verifiers.
+
+### Threat Assumptions
+
+The harness assumes Soroban auth + persistent storage semantics. It does not
+exercise live mainnet wasm replace, cryptographic verifier soundness, or real
+evidence payloads. Failure modes under test are deterministic `RegistryError`
+codes (`Unauthorized`) and privacy-safe absence of `SchemaUpgraded` on no-ops.
+
 ### Compatibility And Rollout
 
 This fuzzing change is test-only. It does not alter exported contract
@@ -121,6 +159,8 @@ The current registry exports:
 
 ```text
 init
+get_storage_schema_version
+upgrade_storage
 propose_admin
 cancel_admin_transfer
 accept_admin
