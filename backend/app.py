@@ -27,11 +27,18 @@ from werkzeug.utils import secure_filename
 
 from config import load_config
 from errors import (
+    DEPENDENCY_FAILURE,
+    EXPIRED_INPUT,
     INTERNAL_ERROR,
+    MALFORMED_INPUT,
     NOT_FOUND,
+    OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    REVOKED_INPUT,
+    UNSUPPORTED_INPUT,
     VALIDATION_ERROR,
+    classify_cli_error,
     error_response,
 )
 from db import (
@@ -317,6 +324,7 @@ def create_app() -> Flask:
             code=PAYLOAD_TOO_LARGE,
             message="request body is too large",
             status=413,
+            cli_code=OVERSIZED_INPUT,
         )
 
     @app.errorhandler(ValueError)
@@ -325,6 +333,7 @@ def create_app() -> Flask:
             code=VALIDATION_ERROR,
             message=str(error),
             status=400,
+            cli_code=classify_cli_error(str(error)),
         )
 
     @app.errorhandler(RuntimeError)
@@ -348,6 +357,7 @@ def create_app() -> Flask:
             code=RATE_LIMITED,
             message="rate limit exceeded",
             status=429,
+            cli_code="rate_limited",
         )
         response.headers.setdefault("Retry-After", "60")
         return response, status
@@ -827,7 +837,12 @@ def create_app() -> Flask:
                 status=400,
             )
         if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "registration payload is too large"}), 413
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="registration payload is too large",
+                status=413,
+                cli_code=OVERSIZED_INPUT,
+            )
 
         video_hash = payload.get("videoHash")
         metadata_hash = payload.get("metadataHash")
@@ -845,6 +860,7 @@ def create_app() -> Flask:
                     code=VALIDATION_ERROR,
                     message=f"{name} must be a 32-byte hex string",
                     status=400,
+                    cli_code=MALFORMED_INPUT,
                 )
 
         tier = payload.get("tier")
@@ -853,6 +869,7 @@ def create_app() -> Flask:
                 code=VALIDATION_ERROR,
                 message="tier must be one of: silent, source, seal",
                 status=400,
+                cli_code=UNSUPPORTED_INPUT,
             )
 
         try:
@@ -882,7 +899,12 @@ def create_app() -> Flask:
                 time_att = decode_time_attestation(payload["timeAttestation"])
                 errors = validate_time_attestation(time_att, video_hash)
                 if errors:
-                    return jsonify({"error": "Invalid time attestation", "details": errors}), 400
+                    return error_response(
+                        code=VALIDATION_ERROR,
+                        message="Invalid time attestation",
+                        status=400,
+                        cli_code=classify_cli_error("time attestation is invalid"),
+                    )
                 time_attestation_data = encode_time_attestation(time_att)
                 if time_att.claimed_time:
                     from datetime import datetime, timezone
@@ -890,13 +912,23 @@ def create_app() -> Flask:
                         time_att.claimed_time.unix_ms / 1000, tz=timezone.utc
                     ).isoformat()
             except (ValueError, TypeError) as exc:
-                return jsonify({"error": f"Time attestation error: {str(exc)}"}), 400
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=f"Time attestation error: {str(exc)}",
+                    status=400,
+                    cli_code=classify_cli_error(str(exc)),
+                )
 
         idempotency_key = make_idempotency_key(video_hash, proof_id, normalized_tx_hash)
 
         retention_class = payload.get("retentionClass", "default")
         if retention_class not in config.retention_classes:
-            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"invalid retention class: {retention_class}",
+                status=400,
+                cli_code=UNSUPPORTED_INPUT,
+            )
         retention_days = config.retention_classes[retention_class]
         expires_at = None
         if retention_days >= 0:

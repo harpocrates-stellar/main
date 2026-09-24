@@ -51,10 +51,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALIDATION_ERROR = "VALIDATION_ERROR"
-"""Client-supplied data failed validation (400)."""
+"""Legacy client-validation code retained for compatibility (400)."""
 
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
-"""Request body exceeds the configured size limit (413)."""
+"""Legacy payload-limit code retained for compatibility (413)."""
 
 NOT_FOUND = "NOT_FOUND"
 """The requested resource or capability is unavailable (404)."""
@@ -68,6 +68,32 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
+# CLI-friendly aliases kept stable at the public boundary. These are the values
+# shell tooling and higher-level clients should prefer when they do not need the
+# legacy uppercase names retained for compatibility with older callers.
+MALFORMED_INPUT = "malformed_input"
+OVERSIZED_INPUT = "oversized_input"
+UNSUPPORTED_INPUT = "unsupported_input"
+EXPIRED_INPUT = "expired_input"
+REVOKED_INPUT = "revoked_input"
+DEPENDENCY_FAILURE = "dependency_failure"
+RATE_LIMITED_CLI = "rate_limited"
+
+CLI_ERROR_CODES = {
+    VALIDATION_ERROR: "validation_error",
+    PAYLOAD_TOO_LARGE: "payload_too_large",
+    NOT_FOUND: "not_found",
+    INTERNAL_ERROR: "internal_error",
+    UNSUPPORTED_MEDIA_TYPE: "unsupported_media_type",
+    RATE_LIMITED: RATE_LIMITED_CLI,
+    MALFORMED_INPUT: MALFORMED_INPUT,
+    OVERSIZED_INPUT: OVERSIZED_INPUT,
+    UNSUPPORTED_INPUT: UNSUPPORTED_INPUT,
+    EXPIRED_INPUT: EXPIRED_INPUT,
+    REVOKED_INPUT: REVOKED_INPUT,
+    DEPENDENCY_FAILURE: DEPENDENCY_FAILURE,
+}
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -78,28 +104,61 @@ def error_response(
     code: str,
     message: str,
     status: int,
+    cli_code: str | None = None,
 ) -> tuple[Response, int]:
     """Return a Flask response tuple for a standardized error envelope.
+
+    The legacy ``code`` value remains the stable public contract for compatible
+    callers. A second ``cli_code`` field is added for CLI and automation tooling
+    that needs a lowercase, shell-friendly identifier without breaking existing
+    integrations.
 
     Args:
         code: Machine-readable error code (one of the module-level constants).
         message: Human-readable error description.
         status: HTTP status code.
+        cli_code: Optional CLI-friendly error code (lowercase snake_case).
     """
     request_id = _get_request_id()
-    return (
-        jsonify(
-            {
-                "ok": False,
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "request_id": request_id,
-                },
-            },
-        ),
-        status,
-    )
+    resolved_cli_code = cli_code or _resolve_cli_code(code)
+    payload = {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "request_id": request_id,
+        },
+    }
+    if resolved_cli_code:
+        payload["error"]["cli_code"] = resolved_cli_code
+    return jsonify(payload), status
+
+
+def _resolve_cli_code(code: str | None) -> str | None:
+    """Map an error code to its lowercase CLI-friendly alias when available."""
+    if not code:
+        return None
+    return CLI_ERROR_CODES.get(code, code.lower().replace("-", "_"))
+
+
+def classify_cli_error(message: str | None) -> str:
+    """Classify a user-facing validation message into a stable CLI-friendly code."""
+    if not message:
+        return "validation_error"
+    lowered = message.lower()
+    if "dependency" in lowered or "downstream" in lowered or "dependency_failure" in lowered:
+        return DEPENDENCY_FAILURE
+    if "revoked" in lowered:
+        return REVOKED_INPUT
+    if "expired" in lowered:
+        return EXPIRED_INPUT
+    if "unsupported" in lowered or "unknown" in lowered or "not supported" in lowered:
+        return UNSUPPORTED_INPUT
+    if "too large" in lowered or "oversized" in lowered or "size limit" in lowered:
+        return OVERSIZED_INPUT
+    if "malformed" in lowered or "invalid" in lowered or "required" in lowered or "must be" in lowered:
+        return MALFORMED_INPUT
+    return "validation_error"
 
 
 def ok_response(
