@@ -2,6 +2,18 @@
 
 ## 1.0.0 — Unreleased
 
+- Added signed receipt digest commitment (#337): `commit_receipt_digest`
+  anchors `sha256(canonical_json(signed_verification_receipt))` with a
+  contract-bound P-256 attestation from an admin-managed allowlist
+  (`add_receipt_signer`, `revoke_receipt_signer`, max 8 active keys), one
+  immutable commitment per proof, idempotent retries, public
+  `get_receipt_commitment` / `get_receipt_signer` reads, typed events, and
+  additive storage. The receipt itself never touches the chain. See
+  `contracts/RECEIPT_COMMITMENT.md`.
+- External verifier verdicts are now enforced: registrations whose
+  `verify_external_proof` call fails (or that pass an empty proof) revert with
+  `InvalidProof` instead of proceeding silently.
+
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
   silence checks, and regression corpus entries `fz-011`–`fz-013` (#369).
