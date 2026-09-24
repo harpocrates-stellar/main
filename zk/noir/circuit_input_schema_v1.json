@@ -1,0 +1,46 @@
+{
+  "format": "harpocrates.circuit-input-schema",
+  "version": 1,
+  "id": "silent_witness/input-v1",
+  "noir_version": "1.0.0-beta.9",
+  "input_fields": [
+    "credential_secret",
+    "nullifier_secret",
+    "video_hash_hi",
+    "video_hash_lo",
+    "verifier_scope",
+    "epoch"
+  ],
+  "public_frames": {
+    "unscoped_v1": [
+      "video_hash_hi",
+      "video_hash_lo",
+      "credential_root",
+      "nullifier",
+      "domain_tag"
+    ],
+    "scoped_v2": [
+      "video_hash_hi",
+      "video_hash_lo",
+      "credential_root",
+      "nullifier",
+      "verifier_scope",
+      "epoch",
+      "domain_tag"
+    ]
+  },
+  "artifact_abis": {
+    "unscoped_v1": {
+      "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo"],
+      "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier", "domain_tag"],
+      "helper_return_fields": 3
+    },
+    "scoped_v2": {
+      "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "verifier_scope", "epoch"],
+      "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier", "verifier_scope", "epoch", "domain_tag"],
+      "helper_return_fields": 3
+    }
+  },
+  "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "proof_bytes": { "min": 64, "max": 65536 }
+}
