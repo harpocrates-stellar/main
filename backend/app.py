@@ -164,6 +164,28 @@ def create_app() -> Flask:
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
 
+    @app.before_request
+    def enforce_content_length():
+        if request.method in {"POST", "PUT", "PATCH"}:
+            if request.content_length is None:
+                return jsonify({
+                    "ok": False,
+                    "error": {
+                        "code": "LENGTH_REQUIRED",
+                        "message": "Content-Length header is required",
+                        "request_id": getattr(g, "request_id", "unknown")
+                    }
+                }), 411
+            if request.content_length > config.max_content_length:
+                return jsonify({
+                    "ok": False,
+                    "error": {
+                        "code": "PAYLOAD_TOO_LARGE",
+                        "message": "request body is too large",
+                        "request_id": getattr(g, "request_id", "unknown")
+                    }
+                }), 413
+
     @app.after_request
     def process_response(response: Response):
         response.headers["X-Request-ID"] = request_id()

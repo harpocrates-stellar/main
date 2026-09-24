@@ -1,9 +1,0 @@
-credential_secret = "12345"
-nullifier_secret = "67890"
-video_hash_hi = "22685491128062564230891640495451214097"
-video_hash_lo = "45370982256125128461783280990902428194"
-credential_root = "0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9"
-# nullifier must be regenerated after compiling the updated circuit:
-# evidence_digest = pedersen_hash([0, video_hash_hi, video_hash_lo])
-# nullifier = pedersen_hash([12345, 67890, evidence_digest])
-nullifier = "0"

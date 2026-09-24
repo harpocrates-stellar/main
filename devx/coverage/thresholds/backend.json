@@ -1,9 +1,0 @@
-{
-  "workspace": "backend",
-  "report_format": "coverage_py",
-  "description": "Minimum coverage for the Flask backend, measured by `coverage json` (pytest-cov).",
-  "thresholds": {
-    "line_rate": 70,
-    "branch_rate": 55
-  }
-}

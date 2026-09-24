@@ -40,6 +40,9 @@ VALIDATION_ERROR = "VALIDATION_ERROR"
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 """Request body exceeds the configured size limit (413)."""
 
+LENGTH_REQUIRED = "LENGTH_REQUIRED"
+"""Content-Length header is required for this request (411)."""
+
 NOT_FOUND = "NOT_FOUND"
 """The requested resource or capability is unavailable (404)."""
 
