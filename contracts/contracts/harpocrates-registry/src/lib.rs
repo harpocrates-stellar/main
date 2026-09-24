@@ -51,6 +51,29 @@ pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
 pub const MAX_HISTORY_LIMIT: u32 = 50;
 
 // ---------------------------------------------------------------------------
+// Paginated verifier-set inspection
+// ---------------------------------------------------------------------------
+//
+// The verifier registry exposes a paginated view of all verifier addresses
+// that have ever been set or scheduled, ordered by registration index.
+//
+// - MAX_VERIFIER_LIST_LIMIT bounds the number of entries a single
+//   `list_verifiers` call may return, matching the history-query cap.
+// - The cursor is a u32 representing the last-seen 1-based index.
+//   Passing `None` (or `Some(0)`) starts from the first entry.
+// - Privacy guarantee: `list_verifiers` returns only public Stellar
+//   addresses and their registration timestamps. No rotation secrets,
+//   pending verifier candidates, or rollback windows are included.
+//
+// Migration: `VerifierIndex(u32)` and `VerifierCount` are new, additive
+// storage keys written on every `set_verifier` / `schedule_verifier_rotation`
+// call. Existing deployments read these keys as absent and `list_verifiers`
+// returns an empty page. Upgrading requires no data migration; new index
+// entries accumulate from the first post-upgrade write. Rolling back to a
+// pre-pagination wasm simply ignores these keys.
+pub const MAX_VERIFIER_LIST_LIMIT: u32 = 50;
+
+// ---------------------------------------------------------------------------
 // Scoped emergency pause controls (#87)
 // ---------------------------------------------------------------------------
 //
@@ -167,6 +190,41 @@ pub struct VerifierState {
     pub overlap_window: u64,
     pub rollback_window: u64,
     pub rollback_window_end: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Paginated verifier-set entry and page
+// ---------------------------------------------------------------------------
+
+/// A single entry returned by [`HarpocratesRegistry::list_verifiers`].
+///
+/// Only public, non-sensitive fields are included: the monotonic registration
+/// `index`, the verifier `verifier` (a Stellar address), and the ledger
+/// timestamp at which it was first indexed. No rotation state, pending
+/// candidates, or rollback windows are exposed here.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifierEntry {
+    /// 1-based sequential position in the verifier registry.
+    pub index: u32,
+    /// The registered verifier contract address.
+    pub verifier: Address,
+    /// Ledger timestamp (seconds since Unix epoch) when this entry was indexed.
+    pub registered_at: u64,
+}
+
+/// Page result returned by [`HarpocratesRegistry::list_verifiers`].
+///
+/// `entries` contains up to `limit` entries starting after the cursor.
+/// `next_cursor` is `Some(last_index)` when more entries exist, `None` when
+/// the caller has reached the end of the list.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifierPage {
+    pub entries: SorobanVec<VerifierEntry>,
+    /// Pass this value as `cursor` on the next call to continue pagination.
+    /// `None` means there are no more pages.
+    pub next_cursor: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +442,21 @@ pub struct IssuerRevoked {
 pub struct VerifierSet {
     #[topic]
     pub verifier: Address,
+}
+
+/// Emitted when a verifier address is appended to the paginated verifier
+/// index for the first time (either via `set_verifier` or
+/// `schedule_verifier_rotation`). Safe to emit publicly: the index and
+/// verifier address are already on-chain; no secret material is present.
+#[contractevent(topics = ["verif", "indexed"])]
+pub struct VerifierIndexed {
+    /// 1-based sequential position assigned to this verifier.
+    #[topic]
+    pub index: u32,
+    #[topic]
+    pub verifier: Address,
+    /// Ledger timestamp at which the entry was added.
+    pub registered_at: u64,
 }
 
 #[contractevent(topics = ["credroot", "add"])]
@@ -669,6 +742,13 @@ pub enum DataKey {
     TimelockMinDelay,
     /// Schema definition by schema hash.
     Schema(BytesN<32>),
+    /// Indexed verifier entry by 1-based sequential position.
+    /// Written on every `set_verifier` / `schedule_verifier_rotation` call
+    /// for newly-seen addresses; never removed on rotation or rollback.
+    VerifierIndex(u32),
+    /// Total count of ever-indexed verifier addresses (monotonically
+    /// increasing). Used as the upper bound for `list_verifiers` pagination.
+    VerifierCount,
 }
 
 #[contracterror]
@@ -739,6 +819,8 @@ pub enum RegistryError {
     UnknownSchema = 50,
     InactiveSchema = 51,
     SchemaVersionMismatch = 52,
+    /// `limit` exceeded `MAX_VERIFIER_LIST_LIMIT` in `list_verifiers`.
+    VerifierLimitExceeded = 53,
 }
 
 #[contract]
@@ -863,11 +945,109 @@ impl HarpocratesRegistry {
 
         env.storage().persistent().set(&DataKey::Verifier, &verifier);
         env.storage().persistent().remove(&DataKey::VerifierState);
+        // Append to the paginated verifier index if this is a newly-seen address.
+        append_verifier_index(&env, &verifier);
         VerifierSet { verifier }.publish(&env);
     }
 
     pub fn get_verifier(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Verifier)
+    }
+
+    /// Return the total number of unique verifier addresses that have ever
+    /// been indexed (via `set_verifier` or `schedule_verifier_rotation`).
+    ///
+    /// The count is monotonically non-decreasing. It is `0` on deployments
+    /// that have not yet set a verifier, or on pre-pagination deployments
+    /// that have not had their first post-upgrade `set_verifier` call.
+    pub fn get_verifier_count(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VerifierCount)
+            .unwrap_or(0u32)
+    }
+
+    /// Paginated read-only query over all verifier addresses that have ever
+    /// been registered via `set_verifier` or `schedule_verifier_rotation`.
+    ///
+    /// # Parameters
+    ///
+    /// - `cursor` — the 1-based index of the last entry seen on a previous
+    ///   page, or `None` (equivalent to `Some(0)`) to start from the
+    ///   beginning. The first page always uses `cursor = None`.
+    /// - `limit` — how many entries to return (1 – `MAX_VERIFIER_LIST_LIMIT`
+    ///   inclusive). Passing 0 or a value above the cap panics with
+    ///   [`RegistryError::VerifierLimitExceeded`].
+    ///
+    /// # Returns
+    ///
+    /// A [`VerifierPage`] containing up to `limit` entries and a
+    /// `next_cursor`. When `next_cursor` is `None` the caller has reached
+    /// the end of the list.
+    ///
+    /// # Privacy
+    ///
+    /// Only public Stellar addresses and their registration timestamps are
+    /// returned. Rotation state (`pending_verifier`, rollback windows) is
+    /// never included in this response.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistryError::VerifierLimitExceeded`] — `limit` is 0 or above
+    ///   `MAX_VERIFIER_LIST_LIMIT`.
+    pub fn list_verifiers(
+        env: Env,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> VerifierPage {
+        if limit == 0 || limit > MAX_VERIFIER_LIST_LIMIT {
+            panic_with_error!(&env, RegistryError::VerifierLimitExceeded);
+        }
+
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifierCount)
+            .unwrap_or(0u32);
+
+        // The cursor is the last-seen 1-based index; resume from the next one.
+        let start = cursor.unwrap_or(0).saturating_add(1);
+
+        if start > total || total == 0 {
+            // No entries beyond the cursor — return an empty page.
+            return VerifierPage {
+                entries: SorobanVec::new(&env),
+                next_cursor: None,
+            };
+        }
+
+        let end = start.saturating_add(limit).min(total.saturating_add(1));
+        let mut entries: SorobanVec<VerifierEntry> = SorobanVec::new(&env);
+        let mut last_index = start.saturating_sub(1);
+
+        let mut i = start;
+        while i < end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, VerifierEntry>(&DataKey::VerifierIndex(i))
+            {
+                entries.push_back(entry);
+                last_index = i;
+            }
+            i = i.saturating_add(1);
+        }
+
+        let next_cursor = if last_index < total {
+            Some(last_index)
+        } else {
+            None
+        };
+
+        VerifierPage {
+            entries,
+            next_cursor,
+        }
     }
 
     pub fn schedule_verifier_rotation(
@@ -891,6 +1071,9 @@ impl HarpocratesRegistry {
             rollback_window_end: activation_ledger.saturating_add(rollback_window),
         };
         env.storage().persistent().set(&DataKey::VerifierState, &state);
+        // Index the pending verifier so it appears in list_verifiers once
+        // scheduled, giving observers early visibility of the incoming address.
+        append_verifier_index(&env, &verifier);
         VerifierRotationScheduled {
             active_verifier: active_verifier.clone(),
             pending_verifier: verifier.clone(),
