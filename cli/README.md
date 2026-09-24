@@ -13,6 +13,12 @@ node dist/cli.js verify --manifest proof.json \
   --source-address G... --output json
 ```
 
+To verify a signed verification receipt offline without hitting the RPC:
+
+```sh
+node dist/cli.js verify-receipt --receipt receipt.json --keys trusted_keys.json
+```
+
 For reproducible, network-free manifest and status fixtures, run from `cli/`:
 
 ```sh

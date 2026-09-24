@@ -1,12 +1,17 @@
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
 import { CheckCircle2, Loader2, RefreshCw, Upload, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
+import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import VerificationTimeline from '../components/VerificationTimeline'
 import { shortHash } from '../utils'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
+import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
+import type { VerificationShareLinkInput } from '../verificationShareLink'
+
+const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 
 type Props = {
   wallet: string
@@ -50,6 +55,27 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const showRetry = isError && !!errorCode && errorCode !== 'CANCELLED' && errorCode !== 'REVOKED_EVIDENCE' && errorCode !== 'EXPIRED_EVIDENCE'
   // Revoked/expired are terminal trust decisions, retry still allowed but we keep it available via retry button
   const effectiveRetry = isError || isCancelled
+
+  const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
+    if (status !== 'success' || !verifyHash || !CONTRACT_ID) return null
+    const matchedEvent = events.find((event) => event.proof_id && event.video_hash === verifyHash)
+      ?? events.find((event) => !!event.proof_id)
+    const proofId = matchedEvent?.proof_id ?? null
+    const metadataHash = chainProof?.metadataHash ?? provenanceRecord?.metadata.metadataHash ?? null
+    if (!proofId || !metadataHash) return null
+    const tierRaw = matchedEvent?.tier
+    const tier =
+      tierRaw === 'silent' || tierRaw === 'source' || tierRaw === 'seal' ? tierRaw : undefined
+    return {
+      videoHash: verifyHash,
+      proofId,
+      metadataHash,
+      network: provenanceRecord?.network.passphrase || CONTRACT_NETWORK_PASSPHRASE,
+      contractId: CONTRACT_ID,
+      transactionRef: provenanceRecord?.ledger.transactionHash || matchedEvent?.tx_hash || undefined,
+      tier,
+    }
+  }, [status, verifyHash, events, chainProof, provenanceRecord])
 
   return (
     <section className="workspace app-page verify-page" id="verify">
@@ -178,6 +204,8 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           {/* Hidden retry helper for tests / keyboard users */}
           {showRetry ? null : null}
         </div>
+
+        <ShareVerificationLink input={shareLinkInput} />
 
         <dl className="data-list">
           <div>

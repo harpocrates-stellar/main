@@ -61,6 +61,66 @@ class ReleaseGuardTest(unittest.TestCase):
         with self.assertRaisesRegex(release_guard.ManifestError, "registry WASM"):
             release_guard.validate_manifest(manifest)
 
+    def test_active_release_requires_verifier_key_checksum_binding(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["rollout"]["state"] = "active"
+        manifest["artifacts"].extend(
+            [
+                {
+                    "component": "registry",
+                    "path": "contracts/contracts/harpocrates-registry/target/registry.wasm",
+                    "sha256": "a" * 64,
+                },
+                {
+                    "component": "verifier",
+                    "path": "release/verifier.wasm",
+                    "sha256": "b" * 64,
+                },
+                {
+                    "component": "verifier",
+                    "path": "release/verifier.vk",
+                    "sha256": "c" * 64,
+                },
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            release_guard.ManifestError, "requires verification_key_artifact"
+        ):
+            release_guard.validate_verifier_key_binding(manifest, {})
+
+    def test_active_release_rejects_verifier_key_checksum_mismatch(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["rollout"]["state"] = "active"
+        manifest["artifacts"].extend(
+            [
+                {
+                    "component": "registry",
+                    "path": "contracts/contracts/harpocrates-registry/target/registry.wasm",
+                    "sha256": "a" * 64,
+                },
+                {
+                    "component": "verifier",
+                    "path": "release/verifier.wasm",
+                    "sha256": "b" * 64,
+                },
+                {
+                    "component": "verifier",
+                    "path": "release/verifier.vk",
+                    "sha256": "c" * 64,
+                },
+            ]
+        )
+        binding = {
+            "verification_key_artifact": "release/verifier.vk",
+            "verification_key_sha256": "d" * 64,
+        }
+
+        with self.assertRaisesRegex(
+            release_guard.ManifestError, "checksum does not match"
+        ):
+            release_guard.validate_verifier_key_binding(manifest, binding)
+
 
 if __name__ == "__main__":
     unittest.main()

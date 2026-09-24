@@ -53,6 +53,15 @@ export const SILENT_WITNESS_DOMAIN_TAG_HEX =
 export const SCHEMA_SILENT_WITNESS = 'silent_witness/v1'
 export const SCHEMA_REVOCATION_WITNESS = 'revocation_witness/v1'
 
+/**
+ * Protocol Merkle-depth bound for `revocation_witness/v1` (#357).
+ * Must match the Noir globals and the Soroban registry constants.
+ * Host tooling must reject depth > this value before proving.
+ */
+export const MAX_REVOCATION_WITNESS_DEPTH = 3
+/** Leaf capacity implied by {@link MAX_REVOCATION_WITNESS_DEPTH} (`2^depth`). */
+export const MAX_REVOCATION_LEAVES = 8
+
 export type VerifierSchema =
   | typeof SCHEMA_SILENT_WITNESS
   | typeof SCHEMA_REVOCATION_WITNESS
@@ -338,4 +347,20 @@ export function classify(
     throw error
   }
   return null
+}
+
+/**
+ * Reject a Merkle depth outside the protocol bound for revocation witnesses.
+ * Privacy-safe: never logs leaves, secrets, or witness material.
+ */
+export function checkRevocationWitnessDepth(depth: number): void {
+  if (!Number.isInteger(depth)) {
+    throw new VerifierInputError('malformed_hex', 'depth')
+  }
+  if (depth < 1) {
+    throw new VerifierInputError('length', 'depth')
+  }
+  if (depth > MAX_REVOCATION_WITNESS_DEPTH) {
+    throw new VerifierInputError('proof_oversize', 'depth')
+  }
 }

@@ -242,3 +242,20 @@ The verifier contract address is stored on-chain and used to verify proofs. A pr
 - [Noir Circuit Source](zk/noir/silent_witness/src/main.nr)
 - [Contract Source](contracts/contracts/harpocrates-registry/src/lib.rs)
 - [Frontend Scope Derivation](frontend/src/seedVault.ts)
+
+## Revocation witness depth bound (#357)
+
+The `revocation_witness` circuit is fixed at **depth 3** (8 Pedersen leaves).
+
+| Constant | Value | Layers |
+| --- | --- | --- |
+| `MAX_REVOCATION_WITNESS_DEPTH` | 3 | Noir, registry, frontend/backend codec, `zk/tools/revocation_depth.py` |
+| `MAX_REVOCATION_LEAVES` | 8 | same |
+
+**Compatibility:** Public-input layout (`revocation_witness/v1`, 128 bytes) is
+unchanged. Existing depth-3 proofs remain valid.
+
+**Migration / rollback:** No storage migration. Raising the depth requires a
+new circuit version and coordinated artifact republish; rolling back means
+keeping the depth-3 verifier key. Host tooling must keep rejecting `depth > 3`
+so oversized trees never reach the prover.

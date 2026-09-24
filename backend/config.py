@@ -29,6 +29,10 @@ class AppConfig:
     verifier_cache_max_size: int
     verifier_cache_positive_ttl_seconds: float
     verifier_cache_negative_ttl_seconds: float
+    upload_chunk_bytes: int
+    upload_stream_threshold_bytes: int
+    upload_max_bytes: int
+    upload_temp_dir: str | None
 
 
 def load_config() -> AppConfig:
@@ -62,7 +66,25 @@ def load_config() -> AppConfig:
         verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
         verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
         verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
+        upload_chunk_bytes=_upload_chunk_bytes(),
+        upload_stream_threshold_bytes=_int_env("UPLOAD_STREAM_THRESHOLD_BYTES", 1_048_576),
+        upload_max_bytes=_int_env("UPLOAD_MAX_BYTES", _int_env("MAX_VIDEO_BYTES", 262_144_000)),
+        upload_temp_dir=_str_env("UPLOAD_TEMP_DIR"),
     )
+
+
+
+def _upload_chunk_bytes() -> int:
+    """Load UPLOAD_CHUNK_BYTES clamped into the supported streaming range."""
+    raw = os.getenv("UPLOAD_CHUNK_BYTES")
+    if raw is None or not raw.strip():
+        return 65_536
+    parsed = int(raw)
+    if parsed < 4_096:
+        return 4_096
+    if parsed > 1_048_576:
+        return 1_048_576
+    return parsed
 
 
 def _csv(name: str, default: str) -> list[str]:

@@ -4,6 +4,8 @@ import type {
   SilentWitnessProof,
   ProofErrorCode,
 } from './proofWorker.types'
+import { assessWorkerSupport } from './multiBrowserWorkerSupport'
+
 const PROOF_TIMEOUT_MS = 60_000
 const HEX64 = /^[0-9a-fA-F]{64}$/
 const MAX_SECRET_BYTES = 256
@@ -85,6 +87,7 @@ export class ProofWorkerClient {
     this.worker.terminate()
     this.worker = this.spawn()
   }
+
   private timeoutJob(requestId: string) {
     const job = this.pending.get(requestId)
     if (!job) return
@@ -94,7 +97,7 @@ export class ProofWorkerClient {
     this.worker = this.spawn()
   }
 
-generate(
+  generate(
     input: GenerateSilentWitnessInput,
     onProgress?: (stage: string) => void,
   ): { requestId: string; result: Promise<SilentWitnessProof> } {
@@ -102,11 +105,35 @@ generate(
     if (validationError) {
       return { requestId: '', result: Promise.reject(validationError) }
     }
+
+    // Fail closed before any secret crosses the worker boundary when the
+    // multi-browser capability floor is not met.
+    const support = assessWorkerSupport()
+    if (!support.ok) {
+      return {
+        requestId: '',
+        result: Promise.reject(
+          new ProofWorkerError('UNSUPPORTED_ENVIRONMENT', support.reason),
+        ),
+      }
+    }
+
+    // Reject concurrent work on the client without posting another message
+    // (matches the documented BUSY contract).
+    if (this.pending.size > 0) {
+      return {
+        requestId: '',
+        result: Promise.reject(
+          new ProofWorkerError('BUSY', 'A proof is already being generated.'),
+        ),
+      }
+    }
+
     const requestId = crypto.randomUUID()
     const credentialSecret = new TextEncoder().encode(input.credentialSecret).buffer
     const nullifierSecret = new TextEncoder().encode(input.nullifierSecret).buffer
 
-const result = new Promise<SilentWitnessProof>((resolve, reject) => {
+    const result = new Promise<SilentWitnessProof>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.timeoutJob(requestId)
       }, PROOF_TIMEOUT_MS)

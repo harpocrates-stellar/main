@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import logging
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
@@ -12,9 +14,50 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+logger = logging.getLogger(__name__)
+
 # Max page size for GET /api/proofs cursor pagination.
 PROOF_EVENTS_MAX_LIMIT = 100
 PROOF_EVENTS_DEFAULT_LIMIT = 25
+
+# Libpq / Postgres connection-class SQLSTATEs that are typically transient on
+# Neon (cold start, compute wake, brief network blips, pooler pressure).
+_TRANSIENT_SQLSTATES = frozenset(
+    {
+        "08000",  # connection_exception
+        "08001",  # sqlclient_unable_to_establish_sqlconnection
+        "08003",  # connection_does_not_exist
+        "08004",  # sqlserver_rejected_establishment_of_sqlconnection
+        "08006",  # connection_failure
+        "08007",  # transaction_resolution_unknown
+        "57P01",  # admin_shutdown
+        "57P02",  # crash_shutdown
+        "57P03",  # cannot_connect_now (Neon compute starting)
+        "53300",  # too_many_connections
+        "53400",  # configuration_limit_exceeded
+    }
+)
+
+_TRANSIENT_MESSAGE_FRAGMENTS = (
+    "timeout expired",
+    "timed out",
+    "connection timed out",
+    "connection refused",
+    "connection reset",
+    "server closed the connection",
+    "could not connect",
+    "ssl connection has been closed",
+    "the database system is starting up",
+    "the database system is in recovery mode",
+    "remaining connection slots",
+    "temporary failure",
+    "broken pipe",
+    "connection terminated",
+    "terminating connection due to administrator command",
+    "compute is not active",
+    "couldn't connect to compute",
+    "error connecting to compute node",
+)
 
 
 def encode_proof_events_cursor(event_id: int) -> str:
@@ -51,14 +94,154 @@ def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = float(raw)
+    if value <= 0.0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = int(raw)
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def db_connect_timeout_seconds() -> float:
+    """Per-attempt libpq connect timeout (seconds)."""
+    return _positive_float_env("DB_CONNECT_TIMEOUT_SECONDS", 5.0)
+
+
+def db_connect_deadline_seconds() -> float:
+    """Overall wall-clock budget for connect + retries (seconds)."""
+    return _positive_float_env("DB_CONNECT_DEADLINE_SECONDS", 15.0)
+
+
+def db_connect_max_attempts() -> int:
+    """Maximum connect attempts within the deadline."""
+    return _positive_int_env("DB_CONNECT_MAX_ATTEMPTS", 4)
+
+
+def db_connect_retry_base_seconds() -> float:
+    """Base backoff before the first retry (doubles each attempt)."""
+    return _positive_float_env("DB_CONNECT_RETRY_BASE_SECONDS", 0.05)
+
+
+def is_transient_neon_connect_error(exc: BaseException) -> bool:
+    """Return True when *exc* looks like a transient Neon/Postgres connect failure.
+
+    Classification is intentionally conservative: auth failures, syntax errors,
+    and other permanent faults are not retried. Never inspect or return the
+    connection string — only error class / SQLSTATE / sanitized message text.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, OSError)):
+        # OSError covers many socket-level connect failures; exclude permission
+        # errors which are not transient.
+        if isinstance(exc, PermissionError):
+            return False
+        return True
+
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate in _TRANSIENT_SQLSTATES:
+        return True
+
+    if isinstance(exc, psycopg.OperationalError):
+        message = str(exc).lower()
+        if any(fragment in message for fragment in _TRANSIENT_MESSAGE_FRAGMENTS):
+            return True
+        # OperationalError without a permanent marker is treated as transient
+        # for the connect path only (Neon wake / pooler flaps).
+        permanent_markers = (
+            "password authentication failed",
+            "authentication failed",
+            "no password supplied",
+            "certificate verify failed",
+            "could not translate host name",
+        )
+        if any(marker in message for marker in permanent_markers):
+            return False
+        return True
+
+    return False
+
+
+def _connect_with_retry(url: str) -> psycopg.Connection:
+    """Open a psycopg connection, retrying transient Neon failures until deadline.
+
+    Privacy: never logs ``DATABASE_URL`` or credentials — only attempt counts,
+    SQLSTATE, and exception class names.
+    """
+    deadline_at = time.monotonic() + db_connect_deadline_seconds()
+    per_attempt_timeout = db_connect_timeout_seconds()
+    max_attempts = db_connect_max_attempts()
+    retry_base = db_connect_retry_base_seconds()
+    last_exc: BaseException | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            break
+
+        connect_timeout = max(1, int(min(per_attempt_timeout, remaining)))
+        try:
+            return psycopg.connect(
+                url,
+                row_factory=dict_row,
+                connect_timeout=connect_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — classify then re-raise
+            last_exc = exc
+            transient = is_transient_neon_connect_error(exc)
+            sqlstate = getattr(exc, "sqlstate", None)
+            logger.warning(
+                "neon_connect_attempt_failed attempt=%s/%s transient=%s sqlstate=%s error_type=%s",
+                attempt,
+                max_attempts,
+                transient,
+                sqlstate,
+                type(exc).__name__,
+            )
+            if not transient:
+                raise
+
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0 or attempt >= max_attempts:
+                break
+
+            sleep_for = min(retry_base * (2 ** (attempt - 1)), max(0.0, remaining / 2.0))
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    message = "database connection deadline exceeded"
+    if last_exc is None:
+        raise RuntimeError(message)
+    raise RuntimeError(message) from last_exc
+
+
 @contextmanager
 def get_connection() -> Iterator[psycopg.Connection]:
+    """Yield a Postgres connection with Neon-aware transient connect retries.
+
+    Callers keep the existing interface. Connect attempts honour
+    ``DB_CONNECT_TIMEOUT_SECONDS`` per try and ``DB_CONNECT_DEADLINE_SECONDS``
+    overall so readiness / request paths stay bounded.
+    """
     url = database_url()
     if not url:
         raise RuntimeError("DATABASE_URL is not configured")
 
-    with psycopg.connect(url, row_factory=dict_row) as connection:
+    connection = _connect_with_retry(url)
+    try:
         yield connection
+    finally:
+        connection.close()
 
 
 def init_db() -> None:

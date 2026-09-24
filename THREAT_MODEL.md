@@ -255,6 +255,13 @@ and `metadata_hash` for content they did not actually review.
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
 
+**Control (#357):** The `revocation_witness` Merkle tree is protocol-bounded at
+`MAX_REVOCATION_WITNESS_DEPTH = 3` (`MAX_REVOCATION_LEAVES = 8`). The Noir
+circuit is fixed at this depth; host tooling (`zk/tools/revocation_depth.py`,
+verifier codec) rejects oversized depth before proving so hostile trees cannot
+inflate witness size or proving cost at this boundary. Depth changes require a
+new circuit version.
+
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually
 call `revoke_proof` for each fraudulent record — there is no bulk revocation.
@@ -823,6 +830,26 @@ The following are explicitly outside the scope of this threat model:
 
 ---
 
+
+---
+
+## 9.1 Privacy-Safe Backend Trace Fields
+
+**Artifact:** `backend/trace_fields.py` (`harpocrates-trace-v1`)
+
+Backend request logs and `/health`/`/ready` responses may carry opaque
+correlation identifiers (`request_id`, `trace_id`, `span_id`,
+`correlation_id`) plus a sanitized `endpoint_pattern`.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Public HTTP edge and structured logs only |
+| Allowed | Opaque IDs, W3C `traceparent` (v00), sanitized routes, versioned ID tags |
+| Forbidden | Media bytes, proofs, witness values, private keys, secrets, raw IPs, raw User-Agent |
+| Malformed / oversized headers | Ignored; generated opaque IDs substituted |
+| Migration | Additive; existing `request_id` header/log field retained |
+| Rollback | Stop emitting extended fields; callers keep `request_id` |
+
 ## 10. Review and Update Cadence
 
 | Trigger | Action |
@@ -842,3 +869,4 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
+| 1.2 | 2026-09-24 | Document privacy-safe backend trace fields (`harpocrates-trace-v1`). |

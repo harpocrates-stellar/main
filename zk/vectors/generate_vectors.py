@@ -456,9 +456,9 @@ def build_cases() -> list[dict[str, object]]:
         case(
             "rv-neg-044-domain-all-ones",
             "revocation_witness/v1",
-            "All-ones domain separator must not match the v1 constant.",
+            "All-ones domain separator is non-canonical (canonical check precedes domain match).",
             revocation(REVOCATION_ROOT, NULLIFIER, ONES, CREDENTIAL_ROOT),
-            "domain_mismatch",
+            "non_canonical_field",
         )
     )
 
@@ -468,7 +468,72 @@ def build_cases() -> list[dict[str, object]]:
             "sw-neg-060-length-before-padding",
             "silent_witness/v1",
             "A frame that is both dirty-padded and wrong length must be rejected for length, not padding (check order).",
-            "01" + SILENT_VALID[:-2],  # 128 bytes but with dirty first byte and truncated
+            "01" + SILENT_VALID[:-4],  # 159 bytes with dirty first byte — length wins
+            "length",
+        )
+    )
+
+    # ---- revocation length / framing (malformed public-input shapes) ----
+    cases.append(
+        case(
+            "rv-neg-001-empty",
+            "revocation_witness/v1",
+            "Empty revocation public inputs.",
+            "",
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-002-truncated-one-byte",
+            "revocation_witness/v1",
+            "127 bytes: one byte short of a revocation frame.",
+            REVOCATION_VALID[:-2],
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-003-truncated-one-field",
+            "revocation_witness/v1",
+            "96 bytes: a whole field element missing from a revocation frame.",
+            REVOCATION_VALID[: 96 * 2],
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-004-oversized-one-byte",
+            "revocation_witness/v1",
+            "129 bytes: one trailing byte past the revocation frame.",
+            REVOCATION_VALID + "00",
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-005-doubled-frame",
+            "revocation_witness/v1",
+            "Two concatenated valid revocation frames must not be accepted as one.",
+            REVOCATION_VALID + REVOCATION_VALID,
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-006-silent-length-as-revocation",
+            "revocation_witness/v1",
+            "A silent-witness-length (160-byte) frame must not be accepted under the revocation schema.",
+            SILENT_VALID,
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "sw-neg-006-revocation-length-as-silent",
+            "silent_witness/v1",
+            "A revocation-length (128-byte) frame must not be accepted under the silent-witness schema.",
+            REVOCATION_VALID,
             "length",
         )
     )
