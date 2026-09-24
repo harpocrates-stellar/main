@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react'
 import { Building2, Fingerprint, KeyRound } from 'lucide-react'
 import type { IdentityTier, ProofPackage, Stage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
+import type { ProofStage } from '../proofStage'
 
 export const TIERS = [
   {
@@ -40,6 +41,8 @@ export type UseEvidenceReturn = {
   setSelectedTier: (tier: IdentityTier) => void
   selectedTierMeta: (typeof TIERS)[number]
   stage: Stage
+  /** Active Silent Witness proof phase, or null when not proving. */
+  proofStage: ProofStage | null
   file: File | null
   proof: ProofPackage | null
   processedVideoUrl: string
@@ -57,6 +60,7 @@ export type UseEvidenceReturn = {
 export function useEvidence(): UseEvidenceReturn {
   const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
   const [stage, setStage] = useState<Stage>('idle')
+  const [proofStage, setProofStage] = useState<ProofStage | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [proof, setProof] = useState<ProofPackage | null>(null)
   const [processedVideoUrl, setProcessedVideoUrl] = useState('')
@@ -187,6 +191,7 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     setStage('proving')
+    setProofStage(null)
     setMessage('Generating Noir UltraHonk proof in this browser.')
 
     const { fieldSecret } = await import('../utils')
@@ -196,15 +201,22 @@ export function useEvidence(): UseEvidenceReturn {
     ])
 
     const { generateSilentWitnessProof } = await import('../noirClient')
-    const silentWitness = await generateSilentWitnessProof({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
+    try {
+      const silentWitness = await generateSilentWitnessProof({
+        videoHash: nextProof.videoHash,
+        credentialSecret,
+        nullifierSecret,
+        onStage: setProofStage,
+      })
 
-    const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
-    setProof(nextWithProof)
-    return nextWithProof
+      const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
+      setProof(nextWithProof)
+      return nextWithProof
+    } finally {
+      // Phase status is only meaningful while proving; clear it on both the
+      // success and failure paths so the UI never shows a stale phase.
+      setProofStage(null)
+    }
   }
 
   return {
@@ -212,6 +224,7 @@ export function useEvidence(): UseEvidenceReturn {
     setSelectedTier,
     selectedTierMeta,
     stage,
+    proofStage,
     file,
     proof,
     processedVideoUrl,
