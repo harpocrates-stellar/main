@@ -79,7 +79,13 @@ const FIXTURE_TIMESTAMP: u64 = 1_750_000_000;
 #[cfg(test)]
 fn slot(env: &Env, domain: u8, index: u8) -> BytesN<32> {
     let mut buf = [0u8; 32];
-    buf[0] = domain;
+    if domain == 0 && index == 0 {
+        return BytesN::from_array(env, &buf);
+    }
+    // Key the marker to low bytes so synthetic *field* values stay below the
+    // BN254 modulus (classify_public_inputs bounds-checks credential_root and
+    // nullifier): any value whose first byte is < 0x30 is canonical.
+    buf[0] = (domain & 0x0F).wrapping_add(1); // 0x02..=0x08 for domains A1..A7
     buf[1] = index;
     // Fill the remaining bytes with a simple but recognisable pattern.
     for i in 2..32 {
@@ -100,22 +106,39 @@ fn slot(env: &Env, domain: u8, index: u8) -> BytesN<32> {
 /// The credential_root and nullifier must be non-zero and below the BN254
 /// modulus; using small synthetic values satisfies both.
 #[cfg(test)]
-fn silent_pi(env: &Env, credential_root: &BytesN<32>, nullifier: &BytesN<32>) -> Bytes {
-    let mut buf = [0u8; 128];
-    // video_hash_hi: 16 zero bytes of padding then the first 16 bytes of a
-    // fixed synthetic video hash.
-    buf[16..32].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                   0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10]);
-    // video_hash_lo: 16 zero bytes of padding then the last 16 bytes.
-    buf[48..64].copy_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-                                   0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20]);
+fn silent_pi(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+) -> Bytes {
+    let mut vh = [0u8; 32];
+    video_hash.copy_into_slice(&mut vh);
     let mut cr = [0u8; 32];
     credential_root.copy_into_slice(&mut cr);
-    buf[64..96].copy_from_slice(&cr);
     let mut nu = [0u8; 32];
     nullifier.copy_into_slice(&mut nu);
+    let domain_tag = expected_domain_tag(env);
+    let mut dt = [0u8; 32];
+    domain_tag.copy_into_slice(&mut dt);
+
+    let mut buf = [0u8; 160];
+    buf[16..32].copy_from_slice(&vh[..16]);
+    buf[48..64].copy_from_slice(&vh[16..]);
+    buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
+    buf[128..160].copy_from_slice(&dt);
     Bytes::from_array(env, &buf)
+}
+
+/// A 32-byte hash whose high half has zero padding (as required by the
+/// codec's `has_half_padding` check); the low 16 bytes carry the value.
+#[cfg(test)]
+fn clean_video(env: &Env, v: u8) -> BytesN<32> {
+    let mut b = [0u8; 32];
+    b[16] = v;
+    b[31] = v.wrapping_add(1);
+    BytesN::from_array(env, &b)
 }
 
 /// A minimal proof blob accepted by the mock verifier (non-empty).
@@ -135,12 +158,12 @@ struct MockDeploymentVerifier;
 #[cfg(test)]
 #[contractimpl]
 impl MockDeploymentVerifier {
-    /// Accept any 128-byte public-input blob with a non-empty proof.
-    /// This matches the real Noir verifier interface without requiring a
-    /// live circuit; it panics on obviously malformed inputs so the
-    /// contract's pre-verifier validation is still exercised.
+    /// Accept any valid public-input blob with a non-empty proof. This matches
+    /// the real Noir verifier interface without requiring a live circuit; it
+    /// panics on obviously malformed inputs so the contract's pre-verifier
+    /// validation is still exercised.
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if public_inputs.is_empty() || proof.is_empty() {
             panic!("mock verifier: invalid inputs");
         }
     }
@@ -154,13 +177,13 @@ impl MockDeploymentVerifier {
 /// the kind of hash so collisions between fields are impossible.
 #[cfg(test)]
 mod domains {
-    pub const VIDEO: u8      = 0xA1;
-    pub const METADATA: u8   = 0xA2;
-    pub const PROOF: u8      = 0xA3;
-    pub const ISSUER_META: u8= 0xA4;
-    pub const CRED_META: u8  = 0xA5;
-    pub const NULLIFIER: u8  = 0xA6;
-    pub const CRED_ROOT: u8  = 0xA7;
+    pub const VIDEO: u8 = 0xA1;
+    pub const METADATA: u8 = 0xA2;
+    pub const PROOF: u8 = 0xA3;
+    pub const ISSUER_META: u8 = 0xA4;
+    pub const CRED_META: u8 = 0xA5;
+    pub const NULLIFIER: u8 = 0xA6;
+    pub const CRED_ROOT: u8 = 0xA7;
 }
 
 /// A fully-initialized deployment fixture.
@@ -198,13 +221,13 @@ impl DeploymentFixture {
         let contract_id = env.register(HarpocratesRegistry, ());
         let verifier_id = env.register(MockDeploymentVerifier, ());
 
-        let admin   = Address::generate(&env);
-        let issuer  = Address::generate(&env);
-        let source  = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        let source = Address::generate(&env);
 
         let credential_root = slot(&env, domains::CRED_ROOT, 1);
-        let cred_root_meta  = slot(&env, domains::CRED_META, 1);
-        let issuer_meta     = slot(&env, domains::ISSUER_META, 1);
+        let cred_root_meta = slot(&env, domains::CRED_META, 1);
+        let issuer_meta = slot(&env, domains::ISSUER_META, 1);
 
         let client = HarpocratesRegistryClient::new(&env, &contract_id);
 
@@ -244,7 +267,11 @@ fn deployment_fixture_init_state_is_consistent() {
     // Admin is stored.
     // (No public get_admin; verify indirectly via a privileged call.)
     let new_issuer = Address::generate(&f.env);
-    client.add_issuer(&f.admin, &new_issuer, &slot(&f.env, domains::ISSUER_META, 2));
+    client.add_issuer(
+        &f.admin,
+        &new_issuer,
+        &slot(&f.env, domains::ISSUER_META, 2),
+    );
     assert!(client.get_issuer(&new_issuer).unwrap().active);
 
     // Verifier is stored.
@@ -272,11 +299,11 @@ fn deployment_fixture_schema_version_is_v1() {
     let client = f.client();
     // upgrade_storage with the same version must not emit an event and
     // must leave the verifier record untouched (idempotency).
-    let events_before = f.env.events().all().events().len();
+    let _ = f.env.events().all(); // drain events from prior invocations
     client.upgrade_storage(&f.admin);
     let events_after = f.env.events().all().events().len();
     assert_eq!(
-        events_before, events_after,
+        events_after, 0,
         "upgrade_storage must be a no-op when already at current version"
     );
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
@@ -292,10 +319,10 @@ fn deployment_fixture_all_tiers_register_successfully() {
     let client = f.client();
 
     // Tier 1 – anonymous (no verifier path, uses credential root directly).
-    let anon_proof_id  = slot(&f.env, domains::PROOF,    0x01);
-    let anon_video     = slot(&f.env, domains::VIDEO,    0x01);
-    let anon_meta      = slot(&f.env, domains::METADATA, 0x01);
-    let anon_nullifier = slot(&f.env, domains::NULLIFIER,0x01);
+    let anon_proof_id = slot(&f.env, domains::PROOF, 0x01);
+    let anon_video = slot(&f.env, domains::VIDEO, 0x01);
+    let anon_meta = slot(&f.env, domains::METADATA, 0x01);
+    let anon_nullifier = slot(&f.env, domains::NULLIFIER, 0x01);
 
     let anon_rec = client.register_anonymous(
         &anon_video,
@@ -310,25 +337,25 @@ fn deployment_fixture_all_tiers_register_successfully() {
     assert!(client.has_nullifier(&anon_nullifier));
 
     // Tier 1 – anonymous_verified (uses mock verifier + public inputs).
-    let av_proof_id  = slot(&f.env, domains::PROOF,    0x02);
-    let av_video     = slot(&f.env, domains::VIDEO,    0x02);
-    let av_meta      = slot(&f.env, domains::METADATA, 0x02);
-    let av_nullifier = slot(&f.env, domains::NULLIFIER,0x02);
+    let av_proof_id = slot(&f.env, domains::PROOF, 0x02);
+    let av_video = slot(&f.env, domains::VIDEO, 0x02);
+    let av_meta = slot(&f.env, domains::METADATA, 0x02);
+    let av_nullifier = slot(&f.env, domains::NULLIFIER, 0x02);
 
     let av_rec = client.register_anonymous_verified(
         &av_video,
         &av_meta,
         &av_proof_id,
-        &silent_pi(&f.env, &f.credential_root, &av_nullifier),
+        &silent_pi(&f.env, &av_video, &f.credential_root, &av_nullifier),
         &proof_buf(&f.env),
     );
     assert_eq!(av_rec.tier, TIER_SILENT_WITNESS);
     assert!(client.has_nullifier(&av_nullifier));
 
     // Tier 2 – consistent source.
-    let src_proof_id = slot(&f.env, domains::PROOF,    0x03);
-    let src_video    = slot(&f.env, domains::VIDEO,    0x03);
-    let src_meta     = slot(&f.env, domains::METADATA, 0x03);
+    let src_proof_id = slot(&f.env, domains::PROOF, 0x03);
+    let src_video = slot(&f.env, domains::VIDEO, 0x03);
+    let src_meta = slot(&f.env, domains::METADATA, 0x03);
 
     let src_rec = client.register_source(&f.source, &src_video, &src_meta, &src_proof_id);
     assert_eq!(src_rec.tier, TIER_CONSISTENT_SOURCE);
@@ -336,19 +363,31 @@ fn deployment_fixture_all_tiers_register_successfully() {
     assert!(client.get_by_video(&src_video).is_some());
 
     // Tier 3 – public seal.
-    let seal_proof_id = slot(&f.env, domains::PROOF,    0x04);
-    let seal_video    = slot(&f.env, domains::VIDEO,    0x04);
-    let seal_meta     = slot(&f.env, domains::METADATA, 0x04);
+    let seal_proof_id = slot(&f.env, domains::PROOF, 0x04);
+    let seal_video = slot(&f.env, domains::VIDEO, 0x04);
+    let seal_meta = slot(&f.env, domains::METADATA, 0x04);
 
     let seal_rec = client.register_seal(&f.issuer, &seal_video, &seal_meta, &seal_proof_id);
     assert_eq!(seal_rec.tier, TIER_PUBLIC_SEAL);
     assert_eq!(seal_rec.issuer, Some(f.issuer.clone()));
 
     // Proof status query for all four registrations.
-    assert_eq!(client.get_proof_status(&anon_proof_id), ProofVerificationStatus::Valid);
-    assert_eq!(client.get_proof_status(&av_proof_id),   ProofVerificationStatus::Valid);
-    assert_eq!(client.get_proof_status(&src_proof_id),  ProofVerificationStatus::Valid);
-    assert_eq!(client.get_proof_status(&seal_proof_id), ProofVerificationStatus::Valid);
+    assert_eq!(
+        client.get_proof_status(&anon_proof_id),
+        ProofVerificationStatus::Valid
+    );
+    assert_eq!(
+        client.get_proof_status(&av_proof_id),
+        ProofVerificationStatus::Valid
+    );
+    assert_eq!(
+        client.get_proof_status(&src_proof_id),
+        ProofVerificationStatus::Valid
+    );
+    assert_eq!(
+        client.get_proof_status(&seal_proof_id),
+        ProofVerificationStatus::Valid
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +408,11 @@ fn deployment_fixture_non_admin_cannot_add_issuer() {
     let f = DeploymentFixture::new();
     let stranger = Address::generate(&f.env);
     let new_issuer = Address::generate(&f.env);
-    f.client().add_issuer(&stranger, &new_issuer, &slot(&f.env, domains::ISSUER_META, 9));
+    f.client().add_issuer(
+        &stranger,
+        &new_issuer,
+        &slot(&f.env, domains::ISSUER_META, 9),
+    );
 }
 
 #[test]
@@ -429,18 +472,26 @@ fn deployment_fixture_single_registration_within_budget() {
     // constants in test_state_machine.rs (MAX_FUZZ_CPU / MAX_FUZZ_MEM).
     f.env.budget().reset_limits(20_000_000, 16_000_000);
 
-    let proof_id  = slot(&f.env, domains::PROOF,    0x20);
-    let nullifier = slot(&f.env, domains::NULLIFIER,0x20);
+    let proof_id = slot(&f.env, domains::PROOF, 0x20);
+    let nullifier = slot(&f.env, domains::NULLIFIER, 0x20);
 
     client.register_anonymous_verified(
-        &slot(&f.env, domains::VIDEO,    0x20),
+        &slot(&f.env, domains::VIDEO, 0x20),
         &slot(&f.env, domains::METADATA, 0x20),
         &proof_id,
-        &silent_pi(&f.env, &f.credential_root, &nullifier),
+        &silent_pi(
+            &f.env,
+            &slot(&f.env, domains::VIDEO, 0x20),
+            &f.credential_root,
+            &nullifier,
+        ),
         &proof_buf(&f.env),
     );
 
-    assert_eq!(client.get_proof_status(&proof_id), ProofVerificationStatus::Valid);
+    assert_eq!(
+        client.get_proof_status(&proof_id),
+        ProofVerificationStatus::Valid
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -450,13 +501,15 @@ fn deployment_fixture_single_registration_within_budget() {
 #[test]
 fn deployment_fixture_empty_public_inputs_rejected() {
     let f = DeploymentFixture::new();
-    let code = f.client().classify_public_inputs(
-        &SCHEMA_ID_SILENT_WITNESS,
-        &Bytes::new(&f.env),
-        &128,
-    );
+    let code =
+        f.client()
+            .classify_public_inputs(&SCHEMA_ID_SILENT_WITNESS, &Bytes::new(&f.env), &128);
     // Reject code 1 = length mismatch (from verifier_inputs::RejectCode::Length).
-    assert_ne!(code, verifier_inputs::ACCEPTED_CODE, "empty pi must be rejected");
+    assert_ne!(
+        code,
+        verifier_inputs::ACCEPTED_CODE,
+        "empty pi must be rejected"
+    );
 }
 
 #[test]
@@ -464,7 +517,9 @@ fn deployment_fixture_truncated_public_inputs_rejected() {
     let f = DeploymentFixture::new();
     // 127 bytes — one byte short.
     let short = Bytes::from_array(&f.env, &[0u8; 127]);
-    let code = f.client().classify_public_inputs(&SCHEMA_ID_SILENT_WITNESS, &short, &128);
+    let code = f
+        .client()
+        .classify_public_inputs(&SCHEMA_ID_SILENT_WITNESS, &short, &128);
     assert_ne!(code, verifier_inputs::ACCEPTED_CODE);
 }
 
@@ -478,7 +533,9 @@ fn deployment_fixture_dirty_padding_rejected() {
     buf[64..96].copy_from_slice(&[0x02; 32]); // credential_root
     buf[96..128].copy_from_slice(&[0x03; 32]); // nullifier
     let pi = Bytes::from_array(&f.env, &buf);
-    let code = f.client().classify_public_inputs(&SCHEMA_ID_SILENT_WITNESS, &pi, &128);
+    let code = f
+        .client()
+        .classify_public_inputs(&SCHEMA_ID_SILENT_WITNESS, &pi, &128);
     assert_ne!(code, verifier_inputs::ACCEPTED_CODE);
 }
 
@@ -486,11 +543,12 @@ fn deployment_fixture_dirty_padding_rejected() {
 fn deployment_fixture_zero_nullifier_rejected() {
     let f = DeploymentFixture::new();
     let nullifier_zero = slot(&f.env, 0x00, 0x00); // all-zero
-    let pi = silent_pi(&f.env, &f.credential_root, &nullifier_zero);
+    let video = clean_video(&f.env, 0x01);
+    let pi = silent_pi(&f.env, &video, &f.credential_root, &nullifier_zero);
     let code = f.client().classify_public_inputs(
         &SCHEMA_ID_SILENT_WITNESS,
         &pi,
-        &(proof_buf(&f.env).len()),
+        &verifier_inputs::MIN_PROOF_BYTES,
     );
     assert_ne!(code, verifier_inputs::ACCEPTED_CODE);
 }
@@ -499,11 +557,12 @@ fn deployment_fixture_zero_nullifier_rejected() {
 fn deployment_fixture_valid_public_inputs_accepted() {
     let f = DeploymentFixture::new();
     let nullifier = slot(&f.env, domains::NULLIFIER, 0x30);
-    let pi = silent_pi(&f.env, &f.credential_root, &nullifier);
+    let video = clean_video(&f.env, 0x30);
+    let pi = silent_pi(&f.env, &video, &f.credential_root, &nullifier);
     let code = f.client().classify_public_inputs(
         &SCHEMA_ID_SILENT_WITNESS,
         &pi,
-        &(proof_buf(&f.env).len()),
+        &verifier_inputs::MIN_PROOF_BYTES,
     );
     assert_eq!(code, verifier_inputs::ACCEPTED_CODE);
 }
@@ -531,7 +590,12 @@ fn deployment_fixture_upgrade_storage_is_idempotent() {
 
     // All fixture state must be intact after repeated upgrades.
     assert!(client.get_issuer(&f.issuer).unwrap().active);
-    assert!(client.get_credential_root(&f.credential_root).unwrap().active);
+    assert!(
+        client
+            .get_credential_root(&f.credential_root)
+            .unwrap()
+            .active
+    );
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
 }
 
@@ -551,12 +615,15 @@ fn deployment_fixture_revoked_issuer_blocks_seal_registration() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.register_seal(
             &f.issuer,
-            &slot(&f.env, domains::VIDEO,    0x40),
+            &slot(&f.env, domains::VIDEO, 0x40),
             &slot(&f.env, domains::METADATA, 0x40),
-            &slot(&f.env, domains::PROOF,    0x40),
+            &slot(&f.env, domains::PROOF, 0x40),
         );
     }));
-    assert!(result.is_err(), "register_seal with revoked issuer must panic");
+    assert!(
+        result.is_err(),
+        "register_seal with revoked issuer must panic"
+    );
 }
 
 #[test]
@@ -565,20 +632,28 @@ fn deployment_fixture_revoked_credential_root_blocks_anonymous_registration() {
     let client = f.client();
 
     client.revoke_credential_root(&f.admin, &f.credential_root);
-    assert!(!client.get_credential_root(&f.credential_root).unwrap().active);
+    assert!(
+        !client
+            .get_credential_root(&f.credential_root)
+            .unwrap()
+            .active
+    );
 
     // Attempting to register with the revoked root must fail.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.register_anonymous(
-            &slot(&f.env, domains::VIDEO,    0x50),
+            &slot(&f.env, domains::VIDEO, 0x50),
             &slot(&f.env, domains::METADATA, 0x50),
-            &slot(&f.env, domains::PROOF,    0x50),
-            &slot(&f.env, domains::NULLIFIER,0x50),
+            &slot(&f.env, domains::PROOF, 0x50),
+            &slot(&f.env, domains::NULLIFIER, 0x50),
             &f.credential_root,
             &proof_buf(&f.env),
         );
     }));
-    assert!(result.is_err(), "register_anonymous with revoked credential root must panic");
+    assert!(
+        result.is_err(),
+        "register_anonymous with revoked credential root must panic"
+    );
 }
 
 #[test]
@@ -597,8 +672,10 @@ fn deployment_fixture_revoked_state_read_queries_still_work() {
     assert!(!cred_rec.active); // revoked, not deleted
 
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
-    assert_eq!(client.get_proof_status(&slot(&f.env, domains::PROOF, 0xFF)),
-               ProofVerificationStatus::NotFound);
+    assert_eq!(
+        client.get_proof_status(&slot(&f.env, domains::PROOF, 0xFF)),
+        ProofVerificationStatus::NotFound
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -610,21 +687,21 @@ fn deployment_fixture_revoked_state_read_queries_still_work() {
 fn deployment_fixture_duplicate_nullifier_rejected() {
     let f = DeploymentFixture::new();
     let client = f.client();
-    let nullifier  = slot(&f.env, domains::NULLIFIER, 0x60);
+    let nullifier = slot(&f.env, domains::NULLIFIER, 0x60);
 
     client.register_anonymous(
-        &slot(&f.env, domains::VIDEO,    0x60),
+        &slot(&f.env, domains::VIDEO, 0x60),
         &slot(&f.env, domains::METADATA, 0x60),
-        &slot(&f.env, domains::PROOF,    0x60),
+        &slot(&f.env, domains::PROOF, 0x60),
         &nullifier,
         &f.credential_root,
         &proof_buf(&f.env),
     );
     // Second registration reuses the same nullifier → DuplicateNullifier (#6).
     client.register_anonymous(
-        &slot(&f.env, domains::VIDEO,    0x61),
+        &slot(&f.env, domains::VIDEO, 0x61),
         &slot(&f.env, domains::METADATA, 0x61),
-        &slot(&f.env, domains::PROOF,    0x61),
+        &slot(&f.env, domains::PROOF, 0x61),
         &nullifier,
         &f.credential_root,
         &proof_buf(&f.env),

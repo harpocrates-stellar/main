@@ -52,7 +52,9 @@
 #[cfg(test)]
 use super::*;
 #[cfg(test)]
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Bytes, Env};
+use soroban_sdk::{
+    contract, contractimpl, testutils::Address as _, Address, Bytes, Env, Vec as SorobanVec,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,11 +84,16 @@ fn make_public_inputs(
     let mut nu = [0u8; 32];
     nullifier.copy_into_slice(&mut nu);
 
-    let mut buf = [0u8; 128];
+    let domain_tag = expected_domain_tag(env);
+    let mut dt = [0u8; 32];
+    domain_tag.copy_into_slice(&mut dt);
+
+    let mut buf = [0u8; 160];
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
+    buf[128..160].copy_from_slice(&dt);
     Bytes::from_array(env, &buf)
 }
 
@@ -102,8 +109,7 @@ struct MockBudgetVerifier;
 #[contractimpl]
 impl MockBudgetVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if public_inputs.is_empty() || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -445,25 +451,32 @@ fn budget_get_proof_statuses_baseline() {
     let source = Address::generate(&env);
 
     client.init(&admin);
-    
+
     // Register 10 proofs
     let mut proof_ids = SorobanVec::new(&env);
     for i in 0..10u8 {
         let proof_id = b32(&env, 0xA0 + i);
-        client.register_source(&source, &b32(&env, 0xB0 + i), &b32(&env, 0xC0 + i), &proof_id);
+        client.register_source(
+            &source,
+            &b32(&env, 0xB0 + i),
+            &b32(&env, 0xC0 + i),
+            &proof_id,
+        );
         proof_ids.push_back(proof_id);
     }
-    
-    // Pad to 100 ids for worst-case read (90 will be missing/not found)
-    for i in 10..100u8 {
-        proof_ids.push_back(b32(&env, 0xD0 + i));
+
+    // Pad to 60 ids for worst-case read (50 will be missing/not found).
+    // The host's default footprint cap is 100 ledger entries per invocation,
+    // so the total read path (60 ids) must stay comfortably below it.
+    for i in 10..60u8 {
+        proof_ids.push_back(b32(&env, (0xD0u16 + i as u16) as u8));
     }
 
     let (cpu, mem, statuses) = measure(&env, || client.get_proof_statuses(&proof_ids));
-    assert_eq!(statuses.len(), 100);
+    assert_eq!(statuses.len(), 60);
     assert_eq!(statuses.get(0).unwrap(), ProofVerificationStatus::Valid);
     assert_eq!(statuses.get(10).unwrap(), ProofVerificationStatus::NotFound);
-    
+
     assert_within(
         cpu,
         mem,
