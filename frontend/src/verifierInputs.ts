@@ -1,5 +1,10 @@
 /**
- * Canonical verifier-input codec for Harpocrates (codec `hpx-vi/1`).
+ * Canonical verifier-input codecs for Harpocrates (`hpx-vi/1` and `hpx-vi/2`).
+ *
+ * `hpx-vi/1` covers `silent_witness/v1` and `revocation_witness/v1`.
+ * `hpx-vi/2` covers `silent_witness/v2`, which appends the circuit version as a
+ * trailing field so the wire format commits to the exact circuit that produced
+ * the proof (#368).
  *
  * Browser/TypeScript side of a three-way codec that must agree byte for byte
  * with:
@@ -7,8 +12,9 @@
  *   backend/verifier_inputs.py                          (Python)
  *   contracts/contracts/harpocrates-registry/src/lib.rs (Soroban / Rust)
  *
- * Agreement is enforced by the shared corpus in
- * `zk/vectors/verifier_conformance_v1.json`; see docs/zk-conformance-vectors.md.
+ * Agreement is enforced by the shared corpora in
+ * `zk/vectors/verifier_conformance_v1.json` and
+ * `zk/vectors/verifier_conformance_v2.json`; see docs/zk-conformance-vectors.md.
  *
  * Every entry point is bounded, deterministic, and silent: rejections carry a
  * stable machine code and at most a field *name* — never witness material,
@@ -17,6 +23,9 @@
 
 export const CODEC_ID = 'hpx-vi/1'
 
+/** Codec id for the circuit-versioned silent-witness envelope. */
+export const CODEC_ID_V2 = 'hpx-vi/2'
+
 export const FIELD_LEN = 32
 export const SILENT_WITNESS_FIELD_COUNT = 5
 export const REVOCATION_FIELD_COUNT = 4
@@ -24,6 +33,17 @@ export const SILENT_WITNESS_PUBLIC_INPUTS_LEN = FIELD_LEN * SILENT_WITNESS_FIELD
 export const REVOCATION_PUBLIC_INPUTS_LEN = FIELD_LEN * REVOCATION_FIELD_COUNT
 /** Default frame length for the primary silent-witness verifier boundary. */
 export const PUBLIC_INPUTS_LEN = SILENT_WITNESS_PUBLIC_INPUTS_LEN
+
+/** `silent_witness/v2` appends the circuit version as a trailing 6th field. */
+export const SILENT_WITNESS_V2_FIELD_COUNT = 6
+export const SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN =
+  FIELD_LEN * SILENT_WITNESS_V2_FIELD_COUNT // 192
+
+/**
+ * The only circuit version accepted by the `silent_witness/v2` codec. Must
+ * match `CURRENT_CIRCUIT_VERSION` in zk/noir/silent_witness/src/main.nr.
+ */
+export const EXPECTED_CIRCUIT_VERSION = 2
 
 export const MIN_PROOF_BYTES = 64
 export const MAX_PROOF_BYTES = 65536
@@ -52,6 +72,7 @@ export const SILENT_WITNESS_DOMAIN_TAG_HEX =
 
 export const SCHEMA_SILENT_WITNESS = 'silent_witness/v1'
 export const SCHEMA_REVOCATION_WITNESS = 'revocation_witness/v1'
+export const SCHEMA_SILENT_WITNESS_V2 = 'silent_witness/v2'
 
 /**
  * Protocol Merkle-depth bound for `revocation_witness/v1` (#357).
@@ -65,6 +86,7 @@ export const MAX_REVOCATION_LEAVES = 8
 export type VerifierSchema =
   | typeof SCHEMA_SILENT_WITNESS
   | typeof SCHEMA_REVOCATION_WITNESS
+  | typeof SCHEMA_SILENT_WITNESS_V2
 
 export type RejectCode =
   | 'malformed_hex'
@@ -76,6 +98,7 @@ export type RejectCode =
   | 'proof_undersize'
   | 'proof_oversize'
   | 'unknown_schema'
+  | 'version_mismatch'
 
 /** Rejection carrying a stable machine code and, at most, a field name. */
 export class VerifierInputError extends Error {
@@ -104,6 +127,8 @@ export type SilentWitnessInputs = {
   credentialRoot: Uint8Array
   nullifier: Uint8Array
   domainTag: Uint8Array
+  /** Circuit version committed to the rightmost trailing field (`hpx-vi/2`). */
+  circuitVersion?: number
 }
 
 export type RevocationWitnessInputs = {
@@ -247,12 +272,40 @@ const SILENT_WITNESS_FIELDS = [
   'domain_tag',
 ] as const
 
+const SILENT_WITNESS_V2_FIELDS = [
+  'video_hash_hi',
+  'video_hash_lo',
+  'credential_root',
+  'nullifier',
+  'domain_tag',
+  'circuit_version',
+] as const
+
 const REVOCATION_FIELDS = [
   'revocation_root',
   'nullifier',
   'domain_separator',
   'credential_root',
 ] as const
+
+/**
+ * Read the 32-byte circuit-version field as a big-endian u32. The upper 28
+ * bytes must be zero; otherwise the encoding is dirty and a sentinel value is
+ * returned so the caller's equality check fails.
+ */
+function versionOf(field: Uint8Array): number {
+  for (let index = 0; index < FIELD_LEN - 4; index += 1) {
+    if (field[index] !== 0) {
+      return 0xffffffff
+    }
+  }
+  return (
+    (field[FIELD_LEN - 4] << 24) |
+    (field[FIELD_LEN - 3] << 16) |
+    (field[FIELD_LEN - 2] << 8) |
+    field[FIELD_LEN - 1]
+  )
+}
 
 /** Parse `silent_witness/v1` public inputs in canonical check order. */
 export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnessInputs {
@@ -280,6 +333,46 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
     credentialRoot: fields[2],
     nullifier: fields[3],
     domainTag: fields[4],
+  }
+}
+
+/**
+ * Parse `silent_witness/v2` public inputs in canonical check order (#368).
+ *
+ * The check order is the codec contract: length → half padding → circuit
+ * version → canonicity → zero → domain. The domain tag and circuit version are
+ * protocol bindings rather than user scalars, so they are compared
+ * byte-for-byte and never reduced modulo BN254.
+ */
+export function parseSilentWitnessV2Inputs(
+  publicInputs: Uint8Array,
+): SilentWitnessInputs {
+  const fields = splitFields(publicInputs, SILENT_WITNESS_V2_FIELD_COUNT)
+
+  const high = requireHalfPadding(fields[0], 'video_hash_hi')
+  const low = requireHalfPadding(fields[1], 'video_hash_lo')
+
+  if (versionOf(fields[5]) !== EXPECTED_CIRCUIT_VERSION) {
+    throw new VerifierInputError('version_mismatch', 'circuit_version')
+  }
+
+  requireCanonical(fields.slice(0, 4), SILENT_WITNESS_V2_FIELDS.slice(0, 4))
+
+  requireNonZero(fields[2], 'credential_root')
+  requireNonZero(fields[3], 'nullifier')
+  requireNonZero(fields[4], 'domain_tag')
+
+  const expectedDomain = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
+  if (fields[4].some((byte, index) => byte !== expectedDomain[index])) {
+    throw new VerifierInputError('domain_mismatch', 'domain_tag')
+  }
+
+  return {
+    videoHash: concat(high, low),
+    credentialRoot: fields[2],
+    nullifier: fields[3],
+    domainTag: fields[4],
+    circuitVersion: EXPECTED_CIRCUIT_VERSION,
   }
 }
 
@@ -318,6 +411,9 @@ export function parsePublicInputs(
 ): SilentWitnessInputs | RevocationWitnessInputs {
   if (schema === SCHEMA_SILENT_WITNESS) {
     return parseSilentWitnessInputs(publicInputs)
+  }
+  if (schema === SCHEMA_SILENT_WITNESS_V2) {
+    return parseSilentWitnessV2Inputs(publicInputs)
   }
   if (schema === SCHEMA_REVOCATION_WITNESS) {
     return parseRevocationWitnessInputs(publicInputs)

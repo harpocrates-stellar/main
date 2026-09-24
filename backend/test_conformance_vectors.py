@@ -1,11 +1,12 @@
-"""Cross-layer verifier conformance runner (Python side, codec ``hpx-vi/1``).
+"""Cross-layer verifier conformance runner (Python side, codecs ``hpx-vi/1``
+and ``hpx-vi/2``).
 
-Drives the shared corpus in ``zk/vectors/verifier_conformance_v1.json`` through
-``backend.verifier_inputs``. The Rust runner
-(``contracts/contracts/harpocrates-registry/src/test_conformance.rs``) and the
-TypeScript runner (``frontend/src/verifierInputs.conformance.test.ts``) drive
-the same file, so a divergence in any layer fails exactly one of the three
-suites and names the offending case id.
+Drives the shared corpora in ``zk/vectors/verifier_conformance_v1.json`` and
+``zk/vectors/verifier_conformance_v2.json`` through ``backend.verifier_inputs``.
+The Rust runner (``contracts/contracts/harpocrates-registry/src/test_conformance.rs``)
+and the TypeScript runner (``frontend/src/verifierInputs.conformance.test.ts``)
+drive the same files, so a divergence in any layer fails exactly one of the
+three suites and names the offending case id.
 
 See docs/zk-conformance-vectors.md.
 """
@@ -20,10 +21,15 @@ import pytest
 from verifier_inputs import (
     BN254_SCALAR_FIELD_MODULUS,
     CODEC_ID,
+    CODEC_ID_V2,
+    EXPECTED_CIRCUIT_VERSION,
     MAX_PROOF_BYTES,
     MIN_PROOF_BYTES,
     PUBLIC_INPUTS_LEN,
     REVOCATION_DOMAIN_SEPARATOR,
+    SCHEMA_SILENT_WITNESS_V2,
+    SILENT_WITNESS_DOMAIN_TAG,
+    SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN,
     RejectCode,
     VerifierInputError,
     classify,
@@ -34,6 +40,9 @@ from verifier_inputs import (
 CORPUS_PATH = (
     Path(__file__).resolve().parents[1] / "zk" / "vectors" / "verifier_conformance_v1.json"
 )
+CORPUS_V2_PATH = (
+    Path(__file__).resolve().parents[1] / "zk" / "vectors" / "verifier_conformance_v2.json"
+)
 MALFORMED_PATH = (
     Path(__file__).resolve().parents[1]
     / "zk"
@@ -43,6 +52,8 @@ MALFORMED_PATH = (
 
 CORPUS = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
 CASES = CORPUS["cases"]
+CORPUS_V2 = json.loads(CORPUS_V2_PATH.read_text(encoding="utf-8"))
+CASES_V2 = CORPUS_V2["cases"]
 MALFORMED_CORPUS = json.loads(MALFORMED_PATH.read_text(encoding="utf-8"))
 MALFORMED_CASES = MALFORMED_CORPUS["cases"]
 
@@ -131,13 +142,73 @@ def test_conformance_case_is_deterministic(case: dict):
     assert first == second
 
 
+# ── v2 (circuit-versioned envelope, #368) ───────────────────────────────────
+
+
+def test_v2_corpus_is_versioned_and_matches_this_codec():
+    assert CORPUS_V2["format"] == "harpocrates.verifier-conformance"
+    assert CORPUS_V2["version"] == 2
+    assert CORPUS_V2["codec"] == CODEC_ID_V2
+    assert "version_mismatch" in CORPUS_V2["reject_codes"]
+
+
+def test_v2_corpus_constants_match_implementation_constants():
+    constants = CORPUS_V2["constants"]
+    assert constants["silent_witness_v2_public_inputs_len"] == SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN
+    assert constants["expected_circuit_version"] == EXPECTED_CIRCUIT_VERSION
+    assert bytes.fromhex(constants["silent_witness_domain_tag_hex"]) == SILENT_WITNESS_DOMAIN_TAG
+
+
+def test_v2_corpus_has_positive_and_negative_and_version_mismatch_cases():
+    assert len(CASES_V2) >= 10
+    assert any(case["expect"]["accept"] for case in CASES_V2)
+    assert any(not case["expect"]["accept"] for case in CASES_V2)
+    assert any(
+        case["expect"]["reject_code"] == "version_mismatch" for case in CASES_V2
+    )
+    for case in CASES_V2:
+        assert case["schema"] == SCHEMA_SILENT_WITNESS_V2
+
+
+def test_v2_case_ids_are_unique():
+    identifiers = [case["id"] for case in CASES_V2]
+    assert len(identifiers) == len(set(identifiers))
+
+
+def test_v2_reject_codes_are_reachable_or_layer_specific():
+    """``malformed_hex`` is still the string-layer only code, covered by the
+    companion malformed corpus; every other declared v2 code must have a case."""
+    exercised = {
+        case["expect"]["reject_code"] for case in CASES_V2 if case["expect"]["reject_code"]
+    }
+    unexercised = set(CORPUS_V2["reject_codes"]) - exercised - {"malformed_hex"}
+    assert unexercised <= set()
+
+
+@pytest.mark.parametrize("case", CASES_V2, ids=case_id)
+def test_v2_conformance_case(case: dict):
+    expected = case["expect"]["reject_code"] if not case["expect"]["accept"] else None
+    actual = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    assert actual == expected, (
+        f"{case['id']}: expected {expected!r}, got {actual!r} — "
+        f"{case['description']}"
+    )
+
+
+@pytest.mark.parametrize("case", CASES_V2, ids=case_id)
+def test_v2_conformance_case_is_deterministic(case: dict):
+    first = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    second = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    assert first == second
+
+
 # ── Boundary behaviour not expressible as a corpus case ─────────────────────
 
 
 def test_unknown_schema_is_rejected():
     valid = next(case for case in CASES if case["expect"]["accept"])
     assert (
-        classify("silent_witness/v2", valid["public_inputs_hex"], valid["proof_hex"])
+        classify("silent_witness/v9", valid["public_inputs_hex"], valid["proof_hex"])
         == "unknown_schema"
     )
 

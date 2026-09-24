@@ -6,7 +6,7 @@ type SilentWitnessProof = {
   /** Domain tag as a 32-byte hex string (no 0x prefix). */
   domainTag: string
   proof: string
-  /** Hex-encoded public inputs: 5 × 32 bytes = 160 bytes (320 hex chars). */
+  /** Hex-encoded public inputs: 8 × 32 bytes = 256 bytes (512 hex chars). */
   publicInputs: string
   proofBytes: number
   publicInputBytes: number
@@ -88,6 +88,10 @@ export async function generateSilentWitnessProof({
     nullifier,
     verifier_scope: scope_field,
     epoch: epoch_field,
+    domain_tag: domainTag,
+    // Circuit version committed to the proof envelope (#368). Must equal
+    // CURRENT_CIRCUIT_VERSION in zk/noir/silent_witness/src/main.nr.
+    circuit_version: '2',
   }
 
   const { witness } = await new Noir(mainCircuit).execute({
@@ -100,15 +104,19 @@ export async function generateSilentWitnessProof({
     const proofData = await backend.generateProof(witness, { keccak: true })
     const proofHex = bytesToHex(proofData.proof)
 
-    // Public inputs in on-chain ordering:
-    //   [0] video_hash_hi, [1] video_hash_lo, [2] credential_root,
-    //   [3] nullifier,     [4] domain_tag
+    // Public inputs in on-chain ordering (#368):
+    //   [0] video_hash_hi,  [1] video_hash_lo,  [2] credential_root,
+    //   [3] nullifier,      [4] verifier_scope, [5] epoch,
+    //   [6] domain_tag,      [7] circuit_version
     const publicInputHex = encodePublicInputs(proofData.publicInputs, [
       'video_hash_hi',
       'video_hash_lo',
       'credential_root',
       'nullifier',
+      'verifier_scope',
+      'epoch',
       'domain_tag',
+      'circuit_version',
     ])
     return {
       credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),

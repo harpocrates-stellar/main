@@ -200,6 +200,18 @@ fn positive_frame(schema: &str) -> Vec<u8> {
         frame.extend_from_slice(&lo);
         frame.extend_from_slice(&credential_root);
         frame.extend_from_slice(&nullifier);
+    } else if schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2 {
+        // Full valid 192-byte v2 frame: the five v1 fields plus the
+        // circuit-version trailer, so mutations explore the acceptance region
+        // as well as the rejection region.
+        frame.extend_from_slice(&hi);
+        frame.extend_from_slice(&lo);
+        frame.extend_from_slice(&credential_root);
+        frame.extend_from_slice(&nullifier);
+        frame.extend_from_slice(&verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE);
+        let mut version = [0u8; 32];
+        version[31] = verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8;
+        frame.extend_from_slice(&version);
     } else {
         frame.extend_from_slice(&revocation_root);
         frame.extend_from_slice(&nullifier);
@@ -210,8 +222,9 @@ fn positive_frame(schema: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
-const SCHEMAS: [&str; 2] = [
+const SCHEMAS: [&str; 3] = [
     verifier_inputs::SCHEMA_SILENT_WITNESS,
+    verifier_inputs::SCHEMA_SILENT_WITNESS_V2,
     verifier_inputs::SCHEMA_REVOCATION_WITNESS,
 ];
 
@@ -219,14 +232,28 @@ const SCHEMAS: [&str; 2] = [
 fn schema_id_of(schema: &str) -> u32 {
     if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
         SCHEMA_ID_SILENT_WITNESS
+    } else if schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2 {
+        SCHEMA_ID_SILENT_WITNESS_V2
     } else {
         SCHEMA_ID_REVOCATION_WITNESS
     }
 }
 
+/// Expected domain for the pure codec, mirroring the on-chain constant.
+#[cfg(test)]
+fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
+    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS
+        || schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2
+    {
+        &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+    } else {
+        &REVOCATION_DOMAIN_SEPARATOR
+    }
+}
+
 #[cfg(test)]
 fn declared(code: u32) -> bool {
-    code <= 9
+    code <= 10
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +276,7 @@ fn codec_never_panics_and_always_yields_a_declared_verdict() {
                     schema,
                     &mutant,
                     64,
-                    &REVOCATION_DOMAIN_SEPARATOR,
+                    expected_domain_for(schema),
                 ) {
                     Ok(()) => verifier_inputs::ACCEPTED_CODE,
                     Err(code) => code.as_code(),
@@ -283,7 +310,7 @@ fn proof_length_sweep_is_bounded_and_declared() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &base,
                 proof_len,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                expected_domain_for(verifier_inputs::SCHEMA_SILENT_WITNESS),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
@@ -361,15 +388,11 @@ fn on_chain_and_pure_codec_agree_on_every_mutant() {
             let mutator = rng.below(MUTATOR_COUNT);
             let mutant = mutate(&base, mutator, &mut rng);
 
-            let pure = match verifier_inputs::classify(
-                schema,
-                &mutant,
-                64,
-                &REVOCATION_DOMAIN_SEPARATOR,
-            ) {
-                Ok(()) => verifier_inputs::ACCEPTED_CODE,
-                Err(code) => code.as_code(),
-            };
+            let pure =
+                match verifier_inputs::classify(schema, &mutant, 64, expected_domain_for(schema)) {
+                    Ok(()) => verifier_inputs::ACCEPTED_CODE,
+                    Err(code) => code.as_code(),
+                };
             let on_chain =
                 client.classify_public_inputs(&schema_id, &Bytes::from_slice(&env, &mutant), &64);
 
@@ -403,7 +426,7 @@ fn a_seed_replays_the_same_mutants_and_verdicts() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &mutant,
                 64,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                expected_domain_for(verifier_inputs::SCHEMA_SILENT_WITNESS),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),

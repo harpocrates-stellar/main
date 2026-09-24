@@ -73,16 +73,17 @@ fn v1_public_inputs(
     Bytes::from_array(env, &buf)
 }
 
-/// Build a v2 (224-byte) scoped silent witness public-input blob.
+/// Fill a 224-byte v2 scoped frame from its logical fields.
 #[cfg(test)]
-fn v2_public_inputs(
+fn fill_v2_frame(
+    buf: &mut [u8; 224],
     env: &Env,
     video_hash: &BytesN<32>,
     credential_root: &BytesN<32>,
     nullifier: &BytesN<32>,
     verifier_scope: &BytesN<32>,
     epoch: u64,
-) -> Bytes {
+) {
     let mut vh = [0u8; 32];
     video_hash.copy_into_slice(&mut vh);
     let mut cr = [0u8; 32];
@@ -103,7 +104,6 @@ fn v2_public_inputs(
     let mut dt = [0u8; 32];
     domain_tag.copy_into_slice(&mut dt);
 
-    let mut buf = [0u8; 224];
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
@@ -111,6 +111,58 @@ fn v2_public_inputs(
     buf[128..160].copy_from_slice(&sc);
     buf[160..192].copy_from_slice(&epoch_bytes);
     buf[192..224].copy_from_slice(&dt);
+}
+
+/// Build a v2 (224-byte) scoped silent witness public-input blob.
+#[cfg(test)]
+fn v2_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+) -> Bytes {
+    let mut buf = [0u8; 224];
+    fill_v2_frame(
+        &mut buf,
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+    );
+    Bytes::from_array(env, &buf)
+}
+
+/// Build a v3 (256-byte) envelope: the v2 scoped frame plus the trailing
+/// circuit-version field (#368). `wrapper_version` is placed in the low byte
+/// of the trailer as a u32 field element.
+#[cfg(test)]
+fn v3_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+    wrapper_version: u8,
+) -> Bytes {
+    let mut frame = [0u8; 224];
+    fill_v2_frame(
+        &mut frame,
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+    );
+
+    let mut buf = [0u8; 256];
+    buf[..224].copy_from_slice(&frame);
+    buf[255] = wrapper_version;
     Bytes::from_array(env, &buf)
 }
 
@@ -303,7 +355,103 @@ fn test_scoped_registration_explicit_scope_epoch_1() {
     assert!(client.has_nullifier(&nullifier));
 }
 
-/// Rejects stale epoch: proof has epoch 0 but current epoch is 1.
+// ===========================================================================
+// Circuit-version envelope (#368)
+// ===========================================================================
+
+/// Happy path: a 256-byte envelope whose circuit-version trailer matches
+/// EXPECTED_CIRCUIT_VERSION is accepted.
+#[test]
+fn test_scoped_registration_enveloped_version_accepted() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x50);
+    let nullifier = b32(&env, 0x51);
+    let scope = b32(&env, 0x00);
+    let epoch: u64 = 0;
+
+    let pi = v3_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+        verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8,
+    );
+    let record = client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x52),
+        &b32(&env, 0x53),
+        &pi,
+        &proof_buf(&env),
+    );
+
+    assert_eq!(record.tier, TIER_SILENT_WITNESS);
+    assert_eq!(record.video_hash, video_hash);
+    assert_eq!(record.nullifier, Some(nullifier.clone()));
+    assert!(client.has_nullifier(&nullifier));
+}
+
+/// A 256-byte envelope declaring a stale circuit version is rejected with
+/// RegistryError::CircuitVersionMismatch (#68).
+#[test]
+#[should_panic(expected = "Error(Contract, #68)")]
+fn test_scoped_registration_wrong_version_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x60);
+    let nullifier = b32(&env, 0x61);
+    let scope = b32(&env, 0x00);
+
+    let pi = v3_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        1,
+    );
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x62),
+        &b32(&env, 0x63),
+        &pi,
+        &proof_buf(&env),
+    );
+}
+
+/// A 256-byte envelope whose trailer is all zeros (version 0) is also rejected.
+#[test]
+#[should_panic(expected = "Error(Contract, #68)")]
+fn test_scoped_registration_zero_version_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x70);
+    let nullifier = b32(&env, 0x71);
+    let scope = b32(&env, 0x00);
+
+    let pi = v3_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        0,
+    );
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x72),
+        &b32(&env, 0x73),
+        &pi,
+        &proof_buf(&env),
+    );
+}
 #[test]
 #[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_scoped_rejects_stale_epoch() {
@@ -649,7 +797,7 @@ fn test_rejects_wrong_input_length() {
     );
 }
 
-/// Rejects 256-byte public inputs (too long).
+/// Rejects 257-byte public inputs (one past the 256-byte v3 envelope).
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")] // InvalidPublicInputs
 fn test_rejects_oversized_inputs() {
@@ -657,7 +805,7 @@ fn test_rejects_oversized_inputs() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
 
     let video_hash = b32(&env, 0xA3);
-    let bad_pi = Bytes::from_array(&env, &[0u8; 256]);
+    let bad_pi = Bytes::from_array(&env, &[0u8; 257]);
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0xA4),

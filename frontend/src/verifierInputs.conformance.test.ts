@@ -1,12 +1,13 @@
 /**
- * Cross-layer verifier conformance runner (browser side, codec `hpx-vi/1`).
+ * Cross-layer verifier conformance runner (browser side, codecs `hpx-vi/1`
+ * and `hpx-vi/2`).
  *
- * Drives the shared corpus in `zk/vectors/verifier_conformance_v1.json` through
- * `src/verifierInputs.ts`. The Python runner
- * (`backend/test_conformance_vectors.py`) and the Rust runner
- * (`contracts/contracts/harpocrates-registry/src/test_conformance.rs`) drive
- * the same file, so a divergence in any layer fails exactly one of the three
- * suites and names the offending case id.
+ * Drives the shared corpora in `zk/vectors/verifier_conformance_v1.json` and
+ * `zk/vectors/verifier_conformance_v2.json` through `src/verifierInputs.ts`.
+ * The Python runner (`backend/test_conformance_vectors.py`) and the Rust
+ * runner (`contracts/contracts/harpocrates-registry/src/test_conformance.rs`)
+ * drive the same files, so a divergence in any layer fails exactly one of the
+ * three suites and names the offending case id.
  *
  * See docs/zk-conformance-vectors.md.
  */
@@ -19,10 +20,15 @@ import { describe, expect, it } from 'vitest'
 import {
   BN254_SCALAR_FIELD_MODULUS,
   CODEC_ID,
+  CODEC_ID_V2,
+  EXPECTED_CIRCUIT_VERSION,
   MAX_PROOF_BYTES,
   MIN_PROOF_BYTES,
   PUBLIC_INPUTS_LEN,
   REVOCATION_DOMAIN_SEPARATOR_HEX,
+  SCHEMA_SILENT_WITNESS_V2,
+  SILENT_WITNESS_DOMAIN_TAG_HEX,
+  SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN,
   VerifierInputError,
   classify,
   decodeHex,
@@ -52,6 +58,9 @@ type Corpus = {
 const here = dirname(fileURLToPath(import.meta.url))
 const corpusPath = resolve(here, '../../zk/vectors/verifier_conformance_v1.json')
 const corpus = JSON.parse(readFileSync(corpusPath, 'utf-8')) as Corpus
+
+const corpusV2Path = resolve(here, '../../zk/vectors/verifier_conformance_v2.json')
+const corpusV2 = JSON.parse(readFileSync(corpusV2Path, 'utf-8')) as Corpus
 
 type MalformedCase = {
   id: string
@@ -117,11 +126,60 @@ describe('conformance cases', () => {
   })
 })
 
+describe('v2 conformance corpus (hpx-vi/2, circuit-versioned envelope)', () => {
+  it('is versioned and matches this codec', () => {
+    expect(corpusV2.format).toBe('harpocrates.verifier-conformance')
+    expect(corpusV2.version).toBe(2)
+    expect(corpusV2.codec).toBe(CODEC_ID_V2)
+    expect(corpusV2.reject_codes).toContain('version_mismatch')
+  })
+
+  it('declares constants matching the implementation', () => {
+    expect(corpusV2.constants.silent_witness_v2_public_inputs_len).toBe(
+      SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN,
+    )
+    expect(corpusV2.constants.expected_circuit_version).toBe(EXPECTED_CIRCUIT_VERSION)
+    expect(corpusV2.constants.silent_witness_domain_tag_hex).toBe(SILENT_WITNESS_DOMAIN_TAG_HEX)
+    expect(BigInt(`0x${corpusV2.constants.bn254_scalar_field_modulus_hex}`)).toBe(
+      BN254_SCALAR_FIELD_MODULUS,
+    )
+  })
+
+  it('contains positive, negative, and version-mismatch cases with unique ids', () => {
+    expect(corpusV2.cases.length).toBeGreaterThanOrEqual(10)
+    expect(corpusV2.cases.some((entry) => entry.expect.accept)).toBe(true)
+    expect(corpusV2.cases.some((entry) => !entry.expect.accept)).toBe(true)
+    expect(corpusV2.cases.some((entry) => entry.expect.reject_code === 'version_mismatch')).toBe(
+      true,
+    )
+    expect(new Set(corpusV2.cases.map((entry) => entry.id)).size).toBe(corpusV2.cases.length)
+    for (const entry of corpusV2.cases) {
+      expect(entry.schema).toBe(SCHEMA_SILENT_WITNESS_V2)
+    }
+  })
+
+  for (const entry of corpusV2.cases) {
+    it(`${entry.id} — ${entry.description}`, () => {
+      const expected = entry.expect.accept ? null : entry.expect.reject_code
+      const actual = classify(entry.schema, entry.public_inputs_hex, entry.proof_hex)
+      expect(actual, `${entry.id} mismatched`).toBe(expected)
+    })
+  }
+
+  it('classifies deterministically on repeat evaluation', () => {
+    for (const entry of corpusV2.cases) {
+      const first = classify(entry.schema, entry.public_inputs_hex, entry.proof_hex)
+      const second = classify(entry.schema, entry.public_inputs_hex, entry.proof_hex)
+      expect(second, `${entry.id} was not deterministic`).toBe(first)
+    }
+  })
+})
+
 describe('boundary behaviour outside the corpus', () => {
   const positive = corpus.cases.find((entry) => entry.expect.accept)!
 
   it('rejects an unknown schema', () => {
-    expect(classify('silent_witness/v2', positive.public_inputs_hex, positive.proof_hex)).toBe(
+    expect(classify('silent_witness/v9', positive.public_inputs_hex, positive.proof_hex)).toBe(
       'unknown_schema',
     )
   })
