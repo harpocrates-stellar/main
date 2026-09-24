@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 
 from http_security import apply_security_headers, cors_kwargs
@@ -45,6 +45,7 @@ from db import (
     insert_lineage_event,
     insert_proof_event,
     insert_proof_history_event,
+    list_lineage_events,
     list_proof_events,
     list_proof_history_events,
     make_idempotency_key,
@@ -56,6 +57,14 @@ from db import (
     cancel_job,
 )
 from idempotency import idempotent
+from lineage import (
+    LineageValidationError,
+    canonical_lineage_manifest,
+    lineage_manifest_digest,
+    validate_lineage_graph,
+)
+from storage import get_job_output_path
+from retention import init_retention_worker
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness, generate_aggregated_proof
 from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
