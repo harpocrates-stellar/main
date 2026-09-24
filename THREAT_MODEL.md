@@ -847,6 +847,7 @@ correlation identifiers (`request_id`, `trace_id`, `span_id`,
 | Allowed | Opaque IDs, W3C `traceparent` (v00), sanitized routes, versioned ID tags |
 | Forbidden | Media bytes, proofs, witness values, private keys, secrets, raw IPs, raw User-Agent |
 | Malformed / oversized headers | Ignored; generated opaque IDs substituted |
+| Cross-origin propagation | `http_security.CORS_ALLOW_HEADERS` accepts the trace headers; `CORS_EXPOSE_HEADERS` lets browser clients read the echoed IDs |
 | Migration | Additive; existing `request_id` header/log field retained |
 | Rollback | Stop emitting extended fields; callers keep `request_id` |
 
@@ -870,3 +871,4 @@ add a one-line change summary below:
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
 | 1.2 | 2026-09-24 | Document privacy-safe backend trace fields (`harpocrates-trace-v1`). |
+| 1.3 | 2026-09-24 | Expose/allowed propagation headers through the CORS policy. |
