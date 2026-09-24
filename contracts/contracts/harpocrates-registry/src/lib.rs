@@ -3985,6 +3985,8 @@ mod test_pause;
 #[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
+mod test_registration_replay;
+#[cfg(test)]
 mod test_scoped_nullifier;
 #[cfg(test)]
 mod test_state_machine;
