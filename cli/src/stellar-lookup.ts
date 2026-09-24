@@ -1,4 +1,4 @@
-import { BASE_FEE, Contract, Networks, TransactionBuilder, rpc, scValToNative, nativeToScVal } from '@stellar/stellar-sdk'
+import { BASE_FEE, Contract, Networks, StrKey, TransactionBuilder, rpc, scValToNative, nativeToScVal } from '@stellar/stellar-sdk'
 import { asHex32, bytesToHex, hexToBytes } from './hashing.js'
 
 /**
@@ -10,6 +10,7 @@ export type ChainProofRecord = {
   tier: number
   status: number
   createdAt: string
+  expiresAt?: string
   source: string | null
   issuer: string | null
 }
@@ -81,6 +82,7 @@ export async function lookupByVideoHash(
     tier: Number(native.tier),
     status: Number(native.status),
     createdAt: native.created_at?.toString?.() ?? String(native.created_at),
+    expiresAt: native.expires_at?.toString?.() ?? undefined,
     source: native.source ?? null,
     issuer: native.issuer ?? null,
   }
@@ -136,11 +138,12 @@ export type TransactionVerification = {
 }
 
 /**
- * Check whether a transaction envelope contains a given contract ID as a
- * substring of its hex representation.
+ * Check whether an envelope references the decoded contract address bytes.
+ * This is a conservative preflight, not a substitute for matching chain data.
  */
 export function checkContractMatch(envelopeBytes: Uint8Array, contractId: string): boolean {
-  const hex = contractId.toLowerCase().replace(/^0x/, '')
+  if (!StrKey.isValidContract(contractId)) return false
+  const hex = bytesToHex(StrKey.decodeContract(contractId))
   const bytesHex = Array.from(envelopeBytes, (b) => Number(b).toString(16).padStart(2, '0')).join('')
   return bytesHex.includes(hex)
 }

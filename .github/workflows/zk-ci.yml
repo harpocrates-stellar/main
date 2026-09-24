@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "zk/**"
+      - "frontend/public/noir/**"
       - "backend/verifier_inputs.py"
       - "backend/test_conformance_vectors.py"
       - "backend/test_verifier_fuzz.py"
@@ -13,6 +14,7 @@ on:
       - main
     paths:
       - "zk/**"
+      - "frontend/public/noir/**"
       - "backend/verifier_inputs.py"
       - "backend/test_conformance_vectors.py"
       - "backend/test_verifier_fuzz.py"
@@ -82,6 +84,17 @@ jobs:
             python zk/tools/artifact_manifest.py verify
           else
             echo "no committed manifest yet; drift check is inert on this branch"
+          fi
+
+      - name: Verify published browser ACIR against the browser manifest
+        # The browser trust boundary: frontend/public/noir must match the
+        # committed zk/browser.artifacts.manifest.json digests. Inert until
+        # that manifest is committed. Never logs artifact bytes.
+        run: |
+          if [ -f zk/browser.artifacts.manifest.json ]; then
+            python zk/tools/artifact_manifest.py verify-browser
+          else
+            echo "no committed browser manifest yet; browser drift check is inert"
           fi
 
   circuit-build:

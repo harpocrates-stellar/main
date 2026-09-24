@@ -4,9 +4,12 @@
 Guarantees that generated ACIR bundles, verification keys, and WASM artifacts
 match their source and the pinned toolchain in ``zk/toolchain.lock.json``.
 
-    write    normalize every declared artifact, digest it, and emit a manifest
-    verify   re-digest the working tree and fail on any drift from a manifest
-    compare  diff two manifests (the double-build reproducibility check)
+    write           normalize every declared artifact, digest it, and emit a manifest
+    verify          re-digest the working tree and fail on any drift from a manifest
+    compare         diff two manifests (the double-build reproducibility check)
+    write-browser   digest published browser ACIR and emit the browser manifest
+    verify-browser  fail if published ACIR drifts from the browser manifest or
+                    from the matching build-target ACIR when both are on disk
 
 State machine
 -------------
@@ -42,6 +45,7 @@ See docs/zk-reproducible-builds.md.
 from __future__ import annotations
 
 import argparse
+import re
 import hashlib
 import json
 import os
@@ -56,6 +60,10 @@ MANIFEST_VERSION = 1
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
 DEFAULT_MANIFEST = REPO_ROOT / "zk" / "artifacts.manifest.json"
+DEFAULT_BROWSER_MANIFEST = REPO_ROOT / "zk" / "browser.artifacts.manifest.json"
+
+BROWSER_MANIFEST_FORMAT = "harpocrates.zk-browser-artifact-manifest"
+PUBLISHED_ACIR_ROLE = "published_acir"
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -502,6 +510,274 @@ def _short(digest: str | None) -> str:
     return digest[:16]
 
 
+
+# ── Browser published ACIR ──────────────────────────────────────────────────
+
+
+def published_acir_declarations(lock: Lock) -> tuple[dict, ...]:
+    """Return lock entries that ship into the browser Evidence Studio."""
+    return tuple(
+        entry for entry in lock.artifacts if entry.get("role") == PUBLISHED_ACIR_ROLE
+    )
+
+
+def published_to_build_target(published_path: str) -> str:
+    """Map ``frontend/public/noir/<name>.json`` to its Noir build-target twin.
+
+    The browser bundle is a *publish* of the compiled ACIR, not a second circuit
+    truth. Pairing by stem keeps the lock file as the single declaration of
+    which circuits are browser-facing.
+    """
+    prefix = "frontend/public/noir/"
+    if not published_path.startswith(prefix) or ".." in published_path:
+        raise BuildError(f"refusing to derive a build target from path: {published_path!r}")
+    remainder = published_path[len(prefix) :]
+    if any(sep in remainder for sep in ("/", chr(92))) or not remainder.endswith(".json"):
+        raise BuildError(f"refusing to derive a build target from path: {published_path!r}")
+    stem = remainder[: -len(".json")]
+    if not stem or not re.fullmatch(r"[A-Za-z0-9_]+", stem):
+        raise BuildError(f"refusing to derive a build target from path: {published_path!r}")
+    return f"zk/noir/{stem}/target/{stem}.json"
+
+
+def build_browser_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
+    """Digest only ``published_acir`` entries for the browser trust boundary."""
+    declarations = published_acir_declarations(lock)
+    if not declarations:
+        raise BuildError("toolchain lock declares no published_acir browser artifacts")
+
+    run = ManifestRun()
+    for declaration in declarations:
+        # Browser publishes are optional in the general lock (required:false) so
+        # a repo without a given bundle still verifies. Force required=False here
+        # and treat missing as SKIPPED; the committed browser manifest then
+        # decides which digests must be present.
+        softened = dict(declaration)
+        softened["required"] = False
+        run.entries.append(digest_artifact(softened, lock, root))
+
+    for entry in run.fatal:
+        # Oversized / unreadable published ACIR is always fatal: the browser
+        # trust boundary must not silently skip a corrupted public bundle.
+        pass
+
+    manifest = {
+        "format": BROWSER_MANIFEST_FORMAT,
+        "version": MANIFEST_VERSION,
+        "toolchain": {
+            "nargo": lock.toolchain["nargo"]["version"],
+            "barretenberg": lock.toolchain["barretenberg"]["version"],
+            "proving_scheme": lock.toolchain["proving_scheme"],
+            "oracle_hash": lock.toolchain["oracle_hash"],
+        },
+        "normalization_policy_sha256": sha256_hex(
+            json.dumps(lock.raw["normalization"], sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ),
+        "artifacts": [
+            entry.to_entry()
+            for entry in run.entries
+            if entry.state == ArtifactState.DIGESTED
+        ],
+        "skipped": [
+            entry.path
+            for entry in run.entries
+            if entry.state == ArtifactState.SKIPPED
+        ],
+    }
+    return manifest, run
+
+
+def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
+    """When both a published ACIR and its build target exist, digests must match.
+
+    Findings name paths and truncated digests only — never artifact bytes.
+    Missing either side is not drift: targets are often gitignored, and a
+    published bundle may wait for a later publish step.
+    """
+    findings: list[str] = []
+    for declaration in published_acir_declarations(lock):
+        published_path = declaration["path"]
+        target_path = published_to_build_target(published_path)
+        published = root / published_path
+        target = root / target_path
+        if not published.is_file() or not target.is_file():
+            continue
+
+        published_decl = {
+            "path": published_path,
+            "kind": declaration.get("kind", "json"),
+            "role": PUBLISHED_ACIR_ROLE,
+            "required": True,
+        }
+        target_decl = {
+            "path": target_path,
+            "kind": declaration.get("kind", "json"),
+            "role": "acir",
+            "required": True,
+        }
+        published_result = digest_artifact(published_decl, lock, root)
+        target_result = digest_artifact(target_decl, lock, root)
+
+        if published_result.state != ArtifactState.DIGESTED:
+            findings.append(
+                f"browser artifact {published_path}: unusable state {published_result.state}"
+            )
+            continue
+        if target_result.state != ArtifactState.DIGESTED:
+            findings.append(
+                f"build target {target_path}: unusable state {target_result.state}"
+            )
+            continue
+        if published_result.normalized_sha256 != target_result.normalized_sha256:
+            findings.append(
+                f"browser artifact {published_path}: normalized digest "
+                f"{_short(published_result.normalized_sha256)} disagrees with build target "
+                f"{target_path} {_short(target_result.normalized_sha256)}"
+            )
+        else:
+            signal(
+                "browser.target_matched",
+                path=published_path,
+                target=target_path,
+                digest=published_result.normalized_sha256,
+            )
+    return findings
+
+
+def _load_browser_manifest(path: Path) -> dict:
+    if not path.is_file():
+        raise BuildError(f"browser manifest not found: {_rel(path)}")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BuildError(f"browser manifest is not valid JSON: {_rel(path)}") from exc
+    if manifest.get("format") != BROWSER_MANIFEST_FORMAT:
+        raise BuildError(f"not a browser artifact manifest: {_rel(path)}")
+    if manifest.get("version") != MANIFEST_VERSION:
+        raise BuildError(
+            f"unsupported browser manifest version: {manifest.get('version')!r}"
+        )
+    return manifest
+
+
+def compare_browser_manifests(expected: dict, actual: dict) -> list[str]:
+    """Diff two browser manifests. Digests and paths only; no content."""
+    findings: list[str] = []
+
+    for key in ("format", "version"):
+        if expected.get(key) != actual.get(key):
+            findings.append(
+                f"browser manifest {key}: expected {expected.get(key)!r}, "
+                f"got {actual.get(key)!r}"
+            )
+
+    for key, expected_value in sorted(expected.get("toolchain", {}).items()):
+        actual_value = actual.get("toolchain", {}).get(key)
+        if expected_value != actual_value:
+            findings.append(
+                f"toolchain.{key}: expected {expected_value!r}, got {actual_value!r}"
+            )
+
+    if expected.get("normalization_policy_sha256") != actual.get(
+        "normalization_policy_sha256"
+    ):
+        findings.append(
+            "normalization policy changed; browser artifacts digested under different rules"
+        )
+
+    expected_artifacts = {entry["path"]: entry for entry in expected.get("artifacts", [])}
+    actual_artifacts = {entry["path"]: entry for entry in actual.get("artifacts", [])}
+
+    for path in sorted(set(expected_artifacts) | set(actual_artifacts)):
+        before = expected_artifacts.get(path)
+        after = actual_artifacts.get(path)
+        if before is None:
+            findings.append(
+                f"browser artifact {path}: unexpected publish, not in the browser manifest"
+            )
+            continue
+        if after is None:
+            findings.append(
+                f"browser artifact {path}: missing from frontend/public/noir "
+                "(declared in the browser manifest)"
+            )
+            continue
+        if before.get("normalized_sha256") != after.get("normalized_sha256"):
+            findings.append(
+                f"browser artifact {path}: normalized digest "
+                f"{_short(before.get('normalized_sha256'))} -> "
+                f"{_short(after.get('normalized_sha256'))}"
+            )
+        elif before.get("raw_sha256") != after.get("raw_sha256"):
+            findings.append(
+                f"browser artifact {path}: raw bytes differ but normalize to the same digest "
+                "(host metadata only; not a semantic change)"
+            )
+
+    return findings
+
+
+def command_write_browser(args: argparse.Namespace) -> int:
+    lock = load_lock(Path(args.lock))
+    manifest, run = build_browser_manifest(lock, REPO_ROOT)
+    if run.fatal:
+        for entry in run.fatal:
+            signal("run.fatal", path=entry.path, state=entry.state)
+        raise BuildError(
+            f"{len(run.fatal)} browser artifact(s) in a fatal state; "
+            "browser manifest not written"
+        )
+    if not manifest["artifacts"]:
+        raise BuildError(
+            "no published browser ACIR found under frontend/public/noir; "
+            "browser manifest not written"
+        )
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(serialize_manifest(manifest), encoding="utf-8")
+    signal(
+        "browser.manifest.written",
+        path=_rel(output),
+        artifacts=len(manifest["artifacts"]),
+        skipped=len(manifest["skipped"]),
+    )
+    return EXIT_OK
+
+
+def command_verify_browser(args: argparse.Namespace) -> int:
+    """Verify published browser ACIR against the committed browser manifest.
+
+    Also, when a matching build-target ACIR is on disk, require an identical
+    normalized digest so a publish step cannot silently ship a different circuit
+    than the one the reproducible-build pipeline produced.
+    """
+    lock = load_lock(Path(args.lock))
+    expected = _load_browser_manifest(Path(args.manifest))
+    actual, run = build_browser_manifest(lock, REPO_ROOT)
+    if run.fatal:
+        for entry in run.fatal:
+            signal("run.fatal", path=entry.path, state=entry.state)
+        raise BuildError(
+            f"{len(run.fatal)} browser artifact(s) in a fatal state; verify aborted"
+        )
+
+    findings = compare_browser_manifests(expected, actual)
+    findings.extend(compare_published_to_targets(lock, REPO_ROOT))
+
+    if findings:
+        for finding in findings:
+            signal("drift.finding", detail=finding)
+        signal("browser.verify.failed", findings=len(findings))
+        return EXIT_DRIFT
+
+    signal("browser.verify.ok", artifacts=len(actual["artifacts"]))
+    return EXIT_OK
+
+
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 
@@ -599,6 +875,21 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("first")
     compare.add_argument("second")
     compare.set_defaults(handler=command_compare)
+
+    write_browser = subparsers.add_parser(
+        "write-browser",
+        help="write a manifest for published browser ACIR under frontend/public/noir",
+    )
+    write_browser.add_argument("--output", default=str(DEFAULT_BROWSER_MANIFEST))
+    write_browser.set_defaults(handler=command_write_browser)
+
+    verify_browser = subparsers.add_parser(
+        "verify-browser",
+        help="fail if published browser ACIR drifts from the browser manifest "
+        "or from matching build-target ACIR",
+    )
+    verify_browser.add_argument("--manifest", default=str(DEFAULT_BROWSER_MANIFEST))
+    verify_browser.set_defaults(handler=command_verify_browser)
 
     return parser
 

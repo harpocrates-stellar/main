@@ -107,6 +107,14 @@ git pull
 docker compose up --build -d
 ```
 
+**7. API Gateway Schema**
+
+For deployments leveraging an API Gateway, WAF, or Swagger UI, you can generate an OpenAPI 3.1 schema natively:
+
+```bash
+python devx/generate_api_schema.py --output openapi.json
+```
+
 ### Caddy reverse proxy example
 
 ```
@@ -331,6 +339,21 @@ docker build \
 The backend image is environment-agnostic and can be pulled and run directly.
 
 ---
+
+
+### Docker HEALTHCHECK
+
+Both images declare a Dockerfile `HEALTHCHECK` so standalone `docker run` and
+platforms that honor image-level healthchecks mark containers correctly:
+
+| Image | Probe | Purpose |
+|-------|-------|---------|
+| `harpocrates-backend` | `GET /health` on `:5050` | Process liveness (no dependency gate) |
+| `harpocrates-frontend` | `GET /` on `:8080` | nginx serving the SPA |
+
+Compose still uses `GET /ready` for the backend service readiness gate
+(`depends_on: condition: service_healthy`). Failures never log secrets,
+media, witness values, or private keys — probes are URL-only.
 
 ## Health and readiness endpoints
 

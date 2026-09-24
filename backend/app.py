@@ -16,6 +16,8 @@ from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
+
+from http_security import apply_security_headers, cors_kwargs
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -119,22 +121,7 @@ def create_app() -> Flask:
     load_dotenv()
     config = load_config()
     app = Flask(__name__)
-    CORS(
-        app,
-        origins=config.cors_origins,
-        methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Metrics-Token", "X-Harpocrates-Retention-Class"],
-        expose_headers=[
-            "Content-Disposition",
-            "X-Request-ID",
-            "X-Harpocrates-Source-Hash",
-            "X-Harpocrates-Embedded-Hash",
-            "X-Harpocrates-Metadata-Hash",
-            "X-Harpocrates-Db-Event",
-            "X-Harpocrates-Metadata",
-            "X-Harpocrates-Retention-Class",
-        ],
-    )
+    CORS(app, **cors_kwargs(config.cors_origins))
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
 
     # ------------------------------------------------------------------ #
@@ -180,11 +167,10 @@ def create_app() -> Flask:
     @app.after_request
     def process_response(response: Response):
         response.headers["X-Request-ID"] = request_id()
-        if config.security_headers_enabled:
-            response.headers.setdefault("X-Content-Type-Options", "nosniff")
-            response.headers.setdefault("Referrer-Policy", "no-referrer")
-            response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
-            response.headers.setdefault("Cache-Control", "no-store")
+        apply_security_headers(
+            response.headers,
+            enabled=config.security_headers_enabled,
+        )
         response.headers.setdefault("X-Harpocrates-Release", config.release_id)
         response.headers.setdefault("X-Harpocrates-Network", config.release_network)
 

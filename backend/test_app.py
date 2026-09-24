@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,17 @@ from unittest.mock import patch
 import app as app_module
 import stego
 from config import load_config
+from http_security import (
+    CORS_ALLOW_HEADERS,
+    CORS_EXPOSE_HEADERS,
+    CORS_METHODS,
+    SECURITY_HEADERS,
+    apply_security_headers,
+    cors_kwargs,
+    is_cors_method_allowed,
+    is_cors_request_header_allowed,
+    is_origin_allowed,
+)
 from db import ConflictError, make_idempotency_key
 from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
@@ -61,7 +73,7 @@ def _app_env(extra: dict[str, str], clear: list[str] | None = None):
     os.environ.update(extra)
 
     try:
-        fresh = _app_module.create_app()
+        fresh = app_module.create_app()
         yield fresh.test_client()
     finally:
         for k, v in saved.items():
@@ -133,6 +145,7 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(response.headers["Cross-Origin-Resource-Policy"], "same-site")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["X-Harpocrates-Release"], "harpocrates-1.0.0")
         self.assertEqual(response.headers["X-Harpocrates-Network"], "testnet")
@@ -1188,6 +1201,112 @@ class CorsPreflightAndHeadersTest(unittest.TestCase):
         exposed = response.headers.get("Access-Control-Expose-Headers", "")
         self.assertIn("X-Request-ID", exposed)
         self.assertIn("X-Harpocrates-Source-Hash", exposed)
+
+
+
+class HttpSecurityUnitTest(unittest.TestCase):
+    """Pure-unit coverage for CORS / security header helpers (no Flask app)."""
+
+    def test_cors_kwargs_positive_shape(self) -> None:
+        kwargs = cors_kwargs(["https://app.example.com"])
+        self.assertEqual(kwargs["origins"], ["https://app.example.com"])
+        self.assertEqual(kwargs["methods"], list(CORS_METHODS))
+        self.assertEqual(kwargs["allow_headers"], list(CORS_ALLOW_HEADERS))
+        self.assertEqual(kwargs["expose_headers"], list(CORS_EXPOSE_HEADERS))
+        self.assertIn("GET", kwargs["methods"])
+        self.assertIn("POST", kwargs["methods"])
+        self.assertIn("OPTIONS", kwargs["methods"])
+        self.assertNotIn("DELETE", kwargs["methods"])
+        self.assertNotIn("PUT", kwargs["methods"])
+
+    def test_cors_kwargs_copies_lists(self) -> None:
+        origins = ["https://a.example"]
+        kwargs = cors_kwargs(origins)
+        kwargs["origins"].append("https://b.example")
+        self.assertEqual(origins, ["https://a.example"])
+
+    def test_origin_allowlist_positive_negative_and_wildcard(self) -> None:
+        allowed = ["http://localhost:5173", "https://app.example.com"]
+        self.assertTrue(is_origin_allowed("http://localhost:5173", allowed))
+        self.assertFalse(is_origin_allowed("http://unauthorized-domain.com", allowed))
+        self.assertFalse(is_origin_allowed(None, allowed))
+        self.assertFalse(is_origin_allowed("", allowed))
+        self.assertTrue(is_origin_allowed("https://any.example", ["*"]))
+
+    def test_cors_method_and_header_boundary_checks(self) -> None:
+        self.assertTrue(is_cors_method_allowed("POST"))
+        self.assertTrue(is_cors_method_allowed("get"))
+        self.assertFalse(is_cors_method_allowed("DELETE"))
+        self.assertFalse(is_cors_method_allowed(None))
+        self.assertTrue(is_cors_request_header_allowed("Content-Type"))
+        self.assertTrue(is_cors_request_header_allowed("x-request-id"))
+        self.assertFalse(is_cors_request_header_allowed("X-Forbidden-Header"))
+        self.assertFalse(is_cors_request_header_allowed(None))
+
+    def test_apply_security_headers_enabled_positive(self) -> None:
+        headers: dict[str, str] = {}
+        apply_security_headers(headers, enabled=True)
+        for name, value in SECURITY_HEADERS.items():
+            self.assertEqual(headers[name], value)
+
+    def test_apply_security_headers_disabled_negative(self) -> None:
+        headers: dict[str, str] = {"X-Custom": "keep"}
+        apply_security_headers(headers, enabled=False)
+        self.assertEqual(headers, {"X-Custom": "keep"})
+        for name in SECURITY_HEADERS:
+            self.assertNotIn(name, headers)
+
+    def test_apply_security_headers_setdefault_regression(self) -> None:
+        headers = {"Cache-Control": "public, max-age=60"}
+        apply_security_headers(headers, enabled=True)
+        # Pre-set values must not be overwritten (setdefault semantics).
+        self.assertEqual(headers["Cache-Control"], "public, max-age=60")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+
+
+class SecurityHeadersToggleIntegrationTest(unittest.TestCase):
+    """Integration coverage: SECURITY_HEADERS_ENABLED toggles live responses."""
+
+    def test_security_headers_enabled_via_env(self) -> None:
+        with _app_env(
+            {
+                "SECURITY_HEADERS_ENABLED": "true",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            response = client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        for name, value in SECURITY_HEADERS.items():
+            self.assertEqual(response.headers.get(name), value)
+
+    def test_security_headers_disabled_via_env(self) -> None:
+        with _app_env(
+            {
+                "SECURITY_HEADERS_ENABLED": "false",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            response = client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        for name in SECURITY_HEADERS:
+            self.assertIsNone(response.headers.get(name))
+
+    def test_custom_cors_origin_accepted_and_rejected(self) -> None:
+        with _app_env(
+            {
+                "CORS_ORIGINS": "https://wave.example",
+                "APP_ENV": "development",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            ok = client.get("/health", headers={"Origin": "https://wave.example"})
+            bad = client.get("/health", headers={"Origin": "https://evil.example"})
+        self.assertEqual(ok.headers.get("Access-Control-Allow-Origin"), "https://wave.example")
+        self.assertNotEqual(bad.headers.get("Access-Control-Allow-Origin"), "https://evil.example")
+
 
 
 if __name__ == "__main__":

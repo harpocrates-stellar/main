@@ -36,6 +36,7 @@ DESIGN.md   Visual design source
 | [docs/zk-fuzzing.md](docs/zk-fuzzing.md) | Structured fuzzing of malformed proofs and public inputs |
 | [docs/contract-delegation.md](docs/contract-delegation.md) | Constrained, expiring issuer and source delegation |
 | [docs/streaming-uploads.md](docs/streaming-uploads.md) | Bounded streaming upload path |
+| [docs/release-operations.md](docs/release-operations.md) | Release state machine, SBOM generation, cosign verification, rollback notes |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Protocol threat model |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting |
 

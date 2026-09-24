@@ -1,0 +1,80 @@
+name: E2E environment matrix
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "devx/**"
+      - "release/**"
+      - ".github/workflows/e2e-env-matrix.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "devx/**"
+      - "release/**"
+      - ".github/workflows/e2e-env-matrix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-env-matrix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: Env matrix (py${{ matrix.python-version }} / ${{ matrix.profile-group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        profile-group: ["core", "adversarial"]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Synthetic CI only — never inject production credentials here.
+      APP_ENV: testing
+      DATABASE_URL: ""
+      NOIR_WORKER_ENABLED: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          # app.py imports flask-limiter; keep CI aligned if pin is missing from requirements.
+          python -m pip install flask-limiter
+
+      - name: Unit-test matrix fixture helpers
+        run: |
+          python -m unittest discover -s devx -p 'test_e2e_env_matrix.py' -v
+
+      - name: Run end-to-end environment matrix
+        run: |
+          set -o pipefail
+          python devx/e2e_env_matrix.py --group ${{ matrix.profile-group }} --json \
+            | tee e2e-env-matrix-${{ matrix.python-version }}-${{ matrix.profile-group }}.json
+
+      - name: Upload matrix report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-env-matrix-py${{ matrix.python-version }}-${{ matrix.profile-group }}-${{ github.run_id }}
+          path: e2e-env-matrix-*.json
+          if-no-files-found: warn
+          retention-days: 14

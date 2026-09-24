@@ -23,6 +23,24 @@ non-active rollout. The workflow also runs each component's existing test and
 build path. A digest mismatch is deliberate: rebuild and review all dependent
 artifacts, then update one manifest in the same reviewed change.
 
+
+## Cross-layer compatibility report
+
+Operators and CI can publish a privacy-safe compatibility report derived from
+the same canonical manifest:
+
+```bash
+python3 devx/compatibility_report.py --write --stable --check
+python3 -m unittest discover -s devx -p 'test_compatibility_report.py' -v
+```
+
+The report lands at [`release/compatibility-report.json`](../release/compatibility-report.json).
+It records per-layer version and interface checks plus cross-layer proof-system,
+crypto-domain, metadata, and digest outcomes. Digest drift is reported as
+`version_compatible_digest_drift` so version alignment remains visible while
+artifact pins are refreshed. Use `--strict` when digests must match exactly.
+The report never includes media, witnesses, credentials, proofs, or secrets.
+
 ## Release state machine
 
 `candidate -> staged -> active` is the forward path. `candidate` is valid for
@@ -80,3 +98,80 @@ new protocol/cryptographic domain and a versioned migration in the manifest,
 deterministic vectors shared by circuit/backend/frontend/contract, a parallel
 read path, and an announced removal date. A release may not remove old readers
 until every supported active and rollback bundle is outside that window.
+
+## Software Bill of Materials (SBOM)
+
+Every GitHub Release automatically triggers the `sbom-provenance.yml` workflow,
+which runs in parallel with the Docker image build workflow.
+
+### What is generated
+
+| Artifact | Tool | Format |
+| --- | --- | --- |
+| `backend-sbom.cdx.json` | syft | CycloneDX JSON |
+| `frontend-sbom.cdx.json` | syft | CycloneDX JSON |
+| `contracts-sbom.cdx.json` | syft | CycloneDX JSON |
+| `zk-sbom.cdx.json` | syft | CycloneDX JSON |
+| `harpocrates-sbom.cdx.json` | syft | CycloneDX JSON (aggregate) |
+| `*.cdx.json.sig` / `*.cdx.json.cert` | cosign | keyless Sigstore signatures |
+| `harpocrates.intoto.jsonl` | slsa-github-generator | SLSA level-3 provenance |
+| Docker image attestations | actions/attest-build-provenance | OCI image attestation |
+
+All artifacts are attached to the GitHub Release and are also available as
+workflow run artifacts for 90 days.
+
+### Privacy constraints
+
+SBOMs describe the *dependency graph* of each workspace. They must never
+contain evidence payloads, media hashes in sensitive context, witness values,
+credential roots, proof bytes, signing keys, or deployment secrets. The
+`compatibility-manifest.json` is the authoritative source of public release
+identity; do not duplicate or embed it inside an SBOM.
+
+### Verifying a release SBOM locally
+
+```bash
+# Install cosign (https://docs.sigstore.dev/cosign/installation)
+cosign version
+
+# Verify a specific SBOM against its detached signature and certificate
+cosign verify-blob \
+  --certificate harpocrates-sbom.cdx.json.cert \
+  --signature   harpocrates-sbom.cdx.json.sig  \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '.*' \
+  harpocrates-sbom.cdx.json
+
+# Inspect the SBOM
+cat harpocrates-sbom.cdx.json | python3 -m json.tool | head -60
+```
+
+### Verifying Docker image provenance
+
+```bash
+# Replace <tag> with the release version, e.g. 1.0.0
+gh attestation verify \
+  oci://ghcr.io/<owner>/harpocrates-backend:<tag> \
+  --repo <owner>/harpocrates
+```
+
+### Manual trigger (dry run)
+
+To generate SBOMs for a branch without publishing a release:
+
+```bash
+gh workflow run sbom-provenance.yml \
+  --field ref=main \
+  --field upload_artifacts=true
+```
+
+### Rollback notes
+
+If an SBOM artifact is found to contain incorrect or sensitive content after
+publication, do not silently delete it from the release. Instead:
+1. Remove the affected file from the GitHub Release.
+2. Regenerate the corrected SBOM from the same tag using the manual trigger.
+3. Re-attach and note the correction in the release changelog.
+
+Do not invalidate or overwrite the `compatibility-manifest.json` as part of
+an SBOM correction; those are independent artifacts with separate digests.
