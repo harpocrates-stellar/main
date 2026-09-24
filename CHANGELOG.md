@@ -2,6 +2,8 @@
 
 ## 1.0.0 — Unreleased
 
+- Added structured privacy-safe audit records (`backend/audit_records.py`, migration 11) with redaction of media/secrets/witness/keys, Neon persistence, and `GET /api/audit-records`.
+
 - Added a CI end-to-end environment matrix (`devx/e2e_env_matrix.py`) that exercises public API boundaries across development/testing/production-like profiles with privacy-safe failure checks.
 
 - Added an atomic compatibility manifest and release gate spanning frontend,

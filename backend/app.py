@@ -53,6 +53,12 @@ from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
+from audit_records import (
+    action_from_route,
+    outcome_from_http_status,
+    recent_audit_records,
+    record_audit,
+)
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
@@ -201,6 +207,22 @@ def create_app() -> Flask:
                 "duration_ms": request_duration_ms(),
             },
         )
+        # Privacy-safe structured audit record at the HTTP boundary.
+        # Persist only mutation / error responses to keep volume bounded.
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} or response.status_code >= 400:
+            record_audit(
+                action=action_from_route(request.method, request_route()),
+                outcome=outcome_from_http_status(response.status_code),
+                request_id=request_id(),
+                route=request_route(),
+                method=request.method,
+                status=response.status_code,
+                details={
+                    "path": request.path,
+                    "duration_ms": request_duration_ms(),
+                },
+                persist=True,
+            )
         return response
 
     def require_register_auth(fn):
@@ -1296,6 +1318,62 @@ def create_app() -> Flask:
             "message": "Selective disclosure proof submission accepted.",
             "note": "On-chain verification must be performed via verify_selective_disclosure on the registry contract.",
         })
+
+    @app.get("/api/audit-records")
+    def get_audit_records():
+        """Return recent privacy-safe audit records (in-memory ring or Neon).
+
+        Query params: limit (1..100), source=memory|db (default memory).
+        Responses never include raw media, secrets, witness values, or keys.
+        """
+        try:
+            limit = int(request.args.get("limit", "50"))
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": "limit must be an integer",
+                            "request_id": request_id(),
+                        },
+                    }
+                ),
+                400,
+            )
+        limit = max(1, min(limit, 100))
+        source = (request.args.get("source") or "memory").lower()
+        if source not in {"memory", "db"}:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": "source must be memory or db",
+                            "request_id": request_id(),
+                        },
+                    }
+                ),
+                400,
+            )
+        if source == "db":
+            from db import list_audit_records as _list_audit_records
+
+            records = _list_audit_records(limit=limit)
+        else:
+            records = recent_audit_records(limit)
+        return jsonify(
+            {
+                "ok": True,
+                "request_id": request_id(),
+                "schema_version": "harpocrates-audit-record-v1",
+                "count": len(records),
+                "records": records,
+            }
+        )
+
 
     return app
 

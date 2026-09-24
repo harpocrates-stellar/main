@@ -842,3 +842,4 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
+| 1.2 | 2026-09-24 | Add structured privacy-safe audit records (T5/T6/T10): allowlisted actions, redacted details, Neon `audit_records` table; no media/secrets/witness/keys in durable logs. |
