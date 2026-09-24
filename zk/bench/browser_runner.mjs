@@ -8,6 +8,12 @@
  * Usage (from repo root, after `cd frontend && npm ci` and circuit build):
  *   node zk/bench/browser_runner.mjs
  *   node zk/bench/browser_runner.mjs --cold 1 --warm 2
+ *   node zk/bench/browser_runner.mjs --mode main
+ *
+ * --mode selects which prover runtime the sample stands in for:
+ *   worker  — the Web Worker path (default)
+ *   main    — the non-worker fallback path (explicit limits enforced here so
+ *             drift in the fallback bounds is caught by the bench, not by users)
  *
  * When ACIR artifacts are missing, exits 3 with a structured stderr signal
  * (same convention as the Python harness).
@@ -27,18 +33,27 @@ const PUBLIC_INPUTS_LEN = 160
 const MIN_PROOF_BYTES = 64
 const MAX_PROOF_BYTES = 65536
 
+// Explicit non-worker fallback limits, kept in lockstep with
+// frontend/src/workers/proofWorkerClient.ts and
+// frontend/src/noirClient.ts. The bench enforces the same ceilings so a
+// fixture cannot mask fallback-limit drift.
+const FALLBACK_MAX_SECRET_BYTES = 256
+const FALLBACK_MAX_CONCURRENCY = 1
+const RUNTIME_MODES = ['worker', 'main']
+
 function signal(event, fields = {}) {
   console.error(JSON.stringify({ event, ...fields }))
 }
 
 function parseArgs(argv) {
-  const out = { cold: 1, warm: 2, discard: 1, timeoutMs: 180_000 }
+  const out = { cold: 1, warm: 2, discard: 1, timeoutMs: 180_000, mode: 'worker' }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--cold') out.cold = Number(argv[++i])
     else if (a === '--warm') out.warm = Number(argv[++i])
     else if (a === '--discard') out.discard = Number(argv[++i])
     else if (a === '--timeout-ms') out.timeoutMs = Number(argv[++i])
+    else if (a === '--mode') out.mode = argv[++i]
     else if (a === '--help') out.help = true
   }
   return out
@@ -95,6 +110,14 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
     video_hash_hi: BigInt(`0x${videoHash.slice(0, 32)}`).toString(10),
     video_hash_lo: BigInt(`0x${videoHash.slice(32)}`).toString(10),
   }
+  // Enforce the explicit non-worker fallback bound on secret sizes.
+  const credBytes = new TextEncoder().encode(baseInputs.credential_secret).length
+  const nullBytes = new TextEncoder().encode(baseInputs.nullifier_secret).length
+  if (credBytes > FALLBACK_MAX_SECRET_BYTES || nullBytes > FALLBACK_MAX_SECRET_BYTES) {
+    const err = new Error('secret input exceeds explicit fallback limit')
+    err.code = 'fallback_limit_exceeded'
+    throw err
+  }
 
   const t0 = performance.now()
   const helperResult = await new Noir(helperCircuit).execute(baseInputs)
@@ -138,8 +161,21 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.help) {
-    console.log('browser_runner.mjs [--cold N] [--warm N] [--discard N] [--timeout-ms MS]')
+    console.log('browser_runner.mjs [--cold N] [--warm N] [--discard N] [--timeout-ms MS] [--mode worker|main]')
     process.exit(0)
+  }
+
+  if (!RUNTIME_MODES.includes(args.mode)) {
+    signal('bench.fatal', {
+      code: 'unknown_mode',
+      detail: `--mode must be one of: ${RUNTIME_MODES.join(', ')}`,
+    })
+    process.exit(3)
+  }
+
+  if (args.mode === 'main' && args.timeoutMs < 1) {
+    signal('bench.fatal', { code: 'invalid_timeout', detail: '--timeout-ms must be positive' })
+    process.exit(3)
   }
 
   if (!(await exists(MAIN)) || !(await exists(HELPER))) {
@@ -163,7 +199,11 @@ async function main() {
   const helperCircuit = JSON.parse(await readFile(HELPER, 'utf8'))
   const mainCircuit = JSON.parse(await readFile(MAIN, 'utf8'))
 
-  signal('bench.start', { target: 'browser', fixture_id: 'silent_witness.synthetic.v1' })
+  signal('bench.start', {
+    target: 'browser',
+    fixture_id: 'silent_witness.synthetic.v1',
+    mode: args.mode,
+  })
 
   const proveSamples = []
   const verifySamples = []
@@ -182,7 +222,7 @@ async function main() {
     }
     signal('bench.sample', {
       target: 'browser',
-      mode: cold ? 'cold' : 'warm',
+      mode: args.mode,
       state: 'ok',
       elapsed_ms: sample.prove_ms,
     })
@@ -207,12 +247,15 @@ async function main() {
     target: 'browser',
     fixture_id: 'silent_witness.synthetic.v1',
     circuit: 'silent_witness',
+    // The prover runtime this run stands in for: 'worker' or 'main' (fallback).
+    mode: args.mode,
     runtime: {
       os: os.platform(),
       arch: os.arch(),
       node_version: process.version,
       cpu_count: os.cpus()?.length ?? 0,
       ci: Boolean(process.env.CI || process.env.GITHUB_ACTIONS),
+      threading: { max_concurrency: FALLBACK_MAX_CONCURRENCY },
     },
     phases: [
       {

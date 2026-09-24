@@ -33,12 +33,14 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       nullifierSecret,
     })
     post({ type: 'RESULT', requestId, proof })
-  } catch (err) {
+  } catch {
+    // The raw error is never forwarded: it may embed secret material or
+    // witness data. Surface a stable, privacy-safe message instead.
     post({
       type: 'ERROR',
       requestId,
       code: 'PROOF_GENERATION_FAILED',
-      message: err instanceof Error ? err.message : 'Unknown error during proof generation.',
+      message: 'Proof generation failed. Please retry.',
     })
   } finally {
     zero(input.credentialSecret)

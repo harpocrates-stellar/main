@@ -40,6 +40,31 @@ def test_repo_lock_loads_all_targets(lock: zb.Lock):
     assert lock.limits.max_proof_bytes == 65536
 
 
+def test_browser_target_matches_non_worker_fallback_limits(lock: zb.Lock):
+    """The browser target's concurrency/timeout bounds must stay compatible with
+    the explicit non-worker fallback limits in frontend/src (single concurrent
+    proof, and a timeout ceiling at least the frontend's default 60s)."""
+    browser = lock.targets["browser"]
+    assert browser.max_concurrency == 1
+    assert browser.timeout_ms >= 60_000
+
+
+def test_browser_runner_modes_are_bounded(lock: zb.Lock):
+    runner = (Path(__file__).resolve().parent / "browser_runner.mjs").read_text(encoding="utf-8")
+    # The runner must enumerate exactly the two prover runtimes and keep the
+    # non-worker fallback secret bound in lockstep with the frontend client.
+    assert "RUNTIME_MODES = ['worker', 'main']" in runner
+    assert "FALLBACK_MAX_SECRET_BYTES = 256" in runner
+    assert "FALLBACK_MAX_CONCURRENCY = 1" in runner
+    # Privacy: the report may never carry the forbidden keys, including in the
+    # new mode/threading fields.
+    zb.assert_privacy_safe(
+        {"mode": "main", "threading": {"max_concurrency": 1}},
+        forbidden_keys=lock.forbidden_report_keys,
+        forbidden_substrings=lock.forbidden_substrings,
+    )
+
+
 def test_lock_rejects_unknown_version(tmp_path: Path):
     raw = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     raw["version"] = 99

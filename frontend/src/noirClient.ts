@@ -1,6 +1,9 @@
 import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+import { UltraHonkBackend } from '@aztec/bb.js'
+import { Noir } from '@noir-lang/noir_js'
+import type { CompiledCircuit } from '@noir-lang/types'
 
-type SilentWitnessProof = {
+export type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
   /** Domain tag as a 32-byte hex string (no 0x prefix). */
@@ -12,21 +15,7 @@ type SilentWitnessProof = {
   publicInputBytes: number
 }
 
-type AggregatedProof = {
-  protocol: string
-  version: number
-  type: string
-  batchId: string
-  batchSize: number
-  maxBatchSize: number
-  videoHashes: string[]
-  proof: string
-  publicInputs: string
-  proofBytes: number
-  publicInputBytes: number
-}
-
-type GenerateSilentWitnessInput = {
+export type GenerateSilentWitnessInput = {
   videoHash: string
   credentialSecret: string
   nullifierSecret: string
@@ -36,16 +25,50 @@ type GenerateSilentWitnessInput = {
   epoch?: number
 }
 
-type GenerateAggregatedProofInput = {
-  videoHashes: string[]
-  credentialSecret: string
-  nullifierSecret: string
+/**
+ * Explicit bounds enforced at the trust boundary (the browser prover).
+ * Secret values are capped so a single request can never drive unbounded
+ * work; the scope/epoch values mirror the contracts' scalar limits and keep
+ * malformed inputs from reaching the WASM prover.
+ */
+export const PROOF_INPUT_BOUNDS = {
+  maxSecretBytes: 256,
+  maxEpoch: 0xffffffff,
+  /** BN254 base field modulus — verifier_scope must fit in one field element. */
+  frModulus: 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n,
+} as const
+
+const HEX64 = /^[0-9a-fA-F]{64}$/
+
+function assertBoundedInput(input: GenerateSilentWitnessInput): void {
+  if (!HEX64.test(input.videoHash)) {
+    throw new Error('videoHash must be a 64-character hex string.')
+  }
+  const credBytes = new TextEncoder().encode(input.credentialSecret).length
+  const nullBytes = new TextEncoder().encode(input.nullifierSecret).length
+  if (credBytes === 0 || nullBytes === 0) {
+    throw new Error('credentialSecret and nullifierSecret are required.')
+  }
+  if (credBytes > PROOF_INPUT_BOUNDS.maxSecretBytes || nullBytes > PROOF_INPUT_BOUNDS.maxSecretBytes) {
+    throw new Error('Secret input exceeds the maximum allowed size.')
+  }
+  let scopeField: bigint
+  try {
+    scopeField = BigInt(input.verifierScope ?? '0')
+  } catch {
+    throw new Error('verifierScope must be a decimal string.')
+  }
+  if (scopeField < 0n || scopeField >= PROOF_INPUT_BOUNDS.frModulus) {
+    throw new Error('verifierScope must be a valid BN254 field element.')
+  }
+  const epoch = input.epoch ?? 0
+  if (!Number.isSafeInteger(epoch) || epoch < 0 || epoch > PROOF_INPUT_BOUNDS.maxEpoch) {
+    throw new Error('epoch must be a u32.')
+  }
 }
 
 let helperCircuitPromise: Promise<CompiledCircuit> | null = null
 let mainCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
 
 /**
  * Generate a Silent Witness Noir/UltraHonk proof.
@@ -56,14 +79,22 @@ let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
  * version and network embedded in the circuit constants — a proof generated
  * for testnet will fail the in-circuit assert if submitted to a mainnet
  * verifier with different embedded constants.
+ *
+ * Errors are intentionally stable, human-readable strings that never contain
+ * secret material, witness data, or user input.
  */
-export async function generateSilentWitnessProof({
-  videoHash,
-  credentialSecret,
-  nullifierSecret,
-  verifierScope = '0',
-  epoch = 0,
-}: GenerateSilentWitnessInput): Promise<SilentWitnessProof> {
+export async function generateSilentWitnessProof(
+  input: GenerateSilentWitnessInput,
+): Promise<SilentWitnessProof> {
+  assertBoundedInput(input)
+  const {
+    videoHash,
+    credentialSecret,
+    nullifierSecret,
+    verifierScope = '0',
+    epoch = 0,
+  } = input
+
   const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
 
   const video_hash_hi = BigInt(`0x${videoHash.slice(0, 32)}`).toString(10)
@@ -124,8 +155,24 @@ export async function generateSilentWitnessProof({
   }
 }
 
-async function sha256(input: string): Promise<string> {
-  const bytes = new TextEncoder().encode(input)
-  const hash = await crypto.subtle.digest('SHA-256', bytes)
-  return bytesToHex(new Uint8Array(hash))
+async function loadHelperCircuit() {
+  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
+  return helperCircuitPromise
+}
+
+async function loadMainCircuit() {
+  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
+  return mainCircuitPromise
+}
+
+async function loadCircuit(path: string) {
+  const response = await fetch(path, { cache: 'no-store' }) // cache prohibition
+  if (!response.ok) {
+    throw new Error('Unable to load the Noir circuit artifact required for proof generation.')
+  }
+  return (await response.json()) as CompiledCircuit
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }

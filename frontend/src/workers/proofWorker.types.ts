@@ -12,6 +12,22 @@ export type ProofErrorCode =
   | 'CIRCUIT_LOAD_FAILED'
   | 'PROOF_GENERATION_FAILED'
   | 'TIMEOUT'
+  | 'WORKER_UNAVAILABLE'
+  | 'FALLBACK_LIMIT_EXCEEDED'
+
+/**
+ * Which runtime actually executes proof generation.
+ * - 'worker'      — the dedicated Web Worker.
+ * - 'main-thread' — the non-worker fallback (explicit bounds enforced).
+ */
+export type RuntimeMode = 'worker' | 'main-thread'
+
+/** Why the client ended up proving on the main thread. */
+export type FallbackReason =
+  | 'worker_api_unavailable'
+  | 'worker_spawn_failed'
+  | 'worker_crashed'
+  | 'runtime_forced_main'
 
 export type TransferableProofInput = {
   videoHash: string

@@ -1,4 +1,4 @@
-import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js'
+import { Barretenberg, UltraHonkBackend, Fr } from '@aztec/bb.js'
 import { Noir } from '@noir-lang/noir_js'
 import type { CompiledCircuit } from '@noir-lang/types'
 import type {
@@ -19,8 +19,10 @@ async function getBB(): Promise<Barretenberg> {
 
 async function pedersenHash(inputs: bigint[]): Promise<bigint> {
   const bb = await getBB()
-  const result = await bb.pedersenHash(inputs)
-  return result
+  // std::hash::pedersen_hash in the circuit uses hash index 0; Fr wraps each
+  // input so the field encoding matches what the circuit hashes.
+  const result = await bb.pedersenHash(inputs.map((v) => new Fr(v)), 0)
+  return BigInt(result.toString())
 }
 
 function padPredicates(predicates: Predicate[]): Predicate[] {
@@ -48,13 +50,13 @@ function padArray<T>(arr: T[], len: number, fill: T): T[] {
 }
 
 async function computePredicateCommitment(predicates: Predicate[]): Promise<string> {
-  const padded = padPredicates(predicates)
+  // The circuit hashes exactly num_predicates entries and skips the padding
+  // predicates, so the commitment must only fold real predicates.
   let current = BigInt(0)
-  for (let i = 0; i < padded.length; i++) {
-    const p = padded[i]
+  for (const p of predicates) {
     const predType = BigInt(p.predicateType === 'Equality' ? 0 : p.predicateType === 'SetMembership' ? 1 : 2)
-    const attrIndex = BigInt(i < predicates.length ? p.attrIndex : 0)
-    const publicValue = BigInt(i < predicates.length ? (p.publicValue ?? '0') : '0')
+    const attrIndex = BigInt(p.attrIndex ?? 0)
+    const publicValue = BigInt(p.publicValue ?? '0')
     current = await pedersenHash([current, predType, attrIndex, publicValue])
   }
   return current.toString()
