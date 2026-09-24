@@ -309,6 +309,11 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["verif", "rollback"]             => active_verifier, previous_verifier
 ```
 
+For every successful proof registration, `proof/reg` is emitted before the
+corresponding `proof/history` event. Batch registration emits that same pair
+for each derived proof in input order. Rejected registrations emit neither
+event, so indexers can treat the ordered pair as the registration boundary.
+
 ## Lifecycle History (#90)
 
 Every proof carries an append-only history of lifecycle transitions. History

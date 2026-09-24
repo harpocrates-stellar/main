@@ -1546,13 +1546,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), None);
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            None,
-            record.tier,
-        );
         record
     }
 
@@ -1675,13 +1668,6 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         };
 
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            None,
-            record.tier,
-        );
         record
     }
 
@@ -1878,13 +1864,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(source),
-            record.tier,
-        );
         record
     }
 
@@ -1918,13 +1897,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(issuer),
-            record.tier,
-        );
         record
     }
 
@@ -2131,14 +2103,7 @@ impl HarpocratesRegistry {
             nullifier: None,
             batch_size: 0,
         };
-        save_record(&env, &proof_id, record.clone(), Some(source.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(delegate.clone()),
-            record.tier,
-        );
+        save_record(&env, &proof_id, record.clone(), Some(delegate.clone()));
         DelegationUsed {
             grantor: source,
             delegate,
@@ -2186,14 +2151,7 @@ impl HarpocratesRegistry {
             nullifier: None,
             batch_size: 0,
         };
-        save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(delegate.clone()),
-            record.tier,
-        );
+        save_record(&env, &proof_id, record.clone(), Some(delegate.clone()));
         DelegationUsed {
             grantor: issuer,
             delegate,
@@ -3334,6 +3292,17 @@ fn save_record(
         batch_size: record.batch_size,
     }
     .publish(env);
+    // Registration has one canonical observable order: the domain event is
+    // emitted first, followed by the append-only lifecycle history event.
+    // Keeping both emissions here also covers aggregated registrations and
+    // prevents a new registration path from silently omitting history.
+    record_proof_history(
+        env,
+        proof_id,
+        ProofLifecycleAction::Registered as u32,
+        actor,
+        record.tier,
+    );
     record
 }
 
