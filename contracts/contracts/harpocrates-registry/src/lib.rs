@@ -4029,3 +4029,5 @@ mod test_schema;
 mod test_selective_disclosure;
 #[cfg(test)]
 mod test_upgrade_compat;
+#[cfg(test)]
+mod test_deployment_fixture;
