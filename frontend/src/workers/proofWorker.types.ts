@@ -1,8 +1,11 @@
-export type ProofStage =
-  | 'loading_circuits'
-  | 'executing_helper'
-  | 'executing_main'
-  | 'generating_proof'
+import type { ProofStage } from '../proofStage'
+
+/**
+ * The proof-stage vocabulary is canonical in `../proofStage` so the prover, the
+ * worker boundary, and the Evidence Studio UI cannot drift apart. Re-exported
+ * here to keep the existing worker contract import path stable.
+ */
+export type { ProofStage }
 
 export type ProofErrorCode =
   | 'BUSY'
