@@ -765,6 +765,120 @@ def purge_expired_events() -> list[dict[str, Any]]:
     return receipts
 
 
+
+def insert_audit_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Persist a privacy-safe audit record. No-op when DATABASE_URL is unset.
+
+    Expects the canonical dict from ``audit_records.AuditRecord.to_dict()``.
+    Never stores raw media or secret material — callers must sanitize first.
+    """
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into audit_records (
+                    schema_version,
+                    audit_id,
+                    action,
+                    outcome,
+                    timestamp_unix,
+                    request_id,
+                    actor,
+                    resource_type,
+                    resource_id,
+                    route,
+                    method,
+                    status,
+                    details,
+                    details_digest
+                )
+                values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                on conflict (audit_id) do nothing
+                returning id, created_at;
+                """,
+                (
+                    record.get("schema_version"),
+                    record.get("audit_id"),
+                    record.get("action"),
+                    record.get("outcome"),
+                    record.get("timestamp_unix"),
+                    record.get("request_id"),
+                    record.get("actor"),
+                    record.get("resource_type"),
+                    record.get("resource_id"),
+                    record.get("route"),
+                    record.get("method"),
+                    record.get("status"),
+                    Jsonb(record.get("details") or {}),
+                    record.get("details_digest"),
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_audit_records(
+    *,
+    action: str | None = None,
+    request_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List durable audit records (newest first). Empty when DB unset."""
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if action:
+        clauses.append("action = %s")
+        params.append(action)
+    if request_id:
+        clauses.append("request_id = %s")
+        params.append(request_id)
+    where = f"where {' and '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                select
+                    id,
+                    schema_version,
+                    audit_id,
+                    action,
+                    outcome,
+                    timestamp_unix,
+                    request_id,
+                    actor,
+                    resource_type,
+                    resource_id,
+                    route,
+                    method,
+                    status,
+                    details,
+                    details_digest,
+                    created_at
+                from audit_records
+                {where}
+                order by id desc
+                limit %s offset %s;
+                """,
+                params,
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+
 _JOBS: dict[int, dict[str, Any]] = {}
 _next_job_id = 1
 

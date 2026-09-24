@@ -273,6 +273,36 @@ MIGRATIONS: list[Migration] = [
             ON proof_events (id DESC, created_at DESC);
         """,
     ),
+    Migration(
+        id=11,
+        name="create audit_records table",
+        sql="""
+        CREATE TABLE IF NOT EXISTS audit_records (
+            id BIGSERIAL PRIMARY KEY,
+            schema_version TEXT NOT NULL,
+            audit_id TEXT NOT NULL UNIQUE,
+            action TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            timestamp_unix DOUBLE PRECISION NOT NULL,
+            request_id TEXT,
+            actor TEXT,
+            resource_type TEXT,
+            resource_id TEXT,
+            route TEXT,
+            method TEXT,
+            status INTEGER,
+            details JSONB NOT NULL DEFAULT '{}'::jsonb,
+            details_digest TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS audit_records_action_idx
+            ON audit_records (action);
+        CREATE INDEX IF NOT EXISTS audit_records_request_id_idx
+            ON audit_records (request_id);
+        CREATE INDEX IF NOT EXISTS audit_records_created_at_idx
+            ON audit_records (created_at DESC);
+        """,
+    ),
 ]
 
 
