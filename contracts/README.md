@@ -300,6 +300,9 @@ verify_proof(public_inputs, proof)
 
 See `VERIFIER_INTEGRATION.md` for the UltraHonk verifier deployment plan.
 
+The verifier's verdict is enforced: `verify_external_proof` returning `false`
+fails the registration with `InvalidProof` (`#7`).
+
 Current Testnet verifier:
 
 ```text

@@ -2,6 +2,10 @@
 
 ## 1.0.0 — Unreleased
 
+- External verifier verdicts are now enforced: registrations whose
+  `verify_external_proof` call fails (or that pass an empty proof) revert with
+  `InvalidProof` instead of proceeding silently.
+
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
   silence checks, and regression corpus entries `fz-011`–`fz-013` (#369).
