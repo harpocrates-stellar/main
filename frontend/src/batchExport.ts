@@ -114,6 +114,8 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
         proofId: item.chainProof?.metadataHash ?? item.videoHash,
         tier: (item.tier as 'silent' | 'source' | 'seal') || 'source',
         network: 'testnet',
+        verifierScope: '0',
+        epoch: 0,
         contractId: item.chainProof?.issuer ?? '',
         transactionRef: item.events[0]?.tx_hash ?? '',
         videoHash: item.videoHash,

@@ -117,6 +117,12 @@ leaks, or classifies inconsistently across layers:
 3. Never delete an entry. If a rule intentionally changes, bump `version` and
    record the migration here.
 
+**Migration — version 2.** The `silent_witness/v1` frame grew a fifth field
+(`domain_tag`, byte-identical across all layers), so every silent-witness entry
+was migrated from the 4-field 128-byte frame to the canonical 5-field 160-byte
+described in docs/zk-conformance-vectors.md. Every `expect_reject_code` is
+unchanged: the entries pin the same behaviours against the current frame layout.
+
 The current corpus carries ten minimized entries covering framing off-by-ones,
 the doubled frame, the exact modulus, a single padding bit, a zero nullifier, a
 final-byte domain difference, and both proof-size edges.

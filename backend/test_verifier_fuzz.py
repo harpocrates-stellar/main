@@ -304,7 +304,7 @@ def test_rejection_signals_never_echo_mutant_bytes(seed: int):
 
 def test_regression_corpus_is_versioned():
     assert REGRESSIONS["format"] == "harpocrates.fuzz-regressions"
-    assert REGRESSIONS["version"] == 1
+    assert REGRESSIONS["version"] == 2
 
 
 @pytest.mark.parametrize(

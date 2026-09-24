@@ -44,7 +44,7 @@ struct MockStateMachineVerifier;
 impl MockStateMachineVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if !matches!(len, 128 | 160 | 192 | 224) || proof.is_empty() {
             panic!("invalid state-machine proof");
         }
     }
@@ -564,11 +564,15 @@ fn silent_public_inputs(
             credential_root.copy_into_slice(&mut cr);
             nullifier.copy_into_slice(&mut nu);
 
-            let mut bytes = [0u8; 128];
+            let mut bytes = [0u8; 160];
             bytes[16..32].copy_from_slice(&vh[..16]);
             bytes[48..64].copy_from_slice(&vh[16..]);
             bytes[64..96].copy_from_slice(&cr);
             bytes[96..128].copy_from_slice(&nu);
+            let domain = expected_domain_tag(env);
+            let mut dg = [0u8; 32];
+            domain.copy_into_slice(&mut dg);
+            bytes[128..160].copy_from_slice(&dg);
             Bytes::from_array(env, &bytes)
         }
     }

@@ -121,6 +121,13 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'get_proof'
+  | 'get_proof_statuses'
+  | 'get_proof_history_at'
+  | 'get_proof_history_count'
+  | 'verify_proof'
+  | 'expire_proof'
+  | 'correct_proof'
   | 'set_scope_epoch'
   | 'get_scope_epoch'
   | 'verify_selective_disclosure'
@@ -137,4 +144,16 @@ export type ScopedProofScope = {
 export type ScopedProofEpoch = {
   /** Epoch number matching the on-chain scope epoch. */
   epoch: number
+}
+
+export type ProofHistoryEntry = {
+  action: number
+  timestamp: string
+  actor: string | null
+  reasonCode: number
+}
+
+export type ProofHistoryResult = {
+  entries: ProofHistoryEntry[]
+  count: number
 }

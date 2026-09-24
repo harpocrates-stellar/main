@@ -1,4 +1,4 @@
-import pako from 'pako'
+import { inflate } from 'pako'
 
 const MAGIC = new TextEncoder().encode('HRPSTG1')
 const MAX_PAYLOAD_BYTES = 64 * 1024
@@ -13,7 +13,7 @@ export class MalformedEvidenceError extends Error {
 }
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data as BufferSource)
   return new Uint8Array(hashBuffer)
 }
 
@@ -60,7 +60,7 @@ async function unpackPayload(data: Uint8Array): Promise<unknown | null> {
   if (!bytesEqual(checksum, actualChecksum)) return null
 
   try {
-    const decompressed = pako.inflate(body)
+    const decompressed = inflate(body)
     const jsonStr = new TextDecoder('utf-8').decode(decompressed)
     const value = JSON.parse(jsonStr)
     return typeof value === 'object' && value !== null ? value : null

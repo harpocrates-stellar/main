@@ -118,6 +118,7 @@
     {
       "id": "sw-neg-002-truncated-one-byte",
       "schema": "silent_witness/v1",
+      "description": "One byte short of a full frame.",
       "description": "127 bytes: one byte short of a full frame.",
       "public_inputs_hex": "00000000000000000000000000000000000102030405060708090a0b0c0d0e0f00000000000000000000000000000000101112131415161718191a1b1c1d1e1f010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202024aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c",
       "proof_hex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
@@ -129,8 +130,8 @@
     {
       "id": "sw-neg-003-truncated-one-field",
       "schema": "silent_witness/v1",
-      "description": "96 bytes: a whole field element missing.",
-      "public_inputs_hex": "00000000000000000000000000000000000102030405060708090a0b0c0d0e0f00000000000000000000000000000000101112131415161718191a1b1c1d1e1f0101010101010101010101010101010101010101010101010101010101010101",
+      "description": "128 bytes: a whole field element missing.",
+      "public_inputs_hex": "00000000000000000000000000000000000102030405060708090a0b0c0d0e0f00000000000000000000000000000000101112131415161718191a1b1c1d1e1f01010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202",
       "proof_hex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
       "expect": {
         "accept": false,
@@ -140,6 +141,7 @@
     {
       "id": "sw-neg-004-oversized-one-byte",
       "schema": "silent_witness/v1",
+      "description": "One trailing byte past the full frame.",
       "description": "129 bytes: one trailing byte past the frame.",
       "public_inputs_hex": "00000000000000000000000000000000000102030405060708090a0b0c0d0e0f00000000000000000000000000000000101112131415161718191a1b1c1d1e1f010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202024aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c5500",
       "proof_hex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",

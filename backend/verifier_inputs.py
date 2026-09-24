@@ -238,6 +238,14 @@ def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
     high = _require_half_padding(fields[0], "video_hash_hi")
     low = _require_half_padding(fields[1], "video_hash_lo")
 
+    # The domain tag (index 4) is a raw SHA-256 digest compared byte-wise
+    # against SILENT_WITNESS_DOMAIN_TAG, not a BN254 field element: the
+    # expected tag is >= the scalar modulus by construction, so it is exempt
+    # from the canonicity rule. Every other field is checked in index order.
+    _require_canonical(
+        fields[: SILENT_WITNESS_FIELD_COUNT - 1],
+        _SILENT_WITNESS_FIELDS[: SILENT_WITNESS_FIELD_COUNT - 1],
+    )
     # The digest is an opaque protocol binding; compare it byte-for-byte below
     # instead of treating arbitrary SHA-256 output as a BN254 scalar.
     _require_canonical(fields[:4], _SILENT_WITNESS_FIELDS[:4])

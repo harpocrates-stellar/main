@@ -17,3 +17,17 @@
   open-dispute caps, reporter cooldowns, respond/resolve deadlines, cycle-safe
   supersession, privacy-safe typed events, and additive storage that needs no
   migration. See `contracts/DISPUTE.md`.
+
+- Added revocation reason codes to the Soroban registry (`revoke_proof_with_reason`,
+  `get_revocation_reason`) with bounded `0..=255` codes, an additive storage key
+  that needs no migration, and a privacy-safe `reason_code` field on the
+  `ProofRevoked` event (#327).
+
+- Restored cross-layer verifier-input conformance: the silent-witness frame is
+  now byte-identical across the Python, TypeScript, and Soroban codecs (160
+  bytes / five fields including the `domain_tag` digest), the `domain_tag` is
+  exempted from field-canonicity checks (it is a raw SHA-256 digest, not a
+  field element), the fuzz regression corpus was migrated to the current frame
+  layout (`fuzz_regressions_v1.json` version 2), and the contract test suite
+  was repaired against soroban-sdk 27 so `cargo test --workspace`,
+  `cargo fmt --check`, and the conformance/fuzz suites pass in CI.

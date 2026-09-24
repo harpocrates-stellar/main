@@ -31,16 +31,18 @@ Circuit signature (`zk/noir/silent_witness/src/main.nr`):
 | `epoch` | public | `Field` |
 
 On-chain wire order (`docs/zk-conformance-vectors.md`, `silent_witness/v1`
-frame, 128 bytes / 4 fields):
+frame, 160 bytes / 5 fields):
 [ 0.. 32) video_hash_hi
 [ 32.. 64) video_hash_lo
 [ 64.. 96) credential_root
 [ 96..128) nullifier
+[128..160) domain_tag
 
-Note: the on-chain conformance frame (`hpx-vi/1`) currently only encodes 4 of
-the 6 public circuit inputs. `verifier_scope` and `epoch` are not part of the
-128-byte frame the Soroban registry classifies. Whether/how they reach the
-contract layer independently of this frame needs to be confirmed as part of
+Note: the on-chain conformance frame (`hpx-vi/1`) encodes the v1 frame above,
+including the `domain_tag` digest bound to the contract deployment.
+`verifier_scope` and `epoch` are not part of the 160-byte v1 frame; they are
+carried by the 224-byte v2 scoped frame. Whether/how they reach the contract
+layer independently of this frame needs to be confirmed as part of
 resolving §6.
 
 ## 3. Statement (as currently enforced)

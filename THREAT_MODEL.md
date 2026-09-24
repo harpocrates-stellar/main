@@ -254,6 +254,7 @@ and `metadata_hash` for content they did not actually review.
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
+| Proof revocations record a bounded `0..=255` reason code (`get_revocation_reason`); free text and sensitive material are never stored (#327) | `lib.rs` → `revoke_proof_with_reason` |
 
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually

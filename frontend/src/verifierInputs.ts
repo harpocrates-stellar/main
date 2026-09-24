@@ -20,6 +20,9 @@ export const CODEC_ID = 'hpx-vi/1'
 export const FIELD_LEN = 32
 export const SILENT_WITNESS_FIELD_COUNT = 5
 export const REVOCATION_FIELD_COUNT = 4
+export const SILENT_WITNESS_PUBLIC_INPUTS_LEN = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT // 160
+export const REVOCATION_PUBLIC_INPUTS_LEN = FIELD_LEN * REVOCATION_FIELD_COUNT // 128
+/** Default frame length (largest schema), mirroring the Python codec. */
 export const SILENT_WITNESS_PUBLIC_INPUTS_LEN = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT
 export const REVOCATION_PUBLIC_INPUTS_LEN = FIELD_LEN * REVOCATION_FIELD_COUNT
 /** Default frame length for the primary silent-witness verifier boundary. */
@@ -46,6 +49,11 @@ export const BN254_SCALAR_FIELD_MODULUS =
 export const REVOCATION_DOMAIN_SEPARATOR_HEX =
   '00000000000000484152504f4352415445535f5245564f434154494f4e5f5631'
 
+/**
+ * SHA-256(DOMAIN_PROTOCOL_FIELD || DOMAIN_VERSION_FIELD || DOMAIN_NETWORK_FIELD).
+ * Byte-for-byte identical to `expected_domain_tag()` in the Soroban registry
+ * and `SILENT_WITNESS_DOMAIN_TAG` in backend/verifier_inputs.py.
+ */
 /** SHA-256(protocol || version || network), embedded by the v1 Noir helper. */
 export const SILENT_WITNESS_DOMAIN_TAG_HEX =
   '4aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c55'
@@ -188,6 +196,12 @@ export function checkProofBounds(proof: Uint8Array): void {
   }
 }
 
+function splitFields(
+  publicInputs: Uint8Array,
+  expectedLen: number,
+  fieldCount: number,
+): Uint8Array[] {
+  if (publicInputs.length !== expectedLen) {
 function splitFields(publicInputs: Uint8Array, fieldCount: number): Uint8Array[] {
   if (publicInputs.length !== FIELD_LEN * fieldCount) {
     throw new VerifierInputError('length', 'public_inputs')
@@ -247,11 +261,21 @@ const REVOCATION_FIELDS = [
 
 /** Parse `silent_witness/v1` public inputs in canonical check order. */
 export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnessInputs {
+  const fields = splitFields(
+    publicInputs,
+    SILENT_WITNESS_PUBLIC_INPUTS_LEN,
+    SILENT_WITNESS_FIELD_COUNT,
+  )
   const fields = splitFields(publicInputs, SILENT_WITNESS_FIELD_COUNT)
 
   const high = requireHalfPadding(fields[0], 'video_hash_hi')
   const low = requireHalfPadding(fields[1], 'video_hash_lo')
 
+  // The domain tag (index 4) is a raw SHA-256 digest compared byte-wise, not
+  // a BN254 field element: the expected tag is >= the scalar modulus by
+  // construction, so it is exempt from the canonicity rule. Every other
+  // field is checked in index order, matching the Python and Rust codecs.
+  requireCanonical(fields.slice(0, -1), SILENT_WITNESS_FIELDS.slice(0, -1))
   // The domain tag is an opaque 32-byte protocol binding, not a user-supplied
   // BN254 scalar. It is compared byte-for-byte below and is intentionally not
   // reduced or rejected merely because its digest is above the modulus.
@@ -262,6 +286,11 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
   requireNonZero(fields[4], 'domain_tag')
 
   const expectedDomain = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
+  const domain = fields[4]
+  for (let index = 0; index < FIELD_LEN; index += 1) {
+    if (domain[index] !== expectedDomain[index]) {
+      throw new VerifierInputError('domain_mismatch', 'domain_tag')
+    }
   if (fields[4].some((byte, index) => byte !== expectedDomain[index])) {
     throw new VerifierInputError('domain_mismatch', 'domain_tag')
   }
@@ -270,6 +299,7 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
     videoHash: concat(high, low),
     credentialRoot: fields[2],
     nullifier: fields[3],
+    domainTag: domain,
     domainTag: fields[4],
   }
 }
@@ -278,6 +308,11 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
 export function parseRevocationWitnessInputs(
   publicInputs: Uint8Array,
 ): RevocationWitnessInputs {
+  const fields = splitFields(
+    publicInputs,
+    REVOCATION_PUBLIC_INPUTS_LEN,
+    REVOCATION_FIELD_COUNT,
+  )
   const fields = splitFields(publicInputs, REVOCATION_FIELD_COUNT)
 
   requireCanonical(fields, REVOCATION_FIELDS)

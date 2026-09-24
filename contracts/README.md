@@ -117,7 +117,7 @@ Production observers continue to rely on existing typed events:
 
 ```text
 ["proof", "reg", proof_id]        => video_hash, tier, status
-["proof", "revoke", proof_id]     => status
+["proof", "revoke", proof_id]     => status, reason_code
 ["issuer", "add", issuer]         => metadata_hash
 ["issuer", "revoke", issuer]      => {}
 ["verif", "set", verifier]        => {}
@@ -178,6 +178,7 @@ register_anonymous_verified
 register_source
 register_seal
 revoke_proof
+revoke_proof_with_reason
 get_proof
 get_by_video
 has_nullifier
@@ -186,6 +187,7 @@ set_revocation_root
 get_revocation_root
 check_non_revocation
 get_proof_status
+get_revocation_reason
 get_proof_history
 get_proof_history_at
 get_proof_history_count
@@ -284,7 +286,7 @@ The registry emits typed Soroban events with `#[contractevent]`:
 
 ```text
 ["proof", "reg", proof_id]        => video_hash, tier, status
-["proof", "revoke", proof_id]     => status
+["proof", "revoke", proof_id]     => status, reason_code
 ["issuer", "add", issuer]         => metadata_hash
 ["issuer", "revoke", issuer]      => {}
 ["verif", "set", verifier]        => {}
@@ -356,7 +358,8 @@ returned in chronological order.
 | `expire_proof` | Admin | Sets `status = STATUS_EXPIRED` and records history. Rejects if already expired. |
 | `correct_proof` | Admin | Updates `metadata_hash` and records history. Rejects if metadata is unchanged. |
 
-All registration functions and `revoke_proof` automatically record history.
+All registration functions, `revoke_proof`, and `revoke_proof_with_reason`
+automatically record history.
 
 ### Privacy Properties
 
@@ -369,6 +372,72 @@ All registration functions and `revoke_proof` automatically record history.
 
 Proofs registered before this feature have zero history entries. `get_proof_history`
 returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
+
+## Revocation Reason Codes (#327)
+
+Revocation carries a bounded, privacy-safe reason code so verifiers and
+indexers can learn *why* a proof was revoked at the public boundary without
+learning anything sensitive.
+
+### Entry Points
+
+```text
+revoke_proof(admin, proof_id)                       // compatibility path; records REVOCATION_REASON_DEFAULT (1)
+revoke_proof_with_reason(admin, proof_id, reason_code)
+get_revocation_reason(proof_id) -> u32              // never panics; never gated by pause state
+```
+
+### Constants And Bounds
+
+```text
+REVOCATION_REASON_UNSPECIFIED = 0   // no reason recorded
+REVOCATION_REASON_DEFAULT     = 1   // recorded by `revoke_proof`
+MAX_REASON_CODE               = 255 // upper bound for every reason_code
+```
+
+- `reason_code` is a bounded `u32` in `0..=255`; free-text reasons are never
+  accepted (`RegistryError::InvalidReasonCode`, `#15`). Authorization is
+  checked before reason validation, so unauthorized callers learn nothing
+  about input bounds.
+- `revoke_proof` keeps its signature and behavior; the reason it always
+  recorded in history (1) is now also queryable.
+- `get_revocation_reason` returns `0` for unknown proofs, proofs that are not
+  revoked (including expired ones), and proofs revoked before #327. Failed
+  revocations emit no events and leave storage unchanged.
+- Re-revoking with `revoke_proof_with_reason` overwrites the stored code while
+  history stays append-only, so the full audit trail is preserved.
+
+### Events
+
+`["proof", "revoke", proof_id]` now includes `reason_code` in its data — an
+additive field; decoders that only read `status` remain compatible. The
+existing `["proof", "history", proof_id]` event carries the same code with
+`action = Revoked (3)`.
+
+### Privacy Properties
+
+- Responses and events carry only the bounded code — never media, secrets,
+  witness values, nullifiers, metadata hashes, or private keys.
+- Reason codes are enumerated `u32` values; free text is never stored.
+
+### Storage, Migration, And Rollback
+
+- New additive persistent key `DataKey::RevocationReason(proof_id)`.
+- No migration step: pre-#327 deployments read as
+  `REVOCATION_REASON_UNSPECIFIED` until a revocation occurs, and stored
+  evidence (`ProofRecord`, lifecycle history) is never rewritten.
+  `get_storage_schema_version` remains V1; there is no schema rewrite.
+- Rolling back to a pre-#327 wasm ignores the key: the getter disappears and
+  revocation keeps working through the unchanged `revoke_proof`.
+
+### Threat Model Notes
+
+- Reason codes are admin-authored bounded values, so a compromised caller
+  cannot smuggle free-text or oversized payloads through revocation paths.
+- The getter is a read: it emits no events, never panics on unknown or
+  malformed identifiers, and returns nothing beyond the bounded code.
+- Negative, boundary, migration, and privacy fixtures live in
+  `src/test_revocation_reason.rs`.
 
 ## Dispute And Supersession
 

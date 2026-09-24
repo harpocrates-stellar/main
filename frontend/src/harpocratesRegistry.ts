@@ -16,9 +16,9 @@ import {
   scBytes32,
   scU32,
 } from './stellarEncoding'
+import { assertReleaseCompatibility } from './releaseCompatibility'
 import type {
   ChainProofRecord,
-  ChainVerifierState,
   IdentityTier,
   NormalizedRegisterProofInput,
   ProofHistoryEntry,
@@ -216,7 +216,7 @@ export async function getBatchProofStatuses(
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(contract.call('get_proof_statuses' as any, scProofIds))
+    .addOperation(contract.call('get_proof_statuses' satisfies RegistryMethod, ...scProofIds))
     .setTimeout(30)
     .build()
 

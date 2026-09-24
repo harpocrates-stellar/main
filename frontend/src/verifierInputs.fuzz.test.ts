@@ -122,6 +122,8 @@ function setField(data: Uint8Array, index: number, value: Uint8Array): void {
 /** Apply one structured mutation. Always returns a bounded byte string. */
 function mutate(base: Uint8Array, mutator: Mutator, rng: Lcg): Uint8Array {
   const data = Uint8Array.from(base)
+  // Field-grid mutators operate on the frame at hand: the silent frame is
+  // 5 fields (160 bytes), the revocation frame 4 fields (128 bytes).
   const fieldCount = Math.floor(data.length / FIELD_LEN)
 
   switch (mutator) {
@@ -323,7 +325,7 @@ describe('rejection signals', () => {
 describe('fuzz regression corpus', () => {
   it('is versioned', () => {
     expect(regressions.format).toBe('harpocrates.fuzz-regressions')
-    expect(regressions.version).toBe(1)
+    expect(regressions.version).toBe(2)
   })
 
   for (const entry of regressions.entries) {
