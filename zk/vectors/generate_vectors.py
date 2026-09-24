@@ -359,11 +359,141 @@ def build_cases() -> list[dict[str, object]]:
         )
     )
 
+    # ---- boundary: proof exactly at limits (regression) -----------------
+    cases.append(
+        case(
+            "sw-pos-010-proof-exactly-min",
+            "silent_witness/v1",
+            "Proof blob exactly at the accepted floor (MIN_PROOF_BYTES=64).",
+            SILENT_VALID,
+            None,
+            "ab" * MIN_PROOF_BYTES,
+        )
+    )
+    cases.append(
+        case(
+            "sw-pos-011-proof-exactly-max",
+            "silent_witness/v1",
+            "Proof blob exactly at the accepted ceiling (MAX_PROOF_BYTES=65536).",
+            SILENT_VALID,
+            None,
+            "cd" * MAX_PROOF_BYTES,
+        )
+    )
+
+    # ---- field canonicity boundary: one below vs at modulus -------------
+    cases.append(
+        case(
+            "sw-neg-022-credential-root-above-modulus-by-one",
+            "silent_witness/v1",
+            "Field element one above the BN254 modulus is non-canonical.",
+            silent(VIDEO_HI, VIDEO_LO, _increment_hex(BN254_R_HEX), NULLIFIER),
+            "non_canonical_field",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-021-nullifier-equals-modulus",
+            "revocation_witness/v1",
+            "Nullifier equal to the BN254 modulus is non-canonical.",
+            revocation(REVOCATION_ROOT, BN254_R_HEX, DOMAIN_HEX, CREDENTIAL_ROOT),
+            "non_canonical_field",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-022-credential-root-all-ones",
+            "revocation_witness/v1",
+            "0xff..ff credential root is far above the modulus.",
+            revocation(REVOCATION_ROOT, NULLIFIER, DOMAIN_HEX, ONES),
+            "non_canonical_field",
+        )
+    )
+
+    # ---- zero identity fields: revocation witness -----------------------
+    cases.append(
+        case(
+            "rv-neg-031-zero-nullifier",
+            "revocation_witness/v1",
+            "A zero nullifier in a revocation frame disables replay protection.",
+            revocation(REVOCATION_ROOT, ZERO, DOMAIN_HEX, CREDENTIAL_ROOT),
+            "zero_field",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-032-zero-credential-root",
+            "revocation_witness/v1",
+            "A zero credential root in a revocation frame is invalid.",
+            revocation(REVOCATION_ROOT, NULLIFIER, DOMAIN_HEX, ZERO),
+            "zero_field",
+        )
+    )
+
+    # ---- padding: silent witness lo field dirty high half ---------------
+    cases.append(
+        case(
+            "sw-neg-012-hi-padding-all-ones",
+            "silent_witness/v1",
+            "All-ones high half in video_hash_hi field must be rejected as dirty padding.",
+            silent(ONES[:32] + VIDEO_HASH[:32], VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER),
+            "padding",
+        )
+    )
+
+    # ---- domain binding: domain all-ones --------------------------------
+    cases.append(
+        case(
+            "rv-neg-044-domain-all-ones",
+            "revocation_witness/v1",
+            "All-ones domain separator must not match the v1 constant.",
+            revocation(REVOCATION_ROOT, NULLIFIER, ONES, CREDENTIAL_ROOT),
+            "domain_mismatch",
+        )
+    )
+
+    # ---- check-order regression: length beats padding -------------------
+    cases.append(
+        case(
+            "sw-neg-060-length-before-padding",
+            "silent_witness/v1",
+            "A frame that is both dirty-padded and wrong length must be rejected for length, not padding (check order).",
+            "01" + SILENT_VALID[:-2],  # 128 bytes but with dirty first byte and truncated
+            "length",
+        )
+    )
+
+    # ---- revocation proof blob bounds -----------------------------------
+    cases.append(
+        case(
+            "rv-neg-050-empty-proof",
+            "revocation_witness/v1",
+            "Empty proof blob for a revocation frame.",
+            REVOCATION_VALID,
+            "proof_undersize",
+            "",
+        )
+    )
+    cases.append(
+        case(
+            "rv-neg-051-proof-one-byte-short",
+            "revocation_witness/v1",
+            "Revocation proof one byte below the accepted floor.",
+            REVOCATION_VALID,
+            "proof_undersize",
+            "ab" * (MIN_PROOF_BYTES - 1),
+        )
+    )
+
     return cases
 
 
 def _decrement_hex(value: str) -> str:
     return format(int(value, 16) - 1, "064x")
+
+
+def _increment_hex(value: str) -> str:
+    return format(int(value, 16) + 1, "064x")
 
 
 def build_document() -> dict[str, object]:
