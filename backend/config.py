@@ -17,6 +17,14 @@ class AppConfig:
     expose_metadata_header: bool
     noir_worker_enabled: bool
     security_headers_enabled: bool
+    ratelimit_enabled: bool
+    trusted_proxies: list[str]
+    ratelimit_embed: str
+    ratelimit_extract: str
+    ratelimit_silent_witness: str
+    ratelimit_register: str
+    ratelimit_upload_session: str
+    ratelimit_upload_chunk: str
     release_id: str
     release_network: str
     metrics_enabled: bool
@@ -54,6 +62,16 @@ def load_config() -> AppConfig:
         expose_metadata_header=_bool_env("EXPOSE_METADATA_HEADER", False),
         noir_worker_enabled=_bool_env("NOIR_WORKER_ENABLED", app_env != "production"),
         security_headers_enabled=_bool_env("SECURITY_HEADERS_ENABLED", True),
+        ratelimit_enabled=_bool_env("RATELIMIT_ENABLED", True),
+        # Real client IP resolution behind proxies; empty list trusts no proxy.
+        trusted_proxies=_csv("TRUSTED_PROXIES", ""),
+        # Per-client rate limits (flask-limiter "N per <window>" strings).
+        ratelimit_embed=_str_env("RATELIMIT_EMBED") or "30 per minute",
+        ratelimit_extract=_str_env("RATELIMIT_EXTRACT") or "30 per minute",
+        ratelimit_silent_witness=_str_env("RATELIMIT_SILENT_WITNESS") or "20 per minute",
+        ratelimit_register=_str_env("RATELIMIT_REGISTER") or "30 per minute",
+        ratelimit_upload_session=_str_env("RATELIMIT_UPLOAD_SESSION") or "60 per minute",
+        ratelimit_upload_chunk=_str_env("RATELIMIT_UPLOAD_CHUNK") or "240 per minute",
         release_id=_release_id(os.getenv("HARPOCRATES_RELEASE_ID", "harpocrates-1.0.0")),
         release_network=_release_network(os.getenv("HARPOCRATES_RELEASE_NETWORK", "testnet")),
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
