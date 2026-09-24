@@ -25,14 +25,22 @@ import json
 from pathlib import Path
 
 OUT_PATH = Path(__file__).resolve().parent / "verifier_conformance_v1.json"
+OUT_PATH_V2 = Path(__file__).resolve().parent / "verifier_conformance_v2.json"
 
 CODEC_ID = "hpx-vi/1"
+CODEC_ID_V2 = "hpx-vi/2"
 VECTOR_VERSION = 1
+VECTOR_VERSION_V2 = 2
 
 FIELD_LEN = 32
 PUBLIC_INPUTS_LEN = 160
 MIN_PROOF_BYTES = 64
 MAX_PROOF_BYTES = 65536
+
+# Circuit version bound into the `silent_witness/v2` envelope (#368). Must
+# match EXPECTED_CIRCUIT_VERSION in verifier_inputs.rs and
+# CURRENT_CIRCUIT_VERSION in zk/noir/silent_witness/src/main.nr.
+EXPECTED_CIRCUIT_VERSION = 2
 
 # BN254 scalar field modulus, big-endian. A field element encoding is canonical
 # only when it is strictly below this value.
@@ -47,6 +55,12 @@ DOMAIN_TAG_HEX = "4aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c
 
 ZERO = "00" * FIELD_LEN
 ONES = "ff" * FIELD_LEN
+
+# Circuit version 2 encoded as a u32 in the low 4 bytes of a field element.
+VERSION_2 = "00" * 28 + "00000002"
+VERSION_1 = "00" * 28 + "00000001"
+VERSION_3 = "00" * 28 + "00000003"
+VERSION_DIRTY_UPPER = "00" * 27 + "01" + "00000002"
 
 VIDEO_HASH = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 PAD16 = "00" * 16
@@ -65,11 +79,26 @@ def silent(hi: str, lo: str, root: str, nullifier: str, domain: str = DOMAIN_TAG
     return hi + lo + root + nullifier + domain
 
 
+def silent_v2(
+    hi: str,
+    lo: str,
+    root: str,
+    nullifier: str,
+    domain: str = DOMAIN_TAG_HEX,
+    version: str | None = None,
+) -> str:
+    """silent_witness/v2 frame: v1 fields followed by the circuit version."""
+    if version is None:
+        version = VERSION_2
+    return hi + lo + root + nullifier + domain + version
+
+
 def revocation(root: str, nullifier: str, domain: str, credential: str) -> str:
     return root + nullifier + domain + credential
 
 
 SILENT_VALID = silent(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER)
+SILENT_V2_VALID = silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER)
 REVOCATION_VALID = revocation(REVOCATION_ROOT, NULLIFIER, DOMAIN_HEX, CREDENTIAL_ROOT)
 
 
@@ -563,6 +592,280 @@ def build_cases() -> list[dict[str, object]]:
     return cases
 
 
+def build_cases_v2() -> list[dict[str, object]]:
+    """silent_witness/v2 cases: the v2-envelope interpretation of the v1 silent
+    corpus, plus version-field-specific rejections (#368)."""
+    cases: list[dict[str, object]] = []
+
+    # ---- positive corpus --------------------------------------------------
+    cases.append(
+        case(
+            "sw2-pos-001-canonical",
+            "silent_witness/v2",
+            "Canonical v2 inputs (version 2) with a minimum-length proof.",
+            SILENT_V2_VALID,
+            None,
+        )
+    )
+    cases.append(
+        case(
+            "sw2-pos-002-typical-proof-size",
+            "silent_witness/v2",
+            "Same inputs with a realistically sized proof blob.",
+            SILENT_V2_VALID,
+            None,
+            PROOF_TYPICAL,
+        )
+    )
+    cases.append(
+        case(
+            "sw2-pos-003-zero-video-hash",
+            "silent_witness/v2",
+            "A zero video hash is structurally legal; only identity fields must be non-zero.",
+            silent_v2(PAD16 + "00" * 16, PAD16 + "00" * 16, CREDENTIAL_ROOT, NULLIFIER),
+            None,
+        )
+    )
+    cases.append(
+        case(
+            "sw2-pos-004-max-canonical-field",
+            "silent_witness/v2",
+            "Identity fields one below the BN254 modulus remain canonical.",
+            silent_v2(VIDEO_HI, VIDEO_LO, _decrement_hex(BN254_R_HEX), NULLIFIER),
+            None,
+        )
+    )
+    cases.append(
+        case(
+            "sw2-pos-010-proof-exactly-min",
+            "silent_witness/v2",
+            "Proof blob exactly at the accepted floor.",
+            SILENT_V2_VALID,
+            None,
+            "ab" * MIN_PROOF_BYTES,
+        )
+    )
+
+    # ---- length / framing -------------------------------------------------
+    cases.append(case("sw2-neg-001-empty", "silent_witness/v2", "Empty public inputs.", "", "length"))
+    cases.append(
+        case(
+            "sw2-neg-002-truncated-one-byte",
+            "silent_witness/v2",
+            "191 bytes: one byte short of a v2 frame.",
+            SILENT_V2_VALID[:-2],
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-003-truncated-one-field",
+            "silent_witness/v2",
+            "160 bytes: the six-field frame missing the version field.",
+            SILENT_V2_VALID[: 160 * 2],
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-004-v1-len-as-v2",
+            "silent_witness/v2",
+            "A 160-byte v1 silent frame must not be accepted under the v2 schema.",
+            SILENT_VALID,
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-005-doubled-frame",
+            "silent_witness/v2",
+            "Two concatenated v2 frames must not be accepted as one.",
+            SILENT_V2_VALID + SILENT_V2_VALID,
+            "length",
+        )
+    )
+
+    # ---- padding invariants ----------------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-010-hi-padding-dirty",
+            "silent_witness/v2",
+            "High half of video_hash_hi must be zero padding.",
+            silent_v2("01" + PAD16[2:] + VIDEO_HASH[:32], VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER),
+            "padding",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-011-lo-padding-dirty",
+            "silent_witness/v2",
+            "High half of video_hash_lo must be zero padding.",
+            silent_v2(VIDEO_HI, PAD16[:30] + "01" + VIDEO_HASH[32:], CREDENTIAL_ROOT, NULLIFIER),
+            "padding",
+        )
+    )
+
+    # ---- circuit version (#368) ------------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-020-version-zero",
+            "silent_witness/v2",
+            "A zero version field is not the accepted circuit version.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, version=ZERO),
+            "version_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-021-version-one",
+            "silent_witness/v2",
+            "Declaring legacy circuit version 1 inside a v2 envelope is a mismatch.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, version=VERSION_1),
+            "version_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-022-version-three",
+            "silent_witness/v2",
+            "A future circuit version is rejected until the codec is promoted.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, version=VERSION_3),
+            "version_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-023-version-all-ones",
+            "silent_witness/v2",
+            "An all-ones version field is not a valid u32 encoding (upper bytes dirty).",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, version=ONES),
+            "version_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-024-version-dirty-upper",
+            "silent_witness/v2",
+            "Version 2 with a non-zero upper byte is a malformed u32 encoding.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, version=VERSION_DIRTY_UPPER),
+            "version_mismatch",
+        )
+    )
+
+    # ---- field canonicity ------------------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-030-credential-root-equals-modulus",
+            "silent_witness/v2",
+            "A field element equal to the modulus is a non-canonical encoding.",
+            silent_v2(VIDEO_HI, VIDEO_LO, BN254_R_HEX, NULLIFIER),
+            "non_canonical_field",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-031-nullifier-all-ones",
+            "silent_witness/v2",
+            "0xff..ff is far above the modulus.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, ONES),
+            "non_canonical_field",
+        )
+    )
+
+    # ---- zero identity fields --------------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-040-zero-nullifier",
+            "silent_witness/v2",
+            "A zero nullifier would disable replay protection.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, ZERO),
+            "zero_field",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-041-zero-credential-root",
+            "silent_witness/v2",
+            "A zero credential root can never be registered on-chain.",
+            silent_v2(VIDEO_HI, VIDEO_LO, ZERO, NULLIFIER),
+            "zero_field",
+        )
+    )
+
+    # ---- domain binding ---------------------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-050-domain-mismatch",
+            "silent_witness/v2",
+            "Silent-witness domain tag must match the protocol binding.",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, ONES),
+            "domain_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-051-domain-all-ones",
+            "silent_witness/v2",
+            "An all-ones domain tag is not the protocol binding (the silent domain is compared byte-for-byte, not canonicalised).",
+            silent_v2(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, ONES),
+            "domain_mismatch",
+        )
+    )
+
+    # ---- proof blob bounds ------------------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-060-empty-proof",
+            "silent_witness/v2",
+            "Empty proof blob.",
+            SILENT_V2_VALID,
+            "proof_undersize",
+            "",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-061-proof-one-byte-long",
+            "silent_witness/v2",
+            "Proof blob one byte past the accepted ceiling.",
+            SILENT_V2_VALID,
+            "proof_oversize",
+            "ab" * (MAX_PROOF_BYTES + 1),
+        )
+    )
+
+    # ---- check-order regressions -----------------------------------------
+    cases.append(
+        case(
+            "sw2-neg-070-length-before-version",
+            "silent_witness/v2",
+            "191 bytes with a wrong version field: length wins (check order).",
+            SILENT_V2_VALID[:-10] + VERSION_1[-8:],
+            "length",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-071-padding-before-version",
+            "silent_witness/v2",
+            "Dirty padding with a wrong version field: padding wins.",
+            silent_v2("01" + PAD16[2:] + VIDEO_HASH[:32], VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, version=VERSION_1),
+            "padding",
+        )
+    )
+    cases.append(
+        case(
+            "sw2-neg-072-version-before-canonical",
+            "silent_witness/v2",
+            "Wrong version with a non-canonical root: version wins.",
+            silent_v2(VIDEO_HI, VIDEO_LO, BN254_R_HEX, NULLIFIER, version=VERSION_1),
+            "version_mismatch",
+        )
+    )
+
+    return cases
+
+
 def _decrement_hex(value: str) -> str:
     return format(int(value, 16) - 1, "064x")
 
@@ -619,20 +922,73 @@ def build_document() -> dict[str, object]:
     }
 
 
-def main() -> None:
-    document = build_document()
-    seen: set[str] = set()
-    for entry in document["cases"]:  # type: ignore[index]
-        case_id = entry["id"]  # type: ignore[index]
-        if case_id in seen:
-            raise SystemExit(f"duplicate case id: {case_id}")
-        seen.add(case_id)
+def build_document_v2() -> dict[str, object]:
+    """Circuit-versioned silent-witness envelope corpus (#368)."""
+    return {
+        "format": "harpocrates.verifier-conformance",
+        "version": VECTOR_VERSION_V2,
+        "codec": CODEC_ID_V2,
+        "description": (
+            "Cross-layer conformance vectors for the circuit-versioned "
+            "silent-witness envelope. `silent_witness/v2` appends the circuit "
+            "version as a trailing field so the wire format commits to the "
+            "exact circuit that produced the proof. Every layer must classify "
+            "each case identically."
+        ),
+        "regenerate_with": "python zk/vectors/generate_vectors.py",
+        "constants": {
+            "field_len": FIELD_LEN,
+            "public_inputs_len": PUBLIC_INPUTS_LEN,
+            "silent_witness_v2_public_inputs_len": FIELD_LEN * 6,
+            "min_proof_bytes": MIN_PROOF_BYTES,
+            "max_proof_bytes": MAX_PROOF_BYTES,
+            "bn254_scalar_field_modulus_hex": BN254_R_HEX,
+            "revocation_domain_separator_hex": DOMAIN_HEX,
+            "silent_witness_domain_tag_hex": DOMAIN_TAG_HEX,
+            "expected_circuit_version": EXPECTED_CIRCUIT_VERSION,
+        },
+        "schemas": {
+            "silent_witness/v2": [
+                "video_hash_hi",
+                "video_hash_lo",
+                "credential_root",
+                "nullifier",
+                "domain_tag",
+                "circuit_version",
+            ],
+        },
+        "reject_codes": [
+            "length",
+            "padding",
+            "non_canonical_field",
+            "zero_field",
+            "domain_mismatch",
+            "proof_undersize",
+            "proof_oversize",
+            "malformed_hex",
+            "version_mismatch",
+        ],
+        "cases": build_cases_v2(),
+    }
 
-    OUT_PATH.write_text(
-        json.dumps(document, indent=2, sort_keys=False) + "\n",
-        encoding="utf-8",
-    )
-    print(f"wrote {len(document['cases'])} cases to {OUT_PATH}")  # type: ignore[arg-type]
+
+def main() -> None:
+    documents = [build_document(), build_document_v2()]
+    outputs = [OUT_PATH, OUT_PATH_V2]
+    seen: set[str] = set()
+    for document, output in zip(documents, outputs):
+        seen.clear()
+        for entry in document["cases"]:  # type: ignore[index]
+            case_id = entry["id"]  # type: ignore[index]
+            if case_id in seen:
+                raise SystemExit(f"duplicate case id: {case_id}")
+            seen.add(case_id)
+
+        output.write_text(
+            json.dumps(document, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote {len(document['cases'])} cases to {output}")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

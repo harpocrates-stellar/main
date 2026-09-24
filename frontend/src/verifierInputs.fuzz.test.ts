@@ -45,6 +45,14 @@ const corpus = readJson('../../zk/vectors/verifier_conformance_v1.json') as {
   }[]
 }
 
+const corpusV2 = readJson('../../zk/vectors/verifier_conformance_v2.json') as {
+  cases: {
+    schema: string
+    public_inputs_hex: string
+    expect: { accept: boolean }
+  }[]
+}
+
 const regressions = readJson('../../zk/vectors/fuzz_regressions_v1.json') as {
   format: string
   version: number
@@ -72,9 +80,10 @@ const DECLARED_CODES = new Set<string>([
   'proof_undersize',
   'proof_oversize',
   'unknown_schema',
+  'version_mismatch',
 ])
 
-const SCHEMAS = ['silent_witness/v1', 'revocation_witness/v1'] as const
+const SCHEMAS = ['silent_witness/v1', 'silent_witness/v2', 'revocation_witness/v1'] as const
 
 const MUTATORS = [
   'truncate_tail',
@@ -200,6 +209,12 @@ function mutate(base: Uint8Array, mutator: Mutator, rng: Lcg): Uint8Array {
 
 const positiveFrames = new Map<string, Uint8Array>()
 for (const entry of corpus.cases) {
+  if (entry.expect.accept && !positiveFrames.has(entry.schema)) {
+    positiveFrames.set(entry.schema, decodeHex(entry.public_inputs_hex))
+  }
+}
+// The v2 codec is exercised through its own envelope corpus (#368).
+for (const entry of corpusV2.cases) {
   if (entry.expect.accept && !positiveFrames.has(entry.schema)) {
     positiveFrames.set(entry.schema, decodeHex(entry.public_inputs_hex))
   }

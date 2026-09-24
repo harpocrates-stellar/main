@@ -59,10 +59,7 @@ impl Lcg {
     }
 
     fn next_u32(&mut self) -> u32 {
-        self.state = self
-            .state
-            .wrapping_mul(1664525)
-            .wrapping_add(1013904223);
+        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
         self.state
     }
 
@@ -80,8 +77,8 @@ impl Lcg {
 #[cfg(test)]
 fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
     let mut data: Vec<u8> = base.to_vec();
-    let field_count = (PUBLIC_INPUTS_LEN / verifier_inputs::FIELD_LEN) as u32;
     let field_len = verifier_inputs::FIELD_LEN;
+    let field_count = (data.len() / field_len as usize) as u32;
 
     match mutator {
         // 0: truncate_tail
@@ -118,30 +115,31 @@ fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
         }
         // 4: field_zero
         4 => {
+            if field_count == 0 {
+                return data;
+            }
             let index = rng.below(field_count) as usize;
-            for byte in data
-                .iter_mut()
-                .skip(index * field_len)
-                .take(field_len)
-            {
+            for byte in data.iter_mut().skip(index * field_len).take(field_len) {
                 *byte = 0x00;
             }
             data
         }
         // 5: field_saturate
         5 => {
+            if field_count == 0 {
+                return data;
+            }
             let index = rng.below(field_count) as usize;
-            for byte in data
-                .iter_mut()
-                .skip(index * field_len)
-                .take(field_len)
-            {
+            for byte in data.iter_mut().skip(index * field_len).take(field_len) {
                 *byte = 0xff;
             }
             data
         }
         // 6: field_swap
         6 => {
+            if field_count == 0 {
+                return data;
+            }
             let left = rng.below(field_count) as usize * field_len;
             let right = rng.below(field_count) as usize * field_len;
             for offset in 0..field_len {
@@ -166,6 +164,9 @@ fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
         }
         // 9: field_modulus
         _ => {
+            if field_count == 0 {
+                return data;
+            }
             let index = rng.below(field_count) as usize;
             data[index * field_len..(index + 1) * field_len].copy_from_slice(&MODULUS_BE);
             data
@@ -199,6 +200,18 @@ fn positive_frame(schema: &str) -> Vec<u8> {
         frame.extend_from_slice(&lo);
         frame.extend_from_slice(&credential_root);
         frame.extend_from_slice(&nullifier);
+    } else if schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2 {
+        // Full valid 192-byte v2 frame: the five v1 fields plus the
+        // circuit-version trailer, so mutations explore the acceptance region
+        // as well as the rejection region.
+        frame.extend_from_slice(&hi);
+        frame.extend_from_slice(&lo);
+        frame.extend_from_slice(&credential_root);
+        frame.extend_from_slice(&nullifier);
+        frame.extend_from_slice(&verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE);
+        let mut version = [0u8; 32];
+        version[31] = verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8;
+        frame.extend_from_slice(&version);
     } else {
         frame.extend_from_slice(&revocation_root);
         frame.extend_from_slice(&nullifier);
@@ -209,8 +222,9 @@ fn positive_frame(schema: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
-const SCHEMAS: [&str; 2] = [
+const SCHEMAS: [&str; 3] = [
     verifier_inputs::SCHEMA_SILENT_WITNESS,
+    verifier_inputs::SCHEMA_SILENT_WITNESS_V2,
     verifier_inputs::SCHEMA_REVOCATION_WITNESS,
 ];
 
@@ -218,14 +232,28 @@ const SCHEMAS: [&str; 2] = [
 fn schema_id_of(schema: &str) -> u32 {
     if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
         SCHEMA_ID_SILENT_WITNESS
+    } else if schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2 {
+        SCHEMA_ID_SILENT_WITNESS_V2
     } else {
         SCHEMA_ID_REVOCATION_WITNESS
     }
 }
 
+/// Expected domain for the pure codec, mirroring the on-chain constant.
+#[cfg(test)]
+fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
+    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS
+        || schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2
+    {
+        &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+    } else {
+        &REVOCATION_DOMAIN_SEPARATOR
+    }
+}
+
 #[cfg(test)]
 fn declared(code: u32) -> bool {
-    code <= 9
+    code <= 10
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +276,7 @@ fn codec_never_panics_and_always_yields_a_declared_verdict() {
                     schema,
                     &mutant,
                     64,
-                    &REVOCATION_DOMAIN_SEPARATOR,
+                    expected_domain_for(schema),
                 ) {
                     Ok(()) => verifier_inputs::ACCEPTED_CODE,
                     Err(code) => code.as_code(),
@@ -282,12 +310,17 @@ fn proof_length_sweep_is_bounded_and_declared() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &base,
                 proof_len,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                expected_domain_for(verifier_inputs::SCHEMA_SILENT_WITNESS),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
             };
-            assert!(declared(verdict), "proof_len={} gave {}", proof_len, verdict);
+            assert!(
+                declared(verdict),
+                "proof_len={} gave {}",
+                proof_len,
+                verdict
+            );
         }
     }
 }
@@ -428,15 +461,11 @@ fn on_chain_and_pure_codec_agree_on_every_mutant() {
             let mutator = rng.below(MUTATOR_COUNT);
             let mutant = mutate(&base, mutator, &mut rng);
 
-            let pure = match verifier_inputs::classify(
-                schema,
-                &mutant,
-                64,
-                &REVOCATION_DOMAIN_SEPARATOR,
-            ) {
-                Ok(()) => verifier_inputs::ACCEPTED_CODE,
-                Err(code) => code.as_code(),
-            };
+            let pure =
+                match verifier_inputs::classify(schema, &mutant, 64, expected_domain_for(schema)) {
+                    Ok(()) => verifier_inputs::ACCEPTED_CODE,
+                    Err(code) => code.as_code(),
+                };
             let on_chain =
                 client.classify_public_inputs(&schema_id, &Bytes::from_slice(&env, &mutant), &64);
 
@@ -470,7 +499,7 @@ fn a_seed_replays_the_same_mutants_and_verdicts() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &mutant,
                 64,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                expected_domain_for(verifier_inputs::SCHEMA_SILENT_WITNESS),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
@@ -487,7 +516,9 @@ fn a_seed_replays_the_same_mutants_and_verdicts() {
 fn distinct_seeds_explore_distinct_paths() {
     let trace = |seed: u32| {
         let mut rng = Lcg::new(seed);
-        (0..64).map(|_| rng.below(MUTATOR_COUNT)).collect::<Vec<_>>()
+        (0..64)
+            .map(|_| rng.below(MUTATOR_COUNT))
+            .collect::<Vec<_>>()
     };
     assert_ne!(trace(SEEDS[0]), trace(SEEDS[1]));
 }

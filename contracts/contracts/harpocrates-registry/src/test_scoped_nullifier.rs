@@ -8,7 +8,7 @@ use super::*;
 #[cfg(test)]
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, Bytes, Env,
 };
 
@@ -24,9 +24,8 @@ struct MockScopedVerifier;
 #[contractimpl]
 impl MockScopedVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        // Accept both 128-byte (v1) and 192-byte (v2) inputs
-        let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        // Accept any valid public-input blob with a non-empty proof
+        if public_inputs.is_empty() || proof.is_empty() {
             panic!("invalid scoped proof");
         }
     }
@@ -46,7 +45,7 @@ fn proof_buf(env: &Env) -> Bytes {
     Bytes::from_array(env, &[0xAA, 0xBB, 0xCC, 0xDD])
 }
 
-/// Build a v1 (128-byte) silent witness public-input blob.
+/// Build a v1 (160-byte) silent witness public-input blob.
 #[cfg(test)]
 fn v1_public_inputs(
     env: &Env,
@@ -61,24 +60,30 @@ fn v1_public_inputs(
     let mut nu = [0u8; 32];
     nullifier.copy_into_slice(&mut nu);
 
-    let mut buf = [0u8; 128];
+    let domain_tag = expected_domain_tag(env);
+    let mut dt = [0u8; 32];
+    domain_tag.copy_into_slice(&mut dt);
+
+    let mut buf = [0u8; 160];
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
+    buf[128..160].copy_from_slice(&dt);
     Bytes::from_array(env, &buf)
 }
 
-/// Build a v2 (192-byte) scoped silent witness public-input blob.
+/// Fill a 224-byte v2 scoped frame from its logical fields.
 #[cfg(test)]
-fn v2_public_inputs(
+fn fill_v2_frame(
+    buf: &mut [u8; 224],
     env: &Env,
     video_hash: &BytesN<32>,
     credential_root: &BytesN<32>,
     nullifier: &BytesN<32>,
     verifier_scope: &BytesN<32>,
     epoch: u64,
-) -> Bytes {
+) {
     let mut vh = [0u8; 32];
     video_hash.copy_into_slice(&mut vh);
     let mut cr = [0u8; 32];
@@ -95,13 +100,69 @@ fn v2_public_inputs(
         e >>= 8;
     }
 
-    let mut buf = [0u8; 192];
+    let domain_tag = expected_domain_tag(env);
+    let mut dt = [0u8; 32];
+    domain_tag.copy_into_slice(&mut dt);
+
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
     buf[128..160].copy_from_slice(&sc);
     buf[160..192].copy_from_slice(&epoch_bytes);
+    buf[192..224].copy_from_slice(&dt);
+}
+
+/// Build a v2 (224-byte) scoped silent witness public-input blob.
+#[cfg(test)]
+fn v2_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+) -> Bytes {
+    let mut buf = [0u8; 224];
+    fill_v2_frame(
+        &mut buf,
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+    );
+    Bytes::from_array(env, &buf)
+}
+
+/// Build a v3 (256-byte) envelope: the v2 scoped frame plus the trailing
+/// circuit-version field (#368). `wrapper_version` is placed in the low byte
+/// of the trailer as a u32 field element.
+#[cfg(test)]
+fn v3_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+    wrapper_version: u8,
+) -> Bytes {
+    let mut frame = [0u8; 224];
+    fill_v2_frame(
+        &mut frame,
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+    );
+
+    let mut buf = [0u8; 256];
+    buf[..224].copy_from_slice(&frame);
+    buf[255] = wrapper_version;
     Bytes::from_array(env, &buf)
 }
 
@@ -238,7 +299,14 @@ fn test_scoped_registration_global_scope_epoch_0() {
     let scope = b32(&env, 0x00); // global scope (zero)
     let epoch: u64 = 0;
 
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     let record = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x03),
@@ -267,7 +335,14 @@ fn test_scoped_registration_explicit_scope_epoch_1() {
     // Set the epoch for this scope
     client.set_scope_epoch(&admin, &scope, &epoch);
 
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     let record = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x12),
@@ -280,9 +355,105 @@ fn test_scoped_registration_explicit_scope_epoch_1() {
     assert!(client.has_nullifier(&nullifier));
 }
 
-/// Rejects stale epoch: proof has epoch 0 but current epoch is 1.
+// ===========================================================================
+// Circuit-version envelope (#368)
+// ===========================================================================
+
+/// Happy path: a 256-byte envelope whose circuit-version trailer matches
+/// EXPECTED_CIRCUIT_VERSION is accepted.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+fn test_scoped_registration_enveloped_version_accepted() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x50);
+    let nullifier = b32(&env, 0x51);
+    let scope = b32(&env, 0x00);
+    let epoch: u64 = 0;
+
+    let pi = v3_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+        verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8,
+    );
+    let record = client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x52),
+        &b32(&env, 0x53),
+        &pi,
+        &proof_buf(&env),
+    );
+
+    assert_eq!(record.tier, TIER_SILENT_WITNESS);
+    assert_eq!(record.video_hash, video_hash);
+    assert_eq!(record.nullifier, Some(nullifier.clone()));
+    assert!(client.has_nullifier(&nullifier));
+}
+
+/// A 256-byte envelope declaring a stale circuit version is rejected with
+/// RegistryError::CircuitVersionMismatch (#68).
+#[test]
+#[should_panic(expected = "Error(Contract, #68)")]
+fn test_scoped_registration_wrong_version_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x60);
+    let nullifier = b32(&env, 0x61);
+    let scope = b32(&env, 0x00);
+
+    let pi = v3_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        1,
+    );
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x62),
+        &b32(&env, 0x63),
+        &pi,
+        &proof_buf(&env),
+    );
+}
+
+/// A 256-byte envelope whose trailer is all zeros (version 0) is also rejected.
+#[test]
+#[should_panic(expected = "Error(Contract, #68)")]
+fn test_scoped_registration_zero_version_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x70);
+    let nullifier = b32(&env, 0x71);
+    let scope = b32(&env, 0x00);
+
+    let pi = v3_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        0,
+    );
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x72),
+        &b32(&env, 0x73),
+        &pi,
+        &proof_buf(&env),
+    );
+}
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_scoped_rejects_stale_epoch() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -306,7 +477,7 @@ fn test_scoped_rejects_stale_epoch() {
 
 /// Rejects future epoch: proof has epoch 2 but current epoch is 1.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_scoped_rejects_future_epoch() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -396,7 +567,14 @@ fn test_scoped_rejects_wrong_video_hash() {
     let scope = b32(&env, 0x00);
 
     // Proof is for wrong_video_hash, but we pass video_hash as the first arg
-    let pi = v2_public_inputs(&env, &wrong_video_hash, &credential_root, &nullifier, &scope, 0);
+    let pi = v2_public_inputs(
+        &env,
+        &wrong_video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+    );
     client.register_anonymous_verified(
         &video_hash, // different from what's in the proof
         &b32(&env, 0x53),
@@ -424,7 +602,14 @@ fn test_cross_scope_different_nullifiers() {
     let scope_b = b32(&env, 0x02);
 
     // Both at epoch 0, different scopes → different nullifiers
-    let pi_a = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier_a, &scope_a, 0);
+    let pi_a = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier_a,
+        &scope_a,
+        0,
+    );
     let r1 = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x63),
@@ -435,7 +620,14 @@ fn test_cross_scope_different_nullifiers() {
 
     // Different video_hash needed since video uniqueness is global
     let video_hash2 = b32(&env, 0x65);
-    let pi_b = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_b, &scope_b, 0);
+    let pi_b = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_b,
+        &scope_b,
+        0,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x66),
@@ -514,7 +706,14 @@ fn test_v1_backward_compatibility() {
     let video_hash_v2 = b32(&env, 0x84);
     let nullifier_v2 = b32(&env, 0x85);
     let scope = b32(&env, 0x00);
-    let pi_v2 = v2_public_inputs(&env, &video_hash_v2, &credential_root, &nullifier_v2, &scope, 0);
+    let pi_v2 = v2_public_inputs(
+        &env,
+        &video_hash_v2,
+        &credential_root,
+        &nullifier_v2,
+        &scope,
+        0,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash_v2,
         &b32(&env, 0x86),
@@ -554,7 +753,14 @@ fn test_v1_v2_nullifiers_are_different() {
     // v2 proof (different video since video uniqueness is global)
     let video_hash2 = b32(&env, 0x95);
     let scope = b32(&env, 0x00);
-    let pi_v2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_v2, &scope, 0);
+    let pi_v2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_v2,
+        &scope,
+        0,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x96),
@@ -591,7 +797,7 @@ fn test_rejects_wrong_input_length() {
     );
 }
 
-/// Rejects 256-byte public inputs (too long).
+/// Rejects 257-byte public inputs (one past the 256-byte v3 envelope).
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")] // InvalidPublicInputs
 fn test_rejects_oversized_inputs() {
@@ -599,7 +805,7 @@ fn test_rejects_oversized_inputs() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
 
     let video_hash = b32(&env, 0xA3);
-    let bad_pi = Bytes::from_array(&env, &[0u8; 256]);
+    let bad_pi = Bytes::from_array(&env, &[0u8; 257]);
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0xA4),
@@ -615,7 +821,7 @@ fn test_rejects_oversized_inputs() {
 
 /// Registering at epoch 0 then rotating to epoch 1: old epoch proofs rejected.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_epoch_rotation_rejects_old_proofs() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -669,7 +875,14 @@ fn test_independent_scope_epochs() {
     // Register in scope_a at epoch 5
     let video_hash1 = b32(&env, 0xC0);
     let nullifier1 = b32(&env, 0xC1);
-    let pi1 = v2_public_inputs(&env, &video_hash1, &credential_root, &nullifier1, &scope_a, 5);
+    let pi1 = v2_public_inputs(
+        &env,
+        &video_hash1,
+        &credential_root,
+        &nullifier1,
+        &scope_a,
+        5,
+    );
     client.register_anonymous_verified(
         &video_hash1,
         &b32(&env, 0xC2),
@@ -681,7 +894,14 @@ fn test_independent_scope_epochs() {
     // Register in scope_b at epoch 3 (independent)
     let video_hash2 = b32(&env, 0xC4);
     let nullifier2 = b32(&env, 0xC5);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &scope_b, 3);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &scope_b,
+        3,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0xC6),
@@ -739,7 +959,14 @@ fn test_global_scope_epoch_management() {
     // Register at epoch 10 — should succeed
     let video_hash = b32(&env, 0xE0);
     let nullifier = b32(&env, 0xE1);
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &global_scope, 10);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &global_scope,
+        10,
+    );
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0xE2),
@@ -751,7 +978,14 @@ fn test_global_scope_epoch_management() {
     // Register at epoch 9 (stale) — should fail
     let video_hash2 = b32(&env, 0xE4);
     let nullifier2 = b32(&env, 0xE5);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &global_scope, 9);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &global_scope,
+        9,
+    );
     let result = client.try_register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0xE6),
@@ -759,7 +993,10 @@ fn test_global_scope_epoch_management() {
         &pi2,
         &proof_buf(&env),
     );
-    assert!(result.is_err(), "expected StaleEpoch for epoch 9 when epoch is 10");
+    assert!(
+        result.is_err(),
+        "expected StaleEpoch for epoch 9 when epoch is 10"
+    );
 }
 
 // ===========================================================================
@@ -812,7 +1049,14 @@ fn test_same_scope_epoch_replay_rejected() {
 
     let video_hash1 = b32(&env, 0x10);
     let nullifier = b32(&env, 0x11);
-    let pi1 = v2_public_inputs(&env, &video_hash1, &credential_root, &nullifier, &scope, epoch);
+    let pi1 = v2_public_inputs(
+        &env,
+        &video_hash1,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash1,
         &b32(&env, 0x12),
@@ -823,7 +1067,14 @@ fn test_same_scope_epoch_replay_rejected() {
 
     // Replay the same nullifier in the same scope/epoch with a different video
     let video_hash2 = b32(&env, 0x14);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x15),
@@ -859,7 +1110,14 @@ fn test_cross_scope_different_nullifiers_unlinkable() {
     let video_hash1 = b32(&env, 0xCC);
     let video_hash2 = b32(&env, 0xDD);
 
-    let pi_a = v2_public_inputs(&env, &video_hash1, &credential_root, &nullifier_a, &scope_a, epoch);
+    let pi_a = v2_public_inputs(
+        &env,
+        &video_hash1,
+        &credential_root,
+        &nullifier_a,
+        &scope_a,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash1,
         &b32(&env, 0xEE),
@@ -868,7 +1126,14 @@ fn test_cross_scope_different_nullifiers_unlinkable() {
         &proof_buf(&env),
     );
 
-    let pi_b = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_b, &scope_b, epoch);
+    let pi_b = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_b,
+        &scope_b,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0xF0),
@@ -915,7 +1180,14 @@ fn test_verifier_change_preserves_nullifier_history() {
     let nullifier = b32(&env, 0x11);
 
     // Register with verifier A
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x12),
@@ -933,7 +1205,14 @@ fn test_verifier_change_preserves_nullifier_history() {
     // A new proof with the new verifier must succeed
     let video_hash2 = b32(&env, 0x20);
     let nullifier2 = b32(&env, 0x21);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x22),
@@ -978,7 +1257,14 @@ fn test_v1_v2_nullifier_distinct_for_same_inputs() {
 
     // Register v2 proof (different video since video uniqueness is global)
     let video_hash2 = b32(&env, 0x95);
-    let pi_v2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_v2, &scope, epoch);
+    let pi_v2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_v2,
+        &scope,
+        epoch,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x96),
@@ -999,7 +1285,7 @@ fn test_v1_v2_nullifier_distinct_for_same_inputs() {
 /// A proof with epoch 0 is rejected when the scope epoch has been advanced
 /// to 1.  This covers the epoch-boundary rejection case.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_epoch_boundary_rejects_stale_proof() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -1023,7 +1309,7 @@ fn test_epoch_boundary_rejects_stale_proof() {
 /// A proof with epoch 2 is rejected when the scope epoch is 1.
 /// This covers the future-epoch boundary case.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_epoch_boundary_rejects_future_proof() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -1062,7 +1348,14 @@ fn test_stale_ledger_valid_proof_still_accepted() {
 
     let video_hash = b32(&env, 0x50);
     let nullifier = b32(&env, 0x51);
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     let record = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x52),
@@ -1075,12 +1368,20 @@ fn test_stale_ledger_valid_proof_still_accepted() {
     assert!(client.has_nullifier(&nullifier));
 
     // Advance the ledger far into the future
-    env.ledger().set_timestamp(env.ledger().timestamp() + 100_000);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 100_000);
 
     // A new proof with the same scope/epoch should still be accepted
     let video_hash2 = b32(&env, 0x60);
     let nullifier2 = b32(&env, 0x61);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &scope,
+        epoch,
+    );
     let record2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x62),
@@ -1114,7 +1415,14 @@ fn test_nullifier_scope_isolation() {
     // Register in scope A
     let video_hash_a = b32(&env, 0x80);
     let nullifier_a = b32(&env, 0x81);
-    let pi_a = v2_public_inputs(&env, &video_hash_a, &credential_root, &nullifier_a, &scope_a, epoch);
+    let pi_a = v2_public_inputs(
+        &env,
+        &video_hash_a,
+        &credential_root,
+        &nullifier_a,
+        &scope_a,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash_a,
         &b32(&env, 0x82),
@@ -1127,7 +1435,14 @@ fn test_nullifier_scope_isolation() {
     // must fail with DuplicateNullifier because the nullifier is globally tracked.
     let video_hash_b = b32(&env, 0x90);
     let nullifier_b_attempt = b32(&env, 0x81); // same value as nullifier_a
-    let pi_b = v2_public_inputs(&env, &video_hash_b, &credential_root, &nullifier_b_attempt, &scope_b, epoch);
+    let pi_b = v2_public_inputs(
+        &env,
+        &video_hash_b,
+        &credential_root,
+        &nullifier_b_attempt,
+        &scope_b,
+        epoch,
+    );
     let result = client.try_register_anonymous_verified(
         &video_hash_b,
         &b32(&env, 0x91),
@@ -1135,7 +1450,10 @@ fn test_nullifier_scope_isolation() {
         &pi_b,
         &proof_buf(&env),
     );
-    assert!(result.is_err(), "replaying nullifier across scopes must fail");
+    assert!(
+        result.is_err(),
+        "replaying nullifier across scopes must fail"
+    );
 }
 
 // ===========================================================================
@@ -1176,7 +1494,14 @@ fn test_cross_network_isolation() {
     let nullifier = b32(&env, 0x11);
 
     // Register on contract A
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client_a.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x12),
@@ -1191,7 +1516,14 @@ fn test_cross_network_isolation() {
     // Register the same nullifier on contract B — must succeed because
     // contract B has its own independent nullifier set
     let video_hash2 = b32(&env, 0x20);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client_b.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x22),

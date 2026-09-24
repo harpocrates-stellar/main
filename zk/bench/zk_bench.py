@@ -73,8 +73,8 @@ TARGETS = frozenset({"native", "browser", "ci", "soroban_adjacent"})
 MODES = frozenset({"cold", "warm"})
 OUTCOMES = frozenset({"ok", "timeout", "cancelled", "rejected", "fatal"})
 
-# Mirror verifier-input codec size bounds (hpx-vi/1).
-PUBLIC_INPUTS_LEN = 160
+# Mirror verifier-input codec size bounds (hpx-vi/2 default envelope, #368).
+PUBLIC_INPUTS_LEN = 192
 MIN_PROOF_BYTES = 64
 MAX_PROOF_BYTES = 65536
 

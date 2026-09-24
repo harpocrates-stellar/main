@@ -29,6 +29,8 @@ Circuit signature (`zk/noir/silent_witness/src/main.nr`):
 | `nullifier` | public | `Field` |
 | `verifier_scope` | public | `Field` |
 | `epoch` | public | `Field` |
+| `domain_tag` | public | `Field` |
+| `circuit_version` | public | `Field` |
 
 On-chain wire order (`docs/zk-conformance-vectors.md`, `silent_witness/v1`
 frame, 128 bytes / 4 fields):
@@ -165,8 +167,14 @@ that old and new derivations remain distinguishable.
 
 ## 8. Reference Vectors
 
-Cross-layer conformance corpus: [`zk/vectors/verifier_conformance_v1.json`](../zk/vectors/verifier_conformance_v1.json),
-described in [`docs/zk-conformance-vectors.md`](./zk-conformance-vectors.md).
-Note this corpus currently only covers the 4-field `silent_witness/v1` frame
-(§2) — it does not exercise `verifier_scope`/`epoch`, consistent with those
-fields not being part of the enforced statement today.
+Cross-layer conformance corpus: [`zk/vectors/verifier_conformance_v1.json`](../zk/vectors/verifier_conformance_v1.json)
+and [`zk/vectors/verifier_conformance_v2.json`](../zk/vectors/verifier_conformance_v2.json)
+(circuit-versioned `silent_witness/v2` frames, #368), described in
+[`docs/zk-conformance-vectors.md`](./zk-conformance-vectors.md).
+Note the corpus covers the `silent_witness/v1` frame (video hash, credential root, nullifier,
+domain tag) and the `silent_witness/v2` frame, which additionally commits the
+circuit version — it does not exercise `verifier_scope`/`epoch` in the
+classify-side frame, consistent with those fields not being part of the
+enforced statement today. The on-chain registration envelope (224 bytes
+scoped, plus a 32-byte `circuit_version` trailer for new proofs) carries all
+eight public inputs including scope, epoch, domain tag, and version.

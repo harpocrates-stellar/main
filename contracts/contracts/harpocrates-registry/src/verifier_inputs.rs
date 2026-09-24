@@ -1,12 +1,18 @@
-//! Canonical verifier-input codec for Harpocrates (codec `hpx-vi/1`).
+//! Canonical verifier-input codecs for Harpocrates (`hpx-vi/1` and `hpx-vi/2`).
+//!
+//! `hpx-vi/1` covers `silent_witness/v1` and `revocation_witness/v1`.
+//! `hpx-vi/2` covers `silent_witness/v2`, which appends the circuit version as a
+//! trailing field so the wire format commits to the exact circuit that produced
+//! the proof.
 //!
 //! Soroban/Rust side of a three-way codec that must agree byte for byte with:
 //!
 //! - `backend/verifier_inputs.py` (Python)
 //! - `frontend/src/verifierInputs.ts` (browser / TypeScript)
 //!
-//! Agreement is enforced by the shared corpus in
-//! `zk/vectors/verifier_conformance_v1.json`; see
+//! Agreement is enforced by the shared corpora in
+//! `zk/vectors/verifier_conformance_v1.json` and
+//! `zk/vectors/verifier_conformance_v2.json`; see
 //! `docs/zk-conformance-vectors.md`.
 //!
 //! The module is deliberately `no_std`, allocation-free, and independent of the
@@ -17,12 +23,23 @@
 /// Codec identifier carried in signals and documentation.
 pub const CODEC_ID: &str = "hpx-vi/1";
 
+/// Codec identifier for the circuit-versioned silent-witness envelope.
+pub const CODEC_ID_V2: &str = "hpx-vi/2";
+
 pub const FIELD_LEN: usize = 32;
 pub const SILENT_WITNESS_FIELD_COUNT: usize = 5;
 pub const REVOCATION_FIELD_COUNT: usize = 4;
 pub const PUBLIC_INPUTS_LEN: usize = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT; // 160
 pub const SILENT_WITNESS_PUBLIC_INPUTS_LEN: usize = 160;
 pub const REVOCATION_PUBLIC_INPUTS_LEN: usize = 128;
+
+/// `silent_witness/v2` appends the circuit version as a trailing 6th field.
+pub const SILENT_WITNESS_V2_FIELD_COUNT: usize = 6;
+pub const SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN: usize = FIELD_LEN * SILENT_WITNESS_V2_FIELD_COUNT; // 192
+
+/// The only circuit version accepted by the `silent_witness/v2` codec. Must
+/// match `CURRENT_CIRCUIT_VERSION` in `zk/noir/silent_witness/src/main.nr`.
+pub const EXPECTED_CIRCUIT_VERSION: u32 = 2;
 
 /// Accepted proof-blob size window. Matches the Python and TypeScript layers.
 pub const MIN_PROOF_BYTES: u32 = 64;
@@ -56,6 +73,9 @@ pub enum RejectCode {
     ProofUndersize,
     ProofOversize,
     UnknownSchema,
+    /// The envelope's declared circuit version is not the one this codec
+    /// accepts (`hpx-vi/2` cases only).
+    VersionMismatch,
 }
 
 /// Numeric result meaning "the material was accepted", returned by the
@@ -76,6 +96,7 @@ impl RejectCode {
             RejectCode::ProofUndersize => 7,
             RejectCode::ProofOversize => 8,
             RejectCode::UnknownSchema => 9,
+            RejectCode::VersionMismatch => 10,
         }
     }
 
@@ -92,6 +113,7 @@ impl RejectCode {
             "proof_undersize" => Some(RejectCode::ProofUndersize),
             "proof_oversize" => Some(RejectCode::ProofOversize),
             "unknown_schema" => Some(RejectCode::UnknownSchema),
+            "version_mismatch" => Some(RejectCode::VersionMismatch),
             _ => None,
         }
     }
@@ -108,12 +130,14 @@ impl RejectCode {
             RejectCode::ProofUndersize => "proof_undersize",
             RejectCode::ProofOversize => "proof_oversize",
             RejectCode::UnknownSchema => "unknown_schema",
+            RejectCode::VersionMismatch => "version_mismatch",
         }
     }
 }
 
 pub const SCHEMA_SILENT_WITNESS: &str = "silent_witness/v1";
 pub const SCHEMA_REVOCATION_WITNESS: &str = "revocation_witness/v1";
+pub const SCHEMA_SILENT_WITNESS_V2: &str = "silent_witness/v2";
 
 /// Parsed `silent_witness/v1` public inputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,6 +146,9 @@ pub struct SilentWitnessFields {
     pub credential_root: [u8; FIELD_LEN],
     pub nullifier: [u8; FIELD_LEN],
     pub domain_tag: [u8; FIELD_LEN],
+    /// Circuit version the frame was produced by. `silent_witness/v1` frames
+    /// carry `1` implicitly; `silent_witness/v2` frames declare it explicitly.
+    pub circuit_version: u32,
 }
 
 /// Parsed `revocation_witness/v1` public inputs.
@@ -228,6 +255,87 @@ pub fn parse_silent_witness(
         credential_root: fields[2],
         nullifier: fields[3],
         domain_tag: fields[4],
+        circuit_version: 1,
+    })
+}
+
+/// Decode the circuit version carried in a 32-byte field element: a `u32` in
+/// the low 4 bytes with the upper 28 zero.
+fn version_of(field: &[u8; FIELD_LEN]) -> u32 {
+    let mut acc = 0u8;
+    for byte in field.iter().take(FIELD_LEN - 4) {
+        acc |= *byte;
+    }
+    if acc != 0 {
+        return u32::MAX;
+    }
+    u32::from_be_bytes([field[28], field[29], field[30], field[31]])
+}
+
+/// Parse `silent_witness/v2` public inputs in canonical check order.
+///
+/// Layout (6 x BN254 field elements, 32 bytes each):
+///   [  0.. 32)  video_hash_hi  (128-bit half in the low 16 bytes)
+///   [ 32.. 64)  video_hash_lo  (128-bit half in the low 16 bytes)
+///   [ 64.. 96)  credential_root
+///   [ 96..128)  nullifier
+///   [128..160)  domain_tag
+///   [160..192)  circuit_version (u32 in the low 4 bytes, {#368})
+///
+/// Check order (documented in `docs/zk-conformance-vectors.md`):
+/// length → half padding → circuit version → canonicity → zero identity →
+/// domain → (proof bounds applied by the caller).
+pub fn parse_silent_witness_v2(
+    frame: &[u8],
+    expected_domain: &[u8; FIELD_LEN],
+) -> Result<SilentWitnessFields, RejectCode> {
+    if frame.len() != SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN {
+        return Err(RejectCode::Length);
+    }
+
+    let fields = [
+        field_at(frame, 0),
+        field_at(frame, 1),
+        field_at(frame, 2),
+        field_at(frame, 3),
+        field_at(frame, 4),
+        field_at(frame, 5),
+    ];
+
+    if !has_half_padding(&fields[0]) || !has_half_padding(&fields[1]) {
+        return Err(RejectCode::Padding);
+    }
+
+    if version_of(&fields[5]) != EXPECTED_CIRCUIT_VERSION {
+        return Err(RejectCode::VersionMismatch);
+    }
+
+    // The domain tag is an opaque protocol binding; compare it byte-for-byte
+    // below instead of treating arbitrary SHA-256 output as a BN254 scalar.
+    for element in fields[..4].iter() {
+        if !is_canonical_field(element) {
+            return Err(RejectCode::NonCanonicalField);
+        }
+    }
+
+    if is_zero(&fields[2]) || is_zero(&fields[3]) || is_zero(&fields[4]) {
+        return Err(RejectCode::ZeroField);
+    }
+
+    if &fields[4] != expected_domain {
+        return Err(RejectCode::DomainMismatch);
+    }
+
+    let mut video_hash = [0u8; FIELD_LEN];
+    video_hash[..16].copy_from_slice(&fields[0][16..]);
+    video_hash[16..].copy_from_slice(&fields[1][16..]);
+
+    Ok(SilentWitnessFields {
+        video_hash,
+        credential_root: fields[2],
+        nullifier: fields[3],
+        domain_tag: fields[4],
+        circuit_version: EXPECTED_CIRCUIT_VERSION,
     })
 }
 
@@ -287,12 +395,17 @@ pub fn classify(
     // Schema dispatch precedes the length check, matching the Python and
     // TypeScript layers: an unrecognised schema is reported as such even when
     // the frame is also the wrong length.
-    if schema != SCHEMA_SILENT_WITNESS && schema != SCHEMA_REVOCATION_WITNESS {
+    if schema != SCHEMA_SILENT_WITNESS
+        && schema != SCHEMA_SILENT_WITNESS_V2
+        && schema != SCHEMA_REVOCATION_WITNESS
+    {
         return Err(RejectCode::UnknownSchema);
     }
 
     if schema == SCHEMA_SILENT_WITNESS {
         parse_silent_witness(public_inputs, expected_domain)?;
+    } else if schema == SCHEMA_SILENT_WITNESS_V2 {
+        parse_silent_witness_v2(public_inputs, expected_domain)?;
     } else {
         parse_revocation_witness(public_inputs, expected_domain)?;
     }

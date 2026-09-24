@@ -31,6 +31,10 @@ use std::{format, vec};
 #[cfg(test)]
 const CORPUS: &str = include_str!("../../../../zk/vectors/verifier_conformance_v1.json");
 
+/// Circuit-versioned envelope corpus (`hpx-vi/2`, {#368}).
+#[cfg(test)]
+const CORPUS_V2: &str = include_str!("../../../../zk/vectors/verifier_conformance_v2.json");
+
 #[cfg(test)]
 #[derive(Debug)]
 struct ConformanceCase {
@@ -63,10 +67,20 @@ fn field_value(line: &str, key: &str) -> Option<String> {
 /// `corpus_is_non_empty_and_versioned` test rejects.
 #[cfg(test)]
 fn parse_corpus() -> Vec<ConformanceCase> {
+    parse_corpus_from(CORPUS)
+}
+
+#[cfg(test)]
+fn parse_corpus_v2() -> Vec<ConformanceCase> {
+    parse_corpus_from(CORPUS_V2)
+}
+
+#[cfg(test)]
+fn parse_corpus_from(source: &str) -> Vec<ConformanceCase> {
     let mut cases = Vec::new();
     let mut current: Option<(String, String, String, String, bool)> = None;
 
-    for line in CORPUS.lines() {
+    for line in source.lines() {
         if let Some(id) = field_value(line, "id") {
             current = Some((id, String::new(), String::new(), String::new(), false));
             continue;
@@ -119,8 +133,22 @@ fn decode_hex(value: &str) -> Vec<u8> {
 fn schema_id(schema: &str) -> u32 {
     match schema {
         "silent_witness/v1" => SCHEMA_ID_SILENT_WITNESS,
+        "silent_witness/v2" => SCHEMA_ID_SILENT_WITNESS_V2,
         "revocation_witness/v1" => SCHEMA_ID_REVOCATION_WITNESS,
         other => panic!("corpus references unknown schema: {}", other),
+    }
+}
+
+/// Expected domain for a schema: the silent-witness domain tags are shared by
+/// the v1 and v2 codecs (v2 changes only the appended version field).
+#[cfg(test)]
+fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
+    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS
+        || schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2
+    {
+        &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+    } else {
+        &REVOCATION_DOMAIN_SEPARATOR
     }
 }
 
@@ -169,6 +197,45 @@ fn corpus_is_non_empty_and_versioned() {
 }
 
 #[test]
+fn v2_corpus_is_non_empty_and_versioned() {
+    assert!(
+        CORPUS_V2.contains("\"codec\": \"hpx-vi/2\""),
+        "v2 corpus codec id drifted from the contract implementation"
+    );
+    assert!(
+        CORPUS_V2.contains("\"version\": 2"),
+        "v2 corpus version drifted; bump the runners alongside the format"
+    );
+    assert!(
+        CORPUS_V2.contains("\"version_mismatch\""),
+        "v2 corpus must exercise the version_mismatch reject code"
+    );
+
+    let cases = parse_corpus_v2();
+    assert!(
+        cases.len() >= 10,
+        "expected a substantive v2 corpus, parsed {} cases",
+        cases.len()
+    );
+    assert!(
+        cases.iter().any(|case| case.accept),
+        "v2 corpus must contain positive cases"
+    );
+    assert!(
+        cases.iter().any(|case| !case.accept),
+        "v2 corpus must contain negative cases"
+    );
+    for case in &cases {
+        assert_eq!(
+            case.schema,
+            verifier_inputs::SCHEMA_SILENT_WITNESS_V2,
+            "v2 corpus must only reference the v2 schema (case {})",
+            case.id
+        );
+    }
+}
+
+#[test]
 fn corpus_constants_match_contract_constants() {
     // The domain separator is the one value that must be byte-identical
     // between the corpus and the deployed contract, so it is asserted
@@ -189,20 +256,25 @@ fn corpus_constants_match_contract_constants() {
 
 #[test]
 fn codec_agrees_with_every_corpus_case() {
+    assert_codec_agrees(&parse_corpus());
+}
+
+#[test]
+fn codec_agrees_with_v2_corpus_cases() {
+    assert_codec_agrees(&parse_corpus_v2());
+}
+
+fn assert_codec_agrees(cases: &[ConformanceCase]) {
     let mut mismatches: Vec<String> = vec![];
 
-    for case in parse_corpus() {
+    for case in cases {
         let public_inputs = decode_hex(&case.public_inputs_hex);
         // Only the length of the proof blob is semantically relevant, so the
         // blob itself is never materialised — this keeps the oversize case
         // cheap and keeps proof material out of the test process.
         let proof_len = (case.proof_hex.len() / 2) as u32;
 
-        let expected_domain = if case.schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
-            &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
-        } else {
-            &REVOCATION_DOMAIN_SEPARATOR
-        };
+        let expected_domain = expected_domain_for(&case.schema);
 
         let actual = match verifier_inputs::classify(
             &case.schema,
@@ -213,7 +285,7 @@ fn codec_agrees_with_every_corpus_case() {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),
         };
-        let expected = expected_code(&case);
+        let expected = expected_code(case);
 
         if actual != expected {
             mismatches.push(format!(
@@ -237,16 +309,33 @@ fn on_chain_entry_point_agrees_with_every_corpus_case() {
     let contract_id = env.register(HarpocratesRegistry, ());
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     client.init(&Address::generate(&env));
+    assert_on_chain_agrees(&client, &env, &parse_corpus());
+}
 
+#[test]
+fn on_chain_entry_point_agrees_with_v2_corpus_cases() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    client.init(&Address::generate(&env));
+    assert_on_chain_agrees(&client, &env, &parse_corpus_v2());
+}
+
+fn assert_on_chain_agrees(
+    client: &HarpocratesRegistryClient,
+    env: &Env,
+    cases: &[ConformanceCase],
+) {
     let mut mismatches: Vec<String> = vec![];
 
-    for case in parse_corpus() {
-        let public_inputs = Bytes::from_slice(&env, &decode_hex(&case.public_inputs_hex));
+    for case in cases {
+        let public_inputs = Bytes::from_slice(env, &decode_hex(&case.public_inputs_hex));
         let proof_len = (case.proof_hex.len() / 2) as u32;
 
         let actual =
             client.classify_public_inputs(&schema_id(&case.schema), &public_inputs, &proof_len);
-        let expected = expected_code(&case);
+        let expected = expected_code(case);
 
         if actual != expected {
             mismatches.push(format!(
@@ -280,7 +369,8 @@ fn classification_is_idempotent_and_side_effect_free() {
     let proof_len = (case.proof_hex.len() / 2) as u32;
 
     let first = client.classify_public_inputs(&schema_id(&case.schema), &public_inputs, &proof_len);
-    let second = client.classify_public_inputs(&schema_id(&case.schema), &public_inputs, &proof_len);
+    let second =
+        client.classify_public_inputs(&schema_id(&case.schema), &public_inputs, &proof_len);
 
     assert_eq!(first, verifier_inputs::ACCEPTED_CODE);
     assert_eq!(first, second, "classification must be deterministic");

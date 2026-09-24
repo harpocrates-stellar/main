@@ -7,3 +7,9 @@ credential_root = "0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0
 # evidence_digest = pedersen_hash([0, video_hash_hi, video_hash_lo])
 # nullifier = pedersen_hash([12345, 67890, evidence_digest])
 nullifier = "0"
+verifier_scope = "0"
+epoch = "0"
+domain_tag = "0"
+# Circuit version committed to the proof envelope (#368). Must equal
+# CURRENT_CIRCUIT_VERSION in src/main.nr.
+circuit_version = "2"

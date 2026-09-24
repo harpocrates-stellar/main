@@ -52,10 +52,16 @@ async function generateSilentWitnessProof({
   }
 
   const helperResult = await new Noir(helperCircuit).execute(privateInputs)
-  const [credentialRoot, nullifier] = helperResult.returnValue as string[]
+  const [credentialRoot, nullifier, domainTag] = helperResult.returnValue as string[]
   const publicInputs = {
     credential_root: credentialRoot,
     nullifier,
+    verifier_scope: '0',
+    epoch: '0',
+    domain_tag: domainTag,
+    // Circuit version committed to the proof envelope (#368). Must equal
+    // CURRENT_CIRCUIT_VERSION in zk/noir/silent_witness/src/main.nr.
+    circuit_version: '2',
   }
 
   const { witness } = await new Noir(mainCircuit).execute({
@@ -72,7 +78,10 @@ async function generateSilentWitnessProof({
       'video_hash_lo',
       'credential_root',
       'nullifier',
+      'verifier_scope',
+      'epoch',
       'domain_tag',
+      'circuit_version',
     ])
 
     return {

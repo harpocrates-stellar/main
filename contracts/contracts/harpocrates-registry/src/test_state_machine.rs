@@ -43,9 +43,8 @@ struct MockStateMachineVerifier;
 #[contractimpl]
 impl MockStateMachineVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
-            panic!("invalid state-machine proof");
+        if public_inputs.is_empty() || proof.is_empty() {
+            panic!("invalid state machine proof");
         }
     }
 }
@@ -548,7 +547,7 @@ fn silent_public_inputs(
 ) -> Bytes {
     match mode {
         SilentInputMode::Short => Bytes::from_array(env, &[0x11; 127]),
-        SilentInputMode::Oversized => Bytes::from_array(env, &[0x22; 129]),
+        SilentInputMode::Oversized => Bytes::from_array(env, &[0x22; 161]),
         SilentInputMode::Correct | SilentInputMode::WrongVideo => {
             let input_video = match mode {
                 SilentInputMode::WrongVideo => slot(video).wrapping_add(1) % KEY_POOL,
@@ -564,11 +563,16 @@ fn silent_public_inputs(
             credential_root.copy_into_slice(&mut cr);
             nullifier.copy_into_slice(&mut nu);
 
-            let mut bytes = [0u8; 128];
+            let domain_tag = expected_domain_tag(env);
+            let mut dt = [0u8; 32];
+            domain_tag.copy_into_slice(&mut dt);
+
+            let mut bytes = [0u8; 160];
             bytes[16..32].copy_from_slice(&vh[..16]);
             bytes[48..64].copy_from_slice(&vh[16..]);
             bytes[64..96].copy_from_slice(&cr);
             bytes[96..128].copy_from_slice(&nu);
+            bytes[128..160].copy_from_slice(&dt);
             Bytes::from_array(env, &bytes)
         }
     }
