@@ -451,13 +451,13 @@ def build_cases() -> list[dict[str, object]]:
         )
     )
 
-    # ---- domain binding: domain all-ones --------------------------------
+    # ---- domain binding: domain mismatch --------------------------------
     cases.append(
         case(
-            "rv-neg-044-domain-all-ones",
+            "rv-neg-044-domain-mismatch",
             "revocation_witness/v1",
-            "All-ones domain separator must not match the v1 constant.",
-            revocation(REVOCATION_ROOT, NULLIFIER, ONES, CREDENTIAL_ROOT),
+            "A canonical domain separator that does not match the v1 constant.",
+            revocation(REVOCATION_ROOT, NULLIFIER, "01" * FIELD_LEN, CREDENTIAL_ROOT),
             "domain_mismatch",
         )
     )
@@ -468,7 +468,7 @@ def build_cases() -> list[dict[str, object]]:
             "sw-neg-060-length-before-padding",
             "silent_witness/v1",
             "A frame that is both dirty-padded and wrong length must be rejected for length, not padding (check order).",
-            "01" + SILENT_VALID[:-2],  # 128 bytes but with dirty first byte and truncated
+            "01" + SILENT_VALID,  # 161 bytes (wrong length) and starts with 01 (dirty padding)
             "length",
         )
     )
