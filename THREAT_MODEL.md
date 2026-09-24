@@ -254,10 +254,15 @@ and `metadata_hash` for content they did not actually review.
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
+| The frontend resolves the issuer's current registry standing independently of the record's own `status`, so a seal whose issuer was revoked afterwards is surfaced as `Issuer revoked` instead of looking endorsed | `frontend/src/provenance/issuerTrust.ts`, `frontend/src/hooks/useIssuerTrust.ts` |
+| An issuer read that does not complete is surfaced as `Issuer lookup unavailable` with no trust decision, never as a trusted or unknown issuer | `frontend/src/hooks/useIssuerTrust.ts` |
 
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually
 call `revoke_proof` for each fraudulent record — there is no bulk revocation.
+The issuer trust badge makes this state visible to a verifier, but it does not
+change the on-chain record: the seal is still `STATUS_REGISTERED` and any
+caller that reads `status` alone will still see it as registered.
 The `metadata_hash` stored in the issuer's `IssuerRecord` is not verified by
 the contract to match the `metadata_hash` in the proof registration; an issuer
 can register a proof with a `metadata_hash` that differs from their declared
