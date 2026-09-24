@@ -1425,3 +1425,21 @@ input:focus-visible,
 .primary-action[aria-busy="true"] {
   cursor: wait;
 }
+
+/* Shareable verification link (Issue #302) */
+.share-verification-link {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.share-verification-link .verify-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.share-link-status {
+  overflow-wrap: anywhere;
+}
