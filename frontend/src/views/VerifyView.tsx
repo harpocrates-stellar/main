@@ -9,6 +9,7 @@ import type { ProvenanceRecord } from '../provenance/provenanceModel'
 
 type Props = {
   wallet: string
+  networkMismatch?: string | null
   verification: UseVerificationReturn
   provenanceRecord: ProvenanceRecord | null
 }
@@ -25,7 +26,7 @@ function statusLabel(status: UseVerificationReturn['status']): string {
   }
 }
 
-export function VerifyView({ wallet, verification, provenanceRecord }: Props) {
+export function VerifyView({ wallet, networkMismatch, verification, provenanceRecord }: Props) {
   const {
     verifyHash,
     verifyResult,
@@ -56,6 +57,13 @@ export function VerifyView({ wallet, verification, provenanceRecord }: Props) {
           <h2 id="verify-heading" tabIndex={-1}>Verify Artifact</h2>
           <p>Inspect a received video against embedded metadata and the Stellar registry.</p>
         </header>
+
+        {networkMismatch ? (
+          <div className="network-mismatch-banner" role="alert" aria-live="assertive" aria-atomic="true">
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <span>{networkMismatch}</span>
+          </div>
+        ) : null}
 
         <label
           className="dropzone"
