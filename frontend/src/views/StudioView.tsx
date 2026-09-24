@@ -8,6 +8,7 @@ import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
+import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
@@ -28,6 +29,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setSelectedTier,
     selectedTierMeta,
     stage,
+    proofStage,
     file,
     proof,
     processedVideoUrl,
@@ -123,6 +125,37 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
                 autoComplete="off"
               />
             </label>
+          </div>
+        ) : null}
+
+        {stage === 'proving' ? (
+          <div
+            className="proof-phases"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label="Proof generation phases"
+          >
+            <span className="proof-phases-title">
+              {proofStage ? proofStageLabel(proofStage) : 'Preparing proof…'}
+            </span>
+            <ol className="proof-phases-list">
+              {PROOF_STAGE_SEQUENCE.map((phase) => {
+                const status = proofStageStatus(phase, proofStage)
+                return (
+                  <li
+                    key={phase}
+                    className={`proof-phase proof-phase--${status}`}
+                    aria-current={status === 'active' ? 'step' : undefined}
+                  >
+                    <span className="proof-phase-marker" aria-hidden="true">
+                      {status === 'complete' ? '✓' : ''}
+                    </span>
+                    <span>{proofStageLabel(phase)}</span>
+                  </li>
+                )
+              })}
+            </ol>
           </div>
         ) : null}
 
