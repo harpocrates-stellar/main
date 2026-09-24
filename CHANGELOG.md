@@ -2,6 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
+- Added a privacy-safe redaction preview in Evidence Studio that discloses truncated public fingerprints while withholding seeds, witness proofs, private keys, and media URLs (`frontend/src/redactionPreview.ts`).
 - Added a CI end-to-end environment matrix (`devx/e2e_env_matrix.py`) that exercises public API boundaries across development/testing/production-like profiles with privacy-safe failure checks.
 
 - Added an atomic compatibility manifest and release gate spanning frontend,
