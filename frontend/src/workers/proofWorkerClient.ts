@@ -29,6 +29,9 @@ export type GenerateSilentWitnessInput = {
   videoHash: string
   credentialSecret: string
   nullifierSecret: string
+  inputSchemaVersion?: number
+  verifierScope?: string
+  epoch?: number
 }
 
 export class ProofWorkerError extends Error {
@@ -229,7 +232,14 @@ export class ProofWorkerClient {
       const msg: WorkerRequest = {
         type: 'GENERATE_PROOF',
         requestId,
-        input: { videoHash: input.videoHash, credentialSecret, nullifierSecret },
+        input: {
+          videoHash: input.videoHash,
+          credentialSecret,
+          nullifierSecret,
+          inputSchemaVersion: input.inputSchemaVersion,
+          verifierScope: input.verifierScope,
+          epoch: input.epoch,
+        },
       }
       this.worker.postMessage(msg, [credentialSecret, nullifierSecret])
     })

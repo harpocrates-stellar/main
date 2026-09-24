@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { generateSilentWitnessProof } from '../noirClient'
+import { CircuitInputError } from '../circuitInputSchema'
 import type { WorkerRequest, WorkerResponse, TransferableProofInput } from './proofWorker.types'
 
 let activeRequestId: string | null = null
@@ -38,11 +39,9 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
   activeRequestId = requestId
   cancelRequestedFor = null
 
-  let credentialSecret = ''
-  let nullifierSecret = ''
   try {
-    credentialSecret = bufToStr(input.credentialSecret)
-    nullifierSecret = bufToStr(input.nullifierSecret)
+    const credentialSecret = bufToStr(input.credentialSecret)
+    const nullifierSecret = bufToStr(input.nullifierSecret)
     // Zero transferable buffers as soon as strings are materialised so a later
     // terminate()/cancel cannot leave secret bytes resident in the ArrayBuffers.
     zeroInput(input)
@@ -61,6 +60,9 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       videoHash: input.videoHash,
       credentialSecret,
       nullifierSecret,
+      inputSchemaVersion: input.inputSchemaVersion,
+      verifierScope: input.verifierScope,
+      epoch: input.epoch,
     })
 
     if (cancelRequestedFor === requestId) {
@@ -74,15 +76,23 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       post({ type: 'CANCELLED', requestId })
       return
     }
+    const code = err instanceof CircuitInputError
+      ? ({
+          invalid_input: 'INVALID_INPUT',
+          unsupported_input_schema: 'UNSUPPORTED_INPUT_SCHEMA',
+          artifact_mismatch: 'ARTIFACT_MISMATCH',
+          invalid_proof_output: 'INVALID_PROOF_OUTPUT',
+          circuit_load_failed: 'CIRCUIT_LOAD_FAILED',
+          proof_generation_failed: 'PROOF_GENERATION_FAILED',
+        } as const)[err.code]
+      : 'PROOF_GENERATION_FAILED'
     post({
       type: 'ERROR',
       requestId,
-      code: 'PROOF_GENERATION_FAILED',
-      message: err instanceof Error ? err.message : 'Unknown error during proof generation.',
+      code,
+      message: err instanceof CircuitInputError ? err.code : 'proof_generation_failed',
     })
   } finally {
-    credentialSecret = ''
-    nullifierSecret = ''
     zeroInput(input)
     if (activeRequestId === requestId) {
       activeRequestId = null
