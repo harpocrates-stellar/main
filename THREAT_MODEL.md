@@ -842,3 +842,4 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
+| 1.2 | 2026-09-24 | Evidence Studio redaction preview documents the public boundary; seeds/witness/media never render in preview or telemetry signals. |
