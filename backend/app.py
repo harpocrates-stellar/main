@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import ipaddress
 import json
 import logging
@@ -53,6 +54,11 @@ from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from logging_utils import log_structured, redact_sensitive
+from trace_fields import (
+    build_trace_fields,
+    format_traceparent,
+    merge_trace_into_event,
+)
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
@@ -163,10 +169,30 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+        # Privacy-safe trace fields for log correlation (no secrets/media/PII).
+        g.trace_fields = build_trace_fields(
+            request.headers,
+            request_id=g.request_id,
+            method=request.method,
+            route=request.url_rule.rule if request.url_rule else request.path,
+            path=request.path,
+        )
+        # Keep request_id aligned with normalized opaque ID from trace builder.
+        g.request_id = g.trace_fields["request_id"]
 
     @app.after_request
     def process_response(response: Response):
         response.headers["X-Request-ID"] = request_id()
+        trace = current_trace_fields()
+        if trace.get("trace_id"):
+            response.headers["X-Trace-ID"] = str(trace["trace_id"])
+        if trace.get("correlation_id"):
+            response.headers["X-Correlation-ID"] = str(trace["correlation_id"])
+        if trace.get("span_id"):
+            response.headers["X-Span-ID"] = str(trace["span_id"])
+        traceparent = format_traceparent(trace)
+        if traceparent:
+            response.headers["traceparent"] = traceparent
         apply_security_headers(
             response.headers,
             enabled=config.security_headers_enabled,
@@ -191,15 +217,18 @@ def create_app() -> Flask:
         log_structured(
             LOGGER,
             logging.INFO,
-            {
-                "event": "request",
-                "request_id": request_id(),
-                "method": request.method,
-                "route": request_route(),
-                "path": request.path,
-                "status": response.status_code,
-                "duration_ms": request_duration_ms(),
-            },
+            merge_trace_into_event(
+                {
+                    "event": "request",
+                    "request_id": request_id(),
+                    "method": request.method,
+                    "route": request_route(),
+                    "path": request.path,
+                    "status": response.status_code,
+                    "duration_ms": request_duration_ms(),
+                },
+                trace,
+            ),
         )
         return response
 
@@ -289,18 +318,23 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health():
+        trace = current_trace_fields()
         return jsonify(
             {
                 "ok": True,
                 "service": "harpocrates-stego",
                 "release_id": config.release_id,
                 "network": config.release_network,
+                "request_id": request_id(),
+                "trace_id": trace.get("trace_id"),
+                "correlation_id": trace.get("correlation_id"),
             }
         )
 
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
+        trace = current_trace_fields()
         return jsonify(
             {
                 "ok": status["ok"],
@@ -310,6 +344,9 @@ def create_app() -> Flask:
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
                 "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
                 "max_aggregation_size": MAX_AGGREGATION_SIZE,
+                "request_id": request_id(),
+                "trace_id": trace.get("trace_id"),
+                "correlation_id": trace.get("correlation_id"),
             }
         ), 200 if status["ok"] else 503
 
@@ -1319,15 +1356,31 @@ def log_error_response(status: int) -> None:
     log_structured(
         LOGGER,
         logging.ERROR,
-        {
-            "event": "error",
-            "request_id": request_id(),
-            "method": request.method,
-            "route": request_route(),
-            "path": request.path,
-            "status": status,
-            "duration_ms": request_duration_ms(),
-        },
+        merge_trace_into_event(
+            {
+                "event": "error",
+                "request_id": request_id(),
+                "method": request.method,
+                "route": request_route(),
+                "path": request.path,
+                "status": status,
+                "duration_ms": request_duration_ms(),
+            },
+            current_trace_fields(),
+        ),
+    )
+
+
+def current_trace_fields() -> dict:
+    fields = getattr(g, "trace_fields", None)
+    if isinstance(fields, dict):
+        return fields
+    return build_trace_fields(
+        getattr(request, "headers", None),
+        request_id=request_id(),
+        method=getattr(request, "method", None),
+        route=request_route() if request else None,
+        path=getattr(request, "path", None),
     )
 
 
