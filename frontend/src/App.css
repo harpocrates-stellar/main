@@ -1277,10 +1277,25 @@ code {
   margin-bottom: 0.5rem;
 }
 
+/* Global banner shown below the navbar — spans full viewport width */
+.network-mismatch-banner--global {
+  border-radius: 0;
+  margin-bottom: 0;
+  padding: 0.6rem 1.25rem;
+  position: relative;
+  z-index: 99;
+}
+
 .network-mismatch-icon {
   flex-shrink: 0;
   font-size: 1rem;
   line-height: 1.45;
+}
+
+/* Highlight the connect-wallet button when a mismatch is active */
+.icon-button.wallet-mismatch {
+  border-color: rgba(255, 180, 0, 0.6);
+  color: #ffd966;
 }
 
 /* ── Skip to content ───────────────────────────────────────────────────── */
