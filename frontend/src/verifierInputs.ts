@@ -62,6 +62,13 @@ export const MAX_REVOCATION_WITNESS_DEPTH = 3
 /** Leaf capacity implied by {@link MAX_REVOCATION_WITNESS_DEPTH} (`2^depth`). */
 export const MAX_REVOCATION_LEAVES = 8
 
+/**
+ * Protocol aggregation proof count bounds for silent witness batch aggregation (#497).
+ * Must match the Noir globals and the Soroban registry constants.
+ */
+export const MAX_AGGREGATION_SIZE = 8
+export const MIN_AGGREGATION_SIZE = 1
+
 export type VerifierSchema =
   | typeof SCHEMA_SILENT_WITNESS
   | typeof SCHEMA_REVOCATION_WITNESS
@@ -364,3 +371,21 @@ export function checkRevocationWitnessDepth(depth: number): void {
     throw new VerifierInputError('proof_oversize', 'depth')
   }
 }
+
+/**
+ * Reject an aggregation proof count / batch size outside the protocol bound (#497).
+ * Privacy-safe: never logs video hashes, secrets, or witness material.
+ */
+export function checkAggregationBatchSize(batchSize: number): number {
+  if (!Number.isInteger(batchSize)) {
+    throw new VerifierInputError('malformed_hex', 'batch_size')
+  }
+  if (batchSize < MIN_AGGREGATION_SIZE) {
+    throw new VerifierInputError('length', 'batch_size')
+  }
+  if (batchSize > MAX_AGGREGATION_SIZE) {
+    throw new VerifierInputError('proof_oversize', 'batch_size')
+  }
+  return batchSize
+}
+

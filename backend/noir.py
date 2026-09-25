@@ -11,6 +11,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SINGLE_SCRIPT_PATH = ROOT_DIR / "zk" / "noir" / "scripts" / "generate-silent-witness-wsl.ps1"
 BATCH_SCRIPT_PATH = ROOT_DIR / "zk" / "noir" / "scripts" / "generate-silent-witness-aggregator.sh"
 
+from verifier_inputs import (
+    MAX_AGGREGATION_SIZE,
+    MIN_AGGREGATION_SIZE,
+    check_aggregation_batch_size,
+)
+
 
 def generate_silent_witness(
     video_hash: str,
@@ -82,10 +88,12 @@ def generate_aggregated_proof(
         RuntimeError: If the Noir/batch process fails.
     """
     batch_size = len(video_hashes)
-    if batch_size < 1 or batch_size > 8:
+    try:
+        check_aggregation_batch_size(batch_size)
+    except Exception as exc:
         raise ValueError(
-            f"Batch size must be between 1 and 8 (got {batch_size})"
-        )
+            f"Batch size must be between {MIN_AGGREGATION_SIZE} and {MAX_AGGREGATION_SIZE} (got {batch_size})"
+        ) from exc
 
     cmd = [
         "bash",

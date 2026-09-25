@@ -548,3 +548,11 @@ fn test_batch_register_max_size() {
         assert!(by_video.is_some(), "element {} video hash should be registered", i);
     }
 }
+
+#[cfg(test)]
+#[test]
+fn test_aggregation_bound_constants() {
+    assert_eq!(MAX_AGGREGATION_SIZE, 8);
+    assert_eq!(MIN_AGGREGATION_SIZE, 1);
+}
+
