@@ -80,3 +80,74 @@ describe('result labels', () => {
     }
   })
 })
+
+describe('createReceipt — boundary and regression', () => {
+  it('does not expose chainRecord fields when null', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'not_found')
+    expect(receipt.chainRecord).toBeNull()
+  })
+
+  it('verifiedAt is a valid ISO-8601 date string', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'pending', txHash: '' }, null, 'pending')
+    const parsed = new Date(receipt.verifiedAt)
+    expect(isNaN(parsed.getTime())).toBe(false)
+    expect(receipt.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('version is always 1', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    for (const result of ['valid', 'expired', 'revoked', 'not_found', 'failed'] as const) {
+      expect(createReceipt(manifest, { status: 'confirmed', txHash: 'x' }, null, result).version).toBe(1)
+    }
+  })
+
+  it('preserves the exact manifest reference', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'valid')
+    expect(receipt.manifest).toBe(manifest)
+  })
+
+  it('preserves the exact transaction reference', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const tx = { status: 'confirmed' as const, txHash: 'deafbeef' }
+    const receipt = createReceipt(manifest, tx, null, 'valid')
+    expect(receipt.transaction).toBe(tx)
+  })
+})
+
+describe('formatReceipt — boundary and regression', () => {
+  it('does not print null for missing chainRecord', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'not_found')
+    expect(formatReceipt(receipt)).not.toContain('null')
+  })
+
+  it('includes the proofId in the output', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'valid')
+    expect(formatReceipt(receipt)).toContain(VALID_INPUT.proofId)
+  })
+
+  it('does not leak secrets or witness values in formatted output', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'valid')
+    const text = formatReceipt(receipt).toLowerCase()
+    for (const word of ['seed', 'nullifier', 'witness', 'credential', 'private']) {
+      expect(text).not.toContain(word)
+    }
+  })
+
+  it('shows network_mismatch label without throwing', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'network_mismatch')
+    expect(formatReceipt(receipt)).toContain('NETWORK MISMATCH')
+  })
+
+  it('shows contract_mismatch label without throwing', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const receipt = createReceipt(manifest, { status: 'confirmed', txHash: 'abc' }, null, 'contract_mismatch')
+    expect(formatReceipt(receipt)).toContain('CONTRACT MISMATCH')
+  })
+})

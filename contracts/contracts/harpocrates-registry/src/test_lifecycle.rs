@@ -19,7 +19,7 @@ use super::*;
 #[cfg(test)]
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, testutils::Events as _, Address, Bytes, Env,
-    Vec as SorobanVec,
+    IntoVal, Symbol, Val, Vec as SorobanVec,
 };
 
 // ---------------------------------------------------------------------------
@@ -207,6 +207,30 @@ fn lifecycle_source_emits_history() {
     );
     assert_eq!(history.get(0).unwrap().actor, Some(source));
     assert_eq!(history.get(0).unwrap().reason_code, TIER_CONSISTENT_SOURCE);
+
+    // Registration has one stable observable order: ProofRegistered first,
+    // then its append-only lifecycle history entry. This also guards the
+    // batch path, which uses the same save_record helper.
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 2);
+    let registration_topics: SorobanVec<Val> = events.events().get(0).unwrap().1.clone();
+    let history_topics: SorobanVec<Val> = events.events().get(1).unwrap().1.clone();
+    assert_eq!(
+        registration_topics.get(0).unwrap().try_into_val::<Symbol>(&env).unwrap(),
+        Symbol::new(&env, "proof")
+    );
+    assert_eq!(
+        registration_topics.get(1).unwrap().try_into_val::<Symbol>(&env).unwrap(),
+        Symbol::new(&env, "reg")
+    );
+    assert_eq!(
+        history_topics.get(0).unwrap().try_into_val::<Symbol>(&env).unwrap(),
+        Symbol::new(&env, "proof")
+    );
+    assert_eq!(
+        history_topics.get(1).unwrap().try_into_val::<Symbol>(&env).unwrap(),
+        Symbol::new(&env, "history")
+    );
 }
 
 #[test]

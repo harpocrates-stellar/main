@@ -131,6 +131,69 @@ class ProofEventsCursorApiTest(unittest.TestCase):
         # already returned ids (keyset stability).
         self.assertNotIn(11, seen)
 
+    def test_composite_cursor_boundary_and_duplicate_timestamps(self) -> None:
+        """Test cursor traversal when multiple events share identical timestamps."""
+        timestamp = "2026-09-24T12:00:00Z"
+        # 5 events with identical created_at timestamp
+        events_batch = []
+        for i in range(5, 0, -1):
+            e = _event(i)
+            e["created_at"] = timestamp
+            events_batch.append(e)
+
+        def fake_list(limit: int, *, cursor_id: int | None = None):
+            page_size = clamp_proof_events_limit(limit)
+            filtered = [r for r in events_batch if cursor_id is None or r["id"] < cursor_id]
+            window = filtered[: page_size + 1]
+            next_cursor = None
+            if len(window) > page_size:
+                window = window[:page_size]
+                next_cursor = encode_proof_events_cursor(window[-1]["id"])
+            return window, next_cursor
+
+        with patch.object(app_module, "list_proof_events", side_effect=fake_list):
+            # Page 1 (limit 2) -> ids 5, 4
+            res1 = self.client.get("/api/proofs?limit=2")
+            self.assertEqual(res1.status_code, 200)
+            self.assertEqual([item["id"] for item in res1.json["events"]], [5, 4])
+            c1 = res1.json["nextCursor"]
+            self.assertIsNotNone(c1)
+
+            # Page 2 (limit 2) -> ids 3, 2
+            res2 = self.client.get(f"/api/proofs?limit=2&cursor={c1}")
+            self.assertEqual(res2.status_code, 200)
+            self.assertEqual([item["id"] for item in res2.json["events"]], [3, 2])
+            c2 = res2.json["nextCursor"]
+            self.assertIsNotNone(c2)
+
+            # Page 3 (limit 2) -> id 1
+            res3 = self.client.get(f"/api/proofs?limit=2&cursor={c2}")
+            self.assertEqual(res3.status_code, 200)
+            self.assertEqual([item["id"] for item in res3.json["events"]], [1])
+            self.assertIsNone(res3.json["nextCursor"])
+
+    def test_empty_result_page(self) -> None:
+        """Test API behavior when no proof events exist."""
+        with patch.object(app_module, "list_proof_events", return_value=([], None)):
+            response = self.client.get("/api/proofs?limit=25")
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json["ok"])
+            self.assertEqual(response.json["events"], [])
+            self.assertIsNone(response.json["nextCursor"])
+
+    def test_privacy_no_sensitive_leak_in_error(self) -> None:
+        """Assert public error responses do not leak sensitive values or stack traces."""
+        response = self.client.get("/api/proofs?cursor=invalid_secret_token_12345")
+        self.assertEqual(response.status_code, 400)
+        body = response.json
+        # Error must be privacy safe
+        self.assertEqual(body.get("error"), "invalid cursor")
+        raw_text = str(body)
+        self.assertNotIn("secret", raw_text)
+        self.assertNotIn("witness", raw_text)
+        self.assertNotIn("SELECT", raw_text)
+        self.assertNotIn("Traceback", raw_text)
+
 
 if __name__ == "__main__":
     unittest.main()

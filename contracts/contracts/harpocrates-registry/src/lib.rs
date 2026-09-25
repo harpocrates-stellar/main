@@ -16,6 +16,13 @@ use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN};
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
 pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
 
+/// Maximum Merkle depth for the `revocation_witness` circuit (#357).
+/// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
+/// Raising this value requires a new circuit version — do not change it silently.
+pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 3;
+/// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 8).
+pub const MAX_REVOCATION_LEAVES: u32 = 8;
+
 const TIER_SILENT_WITNESS: u32 = 1;
 const TIER_CONSISTENT_SOURCE: u32 = 2;
 const TIER_PUBLIC_SEAL: u32 = 3;
@@ -1546,13 +1553,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), None);
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            None,
-            record.tier,
-        );
         record
     }
 
@@ -1675,13 +1675,6 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         };
 
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            None,
-            record.tier,
-        );
         record
     }
 
@@ -1878,13 +1871,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(source),
-            record.tier,
-        );
         record
     }
 
@@ -1918,13 +1904,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(issuer),
-            record.tier,
-        );
         record
     }
 
@@ -2131,14 +2110,7 @@ impl HarpocratesRegistry {
             nullifier: None,
             batch_size: 0,
         };
-        save_record(&env, &proof_id, record.clone(), Some(source.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(delegate.clone()),
-            record.tier,
-        );
+        save_record(&env, &proof_id, record.clone(), Some(delegate.clone()));
         DelegationUsed {
             grantor: source,
             delegate,
@@ -2186,14 +2158,7 @@ impl HarpocratesRegistry {
             nullifier: None,
             batch_size: 0,
         };
-        save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(delegate.clone()),
-            record.tier,
-        );
+        save_record(&env, &proof_id, record.clone(), Some(delegate.clone()));
         DelegationUsed {
             grantor: issuer,
             delegate,
@@ -3334,6 +3299,17 @@ fn save_record(
         batch_size: record.batch_size,
     }
     .publish(env);
+    // Registration has one canonical observable order: the domain event is
+    // emitted first, followed by the append-only lifecycle history event.
+    // Keeping both emissions here also covers aggregated registrations and
+    // prevents a new registration path from silently omitting history.
+    record_proof_history(
+        env,
+        proof_id,
+        ProofLifecycleAction::Registered as u32,
+        actor,
+        record.tier,
+    );
     record
 }
 
@@ -4012,9 +3988,13 @@ mod test_fuzz;
 #[cfg(test)]
 mod test_invariants;
 #[cfg(test)]
+mod test_identity_tier_properties;
+#[cfg(test)]
 mod test_pause;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_registration_replay;
 #[cfg(test)]
 mod test_scoped_nullifier;
 #[cfg(test)]
@@ -4029,3 +4009,5 @@ mod test_schema;
 mod test_selective_disclosure;
 #[cfg(test)]
 mod test_upgrade_compat;
+#[cfg(test)]
+mod test_deployment_fixture;

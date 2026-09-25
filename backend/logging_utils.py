@@ -6,11 +6,22 @@ from typing import Any
 REDACTED_VALUE = "[redacted]"
 SENSITIVE_KEYS = {
     "authorization",
+    "cookie",
     "credentialsecret",
     "nullifiersecret",
+    "password",
+    "privatekey",
     "proof",
     "publicinputs",
+    "rawbytes",
+    "secret",
+    "token",
+    "witness",
 }
+
+# Correlation / trace identifiers are intentionally NOT listed here so
+# privacy-safe trace fields (request_id, trace_id, span_id, correlation_id)
+# survive redact_sensitive() when nested inside structured log events.
 
 
 def redact_sensitive(value: Any) -> Any:

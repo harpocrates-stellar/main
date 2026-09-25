@@ -17,6 +17,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "release" / "compatibility-manifest.json"
+DEFAULT_BINDING = ROOT / "release" / "verifier-binding.json"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$")
 HEX_256 = re.compile(r"^[0-9a-f]{64}$")
 COMPONENTS = {"frontend", "backend", "circuit", "verifier", "registry"}
@@ -139,9 +140,38 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise ManifestError("active release requires digest-pinned verifier WASM and VK artifacts")
 
 
+def validate_verifier_key_binding(manifest: dict[str, Any], binding: dict[str, Any]) -> None:
+    """Require active releases to checksum-bind their deployed verifier key."""
+    if manifest["rollout"]["state"] != "active":
+        return
+
+    verifier_keys = [
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["component"] == "verifier" and artifact["path"].endswith(".vk")
+    ]
+    if len(verifier_keys) != 1:
+        raise ManifestError("active release must declare exactly one verifier VK artifact")
+
+    artifact = verifier_keys[0]
+    bound_path = binding.get("verification_key_artifact")
+    bound_sha256 = binding.get("verification_key_sha256")
+    if not isinstance(bound_path, str) or not isinstance(bound_sha256, str):
+        raise ManifestError(
+            "active release requires verification_key_artifact and verification_key_sha256"
+        )
+    if bound_path != artifact["path"]:
+        raise ManifestError("verifier key binding path does not match the release artifact")
+    if not HEX_256.fullmatch(bound_sha256):
+        raise ManifestError("verification_key_sha256 must be a SHA-256 digest")
+    if bound_sha256.lower() != artifact["sha256"].lower():
+        raise ManifestError("verifier key binding checksum does not match the release artifact")
+
+
 def verify(manifest_path: Path, require_active: bool = False) -> None:
     manifest = read_json(manifest_path)
     validate_manifest(manifest)
+    validate_verifier_key_binding(manifest, read_json(DEFAULT_BINDING))
     _verify_declared_component_versions(manifest)
     if require_active and manifest["rollout"]["state"] != "active":
         raise ManifestError("publication requires rollout.state=active")

@@ -42,3 +42,16 @@ jobs:
 
       - name: Run production build
         run: npm run build
+
+      - name: Set up Python for the coverage checker
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run tests with coverage
+        run: |
+          npm install --no-save @vitest/coverage-v8
+          npx vitest run --coverage --coverage.reporter=json-summary
+
+      - name: Check frontend coverage thresholds
+        run: python3 ../devx/coverage/check_coverage.py --workspace frontend --report coverage/coverage-summary.json

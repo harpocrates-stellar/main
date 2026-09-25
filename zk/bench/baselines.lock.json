@@ -1,0 +1,115 @@
+{
+  "format": "harpocrates.zk-bench-baselines",
+  "version": 1,
+  "description": "Published proof generation/verification benchmark thresholds for Harpocrates. CI enforces the `ci` target against synthetic envelopes. Native/browser ceilings bound real UltraHonk prove/verify on operator hardware within bench.lock timeouts. Reports never include witness, proof hex, or secrets \u2014 only timings, sizes, and digests. See docs/zk-benchmarks.md.",
+  "circuit": "silent_witness",
+  "fixture_id": "silent_witness.synthetic.v1",
+  "calibrated_from": {
+    "ci": "synthetic driver (deterministic envelope); headroom for runner jitter",
+    "native": "host CLI UltraHonk within zk/bench/bench.lock.json native.timeout_ms",
+    "browser": "Node/bb.js UltraHonk within browser.timeout_ms (Evidence Studio worker stack)",
+    "soroban_adjacent": "host CPU/memory budget envelope for register_anonymous_verified / classify"
+  },
+  "rollback": "Delete this file to make compare inert (exit 0). No protocol or proof-format migration.",
+  "privacy": {
+    "note": "Thresholds are numeric only. Forbidden report keys remain enforced by zk_bench.assert_privacy_safe."
+  },
+  "targets": {
+    "ci": {
+      "description": "Hermetic CI gate (synthetic prove/verify). Must stay green without nargo/bb.",
+      "prove": {
+        "max_ms": {
+          "p50": 50.0,
+          "p95": 100.0,
+          "p99": 120.0
+        },
+        "max_sizes": {
+          "proof_bytes": 2048,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 536870912
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 40.0,
+          "p95": 80.0,
+          "p99": 100.0
+        },
+        "max_sizes": {
+          "proof_bytes": 2048,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 536870912
+      }
+    },
+    "native": {
+      "description": "Host nargo/bb prove+verify. Caps sit under native.timeout_ms=180000.",
+      "prove": {
+        "max_ms": {
+          "p50": 90000.0,
+          "p95": 150000.0,
+          "p99": 170000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 4294967296
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 8000.0,
+          "p95": 20000.0,
+          "p99": 30000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 2147483648
+      }
+    },
+    "browser": {
+      "description": "Node/bb.js UltraHonk (browser-equivalent). Caps sit under browser.timeout_ms=180000.",
+      "prove": {
+        "max_ms": {
+          "p50": 120000.0,
+          "p95": 160000.0,
+          "p99": 170000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 4294967296
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 10000.0,
+          "p95": 25000.0,
+          "p99": 40000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 2147483648
+      }
+    },
+    "soroban_adjacent": {
+      "description": "Soroban-adjacent host budget envelope (verify phase only).",
+      "verify": {
+        "max_ms": {
+          "p50": 40.0,
+          "p95": 80.0,
+          "p99": 100.0
+        },
+        "max_sizes": {
+          "proof_bytes": 2048,
+          "public_input_bytes": 160
+        },
+        "max_peak_rss_bytes": 536870912
+      }
+    }
+  }
+}

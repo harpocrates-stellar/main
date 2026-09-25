@@ -265,6 +265,14 @@ MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    Migration(
+        id=10,
+        name="add composite cursor index to proof_events",
+        sql="""
+        CREATE INDEX IF NOT EXISTS proof_events_cursor_idx
+            ON proof_events (id DESC, created_at DESC);
+        """,
+    ),
 ]
 
 
