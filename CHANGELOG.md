@@ -2,15 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
-- Added `harpocrates c2pa` to export C2PA authenticity assertions from the
-  canonical proof manifest (with an optional verification receipt) as an
-  unsigned C2PA JSON manifest definition. Standard `c2pa.actions.v2` and
-  `c2pa.hash.data` assertions plus namespaced `harpocrates.registry.v1`,
-  `harpocrates.verification.v1`, and `harpocrates.export.v1`.
-  Deterministic output, privacy-safe (never media, witnesses, secrets, proof
-  bytes, or keys; never signs), schema version 1, 1 MiB input / 256 KiB
-  output caps. Verified against a committed fixture by
-  `devx/validate_c2pa_fixture.py` in the new CLI CI workflow (#384).
+- Added on-chain **metadata envelope versioning** for the Soroban registry (`MetadataEnvelope`, `bind_metadata_envelope`, auto-V1 stamp on register, V1→V2 upgrade path) aligned with `backend/envelope.py`. See `contracts/METADATA_ENVELOPE.md`. Closes #317.
 
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
