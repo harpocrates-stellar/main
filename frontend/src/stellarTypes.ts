@@ -64,6 +64,30 @@ export type RegisterProofResult = {
   txState: TxState
 }
 
+export type VerifierRotationInput = {
+  contractId: string
+  publicKey: string
+  verifier: string
+  activationLedger: number | bigint
+  overlapWindow: number | bigint
+  rollbackWindow: number | bigint
+}
+
+export type VerifierRotationActionInput = {
+  contractId: string
+  publicKey: string
+}
+
+export type ChainVerifierState = {
+  activeVerifier: string | null
+  pendingVerifier: string | null
+  previousVerifier: string | null
+  activationLedger: string
+  overlapWindow: string
+  rollbackWindow: string
+  rollbackWindowEnd: string
+}
+
 export type ChainProofRecord = {
   videoHash: string
   metadataHash: string
@@ -74,8 +98,43 @@ export type ChainProofRecord = {
   issuer: string | null
 }
 
+export type SupportedPredicateType = 'Equality' | 'SetMembership' | 'Range'
+
+export type SelectiveDisclosureChainInput = {
+  publicInputs: string
+  proof: string
+  schemaHash: string
+  evidenceDigest: string
+}
+
+export type SchemaChainRecord = {
+  schemaHash: string
+  issuerNamespace: string
+  version: number
+  active: boolean
+  attributeCount: number
+  createdAt: string
+}
+
 export type RegistryMethod =
   | 'register_anonymous_verified'
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'set_scope_epoch'
+  | 'get_scope_epoch'
+  | 'verify_selective_disclosure'
+  | 'add_schema'
+  | 'get_schema'
+
+export type ScopedProofScope = {
+  /** Field element derived from the scope string (SHA-256 mod BN254). */
+  scopeField: string
+  /** Human-readable scope name (for manifest only, not sent on-chain). */
+  scopeName: string
+}
+
+export type ScopedProofEpoch = {
+  /** Epoch number matching the on-chain scope epoch. */
+  epoch: number
+}

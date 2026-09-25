@@ -811,11 +811,166 @@ body::-webkit-scrollbar-thumb:hover,
   padding: 14px 0 4px;
 }
 
+.verification-timeline {
+  margin: 14px 0 16px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(9, 9, 14, 0.72);
+}
+
+.verification-timeline__header,
+.verification-timeline__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.verification-timeline__header h3 {
+  margin: 3px 0 0;
+  font-size: 15px;
+}
+
+.verification-timeline__privacy,
+.verification-timeline__title-row span {
+  color: rgba(200, 206, 255, 0.7);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.verification-timeline__list {
+  position: relative;
+  display: grid;
+  gap: 0;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.verification-timeline__list::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 9px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  content: '';
+}
+
+.verification-timeline__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.verification-timeline__marker {
+  z-index: 1;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 50%;
+  background: #09090e;
+  color: rgba(255, 255, 255, 0.48);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.verification-timeline__content {
+  min-width: 0;
+}
+
+.verification-timeline__title-row strong {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+}
+
+.verification-timeline__content p {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.verification-timeline__step--complete .verification-timeline__marker {
+  border-color: rgba(112, 255, 199, 0.72);
+  color: #70ffc7;
+}
+
+.verification-timeline__step--active .verification-timeline__marker {
+  border-color: rgba(200, 206, 255, 0.82);
+  color: #c8ceff;
+}
+
+.verification-timeline__step--failed .verification-timeline__marker {
+  border-color: rgba(255, 160, 120, 0.8);
+  color: #ffa078;
+}
+
+@media (max-width: 640px) {
+  .verification-timeline {
+    padding: 14px;
+  }
+
+  .verification-timeline__header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
 .verify-result p {
   margin: 0;
   color: rgba(255, 255, 255, 0.56);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.verify-progress {
+  min-height: 22px;
+  margin: 6px 0 2px;
+}
+
+.verify-progress-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(200, 206, 255, 0.9);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.verify-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.verify-action-btn {
+  min-height: 44px;
+  min-width: 96px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.verify-error p {
+  color: rgba(255, 160, 120, 0.92);
+}
+
+.verify-cancelled p {
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .event-list {
@@ -876,6 +1031,130 @@ body::-webkit-scrollbar-thumb:hover,
 
 .chain-grid code {
   margin: 0;
+}
+
+.provenance-card {
+  display: grid;
+  gap: 16px;
+}
+
+.provenance-card__header h4 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.provenance-card__header p {
+  margin: 6px 0 0;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.provenance-warning {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 190, 92, 0.3);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(101, 54, 0, 0.35), rgba(66, 31, 0, 0.2));
+}
+
+.provenance-warning strong {
+  color: #ffd59a;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.provenance-warning p {
+  margin: 0;
+  color: rgba(255, 236, 208, 0.92);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.provenance-grid {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.provenance-grid > div {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.provenance-grid > div:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.provenance-grid dt {
+  color: rgba(255, 255, 255, 0.36);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.provenance-grid dd {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.provenance-grid a {
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: none;
+}
+
+.provenance-grid a:hover {
+  text-decoration: underline;
+}
+
+.provenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.provenance-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.provenance-actions button:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.provenance-copy-status {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .muted {
@@ -1072,6 +1351,19 @@ code {
     width: 920px;
     padding: 24px 20px;
   }
+
+  .verify-actions {
+    flex-direction: column;
+  }
+
+  .verify-action-btn {
+    width: 100%;
+  }
+
+  .dropzone {
+    min-height: 160px;
+    padding: 18px 14px;
+  }
 }
 
 .topbar:not(.scrolled) .network-pill {
@@ -1099,8 +1391,214 @@ code {
   margin-bottom: 0.5rem;
 }
 
+/* Global banner shown below the navbar — spans full viewport width */
+.network-mismatch-banner--global {
+  border-radius: 0;
+  margin-bottom: 0;
+  padding: 0.6rem 1.25rem;
+  position: relative;
+  z-index: 99;
+}
+
 .network-mismatch-icon {
   flex-shrink: 0;
   font-size: 1rem;
   line-height: 1.45;
+}
+
+/* ── Verification mode toggle (offline local check) ─────────────────────── */
+.verify-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 0.75rem;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.mode-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.mode-toggle.active {
+  border-color: rgba(125, 211, 252, 0.6);
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.mode-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-toggle:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+
+/* Highlight the connect-wallet button when a mismatch is active */
+.icon-button.wallet-mismatch {
+  border-color: rgba(255, 180, 0, 0.6);
+  color: #ffd966;
+}
+
+/* ── Skip to content ───────────────────────────────────────────────────── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  color: #050505;
+  background: #fff;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transform: translateX(-50%);
+  transition: top 160ms ease;
+}
+
+.skip-link:focus {
+  top: 8px;
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+/* ── Screen reader only ─────────────────────────────────────────────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Visible focus rings (WCAG 2.4.11 Focus Appearance) ─────────────────── */
+:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+/* Remove outline for mouse users who don't need it */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Ensure buttons and interactive elements have sufficient focus ring */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[role="radio"]:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Minimum touch/click target size (WCAG 2.5.8) ───────────────────────── */
+.tier-tab {
+  min-height: 44px;
+}
+
+.navlinks button {
+  min-height: 44px;
+  padding: 0 8px;
+}
+
+/* ── High-contrast text for data labels ─────────────────────────────────── */
+.data-list dt {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.data-list dd {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.rail-block h3 {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.page-header p {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.lede {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* Tier tabs: visible selected state beyond color alone */
+.tier-tab.active {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.38);
+}
+
+/* ── Reduced motion: disable decorative animations ───────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .flow-connector {
+    animation: none;
+    stroke-dasharray: none;
+  }
+
+  .hero-copy h1,
+  .lede,
+  .hero-actions {
+    opacity: 1;
+    animation: none;
+    transform: none;
+  }
+
+  .spin {
+    animation: none;
+  }
+
+  .topbar {
+    transition: none;
+  }
+}
+
+/* ── Error state visual ──────────────────────────────────────────────────── */
+.primary-action[aria-busy="true"] {
+  cursor: wait;
+}
+
+/* Shareable verification link (Issue #302) */
+.share-verification-link {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.share-verification-link .verify-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.share-link-status {
+  overflow-wrap: anywhere;
 }

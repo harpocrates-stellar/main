@@ -20,6 +20,11 @@ class MetricsCollector:
         self._latency_histogram: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self._upload_histogram: Dict[Tuple[str, str], Dict[str, float]] = {}
         self._rejections_total: Dict[Tuple[str, str], int] = {}
+        
+        # Verifier cache metrics
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_evictions = 0
 
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
@@ -28,6 +33,9 @@ class MetricsCollector:
             self._latency_histogram.clear()
             self._upload_histogram.clear()
             self._rejections_total.clear()
+            self._cache_hits = 0
+            self._cache_misses = 0
+            self._cache_evictions = 0
 
     def record_request(
         self,
@@ -90,6 +98,21 @@ class MetricsCollector:
             key = (clean_reason, clean_endpoint)
             self._rejections_total[key] = self._rejections_total.get(key, 0) + 1
 
+    def record_cache_hit(self) -> None:
+        """Record a verifier cache hit."""
+        with self._lock:
+            self._cache_hits += 1
+
+    def record_cache_miss(self) -> None:
+        """Record a verifier cache miss."""
+        with self._lock:
+            self._cache_misses += 1
+
+    def record_cache_eviction(self) -> None:
+        """Record a verifier cache eviction."""
+        with self._lock:
+            self._cache_evictions += 1
+
     def generate_prometheus_metrics(self) -> str:
         """Format metrics into Prometheus text format (version 0.0.4)."""
         lines: List[str] = []
@@ -149,6 +172,22 @@ class MetricsCollector:
                         f'harpocrates_admission_rejected_total{{endpoint="{_escape_label(endpoint)}",'
                         f'reason="{_escape_label(reason)}"}} {count}'
                     )
+
+            # 5. Verifier cache metrics
+            lines.append("")
+            lines.append("# HELP harpocrates_verifier_cache_hits_total Total count of verifier cache hits.")
+            lines.append("# TYPE harpocrates_verifier_cache_hits_total counter")
+            lines.append(f"harpocrates_verifier_cache_hits_total {self._cache_hits}")
+            
+            lines.append("")
+            lines.append("# HELP harpocrates_verifier_cache_misses_total Total count of verifier cache misses.")
+            lines.append("# TYPE harpocrates_verifier_cache_misses_total counter")
+            lines.append(f"harpocrates_verifier_cache_misses_total {self._cache_misses}")
+            
+            lines.append("")
+            lines.append("# HELP harpocrates_verifier_cache_evictions_total Total count of verifier cache evictions.")
+            lines.append("# TYPE harpocrates_verifier_cache_evictions_total counter")
+            lines.append(f"harpocrates_verifier_cache_evictions_total {self._cache_evictions}")
 
         lines.append("")
         return "\n".join(lines)

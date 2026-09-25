@@ -1,0 +1,35 @@
+{
+  "artifacts": [
+    {
+      "kind": "json",
+      "normalized_bytes": 2003,
+      "normalized_sha256": "465e556f5904e7bc5404cfb7557e5648949df36b504d7b7b0a218257cf83d509",
+      "path": "frontend/public/noir/silent_witness.json",
+      "raw_bytes": 24329,
+      "raw_sha256": "26c306df107269cce78e21bdedafe0444a54691131e825d44ce350dcf8b97e79",
+      "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "normalized_bytes": 1960,
+      "normalized_sha256": "a141350e3c2f83fb4d30c9c4c6ba81ff6ef0400a39e81b7a583bf36754719df8",
+      "path": "frontend/public/noir/silent_witness_helper.json",
+      "raw_bytes": 24149,
+      "raw_sha256": "95a629e7a094d8ddfe6bc92d2455f500eb9ce1f4dec37d51b9c5ed3b4a55ddb4",
+      "role": "published_acir"
+    }
+  ],
+  "format": "harpocrates.zk-browser-artifact-manifest",
+  "normalization_policy_sha256": "ab0d2c5df0ed8fa307d26a748fbbca0d6b671e1fa228e491a8149b5d305565b5",
+  "skipped": [
+    "frontend/public/noir/silent_witness_aggregator.json",
+    "frontend/public/noir/silent_witness_aggregator_helper.json"
+  ],
+  "toolchain": {
+    "barretenberg": "0.87.0",
+    "nargo": "1.0.0-beta.9",
+    "oracle_hash": "keccak",
+    "proving_scheme": "ultra_honk"
+  },
+  "version": 1
+}
