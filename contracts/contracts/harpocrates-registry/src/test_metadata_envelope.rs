@@ -48,7 +48,7 @@ fn registration_stamps_default_v1_envelope() {
     assert_eq!(envelope.version, METADATA_ENVELOPE_V1);
     assert_eq!(envelope.metadata_hash, meta);
     assert_eq!(
-        client.resolve_metadata_envelope_version(&proof_id),
+        client.resolve_envelope_version(&proof_id),
         METADATA_ENVELOPE_V1
     );
 }
@@ -65,7 +65,7 @@ fn bind_upgrade_to_v2_succeeds() {
     let stored = client.get_metadata_envelope(&proof_id).unwrap();
     assert_eq!(stored.version, METADATA_ENVELOPE_V2);
     assert_eq!(
-        client.resolve_metadata_envelope_version(&proof_id),
+        client.resolve_envelope_version(&proof_id),
         METADATA_ENVELOPE_V2
     );
 }
@@ -81,7 +81,7 @@ fn bind_v2_is_idempotent() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #68)")]
+#[should_panic(expected = "Error(Contract, #77)")]
 fn unsupported_version_zero_rejected() {
     let (env, client, admin) = setup();
     let (_source, proof_id, meta) = register_source_proof(&env, &client);
@@ -89,7 +89,7 @@ fn unsupported_version_zero_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #68)")]
+#[should_panic(expected = "Error(Contract, #77)")]
 fn unsupported_version_above_max_rejected() {
     let (env, client, admin) = setup();
     let (_source, proof_id, meta) = register_source_proof(&env, &client);
@@ -98,7 +98,7 @@ fn unsupported_version_above_max_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #68)")]
+#[should_panic(expected = "Error(Contract, #77)")]
 fn downgrade_v2_to_v1_rejected() {
     let (env, client, admin) = setup();
     let (_source, proof_id, meta) = register_source_proof(&env, &client);
@@ -107,7 +107,7 @@ fn downgrade_v2_to_v1_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #69)")]
+#[should_panic(expected = "Error(Contract, #78)")]
 fn zero_metadata_hash_rejected_on_bind() {
     let (env, client, admin) = setup();
     let (_source, proof_id, _meta) = register_source_proof(&env, &client);
@@ -116,7 +116,7 @@ fn zero_metadata_hash_rejected_on_bind() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #71)")]
+#[should_panic(expected = "Error(Contract, #80)")]
 fn hash_mismatch_rejected_on_bind() {
     let (env, client, admin) = setup();
     let (_source, proof_id, _meta) = register_source_proof(&env, &client);
@@ -125,7 +125,7 @@ fn hash_mismatch_rejected_on_bind() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #70)")]
+#[should_panic(expected = "Error(Contract, #79)")]
 fn bind_unknown_proof_rejected() {
     let (env, client, admin) = setup();
     let missing = bytes32(&env, 0xFF);
@@ -163,17 +163,17 @@ fn correct_proof_syncs_envelope_hash() {
 fn resolve_version_unknown_proof_is_zero() {
     let (env, client, _) = setup();
     let missing = bytes32(&env, 0xFE);
-    assert_eq!(client.resolve_metadata_envelope_version(&missing), 0);
+    assert_eq!(client.resolve_envelope_version(&missing), 0);
     assert!(client.get_metadata_envelope(&missing).is_none());
 }
 
 #[test]
 fn is_supported_version_bounds() {
     let (_env, client, _) = setup();
-    assert!(!client.is_supported_metadata_envelope_version(&0u32));
-    assert!(client.is_supported_metadata_envelope_version(&METADATA_ENVELOPE_V1));
-    assert!(client.is_supported_metadata_envelope_version(&METADATA_ENVELOPE_V2));
-    assert!(!client.is_supported_metadata_envelope_version(&(METADATA_ENVELOPE_VERSION_MAX + 1)));
+    assert!(!client.is_supported_envelope_version(&0u32));
+    assert!(client.is_supported_envelope_version(&METADATA_ENVELOPE_V1));
+    assert!(client.is_supported_envelope_version(&METADATA_ENVELOPE_V2));
+    assert!(!client.is_supported_envelope_version(&(METADATA_ENVELOPE_VERSION_MAX + 1)));
 }
 
 #[test]
