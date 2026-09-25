@@ -372,7 +372,14 @@ def create_app() -> Flask:
             auth_header = request.headers.get("Authorization", "")
             token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
             custom_token = request.headers.get("X-Metrics-Token", "").strip()
-            if token != config.metrics_token and custom_token != config.metrics_token:
+            # Constant-time comparison; both candidates are always evaluated so
+            # neither the match position nor the header used is observable.
+            import hmac as _hmac
+
+            expected_token = config.metrics_token.encode("utf-8")
+            bearer_ok = _hmac.compare_digest(token.encode("utf-8"), expected_token)
+            header_ok = _hmac.compare_digest(custom_token.encode("utf-8"), expected_token)
+            if not (bearer_ok or header_ok):
                 return jsonify({"error": "unauthorized metrics access"}), 401
 
         output = metrics_collector.generate_prometheus_metrics()
