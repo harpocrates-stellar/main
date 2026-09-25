@@ -17,6 +17,14 @@ class AppConfig:
     expose_metadata_header: bool
     noir_worker_enabled: bool
     security_headers_enabled: bool
+    ratelimit_enabled: bool
+    trusted_proxies: list[str]
+    ratelimit_embed: str
+    ratelimit_extract: str
+    ratelimit_silent_witness: str
+    ratelimit_register: str
+    ratelimit_upload_session: str
+    ratelimit_upload_chunk: str
     release_id: str
     release_network: str
     metrics_enabled: bool
@@ -29,10 +37,10 @@ class AppConfig:
     verifier_cache_max_size: int
     verifier_cache_positive_ttl_seconds: float
     verifier_cache_negative_ttl_seconds: float
-    upload_chunk_bytes: int
-    upload_stream_threshold_bytes: int
-    upload_max_bytes: int
-    upload_temp_dir: str | None
+    # External evidence fetch safety bounds
+    external_fetch_connect_timeout_seconds: float
+    external_fetch_read_timeout_seconds: float
+    external_fetch_max_response_bytes: int
 
 
 def load_config() -> AppConfig:
@@ -54,6 +62,16 @@ def load_config() -> AppConfig:
         expose_metadata_header=_bool_env("EXPOSE_METADATA_HEADER", False),
         noir_worker_enabled=_bool_env("NOIR_WORKER_ENABLED", app_env != "production"),
         security_headers_enabled=_bool_env("SECURITY_HEADERS_ENABLED", True),
+        ratelimit_enabled=_bool_env("RATELIMIT_ENABLED", True),
+        # Real client IP resolution behind proxies; empty list trusts no proxy.
+        trusted_proxies=_csv("TRUSTED_PROXIES", ""),
+        # Per-client rate limits (flask-limiter "N per <window>" strings).
+        ratelimit_embed=_str_env("RATELIMIT_EMBED") or "30 per minute",
+        ratelimit_extract=_str_env("RATELIMIT_EXTRACT") or "30 per minute",
+        ratelimit_silent_witness=_str_env("RATELIMIT_SILENT_WITNESS") or "20 per minute",
+        ratelimit_register=_str_env("RATELIMIT_REGISTER") or "30 per minute",
+        ratelimit_upload_session=_str_env("RATELIMIT_UPLOAD_SESSION") or "60 per minute",
+        ratelimit_upload_chunk=_str_env("RATELIMIT_UPLOAD_CHUNK") or "240 per minute",
         release_id=_release_id(os.getenv("HARPOCRATES_RELEASE_ID", "harpocrates-1.0.0")),
         release_network=_release_network(os.getenv("HARPOCRATES_RELEASE_NETWORK", "testnet")),
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
@@ -66,10 +84,9 @@ def load_config() -> AppConfig:
         verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
         verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
         verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
-        upload_chunk_bytes=_upload_chunk_bytes(),
-        upload_stream_threshold_bytes=_int_env("UPLOAD_STREAM_THRESHOLD_BYTES", 1_048_576),
-        upload_max_bytes=_int_env("UPLOAD_MAX_BYTES", _int_env("MAX_VIDEO_BYTES", 262_144_000)),
-        upload_temp_dir=_str_env("UPLOAD_TEMP_DIR"),
+        external_fetch_connect_timeout_seconds=_float_env("EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS", 5.0),
+        external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
+        external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
     )
 
 

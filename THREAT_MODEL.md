@@ -1,7 +1,7 @@
 # Harpocrates Protocol Threat Model
 
-**Version:** 1.0  
-**Date:** 2026-07-24  
+**Version:** 1.2  
+**Date:** 2026-09-24  
 **Status:** Active  
 **Review cadence:** Every major protocol change or at minimum every six months.  
 **Maintainer:** See `CODEOWNERS`.
@@ -158,6 +158,16 @@ Stellar private key. All on-chain operations are validated by the Soroban VM.
 **TB-3 Backend → NeonDB:** The backend writes proof events using parameterized
 queries via `psycopg`. `DATABASE_URL` is read from the environment and never
 logged. The NeonDB row schema does not store ZK secrets.
+
+**TB-4 Offline local verification (client → nothing):** When the Verification
+Portal runs "Offline local check", the browser performs the hash, stego
+extraction, structural validation, and file→metadata binding with zero network
+calls and no storage or log writes. This boundary produces **no trust
+decision**: a verifier must still consult the registry (TB-2) and event feed
+(TB-3) to confirm revocation, expiry, or nullifier replay, so offline success
+is reported only as a local check with chain/registry status "not checked".
+Envelopes carrying secret-shaped keys are rejected before any field is read,
+and output copy never carries file names, hashes, or secret material.
 
 ---
 
@@ -380,11 +390,16 @@ the NeonDB event log, or inject malicious data into the proof record.
 | `limit` parameter on `GET /api/proofs` is clamped to [1, 100] | `db.py` → `list_proof_events` |
 | Metrics endpoint is token-gated (`METRICS_TOKEN`) | `app.py` → `metrics` route |
 | Request IDs (`X-Request-ID`) enable per-request tracing | `app.py` → `start_request_context` |
+| Per-client rate limits on embed/extract/register/noir and upload-session create/chunk/commit, keyed on the real client IP | `app.py` → `@limiter.limit`, `config.py` |
+| `Retry-After` + `X-RateLimit-*` hints and a JSON `RATE_LIMITED` envelope carrying `request_id` | `app.py` → `rate_limit_exceeded` |
 
-**Residual risk:** There is no rate limiting on any endpoint. A single IP can
-send an unlimited number of embed requests within the connection limit of the
-host. Video processing (ffmpeg frame pipeline) is CPU and memory intensive;
-even a few concurrent large-video requests can saturate the backend.
+**Residual risk:** Per-client rate limits are enforced per endpoint, but the
+default in-process store (`memory://`) is not shared across workers, so counters
+must be backed by a shared store in multi-worker or multi-replica deployments.
+`TRUSTED_PROXIES` must be configured behind a reverse proxy, otherwise every
+request keys on the proxy address. Video processing (ffmpeg frame pipeline) is
+still CPU and memory intensive; a few concurrent large-video requests can
+saturate a single worker.
 `POST /api/proofs/register` has no authentication at all — any caller can insert
 arbitrary (but format-validated) rows into `proof_events`. This means NeonDB
 cannot be used as a trusted audit log for on-chain activity.
@@ -622,6 +637,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Browser-side Noir proving — secrets never sent to server in production | T4, T5 | `noirClient.ts` → `generateSilentWitnessProof` |
 | **Worker-isolated proving** — Noir proving runs in a dedicated Web Worker which is explicitly terminated upon success, failure, timeout, or cancellation. This guarantees the browser reclaims the memory hardware-isolate and drops all secrets reliably, rather than depending on GC. | T4, T5 | `proveWorker.ts`, `noirClient.ts` |
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |
+| Offline local verification — zero network calls, no storage/log writes, and never a confirmed trust decision; envelope extraction reuses the existing single stego loader (no second protocol truth) and secret-shaped envelopes are rejected up-front | T4, T5 | `offlineVerification.ts`, `useVerification.ts` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
 
@@ -662,17 +678,18 @@ confirms a zero-length or trivially-constructed proof is rejected.
 
 ---
 
-### OR-2 No Rate Limiting on Backend API
+### OR-2 Backend API Rate Limiting
 
-**Severity:** High  
+**Severity:** Low (residual)  
 **Component:** Flask backend  
-**Description:** All endpoints (`/api/stego/embed`, `/api/stego/extract`,
-`/api/proofs/register`) are unauthenticated and rate-unlimited. A single IP can
-submit thousands of requests and exhaust CPU (ffmpeg), memory, or the NeonDB
-connection pool.  
-**Remediation:** Add a reverse-proxy rate limit (nginx `limit_req`) or a
-Flask middleware (e.g., `flask-limiter`) keyed on IP address. Consider requiring
-a signed request token for embed operations.
+**Description:** Per-client rate limits now guard the upload and proof endpoints
+via `flask-limiter`, keyed on the real client IP. The remaining risk is
+deployment shape: the default `memory://` store is per-process, so limits must
+be backed by a shared store (`RATELIMIT_STORAGE_URI`) when running more than one
+worker or replica.  
+**Remediation:** Configure `RATELIMIT_STORAGE_URI` (e.g. Redis) and
+`TRUSTED_PROXIES` for multi-worker deployments; consider a signed request token
+for embed operations.
 
 ---
 
@@ -776,7 +793,50 @@ privileged contract event is emitted.
 
 ---
 
-### OR-10 Threshold Seal Policy Governance
+### OR-11 Unbounded External Evidence Fetch
+
+**Severity:** Medium — **Resolved** in #287  
+**Component:** Flask backend (`tx_verification.py`, `webhook.py`)  
+**Description:** The backend makes outbound HTTP calls to two external systems:
+
+1. **Stellar Horizon** — `tx_verification_loop` polls
+   `/transactions/{tx_hash}` on `horizon-testnet.stellar.org` to resolve
+   pending transaction statuses.
+2. **Webhook subscribers** — `dispatch_webhook` `POST`s evidence events to
+   operator-configured subscriber URLs.
+
+Prior to this fix both calls used `urllib.request.urlopen(req, timeout=10)`.
+A single `timeout=` value covers only the *read* phase in Python's
+implementation; the TCP+TLS connect phase was unlimited. Additionally, the full
+response body was buffered without a size cap, allowing a malicious or
+misbehaving remote host to stall the worker indefinitely or exhaust heap memory
+with an arbitrarily large response.
+
+Privacy implication: pre-fix log lines included the raw transaction hash and
+the subscriber URL in WARNING-level messages, which could leak correlation data
+into log aggregation systems.
+
+**Mitigations implemented** (`backend/fetch_external.py` + callers):
+
+| Property | Mechanism | Default |
+|----------|-----------|---------|
+| Connect timeout | `socket_timeout = max(connect, read)` passed to `urlopen` | 5 s |
+| Read timeout | Same `socket_timeout` covers each `recv` call | 10 s |
+| Response-size cap | Chunked read with hard limit; raises `ResponseTooLargeError` | 64 KiB |
+| Privacy-safe logging | URLs and tx-hashes logged at DEBUG only; WARNING messages log `host` only | — |
+| Config-driven | Three new `AppConfig` fields (`EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS`, `EXTERNAL_FETCH_READ_TIMEOUT_SECONDS`, `EXTERNAL_FETCH_MAX_RESPONSE_BYTES`) override defaults via env vars | — |
+
+**Compatibility:** Existing callers pass no new arguments; all three parameters
+default to the values that were previously hard-coded. No API or protocol
+surface change.
+
+**Rollback:** Remove `fetch_external.py`, revert `tx_verification.py` and
+`webhook.py` to direct `urlopen` calls, and remove the three new config fields.
+No database migration required.
+
+---
+
+### OR-12 Threshold Seal Policy Governance
 
 **Severity:** Medium  
 **Component:** Soroban contract  
@@ -827,6 +887,11 @@ The following are explicitly outside the scope of this threat model:
 - **Dependency vulnerability management** — routine CVE scanning and patching
   of npm and Python dependencies is a continuous operations concern, not
   addressed here.
+- **Validating Silent Witness proof bytes offline** — offline local verification
+  checks hash, envelope structure, and file binding only. Proof-byte validation
+  requires the UltraHonk verifier (contract or WASM with the matching circuit
+  artifact) and is intentionally not performed in offline mode; it is also not
+  embedded into the canonical metadata, so no second protocol truth is created.
 
 ---
 
@@ -847,8 +912,26 @@ correlation identifiers (`request_id`, `trace_id`, `span_id`,
 | Allowed | Opaque IDs, W3C `traceparent` (v00), sanitized routes, versioned ID tags |
 | Forbidden | Media bytes, proofs, witness values, private keys, secrets, raw IPs, raw User-Agent |
 | Malformed / oversized headers | Ignored; generated opaque IDs substituted |
+| Cross-origin propagation | `http_security.CORS_ALLOW_HEADERS` accepts the trace headers; `CORS_EXPOSE_HEADERS` lets browser clients read the echoed IDs |
 | Migration | Additive; existing `request_id` header/log field retained |
 | Rollback | Stop emitting extended fields; callers keep `request_id` |
+
+## 9.2 Per-Client Upload Rate Limits
+
+**Artifact:** `backend/app.py`, `backend/config.py` (flask-limiter)
+
+Per-client rate limits are enforced at the Flask request boundary for the
+upload and proof endpoints.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Public HTTP edge; key is the real client IP, never raw forwarded headers |
+| Default windows | embed/extract/register 30/min, silent-witness 20/min, upload-session 60/min, chunk 240/min |
+| Failure response | Stable JSON `RATE_LIMITED` envelope with `request_id`; `Retry-After` + `X-RateLimit-*` headers |
+| Privacy | Counters and logs never include media bytes, witness values, secrets, or raw forwarded headers |
+| Malformed input | Oversized/unknown paths still counted per client; spoofed `X-Forwarded-For` ignored unless the peer is a trusted proxy |
+| Migration | Additive; `RATELIMIT_ENABLED=false` disables the layer without changing routes |
+| Rollback | Remove `@limiter.limit` decorators; endpoints behave as before |
 
 ## 10. Review and Update Cadence
 
@@ -869,4 +952,4 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
-| 1.2 | 2026-09-24 | Document privacy-safe backend trace fields (`harpocrates-trace-v1`). |
+| 1.2 | 2026-09-24 | Add OR-11: Unbounded external evidence fetch — resolved in #287. Connect timeout, response-size cap, and privacy-safe logging enforced via fetch_external.safe_urlopen. |
