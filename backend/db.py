@@ -217,6 +217,38 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
 
 
+def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    metadata,
+                    created_at
+                from proof_events
+                where proof_id = %s
+                order by id desc;
+                """,
+                (proof_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def make_idempotency_key(video_hash: str, proof_id: str, tx_hash: str | None) -> str:
     """Derive the idempotency key for a register event.
 

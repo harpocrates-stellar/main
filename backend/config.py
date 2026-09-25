@@ -22,6 +22,7 @@ class AppConfig:
     max_queue_size: int
     max_concurrent_per_identity: int
     admission_timeout_seconds: float
+    max_batch_size: int
 
 
 def load_config() -> AppConfig:
@@ -50,6 +51,7 @@ def load_config() -> AppConfig:
         max_queue_size=_int_env("MAX_QUEUE_SIZE", 100),
         max_concurrent_per_identity=_int_env("MAX_CONCURRENT_PER_IDENTITY", 5),
         admission_timeout_seconds=_float_env("ADMISSION_TIMEOUT_SECONDS", 5.0),
+        max_batch_size=_int_env("MAX_BATCH_SIZE", 100),
     )
 
 
