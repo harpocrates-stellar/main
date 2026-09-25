@@ -1,7 +1,7 @@
 # Harpocrates Protocol Threat Model
 
-**Version:** 1.0  
-**Date:** 2026-07-24  
+**Version:** 1.4  
+**Date:** 2026-09-25  
 **Status:** Active  
 **Review cadence:** Every major protocol change or at minimum every six months.  
 **Maintainer:** See `CODEOWNERS`.
@@ -874,6 +874,32 @@ upload and proof endpoints.
 | Migration | Additive; `RATELIMIT_ENABLED=false` disables the layer without changing routes |
 | Rollback | Remove `@limiter.limit` decorators; endpoints behave as before |
 
+## 9.3 C2PA Authenticity Assertion Export
+
+**Artifact:** `cli/src/c2pa.ts` (`harpocrates c2pa`), schema version 1,
+exporter `harpocrates-cli/c2pa` v1.0.0.
+
+`harpocrates c2pa` derives C2PA authenticity assertions from the canonical
+proof manifest and (optionally) a verification receipt. It produces an
+**unsigned** C2PA JSON manifest definition; downstream tooling signs it with
+its own C2PA signer and key material.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Local output byte stream; the caller's C2PA signer and the target media platform become the consumers |
+| Single truth | All values come from the canonical manifest/receipt schemas; `manifestHash` = SHA-256 of the canonical serialized manifest, so the export cannot drift into a second metadata truth |
+| Privacy | Only public manifest/registry fields are emitted; media bytes, witness values, credential secrets, proof bytes, transaction blobs, and signing keys are never emitted, and the exporter never signs |
+| Verification honesty | `harpocrates.verification.v1` records the receipt outcome verbatim (`valid`/`expired`/`revoked`/`not_found`/`pending`/`failed`/...); a `valid` status is never fabricated |
+| Determinism | Same manifest + receipt ⇒ identical output bytes (CI-verified against `devx/fixtures/c2pa/expected-export.json`) |
+| Input guards | Manifest/receipt capped at 1 MiB input, 256 KiB output; unknown manifest fields and unsupported versions rejected with fixed, privacy-safe errors (exit 8) |
+| Migration | Additive; schema version `1` carried in the export, no on-chain or metadata schema change |
+| Rollback | Deploy the prior CLI build; existing receipt shape and exit-code mapping unchanged |
+
+For upstream threat coverage, the export output sits at TB-2 (browser/user →
+Stellar RPC) and TB-1 (local tooling boundary): it publishes hashes and
+registry identity that are public after registration, and it never accesses
+A1/A2 (credential/nullifier secrets) or A8/A9 keypairs.
+
 ## 10. Review and Update Cadence
 
 | Trigger | Action |
@@ -884,6 +910,7 @@ upload and proof endpoints.
 | New backend endpoint or authentication change | Re-review T1, T6, T10. |
 | Admin key rotation | Update D3; verify two-step transfer completed cleanly. |
 | Any new npm or Python dependency with network access | Assess supply-chain risk (T4). |
+| Any change to the CLI C2PA exporter (`cli/src/c2pa.ts`, `harpocrates c2pa`) | Re-review Section 9.3; regenerate the committed fixture. |
 | Scheduled review | Every six months from the date of last update, regardless of changes. |
 
 When updating this document, increment the version number, update the date, and
@@ -895,3 +922,4 @@ add a one-line change summary below:
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
 | 1.2 | 2026-09-24 | Document privacy-safe backend trace fields (`harpocrates-trace-v1`). |
 | 1.3 | 2026-09-24 | Expose/allowed propagation headers through the CORS policy. |
+| 1.4 | 2026-09-25 | Document the C2PA authenticity assertion export boundary (`harpocrates c2pa`, Section 9.3). |
