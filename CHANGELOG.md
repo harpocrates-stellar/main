@@ -2,6 +2,13 @@
 
 ## 1.0.0 — Unreleased
 
+- Added automated WCAG 2.2 AA accessibility checks to the frontend CI via
+  `axe-core` (`npm run test:a11y`), with a fail-closed assertion over every
+  public view and a documented jsdom-only limitation for `color-contrast`.
+  Landing-page workflow-diagram, protocol-status, and primary-nav labelling
+  were aligned with the documented audit. Additive dev-only change; no
+  protocol, artifact, or stored-evidence impact (#408).
+
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
   silence checks, and regression corpus entries `fz-011`–`fz-013` (#369).
