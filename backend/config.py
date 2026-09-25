@@ -5,6 +5,8 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from register_auth import ScopedKey, parse_scoped_keys
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -41,6 +43,11 @@ class AppConfig:
     external_fetch_connect_timeout_seconds: float
     external_fetch_read_timeout_seconds: float
     external_fetch_max_response_bytes: int
+    # Proof registration auth. Unset = open (development), as before.
+    register_api_key: str | None = None
+    register_api_key_expires: datetime | None = None
+    # Owner-scoped credentials: each key may only register its own sourceAddress.
+    register_scoped_keys: tuple[ScopedKey, ...] = ()
 
 
 def load_config() -> AppConfig:
@@ -87,6 +94,9 @@ def load_config() -> AppConfig:
         external_fetch_connect_timeout_seconds=_float_env("EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS", 5.0),
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
+        register_api_key=_str_env("REGISTER_API_KEY"),
+        register_api_key_expires=_iso8601_env("REGISTER_API_KEY_EXPIRES"),
+        register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
     )
 
 
@@ -143,6 +153,20 @@ def _str_env(name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
+
+
+def _iso8601_env(name: str) -> datetime | None:
+    value = _str_env(name)
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise RuntimeError(f"{name} must be a valid ISO 8601 datetime (e.g. 2026-12-31T23:59:59Z)")
+    # Assume UTC when no offset is given so the comparison is always aware.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _float_env(name: str, default: float) -> float:

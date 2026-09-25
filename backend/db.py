@@ -575,6 +575,36 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
 
 
+def find_proof_owner(proof_id: str) -> str | None:
+    """Return the ``source_address`` that first registered ``proof_id``.
+
+    The earliest register event with a recorded address is authoritative, so a
+    later event cannot re-assign ownership. Returns ``None`` when the proof is
+    unknown, was registered without an address, or no database is configured
+    (the same stub behaviour as :func:`upsert_register_event`). Database errors
+    propagate so callers can fail closed instead of guessing.
+    """
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select source_address
+                from proof_events
+                where proof_id = %s
+                  and event_type = 'register'
+                  and source_address is not null
+                order by id asc
+                limit 1;
+                """,
+                (proof_id,),
+            )
+            row = cursor.fetchone()
+    return row["source_address"] if row else None
+
+
 def make_idempotency_key(video_hash: str, proof_id: str, tx_hash: str | None) -> str:
     """Derive the idempotency key for a register event.
 
