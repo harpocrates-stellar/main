@@ -519,6 +519,20 @@ class AppHardeningTest(unittest.TestCase):
         self.assertIn('# TYPE harpocrates_request_duration_seconds histogram', metrics_text)
         self.assertIn('harpocrates_request_duration_seconds_count{endpoint="/health",method="GET",status="200"} 1', metrics_text)
 
+    def test_metrics_exposes_bounded_dependency_health_after_readiness_probe(self) -> None:
+        readiness = self.client.get("/ready")
+        self.assertIn(readiness.status_code, (200, 503))
+
+        response = self.client.get("/metrics")
+        self.assertEqual(response.status_code, 200)
+        metrics_text = response.data.decode("utf-8")
+        self.assertIn("# HELP harpocrates_dependency_up", metrics_text)
+        self.assertIn('dependency="database"', metrics_text)
+        self.assertIn('dependency="video_tools"', metrics_text)
+        self.assertIn("# HELP harpocrates_dependency_status", metrics_text)
+        self.assertNotIn("Traceback", metrics_text)
+        self.assertNotIn("password", metrics_text.lower())
+
     def test_metrics_privacy_excludes_sensitive_identifiers_and_parameterizes_routes(self) -> None:
         video_hash = "a" * 64
         self.client.get(f"/api/proofs/by-video/{video_hash}")

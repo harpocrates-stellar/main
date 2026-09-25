@@ -396,6 +396,12 @@ def create_app() -> Flask:
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
+        for dependency in readiness_manager.deps:
+            metrics_collector.record_dependency_status(
+                dependency.name,
+                status.get(dependency.name, "unknown"),
+                dependency.critical,
+            )
         trace = current_trace_fields()
         return jsonify(
             {
