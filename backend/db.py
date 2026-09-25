@@ -1,85 +1,279 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import logging
 import os
+import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+logger = logging.getLogger(__name__)
+
+# Max page size for GET /api/proofs cursor pagination.
+PROOF_EVENTS_MAX_LIMIT = 100
+PROOF_EVENTS_DEFAULT_LIMIT = 25
+
+# Libpq / Postgres connection-class SQLSTATEs that are typically transient on
+# Neon (cold start, compute wake, brief network blips, pooler pressure).
+_TRANSIENT_SQLSTATES = frozenset(
+    {
+        "08000",  # connection_exception
+        "08001",  # sqlclient_unable_to_establish_sqlconnection
+        "08003",  # connection_does_not_exist
+        "08004",  # sqlserver_rejected_establishment_of_sqlconnection
+        "08006",  # connection_failure
+        "08007",  # transaction_resolution_unknown
+        "57P01",  # admin_shutdown
+        "57P02",  # crash_shutdown
+        "57P03",  # cannot_connect_now (Neon compute starting)
+        "53300",  # too_many_connections
+        "53400",  # configuration_limit_exceeded
+    }
+)
+
+_TRANSIENT_MESSAGE_FRAGMENTS = (
+    "timeout expired",
+    "timed out",
+    "connection timed out",
+    "connection refused",
+    "connection reset",
+    "server closed the connection",
+    "could not connect",
+    "ssl connection has been closed",
+    "the database system is starting up",
+    "the database system is in recovery mode",
+    "remaining connection slots",
+    "temporary failure",
+    "broken pipe",
+    "connection terminated",
+    "terminating connection due to administrator command",
+    "compute is not active",
+    "couldn't connect to compute",
+    "error connecting to compute node",
+)
+
+
+def encode_proof_events_cursor(event_id: int) -> str:
+    """Return a stable opaque cursor for the given proof_events.id."""
+    return base64.urlsafe_b64encode(str(event_id).encode("ascii")).decode("ascii")
+
+
+def decode_proof_events_cursor(cursor: str) -> int:
+    """Decode an opaque proof-events cursor.
+
+    Raises ValueError when the cursor is malformed.
+    """
+    if not isinstance(cursor, str) or not cursor.strip():
+        raise ValueError("invalid cursor")
+
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        text = raw.decode("ascii")
+        event_id = int(text)
+    except (ValueError, UnicodeDecodeError, binascii.Error, TypeError) as exc:
+        raise ValueError("invalid cursor") from exc
+
+    if event_id < 1:
+        raise ValueError("invalid cursor")
+    return event_id
+
+
+def clamp_proof_events_limit(limit: int) -> int:
+    return max(1, min(limit, PROOF_EVENTS_MAX_LIMIT))
+
 
 def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = float(raw)
+    if value <= 0.0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = int(raw)
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def db_connect_timeout_seconds() -> float:
+    """Per-attempt libpq connect timeout (seconds)."""
+    return _positive_float_env("DB_CONNECT_TIMEOUT_SECONDS", 5.0)
+
+
+def db_connect_deadline_seconds() -> float:
+    """Overall wall-clock budget for connect + retries (seconds)."""
+    return _positive_float_env("DB_CONNECT_DEADLINE_SECONDS", 15.0)
+
+
+def db_connect_max_attempts() -> int:
+    """Maximum connect attempts within the deadline."""
+    return _positive_int_env("DB_CONNECT_MAX_ATTEMPTS", 4)
+
+
+def db_connect_retry_base_seconds() -> float:
+    """Base backoff before the first retry (doubles each attempt)."""
+    return _positive_float_env("DB_CONNECT_RETRY_BASE_SECONDS", 0.05)
+
+
+def is_transient_neon_connect_error(exc: BaseException) -> bool:
+    """Return True when *exc* looks like a transient Neon/Postgres connect failure.
+
+    Classification is intentionally conservative: auth failures, syntax errors,
+    and other permanent faults are not retried. Never inspect or return the
+    connection string — only error class / SQLSTATE / sanitized message text.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, OSError)):
+        # OSError covers many socket-level connect failures; exclude permission
+        # errors which are not transient.
+        if isinstance(exc, PermissionError):
+            return False
+        return True
+
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate in _TRANSIENT_SQLSTATES:
+        return True
+
+    if isinstance(exc, psycopg.OperationalError):
+        message = str(exc).lower()
+        if any(fragment in message for fragment in _TRANSIENT_MESSAGE_FRAGMENTS):
+            return True
+        # OperationalError without a permanent marker is treated as transient
+        # for the connect path only (Neon wake / pooler flaps).
+        permanent_markers = (
+            "password authentication failed",
+            "authentication failed",
+            "no password supplied",
+            "certificate verify failed",
+            "could not translate host name",
+        )
+        if any(marker in message for marker in permanent_markers):
+            return False
+        return True
+
+    return False
+
+
+def _connect_with_retry(url: str) -> psycopg.Connection:
+    """Open a psycopg connection, retrying transient Neon failures until deadline.
+
+    Privacy: never logs ``DATABASE_URL`` or credentials — only attempt counts,
+    SQLSTATE, and exception class names.
+    """
+    deadline_at = time.monotonic() + db_connect_deadline_seconds()
+    per_attempt_timeout = db_connect_timeout_seconds()
+    max_attempts = db_connect_max_attempts()
+    retry_base = db_connect_retry_base_seconds()
+    last_exc: BaseException | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            break
+
+        connect_timeout = max(1, int(min(per_attempt_timeout, remaining)))
+        try:
+            return psycopg.connect(
+                url,
+                row_factory=dict_row,
+                connect_timeout=connect_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — classify then re-raise
+            last_exc = exc
+            transient = is_transient_neon_connect_error(exc)
+            sqlstate = getattr(exc, "sqlstate", None)
+            logger.warning(
+                "neon_connect_attempt_failed attempt=%s/%s transient=%s sqlstate=%s error_type=%s",
+                attempt,
+                max_attempts,
+                transient,
+                sqlstate,
+                type(exc).__name__,
+            )
+            if not transient:
+                raise
+
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0 or attempt >= max_attempts:
+                break
+
+            sleep_for = min(retry_base * (2 ** (attempt - 1)), max(0.0, remaining / 2.0))
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    message = "database connection deadline exceeded"
+    if last_exc is None:
+        raise RuntimeError(message)
+    raise RuntimeError(message) from last_exc
+
+
 @contextmanager
 def get_connection() -> Iterator[psycopg.Connection]:
+    """Yield a Postgres connection with Neon-aware transient connect retries.
+
+    Callers keep the existing interface. Connect attempts honour
+    ``DB_CONNECT_TIMEOUT_SECONDS`` per try and ``DB_CONNECT_DEADLINE_SECONDS``
+    overall so readiness / request paths stay bounded.
+    """
     url = database_url()
     if not url:
         raise RuntimeError("DATABASE_URL is not configured")
 
-    with psycopg.connect(url, row_factory=dict_row) as connection:
+    connection = _connect_with_retry(url)
+    try:
         yield connection
+    finally:
+        connection.close()
 
 
 def init_db() -> None:
-    if not database_url():
-        return
+    """Initialise the database schema via the versioned migration system.
 
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                create table if not exists proof_events (
-                    id bigserial primary key,
-                    event_type text not null,
-                    file_name text,
-                    video_hash text,
-                    metadata_hash text,
-                    proof_id text,
-                    tier text,
-                    embedded_hash text,
-                    metadata jsonb,
-                    created_at timestamptz not null default now()
-                );
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists proof_events_video_hash_idx
-                on proof_events (video_hash);
-                """
-            )
-            cursor.execute(
-                """
-                create index if not exists proof_events_proof_id_idx
-                on proof_events (proof_id);
-                """
-            )
-            cursor.execute("alter table proof_events add column if not exists tx_hash text;")
-            cursor.execute("alter table proof_events add column if not exists tx_status text;")
-            cursor.execute("alter table proof_events add column if not exists source_address text;")
-            cursor.execute("alter table proof_events add column if not exists contract_id text;")
-            cursor.execute(
-                """
-                create index if not exists proof_events_tx_hash_idx
-                on proof_events (tx_hash);
-                """
-            )
-            # Idempotency support: unique key for register events only.
-            cursor.execute("alter table proof_events add column if not exists idempotency_key text;")
-            # Partial unique index: only enforced when idempotency_key is non-null
-            # (i.e., only for 'register' events). embed/extract events are unaffected.
-            cursor.execute(
-                """
-                create unique index if not exists proof_events_idempotency_key_idx
-                on proof_events (idempotency_key)
-                where idempotency_key is not null;
-                """
-            )
-        connection.commit()
+    This replaces the earlier inline ``CREATE TABLE IF NOT EXISTS`` approach
+    with an ordered, auditable migration ledger.  Safe to call repeatedly.
+    """
+    from migration import run_migrations  # late import to avoid cycles
+
+    run_migrations()
+
+
+def detect_drift() -> list[dict[str, str]]:
+    """Check for schema drift and return a list of issues.
+
+    Each dict has keys ``table_name``, ``issue``, ``detail``."""
+    from migration import detect_drift as _detect_drift
+
+    return [
+        {"table_name": d.table_name, "issue": d.issue, "detail": d.detail}
+        for d in _detect_drift()
+    ]
+
+
+def get_migration_report() -> list[dict[str, object]]:
+    """Return the list of migrations and their current status.
+
+    Useful for health-check endpoints and operational observability."""
+    from migration import run_migrations
+
+    return run_migrations()
 
 
 def check_db() -> bool:
@@ -91,6 +285,107 @@ def check_db() -> bool:
             cursor.execute("select 1 as ok")
             row = cursor.fetchone()
             return bool(row and row["ok"] == 1)
+
+
+def insert_lineage_event(
+    *,
+    manifest_digest: str,
+    manifest: dict[str, Any],
+    actor_address: str,
+    parent_proof_ids: list[str],
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into lineage_events (manifest_digest, manifest, actor_address, parent_proof_ids)
+                values (%s, %s, %s, %s)
+                on conflict (manifest_digest) do nothing
+                returning id, manifest_digest, created_at;
+                """,
+                (manifest_digest, Jsonb(manifest), actor_address, parent_proof_ids),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_lineage_events(limit: int = 25) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                from lineage_events
+                order by id desc
+                limit %s;
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def find_lineage_by_output_digest(output_digest: str) -> dict[str, Any] | None:
+    """Find lineage record by the output digest of the derivative.
+    
+    Args:
+        output_digest: The output digest (32-byte hex string)
+    
+    Returns:
+        Lineage record or None if not found
+    """
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                from lineage_events
+                where (manifest ->> 'outputDigest') = %s
+                limit 1;
+                """,
+                (output_digest,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
+def find_lineage_by_actor(actor_address: str, limit: int = 25) -> list[dict[str, Any]]:
+    """Find lineage records by actor address with pagination.
+    
+    Args:
+        actor_address: The actor's address
+        limit: Maximum number of records to return (bounded to 100)
+    
+    Returns:
+        List of lineage records
+    """
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, manifest_digest, manifest, actor_address, parent_proof_ids, created_at
+                from lineage_events
+                where actor_address = %s
+                order by id desc
+                limit %s;
+                """,
+                (actor_address, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
 
 def insert_proof_event(
@@ -106,7 +401,11 @@ def insert_proof_event(
     tx_status: str | None = None,
     source_address: str | None = None,
     contract_id: str | None = None,
+    retention_class: str | None = None,
+    expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
+    time_attestation: dict[str, Any] | None = None,
+    claimed_capture_time: str | None = None,
 ) -> dict[str, Any] | None:
     if not database_url():
         return None
@@ -127,9 +426,11 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     metadata
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at;
                 """,
                 (
@@ -144,7 +445,11 @@ def insert_proof_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     Jsonb(metadata) if metadata is not None else None,
+                    Jsonb(time_attestation) if time_attestation is not None else None,
+                    claimed_capture_time,
                 ),
             )
             row = cursor.fetchone()
@@ -152,37 +457,85 @@ def insert_proof_event(
         return dict(row) if row else None
 
 
-def list_proof_events(limit: int = 25) -> list[dict[str, Any]]:
-    if not database_url():
-        return []
+def list_proof_events(
+    limit: int = PROOF_EVENTS_DEFAULT_LIMIT,
+    *,
+    cursor_id: int | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """List proof events with stable keyset (cursor) pagination.
 
-    limit = max(1, min(limit, 100))
+    Ordering is deterministic: ``id DESC`` (primary key is the unique tie-breaker).
+    Returns ``(events, next_cursor)`` where ``next_cursor`` is an opaque token for
+    the next page, or ``None`` when there are no further rows.
+    """
+    if not database_url():
+        return [], None
+
+    page_size = clamp_proof_events_limit(limit)
+    fetch_size = page_size + 1
+
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                select
-                    id,
-                    event_type,
-                    file_name,
-                    video_hash,
-                    metadata_hash,
-                    proof_id,
-                    tier,
-                    embedded_hash,
-                    tx_hash,
-                    tx_status,
-                    source_address,
-                    contract_id,
-                    metadata,
-                    created_at
-                from proof_events
-                order by id desc
-                limit %s;
-                """,
-                (limit,),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+            if cursor_id is None:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        metadata,
+                        time_attestation,
+                        claimed_capture_time,
+                        created_at
+                    from proof_events
+                    order by id desc
+                    limit %s;
+                    """,
+                    (fetch_size,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        metadata,
+                        time_attestation,
+                        claimed_capture_time,
+                        created_at
+                    from proof_events
+                    where id < %s
+                    order by id desc
+                    limit %s;
+                    """,
+                    (cursor_id, fetch_size),
+                )
+            rows = [dict(row) for row in cursor.fetchall()]
+
+    next_cursor: str | None = None
+    if len(rows) > page_size:
+        rows = rows[:page_size]
+        next_cursor = encode_proof_events_cursor(int(rows[-1]["id"]))
+    return rows, next_cursor
 
 
 def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
@@ -206,7 +559,12 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     created_at
                 from proof_events
                 where video_hash = %s
@@ -276,7 +634,11 @@ def upsert_register_event(
     tx_status: str | None = None,
     source_address: str | None = None,
     contract_id: str | None = None,
+    retention_class: str | None = None,
+    expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
+    time_attestation: dict[str, Any] | None = None,
+    claimed_capture_time: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Insert a register event idempotently.
 
@@ -303,6 +665,9 @@ def upsert_register_event(
             "tier": tier,
             "source_address": source_address,
             "contract_id": contract_id,
+            "retention_class": retention_class,
+            "expires_at": expires_at,
+            "legal_hold": False,
         }
         return stub, True
 
@@ -323,10 +688,14 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     idempotency_key
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (idempotency_key)
                 where idempotency_key is not null
                 do nothing
@@ -343,7 +712,12 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     created_at;
                 """,
                 (
@@ -357,7 +731,11 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
                     Jsonb(metadata) if metadata is not None else None,
+                    Jsonb(time_attestation) if time_attestation is not None else None,
+                    claimed_capture_time,
                     idempotency_key,
                 ),
             )
@@ -385,7 +763,12 @@ def upsert_register_event(
                     tx_status,
                     source_address,
                     contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
                     metadata,
+                    time_attestation,
+                    claimed_capture_time,
                     created_at
                 from proof_events
                 where idempotency_key = %s;
@@ -443,3 +826,189 @@ class ConflictError(Exception):
         self.field = field
         self.existing_value = existing_value
         self.incoming_value = incoming_value
+
+
+def insert_proof_history_event(
+    *,
+    proof_id: str,
+    action: str,
+    actor: str | None = None,
+    reason_code: int,
+    contract_id: str | None = None,
+    tx_hash: str | None = None,
+    tx_status: str | None = None,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into proof_history_events (
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status
+                )
+                values (%s, %s, %s, %s, %s, %s, %s)
+                returning id, created_at;
+                """,
+                (
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_proof_history_events(
+    proof_id: str, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    proof_id,
+                    action,
+                    actor,
+                    reason_code,
+                    contract_id,
+                    tx_hash,
+                    tx_status,
+                    created_at
+                from proof_history_events
+                where proof_id = %s
+                order by id asc
+                limit %s offset %s;
+                """,
+                (proof_id, limit, offset),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+def update_tx_status(tx_hash: str, status: str) -> None:
+    if not database_url():
+        return
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update proof_events
+                set tx_status = %s
+                where tx_hash = %s;
+                """,
+                (status, tx_hash)
+            )
+        connection.commit()
+
+
+def set_legal_hold(proof_id: str, hold: bool) -> None:
+    """Set or clear the legal-hold flag on a proof event."""
+    if not database_url():
+        return
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                update proof_events
+                set legal_hold = %s
+                where proof_id = %s;
+                """,
+                (hold, proof_id),
+            )
+        connection.commit()
+
+
+def purge_expired_events() -> list[dict[str, Any]]:
+    """Delete proof events past their expiration that are not on legal hold.
+
+    Returns a list of deletion receipts (proof_id, deleted_at, etc.) for
+    each purged event.
+    """
+    if not database_url():
+        return []
+    now = datetime.now(timezone.utc)
+    receipts: list[dict[str, Any]] = []
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, proof_id, video_hash, metadata_hash,
+                       retention_class, tier
+                from proof_events
+                where expires_at is not null
+                  and expires_at <= %s
+                  and legal_hold = false;
+                """,
+                (now,),
+            )
+            expired = [dict(row) for row in cursor.fetchall()]
+            for event in expired:
+                cursor.execute(
+                    """
+                    insert into deletion_receipts (proof_id, video_hash, metadata_hash)
+                    values (%s, %s, %s)
+                    returning id, created_at;
+                    """,
+                    (event["proof_id"], event.get("video_hash"), event.get("metadata_hash")),
+                )
+                receipt = cursor.fetchone()
+                if receipt:
+                    receipts.append(dict(receipt))
+                cursor.execute(
+                    "delete from proof_events where id = %s;",
+                    (event["id"],),
+                )
+        connection.commit()
+    return receipts
+
+
+_JOBS: dict[int, dict[str, Any]] = {}
+_next_job_id = 1
+
+
+def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
+    """Enqueue a background job and return its job id."""
+    global _next_job_id
+    job_id = _next_job_id
+    _next_job_id += 1
+    _JOBS[job_id] = {
+        "id": job_id,
+        "type": job_type,
+        "payload": payload,
+        "status": "pending",
+        "result": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return job_id
+
+
+def get_job(job_id: int) -> dict[str, Any] | None:
+    """Return a job by id, or None."""
+    return _JOBS.get(job_id)
+
+
+def cancel_job(job_id: int) -> bool:
+    """Cancel a pending job. Returns True on success."""
+    job = _JOBS.get(job_id)
+    if job and job["status"] == "pending":
+        job["status"] = "cancelled"
+        return True
+    return False

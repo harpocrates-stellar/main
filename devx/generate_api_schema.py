@@ -1,0 +1,99 @@
+import sys
+import json
+import ast
+import argparse
+from pathlib import Path
+
+def extract_routes_from_ast(app_path: Path):
+    routes = []
+    tree = ast.parse(app_path.read_text(encoding="utf-8"))
+    
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            for decorator in node.decorator_list:
+                # Handle @app.get("/path"), @app.post("/path"), @app.put("/path")
+                if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                    if isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "app":
+                        method = decorator.func.attr # "get", "post", "put"
+                        if method in {"get", "post", "put", "delete", "patch"}:
+                            if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                                path = decorator.args[0].value
+                                routes.append((path, method.upper(), node.name))
+    return routes
+
+def generate_schema(app_path: Path, schemas_dir: Path):
+    if not app_path.exists():
+        raise FileNotFoundError("app.py not found")
+        
+    paths = {}
+    routes = extract_routes_from_ast(app_path)
+    for path, method, endpoint in routes:
+        paths.setdefault(path, {})
+        paths[path][method.lower()] = {
+            "operationId": endpoint,
+            "responses": {
+                "200": {"description": "OK"}
+            }
+        }
+
+    schema = {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Harpocrates API",
+            "version": "1.0.0"
+        },
+        "paths": paths,
+        "components": {
+            "schemas": {}
+        }
+    }
+    
+    # Load canonical schemas safely
+    if schemas_dir.is_dir():
+        for p in sorted(schemas_dir.glob("*.json")):
+            # Check for oversized/malformed schemas
+            if p.stat().st_size > 1024 * 1024:
+                continue # ignore oversized
+            try:
+                with p.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        schema_hash = data.get("schemaHash")
+                        if schema_hash:
+                            schema["components"]["schemas"][schema_hash] = data
+            except Exception:
+                pass
+                
+    return schema
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--app-path", type=Path)
+    parser.add_argument("--schemas-dir", type=Path)
+    args = parser.parse_args()
+    
+    root = Path(__file__).resolve().parent.parent
+    app_path = args.app_path or (root / "backend" / "app.py")
+    schemas_dir = args.schemas_dir or (root / "backend" / "schemas")
+    
+    try:
+        schema = generate_schema(app_path, schemas_dir)
+        out_json = json.dumps(schema, indent=2)
+    except FileNotFoundError as e:
+        print(f"dependency failure: {e}", file=sys.stderr)
+        sys.exit(2)
+    except SyntaxError as e:
+        print(f"malformed input: app.py is not valid Python: {e}", file=sys.stderr)
+        sys.exit(3)
+    except Exception as e:
+        print(f"schema generation failed: {e}", file=sys.stderr)
+        sys.exit(4)
+        
+    if args.output:
+        args.output.write_text(out_json, encoding="utf-8")
+    else:
+        print(out_json)
+
+if __name__ == '__main__':
+    main()

@@ -285,7 +285,8 @@ struct MockVerifier3;
 #[contractimpl]
 impl MockVerifier3 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -299,12 +300,45 @@ fn make_pi(env: &Env, vh: &BytesN<32>, cr: &BytesN<32>, nu: &BytesN<32>) -> Byte
     cr.copy_into_slice(&mut c);
     let mut n = [0u8; 32];
     nu.copy_into_slice(&mut n);
-    let mut buf = [0u8; 128];
+    // Compute the expected domain tag (SHA-256 of the 3 domain field constants concatenated)
+    let domain_tag = expected_domain_tag_for_test(env);
+    let mut dt = [0u8; 32];
+    domain_tag.copy_into_slice(&mut dt);
+    // 5 public inputs × 32 bytes = 160 bytes
+    let mut buf = [0u8; 160];
     buf[16..32].copy_from_slice(&v[..16]);
     buf[48..64].copy_from_slice(&v[16..]);
     buf[64..96].copy_from_slice(&c);
     buf[96..128].copy_from_slice(&n);
+    buf[128..160].copy_from_slice(&dt);
     Bytes::from_array(env, &buf)
+}
+
+#[cfg(test)]
+fn expected_domain_tag_for_test(env: &Env) -> BytesN<32> {
+    let protocol: [u8; 32] = [
+        0x26, 0x1e, 0x9f, 0x6e, 0x39, 0xe3, 0xc1, 0xae,
+        0x6a, 0xca, 0x9f, 0x29, 0xe8, 0x4c, 0x10, 0xd5,
+        0x9c, 0x82, 0xd5, 0xf4, 0xb4, 0x0c, 0x21, 0xc1,
+        0xb7, 0xe3, 0xc0, 0x1a, 0xd5, 0x71, 0xc2, 0x1,
+    ];
+    let version: [u8; 32] = [
+        0x0c, 0x89, 0xef, 0xf4, 0xec, 0x8e, 0x39, 0xa0,
+        0x1e, 0x9f, 0x19, 0x54, 0x7a, 0x0c, 0xc9, 0xdd,
+        0x7f, 0xd2, 0xa9, 0x7d, 0x79, 0xba, 0x4d, 0x94,
+        0xfd, 0x32, 0xe9, 0x7a, 0x1f, 0x5a, 0xc6, 0x23,
+    ];
+    let network: [u8; 32] = [
+        0x2a, 0x2c, 0x3f, 0x48, 0xce, 0x2e, 0x3c, 0x2f,
+        0x1e, 0x6c, 0x89, 0xb1, 0x8d, 0x64, 0xb5, 0xf5,
+        0xc1, 0xf8, 0x8a, 0x59, 0xa0, 0xd9, 0xbc, 0x82,
+        0xcb, 0x61, 0xa1, 0xe8, 0xcb, 0x77, 0xa5, 0xf,
+    ];
+    let mut preimage = Bytes::new(env);
+    preimage.extend_from_array(&protocol);
+    preimage.extend_from_array(&version);
+    preimage.extend_from_array(&network);
+    env.crypto().sha256(&preimage).into()
 }
 
 /// All three registration paths store expires_at correctly when TTL is set.

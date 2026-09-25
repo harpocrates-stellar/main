@@ -10,8 +10,9 @@
 //! ### How it works
 //!
 //! 1. The admin publishes a Merkle root of revoked credential_roots via
-//!    `set_revocation_root`.  The tree is depth‑3 (8 leaves) and uses
-//!    Pedersen hashes, matching the Silent Witness circuit.
+//!    `set_revocation_root`.  The tree is depth-bounded at
+//!    [`MAX_REVOCATION_WITNESS_DEPTH`] (= 3, so [`MAX_REVOCATION_LEAVES`] = 8)
+//!    and uses Pedersen hashes (#357).
 //!
 //! 2. A user who wants to prove their credential is still valid constructs a
 //!    Noir proof using the `revocation_witness` circuit.  The circuit takes
@@ -70,7 +71,8 @@ struct MockRevocationVerifier;
 #[contractimpl]
 impl MockRevocationVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        let len = public_inputs.len();
+        if (len != 128 && len != 192) || proof.is_empty() {
             panic!("invalid revocation proof");
         }
     }
@@ -574,4 +576,12 @@ fn test_check_non_revocation_emits_event() {
         [].as_slice(),
         "expected NonRevocationChecked event after check_non_revocation"
     );
+}
+
+#[cfg(test)]
+#[test]
+fn revocation_depth_bound_constants() {
+    assert_eq!(MAX_REVOCATION_WITNESS_DEPTH, 3);
+    assert_eq!(MAX_REVOCATION_LEAVES, 8);
+    assert_eq!(MAX_REVOCATION_LEAVES, 1u32 << MAX_REVOCATION_WITNESS_DEPTH);
 }
