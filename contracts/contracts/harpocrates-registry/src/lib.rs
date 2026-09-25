@@ -5,8 +5,10 @@ extern crate std;
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
+    Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val, Vec,
 };
+
+pub type SorobanVec<T> = Vec<T>;
 
 pub mod verifier_inputs;
 
@@ -191,6 +193,7 @@ pub enum ProposalAction {
 }
 
 pub const DEFAULT_SCOPE_EPOCH: u64 = 0;
+pub const MIN_AGGREGATION_SIZE: u32 = 1;
 pub const MAX_AGGREGATION_SIZE: u32 = 8;
 pub const AGGREGATION_DOMAIN_SEPARATOR: [u8; 32] = [0u8; 32];
 
@@ -274,7 +277,7 @@ pub enum ProofVerificationStatus {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineageRecord {
-    pub parent_proof_ids: SorobanVec<BytesN<32>>,
+    pub parent_proof_ids: Vec<BytesN<32>>,
     pub manifest_digest: BytesN<32>,
     pub actor: Address,
     pub operation_type: Symbol,
@@ -357,7 +360,7 @@ pub struct ProofRegistered {
     pub batch_size: u32,
 }
 
-#[contractevent(topics = ["proof", "batch", "reg"])]
+#[contractevent(topics = ["proof", "batch"])]
 pub struct BatchProofRegistered {
     #[topic]
     pub batch_id: BytesN<32>,
@@ -825,7 +828,7 @@ pub struct TimelockEmergencyExec {
     pub executed_at: u64,
 }
 
-#[contractevent(topics = ["timelock", "delay", "set"])]
+#[contractevent(topics = ["timelock", "delay"])]
 pub struct TimelockMinDelaySet {
     pub previous_delay: u64,
     pub new_delay: u64,
@@ -1461,7 +1464,7 @@ impl HarpocratesRegistry {
     ///
     /// The maximum number of proof IDs in a single batch is bounded (e.g. 100) to
     /// ensure the query always completes within resource limits.
-    pub fn get_proof_statuses(env: Env, proof_ids: SorobanVec<BytesN<32>>) -> SorobanVec<ProofVerificationStatus> {
+    pub fn get_proof_statuses(env: Env, proof_ids: Vec<BytesN<32>>) -> Vec<ProofVerificationStatus> {
         let max_batch_size = 100;
         if proof_ids.len() > max_batch_size {
             panic_with_error!(&env, RegistryError::BatchTooLarge);
@@ -1717,8 +1720,8 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         public_inputs: Bytes,
         proof: Bytes,
-        video_hashes: SorobanVec<BytesN<32>>,
-    ) -> SorobanVec<ProofRecord> {
+        video_hashes: Vec<BytesN<32>>,
+    ) -> Vec<ProofRecord> {
         let batch_size = video_hashes.len();
 
         if batch_size == 0 || batch_size > MAX_AGGREGATION_SIZE {
@@ -2316,7 +2319,7 @@ impl HarpocratesRegistry {
     pub fn register_lineage(
         env: Env,
         actor: Address,
-        parent_proof_ids: SorobanVec<BytesN<32>>,
+        parent_proof_ids: Vec<BytesN<32>>,
         manifest_digest: BytesN<32>,
         operation_type: Symbol,
         output_digest: BytesN<32>,
@@ -3367,7 +3370,7 @@ fn record_proof_history(
 /// and every parent must already be a known proof or lineage record.
 fn validate_lineage(
     env: &Env,
-    parent_proof_ids: &SorobanVec<BytesN<32>>,
+    parent_proof_ids: &Vec<BytesN<32>>,
     output_digest: &BytesN<32>,
     depth: u32,
 ) {

@@ -276,3 +276,19 @@ unchanged. Existing depth-3 proofs remain valid.
 new circuit version and coordinated artifact republish; rolling back means
 keeping the depth-3 verifier key. Host tooling must keep rejecting `depth > 3`
 so oversized trees never reach the prover.
+
+## Aggregation proof count bound (#488)
+
+The `silent_witness_aggregator` circuit and registry boundary are bounded at **1 to 8 batch elements**.
+
+| Constant | Value | Layers |
+| --- | --- | --- |
+| `MIN_AGGREGATION_SIZE` | 1 | Noir, registry, frontend/backend codec, `zk/tools/aggregation_bound.py` |
+| `MAX_AGGREGATION_SIZE` | 8 | same |
+
+**Compatibility:** Existing single-proof callers are unaffected (single proofs use `silent_witness` and have `batch_size = 0` or batch size 1). Existing aggregated batch proofs within 1..8 elements remain valid. Stored evidence format is preserved.
+
+**Failure responses:** Invalid, undersized (`batch_size < 1`), oversized (`batch_size > 8`), or malformed batch sizes are rejected at the edge before proving. Host layers return structured, privacy-safe errors (`rejectCode: "BATCH_SIZE_OUT_OF_BOUNDS"` / `RegistryError::BatchSizeExceeded`) without logging media, witness values, or secrets.
+
+**Migration / rollback:** No on-chain storage migration required. Changing `MAX_AGGREGATION_SIZE` would require a new circuit version, recompilation of verification keys, and coordinated deployment across registry and provers. Rolling back means retaining the `MAX_AGGREGATION_SIZE = 8` verifier key. Host tooling enforces limits early so provers never waste cycles on out-of-bound batches.
+

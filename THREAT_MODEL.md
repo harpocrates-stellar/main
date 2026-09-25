@@ -874,6 +874,22 @@ upload and proof endpoints.
 | Migration | Additive; `RATELIMIT_ENABLED=false` disables the layer without changing routes |
 | Rollback | Remove `@limiter.limit` decorators; endpoints behave as before |
 
+## 9.3 Bounded Aggregation Proof Batch Size
+
+**Artifact:** `zk/tools/aggregation_bound.py`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts`, `contracts/contracts/harpocrates-registry/src/lib.rs`
+
+Batch aggregation replaces multiple individual Silent Witness proofs with a single UltraHonk proof. To mitigate unbounded resource consumption, DoS attacks against provers/verifiers, and witness extraction risks, batch sizes are strictly bounded between `MIN_AGGREGATION_SIZE = 1` and `MAX_AGGREGATION_SIZE = 8`.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Public HTTP endpoints, browser proving workers, and Soroban contract invocation |
+| Size limits | `MIN_AGGREGATION_SIZE = 1`, `MAX_AGGREGATION_SIZE = 8` |
+| Privacy safety | Rejection responses emit structured error codes (`BATCH_SIZE_OUT_OF_BOUNDS`, `INVALID_BATCH_SIZE_TYPE`) and target field without disclosing media, witness values, secrets, or identity roots |
+| Prover DoS mitigation | Host validators reject batches before witness generation, preventing provers from wasting CPU/memory on invalid sizes |
+| On-chain contract enforcement | Soroban `register_batch_verified` asserts `batch_size >= 1 && batch_size <= 8`, reverting with `BatchSizeExceeded` on violation |
+| Migration | Additive and backward compatible; existing single-proof flows (`batch_size = 0` / single proofs) remain supported |
+| Rollback | Reverting to previous verifier/contract keeps the depth-8 aggregation circuit verification key |
+
 ## 10. Review and Update Cadence
 
 | Trigger | Action |
@@ -895,3 +911,5 @@ add a one-line change summary below:
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
 | 1.2 | 2026-09-24 | Document privacy-safe backend trace fields (`harpocrates-trace-v1`). |
 | 1.3 | 2026-09-24 | Expose/allowed propagation headers through the CORS policy. |
+| 1.4 | 2026-09-25 | Bound aggregation proof batch size (MAX_AGGREGATION_SIZE = 8, MIN_AGGREGATION_SIZE = 1). |
+

@@ -41,7 +41,10 @@ import json
 import os
 import platform
 import re
-import resource
+try:
+    import resource
+except (ImportError, ModuleNotFoundError):
+    resource = None
 import signal
 import statistics
 import sys

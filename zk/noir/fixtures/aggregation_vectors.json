@@ -4,6 +4,8 @@
   "type": "aggregation_fixtures",
   "description": "Deterministic test vectors for silent_witness_aggregator circuit. All values are synthetic and for testing only.",
   "maxBatchSize": 8,
+  "_max_aggregation_size": 8,
+  "_min_aggregation_size": 1,
   "fixtures": [
     {
       "name": "full_batch_8",
@@ -91,6 +93,26 @@
           "videoHashLo": "45370982256125128461783280990902428194"
         }
       ]
+    }
+  ],
+  "negative_cases": [
+    {
+      "name": "oversized_aggregation_batch",
+      "description": "Batch of 9 video hashes exceeds MAX_AGGREGATION_SIZE = 8",
+      "batch_size": 9,
+      "expected_reject_code": "batch_size_oversize"
+    },
+    {
+      "name": "undersized_aggregation_batch",
+      "description": "Empty batch (0 elements) is rejected below MIN_AGGREGATION_SIZE = 1",
+      "batch_size": 0,
+      "expected_reject_code": "batch_size_undersize"
+    },
+    {
+      "name": "malformed_aggregation_batch_size",
+      "description": "Non-integer batch size is rejected as malformed",
+      "batch_size": "8",
+      "expected_reject_code": "malformed_batch_size"
     }
   ]
 }
