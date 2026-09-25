@@ -59,10 +59,10 @@ fn verify_predicate(
     let is_set = predicate_type == set_membership_predicate_type();
     let is_range = predicate_type == range_predicate_type();
     
-    assert(!is_active | (is_eq | is_set | is_range), "unknown predicate type");
+    assert(!is_active | (is_eq | is_set | is_range), "unsupported");
 
     let eq_valid = attr_value == public_value;
-    assert(!(is_active & is_eq) | eq_valid, "equality predicate failed");
+    assert(!(is_active & is_eq) | eq_valid, "malformed");
 
     let mut set_found = false;
     for i in 0..MAX_SET_MEMBERS {
@@ -70,12 +70,12 @@ fn verify_predicate(
         let in_range = i < set_len;
         set_found = set_found | (matches & in_range);
     }
-    assert(!(is_active & is_set) | set_found, "set membership predicate failed");
+    assert(!(is_active & is_set) | set_found, "malformed");
 
     let range_lower_valid = attr_value >= lower_bound;
     let range_upper_valid = attr_value <= upper_bound;
-    assert(!(is_active & is_range) | range_lower_valid, "range predicate: below lower bound");
-    assert(!(is_active & is_range) | range_upper_valid, "range predicate: above upper bound");
+    assert(!(is_active & is_range) | range_lower_valid, "malformed");
+    assert(!(is_active & is_range) | range_upper_valid, "malformed");
 }
 
 fn compute_predicate_commitment(
@@ -136,20 +136,20 @@ fn main(
         "circuit version mismatch",
     );
 
-    assert(num_attributes > 0, "at least one attribute required");
-    assert(num_attributes <= MAX_ATTRIBUTES, "too many attributes");
-    assert(num_predicates <= MAX_PREDICATES, "too many predicates");
+    assert(num_attributes > 0, "malformed");
+    assert(num_attributes <= MAX_ATTRIBUTES, "oversized");
+    assert(num_predicates <= MAX_PREDICATES, "oversized");
     for i in 0..MAX_PREDICATES {
         let is_active = i < num_predicates;
         let valid_attr_index = predicates[i].attr_index < num_attributes;
-        assert(!is_active | valid_attr_index, "predicate attribute index out of range");
+        assert(!is_active | valid_attr_index, "malformed");
 
         let is_set = predicates[i].predicate_type == set_membership_predicate_type();
         let check_set = is_active & is_set;
         let set_len_gt_0 = predicates[i].set_len > 0;
         let set_len_valid = predicates[i].set_len <= MAX_SET_MEMBERS;
-        assert(!check_set | set_len_gt_0, "set membership predicate requires non-empty set");
-        assert(!check_set | set_len_valid, "set membership predicate: too many set values");
+        assert(!check_set | set_len_gt_0, "malformed");
+        assert(!check_set | set_len_valid, "oversized");
     }
 
     let mut commitments: [Field; MAX_ATTRIBUTES] = [0; MAX_ATTRIBUTES];
@@ -158,7 +158,7 @@ fn main(
     }
 
     let derived_root = compute_credential_root(commitments, num_attributes);
-    assert(derived_root == credential_root, "credential root mismatch");
+    assert(derived_root == credential_root, "malformed");
 
     for i in 0..MAX_PREDICATES {
         let pred = predicates[i];
@@ -188,14 +188,14 @@ fn main(
         video_hash_lo,
         evidence_digest,
     ]);
-    assert(derived_nullifier == nullifier, "nullifier mismatch");
+    assert(derived_nullifier == nullifier, "malformed");
 
     let derived_verifier_digest = pedersen_hash([
         verifier_digest,
         schema_hash,
         circuit_version,
     ]);
-    assert(verifier_digest != 0, "verifier digest must be non-zero");
+    assert(verifier_digest != 0, "malformed");
 }
 
 fn make_predicate(
@@ -380,7 +380,7 @@ fn test_set_membership_single_element() {
     );
 }
 
-#[test(should_fail_with = "equality predicate failed")]
+#[test(should_fail_with = "malformed")]
 fn test_equality_wrong_value() {
     let mut preds = default_padding_predicates();
     preds[0] = make_predicate(0, 0, 21, [0; 8], 0, 0, 0);
@@ -395,7 +395,7 @@ fn test_equality_wrong_value() {
     );
 }
 
-#[test(should_fail_with = "range predicate: below lower bound")]
+#[test(should_fail_with = "malformed")]
 fn test_range_below_lower() {
     let mut preds = default_padding_predicates();
     preds[0] = make_predicate(2, 0, 0, [0; 8], 0, 21, 99);
@@ -410,7 +410,7 @@ fn test_range_below_lower() {
     );
 }
 
-#[test(should_fail_with = "range predicate: above upper bound")]
+#[test(should_fail_with = "malformed")]
 fn test_range_above_upper() {
     let mut preds = default_padding_predicates();
     preds[0] = make_predicate(2, 0, 0, [0; 8], 0, 18, 17);
@@ -425,7 +425,7 @@ fn test_range_above_upper() {
     );
 }
 
-#[test(should_fail_with = "set membership predicate failed")]
+#[test(should_fail_with = "malformed")]
 fn test_set_membership_not_in_set() {
     let mut preds = default_padding_predicates();
     preds[0] = make_predicate(1, 1, 0, [87654321, 11111111, 0, 0, 0, 0, 0, 0], 2, 0, 0);
@@ -440,7 +440,7 @@ fn test_set_membership_not_in_set() {
     );
 }
 
-#[test(should_fail_with = "set membership predicate requires non-empty set")]
+#[test(should_fail_with = "malformed")]
 fn test_set_membership_empty_set() {
     let mut preds = default_padding_predicates();
     preds[0] = make_predicate(1, 1, 0, [0; 8], 0, 0, 0);
@@ -455,7 +455,7 @@ fn test_set_membership_empty_set() {
     );
 }
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_credential_root() {
     run_test(
         0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
@@ -468,7 +468,7 @@ fn test_wrong_credential_root() {
     );
 }
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_attribute_value() {
     let mut attr_vals = default_attr_values();
     attr_vals[0] = 19;
@@ -483,7 +483,7 @@ fn test_wrong_attribute_value() {
     );
 }
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_blinding() {
     let mut blindings = default_blindings();
     blindings[0] = 999999;
@@ -532,7 +532,7 @@ fn test_circuit_version_downgrade() {
     );
 }
 
-#[test(should_fail_with = "at least one attribute required")]
+#[test(should_fail_with = "malformed")]
 fn test_zero_attributes() {
     run_test(
         0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
@@ -545,7 +545,7 @@ fn test_zero_attributes() {
     );
 }
 
-#[test(should_fail_with = "too many predicates")]
+#[test(should_fail_with = "oversized")]
 fn test_too_many_predicates() {
     let mut preds = default_preds();
     preds[0] = make_predicate(0, 0, 18, [0; 8], 0, 0, 0);
@@ -582,7 +582,7 @@ fn test_unsupported_predicate_type() {
     );
 }
 
-#[test(should_fail_with = "predicate attribute index out of range")]
+#[test(should_fail_with = "malformed")]
 fn test_predicate_out_of_range_attr_index() {
     let mut preds = default_padding_predicates();
     preds[0] = make_predicate(0, 99, 18, [0; 8], 0, 0, 0);
@@ -630,7 +630,7 @@ fn test_predicate_commitment_mismatch() {
     );
 }
 
-#[test(should_fail_with = "verifier digest must be non-zero")]
+#[test(should_fail_with = "malformed")]
 fn test_zero_verifier_digest() {
     let attr_vals = default_attr_values();
     let blindings = default_blindings();

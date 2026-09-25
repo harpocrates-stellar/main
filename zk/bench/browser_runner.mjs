@@ -78,7 +78,7 @@ async function withTimeout(promise, ms) {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), ms)
+        timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'dependency-failure' })), ms)
       }),
     ])
   } finally {
@@ -112,7 +112,7 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
     const proofBytes = proofData.proof.length
     if (proofBytes < MIN_PROOF_BYTES || proofBytes > MAX_PROOF_BYTES) {
       const err = new Error('proof size out of bounds')
-      err.code = proofBytes > MAX_PROOF_BYTES ? 'proof_oversized' : 'proof_undersized'
+      err.code = proofBytes > MAX_PROOF_BYTES ? 'oversized' : 'malformed'
       throw err
     }
     const v0 = performance.now()
@@ -120,7 +120,7 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
     const verifyMs = performance.now() - v0
     if (!verified) {
       const err = new Error('verification failed')
-      err.code = 'verify_failed'
+      err.code = 'malformed'
       throw err
     }
     return {
@@ -143,7 +143,7 @@ async function main() {
   }
 
   if (!(await exists(MAIN)) || !(await exists(HELPER))) {
-    signal('bench.fatal', { code: 'missing_artifacts', detail: 'compile circuits first' })
+    signal('bench.fatal', { code: 'dependency-failure', detail: 'compile circuits first' })
     process.exit(3)
   }
 

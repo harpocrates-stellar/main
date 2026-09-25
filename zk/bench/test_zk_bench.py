@@ -126,13 +126,13 @@ def test_privacy_rejects_long_hex_blob(lock: zb.Lock):
 def test_oversized_proof_fails_deterministically(lock: zb.Lock):
     with pytest.raises(zb.RejectedError) as exc:
         zb.reject_oversized_proof(lock.limits.max_proof_bytes + 1, lock.limits)
-    assert exc.value.code == "proof_oversized"
+    assert exc.value.code == "oversized"
 
 
 def test_undersized_proof_fails_deterministically(lock: zb.Lock):
     with pytest.raises(zb.RejectedError) as exc:
         zb.reject_oversized_proof(1, lock.limits)
-    assert exc.value.code == "proof_undersized"
+    assert exc.value.code == "malformed"
 
 
 def test_invalid_public_inputs_length(lock: zb.Lock):
@@ -143,7 +143,7 @@ def test_invalid_public_inputs_length(lock: zb.Lock):
             witness_bytes=None,
             limits=lock.limits,
         )
-    assert exc.value.code == "public_inputs_len"
+    assert exc.value.code == "malformed"
 
 
 def test_concurrency_capacity_rejected(lock: zb.Lock):
@@ -153,7 +153,7 @@ def test_concurrency_capacity_rejected(lock: zb.Lock):
             limits=lock.limits,
             target_max=1,
         )
-    assert exc.value.code == "capacity"
+    assert exc.value.code == "dependency-failure"
 
 
 def test_duplicated_inflight_same_as_capacity(lock: zb.Lock):
@@ -161,7 +161,7 @@ def test_duplicated_inflight_same_as_capacity(lock: zb.Lock):
     zb.ensure_concurrency_allowed(active=0, limits=lock.limits, target_max=1)
     with pytest.raises(zb.RejectedError) as exc:
         zb.ensure_concurrency_allowed(active=1, limits=lock.limits, target_max=1)
-    assert exc.value.code == "capacity"
+    assert exc.value.code == "dependency-failure"
 
 
 # ── Synthetic / cancel / timeout ─────────────────────────────────────────────
@@ -191,7 +191,7 @@ def test_timeout_wrapper_returns_timed_out(lock: zb.Lock):
 
     result = zb._with_timeout(slow, timeout_ms=10)
     assert result.state == zb.BenchState.TIMED_OUT
-    assert result.reject_code == "timeout"
+    assert result.reject_code == "dependency-failure"
 
 
 # ── End-to-end synthetic runs ────────────────────────────────────────────────
@@ -237,7 +237,7 @@ def test_browser_and_native_synthetic(lock: zb.Lock):
 
 def test_partial_failure_does_not_write_ok_semantics(lock: zb.Lock, tmp_path: Path, monkeypatch):
     def boom(*_a, **_k):
-        raise zb.RejectedError("injected", code="proof_oversized")
+        raise zb.RejectedError("injected", code="oversized")
 
     monkeypatch.setattr(zb, "synthetic_op", boom)
     report = zb.run_target(lock, "ci", force_synthetic=True, phases=("prove",))
