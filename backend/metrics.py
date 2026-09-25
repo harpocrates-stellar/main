@@ -26,6 +26,9 @@ class MetricsCollector:
         self._cache_misses = 0
         self._cache_evictions = 0
 
+        # Retention metrics
+        self._deleted_events_total = 0
+
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
         with self._lock:
@@ -36,6 +39,7 @@ class MetricsCollector:
             self._cache_hits = 0
             self._cache_misses = 0
             self._cache_evictions = 0
+            self._deleted_events_total = 0
 
     def record_request(
         self,
@@ -113,6 +117,16 @@ class MetricsCollector:
         with self._lock:
             self._cache_evictions += 1
 
+    def record_deleted_event(self) -> None:
+        """Count one proof event purged by the retention worker.
+
+        The counter is intentionally label-free: deletion receipts hold the
+        privacy-relevant identifiers, and the metric must not become a second
+        index of deleted (privacy-sensitive) evidence.
+        """
+        with self._lock:
+            self._deleted_events_total += 1
+
     def generate_prometheus_metrics(self) -> str:
         """Format metrics into Prometheus text format (version 0.0.4)."""
         lines: List[str] = []
@@ -188,6 +202,12 @@ class MetricsCollector:
             lines.append("# HELP harpocrates_verifier_cache_evictions_total Total count of verifier cache evictions.")
             lines.append("# TYPE harpocrates_verifier_cache_evictions_total counter")
             lines.append(f"harpocrates_verifier_cache_evictions_total {self._cache_evictions}")
+
+            # 6. Retention metrics
+            lines.append("")
+            lines.append("# HELP harpocrates_deleted_events_total Total count of events purged by retention.")
+            lines.append("# TYPE harpocrates_deleted_events_total counter")
+            lines.append(f"harpocrates_deleted_events_total {self._deleted_events_total}")
 
         lines.append("")
         return "\n".join(lines)

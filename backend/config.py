@@ -40,6 +40,7 @@ class AppConfig:
     upload_chunk_bytes: int
     retention_worker_enabled: bool
     retention_interval_seconds: int
+    retention_classes: dict[str, int]
     upload_stream_threshold_bytes: int
     upload_max_bytes: int
     upload_temp_dir: str | None
@@ -93,6 +94,7 @@ def load_config() -> AppConfig:
         # Purges expired events; off by default so data is never deleted implicitly.
         retention_worker_enabled=_bool_env("RETENTION_WORKER_ENABLED", False),
         retention_interval_seconds=_int_env("RETENTION_INTERVAL_SECONDS", 3600),
+        retention_classes=_parse_retention_classes(os.getenv("RETENTION_CLASSES")),
     )
 
 
@@ -161,3 +163,39 @@ def _float_env(name: str, default: float) -> float:
     return parsed
 
 
+def _parse_retention_classes(value: str | None) -> dict[str, int]:
+    """Parse ``RETENTION_CLASSES`` into a ``{class: lifetime_days}`` mapping.
+
+    ``lifetime_days`` is how long a proof event stays addressable before the
+    retention worker may purge it. A negative lifetime means "no expiry" and
+    is stored as an event with a null ``expires_at`` so it is never purged.
+
+    Format: ``name:days[,name:days...]`` (e.g. ``short:7,default:30,forever:-1``).
+    When the variable is unset the built-in defaults are used; a ``default``
+    class is always present so callers that send no explicit class still get a
+    deterministic window.
+    """
+    defaults = {"default": 30, "short": 7, "long": 365, "forever": -1}
+    if value is None or not value.strip():
+        return defaults
+
+    classes: dict[str, int] = {}
+    for pair in value.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        name, separator, days = pair.partition(":")
+        name = name.strip()
+        if not separator or not name:
+            raise RuntimeError(
+                "RETENTION_CLASSES must be 'name:days[,name:days...]'"
+            )
+        try:
+            classes[name] = int(days.strip())
+        except ValueError:
+            raise RuntimeError(
+                f"RETENTION_CLASSES days must be integers, got {pair!r}"
+            ) from None
+
+    classes.setdefault("default", defaults["default"])
+    return classes

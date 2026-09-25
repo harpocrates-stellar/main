@@ -904,11 +904,18 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
-def purge_expired_events() -> list[dict[str, Any]]:
+def purge_expired_events(batch_size: int = 100) -> list[dict[str, Any]]:
     """Delete proof events past their expiration that are not on legal hold.
 
-    Returns a list of deletion receipts (proof_id, deleted_at, etc.) for
-    each purged event.
+    A retention sweep can be arbitrarily large, so events are drained in
+    bounded batches. The ``order by id`` keeps the drain deterministic and
+    restartable, and ``limit`` caps both the row lock footprint and the amount
+    of work done inside a single transaction. Callers (the retention worker)
+    loop until a batch comes back short.
+
+    Returns a list of deletion receipts (``id``, ``created_at``, ``proof_id``)
+    for each purged event, so the caller can correlate a purge with the proof
+    it removed without re-reading the deleted row.
     """
     if not database_url():
         return []
@@ -923,9 +930,11 @@ def purge_expired_events() -> list[dict[str, Any]]:
                 from proof_events
                 where expires_at is not null
                   and expires_at <= %s
-                  and legal_hold = false;
+                  and legal_hold = false
+                order by id
+                limit %s;
                 """,
-                (now,),
+                (now, batch_size),
             )
             expired = [dict(row) for row in cursor.fetchall()]
             for event in expired:
@@ -933,7 +942,7 @@ def purge_expired_events() -> list[dict[str, Any]]:
                     """
                     insert into deletion_receipts (proof_id, video_hash, metadata_hash)
                     values (%s, %s, %s)
-                    returning id, created_at;
+                    returning id, created_at, proof_id;
                     """,
                     (event["proof_id"], event.get("video_hash"), event.get("metadata_hash")),
                 )
