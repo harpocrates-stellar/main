@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "category": "expired",
+  "description": "Expired proof, timestamp, or credential vectors that must be rejected at the privacy boundary",
+  "cases": [
+    {
+      "id": "exp-001-proof-expired",
+      "description": "Proof past its validity window must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964185Z",
+        "validUntil": "2024-09-25T06:37:59.964165Z"
+      },
+      "expect": {
+        "reject_code": "proof_expired",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "exp-002-timestamp-too-old",
+      "description": "Timestamp older than maximum allowed age must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2006-09-30T06:37:59.964189Z"
+      },
+      "expect": {
+        "reject_code": "timestamp_too_old",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "exp-003-rfc3161-chain-expired",
+      "description": "RFC 3161 timestamp chain with expired leaf must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964202Z",
+        "rfc3161Chain": {
+          "chain": [
+            "base64-cert-1",
+            "base64-cert-2"
+          ],
+          "trustRoots": [
+            "base64-root"
+          ],
+          "genTime": "2023-09-26T06:37:59.964197Z",
+          "expiresAt": "2024-09-25T06:37:59.964199Z"
+        }
+      },
+      "expect": {
+        "reject_code": "rfc3161_chain_expired",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "exp-004-credential-expired",
+      "description": "Expired credential in proof must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "source",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964211Z",
+        "credential": {
+          "type": "VerifiableCredential",
+          "issuer": "did:example:issuer",
+          "validFrom": "2023-09-26T06:37:59.964205Z",
+          "validUntil": "2024-09-25T06:37:59.964208Z",
+          "credentialSubject": {
+            "id": "did:example:subject"
+          }
+        }
+      },
+      "expect": {
+        "reject_code": "credential_expired",
+        "must_not_log": [],
+        "must_not_store": [
+          "credential"
+        ]
+      }
+    },
+    {
+      "id": "exp-005-attestation-expired",
+      "description": "Expired attestation must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "seal",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964218Z",
+        "attestation": {
+          "type": "TimeAttestation",
+          "issuedAt": "2023-09-26T06:37:59.964214Z",
+          "expiresAt": "2024-09-25T06:37:59.964216Z",
+          "attester": "did:example:attester"
+        }
+      },
+      "expect": {
+        "reject_code": "attestation_expired",
+        "must_not_log": [],
+        "must_not_store": [
+          "attestation"
+        ]
+      }
+    },
+    {
+      "id": "exp-006-nullifier-epoch-expired",
+      "description": "Nullifier from expired epoch must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964221Z",
+        "nullifier": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "epoch": 0,
+        "currentEpoch": 100
+      },
+      "expect": {
+        "reject_code": "nullifier_epoch_expired",
+        "must_not_log": [
+          "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+        ],
+        "must_not_store": [
+          "nullifier"
+        ]
+      }
+    }
+  ]
+}
