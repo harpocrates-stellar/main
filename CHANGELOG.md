@@ -2,12 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
-- Added automated WCAG 2.2 AA accessibility checks to the frontend CI via
-  `axe-core` (`npm run test:a11y`), with a fail-closed assertion over every
-  public view and a documented jsdom-only limitation for `color-contrast`.
-  Landing-page workflow-diagram, protocol-status, and primary-nav labelling
-  were aligned with the documented audit. Additive dev-only change; no
-  protocol, artifact, or stored-evidence impact (#408).
+- Added on-chain **metadata envelope versioning** for the Soroban registry (`MetadataEnvelope`, `bind_metadata_envelope`, auto-V1 stamp on register, V1→V2 upgrade path) aligned with `backend/envelope.py`. See `contracts/METADATA_ENVELOPE.md`. Closes #317.
 
 - Extended structured fuzzing of proof and public-input decoding: proof-hex
   mutators (odd nibble, non-hex, empty, length edges), exact proof-bound tables,
