@@ -67,3 +67,19 @@ jobs:
       - name: cargo audit (Contracts)
         working-directory: contracts
         run: cargo audit
+
+  container-scan:
+    name: Deployment Container Non-Root Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Validate Deployment Containers
+        run: python3 devx/validate_deployment_containers.py --check
+

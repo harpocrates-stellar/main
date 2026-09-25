@@ -340,6 +340,61 @@ The backend image is environment-agnostic and can be pulled and run directly.
 
 ---
 
+### Non-Root Container Execution
+
+Both production deployment containers run as dedicated unprivileged non-root users:
+
+| Image | User:Group | UID:GID | Purpose |
+|-------|------------|---------|---------|
+| `harpocrates-backend` | `harpocrates:harpocrates` | `10001:10001` | Dedicated system user with `/app` and `/tmp/harpocrates_jobs` access |
+| `harpocrates-frontend` | `nginx:nginx` | `101:101` | Alpine unprivileged nginx user with `/tmp/nginx.pid` and local cache |
+
+#### Container Hardening Benefits
+- **Least privilege:** Execution boundaries prevent processes from modifying system binaries, mounting filesystems, or accessing host namespaces.
+- **Privilege escalation prevention:** Docker Compose stacks set `security_opt: ["no-new-privileges:true"]` to block setuid/setgid privilege escalation.
+- **Privacy preservation:** In the event of a remote code execution bug in parsing libraries (e.g. ffmpeg or image decoders), attacker execution is constrained to an unprivileged account, preventing host root compromise or access to secrets/evidence in adjacent workloads.
+
+#### Orchestrator Security Contexts (Kubernetes / ECS / Nomad)
+Both images satisfy Kubernetes Pod Security Standards (`restricted` profile). You can enforce non-root execution in pod manifests:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container securityContext for backend:
+containers:
+  - name: backend
+    image: ghcr.io/YOUR_ORG/harpocrates-backend:latest
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+
+# Container securityContext for frontend:
+  - name: frontend
+    image: ghcr.io/YOUR_ORG/harpocrates-frontend:latest
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 101
+      runAsGroup: 101
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+```
+
+#### Migration and Volume Permissions
+- **Zero-downtime compatibility:** Existing HTTP/RPC interfaces, exposed ports (`:5050`, `:8080`), and environment variables remain identical.
+- **Persistent/Mounted Volumes:** If mounting persistent storage to `/tmp` or `HARPOCRATES_STORAGE_DIR`, ensure the mounted host directory is writable by UID `10001` (e.g. `chown -R 10001:10001 /path/to/storage`).
+- **Rollback:** If reverting to legacy root containers is required for legacy host environments, images can be rebuilt from previous tags or run with `user: "0:0"` at the compose/orchestrator level without data migration.
+
+---
 
 ### Docker HEALTHCHECK
 

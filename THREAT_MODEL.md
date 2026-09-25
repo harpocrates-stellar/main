@@ -112,6 +112,7 @@ Each assumption is a potential attack surface if violated.
 | D7 | Circuit artifacts in `frontend/public/noir/` match the circuit used to generate `RegistryWasmHash`-era verifier keys. | Browser-generated proofs fail on-chain verification or (worse) a stale verifier accepts proofs from a replaced circuit. |
 | D8 | Stellar Testnet ledger timestamps are monotonically increasing and not manipulable by a single validator. | Proof TTL enforcement can be bypassed. |
 | D9 | ffmpeg/ffprobe binaries on the backend host are from a trusted, unmodified distribution. | Malicious ffmpeg could exfiltrate video frames or corrupt steganographic output. |
+| D10 | Deployment containers execute as dedicated unprivileged non-root users (`harpocrates` UID 10001 for backend, `nginx` UID 101 for frontend) with `no-new-privileges:true`. | Vulnerability in runtime dependencies (e.g. ffmpeg or nginx parser) could lead to container breakout or host root compromise. |
 
 
 ---
@@ -158,6 +159,13 @@ Stellar private key. All on-chain operations are validated by the Soroban VM.
 **TB-3 Backend → NeonDB:** The backend writes proof events using parameterized
 queries via `psycopg`. `DATABASE_URL` is read from the environment and never
 logged. The NeonDB row schema does not store ZK secrets.
+
+**TB-4 Deployment Container Execution Boundary (Container Sandbox):** Isolates backend
+and frontend processes from the host operating system. Deployment containers run as
+unprivileged, dedicated non-root users (`harpocrates` UID 10001:10001, `nginx` UID 101:101)
+with unprivileged network ports (:5050, :8080) and `security_opt: ["no-new-privileges:true"]`.
+Even in the event of an exploit in user-space parser code (e.g. ffmpeg video decode),
+host root access is denied, preventing lateral compromise of host credentials or adjacent workloads.
 
 ---
 
@@ -615,6 +623,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
 | Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
 | AST-based API Schema generation prevents DB injections and application state side-effects during build/CI | T6, T10 | `devx/generate_api_schema.py` |
+| Non-root container execution (`harpocrates` UID 10001) with `no-new-privileges:true` and unprivileged port 5050 | T6 | `backend/Dockerfile`, `docker-compose.yml` |
 
 
 ### 7.3 React Frontend
@@ -629,6 +638,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
+| Non-root container execution (`nginx` UID 101) with unprivileged PID path (`/tmp/nginx.pid`) and `no-new-privileges:true` | T4 | `frontend/Dockerfile`, `docker-compose.yml` |
 
 ### 7.4 Noir ZK Circuit (`silent_witness`)
 

@@ -43,5 +43,7 @@ jobs:
         run: |
           python3 devx/compatibility_report.py --write --stable --check
           python3 devx/compatibility_report.py --verify-existing --stable --check
+      - name: Validate deployment containers non-root execution
+        run: python3 devx/validate_deployment_containers.py --check
       - name: Exercise negative release-gate paths
         run: python3 -m unittest discover -s devx -p 'test_*.py' -v

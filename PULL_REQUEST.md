@@ -1,143 +1,92 @@
-# Bounded Aggregation of Silent Witness Proofs
+# chore(devx): run deployment containers as non-root
 
 ## Summary
 
-Implements bounded aggregation of multiple Silent Witness proofs into a single verifiable UltraHonk statement. A prover can bundle up to **8** video hashes under the same credential identity and produce one compact proof, reducing on-chain verification costs by up to 8× for batch submissions.
+Hardens all Harpocrates production deployment containers (`harpocrates-backend` and `harpocrates-frontend`) to execute as unprivileged, dedicated non-root users. Prevents container privilege escalation across local, Compose, and Kubernetes environments, reinforcing defense-in-depth at Harpocrates' public deployment boundaries without breaking compatible callers or stored evidence.
 
-Closes # (issue number)
+Closes #394
 
-## Motivation
+---
 
-Harpocrates handles privacy-sensitive media, proof material, Stellar transactions, and on-chain verification. This change is production-grade: secure by default, bounded under hostile inputs, observable without leaking evidence or witnesses, and recoverable across partial failures.
+## Trust-Boundary Implications
+
+Harpocrates isolates cryptographic proof construction and secret generation (in-browser) from untrusted media processing and proof coordination. Running containers as non-root strengthens this architectural separation:
+
+- **TB-4 Deployment Container Execution Boundary (Container Sandbox):**
+  - **Backend container (`harpocrates-backend`):** Runs as unprivileged system user `harpocrates` (UID `10001`, GID `10001`). Application files (`/app`) and runtime scratch storage (`/tmp/harpocrates_jobs`) are owned by `10001:10001`. Even under a theoretical memory corruption or RCE flaw in user-space parsers (such as ffmpeg video decoding or image extraction), attacker execution cannot escalate to host root, mount host devices, or inspect root-only filesystems.
+  - **Frontend container (`harpocrates-frontend`):** Runs as unprivileged system user `nginx` (UID `101`, GID `101`). Nginx is reconfigured with an unprivileged PID path (`/tmp/nginx.pid`), root directive suppressed, and read-only static web root permissions. Web server vulnerabilities cannot compromise the underlying container sandbox.
+  - **Privilege Escalation Block:** Docker Compose stacks and example manifests declare `security_opt: ["no-new-privileges:true"]`, preventing setuid/setgid binary escalation inside the container.
+  - **Network Boundary:** All container ports remain strictly unprivileged (`:5050` for backend, `:8080` for frontend, > 1024), eliminating requirements for `CAP_NET_BIND_SERVICE`.
+
+---
+
+## Privacy Implications
+
+- **Zero credential / secret exposure:** Deployment containers and their build definitions contain zero hardcoded secrets, database URLs, witness secrets, or private keys.
+- **No telemetry / evidence leakage in logs:** Healthcheck probes (`/health` and `/`) remain URL-only and execute unprivileged without leaking witness values, media paths, or tokens.
+- **Fail-safe isolation:** In multi-tenant container hosts or shared virtual machines, non-root execution prevents lateral read access to adjacent tenant filesystems or shared tmpfs storage.
+
+---
+
+## Migration and Compatibility Implications
+
+- **Zero API or wire protocol drift:** The HTTP endpoints, JSON schemas, environment variables (`DATABASE_URL`, `CORS_ORIGINS`, `VITE_*`), and exposed ports (`:5050`, `:8080`) are 100% unchanged.
+- **Kubernetes Pod Security Standard compliance:** The images are immediately compliant with the `restricted` profile of Kubernetes Pod Security Standards (`runAsNonRoot: true`, `runAsUser: 10001`, `drop: [ALL]`).
+- **Volume storage migration note:** For existing bare-metal / VPS deployments that mounted host directories directly into `/tmp` or custom `HARPOCRATES_STORAGE_DIR`, administrators should ensure host directory ownership is updated to UID `10001`:
+  ```bash
+  chown -R 10001:10001 /path/to/host/storage
+  ```
+  Default container runs using container-local `/tmp/harpocrates_jobs` require no manual intervention.
+
+---
+
+## Rollback Plan
+
+- **Container tag rollback:** If a legacy host runtime strictly requires root container execution, deployments can instantly roll back to previous image tags or specify `user: "0:0"` in their compose / pod override without modifying stored evidence or database tables.
+- **No persistent state locks:** Non-root execution introduces no state locks, schema migrations, or on-chain contract upgrades.
+
+---
 
 ## What Changed
 
-### New: `silent_witness_aggregator` Noir Circuit (`zk/noir/silent_witness_aggregator/`)
+### 1. `backend/Dockerfile`
+- Added unprivileged user and group `harpocrates:harpocrates` (UID `10001`, GID `10001`, home `/home/harpocrates`).
+- Created and chowned `/tmp/harpocrates_jobs` and `/app` to `harpocrates:harpocrates`.
+- Updated `COPY` step with `--chown=harpocrates:harpocrates . .`.
+- Switched default runtime user to `USER harpocrates:harpocrates`.
+- Retained unprivileged port `EXPOSE 5050` and URL-only `/health` liveness probe.
 
-- Bounded batch circuit accepting exactly **8** elements (1–8 meaningful, rest zero-padded)
-- Verifies all `credential_root` values match (same identity across batch)
-- Verifies per-element nullifiers bind to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)`
-- `MAX_AGGREGATION_SIZE = 8` enforced at circuit level
-- Comprehensive test corpus: positive full batch, edge cases (zero/max secrets, all-zero hashes), negative cases (mismatched roots, wrong nullifiers, swapped fields, replay)
-- Versioned domain isolation via `AGGREGATION_DOMAIN_SEPARATOR`
+### 2. `frontend/Dockerfile`
+- Configured Alpine nginx runtime to execute as `USER nginx:nginx` (UID `101`, GID `101`).
+- Changed PID file path from `/var/run/nginx.pid` to `/tmp/nginx.pid`.
+- Commented out the `user nginx;` directive in `/etc/nginx/nginx.conf` to eliminate unprivileged master process warnings.
+- Granted ownership of cache, logs, and config directories to `nginx:nginx`.
+- Retained unprivileged port `EXPOSE 8080` and SPA liveness probe.
 
-### New: `silent_witness_aggregator_helper` Noir Circuit (`zk/noir/silent_witness_aggregator_helper/`)
+### 3. `docker-compose.yml` & `docker-compose.example.yml`
+- Added `security_opt: ["no-new-privileges:true"]` to both `backend` and `frontend` service definitions.
+- Confirmed unprivileged port mappings (`:5050`, `:8080`).
 
-- Derives batch public inputs (credential_root, nullifiers) from private secrets and video hashes
-- Mirrors the `silent_witness_helper` pattern for aggregation flow
+### 4. `devx/validate_deployment_containers.py`
+- Created dedicated CI verification tool that fail-closes on:
+  - Missing `USER` instruction or explicit `USER root` / `USER 0`.
+  - Exposed ports < 1024.
+  - Embedded secrets, tokens, private keys, or real media paths.
+  - Missing `no-new-privileges` in compose files.
+  - Privileged flags or root overrides in compose files.
+  - Oversized (> 256 KiB), missing, or malformed container files.
 
-### New Build + Generation Scripts (`zk/noir/scripts/`)
+### 5. Test Coverage
+- **`backend/test_docker_non_root.py`**:
+  - Positive tests: non-root user verification for backend (`harpocrates`, 10001) and frontend (`nginx`, 101).
+  - Security option checks: `no-new-privileges:true` in compose configs.
+  - Negative tests: rejection of root directives, parsing empty/malformed lines, unprivileged port checks.
+  - Privacy assertions: absence of credentials and sensitive literals.
+- **`devx/test_validate_deployment_containers.py`**:
+  - Full suite testing file validation, CLI `--check`, and negative inputs (missing files, empty files, oversized files, root declarations, privileged ports).
 
-- `build-silent-witness-aggregator.sh` – compile, prove, write_vk, and verify the aggregator circuit
-- `generate-silent-witness-aggregator.sh` – generate aggregated proofs for 1–8 video hashes
-
-### Updated: Soroban Registry Contract (`contracts/contracts/harpocrates-registry/src/lib.rs`)
-
-- **`register_batch_verified`** – new entry point for batch registration:
-  - Accepts `batch_id`, `metadata_hash`, aggregated `public_inputs`, aggregated `proof`, and `video_hashes` vector
-  - Validates domain separator matches `AGGREGATION_DOMAIN_SEPARATOR` (version binding)
-  - Verifies the aggregated UltraHonk proof through the configured external verifier
-  - Validates credential root is active and identical across all elements
-  - Checks per-element nullifier uniqueness (no replay)
-  - Checks per-video hash uniqueness
-  - Persists all elements atomically after full pre-validation
-  - Derives deterministic sub-proof_ids for each element
-- **`AGGREGATION_DOMAIN_SEPARATOR`** – versioned domain tag `"HARPOCRATES_AGG_V1"`
-- **`parse_aggregated_public_inputs`** – parses 32 + (batch_size × 128) byte layout efficiently (no large stack allocation)
-- **`derive_element_proof_id`** – deterministic sub-proof_id derivation with full 32-byte XOR spread
-- **`ProofRecord.batch_size`** – new field tracking batch membership (0 = individual)
-- New error types: `BatchSizeExceeded` (14), `BatchCredentialRootMismatch` (15), `BatchCountMismatch` (16)
-
-### New: Contract Tests (`contracts/contracts/harpocrates-registry/src/test_aggregation.rs`)
-
-- Happy path: 3-element batch registers all elements successfully
-- Empty batch rejected (`BatchSizeExceeded`)
-- Oversized batch (9 elements) rejected (`BatchSizeExceeded`)
-- Mismatched credential roots rejected (`BatchCredentialRootMismatch`)
-- No verifier configured rejected (`VerifierNotSet`)
-- Unknown credential root rejected (`UnknownCredentialRoot`)
-- Wrong domain separator rejected (`InvalidPublicInputs`)
-- Duplicate nullifier rejected (`DuplicateNullifier`)
-- Public input length mismatch rejected (`InvalidPublicInputs`)
-- Verifier rejects proof → registration fails (`InvalidProof`)
-- MAX_AGGREGATION_SIZE (8) batch succeeds
-
-### Updated: Backend (`backend/`)
-
-- `noir.py` – added `generate_aggregated_proof()` function
-- `app.py` – added `POST /api/noir/silent-witness/aggregate` endpoint:
-  - Accepts `videoHashes` array (1–8), `credentialSecret`, `nullifierSecret`
-  - Bounded input validation with size checking
-  - Privacy-safe logging (batch size logged, secrets redacted)
-
-### Updated: Frontend (`frontend/src/noirClient.ts`)
-
-- Added `generateAggregatedProof()` function
-- Loads aggregator circuits (`silent_witness_aggregator.json`, `silent_witness_aggregator_helper.json`)
-- Derives batch public inputs via helper, then generates single UltraHonk proof
-- Returns typed `AggregatedProof` with batch metadata
-
-### Updated: Documentation
-
-- `zk/noir/README.md` – aggregator circuit section with properties and build instructions
-- `contracts/VERIFIER_INTEGRATION.md` – batch aggregation section with public input layout and semantics
-
-### New: Test Vectors (`zk/noir/fixtures/aggregation_vectors.json`)
-
-- Deterministic fixture data for batch of 8 elements
-- Zero-credential-secret edge case fixture
-
-## Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| **MAX_AGGREGATION_SIZE = 8** | Balances circuit size with practical batching; 8 public inputs × 128 bytes = 1024 bytes per batch |
-| **Explicit unrolled verification** (not loops) | Noir circuit constraints must be bounded at compile time; unrolled per-element verification eliminates dynamic iteration |
-| **Pre-validation then persist** | Two-phase approach prevents partial writes; all checks pass before any write |
-| **XOR-based sub-proof_id** | Deterministic, cheap, and collision-resistant within batch; full 32-byte spread with index-dependent mask |
-| **Same-identity binding** | All credential roots must match; prevents cross-identity aggregation attacks |
-| **Per-element nullifiers** | Individual video proofs cannot be replayed outside batch context |
-| **Versioned domain separator** | Prevents cross-version proof replay; both circuit and contract check it |
-
-## Security Properties
-
-1. **Soundness**: Prover cannot forge aggregate proof without knowing secrets for every video
-2. **Binding**: All credential roots identical; prevents cross-identity bundling
-3. **Bounded work**: Exactly 8 elements; oversized/undersized inputs rejected
-4. **Domain isolation**: `AGGREGATION_DOMAIN_SEPARATOR != REVOCATION_DOMAIN_SEPARATOR` prevents cross-circuit replay
-5. **Nullifier consumption**: Each element gets its own consumed nullifier; no single-video replay
-
-## Rollout
-
-1. **Compatibility**: Backward compatible; `ProofRecord.batch_size` defaults to 0 for existing records
-2. **Migration**: No data migration needed; new contract deployment required to add `register_batch_verified`
-3. **Rollback**: Revert to previous contract deployment; batch registration fails but individual registration continues working
-
-## Out of Scope
-
-- Real user evidence or production secrets
-- Live mainnet deployment
-- Browser-side aggregator circuit generation (requires compiled WASM artifacts)
-- Unrelated visual redesign or dependency upgrades
-
-## Dependencies
-
-- Noir 1.0.0-beta.9+ and Barretenberg 0.87.0+ for circuit compilation/proving
-- `rs-soroban-ultrahonk` verifier contract for on-chain UltraHonk verification
-- Soroban SDK 25.x for registry contract compilation
-
-## Testing
-
-```bash
-# Noir circuit tests (requires nargo)
-cd zk/noir/silent_witness_aggregator
-nargo test
-
-# Contract tests (requires cargo)
-cd contracts
-cargo test
-
-# Backend tests (requires python)
-cd backend
-python -m pytest
-```
+### 6. Documentation & Workflows
+- **`DEPLOY.md`**: Added Non-Root Container Execution section with UID/GID reference table, Kubernetes securityContext examples, and volume permissions guide.
+- **`THREAT_MODEL.md`**: Added assumption D10, trust boundary TB-4, and container mitigation entries for backend and frontend.
+- **`.github/workflows/security-scans.yml`**: Added `container-scan` job running `python3 devx/validate_deployment_containers.py --check`.
+- **`.github/workflows/release-gate.yml`**: Added validation step before gate checks.
