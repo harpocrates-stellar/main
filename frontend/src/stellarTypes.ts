@@ -94,8 +94,23 @@ export type ChainProofRecord = {
   tier: number
   status: number
   createdAt: string
+  /**
+   * `ProofRecord.expires_at` in Unix seconds. `0` means the record never
+   * expires, matching the registry's expiry policy.
+   */
+  expiresAt: number | null
   source: string | null
   issuer: string | null
+}
+
+/**
+ * `IssuerRecord` from the registry: an institutional issuer's standing.
+ * `active` is the registry's own flag, so revocation is authoritative here
+ * rather than inferred from the proof record.
+ */
+export type IssuerRecord = {
+  metadataHash: string
+  active: boolean
 }
 
 export type SupportedPredicateType = 'Equality' | 'SetMembership' | 'Range'
@@ -121,6 +136,7 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'get_issuer'
   | 'set_scope_epoch'
   | 'get_scope_epoch'
   | 'verify_selective_disclosure'

@@ -44,7 +44,7 @@ struct MockStateMachineVerifier;
 impl MockStateMachineVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
             panic!("invalid state-machine proof");
         }
     }
@@ -564,11 +564,14 @@ fn silent_public_inputs(
             credential_root.copy_into_slice(&mut cr);
             nullifier.copy_into_slice(&mut nu);
 
-            let mut bytes = [0u8; 128];
+            let mut bytes = [0u8; 160];
             bytes[16..32].copy_from_slice(&vh[..16]);
             bytes[48..64].copy_from_slice(&vh[16..]);
             bytes[64..96].copy_from_slice(&cr);
             bytes[96..128].copy_from_slice(&nu);
+            let mut domain = [0u8; 32];
+            expected_domain_tag(env).copy_into_slice(&mut domain);
+            bytes[128..160].copy_from_slice(&domain);
             Bytes::from_array(env, &bytes)
         }
     }
@@ -818,7 +821,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_source",
             )? {
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -863,7 +866,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_seal",
             )? {
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -931,7 +934,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -1006,7 +1009,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }

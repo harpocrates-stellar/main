@@ -68,6 +68,19 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
+FORBIDDEN = "FORBIDDEN"
+"""The credential is valid but not authorized for this proof owner (403)."""
+
+DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+"""A required backing service failed; the request was rejected, not applied (503)."""
+
+FORBIDDEN_ORIGIN = "FORBIDDEN_ORIGIN"
+"""The request's Origin is not on the configured CORS allow-list (403).
+
+The offending origin value is intentionally absent from the envelope: error
+payloads must stay privacy-safe and must not echo attacker-controlled input.
+"""
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------

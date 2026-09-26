@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from workspace import EncryptedWorkspace
@@ -18,7 +19,12 @@ from pathlib import Path
 from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 
-from http_security import apply_security_headers, cors_kwargs
+from http_security import (
+    CORS_EXEMPT_PATHS,
+    apply_security_headers,
+    cors_kwargs,
+    is_origin_allowed,
+)
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -26,7 +32,11 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from config import load_config
+import register_auth
 from errors import (
+    DEPENDENCY_UNAVAILABLE,
+    FORBIDDEN,
+    FORBIDDEN_ORIGIN,
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
@@ -39,6 +49,7 @@ from db import (
     database_url,
     decode_proof_events_cursor,
     find_proof_events_by_video,
+    find_proof_owner,
     find_lineage_by_output_digest,
     find_lineage_by_actor,
     init_db,
@@ -77,6 +88,13 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from c2pa import (
+    C2paParseError,
+    C2paTrustStatus,
+    corroborate_binding,
+    export_c2pa_manifest,
+    parse_c2pa_manifest,
+)
 from logging_utils import log_structured, redact_sensitive
 from errors import (
     INTERNAL_ERROR,
@@ -210,6 +228,53 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+
+    @app.before_request
+    def enforce_cors_origins():
+        """Reject browser requests whose Origin is not on the configured allow-list.
+
+        flask-cors alone only *withholds* ``Access-Control-Allow-Origin`` on
+        disallowed origins; the request still executes server-side and its
+        response is readable by non-browser clients. This hook closes that gap
+        for real cross-origin browser traffic:
+
+        - Requests without an ``Origin`` header are same-origin/curl/server
+          callers and are never rejected (CORS does not apply to them).
+        - ``null``/opaque Origins are rejected — they are indistinguishable
+          from a sandboxed attacker context.
+        - Configured wildcard (``*``) short-circuits to allow, exactly matching
+          the flask-cors behavior and remaining gated by ``ALLOW_WILDCARD_CORS``.
+        - Health, readiness, and metrics paths are exempt: probes and scrapers
+          are server-to-server callers without an ``Origin``.
+
+        Rejections use the standardized, privacy-safe error envelope and are
+        counted in the admission-rejection metrics; the offending Origin value
+        is never logged.
+        """
+        origin = request.headers.get("Origin")
+        if origin is None or request.path in CORS_EXEMPT_PATHS:
+            return None
+        if is_origin_allowed(origin, config.cors_origins):
+            return None
+        metrics_collector.record_rejection(
+            "cors_origin_not_allowed",
+            request.url_rule.rule if request.url_rule else request.path,
+        )
+        log_structured(
+            LOGGER,
+            logging.INFO,
+            {
+                "event": "cors_origin_rejected",
+                "request_id": request_id(),
+                "method": request.method,
+                "path": request.path,
+            },
+        )
+        return error_response(
+            code=FORBIDDEN_ORIGIN,
+            message="request origin is not allowed",
+            status=403,
+        )
         # Privacy-safe trace fields for log correlation (no secrets/media/PII).
         g.trace_fields = build_trace_fields(
             request.headers,
@@ -275,45 +340,112 @@ def create_app() -> Flask:
         return response
 
     def require_register_auth(fn):
-        """Decorator that enforces Bearer token auth on proof registration.
+        """Decorator that enforces ownership-scoped auth on proof registration.
 
         Behaviour:
-        - If REGISTER_API_KEY is not configured the endpoint is open (development
-          convenience identical to the previous behaviour).
+        - If neither REGISTER_API_KEY nor REGISTER_SCOPED_KEYS is configured the
+          endpoint is open (development convenience, unchanged).
         - Otherwise the request must carry ``Authorization: Bearer <key>``.
         - If REGISTER_API_KEY_EXPIRES is set and the current UTC time is at or
-          past that instant the key is treated as expired and the request is
-          rejected with 401.
+          past that instant the primary and owner-scoped credentials are
+          expired and the request is rejected with 401, even when the token
+          would match.
+        - ``REGISTER_API_KEY_PREVIOUS`` can overlap the primary key during a
+          rotation.  It is accepted until its optional expiry, allowing
+          already-deployed clients to transition without downtime.
+        - The legacy keys are unscoped. An owner-scoped key may only register a
+          ``sourceAddress`` equal to its owner (403 otherwise).
+
+        This must wrap ``@idempotent``: replays are keyed on the request body
+        alone, so authorization and the owner check have to run first or a
+        cached success could be replayed to a caller who may not register it.
         """
+
+        def reject(reason: str, message: str):
+            # Reason codes only; never the token, its digest, or an address.
+            log_structured(
+                LOGGER,
+                logging.WARNING,
+                {"event": "register_auth_rejected", "reason": reason, "request_id": request_id()},
+            )
+            return jsonify({"error": message}), 401
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            expected_key = config.register_api_key
-            if expected_key is None:
-                # No key configured – allow the request (dev mode).
+            legacy_key = config.register_api_key
+            scoped_keys = config.register_scoped_keys
+            if legacy_key is None and not scoped_keys:
+                # No credential configured – allow the request (dev mode).
                 return fn(*args, **kwargs)
-
-            # Check expiry before validating the key so that an expired key
-            # is never accepted even if the token matches.
-            expires = config.register_api_key_expires
-            if expires is not None:
-                from datetime import datetime as _dt
-
-                now = _dt.now(tz=timezone.utc)
-                if now >= expires:
-                    return jsonify({"error": "API key has expired"}), 401
 
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
-                return jsonify({"error": "Authorization header with Bearer token is required"}), 401
+                return reject(
+                    register_auth.REASON_MISSING,
+                    "Authorization header with Bearer token is required",
+                )
 
-            provided_key = auth_header[len("Bearer "):]
-            # Constant-time comparison to mitigate timing attacks.
-            import hmac as _hmac
+            token = auth_header[len("Bearer "):].strip()
+            now = datetime.now(tz=timezone.utc)
 
-            if not _hmac.compare_digest(provided_key, expected_key):
-                return jsonify({"error": "Invalid API key"}), 401
+            # Every configured credential is compared on every call; do not
+            # reveal whether a key is primary, previous, scoped, or expired.
+            principal = register_auth.authenticate(
+                token,
+                legacy_key=legacy_key,
+                scoped_keys=scoped_keys,
+            )
+            previous_key = config.register_api_key_previous
+            previous_principal = (
+                register_auth.authenticate(token, legacy_key=previous_key, scoped_keys=())
+                if previous_key
+                else None
+            )
+            # REGISTER_API_KEY_EXPIRES applies to the primary and scoped keys;
+            # REGISTER_API_KEY_PREVIOUS has its own optional expiry.
+            expires = config.register_api_key_expires
+            primary_expired = expires is not None and now >= expires
+            previous_expires = config.register_api_key_previous_expires
+            if primary_expired:
+                principal = None
+            if principal is None and previous_principal is not None and (
+                previous_expires is None or now < previous_expires
+            ):
+                principal = previous_principal
+            if principal is None:
+                if primary_expired:
+                    return reject(register_auth.REASON_EXPIRED, "API key has expired")
+                return reject(register_auth.REASON_INVALID, "Invalid API key")
 
+            if principal.is_scoped:
+                # Bound the body we parse before the handler's own size check.
+                if (request.content_length or 0) > config.max_json_bytes:
+                    return jsonify({"error": "JSON payload exceeds size limit"}), 413
+                payload = request.get_json(silent=True)
+                # A non-object body is left for the handler to reject with 400.
+                if isinstance(payload, dict):
+                    try:
+                        claimed_owner = validate_source_address(payload.get("sourceAddress"))
+                    except ValueError as exc:
+                        return jsonify({"error": str(exc)}), 400
+                    if not register_auth.scope_allows(principal, claimed_owner):
+                        log_structured(
+                            LOGGER,
+                            logging.WARNING,
+                            {
+                                "event": "register_auth_rejected",
+                                "reason": register_auth.REASON_SCOPE,
+                                "request_id": request_id(),
+                            },
+                        )
+                        return error_response(
+                            code=FORBIDDEN,
+                            message="credential is not authorized for this sourceAddress",
+                            status=403,
+                            field="sourceAddress",
+                        )
+
+            g.register_principal = principal
             return fn(*args, **kwargs)
 
         return wrapper
@@ -372,7 +504,14 @@ def create_app() -> Flask:
             auth_header = request.headers.get("Authorization", "")
             token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
             custom_token = request.headers.get("X-Metrics-Token", "").strip()
-            if token != config.metrics_token and custom_token != config.metrics_token:
+            # Constant-time comparison; both candidates are always evaluated so
+            # neither the match position nor the header used is observable.
+            import hmac as _hmac
+
+            expected_token = config.metrics_token.encode("utf-8")
+            bearer_ok = _hmac.compare_digest(token.encode("utf-8"), expected_token)
+            header_ok = _hmac.compare_digest(custom_token.encode("utf-8"), expected_token)
+            if not (bearer_ok or header_ok):
                 return jsonify({"error": "unauthorized metrics access"}), 401
 
         output = metrics_collector.generate_prometheus_metrics()
@@ -396,6 +535,12 @@ def create_app() -> Flask:
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
+        for dependency in readiness_manager.deps:
+            metrics_collector.record_dependency_status(
+                dependency.name,
+                status.get(dependency.name, "unknown"),
+                dependency.critical,
+            )
         trace = current_trace_fields()
         return jsonify(
             {
@@ -485,10 +630,11 @@ def create_app() -> Flask:
         except ValueError as exc:
             return metadata_error_response(classify_validation_error(exc))
 
+        normalized_name = normalize_filename(video.filename)
         try:
             quarantine_context = isolate_upload(
                 video,
-                filename=video.filename,
+                filename=normalized_name,
                 content_type=video.content_type,
             )
             with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
@@ -511,7 +657,7 @@ def create_app() -> Flask:
 
         db_event = insert_proof_event(
             event_type="embed",
-            file_name=safe_filename(video.filename),
+            file_name=normalized_name,
             video_hash=embedded_hash,
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId"),
@@ -628,7 +774,7 @@ def create_app() -> Flask:
 
         db_event = insert_proof_event(
             event_type="embed",
-            file_name=safe_filename(metadata.get("fileName", "unknown.mp4")),
+            file_name=normalize_filename(metadata.get("fileName", "unknown.mp4")),
             video_hash=embedded_hash,
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId"),
@@ -671,10 +817,11 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
+        normalized_name = normalize_filename(video.filename)
         try:
             quarantine_context = isolate_upload(
                 video,
-                filename=video.filename,
+                filename=normalized_name,
                 content_type=video.content_type,
             )
             with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
@@ -701,7 +848,7 @@ def create_app() -> Flask:
 
         db_event = insert_proof_event(
             event_type="extract",
-            file_name=safe_filename(video.filename),
+            file_name=normalized_name,
             video_hash=video_hash,
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId") if metadata else None,
@@ -828,6 +975,7 @@ def create_app() -> Flask:
 
     @app.post("/api/proofs/register")
     @limiter.limit(config.ratelimit_register)
+    @require_register_auth
     @idempotent("register")
     def register_proof_event():
         if _enforce_json_size() > config.max_json_bytes:
@@ -886,6 +1034,40 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        # Proof ownership: a scoped credential may not register a proof that a
+        # different address already owns. Fail closed if the lookup fails.
+        principal = g.get("register_principal")
+        if principal is not None and principal.is_scoped:
+            try:
+                existing_owner = find_proof_owner(proof_id)
+            except Exception:
+                log_structured(
+                    LOGGER,
+                    logging.ERROR,
+                    {"event": "register_owner_lookup_failed", "request_id": request_id()},
+                )
+                return error_response(
+                    code=DEPENDENCY_UNAVAILABLE,
+                    message="ownership check unavailable; registration was not applied",
+                    status=503,
+                )
+            if existing_owner is not None and existing_owner != validated_source_address:
+                log_structured(
+                    LOGGER,
+                    logging.WARNING,
+                    {
+                        "event": "register_auth_rejected",
+                        "reason": register_auth.REASON_OWNER_CONFLICT,
+                        "request_id": request_id(),
+                    },
+                )
+                return error_response(
+                    code=FORBIDDEN,
+                    message="proof is registered to a different owner",
+                    status=403,
+                    field="proofId",
+                )
+
         # Handle time attestation if provided
         time_attestation_data = None
         claimed_capture_time = None
@@ -898,7 +1080,6 @@ def create_app() -> Flask:
                     return jsonify({"error": "Invalid time attestation", "details": errors}), 400
                 time_attestation_data = encode_time_attestation(time_att)
                 if time_att.claimed_time:
-                    from datetime import datetime, timezone
                     claimed_capture_time = datetime.fromtimestamp(
                         time_att.claimed_time.unix_ms / 1000, tz=timezone.utc
                     ).isoformat()
@@ -918,7 +1099,7 @@ def create_app() -> Flask:
         try:
             db_event, created = upsert_register_event(
                 idempotency_key=idempotency_key,
-                file_name=safe_filename(payload.get("fileName")),
+                file_name=normalize_filename(payload.get("fileName")),
                 video_hash=video_hash,
                 metadata_hash=metadata_hash,
                 proof_id=proof_id,
@@ -1353,6 +1534,242 @@ def create_app() -> Flask:
             "note": "On-chain verification must be performed via verify_selective_disclosure on the registry contract.",
         })
 
+    # -----------------------------------------------------------------------
+    # C2PA interoperability
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/c2pa/export")
+    def c2pa_export():
+        """
+        Export a C2PA-compatible authenticity manifest from Harpocrates evidence
+        digests.
+
+        Request body (JSON):
+            video_hash    string  32-byte hex (embedded video hash registered on-chain)
+            metadata_hash string  32-byte hex
+            proof_id      string  32-byte hex
+            tier          string  'silent' | 'source' | 'seal'
+            network       string  Stellar network passphrase
+            contract_id   string  Soroban registry contract ID
+            claim_generator string  Optional override for the C2PA claim_generator field
+
+        Response body (JSON):
+            ok            bool    true
+            manifest      object  Serialisable C2PA-compatible manifest
+            digest        string  SHA-256 of the canonical JSON (for round-trip checks)
+            trust_status  string  Always 'signature_not_checked' — C2PA trust is
+                                  independent of on-chain / ZK status
+
+        The C2PA trust status is explicitly separate from Harpocrates on-chain or
+        ZK verification status.  Callers MUST NOT treat the exported manifest as
+        a Harpocrates proof or an on-chain confirmation.
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        required_fields = ("video_hash", "metadata_hash", "proof_id", "tier", "network", "contract_id")
+        for field_name in required_fields:
+            if field_name not in body:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=f"missing required field: {field_name}",
+                    status=400,
+                )
+
+        try:
+            exported = export_c2pa_manifest(
+                video_hash=body["video_hash"],
+                metadata_hash=body["metadata_hash"],
+                proof_id=body["proof_id"],
+                tier=body["tier"],
+                network=body["network"],
+                contract_id=body["contract_id"],
+                claim_generator=body.get("claim_generator"),
+            )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response({
+            "manifest": exported.manifest,
+            "digest": exported.digest,
+            # Explicit trust separation: C2PA export never implies on-chain status.
+            "trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
+            "note": (
+                "C2PA trust status is independent of Harpocrates on-chain and ZK "
+                "verification. Do not treat this manifest as a Harpocrates proof."
+            ),
+        })
+
+    @app.post("/api/c2pa/import")
+    def c2pa_import():
+        """
+        Parse, validate, and corroborate a C2PA-compatible authenticity manifest.
+
+        Request body (JSON):
+            manifest  string | object  Raw manifest (JSON string or pre-parsed object)
+            expected  object           Optional hashes the caller claims, compared
+                                       against the binding embedded in the manifest.
+                                       Keys: video_hash, metadata_hash, proof_id,
+                                       tier, network, contract_id
+
+        Response body (JSON):
+            ok              bool    true
+            binding         object  Extracted Harpocrates binding fields
+            trust_status    string  'signature_not_checked' — always; see note
+            hashes_verified bool    true only when *expected* was supplied and every
+                                    supplied field matched the embedded binding
+            hashes_compared list    Field names actually compared ([] when no
+                                    *expected* was supplied)
+            unknown_assertions  list  Assertions not recognised by this version
+                                      (unsupported_semantics: true)
+            note            string  Trust model clarification
+
+        The binding is embedded twice (named assertion and top-level object); a
+        manifest whose two copies disagree is rejected rather than resolved in
+        favour of one of them.  When *expected* is supplied, a submitted value
+        that disagrees with the embedded binding is rejected with
+        VALIDATION_ERROR carrying the offending field *name* only.
+
+        The trust_status is always 'signature_not_checked'.  C2PA signature
+        verification is out of scope, and a matching *expected* block is
+        integrity corroboration only — never an on-chain or ZK verification.
+        The extracted binding must still be corroborated against on-chain
+        records before any trust decision is made.
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        # Accept either a pre-parsed object or a raw JSON string.
+        if isinstance(manifest_raw, dict):
+            try:
+                import json as _json
+                manifest_bytes = _json.dumps(manifest_raw, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="manifest object could not be serialised",
+                    status=400,
+                )
+        elif isinstance(manifest_raw, str):
+            manifest_bytes = manifest_raw.encode("utf-8")
+        else:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            parsed = parse_c2pa_manifest(manifest_bytes)
+        except C2paParseError as exc:
+            # Privacy-safe: only the reason code and optional field name are returned.
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        binding = parsed.binding
+
+        # Submitted-vs-embedded verification. When the caller states which
+        # evidence it is asking about, the manifest's embedded binding must
+        # describe that same evidence; otherwise a validly-exported manifest for
+        # a different video would be accepted here.
+        expected = body.get("expected")
+        if expected is not None and not isinstance(expected, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="expected must be a JSON object of submitted hashes",
+                status=400,
+            )
+
+        corroboration = None
+        if expected is not None:
+            try:
+                corroboration = corroborate_binding(
+                    parsed,
+                    video_hash=expected.get("video_hash"),
+                    metadata_hash=expected.get("metadata_hash"),
+                    proof_id=expected.get("proof_id"),
+                    tier=expected.get("tier"),
+                    network=expected.get("network"),
+                    contract_id=expected.get("contract_id"),
+                )
+            except ValueError as exc:
+                # _validate_hex32/field checks emit the field name and static
+                # text only — never a submitted value.
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+
+            if not corroboration.ok:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=(
+                        "submitted hashes do not match the embedded C2PA binding: "
+                        + ", ".join(corroboration.mismatches)
+                    ),
+                    status=400,
+                    field=corroboration.mismatches[0],
+                )
+
+        unknown = [
+            {
+                "label": ua.label,
+                "unsupported_semantics": ua.unsupported_semantics,
+            }
+            for ua in parsed.unknown_assertions
+        ]
+
+        return ok_response({
+            "binding": {
+                "mapping_version": binding.mapping_version,
+                "video_hash": binding.video_hash,
+                "metadata_hash": binding.metadata_hash,
+                "proof_id": binding.proof_id,
+                "tier": binding.tier,
+                "network": binding.network,
+                "contract_id": binding.contract_id,
+            },
+            "trust_status": parsed.trust_status.value,
+            # True only when the caller supplied hashes AND all of them matched.
+            "hashes_verified": bool(corroboration is not None and corroboration.ok),
+            "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
+            "unknown_assertions": unknown,
+            "note": (
+                "C2PA trust status is independent of Harpocrates on-chain and ZK "
+                "verification. A matching 'expected' block is integrity "
+                "corroboration only. Corroborate this binding against on-chain "
+                "records before making any trust decision."
+            ),
+        })
+
     return app
 
 
@@ -1463,11 +1880,52 @@ def validate_video_upload(video) -> None:
 
 
 
-def safe_filename(value: object) -> str | None:
+def normalize_filename(value: object) -> str | None:
+    """Return a normalized, filesystem-safe version of an uploaded filename.
+
+    Processing steps (in order):
+    1. Reject non-string or blank input → ``None``.
+    2. ``werkzeug.utils.secure_filename`` — strips path separators, null bytes,
+       and non-ASCII characters, reducing the name to ASCII-safe characters.
+    3. Lowercase the entire name so that ``My_Video.MP4`` and
+       ``my_video.mp4`` are treated identically in the database.
+    4. Split on the last ``.`` to isolate the stem and extension, then
+       collapse runs of whitespace, underscores, and hyphens in the stem
+       into a single ``_``, and strip leading/trailing ``_`` and ``-``.
+    5. Reassemble ``stem.ext`` (or just ``stem`` if there was no extension).
+    6. Hard-cap at 160 characters.
+    """
     if not isinstance(value, str) or not value.strip():
         return None
+
+    # Step 2: strip path traversal, null bytes, non-ASCII
     sanitized = secure_filename(value)
-    return sanitized[:160] if sanitized else None
+    if not sanitized:
+        return None
+
+    # Step 3: lowercase
+    sanitized = sanitized.lower()
+
+    # Step 4-5: normalize separators in the stem only
+    if "." in sanitized:
+        dot = sanitized.rfind(".")
+        stem, ext = sanitized[:dot], sanitized[dot:]  # ext includes the leading dot
+    else:
+        stem, ext = sanitized, ""
+
+    stem = re.sub(r"[\s_\-]+", "_", stem).strip("_-")
+    if not stem:
+        return None
+
+    normalized = stem + ext
+
+    # Step 6: cap length
+    return normalized[:160]
+
+
+# Keep a backward-compatible alias so external callers (worker.py, tests)
+# that already import ``safe_filename`` continue to work unchanged.
+safe_filename = normalize_filename
 
 
 def redact_metadata(value: object) -> dict | None:

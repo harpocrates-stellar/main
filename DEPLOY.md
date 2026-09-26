@@ -31,6 +31,10 @@ All paths share the same two containers:
 | `METRICS_ENABLED` | — | Default `true` |
 | `METRICS_TOKEN` | — | Protect the `/metrics` endpoint |
 | `METRICS_PATH` | — | Default `/metrics` |
+| `REGISTER_API_KEY` | — | Bearer credential for `/api/proofs/register`; unset keeps the existing development-only open behavior |
+| `REGISTER_API_KEY_EXPIRES` | — | Optional timezone-aware ISO-8601 expiry for the primary registration key |
+| `REGISTER_API_KEY_PREVIOUS` | — | Optional old key accepted during a zero-downtime rotation |
+| `REGISTER_API_KEY_PREVIOUS_EXPIRES` | — | Optional expiry for the previous key; remove the previous key after migration |
 | `NOIR_WORKER_ENABLED` | — | Default `false`; keep off unless running a dedicated prover |
 | `NOIR_PROOF_TIMEOUT_SECONDS` | — | Default `180` |
 
@@ -70,7 +74,8 @@ cd harpocrates
 
 ```bash
 cp backend/.env.example backend/.env
-# Edit backend/.env — set DATABASE_URL, CORS_ORIGINS, METRICS_TOKEN, etc.
+# Edit backend/.env — set DATABASE_URL, CORS_ORIGINS, METRICS_TOKEN, and
+# REGISTER_API_KEY. During rotation, set REGISTER_API_KEY_PREVIOUS as well.
 ```
 
 **3. Configure frontend build args**
@@ -113,6 +118,14 @@ For deployments leveraging an API Gateway, WAF, or Swagger UI, you can generate 
 
 ```bash
 python devx/generate_api_schema.py --output openapi.json
+```
+
+**8. Rollback**
+
+If a deployment introduces critical failures or regressions, you can orchestrate a privacy-safe rollback using the provided CLI tooling. This rolls back the active containers bounds safely without leaking credentials, media, or breaking backwards compatibility.
+
+```powershell
+.\scripts\rollback.ps1 -ManifestFile .\release\compatibility-manifest.json
 ```
 
 ### Caddy reverse proxy example

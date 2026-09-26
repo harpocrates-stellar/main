@@ -84,6 +84,15 @@ jobs:
                 f"bb {lock.toolchain['barretenberg']['version']}")
           PY
 
+      - name: Every Noir circuit in the tree is pinned by the lock
+        # A circuit that is not declared in zk/toolchain.lock.json is compiled
+        # by nobody and digested by nothing, yet can still be published to the
+        # browser or verified on chain. Fails in either direction: an
+        # undeclared package, or a declared pin whose package is gone. No
+        # toolchain required and no artifact is read, so nothing that could
+        # carry a witness or a key can reach the log.
+        run: python zk/tools/artifact_manifest.py check-coverage
+
       - name: Verify committed artifacts against the manifest
         # Skipped when no manifest has been committed yet: generated artifacts
         # are not tracked, so this becomes enforcing once a build publishes one.
@@ -103,6 +112,16 @@ jobs:
             python zk/tools/artifact_manifest.py verify-browser
           else
             echo "no committed browser manifest yet; browser drift check is inert"
+          fi
+
+      - name: Verify published circuit artifact provenance
+        # Source-digest gate: lock-declared circuit sources must match
+        # zk/circuit.provenance.json. Noir/bb not required. Never logs source bytes.
+        run: |
+          if [ -f zk/circuit.provenance.json ]; then
+            python zk/tools/artifact_manifest.py verify-provenance
+          else
+            echo "no committed circuit provenance yet; provenance check is inert"
           fi
 
   circuit-build:
