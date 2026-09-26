@@ -98,7 +98,7 @@
     {
       "component": "registry",
       "path": "contracts/contracts/harpocrates-registry/src/lib.rs",
-      "sha256": "cbde386b0c5fb76d5520c0453eb19cf8aebe0bb5abc2158bfd2a483c07ae2472"
+      "sha256": "fc66b5a25968fae8fa979b27b72f00480c044b25fe8bd071599b87086dfe4718"
     },
     {
       "component": "registry",
