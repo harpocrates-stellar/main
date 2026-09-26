@@ -6,6 +6,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
+from unittest.mock import call, patch
 
 from devx import threat_model_check
 
@@ -41,6 +42,42 @@ class ThreatModelCheckTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("Overall: SUCCESS", output.getvalue())
 
+    @patch("devx.threat_model_check.run_check", return_value=True)
+    def test_main_invokes_checks_in_order(self, mock_run_check):
+        threat_model_check.main()
+
+        mock_run_check.assert_has_calls(
+            [
+                call(
+                    [
+                        threat_model_check.sys.executable,
+                        "devx/release_guard.py",
+                    ]
+                ),
+                call(
+                    [
+                        threat_model_check.sys.executable,
+                        "devx/compatibility_report.py",
+                        "--verify-existing",
+                        "--stable",
+                        "--check",
+                    ]
+                ),
+                call(
+                    [
+                        threat_model_check.sys.executable,
+                        "devx/validate_c2pa_manifests.py",
+                    ]
+                ),
+                call(
+                    [
+                        threat_model_check.sys.executable,
+                        "devx/validate_rfc3161_chains.py",
+                    ]
+                ),
+            ]
+        )
+        self.assertEqual(mock_run_check.call_count, 4)
     @patch(
         "devx.threat_model_check.run_check",
         side_effect=[True, False, True, True],
