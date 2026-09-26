@@ -74,6 +74,24 @@ class ThreatModelCheckTests(unittest.TestCase):
             check=False,
         )
 
-
+    def test_checks_use_expected_commands(self):
+        self.assertEqual(
+            threat_model_check.CHECKS,
+            (
+                ("release", [threat_model_check.sys.executable, "devx/release_guard.py"]),
+                (
+                    "compatibility",
+                    [
+                        threat_model_check.sys.executable,
+                        "devx/compatibility_report.py",
+                        "--verify-existing",
+                        "--stable",
+                        "--check",
+                    ],
+                ),
+                ("c2pa", [threat_model_check.sys.executable, "devx/validate_c2pa_manifests.py"]),
+                ("rfc3161", [threat_model_check.sys.executable, "devx/validate_rfc3161_chains.py"]),
+            ),
+        )
 if __name__ == "__main__":
     unittest.main()

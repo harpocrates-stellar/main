@@ -45,6 +45,8 @@ jobs:
           python-version: '3.12'
       - name: Verify dependency pins and lockfiles
         run: python3 devx/check_dependency_pins.py
+      - name: Install backend dependencies
+        run: python3 -m pip install --requirement backend/requirements.txt
       - name: Verify manifest and digests
         run: python3 devx/release_guard.py
       - name: Publish cross-layer compatibility report
