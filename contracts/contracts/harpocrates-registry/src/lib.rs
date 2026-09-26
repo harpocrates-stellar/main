@@ -4972,6 +4972,8 @@ mod test_deployment_fixture;
 #[cfg(test)]
 mod test_dispute;
 #[cfg(test)]
+mod test_error_abi;
+#[cfg(test)]
 mod test_expiry;
 #[cfg(test)]
 mod test_fuzz;
