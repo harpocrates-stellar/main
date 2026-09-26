@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from workspace import EncryptedWorkspace
@@ -569,10 +570,11 @@ def create_app() -> Flask:
         except ValueError as exc:
             return metadata_error_response(classify_validation_error(exc))
 
+        normalized_name = normalize_filename(video.filename)
         try:
             quarantine_context = isolate_upload(
                 video,
-                filename=video.filename,
+                filename=normalized_name,
                 content_type=video.content_type,
             )
             with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
@@ -595,7 +597,7 @@ def create_app() -> Flask:
 
         db_event = insert_proof_event(
             event_type="embed",
-            file_name=safe_filename(video.filename),
+            file_name=normalized_name,
             video_hash=embedded_hash,
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId"),
@@ -712,7 +714,7 @@ def create_app() -> Flask:
 
         db_event = insert_proof_event(
             event_type="embed",
-            file_name=safe_filename(metadata.get("fileName", "unknown.mp4")),
+            file_name=normalize_filename(metadata.get("fileName", "unknown.mp4")),
             video_hash=embedded_hash,
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId"),
@@ -755,10 +757,11 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
+        normalized_name = normalize_filename(video.filename)
         try:
             quarantine_context = isolate_upload(
                 video,
-                filename=video.filename,
+                filename=normalized_name,
                 content_type=video.content_type,
             )
             with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
@@ -785,7 +788,7 @@ def create_app() -> Flask:
 
         db_event = insert_proof_event(
             event_type="extract",
-            file_name=safe_filename(video.filename),
+            file_name=normalized_name,
             video_hash=video_hash,
             metadata_hash=metadata_hash,
             proof_id=metadata.get("proofId") if metadata else None,
@@ -1036,7 +1039,7 @@ def create_app() -> Flask:
         try:
             db_event, created = upsert_register_event(
                 idempotency_key=idempotency_key,
-                file_name=safe_filename(payload.get("fileName")),
+                file_name=normalize_filename(payload.get("fileName")),
                 video_hash=video_hash,
                 metadata_hash=metadata_hash,
                 proof_id=proof_id,
@@ -1817,11 +1820,52 @@ def validate_video_upload(video) -> None:
 
 
 
-def safe_filename(value: object) -> str | None:
+def normalize_filename(value: object) -> str | None:
+    """Return a normalized, filesystem-safe version of an uploaded filename.
+
+    Processing steps (in order):
+    1. Reject non-string or blank input → ``None``.
+    2. ``werkzeug.utils.secure_filename`` — strips path separators, null bytes,
+       and non-ASCII characters, reducing the name to ASCII-safe characters.
+    3. Lowercase the entire name so that ``My_Video.MP4`` and
+       ``my_video.mp4`` are treated identically in the database.
+    4. Split on the last ``.`` to isolate the stem and extension, then
+       collapse runs of whitespace, underscores, and hyphens in the stem
+       into a single ``_``, and strip leading/trailing ``_`` and ``-``.
+    5. Reassemble ``stem.ext`` (or just ``stem`` if there was no extension).
+    6. Hard-cap at 160 characters.
+    """
     if not isinstance(value, str) or not value.strip():
         return None
+
+    # Step 2: strip path traversal, null bytes, non-ASCII
     sanitized = secure_filename(value)
-    return sanitized[:160] if sanitized else None
+    if not sanitized:
+        return None
+
+    # Step 3: lowercase
+    sanitized = sanitized.lower()
+
+    # Step 4-5: normalize separators in the stem only
+    if "." in sanitized:
+        dot = sanitized.rfind(".")
+        stem, ext = sanitized[:dot], sanitized[dot:]  # ext includes the leading dot
+    else:
+        stem, ext = sanitized, ""
+
+    stem = re.sub(r"[\s_\-]+", "_", stem).strip("_-")
+    if not stem:
+        return None
+
+    normalized = stem + ext
+
+    # Step 6: cap length
+    return normalized[:160]
+
+
+# Keep a backward-compatible alias so external callers (worker.py, tests)
+# that already import ``safe_filename`` continue to work unchanged.
+safe_filename = normalize_filename
 
 
 def redact_metadata(value: object) -> dict | None:
