@@ -9,6 +9,9 @@ export type ProofErrorCode =
   | 'CANCELLED'
   | 'CRASHED'
   | 'INVALID_INPUT'
+  | 'UNSUPPORTED_INPUT_SCHEMA'
+  | 'ARTIFACT_MISMATCH'
+  | 'INVALID_PROOF_OUTPUT'
   | 'UNSUPPORTED_ENVIRONMENT'
   | 'CIRCUIT_LOAD_FAILED'
   | 'PROOF_GENERATION_FAILED'
@@ -18,6 +21,9 @@ export type TransferableProofInput = {
   videoHash: string
   credentialSecret: ArrayBuffer
   nullifierSecret: ArrayBuffer
+  inputSchemaVersion?: number
+  verifierScope?: string
+  epoch?: number
 }
 
 export type SilentWitnessProof = {

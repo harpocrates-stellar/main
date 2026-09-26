@@ -1,4 +1,11 @@
+import { UltraHonkBackend } from '@aztec/bb.js'
+import { Noir } from '@noir-lang/noir_js'
+import type { CompiledCircuit } from '@noir-lang/types'
 import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+import { assertArtifactPair, assertProofOutput, CircuitInputError, prepareSilentWitnessInputs, PUBLIC_FRAMES } from './circuitInputSchema'
+import type { SilentWitnessInput } from './circuitInputSchema'
+
+const MAX_AGGREGATION_SIZE = 8
 
 type SilentWitnessProof = {
   credentialRoot: string
@@ -6,7 +13,7 @@ type SilentWitnessProof = {
   /** Domain tag as a 32-byte hex string (no 0x prefix). */
   domainTag: string
   proof: string
-  /** Hex-encoded public inputs: 5 × 32 bytes = 160 bytes (320 hex chars). */
+  /** Hex-encoded verifier frame: five unscoped or seven scoped fields. */
   publicInputs: string
   proofBytes: number
   publicInputBytes: number
@@ -24,16 +31,6 @@ type AggregatedProof = {
   publicInputs: string
   proofBytes: number
   publicInputBytes: number
-}
-
-type GenerateSilentWitnessInput = {
-  videoHash: string
-  credentialSecret: string
-  nullifierSecret: string
-  /** Scope field element (BN254). Pass '0' for global/unscoped. */
-  verifierScope?: string
-  /** Epoch number. Pass 0 for unscoped or legacy proofs. */
-  epoch?: number
 }
 
 type GenerateAggregatedProofInput = {
@@ -57,71 +54,188 @@ let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
  * for testnet will fail the in-circuit assert if submitted to a mainnet
  * verifier with different embedded constants.
  */
-export async function generateSilentWitnessProof({
-  videoHash,
+export async function generateSilentWitnessProof(input: SilentWitnessInput): Promise<SilentWitnessProof> {
+  const prepared = prepareSilentWitnessInputs(input)
+  try {
+    const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
+    const frame = assertArtifactPair(helperCircuit, mainCircuit)
+    if (frame === 'unscoped_v1' && (prepared.verifier_scope !== '0' || prepared.epoch !== '0')) {
+      throw new CircuitInputError('unsupported_input_schema')
+    }
+
+    const helperInputs = frame === 'scoped_v2' ? prepared : {
+      credential_secret: prepared.credential_secret,
+      nullifier_secret: prepared.nullifier_secret,
+      video_hash_hi: prepared.video_hash_hi,
+      video_hash_lo: prepared.video_hash_lo,
+    }
+    const helperResult = await new Noir(helperCircuit).execute(helperInputs)
+    const returned = helperResult.returnValue
+    if (!Array.isArray(returned) || returned.length !== 3) {
+      throw new CircuitInputError('invalid_proof_output')
+    }
+    const [credentialRoot, nullifier, domainTag] = returned as string[]
+    const { witness } = await new Noir(mainCircuit).execute({
+      ...helperInputs,
+      credential_root: credentialRoot,
+      nullifier,
+      domain_tag: domainTag,
+    })
+
+    const backend = new UltraHonkBackend(mainCircuit.bytecode)
+    try {
+      const proofData = await backend.generateProof(witness, { keccak: true })
+      assertProofOutput(proofData.proof.length, proofData.publicInputs, {
+        video_hash_hi: prepared.video_hash_hi,
+        video_hash_lo: prepared.video_hash_lo,
+        credential_root: credentialRoot,
+        nullifier,
+        verifier_scope: prepared.verifier_scope,
+        epoch: prepared.epoch,
+        domain_tag: domainTag,
+      }, frame)
+      const publicInputHex = encodePublicInputs(proofData.publicInputs, PUBLIC_FRAMES[frame])
+      return {
+        credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),
+        nullifier: encodeFieldToBytes32Hex(nullifier, 'nullifier'),
+        domainTag: encodeFieldToBytes32Hex(domainTag, 'domain_tag'),
+        proof: bytesToHex(proofData.proof),
+        publicInputs: publicInputHex,
+        proofBytes: proofData.proof.length,
+        publicInputBytes: publicInputHex.length / 2,
+      }
+    } finally {
+      await backend.destroy()
+    }
+  } catch (error) {
+    if (error instanceof CircuitInputError) throw error
+    throw new CircuitInputError('proof_generation_failed')
+  }
+}
+
+export async function generateAggregatedProof({
+  videoHashes,
   credentialSecret,
   nullifierSecret,
-  verifierScope = '0',
-  epoch = 0,
-}: GenerateSilentWitnessInput): Promise<SilentWitnessProof> {
-  const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
-
-  const video_hash_hi = BigInt(`0x${videoHash.slice(0, 32)}`).toString(10)
-  const video_hash_lo = BigInt(`0x${videoHash.slice(32)}`).toString(10)
-  const scope_field = BigInt(verifierScope).toString(10)
-  const epoch_field = BigInt(epoch).toString(10)
-  const privateInputs = {
-    credential_secret: credentialSecret,
-    nullifier_secret: nullifierSecret,
-    video_hash_hi,
-    video_hash_lo,
-    verifier_scope: scope_field,
-    epoch: epoch_field,
+}: GenerateAggregatedProofInput): Promise<AggregatedProof> {
+  if (!Array.isArray(videoHashes)) throw new CircuitInputError('invalid_input')
+  const batchSize = videoHashes.length
+  if (batchSize < 1 || batchSize > MAX_AGGREGATION_SIZE) {
+    throw new CircuitInputError('invalid_input')
   }
 
-  // Helper returns (credential_root, nullifier, domain_tag).
-  const helperResult = await new Noir(helperCircuit).execute(privateInputs)
-  const [credentialRoot, nullifier, domainTag] = helperResult.returnValue as string[]
-
-  const publicInputs = {
-    credential_root: credentialRoot,
-    nullifier,
-    verifier_scope: scope_field,
-    epoch: epoch_field,
+  for (const vh of videoHashes) {
+    prepareSilentWitnessInputs({ videoHash: vh, credentialSecret, nullifierSecret })
   }
 
-  const { witness } = await new Noir(mainCircuit).execute({
-    ...privateInputs,
-    ...publicInputs,
-  })
-
-  const backend = new UltraHonkBackend(mainCircuit.bytecode)
   try {
-    const proofData = await backend.generateProof(witness, { keccak: true })
-    const proofHex = bytesToHex(proofData.proof)
-
-    // Public inputs in on-chain ordering:
-    //   [0] video_hash_hi, [1] video_hash_lo, [2] credential_root,
-    //   [3] nullifier,     [4] domain_tag
-    const publicInputHex = encodePublicInputs(proofData.publicInputs, [
-      'video_hash_hi',
-      'video_hash_lo',
-      'credential_root',
-      'nullifier',
-      'domain_tag',
+    const [helperCircuit, aggCircuit] = await Promise.all([
+      loadAggregatorHelperCircuit(),
+      loadAggregatorCircuit(),
     ])
-    return {
-      credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),
-      nullifier: encodeFieldToBytes32Hex(nullifier, 'nullifier'),
-      domainTag: encodeFieldToBytes32Hex(domainTag, 'domain_tag'),
-      proof: proofHex,
-      publicInputs: publicInputHex,
-      proofBytes: proofData.proof.length,
-      publicInputBytes: publicInputHex.length / 2,
+
+    // Build helper circuit inputs
+    const helperInputs: Record<string, string> = {
+      credential_secret: credentialSecret,
+      nullifier_secret: nullifierSecret,
     }
-  } finally {
-    await backend.destroy()
+    for (let i = 0; i < MAX_AGGREGATION_SIZE; i++) {
+      if (i < batchSize) {
+        const vh = videoHashes[i]
+        helperInputs[`video_hash_hi_${i}`] = BigInt(`0x${vh.slice(0, 32)}`).toString(10)
+        helperInputs[`video_hash_lo_${i}`] = BigInt(`0x${vh.slice(32)}`).toString(10)
+      } else {
+        helperInputs[`video_hash_hi_${i}`] = '0'
+        helperInputs[`video_hash_lo_${i}`] = '0'
+      }
+    }
+
+    // Run helper circuit to derive batch public inputs
+    const helperResult = await new Noir(helperCircuit).execute(helperInputs)
+    const batchResults = helperResult.returnValue as [string, string][]
+
+    // Build aggregator circuit inputs
+    const aggInputs: Record<string, string> = {
+      credential_secret: credentialSecret,
+      nullifier_secret: nullifierSecret,
+    }
+    for (let i = 0; i < MAX_AGGREGATION_SIZE; i++) {
+      const vh = i < batchSize ? videoHashes[i] : '0000000000000000000000000000000000000000000000000000000000000000'
+      const credentialRoot = batchResults[i][0]
+      const nullifier = batchResults[i][1]
+
+      aggInputs[`video_hash_hi_${i}`] = BigInt(`0x${vh.slice(0, 32)}`).toString(10)
+      aggInputs[`video_hash_lo_${i}`] = BigInt(`0x${vh.slice(32)}`).toString(10)
+      aggInputs[`credential_root_${i}`] = credentialRoot
+      aggInputs[`nullifier_${i}`] = nullifier
+    }
+
+    // Generate the aggregated UltraHonk proof
+    const { witness } = await new Noir(aggCircuit).execute(aggInputs)
+
+    const backend = new UltraHonkBackend(aggCircuit.bytecode)
+    try {
+      const proofData = await backend.generateProof(witness, { keccak: true })
+      const proofHex = bytesToHex(proofData.proof)
+      const publicInputHex = encodePublicInputs(proofData.publicInputs)
+
+      // Generate deterministic batch ID from the video hashes
+      const batchId = await sha256(videoHashes.join(':'))
+
+      return {
+        protocol: 'harpocrates',
+        version: 1,
+        type: 'aggregated_batch',
+        batchId,
+        batchSize,
+        maxBatchSize: MAX_AGGREGATION_SIZE,
+        videoHashes: videoHashes.map((vh) => vh.toLowerCase()),
+        proof: proofHex,
+        publicInputs: publicInputHex,
+        proofBytes: proofData.proof.length,
+        publicInputBytes: publicInputHex.length / 2,
+      }
+    } finally {
+      await backend.destroy()
+    }
+  } catch (error) {
+    if (error instanceof CircuitInputError) throw error
+    throw new CircuitInputError('proof_generation_failed')
   }
+}
+
+async function loadHelperCircuit() {
+  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
+  return helperCircuitPromise
+}
+
+async function loadMainCircuit() {
+  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
+  return mainCircuitPromise
+}
+
+async function loadAggregatorCircuit() {
+  aggregatorCircuitPromise ??= loadCircuit('/noir/silent_witness_aggregator.json')
+  return aggregatorCircuitPromise
+}
+
+async function loadAggregatorHelperCircuit() {
+  aggregatorHelperCircuitPromise ??= loadCircuit('/noir/silent_witness_aggregator_helper.json')
+  return aggregatorHelperCircuitPromise
+}
+
+async function loadCircuit(path: string) {
+  try {
+    const response = await fetch(path, { cache: 'no-store' })
+    if (!response.ok) throw new CircuitInputError('circuit_load_failed')
+    return (await response.json()) as CompiledCircuit
+  } catch {
+    throw new CircuitInputError('circuit_load_failed')
+  }
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 async function sha256(input: string): Promise<string> {
