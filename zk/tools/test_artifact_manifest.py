@@ -735,3 +735,212 @@ def test_oversized_browser_artifact_is_fatal_for_write(tmp_path: Path, monkeypat
         == am.EXIT_FATAL
     )
     assert not manifest_path.exists()
+
+
+# ── Circuit coverage ────────────────────────────────────────────────────────
+
+
+def _package(root: Path, name: str) -> Path:
+    """Create a minimal Noir package directory (Nargo.toml is what marks it)."""
+    circuit_dir = root / "zk" / "noir" / name
+    circuit_dir.mkdir(parents=True, exist_ok=True)
+    circuit_dir.joinpath("Nargo.toml").write_text(
+        f'[package]\nname = "{name}"\ntype = "bin"\n', encoding="utf-8"
+    )
+    return circuit_dir
+
+
+def _acir_entry(name: str) -> dict:
+    return {
+        "path": f"zk/noir/{name}/target/{name}.json",
+        "kind": "json",
+        "role": "acir",
+        "required": True,
+    }
+
+
+def test_repo_lock_pins_every_noir_package_on_disk(lock: am.Lock):
+    """Regression: a circuit in the tree that the lock does not pin would be an
+    unpinned second truth at a public boundary. `selective_disclosure` is
+    fetched by the browser and verified on chain, so it must be covered."""
+    on_disk = am.discover_circuit_packages(lock, am.REPO_ROOT)
+    declared = am.declared_circuit_names(lock)
+
+    assert on_disk, "no Noir packages discovered"
+    assert set(on_disk) == declared
+    assert "selective_disclosure" in declared
+    assert am.check_coverage(lock, am.REPO_ROOT) == []
+
+
+def test_build_script_compiles_every_declared_circuit():
+    """The build driver iterates its own name list, so a circuit pinned in the
+    lock but absent from the script would never be built or digested."""
+    script = (am.REPO_ROOT / "zk" / "noir" / "scripts" / "reproducible-build.sh").read_text(
+        encoding="utf-8"
+    )
+    block = script.split("CIRCUITS=(", 1)[1].split(")", 1)[0]
+    built = {line.strip().strip('"') for line in block.splitlines() if line.strip()}
+
+    lock = am.load_lock(am.DEFAULT_LOCK)
+    assert built == am.declared_circuit_names(lock)
+    assert "selective_disclosure" in built
+
+
+def test_undeclared_package_is_reported_as_unpinned(tmp_path: Path):
+    _package(tmp_path, "pinned_circuit")
+    _package(tmp_path, "brand_new_circuit")
+    lock = _lock_for(tmp_path, [_acir_entry("pinned_circuit")])
+
+    findings = am.check_coverage(lock, tmp_path)
+
+    assert len(findings) == 1
+    assert "brand_new_circuit" in findings[0]
+    assert "nothing" in findings[0]
+
+
+def test_declared_pin_without_a_package_is_reported(tmp_path: Path):
+    _package(tmp_path, "pinned_circuit")
+    lock = _lock_for(
+        tmp_path, [_acir_entry("pinned_circuit"), _acir_entry("renamed_circuit")]
+    )
+
+    findings = am.check_coverage(lock, tmp_path)
+
+    assert len(findings) == 1
+    assert "renamed_circuit" in findings[0]
+    assert "never be rebuilt" in findings[0]
+
+
+def test_findings_are_deterministically_ordered(tmp_path: Path):
+    for name in ("zulu", "alpha", "mike"):
+        _package(tmp_path, name)
+
+    lock = _lock_for(tmp_path, [])
+
+    findings = am.check_coverage(lock, tmp_path)
+
+    assert [finding.split()[1].rstrip(":") for finding in findings] == [
+        "alpha",
+        "mike",
+        "zulu",
+    ]
+
+
+def test_directories_without_a_package_file_are_not_circuits(tmp_path: Path):
+    _package(tmp_path, "real_circuit")
+    # `zk/noir/scripts` and `zk/noir/tools` hold tooling, not circuits.
+    (tmp_path / "zk" / "noir" / "scripts").mkdir(parents=True)
+    (tmp_path / "zk" / "noir" / "tools" / "jq").parent.mkdir(parents=True)
+    lock = _lock_for(tmp_path, [_acir_entry("real_circuit")])
+
+    assert am.discover_circuit_packages(lock, tmp_path) == ["real_circuit"]
+    assert am.check_coverage(lock, tmp_path) == []
+
+
+def test_an_empty_circuit_root_is_not_a_coverage_failure(tmp_path: Path):
+    """A repo with no Noir packages is not misreported as a gap."""
+    lock = _lock_for(tmp_path, [])
+
+    assert am.discover_circuit_packages(lock, tmp_path) == []
+    assert am.check_coverage(lock, tmp_path) == []
+
+
+def test_only_the_canonical_acir_path_counts_as_a_pin(tmp_path: Path):
+    """A verification key or a differently-shaped path is not evidence that a
+    circuit is built and digested."""
+    _package(tmp_path, "real_circuit")
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "zk/noir/real_circuit/target/vk",
+                "kind": "binary",
+                "role": "verification_key",
+            },
+            {"path": "zk/noir/real_circuit/target/other.json", "kind": "json", "role": "acir"},
+        ],
+    )
+
+    assert am.declared_circuit_names(lock) == set()
+    assert len(am.check_coverage(lock, tmp_path)) == 1
+
+
+def test_browser_publish_is_not_a_substitute_for_a_build_pin(tmp_path: Path):
+    """`published_acir` is a copy of a build target. Treating it as coverage
+    would let a circuit ship to the browser with nothing building it."""
+    _package(tmp_path, "real_circuit")
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "frontend/public/noir/real_circuit.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            }
+        ],
+    )
+
+    assert am.declared_circuit_names(lock) == set()
+    assert len(am.check_coverage(lock, tmp_path)) == 1
+
+
+def test_coverage_walk_is_bounded(tmp_path: Path):
+    for index in range(5):
+        _package(tmp_path, f"circuit_{index}")
+    lock = _lock_for(tmp_path, [], max_circuits=3)
+
+    with pytest.raises(am.BuildError, match="circuit count exceeds"):
+        am.discover_circuit_packages(lock, tmp_path)
+
+
+def test_lock_rejects_an_unusable_coverage_path(tmp_path: Path):
+    raw = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    raw["coverage"]["circuit_root"] = "../elsewhere"
+    path = tmp_path / "lock.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(am.BuildError, match="unusable coverage circuit_root"):
+        am.load_lock(path)
+
+
+def test_check_coverage_command_passes_on_the_repo_lock(capsys):
+    assert am.main(["check-coverage"]) == am.EXIT_OK
+
+    signal_event = json.loads(capsys.readouterr().err.strip())
+    assert signal_event["event"] == "coverage.ok"
+    assert signal_event["circuits"] >= 7
+
+
+def test_check_coverage_command_reports_drift(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    _package(tmp_path, "unpinned_circuit")
+    lock_path = tmp_path / "lock.json"
+
+    assert am.main(["--lock", str(lock_path), "check-coverage"]) == am.EXIT_DRIFT
+
+    events = [json.loads(line) for line in capsys.readouterr().err.strip().splitlines()]
+    assert events[0]["event"] == "drift.finding"
+    assert events[-1] == {"event": "coverage.failed", "findings": 1}
+
+
+def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkeypatch, capsys):
+    """The gate must not read artifacts, so it cannot leak bytecode, witnesses,
+    or keys through a finding or a signal."""
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    circuit_dir = _package(tmp_path, "unpinned_circuit")
+    secret = "0xdeadbeefcredentialsecret"
+    circuit_dir.joinpath("Prover.toml").write_text(
+        f'credential_secret = "{secret}"\n', encoding="utf-8"
+    )
+    target = circuit_dir / "target"
+    target.mkdir()
+    target.joinpath("unpinned_circuit.json").write_bytes(b'{"bytecode":"AAA"}')
+
+    assert am.main(["--lock", str(tmp_path / "lock.json"), "check-coverage"]) == am.EXIT_DRIFT
+
+    captured = capsys.readouterr().err
+    assert secret not in captured
+    assert "AAA" not in captured
+    assert "bytecode" not in captured
+    assert "unpinned_circuit" in captured
