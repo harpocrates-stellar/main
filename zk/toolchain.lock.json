@@ -138,6 +138,18 @@
       "required": true
     },
     {
+      "path": "zk/noir/redacted_ancestry/target/redacted_ancestry.json",
+      "kind": "json",
+      "role": "acir",
+      "required": false
+    },
+    {
+      "path": "zk/noir/redacted_ancestry_helper/target/redacted_ancestry_helper.json",
+      "kind": "json",
+      "role": "acir",
+      "required": false
+    },
+    {
       "path": "frontend/public/noir/silent_witness.json",
       "kind": "json",
       "role": "published_acir",
