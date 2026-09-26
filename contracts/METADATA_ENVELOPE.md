@@ -22,6 +22,18 @@ its public contract boundary — without inventing a second protocol truth.
 Raw envelope bytes, media, witnesses, nullifiers, and private keys are **never**
 stored or logged. Typed events emit only `(proof_id, version, metadata_hash, bound_at)`.
 
+## Storage Bound
+
+- Every evidence metadata commitment is exactly `MAX_EVIDENCE_METADATA_HASH_BYTES`
+  bytes (32); contract entry points use the fixed-size `BytesN<32>` type, so
+  oversized or short digests cannot be stored.
+- At most one `MetadataEnvelope` row exists per proof. Binding or upgrading
+  rewrites the row at `DataKey::MetadataEnvelope(proof_id)`; it does not append
+  a version history. `ProofRecord` remains the canonical metadata hash.
+- The bound is per proof, not a global cap on registered proofs. Expired or
+  revoked proof records remain readable according to the existing lifecycle
+  policy; this feature does not delete evidence or change retention.
+
 ## Compatibility
 
 - Existing `register_*` entry points that take a bare `metadata_hash` keep working.
@@ -41,12 +53,18 @@ stored or logged. Typed events emit only `(proof_id, version, metadata_hash, bou
 | Existing proofs | First read via `resolve_*` treats missing rows as V1; next `correct_proof` or `bind_*` materializes a row. New registrations stamp V1 immediately. |
 | Rollback | Pre-#317 wasm ignores the new key. Re-deploying an older wasm leaves orphan envelope rows that newer builds can still read. |
 
+The storage bound is documentation and type-level clarification of the existing
+32-byte digest and single-key layout. It changes neither the contract ABI nor
+the persistent storage encoding, so no migration or data rewrite is required.
+
 ## Threat model notes
 
 - **Confidentiality:** only hashes and version integers cross the trust boundary.
 - **Integrity:** bind requires the hash to match `ProofRecord.metadata_hash`;
   same-version hash edits go through `correct_proof` (admin) so history stays authoritative.
 - **Availability / DoS:** fixed-size types; no unbounded decoding of off-chain envelopes.
+- **Input bounds:** malformed digest lengths fail Soroban argument decoding
+  before contract logic; the contract never logs rejected payloads.
 - **Replay / confusion:** version is explicit on-chain so V1 and V2 digests cannot be silently reinterpreted.
 
 ## API surface
