@@ -1006,3 +1006,6 @@ add a one-line change summary below:
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
 | 1.2 | 2026-09-24 | Add OR-11: Unbounded external evidence fetch — resolved in #287. Connect timeout, response-size cap, and privacy-safe logging enforced via fetch_external.safe_urlopen. |
+
+## CI proof artifact retention
+Retained CI artifacts are a public-boundary risk. Only allowlisted proof outputs are retained, via `devx/retain_proof_artifacts.py`, which rejects media, keys, seeds, witness values and prover inputs, and never prints file names or contents. See `docs/proof-artifact-retention.md`.

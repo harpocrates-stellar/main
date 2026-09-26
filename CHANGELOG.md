@@ -2,6 +2,12 @@
 
 ## 1.0.0 — Unreleased
 
+- chore(devx): retain proof artifacts in CI through a privacy-checked allowlist (#398)
+- Added the `redacted_ancestry` Noir circuit and helper (#356): proves a redacted
+  derivative descends from a committed parent evidence object without revealing
+  the unredacted parent hash, the redaction mask preimage, or credential secrets.
+  Binds the canonical lineage `redact` identifier and the `1..=4` depth bound,
+  with synthetic vectors and schema guards. See `docs/zk-redacted-ancestry-spec.md`.
 - External verifier verdicts are now enforced: registrations whose
   `verify_external_proof` call fails (or that pass an empty proof) revert with
   `InvalidProof` instead of proceeding silently.

@@ -458,6 +458,33 @@ redeploy.
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
 
+## Contract Error ABI (#344)
+
+`contracts/ERROR_ABI.md` publishes the stable error ABI (`hpx-err/1`) for
+`RegistryError`: every discriminant, its variant name, its failure class
+(`malformed`, `oversized`, `expired`, `revoked`, `unsupported`, `dependency`,
+plus `auth`, `conflict`, `resource`, `state`), and whether the same call may be
+retried once an external condition clears.
+
+Codes `1..=80` are frozen and append-only: a new failure takes the next unused
+number, and an existing code is never renumbered or reused. The ABI describes
+revert values only. It adds no storage keys, changes no entrypoint signature,
+and requires no migration.
+
+Failure responses stay privacy-safe: a revert is reported as a code, never as a
+dump of the offending input. Proof bytes, public inputs, witnesses, nullifiers,
+media, credentials, signatures, and private keys are never part of an error and
+never logged, and a rejected call still emits no lifecycle event.
+
+`contracts/harpocrates-registry/src/test_error_abi.rs` reads the document at
+compile time and fails if a variant is renamed, renumbered, dropped, duplicated,
+or assigned a class outside the documented set:
+
+```bash
+cd contracts
+cargo test -p harpocrates-registry error_abi -- --nocapture
+```
+
 ## Scripts
 
 PowerShell helpers live in `scripts/`:

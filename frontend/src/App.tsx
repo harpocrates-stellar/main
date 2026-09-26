@@ -102,6 +102,7 @@ function App() {
   }, [])
 
   function openView(view: AppView) {
+    if (view !== currentView) evidence.cancelProving()
     setCurrentView(view)
     const nextHash = view === 'landing' ? window.location.pathname : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)

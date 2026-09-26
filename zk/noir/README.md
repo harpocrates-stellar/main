@@ -15,6 +15,32 @@ The base circuit proves:
 
 The creator can register evidence without revealing the credential secret.
 
+### `redacted_ancestry`
+
+Proves that a **redacted** derivative descends from a committed parent evidence
+object without revealing the unredacted parent hash, the redaction mask
+preimage, or the credential secrets. The operation is bound to the canonical
+lineage `redact` identifier (the ASCII field element `0x726564616374`, matching
+the registry `Symbol`), and the ancestry depth is bounded to `1..=4` to match
+`backend/lineage.py`.
+
+Public statement: `parent_commitment`, `derivative_digest`,
+`parameters_digest`, `operation_type`, `ancestry_root`, `nullifier`, `depth`,
+`domain_tag`. Private witness: parent hash halves, parent blinding, mask
+commitment, redaction seed, and the credential / nullifier secrets.
+
+Companion helper: `redacted_ancestry_helper` derives the public statement from
+the private openings for the browser/native proving path.
+
+Synthetic vectors: [`fixtures/redacted_ancestry_vectors.json`](fixtures/redacted_ancestry_vectors.json).  
+Spec: [`docs/zk-redacted-ancestry-spec.md`](../../docs/zk-redacted-ancestry-spec.md).
+
+```bash
+cd zk/noir/redacted_ancestry && nargo test
+cd zk/noir/redacted_ancestry_helper && nargo test
+python -m pytest zk/tools -q
+```
+
 ### `silent_witness_aggregator` (NEW)
 
 Bounded aggregation circuit that bundles up to **8** individual Silent Witness
