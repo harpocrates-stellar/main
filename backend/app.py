@@ -68,8 +68,22 @@ from retention import init_retention_worker
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness, generate_aggregated_proof
 from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
+from metadata_errors import (
+    METADATA_MALFORMED,
+    METADATA_OVERSIZED,
+    MetadataError,
+    classify_validation_error,
+    metadata_error_response,
+)
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from c2pa import (
+    C2paParseError,
+    C2paTrustStatus,
+    corroborate_binding,
+    export_c2pa_manifest,
+    parse_c2pa_manifest,
+)
 from logging_utils import log_structured, redact_sensitive
 from errors import (
     INTERNAL_ERROR,
@@ -274,37 +288,41 @@ def create_app() -> Flask:
         - If REGISTER_API_KEY is not configured the endpoint is open (development
           convenience identical to the previous behaviour).
         - Otherwise the request must carry ``Authorization: Bearer <key>``.
-        - If REGISTER_API_KEY_EXPIRES is set and the current UTC time is at or
-          past that instant the key is treated as expired and the request is
-          rejected with 401.
+        - ``REGISTER_API_KEY_PREVIOUS`` can overlap the primary key during a
+          rotation.  It is accepted until its optional expiry, allowing
+          already-deployed clients to transition without downtime.
         """
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            expected_key = config.register_api_key
-            if expected_key is None:
+            if config.register_api_key is None:
                 # No key configured – allow the request (dev mode).
                 return fn(*args, **kwargs)
-
-            # Check expiry before validating the key so that an expired key
-            # is never accepted even if the token matches.
-            expires = config.register_api_key_expires
-            if expires is not None:
-                from datetime import datetime as _dt
-
-                now = _dt.now(tz=timezone.utc)
-                if now >= expires:
-                    return jsonify({"error": "API key has expired"}), 401
 
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return jsonify({"error": "Authorization header with Bearer token is required"}), 401
 
-            provided_key = auth_header[len("Bearer "):]
-            # Constant-time comparison to mitigate timing attacks.
+            provided_key = auth_header[len("Bearer "):].strip()
+            now = datetime.now(tz=timezone.utc)
+
+            # Constant-time comparison is performed for every configured key.
+            # Do not reveal whether a key is primary, previous, or expired.
             import hmac as _hmac
 
-            if not _hmac.compare_digest(provided_key, expected_key):
+            candidates = (
+                (config.register_api_key, config.register_api_key_expires),
+                (config.register_api_key_previous, config.register_api_key_previous_expires),
+            )
+            valid = False
+            for expected_key, expires in candidates:
+                matches = bool(expected_key) and _hmac.compare_digest(provided_key, expected_key)
+                if matches and (expires is None or now < expires):
+                    valid = True
+
+            if not valid:
+                if config.register_api_key_expires is not None and now >= config.register_api_key_expires:
+                    return jsonify({"error": "API key has expired"}), 401
                 return jsonify({"error": "Invalid API key"}), 401
 
             return fn(*args, **kwargs)
@@ -321,6 +339,10 @@ def create_app() -> Flask:
 
     @app.errorhandler(ValueError)
     def bad_request(error: ValueError):
+        # Metadata failures carry a canonical taxonomy code; serialize them
+        # with the shared metadata envelope so every boundary agrees.
+        if isinstance(error, MetadataError):
+            return metadata_error_response(error)
         return error_response(
             code=VALIDATION_ERROR,
             message=str(error),
@@ -385,6 +407,12 @@ def create_app() -> Flask:
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
+        for dependency in readiness_manager.deps:
+            metrics_collector.record_dependency_status(
+                dependency.name,
+                status.get(dependency.name, "unknown"),
+                dependency.critical,
+            )
         trace = current_trace_fields()
         return jsonify(
             {
@@ -457,24 +485,22 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "metadata is too large"}), 413
+            return metadata_error_response(
+                MetadataError(METADATA_OVERSIZED, "metadata is too large")
+            )
 
         try:
             metadata = json.loads(metadata_raw)
         except json.JSONDecodeError:
-            return error_response(
-                code=VALIDATION_ERROR,
-                message="metadata must be valid JSON",
-                status=400,
+            return metadata_error_response(
+                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
             )
         try:
             validate_embed_metadata(metadata)
+        except MetadataError as exc:
+            return metadata_error_response(exc)
         except ValueError as exc:
-            return error_response(
-                code=VALIDATION_ERROR,
-                message=str(exc),
-                status=400,
-            )
+            return metadata_error_response(classify_validation_error(exc))
 
         try:
             quarantine_context = isolate_upload(
@@ -576,11 +602,15 @@ def create_app() -> Flask:
         try:
             metadata = json.loads(metadata_raw)
         except json.JSONDecodeError:
-            return jsonify({"error": "metadata must be valid JSON"}), 400
+            return metadata_error_response(
+                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+            )
         try:
             validate_embed_metadata(metadata)
+        except MetadataError as exc:
+            return metadata_error_response(exc)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return metadata_error_response(classify_validation_error(exc))
 
         combined_path = session_dir / "combined.video"
         chunk_files = sorted(
@@ -815,6 +845,7 @@ def create_app() -> Flask:
 
     @app.post("/api/proofs/register")
     @limiter.limit(config.ratelimit_register)
+    @require_register_auth
     @idempotent("register")
     def register_proof_event():
         if _enforce_json_size() > config.max_json_bytes:
@@ -1338,6 +1369,242 @@ def create_app() -> Flask:
             "ok": True,
             "message": "Selective disclosure proof submission accepted.",
             "note": "On-chain verification must be performed via verify_selective_disclosure on the registry contract.",
+        })
+
+    # -----------------------------------------------------------------------
+    # C2PA interoperability
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/c2pa/export")
+    def c2pa_export():
+        """
+        Export a C2PA-compatible authenticity manifest from Harpocrates evidence
+        digests.
+
+        Request body (JSON):
+            video_hash    string  32-byte hex (embedded video hash registered on-chain)
+            metadata_hash string  32-byte hex
+            proof_id      string  32-byte hex
+            tier          string  'silent' | 'source' | 'seal'
+            network       string  Stellar network passphrase
+            contract_id   string  Soroban registry contract ID
+            claim_generator string  Optional override for the C2PA claim_generator field
+
+        Response body (JSON):
+            ok            bool    true
+            manifest      object  Serialisable C2PA-compatible manifest
+            digest        string  SHA-256 of the canonical JSON (for round-trip checks)
+            trust_status  string  Always 'signature_not_checked' — C2PA trust is
+                                  independent of on-chain / ZK status
+
+        The C2PA trust status is explicitly separate from Harpocrates on-chain or
+        ZK verification status.  Callers MUST NOT treat the exported manifest as
+        a Harpocrates proof or an on-chain confirmation.
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        required_fields = ("video_hash", "metadata_hash", "proof_id", "tier", "network", "contract_id")
+        for field_name in required_fields:
+            if field_name not in body:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=f"missing required field: {field_name}",
+                    status=400,
+                )
+
+        try:
+            exported = export_c2pa_manifest(
+                video_hash=body["video_hash"],
+                metadata_hash=body["metadata_hash"],
+                proof_id=body["proof_id"],
+                tier=body["tier"],
+                network=body["network"],
+                contract_id=body["contract_id"],
+                claim_generator=body.get("claim_generator"),
+            )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response({
+            "manifest": exported.manifest,
+            "digest": exported.digest,
+            # Explicit trust separation: C2PA export never implies on-chain status.
+            "trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
+            "note": (
+                "C2PA trust status is independent of Harpocrates on-chain and ZK "
+                "verification. Do not treat this manifest as a Harpocrates proof."
+            ),
+        })
+
+    @app.post("/api/c2pa/import")
+    def c2pa_import():
+        """
+        Parse, validate, and corroborate a C2PA-compatible authenticity manifest.
+
+        Request body (JSON):
+            manifest  string | object  Raw manifest (JSON string or pre-parsed object)
+            expected  object           Optional hashes the caller claims, compared
+                                       against the binding embedded in the manifest.
+                                       Keys: video_hash, metadata_hash, proof_id,
+                                       tier, network, contract_id
+
+        Response body (JSON):
+            ok              bool    true
+            binding         object  Extracted Harpocrates binding fields
+            trust_status    string  'signature_not_checked' — always; see note
+            hashes_verified bool    true only when *expected* was supplied and every
+                                    supplied field matched the embedded binding
+            hashes_compared list    Field names actually compared ([] when no
+                                    *expected* was supplied)
+            unknown_assertions  list  Assertions not recognised by this version
+                                      (unsupported_semantics: true)
+            note            string  Trust model clarification
+
+        The binding is embedded twice (named assertion and top-level object); a
+        manifest whose two copies disagree is rejected rather than resolved in
+        favour of one of them.  When *expected* is supplied, a submitted value
+        that disagrees with the embedded binding is rejected with
+        VALIDATION_ERROR carrying the offending field *name* only.
+
+        The trust_status is always 'signature_not_checked'.  C2PA signature
+        verification is out of scope, and a matching *expected* block is
+        integrity corroboration only — never an on-chain or ZK verification.
+        The extracted binding must still be corroborated against on-chain
+        records before any trust decision is made.
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        # Accept either a pre-parsed object or a raw JSON string.
+        if isinstance(manifest_raw, dict):
+            try:
+                import json as _json
+                manifest_bytes = _json.dumps(manifest_raw, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="manifest object could not be serialised",
+                    status=400,
+                )
+        elif isinstance(manifest_raw, str):
+            manifest_bytes = manifest_raw.encode("utf-8")
+        else:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            parsed = parse_c2pa_manifest(manifest_bytes)
+        except C2paParseError as exc:
+            # Privacy-safe: only the reason code and optional field name are returned.
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        binding = parsed.binding
+
+        # Submitted-vs-embedded verification. When the caller states which
+        # evidence it is asking about, the manifest's embedded binding must
+        # describe that same evidence; otherwise a validly-exported manifest for
+        # a different video would be accepted here.
+        expected = body.get("expected")
+        if expected is not None and not isinstance(expected, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="expected must be a JSON object of submitted hashes",
+                status=400,
+            )
+
+        corroboration = None
+        if expected is not None:
+            try:
+                corroboration = corroborate_binding(
+                    parsed,
+                    video_hash=expected.get("video_hash"),
+                    metadata_hash=expected.get("metadata_hash"),
+                    proof_id=expected.get("proof_id"),
+                    tier=expected.get("tier"),
+                    network=expected.get("network"),
+                    contract_id=expected.get("contract_id"),
+                )
+            except ValueError as exc:
+                # _validate_hex32/field checks emit the field name and static
+                # text only — never a submitted value.
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+
+            if not corroboration.ok:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=(
+                        "submitted hashes do not match the embedded C2PA binding: "
+                        + ", ".join(corroboration.mismatches)
+                    ),
+                    status=400,
+                    field=corroboration.mismatches[0],
+                )
+
+        unknown = [
+            {
+                "label": ua.label,
+                "unsupported_semantics": ua.unsupported_semantics,
+            }
+            for ua in parsed.unknown_assertions
+        ]
+
+        return ok_response({
+            "binding": {
+                "mapping_version": binding.mapping_version,
+                "video_hash": binding.video_hash,
+                "metadata_hash": binding.metadata_hash,
+                "proof_id": binding.proof_id,
+                "tier": binding.tier,
+                "network": binding.network,
+                "contract_id": binding.contract_id,
+            },
+            "trust_status": parsed.trust_status.value,
+            # True only when the caller supplied hashes AND all of them matched.
+            "hashes_verified": bool(corroboration is not None and corroboration.ok),
+            "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
+            "unknown_assertions": unknown,
+            "note": (
+                "C2PA trust status is independent of Harpocrates on-chain and ZK "
+                "verification. A matching 'expected' block is integrity "
+                "corroboration only. Corroborate this binding against on-chain "
+                "records before making any trust decision."
+            ),
         })
 
     return app

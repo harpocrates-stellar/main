@@ -7,6 +7,8 @@ match their source and the pinned toolchain in ``zk/toolchain.lock.json``.
     write           normalize every declared artifact, digest it, and emit a manifest
     verify          re-digest the working tree and fail on any drift from a manifest
     compare         diff two manifests (the double-build reproducibility check)
+    check-coverage  fail when the lock and the source tree disagree about which
+                    circuits exist, so no circuit can ship unpinned
     write-browser   digest published browser ACIR and emit the browser manifest
     verify-browser  fail if published ACIR drifts from the browser manifest or
                     from the matching build-target ACIR when both are on disk
@@ -64,6 +66,10 @@ DEFAULT_BROWSER_MANIFEST = REPO_ROOT / "zk" / "browser.artifacts.manifest.json"
 
 BROWSER_MANIFEST_FORMAT = "harpocrates.zk-browser-artifact-manifest"
 PUBLISHED_ACIR_ROLE = "published_acir"
+ACIR_ROLE = "acir"
+
+DEFAULT_CIRCUIT_ROOT = "zk/noir"
+DEFAULT_PACKAGE_FILE = "Nargo.toml"
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -111,6 +117,7 @@ class Limits:
     max_artifact_bytes: int
     max_artifacts: int
     max_provenance_files: int
+    max_circuits: int
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,8 @@ class Lock:
     strip_custom_sections: frozenset[str]
     artifacts: tuple[dict, ...]
     provenance_globs: tuple[str, ...]
+    circuit_root: str
+    package_file: str
 
     @property
     def toolchain(self) -> dict:
@@ -149,6 +158,7 @@ def load_lock(path: Path) -> Lock:
         max_artifact_bytes=int(limits_raw["max_artifact_bytes"]),
         max_artifacts=int(limits_raw["max_artifacts"]),
         max_provenance_files=int(limits_raw["max_provenance_files"]),
+        max_circuits=int(limits_raw["max_circuits"]),
     )
 
     artifacts = tuple(raw["artifacts"])
@@ -156,6 +166,13 @@ def load_lock(path: Path) -> Lock:
         raise BuildError(
             f"lock declares {len(artifacts)} artifacts, above the cap of {limits.max_artifacts}"
         )
+
+    coverage = raw.get("coverage") or {}
+    circuit_root = str(coverage.get("circuit_root", DEFAULT_CIRCUIT_ROOT))
+    package_file = str(coverage.get("package_file", DEFAULT_PACKAGE_FILE))
+    for label, value in (("circuit_root", circuit_root), ("package_file", package_file)):
+        if not value or value.startswith("/") or ".." in value.split("/"):
+            raise BuildError(f"toolchain lock declares an unusable coverage {label}: {value!r}")
 
     return Lock(
         raw=raw,
@@ -166,6 +183,8 @@ def load_lock(path: Path) -> Lock:
         ),
         artifacts=artifacts,
         provenance_globs=tuple(raw["provenance_sources"]["globs"]),
+        circuit_root=circuit_root,
+        package_file=package_file,
     )
 
 
@@ -778,6 +797,102 @@ def command_verify_browser(args: argparse.Namespace) -> int:
 
 
 
+# ── Circuit coverage ─────────────────────────────────────────────────────────
+#
+# The digest manifest is only as complete as the lock file. A circuit that is
+# added to zk/noir but never declared would be compiled by nobody, digested by
+# nothing, and still reachable at a public boundary — a second, unpinned
+# protocol truth. This gate makes that state a build failure instead of a silent
+# gap, in either direction: an undeclared package, or a declared artifact whose
+# package has been renamed or removed.
+
+
+def declared_circuit_names(lock: Lock) -> set[str]:
+    """Circuit names the lock declares a build-target ACIR for.
+
+    Read off the artifact paths themselves rather than a parallel list, so the
+    lock file stays the single declaration of which circuits are pinned. Only
+    the canonical ``<root>/<name>/target/<name>.json`` shape counts: a declared
+    path that does not have that shape is not evidence of coverage.
+    """
+    prefix = f"{lock.circuit_root}/"
+    names: set[str] = set()
+    for entry in lock.artifacts:
+        if entry.get("role") != ACIR_ROLE:
+            continue
+        relative = str(entry.get("path", ""))
+        if not relative.startswith(prefix):
+            continue
+        parts = relative[len(prefix) :].split("/")
+        if len(parts) != 3 or parts[1] != "target" or not parts[2].endswith(".json"):
+            continue
+        name = parts[2][: -len(".json")]
+        if name and name == parts[0]:
+            names.add(name)
+    return names
+
+
+def discover_circuit_packages(lock: Lock, root: Path) -> list[str]:
+    """Every Noir package in the tree, i.e. every directory holding a Nargo.toml.
+
+    A sibling directory without one (``scripts/``, ``tools/``) is not a circuit
+    and is ignored, so neither a helper script nor a stray build directory can
+    fail the gate. The walk is sorted and capped by ``limits.max_circuits``.
+    """
+    base = root / lock.circuit_root
+    if not base.is_dir():
+        return []
+
+    names: list[str] = []
+    for path in sorted(base.iterdir()):
+        if not (path.is_dir() and (path / lock.package_file).is_file()):
+            continue
+        if len(names) >= lock.limits.max_circuits:
+            raise BuildError(
+                f"circuit count exceeds {lock.limits.max_circuits}; refusing to continue"
+            )
+        names.append(path.name)
+    return names
+
+
+def check_coverage(lock: Lock, root: Path) -> list[str]:
+    """Findings for circuits that exist but are unpinned, and pins with no circuit.
+
+    Findings name circuits and paths only. No artifact is read, so nothing that
+    could carry witness or key material can reach a finding.
+    """
+    on_disk = set(discover_circuit_packages(lock, root))
+    declared = declared_circuit_names(lock)
+
+    findings: list[str] = []
+    for name in sorted(on_disk - declared):
+        findings.append(
+            f"circuit {name}: package on disk declares no "
+            f"{lock.circuit_root}/{name}/target/{name}.json artifact; "
+            "it would be built and digested by nothing"
+        )
+    for name in sorted(declared - on_disk):
+        findings.append(
+            f"circuit {name}: declared artifact has no "
+            f"{lock.circuit_root}/{name}/{lock.package_file} package; "
+            "the pin can never be rebuilt"
+        )
+    return findings
+
+
+def command_check_coverage(args: argparse.Namespace) -> int:
+    lock = load_lock(Path(args.lock))
+    findings = check_coverage(lock, REPO_ROOT)
+    if findings:
+        for finding in findings:
+            signal("drift.finding", detail=finding)
+        signal("coverage.failed", findings=len(findings))
+        return EXIT_DRIFT
+
+    signal("coverage.ok", circuits=len(declared_circuit_names(lock)))
+    return EXIT_OK
+
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 
@@ -875,6 +990,12 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("first")
     compare.add_argument("second")
     compare.set_defaults(handler=command_compare)
+
+    coverage = subparsers.add_parser(
+        "check-coverage",
+        help="fail when the lock and the source tree disagree about which circuits exist",
+    )
+    coverage.set_defaults(handler=command_check_coverage)
 
     write_browser = subparsers.add_parser(
         "write-browser",
