@@ -1,4 +1,9 @@
+import { UltraHonkBackend } from '@aztec/bb.js'
+import { Noir } from '@noir-lang/noir_js'
+import type { CompiledCircuit } from '@noir-lang/types'
+
 import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+import type { ProofStage } from './proofStage'
 
 type SilentWitnessProof = {
   credentialRoot: string
@@ -12,20 +17,6 @@ type SilentWitnessProof = {
   publicInputBytes: number
 }
 
-type AggregatedProof = {
-  protocol: string
-  version: number
-  type: string
-  batchId: string
-  batchSize: number
-  maxBatchSize: number
-  videoHashes: string[]
-  proof: string
-  publicInputs: string
-  proofBytes: number
-  publicInputBytes: number
-}
-
 type GenerateSilentWitnessInput = {
   videoHash: string
   credentialSecret: string
@@ -34,18 +25,16 @@ type GenerateSilentWitnessInput = {
   verifierScope?: string
   /** Epoch number. Pass 0 for unscoped or legacy proofs. */
   epoch?: number
-}
-
-type GenerateAggregatedProofInput = {
-  videoHashes: string[]
-  credentialSecret: string
-  nullifierSecret: string
+  /**
+   * Optional progress sink. Receives the canonical `ProofStage` at each real
+   * phase boundary so callers (Evidence Studio, the proof worker) can show
+   * phase status without touching witness material.
+   */
+  onStage?: (stage: ProofStage) => void
 }
 
 let helperCircuitPromise: Promise<CompiledCircuit> | null = null
 let mainCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
 
 /**
  * Generate a Silent Witness Noir/UltraHonk proof.
@@ -63,7 +52,9 @@ export async function generateSilentWitnessProof({
   nullifierSecret,
   verifierScope = '0',
   epoch = 0,
+  onStage,
 }: GenerateSilentWitnessInput): Promise<SilentWitnessProof> {
+  onStage?.('loading_circuits')
   const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
 
   const video_hash_hi = BigInt(`0x${videoHash.slice(0, 32)}`).toString(10)
@@ -80,6 +71,7 @@ export async function generateSilentWitnessProof({
   }
 
   // Helper returns (credential_root, nullifier, domain_tag).
+  onStage?.('executing_helper')
   const helperResult = await new Noir(helperCircuit).execute(privateInputs)
   const [credentialRoot, nullifier, domainTag] = helperResult.returnValue as string[]
 
@@ -90,6 +82,7 @@ export async function generateSilentWitnessProof({
     epoch: epoch_field,
   }
 
+  onStage?.('executing_main')
   const { witness } = await new Noir(mainCircuit).execute({
     ...privateInputs,
     ...publicInputs,
@@ -97,6 +90,7 @@ export async function generateSilentWitnessProof({
 
   const backend = new UltraHonkBackend(mainCircuit.bytecode)
   try {
+    onStage?.('generating_proof')
     const proofData = await backend.generateProof(witness, { keccak: true })
     const proofHex = bytesToHex(proofData.proof)
 
@@ -124,8 +118,24 @@ export async function generateSilentWitnessProof({
   }
 }
 
-async function sha256(input: string): Promise<string> {
-  const bytes = new TextEncoder().encode(input)
-  const hash = await crypto.subtle.digest('SHA-256', bytes)
-  return bytesToHex(new Uint8Array(hash))
+async function loadHelperCircuit() {
+  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
+  return helperCircuitPromise
+}
+
+async function loadMainCircuit() {
+  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
+  return mainCircuitPromise
+}
+
+async function loadCircuit(path: string) {
+  const response = await fetch(path, { cache: 'no-store' }) // cache prohibition
+  if (!response.ok) {
+    throw new Error(`Unable to load Noir circuit artifact: ${path}`)
+  }
+  return (await response.json()) as CompiledCircuit
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
