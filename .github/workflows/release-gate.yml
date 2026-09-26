@@ -45,12 +45,16 @@ jobs:
           python-version: '3.12'
       - name: Verify dependency pins and lockfiles
         run: python3 devx/check_dependency_pins.py
+      - name: Install backend dependencies
+        run: python3 -m pip install --requirement backend/requirements.txt
       - name: Verify manifest and digests
         run: python3 devx/release_guard.py
       - name: Publish cross-layer compatibility report
         run: |
           python3 devx/compatibility_report.py --write --stable --check
           python3 devx/compatibility_report.py --verify-existing --stable --check
+      - name: Run threat-model checklist
+        run: python3 devx/threat_model_check.py
       - name: Validate label taxonomy
         run: |
           pip install pyyaml --quiet
