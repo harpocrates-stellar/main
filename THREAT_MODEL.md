@@ -1,7 +1,7 @@
 # Harpocrates Protocol Threat Model
 
-**Version:** 1.0  
-**Date:** 2026-07-24  
+**Version:** 1.2  
+**Date:** 2026-09-24  
 **Status:** Active  
 **Review cadence:** Every major protocol change or at minimum every six months.  
 **Maintainer:** See `CODEOWNERS`.
@@ -158,6 +158,16 @@ Stellar private key. All on-chain operations are validated by the Soroban VM.
 **TB-3 Backend → NeonDB:** The backend writes proof events using parameterized
 queries via `psycopg`. `DATABASE_URL` is read from the environment and never
 logged. The NeonDB row schema does not store ZK secrets.
+
+**TB-4 Offline local verification (client → nothing):** When the Verification
+Portal runs "Offline local check", the browser performs the hash, stego
+extraction, structural validation, and file→metadata binding with zero network
+calls and no storage or log writes. This boundary produces **no trust
+decision**: a verifier must still consult the registry (TB-2) and event feed
+(TB-3) to confirm revocation, expiry, or nullifier replay, so offline success
+is reported only as a local check with chain/registry status "not checked".
+Envelopes carrying secret-shaped keys are rejected before any field is read,
+and output copy never carries file names, hashes, or secret material.
 
 ---
 
@@ -478,7 +488,11 @@ limitation).
 
 3. Circuit artifact versioning: the compiled `silent_witness.json` in
    `frontend/public/noir/` must match the verifier contract's proving key. There
-   is no on-chain mechanism to detect or enforce this alignment.
+   is no on-chain mechanism to detect or enforce this alignment. The build side is
+   now pinned and drift-checked (`zk/browser.artifacts.manifest.json`,
+   `check-coverage`), but no check yet compares a circuit's verification-key digest
+   to the key the deployed verifier contract was built with.
+   See [Open Risk OR-5](#or-5-circuit-artifact-version-alignment).
 
 **Severity:** Critical (OR-1 stub path). Low (verified path via `register_anonymous_verified`).
 
@@ -615,6 +629,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
 | Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
 | AST-based API Schema generation prevents DB injections and application state side-effects during build/CI | T6, T10 | `devx/generate_api_schema.py` |
+| Domain-separated proof-cache keys: SHA-256 over versioned `harpocrates:verifier-cache:v1` tag + length-prefixed fields; hex canonicalization prevents case-variant cache fragmentation | T2, T8 | `verifier_cache.py` → `CACHE_KEY_DOMAIN_TAG`, `_get_cache_key` |
 
 
 ### 7.3 React Frontend
@@ -627,10 +642,11 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Browser-side Noir proving — secrets never sent to server in production | T4, T5 | `noirClient.ts` → `generateSilentWitnessProof` |
 | **Worker-isolated proving** — Noir proving runs in a dedicated Web Worker which is explicitly terminated upon success, failure, timeout, or cancellation. This guarantees the browser reclaims the memory hardware-isolate and drops all secrets reliably, rather than depending on GC. | T4, T5 | `proveWorker.ts`, `noirClient.ts` |
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |
+| Offline local verification — zero network calls, no storage/log writes, and never a confirmed trust decision; envelope extraction reuses the existing single stego loader (no second protocol truth) and secret-shaped envelopes are rejected up-front | T4, T5 | `offlineVerification.ts`, `useVerification.ts` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
 
-### 7.4 Noir ZK Circuit (`silent_witness`)
+### 7.4 Noir ZK Circuits
 
 | Mitigation | Threats addressed | Code reference |
 |------------|------------------|----------------|
@@ -638,6 +654,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `assert(derived_nullifier == nullifier)` — binds nullifier to secrets + video hash | T2, T8 | `silent_witness/src/main.nr` |
 | Nullifier commits to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)` | T2, T5 | `silent_witness/src/main.nr` |
 | Test corpus: tampered public inputs, wrong video hash, swapped fields, cross-video nullifier | T2, T8 | `silent_witness/src/main.nr` → test functions |
+| Pinned toolchain + hermetic build + normalized digest manifest for every circuit, with a double-build check | T4, T8, OR-5 | `zk/toolchain.lock.json`, `zk/noir/scripts/reproducible-build.sh` |
+| `check-coverage` fails when a circuit in the tree is not declared in the lock, so no circuit can reach a public boundary unpinned | T4, T8, OR-5 | `zk/tools/artifact_manifest.py` → `check_coverage` |
+| Published browser ACIR is digest-pinned and, when a build target is present, required to match it | T4, T8, OR-5 | `zk/browser.artifacts.manifest.json` → `verify-browser` |
 
 
 ---
@@ -714,15 +733,26 @@ using a watermarking technique that is more robust to re-encoding.
 **Severity:** Medium  
 **Component:** Frontend / Soroban verifier contract  
 **Description:** The compiled circuit artifacts in `frontend/public/noir/`
-(`silent_witness.json`, `silent_witness_helper.json`) must match the proving
-key embedded in the `SilentWitnessUltraHonkVerifier` contract. There is no
-on-chain or build-time check that enforces this alignment. A circuit upgrade
-that replaces the verifier contract without updating the frontend artifacts (or
-vice versa) will silently break all Tier 1 registrations.  
+(`silent_witness.json`, `silent_witness_helper.json`, `selective_disclosure.json`)
+must match the proving key embedded in the `SilentWitnessUltraHonkVerifier`
+contract. There is no on-chain or build-time check that enforces this alignment.
+A circuit upgrade that replaces the verifier contract without updating the
+frontend artifacts (or vice versa) will silently break all Tier 1 registrations.  
 **Remediation:** Add a build-time check (CI step) that computes a hash of
 `silent_witness.json` and compares it to a value stored alongside the verifier
 contract's WASM hash. Document the circuit upgrade procedure in
 `contracts/VERIFIER_INTEGRATION.md`.
+
+**Partial progress (this repository):** the published-artifact side is now
+covered — `zk/browser.artifacts.manifest.json` pins the digests of every
+`published_acir` bundle and `zk/tools/artifact_manifest.py verify-browser` fails
+on drift, and `check-coverage` fails if a circuit is not declared in
+`zk/toolchain.lock.json` at all (the condition that let
+`selective_disclosure` reach the browser and the registry verifier while sitting
+outside the reproducible-build pipeline). What remains open is the *other* half:
+nothing compares a circuit's verification-key digest to the key the deployed
+verifier contract was built with, so the alignment check is still name-based
+rather than digest-based. See `docs/zk-reproducible-builds.md`.
 
 ---
 
@@ -782,7 +812,50 @@ privileged contract event is emitted.
 
 ---
 
-### OR-10 Threshold Seal Policy Governance
+### OR-11 Unbounded External Evidence Fetch
+
+**Severity:** Medium — **Resolved** in #287  
+**Component:** Flask backend (`tx_verification.py`, `webhook.py`)  
+**Description:** The backend makes outbound HTTP calls to two external systems:
+
+1. **Stellar Horizon** — `tx_verification_loop` polls
+   `/transactions/{tx_hash}` on `horizon-testnet.stellar.org` to resolve
+   pending transaction statuses.
+2. **Webhook subscribers** — `dispatch_webhook` `POST`s evidence events to
+   operator-configured subscriber URLs.
+
+Prior to this fix both calls used `urllib.request.urlopen(req, timeout=10)`.
+A single `timeout=` value covers only the *read* phase in Python's
+implementation; the TCP+TLS connect phase was unlimited. Additionally, the full
+response body was buffered without a size cap, allowing a malicious or
+misbehaving remote host to stall the worker indefinitely or exhaust heap memory
+with an arbitrarily large response.
+
+Privacy implication: pre-fix log lines included the raw transaction hash and
+the subscriber URL in WARNING-level messages, which could leak correlation data
+into log aggregation systems.
+
+**Mitigations implemented** (`backend/fetch_external.py` + callers):
+
+| Property | Mechanism | Default |
+|----------|-----------|---------|
+| Connect timeout | `socket_timeout = max(connect, read)` passed to `urlopen` | 5 s |
+| Read timeout | Same `socket_timeout` covers each `recv` call | 10 s |
+| Response-size cap | Chunked read with hard limit; raises `ResponseTooLargeError` | 64 KiB |
+| Privacy-safe logging | URLs and tx-hashes logged at DEBUG only; WARNING messages log `host` only | — |
+| Config-driven | Three new `AppConfig` fields (`EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS`, `EXTERNAL_FETCH_READ_TIMEOUT_SECONDS`, `EXTERNAL_FETCH_MAX_RESPONSE_BYTES`) override defaults via env vars | — |
+
+**Compatibility:** Existing callers pass no new arguments; all three parameters
+default to the values that were previously hard-coded. No API or protocol
+surface change.
+
+**Rollback:** Remove `fetch_external.py`, revert `tx_verification.py` and
+`webhook.py` to direct `urlopen` calls, and remove the three new config fields.
+No database migration required.
+
+---
+
+### OR-12 Threshold Seal Policy Governance
 
 **Severity:** Medium  
 **Component:** Soroban contract  
@@ -833,6 +906,11 @@ The following are explicitly outside the scope of this threat model:
 - **Dependency vulnerability management** — routine CVE scanning and patching
   of npm and Python dependencies is a continuous operations concern, not
   addressed here.
+- **Validating Silent Witness proof bytes offline** — offline local verification
+  checks hash, envelope structure, and file binding only. Proof-byte validation
+  requires the UltraHonk verifier (contract or WASM with the matching circuit
+  artifact) and is intentionally not performed in offline mode; it is also not
+  embedded into the canonical metadata, so no second protocol truth is created.
 
 ---
 
@@ -874,6 +952,32 @@ upload and proof endpoints.
 | Migration | Additive; `RATELIMIT_ENABLED=false` disables the layer without changing routes |
 | Rollback | Remove `@limiter.limit` decorators; endpoints behave as before |
 
+## 9.3 C2PA Authenticity Assertion Export
+
+**Artifact:** `cli/src/c2pa.ts` (`harpocrates c2pa`), schema version 1,
+exporter `harpocrates-cli/c2pa` v1.0.0.
+
+`harpocrates c2pa` derives C2PA authenticity assertions from the canonical
+proof manifest and (optionally) a verification receipt. It produces an
+**unsigned** C2PA JSON manifest definition; downstream tooling signs it with
+its own C2PA signer and key material.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Local output byte stream; the caller's C2PA signer and the target media platform become the consumers |
+| Single truth | All values come from the canonical manifest/receipt schemas; `manifestHash` = SHA-256 of the canonical serialized manifest, so the export cannot drift into a second metadata truth |
+| Privacy | Only public manifest/registry fields are emitted; media bytes, witness values, credential secrets, proof bytes, transaction blobs, and signing keys are never emitted, and the exporter never signs |
+| Verification honesty | `harpocrates.verification.v1` records the receipt outcome verbatim (`valid`/`expired`/`revoked`/`not_found`/`pending`/`failed`/...); a `valid` status is never fabricated |
+| Determinism | Same manifest + receipt ⇒ identical output bytes (CI-verified against `devx/fixtures/c2pa/expected-export.json`) |
+| Input guards | Manifest/receipt capped at 1 MiB input, 256 KiB output; unknown manifest fields and unsupported versions rejected with fixed, privacy-safe errors (exit 8) |
+| Migration | Additive; schema version `1` carried in the export, no on-chain or metadata schema change |
+| Rollback | Deploy the prior CLI build; existing receipt shape and exit-code mapping unchanged |
+
+For upstream threat coverage, the export output sits at TB-2 (browser/user →
+Stellar RPC) and TB-1 (local tooling boundary): it publishes hashes and
+registry identity that are public after registration, and it never accesses
+A1/A2 (credential/nullifier secrets) or A8/A9 keypairs.
+
 ## 10. Review and Update Cadence
 
 | Trigger | Action |
@@ -884,6 +988,7 @@ upload and proof endpoints.
 | New backend endpoint or authentication change | Re-review T1, T6, T10. |
 | Admin key rotation | Update D3; verify two-step transfer completed cleanly. |
 | Any new npm or Python dependency with network access | Assess supply-chain risk (T4). |
+| Any change to the CLI C2PA exporter (`cli/src/c2pa.ts`, `harpocrates c2pa`) | Re-review Section 9.3; regenerate the committed fixture. |
 | Scheduled review | Every six months from the date of last update, regardless of changes. |
 
 When updating this document, increment the version number, update the date, and
@@ -893,5 +998,4 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
-| 1.2 | 2026-09-24 | Document privacy-safe backend trace fields (`harpocrates-trace-v1`). |
-| 1.3 | 2026-09-24 | Expose/allowed propagation headers through the CORS policy. |
+| 1.2 | 2026-09-24 | Add OR-11: Unbounded external evidence fetch — resolved in #287. Connect timeout, response-size cap, and privacy-safe logging enforced via fetch_external.safe_urlopen. |
