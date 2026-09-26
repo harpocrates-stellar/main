@@ -98,6 +98,8 @@ pub const METADATA_ENVELOPE_V2: u32 = 2;
 pub const METADATA_ENVELOPE_VERSION_MAX: u32 = METADATA_ENVELOPE_V2;
 /// Default for bare `metadata_hash` registrations (backward compatible).
 pub const METADATA_ENVELOPE_VERSION_DEFAULT: u32 = METADATA_ENVELOPE_V1;
+/// Maximum size of canonical evidence metadata stored on-chain: one 32-byte digest.
+pub const MAX_EVIDENCE_METADATA_HASH_BYTES: u32 = 32;
 
 
 // ---------------------------------------------------------------------------
