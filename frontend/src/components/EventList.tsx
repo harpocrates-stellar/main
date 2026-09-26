@@ -39,9 +39,9 @@ export function EventList({ events, onRefresh }: Props) {
                       </>
                     ) : null}
                     <dt>Stellar anchors</dt>
-                    <dd>{event.time_attestation.stellarAnchors.length}</dd>
+                    <dd>{event.time_attestation.stellarAnchors?.length ?? 0}</dd>
                     <dt>RFC 3161 anchors</dt>
-                    <dd>{event.time_attestation.rfc3161Anchors.length}</dd>
+                    <dd>{event.time_attestation.rfc3161Anchors?.length ?? 0}</dd>
                   </dl>
                 </details>
               ) : null}
