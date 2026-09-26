@@ -2,6 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
+- Added a dependency pin and lockfile gate (`devx/check_dependency_pins.py`, wired into the release gate): pip requirements must be exactly pinned, npm lockfiles must match their manifests, cargo locks must resolve every workspace dependency, and the Noir toolchain lock must pin concrete compiler versions. See `docs/dependency-pins.md`. Closes #391.
 - Domain-separated proof-cache keys in the backend verifier cache (#373): keys
   are SHA-256 digests over the versioned `harpocrates:verifier-cache:v1` domain
   tag plus length-prefixed fields, eliminating separator-ambiguity collisions
