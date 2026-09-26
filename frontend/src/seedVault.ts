@@ -65,15 +65,24 @@ export type SeedPair = {
   nullifierSeed: string
 }
 
+export class InvalidSeedError extends Error {}
+
 export function deriveSeeds(raw: SeedPair): SeedPair {
+  const cSeed = raw.credentialSeed.trim()
+  const nSeed = raw.nullifierSeed.trim()
+
+  if (cSeed.length > 256 || nSeed.length > 256) {
+    throw new InvalidSeedError('Seeds must be 256 characters or fewer')
+  }
+
   return {
-    credentialSeed: raw.credentialSeed.trim(),
-    nullifierSeed: raw.nullifierSeed.trim(),
+    credentialSeed: cSeed,
+    nullifierSeed: nSeed,
   }
 }
 
 export function hasSeeds(raw: SeedPair): boolean {
-  return raw.credentialSeed.trim().length > 0 && raw.nullifierSeed.trim().length > 0
+  return raw.credentialSeed.trim().length > 0 && raw.nullifierSeed.trim().length > 0 && raw.credentialSeed.trim().length <= 256 && raw.nullifierSeed.trim().length <= 256
 }
 
 export function createClearSeeds(setter: (value: string) => void): () => void {
