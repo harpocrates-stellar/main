@@ -103,7 +103,7 @@
     ]
   ],
   "ledger": {
-    "protocol_version": 25,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -198,6 +198,66 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "MetadataEnvelope"
+                  },
+                  {
+                    "bytes": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "bound_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata_hash"
+                    },
+                    "val": {
+                      "bytes": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "proof_id"
+                    },
+                    "val": {
+                      "bytes": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "version"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Proof"
                   },
                   {
@@ -208,6 +268,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "batch_size"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "created_at"
@@ -361,6 +429,30 @@
                   },
                   {
                     "bytes": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 1
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "SchemaVersion"
                   }
                 ]
               },
@@ -590,6 +682,14 @@
               "map": [
                 {
                   "key": {
+                    "symbol": "batch_size"
+                  },
+                  "val": {
+                    "u32": 0
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "status"
                   },
                   "val": {
@@ -669,6 +769,57 @@
                   },
                   "val": {
                     "u64": "0"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "metadata"
+              },
+              {
+                "symbol": "bound"
+              },
+              {
+                "bytes": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "bound_at"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "metadata_hash"
+                  },
+                  "val": {
+                    "bytes": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "version"
+                  },
+                  "val": {
+                    "u32": 1
                   }
                 }
               ]

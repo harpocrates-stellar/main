@@ -28,7 +28,7 @@ struct MockTierVerifier;
 impl MockTierVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if (len != 128 && len != 160 && len != 224) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -192,7 +192,7 @@ fn try_register_source(
     );
     match result {
         Ok(Ok(rec)) => Ok(rec),
-        Ok(Err(e)) => Err(e as u32),
+        Ok(Err(_)) => Err(0xffff),
         Err(Ok(e)) => Err(e as u32),
         Err(Err(_)) => Err(0xffff),
     }
@@ -220,7 +220,7 @@ fn try_register_seal(
     );
     match result {
         Ok(Ok(rec)) => Ok(rec),
-        Ok(Err(e)) => Err(e as u32),
+        Ok(Err(_)) => Err(0xffff),
         Err(Ok(e)) => Err(e as u32),
         Err(Err(_)) => Err(0xffff),
     }
@@ -251,7 +251,7 @@ fn try_register_anonymous(
     );
     match result {
         Ok(Ok(rec)) => Ok(rec),
-        Ok(Err(e)) => Err(e as u32),
+        Ok(Err(_)) => Err(0xffff),
         Err(Ok(e)) => Err(e as u32),
         Err(Err(_)) => Err(0xffff),
     }

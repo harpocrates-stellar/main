@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger},
-    Address, Bytes, BytesN, Env,
+    xdr::ContractEventBody, Address, Bytes, BytesN, Env, Symbol, TryFromVal,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,6 +38,20 @@ fn setup_env() -> (Env, Address) {
 
 fn advance_time(env: &Env, secs: u64) {
     env.ledger().set_timestamp(env.ledger().timestamp() + secs);
+}
+
+/// Extract the first two `Symbol` topics from an emitted contract event.
+fn event_topics(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> Option<(Symbol, Symbol)> {
+    let v0 = match &event.body {
+        ContractEventBody::V0(v0) => v0,
+        _ => return None,
+    };
+    if v0.topics.len() < 2 {
+        return None;
+    }
+    let t0 = Symbol::try_from_val(env, v0.topics.get(0).unwrap()).ok()?;
+    let t1 = Symbol::try_from_val(env, v0.topics.get(1).unwrap()).ok()?;
+    Some((t0, t1))
 }
 
 // ---------------------------------------------------------------------------
@@ -93,20 +107,21 @@ fn test_cancel_timelocked_proposal() {
         &zero_payload(&env),
     );
 
-    // Cancel before execution
+    // Cancel before execution. Read events immediately: `env.events().all()`
+    // only exposes the most recent invocation's events.
     client.cancel_timelocked_proposal(&admin, &proposal_id);
+
+    let has_timelock = env
+        .events()
+        .all()
+        .events()
+        .iter()
+        .any(|e| matches!(event_topics(&env, e), Some((t0, _)) if t0 == Symbol::new(&env, "timelock")));
+    assert!(has_timelock, "should have timelock events");
 
     let proposal = client.get_timelock_proposal(&proposal_id).unwrap();
     assert!(proposal.cancelled);
     assert!(!proposal.executed);
-
-    // Verify events
-    let events = env.events().all();
-    let cancel_events: Vec<_> = events
-        .iter()
-        .filter(|e| e.0.topics().get(0) == Some(Symbol::new(&env, "timelock")))
-        .collect();
-    assert!(!cancel_events.is_empty(), "should have timelock events");
 }
 
 #[test]
@@ -234,7 +249,7 @@ fn test_emergency_execute_before_delay() {
     );
 
     // Emergency execute immediately (skip timelock)
-    client.emergency_execute_timelocked_proposal(&admin, &proposal_id);
+    client.emergency_execute_timelock(&admin, &proposal_id);
 
     let verifier = client.get_verifier().unwrap();
     assert_eq!(verifier, new_verifier, "verifier should be set by emergency");
@@ -260,7 +275,7 @@ fn test_emergency_execute_only_admin() {
     // Non-admin trying emergency execute (should fail)
     let non_admin = Address::generate(&env);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.emergency_execute_timelocked_proposal(&non_admin, &proposal_id);
+        client.emergency_execute_timelock(&non_admin, &proposal_id);
     }));
     assert!(result.is_err(), "non-admin emergency execute should panic");
 }
@@ -393,24 +408,24 @@ fn test_timelock_proposal_events_emitted() {
         &zero_payload(&env),
     );
 
+    // Capture the propose event now: `env.events().all()` only exposes the most
+    // recent invocation's events, so the execute call below would evict it.
+    let has_propose = env.events().all().events().iter().any(|e| {
+        matches!(event_topics(&env, e), Some((t0, t1))
+            if t0 == Symbol::new(&env, "timelock") && t1 == Symbol::new(&env, "propose"))
+    });
+
     advance_time(&env, DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
 
     let executor = Address::generate(&env);
     client.execute_timelocked_proposal(&executor, &proposal_id);
 
-    // Check events contain expected topics
-    let events = env.events().all();
-
-    let has_propose = events.iter().any(|e| {
-        e.0.topics().get(0) == Some(Symbol::new(&env, "timelock"))
-            && e.0.topics().get(1) == Some(Symbol::new(&env, "propose"))
+    let has_exec = env.events().all().events().iter().any(|e| {
+        matches!(event_topics(&env, e), Some((t0, t1))
+            if t0 == Symbol::new(&env, "timelock") && t1 == Symbol::new(&env, "exec"))
     });
+
     assert!(has_propose, "should have TimelockProposalCreated event");
-
-    let has_exec = events.iter().any(|e| {
-        e.0.topics().get(0) == Some(Symbol::new(&env, "timelock"))
-            && e.0.topics().get(1) == Some(Symbol::new(&env, "exec"))
-    });
     assert!(has_exec, "should have TimelockProposalExecuted event");
 }
 

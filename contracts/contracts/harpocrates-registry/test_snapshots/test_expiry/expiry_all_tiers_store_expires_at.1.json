@@ -179,7 +179,7 @@
     ]
   ],
   "ledger": {
-    "protocol_version": 25,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 2000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -318,6 +318,186 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "MetadataEnvelope"
+                  },
+                  {
+                    "bytes": "9595959595959595959595959595959595959595959595959595959595959595"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "bound_at"
+                    },
+                    "val": {
+                      "u64": "2000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata_hash"
+                    },
+                    "val": {
+                      "bytes": "9696969696969696969696969696969696969696969696969696969696969696"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "proof_id"
+                    },
+                    "val": {
+                      "bytes": "9595959595959595959595959595959595959595959595959595959595959595"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "version"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MetadataEnvelope"
+                  },
+                  {
+                    "bytes": "9999999999999999999999999999999999999999999999999999999999999999"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "bound_at"
+                    },
+                    "val": {
+                      "u64": "2000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata_hash"
+                    },
+                    "val": {
+                      "bytes": "9898989898989898989898989898989898989898989898989898989898989898"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "proof_id"
+                    },
+                    "val": {
+                      "bytes": "9999999999999999999999999999999999999999999999999999999999999999"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "version"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MetadataEnvelope"
+                  },
+                  {
+                    "bytes": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "bound_at"
+                    },
+                    "val": {
+                      "u64": "2000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata_hash"
+                    },
+                    "val": {
+                      "bytes": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "proof_id"
+                    },
+                    "val": {
+                      "bytes": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "version"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Nullifier"
                   },
                   {
@@ -355,6 +535,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "batch_size"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "created_at"
@@ -453,6 +641,14 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "batch_size"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "created_at"
                     },
                     "val": {
@@ -547,6 +743,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "batch_size"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "created_at"
@@ -925,6 +1129,30 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "SchemaVersion"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 1
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Verifier"
                   }
                 ]
@@ -1245,6 +1473,14 @@
               "map": [
                 {
                   "key": {
+                    "symbol": "batch_size"
+                  },
+                  "val": {
+                    "u32": 0
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "status"
                   },
                   "val": {
@@ -1324,6 +1560,57 @@
                   },
                   "val": {
                     "u64": "2000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "metadata"
+              },
+              {
+                "symbol": "bound"
+              },
+              {
+                "bytes": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "bound_at"
+                  },
+                  "val": {
+                    "u64": "2000"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "metadata_hash"
+                  },
+                  "val": {
+                    "bytes": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "version"
+                  },
+                  "val": {
+                    "u32": 1
                   }
                 }
               ]

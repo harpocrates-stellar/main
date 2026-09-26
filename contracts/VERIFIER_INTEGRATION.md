@@ -148,3 +148,35 @@ the batch must be identical (same identity).
   and its element index.
 - Per-element nullifiers prevent individual proofs from being replayed outside
   the batch context.
+
+## Circuit-version validation (#343)
+
+Every entry point that calls the external verifier validates the proof's
+circuit version **before** the verifier is invoked. An unsupported version fails
+closed with `UnsupportedCircuitVersion` (79) instead of reaching a dependency
+that cannot answer it.
+
+| Circuit | Implied version |
+| --- | --- |
+| `silent_witness` v1 frame (160 bytes) | 1 |
+| `silent_witness` v2 scoped frame (224 bytes) | 2 |
+| `revocation_witness` frame (128 bytes) | 1 |
+| `silent_witness_aggregator` | 1 |
+| `selective_disclosure` (carried in the frame) | 1 |
+
+The wasm build's framable window is
+`MIN_SUPPORTED_CIRCUIT_VERSION..=MAX_SUPPORTED_CIRCUIT_VERSION` (currently
+`1..=2`). An admin may narrow the window for the active verifier:
+
+```text
+set_verifier_circuit_versions(admin, min_version, max_version) -> ()
+get_verifier_circuit_versions() -> VerifierCircuitVersions
+is_supported_circuit_version(version) -> bool
+```
+
+The window defaults to the full built-in range when unset, so pre-#343
+deployments keep accepting the same proofs. `set_verifier` and verifier rotation
+clear the window; a newly configured verifier must declare its own.
+
+Version numbers only are emitted (`verif`/`versions`); no witness, public input,
+or proof material is ever logged.

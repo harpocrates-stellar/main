@@ -88,33 +88,39 @@ fn slot(env: &Env, domain: u8, index: u8) -> BytesN<32> {
     BytesN::from_array(env, &buf)
 }
 
-/// Build a minimal valid 128-byte silent-witness public-input frame.
+/// Build a minimal valid 160-byte silent-witness public-input frame.
 ///
-/// Layout (four 32-byte BN254 field elements):
+/// Layout (five 32-byte BN254 field elements):
 ///   [  0.. 32)  video_hash_hi  (16-byte zero pad + high 16 bytes of video_hash)
 ///   [ 32.. 64)  video_hash_lo  (16-byte zero pad + low  16 bytes of video_hash)
 ///   [ 64.. 96)  credential_root
 ///   [ 96..128)  nullifier
+///   [128..160)  domain_tag
 ///
-/// Only the lower 16 bytes of each video-hash half carry non-zero data.
-/// The credential_root and nullifier must be non-zero and below the BN254
-/// modulus; using small synthetic values satisfies both.
+/// Only the lower 16 bytes of each video-hash half carry non-zero data. The
+/// `video_hash` must match the value passed to the registration call.
 #[cfg(test)]
-fn silent_pi(env: &Env, credential_root: &BytesN<32>, nullifier: &BytesN<32>) -> Bytes {
-    let mut buf = [0u8; 128];
-    // video_hash_hi: 16 zero bytes of padding then the first 16 bytes of a
-    // fixed synthetic video hash.
-    buf[16..32].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                   0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10]);
+fn silent_pi(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    domain_tag: &BytesN<32>,
+) -> Bytes {
+    let mut buf = [0u8; 160];
+    let mut vh = [0u8; 32];
+    video_hash.copy_into_slice(&mut vh);
+    // video_hash_hi: 16 zero bytes of padding then the first 16 bytes.
+    buf[16..32].copy_from_slice(&vh[..16]);
     // video_hash_lo: 16 zero bytes of padding then the last 16 bytes.
-    buf[48..64].copy_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-                                   0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20]);
+    buf[48..64].copy_from_slice(&vh[16..]);
     let mut cr = [0u8; 32];
     credential_root.copy_into_slice(&mut cr);
     buf[64..96].copy_from_slice(&cr);
     let mut nu = [0u8; 32];
     nullifier.copy_into_slice(&mut nu);
     buf[96..128].copy_from_slice(&nu);
+    buf[128..160].copy_from_slice(&domain_tag.to_array());
     Bytes::from_array(env, &buf)
 }
 
@@ -140,7 +146,9 @@ impl MockDeploymentVerifier {
     /// live circuit; it panics on obviously malformed inputs so the
     /// contract's pre-verifier validation is still exercised.
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if (public_inputs.len() != 128 && public_inputs.len() != 160 && public_inputs.len() != 224)
+            || proof.is_empty()
+        {
             panic!("mock verifier: invalid inputs");
         }
     }
@@ -272,11 +280,12 @@ fn deployment_fixture_schema_version_is_v1() {
     let client = f.client();
     // upgrade_storage with the same version must not emit an event and
     // must leave the verifier record untouched (idempotency).
-    let events_before = f.env.events().all().events().len();
+    // `env.events().all()` only exposes the most recent invocation's events, so
+    // assert directly that the upgrade call itself emitted none.
     client.upgrade_storage(&f.admin);
-    let events_after = f.env.events().all().events().len();
     assert_eq!(
-        events_before, events_after,
+        f.env.events().all().events().len(),
+        0,
         "upgrade_storage must be a no-op when already at current version"
     );
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
@@ -319,7 +328,13 @@ fn deployment_fixture_all_tiers_register_successfully() {
         &av_video,
         &av_meta,
         &av_proof_id,
-        &silent_pi(&f.env, &f.credential_root, &av_nullifier),
+        &silent_pi(
+            &f.env,
+            &av_video,
+            &f.credential_root,
+            &av_nullifier,
+            &expected_domain_tag(&f.env),
+        ),
         &proof_buf(&f.env),
     );
     assert_eq!(av_rec.tier, TIER_SILENT_WITNESS);
@@ -436,7 +451,13 @@ fn deployment_fixture_single_registration_within_budget() {
         &slot(&f.env, domains::VIDEO,    0x20),
         &slot(&f.env, domains::METADATA, 0x20),
         &proof_id,
-        &silent_pi(&f.env, &f.credential_root, &nullifier),
+        &silent_pi(
+            &f.env,
+            &slot(&f.env, domains::VIDEO, 0x20),
+            &f.credential_root,
+            &nullifier,
+            &expected_domain_tag(&f.env),
+        ),
         &proof_buf(&f.env),
     );
 
@@ -486,7 +507,13 @@ fn deployment_fixture_dirty_padding_rejected() {
 fn deployment_fixture_zero_nullifier_rejected() {
     let f = DeploymentFixture::new();
     let nullifier_zero = slot(&f.env, 0x00, 0x00); // all-zero
-    let pi = silent_pi(&f.env, &f.credential_root, &nullifier_zero);
+    let pi = silent_pi(
+        &f.env,
+        &slot(&f.env, domains::VIDEO, 0x01),
+        &f.credential_root,
+        &nullifier_zero,
+        &BytesN::from_array(&f.env, &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE),
+    );
     let code = f.client().classify_public_inputs(
         &SCHEMA_ID_SILENT_WITNESS,
         &pi,
@@ -498,12 +525,21 @@ fn deployment_fixture_zero_nullifier_rejected() {
 #[test]
 fn deployment_fixture_valid_public_inputs_accepted() {
     let f = DeploymentFixture::new();
-    let nullifier = slot(&f.env, domains::NULLIFIER, 0x30);
-    let pi = silent_pi(&f.env, &f.credential_root, &nullifier);
+    // Codec acceptance requires canonical (sub-modulus) field elements and the
+    // codec's own silent-witness domain tag.
+    let nullifier = BytesN::from_array(&f.env, &[0x0B; 32]);
+    let credential_root = BytesN::from_array(&f.env, &[0x0C; 32]);
+    let pi = silent_pi(
+        &f.env,
+        &slot(&f.env, domains::VIDEO, 0x30),
+        &credential_root,
+        &nullifier,
+        &BytesN::from_array(&f.env, &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE),
+    );
     let code = f.client().classify_public_inputs(
         &SCHEMA_ID_SILENT_WITNESS,
         &pi,
-        &(proof_buf(&f.env).len()),
+        &verifier_inputs::MIN_PROOF_BYTES,
     );
     assert_eq!(code, verifier_inputs::ACCEPTED_CODE);
 }

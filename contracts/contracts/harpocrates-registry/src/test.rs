@@ -14,7 +14,7 @@ struct MockNoirVerifier;
 impl MockNoirVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if (len != 128 && len != 160 && len != 224) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -26,7 +26,9 @@ struct MockNoirVerifierV2;
 #[contractimpl]
 impl MockNoirVerifierV2 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if (public_inputs.len() != 128 && public_inputs.len() != 160 && public_inputs.len() != 224)
+            || proof.is_empty()
+        {
             panic!("invalid proof");
         }
     }
@@ -297,7 +299,7 @@ fn verifier_rotation_activates_only_after_overlap_window() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #15)")]
+#[should_panic(expected = "Error(Contract, #41)")] // RotationNotReady
 fn verifier_rotation_cannot_activate_before_activation_ledger() {
     let env = Env::default();
     env.mock_all_auths();
@@ -317,7 +319,7 @@ fn verifier_rotation_cannot_activate_before_activation_ledger() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #16)")]
+#[should_panic(expected = "Error(Contract, #42)")] // RotationWindowClosed
 fn verifier_rotation_is_rejected_after_rollback_window_closes() {
     let env = Env::default();
     env.mock_all_auths();
@@ -362,7 +364,13 @@ fn verifier_rotation_supports_overlap_with_previous_verifier() {
         &bytes32(&env, 71),
         &bytes32(&env, 72),
         &bytes32(&env, 73),
-        &silent_public_inputs(&env, &bytes32(&env, 71), &bytes32(&env, 9), &bytes32(&env, 74)),
+        &silent_public_inputs(
+            &env,
+            &bytes32(&env, 71),
+            &bytes32(&env, 9),
+            &bytes32(&env, 74),
+            &expected_domain_tag_test(&env),
+        ),
         &proof_bytes(&env),
     );
 

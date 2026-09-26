@@ -28,7 +28,7 @@ use super::*;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _},
-    Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec as SorobanVec,
+    xdr::ContractEventBody, Address, Bytes, BytesN, Env, Symbol, TryFromVal,
 };
 
 #[contract]
@@ -37,7 +37,9 @@ struct MockVerifierUpgrade;
 #[contractimpl]
 impl MockVerifierUpgrade {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if (public_inputs.len() != 128 && public_inputs.len() != 160 && public_inputs.len() != 224)
+            || proof.is_empty()
+        {
             panic!("invalid proof");
         }
     }
@@ -49,17 +51,17 @@ fn b32(env: &Env, v: u8) -> BytesN<32> {
 
 fn schema_upgrade_event_count(env: &Env, contract_id: &Address) -> u32 {
     let mut count = 0u32;
-    for e in env.events().all().iter() {
-        if &e.0 != contract_id {
-            continue;
-        }
-        let topics: SorobanVec<Val> = e.1.clone();
+    for e in env.events().all().filter_by_contract(contract_id).events() {
+        let topics = match &e.body {
+            ContractEventBody::V0(v0) => &v0.topics,
+            _ => continue,
+        };
         if topics.len() < 2 {
             continue;
         }
-        let t0: Symbol = topics.get(0).unwrap().try_into_val(env).unwrap();
-        let t1: Symbol = topics.get(1).unwrap().try_into_val(env).unwrap();
-        if t0 == Symbol::new(env, "schema") && t1 == Symbol::new(env, "upgrade") {
+        let t0 = Symbol::try_from_val(env, topics.get(0).unwrap()).ok();
+        let t1 = Symbol::try_from_val(env, topics.get(1).unwrap()).ok();
+        if t0 == Some(Symbol::new(env, "schema")) && t1 == Some(Symbol::new(env, "upgrade")) {
             count = count.saturating_add(1);
         }
     }

@@ -72,7 +72,7 @@ struct MockRevocationVerifier;
 impl MockRevocationVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if (len != 128 && len != 160 && len != 224) || proof.is_empty() {
             panic!("invalid revocation proof");
         }
     }

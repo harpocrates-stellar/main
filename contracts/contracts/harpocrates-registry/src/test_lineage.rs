@@ -11,9 +11,14 @@ fn expected_parent_commitment(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> Byte
     const PREFIX: [u8; 11] = *b"harp_lin_pc";
     let mut pre_image = [0u8; 75];
     pre_image[..11].copy_from_slice(&PREFIX);
-    a.copy_into_slice(&mut pre_image[11..43]);
-    b.copy_into_slice(&mut pre_image[43..75]);
-    env.crypto().sha256(&Bytes::from_array(env, &pre_image))
+    pre_image[11..43].copy_from_slice(&a.to_array());
+    pre_image[43..75].copy_from_slice(&b.to_array());
+    env.crypto().sha256(&Bytes::from_array(env, &pre_image)).into()
+}
+
+/// Wrap a contract error the way the SDK 27 generated client reports it.
+fn contract_err(error: RegistryError) -> soroban_sdk::Error {
+    soroban_sdk::Error::from_contract_error(error as u32)
 }
 
 #[test]
@@ -40,7 +45,7 @@ fn stores_lineage_parent_commitments_for_proof_parent() {
         &manifest,
         &Symbol::new(&env, "crop"),
         &output,
-        1,
+        &1,
     );
 
     let expected = expected_parent_commitment(&env, &video, &metadata);
@@ -80,7 +85,7 @@ fn stores_commitments_for_lineage_parent_chain() {
         &mid_manifest,
         &Symbol::new(&env, "blur"),
         &mid_output,
-        1,
+        &1,
     );
 
     let child_output = bytes32(&env, 12);
@@ -90,7 +95,7 @@ fn stores_commitments_for_lineage_parent_chain() {
         &bytes32(&env, 13),
         &Symbol::new(&env, "redact"),
         &child_output,
-        2,
+        &2,
     );
 
     let expected = expected_parent_commitment(&env, &mid.manifest_digest, &mid.output_digest);
@@ -142,9 +147,9 @@ fn rejects_compose_fanout_above_limit() {
         &bytes32(&env, 6),
         &Symbol::new(&env, "compose"),
         &bytes32(&env, 7),
-        1,
+        &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::LineageFanOutExceeded)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageFanOutExceeded))));
 }
 
 #[test]
@@ -167,9 +172,9 @@ fn rejects_self_referential_lineage_cycle() {
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
         &digest,
-        1,
+        &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::LineageCycle)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageCycle))));
 }
 
 #[test]
@@ -189,9 +194,9 @@ fn rejects_empty_parents() {
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
         &bytes32(&env, 5),
-        1,
+        &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::LineageEmptyParents)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageEmptyParents))));
 }
 
 #[test]
@@ -211,9 +216,9 @@ fn rejects_unknown_parent() {
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
         &bytes32(&env, 5),
-        1,
+        &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::InvalidLineage)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::InvalidLineage))));
 }
 
 #[test]
@@ -237,9 +242,9 @@ fn rejects_revoked_parent_proof() {
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
         &bytes32(&env, 5),
-        1,
+        &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::LineageParentUnavailable)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageParentUnavailable))));
 }
 
 #[test]
@@ -262,7 +267,7 @@ fn rejects_duplicate_lineage_output() {
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
         &output,
-        1,
+        &1,
     );
 
     let result = client.try_register_lineage(
@@ -271,9 +276,9 @@ fn rejects_duplicate_lineage_output() {
         &bytes32(&env, 6),
         &Symbol::new(&env, "blur"),
         &output,
-        1,
+        &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::DuplicateLineage)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::DuplicateLineage))));
 }
 
 #[test]
@@ -296,9 +301,9 @@ fn rejects_excessive_depth() {
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
         &bytes32(&env, 5),
-        5,
+        &5,
     );
-    assert_eq!(result, Err(Ok(RegistryError::LineageTooDeep)));
+    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageTooDeep))));
 }
 
 #[test]
