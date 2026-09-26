@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "target": "wasm32v1-none",
+  "artifact": "contracts/target/{target}/release/harpocrates_registry.wasm",
+  "description": "Wasm size budget for the Harpocrates registry contract (#346). The budgets mirror the constants in contracts/contracts/harpocrates-registry/src/wasm_budget.rs; the gate in .github/workflows/contracts-ci.yml fails closed when the built artifact violates a budget or drifts more than regression_band_pct from the recorded baseline. Diagnostics carry sizes and digests only, never artifact bytes, proofs, witnesses, media, or keys.",
+  "budgets": {
+    "registry": {
+      "max_size_bytes": 128000,
+      "min_size_bytes": 10000,
+      "regression_band_pct": 15
+    }
+  },
+  "baseline": {
+    "size_bytes": null,
+    "sha256": null,
+    "recorded_at": null,
+    "note": "Populated by 'python3 devx/wasm_size_budget.py --record' after the first build. The size budget applies even before a baseline exists; the digest is a best-effort audit trail for the deployed artifact."
+  }
+}

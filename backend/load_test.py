@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -33,6 +34,29 @@ class Tier(Enum):
     SILENT = "silent"
     SOURCE = "source"
     SEAL = "seal"
+
+
+def _http_failure(response: requests.Response) -> str:
+    return f"HTTP {response.status_code}"
+
+
+def _dependency_failure(error: Exception) -> str:
+    return f"dependency_failure: {type(error).__name__}"
+
+
+def _report_base_url(value: str) -> str:
+    """Return only the configured origin; credentials, paths, and query are private."""
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        if not parsed.scheme or not host:
+            return "invalid-url"
+        if ":" in host:
+            host = f"[{host}]"
+        port = parsed.port
+        return f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
+    except ValueError:
+        return "invalid-url"
 
 
 @dataclass(frozen=True)
@@ -207,10 +231,52 @@ class LoadWorker:
             elapsed = (time.perf_counter() - start) * 1000
             if response.status_code == 200:
                 return elapsed, True, ""
-            return elapsed, False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return elapsed, False, _http_failure(response)
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
-            return elapsed, False, str(e)
+            return elapsed, False, _dependency_failure(e)
+
+    def upload_verify_operation(self) -> tuple[float, bool, str]:
+        """Upload synthetic media, extract it, and verify the embedded metadata."""
+        start = time.perf_counter()
+        try:
+            video_path = self.corpus.create_synthetic_video()
+            metadata = self.corpus.create_synthetic_metadata()
+            metadata_json = json.dumps(metadata, separators=(",", ":"))
+            base_url = self.config.base_url.rstrip("/")
+
+            with video_path.open("rb") as video:
+                uploaded = self.session.post(
+                    f"{base_url}/api/stego/embed",
+                    files={"video": ("synthetic.mp4", video, "video/mp4")},
+                    data={"metadata": metadata_json},
+                    timeout=30,
+                )
+            if uploaded.status_code != 200:
+                return (time.perf_counter() - start) * 1000, False, _http_failure(uploaded)
+            if uploaded.headers.get("Content-Type", "").split(";", 1)[0].lower() != "video/mp4":
+                return (time.perf_counter() - start) * 1000, False, "upload returned unsupported media type"
+
+            verified = self.session.post(
+                f"{base_url}/api/stego/extract",
+                files={"video": ("synthetic.mp4", uploaded.content, "video/mp4")},
+                timeout=30,
+            )
+            if verified.status_code != 200:
+                return (time.perf_counter() - start) * 1000, False, _http_failure(verified)
+            try:
+                payload = verified.json()
+            except ValueError:
+                return (time.perf_counter() - start) * 1000, False, "verification returned malformed response"
+
+            extracted = payload.get("metadata") if isinstance(payload, dict) else None
+            if not isinstance(extracted, dict):
+                return (time.perf_counter() - start) * 1000, False, "verification metadata missing"
+            if extracted.get("proofId") != metadata["proofId"] or extracted.get("synthetic") is not True:
+                return (time.perf_counter() - start) * 1000, False, "verification metadata mismatch"
+            return (time.perf_counter() - start) * 1000, True, ""
+        except Exception as exc:
+            return (time.perf_counter() - start) * 1000, False, _dependency_failure(exc)
 
     def extract_operation(self) -> tuple[float, bool, str]:
         """Run a synthetic extract operation."""
@@ -228,10 +294,10 @@ class LoadWorker:
             elapsed = (time.perf_counter() - start) * 1000
             if response.status_code == 200:
                 return elapsed, True, ""
-            return elapsed, False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return elapsed, False, _http_failure(response)
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
-            return elapsed, False, str(e)
+            return elapsed, False, _dependency_failure(e)
 
     def register_operation(self) -> tuple[float, bool, str]:
         """Run a synthetic registration operation."""
@@ -247,10 +313,10 @@ class LoadWorker:
             elapsed = (time.perf_counter() - start) * 1000
             if response.status_code == 200:
                 return elapsed, True, ""
-            return elapsed, False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return elapsed, False, _http_failure(response)
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
-            return elapsed, False, str(e)
+            return elapsed, False, _dependency_failure(e)
 
     def lookup_operation(self) -> tuple[float, bool, str]:
         """Run a synthetic lookup operation."""
@@ -265,10 +331,10 @@ class LoadWorker:
             elapsed = (time.perf_counter() - start) * 1000
             if response.status_code == 200:
                 return elapsed, True, ""
-            return elapsed, False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return elapsed, False, _http_failure(response)
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
-            return elapsed, False, str(e)
+            return elapsed, False, _dependency_failure(e)
 
     def list_operation(self) -> tuple[float, bool, str]:
         """Run a synthetic list operation."""
@@ -282,10 +348,10 @@ class LoadWorker:
             elapsed = (time.perf_counter() - start) * 1000
             if response.status_code == 200:
                 return elapsed, True, ""
-            return elapsed, False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return elapsed, False, _http_failure(response)
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
-            return elapsed, False, str(e)
+            return elapsed, False, _dependency_failure(e)
 
     def negative_test_operation(self) -> tuple[float, bool, str]:
         """Run a negative test (invalid input should fail)."""
@@ -300,10 +366,10 @@ class LoadWorker:
             # Expect 400 (bad request) for invalid hex
             if response.status_code == 400:
                 return elapsed, True, ""
-            return elapsed, True, f"Expected 400, got {response.status_code}"
+            return elapsed, False, f"expected HTTP 400, got HTTP {response.status_code}"
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
-            return elapsed, False, str(e)
+            return elapsed, False, _dependency_failure(e)
 
     def close(self) -> None:
         self.session.close()
@@ -409,6 +475,13 @@ class LoadTestRunner:
             )
             self._print_result(result)
 
+            result = self.run_operation_batch(
+                "upload_verification", workers.upload_verify_operation,
+                self.config.total_operations,
+                self.config.ramp_up_seconds,
+            )
+            self._print_result(result)
+
             # Register operations
             result = self.run_operation_batch(
                 "register", workers.register_operation,
@@ -473,6 +546,7 @@ class LoadTestRunner:
                 # Rotate through different operations
                 for op_fn in [
                     workers.embed_operation,
+                    workers.upload_verify_operation,
                     workers.register_operation,
                     workers.lookup_operation,
                     workers.list_operation,
@@ -570,7 +644,7 @@ class LoadTestRunner:
         """Generate a JSON report of all results."""
         report = {
             "config": {
-                "base_url": self.config.base_url,
+                "base_url": _report_base_url(self.config.base_url),
                 "concurrency": self.config.concurrency,
                 "total_operations": self.config.total_operations,
                 "ramp_up_seconds": self.config.ramp_up_seconds,

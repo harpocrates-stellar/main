@@ -28,7 +28,7 @@ stored or logged. Typed events emit only `(proof_id, version, metadata_hash, bou
   `save_record` stamps a **V1** envelope automatically.
 - Callers that understand V2 call `bind_metadata_envelope` after registration
   (admin, source, or issuer) to upgrade.
-- `resolve_metadata_envelope_version` returns the stored version, or `1` when a
+- `resolve_metadata_envelope_ver` returns the stored version, or `1` when a
   proof exists without a row (legacy), or `0` when the proof is unknown.
 - Downgrades and unsupported versions (`0` or `> METADATA_ENVELOPE_VERSION_MAX`)
   fail closed with `UnsupportedMetadataEnvelopeVersion` (error `#68`).
@@ -53,8 +53,8 @@ stored or logged. Typed events emit only `(proof_id, version, metadata_hash, bou
 
 - `bind_metadata_envelope(actor, proof_id, version, metadata_hash)`
 - `get_metadata_envelope(proof_id)`
-- `resolve_metadata_envelope_version(proof_id)`
-- `is_supported_metadata_envelope_version(version)`
+- `resolve_metadata_envelope_ver(proof_id)`
+- `is_supported_envelope_version(version)`
 
 ## Verification
 

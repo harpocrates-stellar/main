@@ -49,14 +49,25 @@ def _ensure_migrations_table() -> None:
         conn.commit()
 
 
-def _applied_migrations() -> set[int]:
-    """Return the set of migration IDs already recorded in the ledger."""
+def _applied_migration_records() -> dict[int, dict[str, Any]]:
+    """Return recorded ledger rows keyed by migration id.
+
+    Each row carries the ``name`` and ``checksum`` captured when the migration
+    was applied, which is what startup verification replays against the
+    in-code definitions.
+    """
     with _get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT migration_id FROM {MIGRATIONS_TABLE} ORDER BY migration_id"
+                f"SELECT migration_id, name, checksum FROM {MIGRATIONS_TABLE} "
+                "ORDER BY migration_id"
             )
-            return {row["migration_id"] for row in cur.fetchall()}
+            return {row["migration_id"]: dict(row) for row in cur.fetchall()}
+
+
+def _applied_migrations() -> set[int]:
+    """Return the set of migration IDs already recorded in the ledger."""
+    return set(_applied_migration_records())
 
 
 def _record_migration(migration_id: int, name: str, checksum: str) -> None:
@@ -78,6 +89,141 @@ def _compute_checksum(sql: str) -> str:
     """Return a SHA-256 hex digest of the canonical migration SQL."""
     import hashlib
     return hashlib.sha256(sql.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Migration checksum verification
+# ---------------------------------------------------------------------------
+#
+# The ledger records the SHA-256 digest of every migration's SQL at the moment
+# it is applied (see ``_record_migration``).  On each startup the recorded
+# digests are replayed against the in-code definitions: an applied migration
+# whose SQL changed afterwards is a trust-boundary violation, because the
+# running schema no longer provably corresponds to the evidence the ledger
+# attests to.  Verification is therefore fail-closed by default.
+#
+# Only migration ids, names, and digests are ever surfaced; SQL text is never
+# included in errors or logs, so no operational secrets, media, witness values,
+# or private keys can leak through this path.
+
+CHECKSUM_ENFORCEMENT_ENV = "MIGRATION_CHECKSUM_ENFORCEMENT"
+CHECKSUM_ENFORCEMENT_MODES = ("enforce", "warn")
+
+
+@dataclass
+class MigrationChecksumIssue:
+    """A single recorded-vs-canonical checksum discrepancy.
+
+    ``expected`` is the SHA-256 digest of the current in-code migration and
+    ``recorded`` is the digest stored in the ledger when it was applied.  Both
+    are digests only; no migration SQL is carried on the issue, so instances
+    are safe to log or expose from operational tooling.
+    """
+
+    migration_id: int
+    name: str
+    issue: str  # "checksum_mismatch" | "missing_checksum" | "unknown_migration"
+    expected: str | None
+    recorded: str | None
+
+
+class MigrationChecksumError(RuntimeError):
+    """Raised at startup when applied migrations no longer match the ledger.
+
+    The message deliberately carries only migration ids and issue kinds so that
+    no SQL, media, secrets, witness values, or private keys are exposed.
+    """
+
+    def __init__(self, issues: list[MigrationChecksumIssue]) -> None:
+        self.issues = list(issues)
+        summary = ", ".join(
+            f"{issue.issue}(migration_id={issue.migration_id})"
+            for issue in self.issues
+        )
+        super().__init__(f"migration checksum verification failed: {summary}")
+
+
+def _checksum_enforcement() -> str:
+    """Return the configured startup enforcement mode.
+
+    ``enforce`` (the default) aborts startup on any discrepancy so a drifted
+    ledger can never silently serve traffic.  ``warn`` is the break-glass
+    rollback switch for operators who need to boot while they reconcile a
+    ledger; discrepancies are still reported.  Unknown values fall back to
+    ``enforce``.
+    """
+    mode = (os.getenv(CHECKSUM_ENFORCEMENT_ENV) or "enforce").strip().lower()
+    return mode if mode in CHECKSUM_ENFORCEMENT_MODES else "enforce"
+
+
+def _verify_records(
+    records: dict[int, dict[str, Any]],
+) -> list[MigrationChecksumIssue]:
+    """Compare applied ledger rows against the current migration definitions."""
+    catalog = {migration.id: migration for migration in MIGRATIONS}
+    issues: list[MigrationChecksumIssue] = []
+
+    for migration_id in sorted(records):
+        row = records[migration_id]
+        migration = catalog.get(migration_id)
+        recorded = str(row.get("checksum") or "").strip()
+
+        if migration is None:
+            # The ledger references a migration the code no longer defines.
+            issues.append(
+                MigrationChecksumIssue(
+                    migration_id=migration_id,
+                    name=str(row.get("name") or ""),
+                    issue="unknown_migration",
+                    expected=None,
+                    recorded=recorded or None,
+                )
+            )
+            continue
+
+        expected = _compute_checksum(migration.sql)
+        if not recorded:
+            issues.append(
+                MigrationChecksumIssue(
+                    migration_id=migration_id,
+                    name=migration.name,
+                    issue="missing_checksum",
+                    expected=expected,
+                    recorded=None,
+                )
+            )
+        elif recorded != expected:
+            issues.append(
+                MigrationChecksumIssue(
+                    migration_id=migration_id,
+                    name=migration.name,
+                    issue="checksum_mismatch",
+                    expected=expected,
+                    recorded=recorded,
+                )
+            )
+
+    return issues
+
+
+def verify_migration_checksums() -> list[MigrationChecksumIssue]:
+    """Verify that every applied migration still matches its recorded checksum.
+
+    Returns an empty list when the database is unconfigured or every applied
+    migration is intact.  A non-empty list means the ledger is out of sync with
+    the code: a migration definition changed after it was applied
+    (``checksum_mismatch``), a ledger row carries no digest
+    (``missing_checksum``), or the code no longer defines an applied migration
+    (``unknown_migration``).
+
+    This never raises; startup enforcement is layered on top by
+    :func:`run_migrations`.
+    """
+    if not _database_url():
+        return []
+
+    _ensure_migrations_table()
+    return _verify_records(_applied_migration_records())
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +422,19 @@ MIGRATIONS: list[Migration] = [
 ]
 
 
-def run_migrations() -> list[dict[str, Any]]:
+def run_migrations(*, enforce_checksums: bool | None = None) -> list[dict[str, Any]]:
     """Apply all pending migrations and return a report.
 
-    Returns a list of dicts with keys ``migration_id``, ``name``, ``action``
-    (``"applied"`` or ``"skipped"`` or ``"drift"``) for each migration.
+    Returns a list of dicts with keys ``migration_id``, ``name``,
+    ``action`` (``"applied"`` or ``"skipped"``) and ``checksum_status``
+    (``"verified"`` for intact rows, otherwise the discrepancy kind reported
+    by :func:`verify_migration_checksums`).
+
+    Before applying anything, the recorded checksums of already-applied
+    migrations are replayed against the in-code definitions.  On any
+    discrepancy startup is aborted with :class:`MigrationChecksumError` unless
+    enforcement is disabled (``MIGRATION_CHECKSUM_ENFORCEMENT=warn`` or
+    ``enforce_checksums=False``); the discrepancy is reported either way.
 
     Safe to call repeatedly (every app startup).  Already-applied migrations
     are skipped automatically via the ledger table.
@@ -289,14 +443,28 @@ def run_migrations() -> list[dict[str, Any]]:
         return []
 
     _ensure_migrations_table()
-    applied = _applied_migrations()
+    records = _applied_migration_records()
+    issues = _verify_records(records)
+    issue_by_id = {issue.migration_id: issue for issue in issues}
+
+    enforce = (
+        _checksum_enforcement() == "enforce"
+        if enforce_checksums is None
+        else enforce_checksums
+    )
+    if issues and enforce:
+        raise MigrationChecksumError(issues)
+
+    applied = set(records)
     results: list[dict[str, Any]] = []
 
     for m in MIGRATIONS:
         entry = {"migration_id": m.id, "name": m.name}
 
         if m.id in applied:
+            issue = issue_by_id.get(m.id)
             entry["action"] = "skipped"
+            entry["checksum_status"] = issue.issue if issue else "verified"
             results.append(entry)
             continue
 
@@ -309,6 +477,7 @@ def run_migrations() -> list[dict[str, Any]]:
 
         _record_migration(m.id, m.name, checksum)
         entry["action"] = "applied"
+        entry["checksum_status"] = "verified"
         results.append(entry)
 
     return results

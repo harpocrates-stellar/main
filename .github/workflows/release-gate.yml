@@ -6,9 +6,12 @@ on:
       - 'release/**'
       - 'devx/**'
       - 'frontend/**'
+      - 'cli/**'
       - 'backend/**'
       - 'contracts/**'
       - 'zk/**'
+      - '.github/labels.yml'
+      - '.github/labeler.yml'
       - '.github/workflows/release-gate.yml'
   push:
     branches: [main]
@@ -16,9 +19,12 @@ on:
       - 'release/**'
       - 'devx/**'
       - 'frontend/**'
+      - 'cli/**'
       - 'backend/**'
       - 'contracts/**'
       - 'zk/**'
+      - '.github/labels.yml'
+      - '.github/labeler.yml'
 
 permissions:
   contents: read
@@ -37,6 +43,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Verify dependency pins and lockfiles
+        run: python3 devx/check_dependency_pins.py
       - name: Verify manifest and digests
         run: python3 devx/release_guard.py
       - name: Publish cross-layer compatibility report
@@ -45,5 +53,11 @@ jobs:
           python3 devx/compatibility_report.py --verify-existing --stable --check
       - name: Run threat-model checklist
         run: python3 devx/threat_model_check.py
+      - name: Validate label taxonomy
+        run: |
+          pip install pyyaml --quiet
+          python3 devx/label_config.py --check .github/labels.yml
+          python3 devx/label_config.py --check-labeler \
+            .github/labeler.yml .github/labels.yml
       - name: Exercise negative release-gate paths
         run: python3 -m unittest discover -s devx -p 'test_*.py' -v

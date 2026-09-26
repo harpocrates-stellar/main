@@ -1033,6 +1033,89 @@ body::-webkit-scrollbar-thumb:hover,
   margin: 0;
 }
 
+.chain-grid__value {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Issuer trust-state badge. Severity carries the colour; `data-state` carries
+   the exact state for tests and future per-state overrides. */
+.issuer-trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.issuer-trust-badge__icon {
+  flex: 0 0 auto;
+}
+
+.issuer-trust-badge__label {
+  white-space: nowrap;
+}
+
+.issuer-trust-badge__issuer {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+
+.issuer-trust-positive {
+  border-color: rgba(120, 230, 170, 0.35);
+  background: rgba(60, 200, 130, 0.08);
+  color: #8fe6b8;
+}
+
+.issuer-trust-neutral {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.issuer-trust-caution {
+  border-color: rgba(255, 190, 92, 0.32);
+  background: rgba(101, 54, 0, 0.28);
+  color: #ffd59a;
+}
+
+.issuer-trust-critical {
+  border-color: rgba(255, 108, 108, 0.38);
+  background: rgba(120, 20, 20, 0.28);
+  color: #ff9d9d;
+}
+
+/* Mobile: the side rail narrows to a single column, so let the badge fill the
+   cell and wrap its label instead of truncating it. */
+@media (max-width: 480px) {
+  .issuer-trust-badge {
+    width: 100%;
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
+  .issuer-trust-badge__label {
+    white-space: normal;
+  }
+}
+
 .provenance-card {
   display: grid;
   gap: 16px;

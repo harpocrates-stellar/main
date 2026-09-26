@@ -21,6 +21,44 @@ cargo test
 stellar contract build
 ```
 
+## Contract Wasm Size Budget
+
+Issue #346 adds a fail-closed size budget for the deployed registry artifact
+`harpocrates_registry.wasm` so supply-chain accidents (an unintended
+dependency, a disabled optimization, a truncated artifact) fail CI before
+they can be deployed.
+
+- Constants live in `contracts/harpocrates-registry/src/wasm_budget.rs`:
+  `MAX_WASM_SIZE_BYTES = 128_000` (just under Soroban's 128 KiB upload cap),
+  `MIN_WASM_SIZE_BYTES = 10_000`,
+  `WASM_SIZE_REGRESSION_BAND_PCT = 15`, plus a typed `WasmBudgetError`
+  contract (`ArtifactTooLarge`, `ArtifactTooSmall`, `MissingArtifact`).
+- The budget manifest is `devx/wasm_size_budget.json`; the fail-closed gate
+  is `devx/wasm_size_budget.py` and runs in the Contracts CI workflow after
+  `stellar contract build`.
+- The gate fails closed: a missing artifact, malformed manifest, size
+  outside the `[min, max]` band, or drift beyond `regression_band_pct` from
+  the recorded baseline all fail. Diagnostics carry sizes and digests only —
+  never artifact bytes, proofs, witnesses, media, or keys.
+
+```bash
+# check the built artifact against the budget
+python3 devx/wasm_size_budget.py --check
+
+# deliberately migrate the baseline after a reviewed size change
+python3 devx/wasm_size_budget.py --record
+
+cd contracts/contracts/harpocrates-registry
+make wasm-budget
+```
+
+The module is host-side only (`#[cfg(not(target_arch = "wasm32"))]`), so the
+deployed artifact stays byte-identical to the pre-budget build, and no
+exported contract function, storage key, or event schema changes. The
+recorded baseline also pins the artifact's SHA-256 digest as an audit trail
+for the deployed build. Rollback is reverting the gate step, the manifest,
+and the budget module; no on-chain repair is required.
+
 ## Identity-Tier Property Tests
 
 Issue #345 adds focused property tests for identity-tier invariants in
@@ -299,6 +337,9 @@ verify_proof(public_inputs, proof)
 ```
 
 See `VERIFIER_INTEGRATION.md` for the UltraHonk verifier deployment plan.
+
+The verifier's verdict is enforced: `verify_external_proof` returning `false`
+fails the registration with `InvalidProof` (`#7`).
 
 Current Testnet verifier:
 
