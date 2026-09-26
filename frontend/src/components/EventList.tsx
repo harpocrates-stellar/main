@@ -22,6 +22,29 @@ export function EventList({ events, onRefresh }: Props) {
               <span>{event.tx_status ?? event.tier ?? 'untiered'}</span>
               <code>{shortHash(event.video_hash ?? event.proof_id ?? '')}</code>
               {event.tx_hash ? <code>{shortHash(event.tx_hash)}</code> : null}
+              {event.time_attestation ? (
+                <details className="event-attestation">
+                  <summary>Timestamp attestation</summary>
+                  <dl>
+                    {event.time_attestation.claimedTime ? (
+                      <>
+                        <dt>Claimed</dt>
+                        <dd>{new Date(event.time_attestation.claimedTime.unixMs).toISOString()}</dd>
+                      </>
+                    ) : null}
+                    {event.time_attestation.observedTime ? (
+                      <>
+                        <dt>Observed</dt>
+                        <dd>{new Date(event.time_attestation.observedTime.unixMs).toISOString()}</dd>
+                      </>
+                    ) : null}
+                    <dt>Stellar anchors</dt>
+                    <dd>{event.time_attestation.stellarAnchors.length}</dd>
+                    <dt>RFC 3161 anchors</dt>
+                    <dd>{event.time_attestation.rfc3161Anchors.length}</dd>
+                  </dl>
+                </details>
+              ) : null}
             </div>
           ))
         )}
