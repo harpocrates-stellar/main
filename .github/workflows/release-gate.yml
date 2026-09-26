@@ -43,5 +43,7 @@ jobs:
         run: |
           python3 devx/compatibility_report.py --write --stable --check
           python3 devx/compatibility_report.py --verify-existing --stable --check
+      - name: Run threat-model checklist
+        run: python3 devx/threat_model_check.py
       - name: Exercise negative release-gate paths
         run: python3 -m unittest discover -s devx -p 'test_*.py' -v
