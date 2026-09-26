@@ -18,6 +18,28 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+## Upload and Verification Load Test
+
+With FFmpeg installed and a local testing backend running, execute a bounded
+load run from this directory:
+
+```bash
+python load_test.py --base-url http://127.0.0.1:5050 --mode load --concurrency 2 --total-ops 10 --output /tmp/harpocrates-load-report.json
+```
+
+The `upload_verification` workload sends generated synthetic video through
+`POST /api/stego/embed`, then sends the returned artifact through
+`POST /api/stego/extract` and checks that its synthetic marker and proof ID
+match. It uses no real media, credentials, proofs, or private keys. Failure
+reports contain status codes or dependency categories, never response bodies;
+the configured URL is reduced to its origin before it is written to a report.
+Run it only against a local or dedicated test backend: successful uploads may
+create ordinary synthetic proof-event records when a database is configured.
+No protocol, API schema, or database migration is introduced. Rollback is
+limited to removing the workload, its focused coverage, and this documentation;
+use normal test-data retention procedures for any synthetic events already
+created.
+
 ## Noir Developer Worker
 
 `POST /api/noir/silent-witness` generates video-specific Silent Witness proof
