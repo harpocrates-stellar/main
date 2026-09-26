@@ -294,10 +294,25 @@ pub enum ProofVerificationStatus {
     NotFound,
 }
 
+/// On-chain lineage edge for a verifiable derivative.
+///
+/// `parent_proof_ids` retain graph topology for cycle/depth checks.
+/// `parent_commitments` store domain-separated content bindings for each
+/// parent so public boundaries (events / interop) can cite parents without
+/// relying on raw proof identifiers alone. Derived as
+/// `SHA-256("harp_lin_pc" || binding_a || binding_b)` where a proof parent
+/// binds `(video_hash, metadata_hash)` and a lineage parent binds
+/// `(manifest_digest, output_digest)`.
+///
+/// Migration: additive field on new registrations. Pre-existing lineage
+/// rows (if any) lack commitments and must be re-registered after upgrade;
+/// rolling back to a pre-#332 wasm ignores the new event / getter and leaves
+/// stored records readable only by matching wasm.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineageRecord {
     pub parent_proof_ids: SorobanVec<BytesN<32>>,
+    pub parent_commitments: SorobanVec<BytesN<32>>,
     pub manifest_digest: BytesN<32>,
     pub actor: Address,
     pub operation_type: Symbol,
@@ -504,6 +519,22 @@ pub struct ProofHistoryEvent {
     pub timestamp: u64,
     pub actor: Option<Address>,
     pub reason_code: u32,
+}
+
+/// Privacy-safe lineage registration signal (#332).
+///
+/// Publishes parent *commitments* (not raw parent proof ids) so indexers and
+/// interoperable consumers can observe derivative linkage without expanding
+/// the public surface beyond opaque 32-byte digests.
+#[contractevent(topics = ["lineage", "reg"])]
+pub struct LineageRegistered {
+    #[topic]
+    pub output_digest: BytesN<32>,
+    pub manifest_digest: BytesN<32>,
+    pub actor: Address,
+    pub operation_type: Symbol,
+    pub depth: u32,
+    pub parent_commitments: SorobanVec<BytesN<32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1086,12 @@ pub enum RegistryError {
     ReporterOnCooldown = 66,
     /// The dispute is not in the state this transition requires.
     InvalidDisputeTransition = 67,
+    /// Lineage registration supplied zero parents (commitments require ≥1).
+    LineageEmptyParents = 76,
+    /// A lineage parent proof is revoked or expired and cannot anchor a derivative.
+    LineageParentUnavailable = 77,
+    /// Lineage output digest is already registered.
+    DuplicateLineage = 78,
     /// Metadata envelope version is zero or above `METADATA_ENVELOPE_VERSION_MAX` (#317).
     UnsupportedMetadataEnvelopeVersion = 68,
     /// Metadata envelope hash is zero / malformed (#317).
@@ -2524,6 +2561,14 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
     }
 
+    /// Register a verifiable derivative lineage edge and persist parent
+    /// content commitments for privacy-preserving public boundaries (#332).
+    ///
+    /// Parent commitments are derived on-chain from each parent's stored
+    /// public fields so callers cannot supply forged bindings. Failure modes
+    /// (empty parents, unknown/revoked/expired parents, cycles, depth/fan-out
+    /// overflow, duplicate output) panic with stable `RegistryError` codes and
+    /// never log media, secrets, or witness material.
     pub fn register_lineage(
         env: Env,
         actor: Address,
@@ -2536,20 +2581,58 @@ impl HarpocratesRegistry {
         actor.require_auth();
         validate_lineage(&env, &parent_proof_ids, &output_digest, depth);
 
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Lineage(output_digest.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DuplicateLineage);
+        }
+
+        let parent_commitments =
+            collect_lineage_parent_commitments(&env, &parent_proof_ids);
+
         let record = LineageRecord {
             parent_proof_ids: parent_proof_ids.clone(),
+            parent_commitments: parent_commitments.clone(),
             manifest_digest: manifest_digest.clone(),
             actor: actor.clone(),
             operation_type: operation_type.clone(),
             output_digest: output_digest.clone(),
             depth,
         };
-        env.storage().persistent().set(&DataKey::Lineage(output_digest.clone()), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Lineage(output_digest.clone()), &record);
+
+        LineageRegistered {
+            output_digest: output_digest.clone(),
+            manifest_digest: manifest_digest.clone(),
+            actor: actor.clone(),
+            operation_type: operation_type.clone(),
+            depth,
+            parent_commitments,
+        }
+        .publish(&env);
+
         record
     }
 
     pub fn get_lineage(env: Env, output_digest: BytesN<32>) -> Option<LineageRecord> {
         env.storage().persistent().get(&DataKey::Lineage(output_digest))
+    }
+
+    /// Return only the stored parent commitments for `output_digest` (#332).
+    ///
+    /// Useful for interoperable consumers that must not pull full lineage
+    /// topology (parent proof ids) across a trust boundary.
+    pub fn get_lineage_parent_commitments(
+        env: Env,
+        output_digest: BytesN<32>,
+    ) -> Option<SorobanVec<BytesN<32>>> {
+        let record: Option<LineageRecord> =
+            env.storage().persistent().get(&DataKey::Lineage(output_digest));
+        record.map(|r| r.parent_commitments)
     }
 
     // -----------------------------------------------------------------------
@@ -3577,8 +3660,9 @@ fn record_proof_history(
     .publish(env);
 }
 
-/// Validate a lineage edge set: bounded fan-out and depth, no self-reference,
-/// and every parent must already be a known proof or lineage record.
+/// Validate a lineage edge set: non-empty, bounded fan-out and depth, no
+/// self-reference, and every parent must already be a usable proof or lineage
+/// record (proofs must not be revoked/expired).
 
 fn require_supported_metadata_envelope_version(env: &Env, version: u32) {
     if version < METADATA_ENVELOPE_V1 || version > METADATA_ENVELOPE_VERSION_MAX {
@@ -3646,23 +3730,89 @@ fn validate_lineage(
     output_digest: &BytesN<32>,
     depth: u32,
 ) {
+    if parent_proof_ids.len() == 0 {
+        panic_with_error!(env, RegistryError::LineageEmptyParents);
+    }
     if parent_proof_ids.len() > MAX_LINEAGE_FANOUT as u32 {
         panic_with_error!(env, RegistryError::LineageFanOutExceeded);
     }
     if depth > MAX_LINEAGE_DEPTH {
         panic_with_error!(env, RegistryError::LineageTooDeep);
     }
+    if depth == 0 {
+        panic_with_error!(env, RegistryError::InvalidLineage);
+    }
 
     for parent in parent_proof_ids.iter() {
         if parent == *output_digest {
             panic_with_error!(env, RegistryError::LineageCycle);
         }
-        let is_known_parent = env.storage().persistent().has(&DataKey::Proof(parent.clone()))
-            || env.storage().persistent().has(&DataKey::Lineage(parent.clone()));
-        if !is_known_parent {
-            panic_with_error!(env, RegistryError::InvalidLineage);
+        if env.storage().persistent().has(&DataKey::Proof(parent.clone())) {
+            let status = HarpocratesRegistry::get_proof_status(env.clone(), parent.clone());
+            if status != ProofVerificationStatus::Valid {
+                panic_with_error!(env, RegistryError::LineageParentUnavailable);
+            }
+            continue;
         }
+        if env.storage().persistent().has(&DataKey::Lineage(parent.clone())) {
+            continue;
+        }
+        panic_with_error!(env, RegistryError::InvalidLineage);
     }
+}
+
+/// Derive the domain-separated parent content commitment (#332).
+///
+/// `SHA-256("harp_lin_pc" ‖ binding_a ‖ binding_b)` — opaque, reproducible,
+/// and free of private media / witness material.
+fn derive_lineage_parent_commitment(
+    env: &Env,
+    binding_a: &BytesN<32>,
+    binding_b: &BytesN<32>,
+) -> BytesN<32> {
+    const PREFIX: [u8; 11] = *b"harp_lin_pc";
+    let mut pre_image = [0u8; 75];
+    pre_image[..11].copy_from_slice(&PREFIX);
+    binding_a.copy_into_slice(&mut pre_image[11..43]);
+    binding_b.copy_into_slice(&mut pre_image[43..75]);
+    let pre_image_bytes = Bytes::from_array(env, &pre_image);
+    env.crypto().sha256(&pre_image_bytes)
+}
+
+/// Build the parallel parent-commitment vector for a validated parent set.
+fn collect_lineage_parent_commitments(
+    env: &Env,
+    parent_proof_ids: &SorobanVec<BytesN<32>>,
+) -> SorobanVec<BytesN<32>> {
+    let mut commitments = SorobanVec::new(env);
+    for parent in parent_proof_ids.iter() {
+        if let Some(proof) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, ProofRecord>(&DataKey::Proof(parent.clone()))
+        {
+            commitments.push_back(derive_lineage_parent_commitment(
+                env,
+                &proof.video_hash,
+                &proof.metadata_hash,
+            ));
+            continue;
+        }
+        if let Some(lineage) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, LineageRecord>(&DataKey::Lineage(parent.clone()))
+        {
+            commitments.push_back(derive_lineage_parent_commitment(
+                env,
+                &lineage.manifest_digest,
+                &lineage.output_digest,
+            ));
+            continue;
+        }
+        panic_with_error!(env, RegistryError::InvalidLineage);
+    }
+    commitments
 }
 
 /// Derive the deterministic sub-proof_id for batch element `index`.
@@ -4284,6 +4434,8 @@ mod test_schema;
 mod test_selective_disclosure;
 #[cfg(test)]
 mod test_upgrade_compat;
+#[cfg(test)]
+mod test_lineage;
 #[cfg(test)]
 mod test_metadata_envelope;
 #[cfg(test)]
