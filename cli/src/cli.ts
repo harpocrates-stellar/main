@@ -10,10 +10,18 @@ import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMeta
 import { lookupByVideoHash, verifyTransaction } from './stellar-lookup.js'
 import { createReceipt, formatReceipt, type VerificationReceipt } from './receipt.js'
 import { classifyVerification } from './normalize.js'
+import { verifyVerificationReceipt, decodeReceiptFromQr, type SignedVerificationReceipt } from './signed-receipt.js'
+import {
+  assertC2paInputWithinLimit,
+  exportC2paAssertions,
+  parseC2paReceiptInput,
+  serializeC2paExport,
+  type C2paExport,
+} from './c2pa.js'
 
 // ── CLI argument parsing ──────────────────────────────────────────────────
 
-type Command = 'verify' | 'manifest' | 'hash' | 'help'
+type Command = 'verify' | 'manifest' | 'hash' | 'verify-receipt' | 'c2pa' | 'help'
 
 function parseArgs(argv: string[]): {
   command: Command
@@ -91,6 +99,10 @@ async function main(): Promise<void> {
       return await handleManifest(flags)
     case 'hash':
       return await handleHash(flags)
+    case 'verify-receipt':
+      return await handleVerifyReceipt(flags)
+    case 'c2pa':
+      return await handleC2pa(flags)
     case 'help':
     default:
       return printHelp()
@@ -269,6 +281,105 @@ async function handleHash(flags: Record<string, string>): Promise<void> {
   }
 }
 
+async function handleVerifyReceipt(flags: Record<string, string>): Promise<void> {
+  const receiptPath = flags.receipt || flags.r
+  const keysPath = flags.keys || flags.k
+  const network = flags.network
+  const proofId = flags['proof-id'] || flags.proofId
+
+  if (!receiptPath) exit(2, '--receipt is required')
+  if (!keysPath) exit(2, '--keys is required for verification')
+
+  let receipt: SignedVerificationReceipt
+  try {
+    const raw = await readText(receiptPath)
+    if (raw.trim().startsWith('{')) {
+      receipt = JSON.parse(raw)
+    } else {
+      receipt = decodeReceiptFromQr(raw.trim())
+    }
+  } catch {
+    exit(8, 'invalid or unreadable receipt')
+  }
+
+  let keys: Record<string, JsonWebKey>
+  try {
+    const rawKeys = await readText(keysPath)
+    keys = JSON.parse(rawKeys)
+  } catch {
+    exit(8, 'invalid or unreadable keys file')
+  }
+
+  const result = await verifyVerificationReceipt(receipt, {
+    keys,
+    expectedNetworkPassphrase: network,
+    expectedProofId: proofId,
+  })
+
+  if (result.valid) {
+    if (flags.output === 'json' || flags.o === 'json') {
+      printJson({ valid: true, receipt: result.receipt })
+    } else {
+      printText(`✅ Receipt is valid. Verified at: ${result.receipt.verifiedAt}, Result: ${result.receipt.result}`)
+    }
+    exit(0)
+  } else {
+    if (flags.output === 'json' || flags.o === 'json') {
+      printJson({ valid: false, reason: result.reason })
+    } else {
+      printText(`❌ Invalid receipt: ${result.reason}`)
+    }
+    exit(8)
+  }
+}
+
+async function handleC2pa(flags: Record<string, string>): Promise<void> {
+  const inputPath = flags.manifest || flags.m
+  const receiptPath = flags.receipt || flags.r
+  const outputPath = flags.output || flags.o
+  const title = flags.title
+
+  if (!inputPath) {
+    exit(2, '--manifest is required for c2pa export')
+  }
+
+  let manifest: ReturnType<typeof parseManifest>
+  try {
+    const raw = await readText(inputPath)
+    assertC2paInputWithinLimit(raw, 'manifest')
+    manifest = parseManifest(raw)
+  } catch {
+    exit(8, 'invalid or unreadable manifest')
+  }
+
+  let receipt: VerificationReceipt | undefined
+  if (receiptPath) {
+    try {
+      const rawReceipt = await readText(receiptPath)
+      assertC2paInputWithinLimit(rawReceipt, 'receipt')
+      receipt = parseC2paReceiptInput(JSON.parse(rawReceipt))
+    } catch {
+      exit(8, 'invalid or unreadable receipt')
+    }
+  }
+
+  let exported: C2paExport
+  try {
+    exported = exportC2paAssertions(manifest, receipt, title ? { title } : undefined)
+  } catch {
+    exit(8, 'c2pa export rejected the supplied inputs')
+  }
+
+  const serialized = serializeC2paExport(exported)
+
+  if (outputPath) {
+    await writeFile(outputPath, serialized, 'utf-8')
+    printText(`C2PA assertions written to ${outputPath}`)
+  } else {
+    printText(serialized)
+  }
+}
+
 function printHelp(): void {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -277,10 +388,29 @@ Usage:
   harpocrates <command> [options]
 
 Commands:
-  verify    Verify a proof against the Stellar network.
-  manifest  Create a proof manifest from metadata.
-  hash      Compute the SHA-256 hash of a file.
-  help      Show this help message.
+  verify         Verify a proof against the Stellar network.
+  manifest       Create a proof manifest from metadata.
+  hash           Compute the SHA-256 hash of a file.
+  verify-receipt Verify an offline signed receipt.
+  c2pa           Export C2PA authenticity assertions from a proof manifest.
+  help           Show this help message.
+
+C2PA export options:
+  --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).
+  --receipt        Optional verification receipt JSON; adds a verification assertion.
+  --output, -o     File path to write the exported assertions to.
+  --title          Optional human-readable title carried by the exported claim.
+  Prerequisite: install deps and build first (cd cli && npm ci && npm run build).
+  The output is deterministic, unsigned C2PA JSON. It never contains media,
+  witnesses, secrets, proof bytes, or private keys; sign it with your own
+  C2PA tooling and key material.
+
+Verify Receipt options:
+  --receipt, -r     Path to signed receipt JSON or QR payload (use "-" for stdin).
+  --keys, -k        Path to JSON file mapping key IDs to JWKs.
+  --network         Optional expected network passphrase.
+  --proof-id        Optional expected proof ID.
+  --output, -o      Output format: "text" (default) or "json".
 
 Verify options:
   --contract-id     Contract ID on Stellar (required).

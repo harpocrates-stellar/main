@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import ipaddress
 import json
 import logging
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 
 from http_security import apply_security_headers, cors_kwargs
@@ -25,6 +26,14 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from config import load_config
+from errors import (
+    INTERNAL_ERROR,
+    NOT_FOUND,
+    PAYLOAD_TOO_LARGE,
+    RATE_LIMITED,
+    VALIDATION_ERROR,
+    error_response,
+)
 from db import (
     check_db,
     database_url,
@@ -36,6 +45,7 @@ from db import (
     insert_lineage_event,
     insert_proof_event,
     insert_proof_history_event,
+    list_lineage_events,
     list_proof_events,
     list_proof_history_events,
     make_idempotency_key,
@@ -47,17 +57,59 @@ from db import (
     cancel_job,
 )
 from idempotency import idempotent
+from lineage import (
+    LineageValidationError,
+    canonical_lineage_manifest,
+    lineage_manifest_digest,
+    validate_lineage_graph,
+)
+from storage import get_job_output_path
+from retention import init_retention_worker
 from metrics import collector as metrics_collector
 from noir import generate_silent_witness, generate_aggregated_proof
 from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
+from metadata_errors import (
+    METADATA_MALFORMED,
+    METADATA_OVERSIZED,
+    MetadataError,
+    classify_validation_error,
+    metadata_error_response,
+)
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from c2pa import (
+    C2paParseError,
+    C2paTrustStatus,
+    corroborate_binding,
+    export_c2pa_manifest,
+    parse_c2pa_manifest,
+)
 from logging_utils import log_structured, redact_sensitive
+from errors import (
+    INTERNAL_ERROR,
+    NOT_FOUND,
+    PAYLOAD_TOO_LARGE,
+    VALIDATION_ERROR,
+    error_response,
+    ok_response,
+    register_request_id_propagation,
+)
+from trace_fields import (
+    build_trace_fields,
+    format_traceparent,
+    merge_trace_into_event,
+)
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload
 from strkey import validate_source_address, validate_contract_id
+from streaming_upload import (
+    StreamingFileStorage,
+    create_streaming_file_storage,
+    hash_paths_concat,
+)
+from werkzeug.datastructures import ImmutableMultiDict
 
 # ---------------------------------------------------------------------------
 # Bounded aggregation constants
@@ -123,6 +175,8 @@ def create_app() -> Flask:
     app = Flask(__name__)
     CORS(app, **cors_kwargs(config.cors_origins))
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
+    # Propagate the request id through every response (header + JSON body).
+    register_request_id_propagation(app)
 
     # ------------------------------------------------------------------ #
     # Rate limiting                                                        #
@@ -163,10 +217,31 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+        # Privacy-safe trace fields for log correlation (no secrets/media/PII).
+        g.trace_fields = build_trace_fields(
+            request.headers,
+            request_id=g.request_id,
+            method=request.method,
+            route=request.url_rule.rule if request.url_rule else request.path,
+            path=request.path,
+        )
+        # Keep request_id aligned with normalized opaque ID from trace builder.
+        g.request_id = g.trace_fields["request_id"]
 
     @app.after_request
     def process_response(response: Response):
-        response.headers["X-Request-ID"] = request_id()
+        # X-Request-ID and the body-level request_id are applied by the
+        # request-id propagation hook registered in create_app().
+        trace = current_trace_fields()
+        if trace.get("trace_id"):
+            response.headers["X-Trace-ID"] = str(trace["trace_id"])
+        if trace.get("correlation_id"):
+            response.headers["X-Correlation-ID"] = str(trace["correlation_id"])
+        if trace.get("span_id"):
+            response.headers["X-Span-ID"] = str(trace["span_id"])
+        traceparent = format_traceparent(trace)
+        if traceparent:
+            response.headers["traceparent"] = traceparent
         apply_security_headers(
             response.headers,
             enabled=config.security_headers_enabled,
@@ -191,15 +266,18 @@ def create_app() -> Flask:
         log_structured(
             LOGGER,
             logging.INFO,
-            {
-                "event": "request",
-                "request_id": request_id(),
-                "method": request.method,
-                "route": request_route(),
-                "path": request.path,
-                "status": response.status_code,
-                "duration_ms": request_duration_ms(),
-            },
+            merge_trace_into_event(
+                {
+                    "event": "request",
+                    "request_id": request_id(),
+                    "method": request.method,
+                    "route": request_route(),
+                    "path": request.path,
+                    "status": response.status_code,
+                    "duration_ms": request_duration_ms(),
+                },
+                trace,
+            ),
         )
         return response
 
@@ -210,37 +288,41 @@ def create_app() -> Flask:
         - If REGISTER_API_KEY is not configured the endpoint is open (development
           convenience identical to the previous behaviour).
         - Otherwise the request must carry ``Authorization: Bearer <key>``.
-        - If REGISTER_API_KEY_EXPIRES is set and the current UTC time is at or
-          past that instant the key is treated as expired and the request is
-          rejected with 401.
+        - ``REGISTER_API_KEY_PREVIOUS`` can overlap the primary key during a
+          rotation.  It is accepted until its optional expiry, allowing
+          already-deployed clients to transition without downtime.
         """
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            expected_key = config.register_api_key
-            if expected_key is None:
+            if config.register_api_key is None:
                 # No key configured – allow the request (dev mode).
                 return fn(*args, **kwargs)
-
-            # Check expiry before validating the key so that an expired key
-            # is never accepted even if the token matches.
-            expires = config.register_api_key_expires
-            if expires is not None:
-                from datetime import datetime as _dt
-
-                now = _dt.now(tz=timezone.utc)
-                if now >= expires:
-                    return jsonify({"error": "API key has expired"}), 401
 
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return jsonify({"error": "Authorization header with Bearer token is required"}), 401
 
-            provided_key = auth_header[len("Bearer "):]
-            # Constant-time comparison to mitigate timing attacks.
+            provided_key = auth_header[len("Bearer "):].strip()
+            now = datetime.now(tz=timezone.utc)
+
+            # Constant-time comparison is performed for every configured key.
+            # Do not reveal whether a key is primary, previous, or expired.
             import hmac as _hmac
 
-            if not _hmac.compare_digest(provided_key, expected_key):
+            candidates = (
+                (config.register_api_key, config.register_api_key_expires),
+                (config.register_api_key_previous, config.register_api_key_previous_expires),
+            )
+            valid = False
+            for expected_key, expires in candidates:
+                matches = bool(expected_key) and _hmac.compare_digest(provided_key, expected_key)
+                if matches and (expires is None or now < expires):
+                    valid = True
+
+            if not valid:
+                if config.register_api_key_expires is not None and now >= config.register_api_key_expires:
+                    return jsonify({"error": "API key has expired"}), 401
                 return jsonify({"error": "Invalid API key"}), 401
 
             return fn(*args, **kwargs)
@@ -257,6 +339,10 @@ def create_app() -> Flask:
 
     @app.errorhandler(ValueError)
     def bad_request(error: ValueError):
+        # Metadata failures carry a canonical taxonomy code; serialize them
+        # with the shared metadata envelope so every boundary agrees.
+        if isinstance(error, MetadataError):
+            return metadata_error_response(error)
         return error_response(
             code=VALIDATION_ERROR,
             message=str(error),
@@ -271,6 +357,22 @@ def create_app() -> Flask:
             message="internal server error",
             status=500,
         )
+
+    @app.errorhandler(429)
+    def rate_limit_exceeded(_error: Exception):
+        """Stable, privacy-safe envelope for per-client throttle responses.
+
+        Flask-Limiter injects the precise ``Retry-After`` value during
+        ``after_request``; the fallback below keeps the response well formed
+        for callers that exercise the handler directly.
+        """
+        response, status = error_response(
+            code=RATE_LIMITED,
+            message="rate limit exceeded",
+            status=429,
+        )
+        response.headers.setdefault("Retry-After", "60")
+        return response, status
 
     @app.get(config.metrics_path)
     def metrics():
@@ -289,18 +391,29 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health():
+        trace = current_trace_fields()
         return jsonify(
             {
                 "ok": True,
                 "service": "harpocrates-stego",
                 "release_id": config.release_id,
                 "network": config.release_network,
+                "request_id": request_id(),
+                "trace_id": trace.get("trace_id"),
+                "correlation_id": trace.get("correlation_id"),
             }
         )
 
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
+        for dependency in readiness_manager.deps:
+            metrics_collector.record_dependency_status(
+                dependency.name,
+                status.get(dependency.name, "unknown"),
+                dependency.critical,
+            )
+        trace = current_trace_fields()
         return jsonify(
             {
                 "ok": status["ok"],
@@ -310,35 +423,54 @@ def create_app() -> Flask:
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
                 "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
                 "max_aggregation_size": MAX_AGGREGATION_SIZE,
+                "request_id": request_id(),
+                "trace_id": trace.get("trace_id"),
+                "correlation_id": trace.get("correlation_id"),
             }
         ), 200 if status["ok"] else 503
 
     def _enforce_video_size(video) -> bool:
+        # StreamingFileStorage enforces the limit mid-stream during save();
+        # avoid seek() which can force whole-body buffering on the WSGI input.
+        if isinstance(video, StreamingFileStorage):
+            if video.bytes_written > 0:
+                return video.bytes_written <= config.max_video_bytes
+            if request.content_length is not None:
+                # Content-Length includes multipart overhead; still a useful gate.
+                return request.content_length <= config.max_content_length
+            return True
         video.seek(0, 2)
         size = video.tell()
         video.seek(0)
         return size <= config.max_video_bytes
 
     def _enable_streaming_for_large_uploads():
-        """Replace large file uploads with streaming versions."""
-        upload_max_bytes = getattr(config, "upload_max_bytes", config.max_video_bytes)
-        if request.content_length and request.content_length > upload_max_bytes:
-            # Store config for streaming file creation
-            g.upload_config = config
-            
-            # Replace file uploads with streaming versions
-            new_files = {}
-            for field_name, field_storage in request.files.items():
-                new_files[field_name] = create_streaming_file_storage(field_storage)
-            
-            # Replace the files in the request
-            request.files = type(request.files)(new_files)
+        """Wrap large multipart uploads with bounded-chunk stream hashing."""
+        threshold = getattr(
+            config, "upload_stream_threshold_bytes", 1_048_576
+        )
+        if not request.content_length or request.content_length <= threshold:
+            return
+        if not request.files:
+            return
+
+        g.upload_config = config
+        # Access files first so the cached_property is populated, then replace.
+        current = request.files
+        new_items = []
+        for field_name, field_storage in current.items(multi=True):
+            new_items.append(
+                (field_name, create_streaming_file_storage(field_storage))
+            )
+        # Shadow the cached_property with stream-hashing wrappers.
+        request.__dict__["files"] = ImmutableMultiDict(new_items)
 
     def _enforce_json_size() -> int:
         raw = request.get_data()
         return len(raw) if raw else 0
 
     @app.post("/api/stego/embed")
+    @limiter.limit(config.ratelimit_embed)
     @require_capacity(admission_controller)
     @idempotent("embed")
     def embed():
@@ -353,24 +485,22 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
-            return jsonify({"error": "metadata is too large"}), 413
+            return metadata_error_response(
+                MetadataError(METADATA_OVERSIZED, "metadata is too large")
+            )
 
         try:
             metadata = json.loads(metadata_raw)
         except json.JSONDecodeError:
-            return error_response(
-                code=VALIDATION_ERROR,
-                message="metadata must be valid JSON",
-                status=400,
+            return metadata_error_response(
+                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
             )
         try:
             validate_embed_metadata(metadata)
+        except MetadataError as exc:
+            return metadata_error_response(exc)
         except ValueError as exc:
-            return error_response(
-                code=VALIDATION_ERROR,
-                message=str(exc),
-                status=400,
-            )
+            return metadata_error_response(classify_validation_error(exc))
 
         try:
             quarantine_context = isolate_upload(
@@ -423,6 +553,7 @@ def create_app() -> Flask:
         return response
 
     @app.post("/api/stego/upload-session")
+    @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
@@ -430,6 +561,7 @@ def create_app() -> Flask:
         return jsonify({"sessionId": session_id})
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
+    @limiter.limit(config.ratelimit_upload_chunk)
     def upload_chunk(session_id: str, chunk_index: int):
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
@@ -438,12 +570,25 @@ def create_app() -> Flask:
         chunk = request.files.get("chunk")
         if chunk is None:
             return jsonify({"error": "chunk is required"}), 400
-            
+        if chunk_index < 0:
+            return jsonify({"error": "chunk_index must be non-negative"}), 400
+
+        # Persist each session chunk with bounded-chunk hashing for integrity.
+        g.upload_config = config
+        streaming_chunk = create_streaming_file_storage(chunk)
         chunk_path = session_dir / f"chunk-{chunk_index}"
-        chunk.save(chunk_path)
-        return jsonify({"ok": True})
+        try:
+            streaming_chunk.save(str(chunk_path))
+        except RequestEntityTooLarge:
+            return jsonify({"error": "chunk exceeds size limit"}), 413
+        return jsonify({
+            "ok": True,
+            "bytes": streaming_chunk.bytes_written,
+            "sha256": streaming_chunk.computed_hash,
+        })
 
     @app.post("/api/stego/upload-session/<session_id>/commit")
+    @limiter.limit(config.ratelimit_upload_session)
     @require_capacity(admission_controller)
     def commit_upload_session(session_id: str):
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
@@ -457,26 +602,36 @@ def create_app() -> Flask:
         try:
             metadata = json.loads(metadata_raw)
         except json.JSONDecodeError:
-            return jsonify({"error": "metadata must be valid JSON"}), 400
+            return metadata_error_response(
+                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+            )
         try:
             validate_embed_metadata(metadata)
+        except MetadataError as exc:
+            return metadata_error_response(exc)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return metadata_error_response(classify_validation_error(exc))
 
         combined_path = session_dir / "combined.video"
-        chunk_files = sorted([f for f in session_dir.iterdir() if f.name.startswith("chunk-")], 
-                             key=lambda f: int(f.name.split("-")[1]))
-        
-        with open(combined_path, "wb") as combined_file:
-            for chunk_file in chunk_files:
-                with open(chunk_file, "rb") as cf:
-                    combined_file.write(cf.read())
+        chunk_files = sorted(
+            [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
+            key=lambda f: int(f.name.split("-")[1]),
+        )
+        if not chunk_files:
+            return jsonify({"error": "session has no chunks"}), 400
+
+        # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
+        source_hash, _written = hash_paths_concat(
+            chunk_files,
+            combined_path,
+            chunk_size=getattr(config, "upload_chunk_bytes", None),
+            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+        )
 
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
             output_path = Path(tmp_dir) / "embedded.mp4"
             embed_metadata(combined_path, output_path, metadata)
             output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(combined_path)
             embedded_hash = sha256_file(output_path)
             metadata_hash = canonical_metadata_hash(metadata)
 
@@ -518,92 +673,8 @@ def create_app() -> Flask:
 
         return response
 
-    @app.post("/api/stego/upload-session")
-    def create_upload_session():
-        session_id = str(uuid.uuid4())
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        return jsonify({"sessionId": session_id})
-
-    @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
-    def upload_chunk(session_id: str, chunk_index: int):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        if not session_dir.exists():
-            return jsonify({"error": "session not found"}), 404
-        
-        chunk = request.files.get("chunk")
-        if chunk is None:
-            return jsonify({"error": "chunk is required"}), 400
-            
-        chunk_path = session_dir / f"chunk-{chunk_index}"
-        chunk.save(chunk_path)
-        return jsonify({"ok": True})
-
-    @app.post("/api/stego/upload-session/<session_id>/commit")
-    @require_capacity(admission_controller)
-    def commit_upload_session(session_id: str):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        if not session_dir.exists():
-            return jsonify({"error": "session not found"}), 404
-
-        metadata_raw = request.form.get("metadata")
-        if metadata_raw is None:
-            return jsonify({"error": "metadata is required"}), 400
-
-        try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return jsonify({"error": "metadata must be valid JSON"}), 400
-        try:
-            validate_embed_metadata(metadata)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-        combined_path = session_dir / "combined.video"
-        chunk_files = sorted([f for f in session_dir.iterdir() if f.name.startswith("chunk-")], 
-                             key=lambda f: int(f.name.split("-")[1]))
-        
-        with open(combined_path, "wb") as combined_file:
-            for chunk_file in chunk_files:
-                with open(chunk_file, "rb") as cf:
-                    combined_file.write(cf.read())
-
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            embed_metadata(combined_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(combined_path)
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
-
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=safe_filename(metadata.get("fileName", "unknown.mp4")),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
-
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-
-        import shutil
-        shutil.rmtree(session_dir, ignore_errors=True)
-
-        return response
-
     @app.post("/api/stego/extract")
+    @limiter.limit(config.ratelimit_extract)
     @require_capacity(admission_controller)
     @idempotent("extract")
     def extract():
@@ -773,6 +844,8 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "manifestDigest": manifest_digest, "db_event": db_event})
 
     @app.post("/api/proofs/register")
+    @limiter.limit(config.ratelimit_register)
+    @require_register_auth
     @idempotent("register")
     def register_proof_event():
         if _enforce_json_size() > config.max_json_bytes:
@@ -1076,6 +1149,7 @@ def create_app() -> Flask:
         return ok_response({"db_event": db_event})
 
     @app.post("/api/noir/silent-witness")
+    @limiter.limit(config.ratelimit_silent_witness)
     @require_capacity(admission_controller)
     @idempotent("silent-witness")
     def silent_witness_proof():
@@ -1297,6 +1371,242 @@ def create_app() -> Flask:
             "note": "On-chain verification must be performed via verify_selective_disclosure on the registry contract.",
         })
 
+    # -----------------------------------------------------------------------
+    # C2PA interoperability
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/c2pa/export")
+    def c2pa_export():
+        """
+        Export a C2PA-compatible authenticity manifest from Harpocrates evidence
+        digests.
+
+        Request body (JSON):
+            video_hash    string  32-byte hex (embedded video hash registered on-chain)
+            metadata_hash string  32-byte hex
+            proof_id      string  32-byte hex
+            tier          string  'silent' | 'source' | 'seal'
+            network       string  Stellar network passphrase
+            contract_id   string  Soroban registry contract ID
+            claim_generator string  Optional override for the C2PA claim_generator field
+
+        Response body (JSON):
+            ok            bool    true
+            manifest      object  Serialisable C2PA-compatible manifest
+            digest        string  SHA-256 of the canonical JSON (for round-trip checks)
+            trust_status  string  Always 'signature_not_checked' — C2PA trust is
+                                  independent of on-chain / ZK status
+
+        The C2PA trust status is explicitly separate from Harpocrates on-chain or
+        ZK verification status.  Callers MUST NOT treat the exported manifest as
+        a Harpocrates proof or an on-chain confirmation.
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        required_fields = ("video_hash", "metadata_hash", "proof_id", "tier", "network", "contract_id")
+        for field_name in required_fields:
+            if field_name not in body:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=f"missing required field: {field_name}",
+                    status=400,
+                )
+
+        try:
+            exported = export_c2pa_manifest(
+                video_hash=body["video_hash"],
+                metadata_hash=body["metadata_hash"],
+                proof_id=body["proof_id"],
+                tier=body["tier"],
+                network=body["network"],
+                contract_id=body["contract_id"],
+                claim_generator=body.get("claim_generator"),
+            )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response({
+            "manifest": exported.manifest,
+            "digest": exported.digest,
+            # Explicit trust separation: C2PA export never implies on-chain status.
+            "trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
+            "note": (
+                "C2PA trust status is independent of Harpocrates on-chain and ZK "
+                "verification. Do not treat this manifest as a Harpocrates proof."
+            ),
+        })
+
+    @app.post("/api/c2pa/import")
+    def c2pa_import():
+        """
+        Parse, validate, and corroborate a C2PA-compatible authenticity manifest.
+
+        Request body (JSON):
+            manifest  string | object  Raw manifest (JSON string or pre-parsed object)
+            expected  object           Optional hashes the caller claims, compared
+                                       against the binding embedded in the manifest.
+                                       Keys: video_hash, metadata_hash, proof_id,
+                                       tier, network, contract_id
+
+        Response body (JSON):
+            ok              bool    true
+            binding         object  Extracted Harpocrates binding fields
+            trust_status    string  'signature_not_checked' — always; see note
+            hashes_verified bool    true only when *expected* was supplied and every
+                                    supplied field matched the embedded binding
+            hashes_compared list    Field names actually compared ([] when no
+                                    *expected* was supplied)
+            unknown_assertions  list  Assertions not recognised by this version
+                                      (unsupported_semantics: true)
+            note            string  Trust model clarification
+
+        The binding is embedded twice (named assertion and top-level object); a
+        manifest whose two copies disagree is rejected rather than resolved in
+        favour of one of them.  When *expected* is supplied, a submitted value
+        that disagrees with the embedded binding is rejected with
+        VALIDATION_ERROR carrying the offending field *name* only.
+
+        The trust_status is always 'signature_not_checked'.  C2PA signature
+        verification is out of scope, and a matching *expected* block is
+        integrity corroboration only — never an on-chain or ZK verification.
+        The extracted binding must still be corroborated against on-chain
+        records before any trust decision is made.
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        # Accept either a pre-parsed object or a raw JSON string.
+        if isinstance(manifest_raw, dict):
+            try:
+                import json as _json
+                manifest_bytes = _json.dumps(manifest_raw, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="manifest object could not be serialised",
+                    status=400,
+                )
+        elif isinstance(manifest_raw, str):
+            manifest_bytes = manifest_raw.encode("utf-8")
+        else:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            parsed = parse_c2pa_manifest(manifest_bytes)
+        except C2paParseError as exc:
+            # Privacy-safe: only the reason code and optional field name are returned.
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        binding = parsed.binding
+
+        # Submitted-vs-embedded verification. When the caller states which
+        # evidence it is asking about, the manifest's embedded binding must
+        # describe that same evidence; otherwise a validly-exported manifest for
+        # a different video would be accepted here.
+        expected = body.get("expected")
+        if expected is not None and not isinstance(expected, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="expected must be a JSON object of submitted hashes",
+                status=400,
+            )
+
+        corroboration = None
+        if expected is not None:
+            try:
+                corroboration = corroborate_binding(
+                    parsed,
+                    video_hash=expected.get("video_hash"),
+                    metadata_hash=expected.get("metadata_hash"),
+                    proof_id=expected.get("proof_id"),
+                    tier=expected.get("tier"),
+                    network=expected.get("network"),
+                    contract_id=expected.get("contract_id"),
+                )
+            except ValueError as exc:
+                # _validate_hex32/field checks emit the field name and static
+                # text only — never a submitted value.
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+
+            if not corroboration.ok:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=(
+                        "submitted hashes do not match the embedded C2PA binding: "
+                        + ", ".join(corroboration.mismatches)
+                    ),
+                    status=400,
+                    field=corroboration.mismatches[0],
+                )
+
+        unknown = [
+            {
+                "label": ua.label,
+                "unsupported_semantics": ua.unsupported_semantics,
+            }
+            for ua in parsed.unknown_assertions
+        ]
+
+        return ok_response({
+            "binding": {
+                "mapping_version": binding.mapping_version,
+                "video_hash": binding.video_hash,
+                "metadata_hash": binding.metadata_hash,
+                "proof_id": binding.proof_id,
+                "tier": binding.tier,
+                "network": binding.network,
+                "contract_id": binding.contract_id,
+            },
+            "trust_status": parsed.trust_status.value,
+            # True only when the caller supplied hashes AND all of them matched.
+            "hashes_verified": bool(corroboration is not None and corroboration.ok),
+            "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
+            "unknown_assertions": unknown,
+            "note": (
+                "C2PA trust status is independent of Harpocrates on-chain and ZK "
+                "verification. A matching 'expected' block is integrity "
+                "corroboration only. Corroborate this binding against on-chain "
+                "records before making any trust decision."
+            ),
+        })
+
     return app
 
 
@@ -1319,15 +1629,31 @@ def log_error_response(status: int) -> None:
     log_structured(
         LOGGER,
         logging.ERROR,
-        {
-            "event": "error",
-            "request_id": request_id(),
-            "method": request.method,
-            "route": request_route(),
-            "path": request.path,
-            "status": status,
-            "duration_ms": request_duration_ms(),
-        },
+        merge_trace_into_event(
+            {
+                "event": "error",
+                "request_id": request_id(),
+                "method": request.method,
+                "route": request_route(),
+                "path": request.path,
+                "status": status,
+                "duration_ms": request_duration_ms(),
+            },
+            current_trace_fields(),
+        ),
+    )
+
+
+def current_trace_fields() -> dict:
+    fields = getattr(g, "trace_fields", None)
+    if isinstance(fields, dict):
+        return fields
+    return build_trace_fields(
+        getattr(request, "headers", None),
+        request_id=request_id(),
+        method=getattr(request, "method", None),
+        route=request_route() if request else None,
+        path=getattr(request, "path", None),
     )
 
 

@@ -42,3 +42,16 @@ assert.match(
 )
 
 console.log(`browser support matrix OK: ${browserSupportMatrix.length} rows, ${browserBuildTargets.length} build targets`)
+
+
+// Proof-worker boundary: module Web Workers must remain in the capability floor
+// so multi-browser Silent Witness proving stays off the main thread.
+assert.ok(
+  requiredBrowserCapabilities.includes('module Web Workers'),
+  'requiredBrowserCapabilities must include module Web Workers for proof-worker support',
+)
+assert.ok(
+  requiredBrowserCapabilities.includes('WebAssembly'),
+  'requiredBrowserCapabilities must include WebAssembly for proof-worker support',
+)
+

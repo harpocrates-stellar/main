@@ -37,6 +37,36 @@ Key properties:
 Helper circuit that derives batch public inputs (`credential_root` and
 `nullifier` for each element) from private secrets and video hashes.
 
+
+### `revocation_witness`
+
+Non-membership circuit for the published revocation Merkle tree. Proves a
+`credential_root` is **not** among the private leaves while binding the public
+`revocation_root`, `nullifier`, and domain separator.
+
+Key properties:
+
+- **MAX_REVOCATION_WITNESS_DEPTH = 3**: fixed upper bound (`MAX_REVOCATION_LEAVES = 8`).
+  Enforced at circuit structure and mirrored in the registry / verifier codec /
+  `zk/tools/revocation_depth.py`. Depth changes require a new circuit version.
+- **Private leaves**: the verifier learns only the root, not which credentials
+  are revoked.
+- **Domain binding**: `HARPOCRATES_REVOCATION_V1` prevents cross-version replay.
+
+### `revocation_witness_helper`
+
+Helper circuit that derives `credential_root` / `nullifier` and Merkle root
+parameters for the depth-bounded revocation tree (same MAX constants).
+
+### `selective_disclosure`
+
+Attribute-selective circuit behind `frontend/src/selectiveDisclosure.ts`
+(`/noir/selective_disclosure.json`) and the registry's
+`verify_selective_disclosure`. Bounded at **MAX_ATTRIBUTES = 16** with predicate
+types restricted to eq / set-membership / range, and bound to
+`CURRENT_CIRCUIT_VERSION` so a proof from another circuit version cannot be
+replayed against the registry.
+
 ## Tooling
 
 Noir's official installation path uses `noirup`/`nargo`. Barretenberg (`bb`) is the proving backend. On Windows, the official Noir docs recommend using WSL for the full toolchain.
@@ -62,8 +92,17 @@ The double-build reproducibility check is:
 ```bash
 zk/noir/scripts/reproducible-build.sh          # build twice, compare, write manifest
 zk/noir/scripts/reproducible-build.sh --verify # build once, compare to the committed manifest
+zk/noir/scripts/reproducible-build.sh --check-coverage  # every circuit pinned? (no toolchain needed)
+python zk/tools/artifact_manifest.py check-coverage     # same gate, tool only
 python -m pytest zk/tools -q                   # tooling unit tests, no toolchain needed
 ```
+
+`--check-coverage` fails when a package under `zk/noir/` is not declared in the
+lock file, or when a declared circuit has no package. A circuit that is neither
+built nor digested is an unpinned second truth at a public boundary — that is how
+`selective_disclosure` reached the browser and the registry verifier while sitting
+outside this pipeline. Adding a circuit means updating `zk/toolchain.lock.json`
+*and* `CIRCUITS` in the build script; the gate fails until both agree.
 
 See [docs/zk-reproducible-builds.md](../../docs/zk-reproducible-builds.md).
 

@@ -70,13 +70,16 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --requirement requirements.txt
-          .venv/bin/python -m pip install pytest
+          .venv/bin/python -m pip install pytest pytest-cov
 
       - name: Run backend tests
         run: |
           set -o pipefail
           .venv/bin/python -m unittest discover -v 2>&1 | tee backend-test.log
-          .venv/bin/python -m pytest -v 2>&1 | tee -a backend-test.log
+          .venv/bin/python -m pytest -v --cov=. --cov-report=json:coverage.json 2>&1 | tee -a backend-test.log
+
+      - name: Check backend coverage thresholds
+        run: python3 ../devx/coverage/check_coverage.py --workspace backend --report coverage.json
 
       - name: Upload test failure log
         if: failure()

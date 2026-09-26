@@ -21,6 +21,34 @@ cargo test
 stellar contract build
 ```
 
+## Identity-Tier Property Tests
+
+Issue #345 adds focused property tests for identity-tier invariants in
+`contracts/harpocrates-registry/src/test_identity_tier_properties.rs`.
+
+The harness uses a deterministic LCG over reproducible seeds to generate
+registration sequences across Silent Witness (tier 1), Consistent Source
+(tier 2), and Public Seal (tier 3). After every step it checks:
+
+- tier-shaped privacy fields (no source/issuer on tier 1; nullifier only on tier 1)
+- global uniqueness of `proof_id` and `video_hash` across tiers
+- nullifier uniqueness for Silent Witness registrations
+- pause-domain isolation (pausing one tier never blocks the others)
+- lookup consistency (`get_proof` / `get_by_video`)
+- rejected duplicates leave prior storage unchanged
+
+Failure messages report only seeds, tier tags, slot indices, and error codes —
+never proof bytes, public inputs, witnesses, or media.
+
+Run focused:
+
+```
+cargo test -p harpocrates-registry identity_tier -- --nocapture
+```
+
+This change is test-only. It does not alter exported contract entry points,
+storage keys, or on-chain migration behavior.
+
 ## Registry State-Machine Fuzzing
 
 Issue #93 adds deterministic state-machine fuzzing for the registry contract in
@@ -308,6 +336,11 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["verif", "activate"]             => active_verifier, previous_verifier, rollback_window_end
 ["verif", "rollback"]             => active_verifier, previous_verifier
 ```
+
+For every successful proof registration, `proof/reg` is emitted before the
+corresponding `proof/history` event. Batch registration emits that same pair
+for each derived proof in input order. Rejected registrations emit neither
+event, so indexers can treat the ordered pair as the registration boundary.
 
 ## Lifecycle History (#90)
 

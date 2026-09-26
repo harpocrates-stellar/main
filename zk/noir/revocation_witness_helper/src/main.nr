@@ -1,3 +1,14 @@
+// =============================================================================
+// Revocation Witness Helper — field derivation + Merkle helpers
+//
+// Depth bound (#357): helpers assume MAX_REVOCATION_WITNESS_DEPTH = 3
+// (MAX_REVOCATION_LEAVES = 8).  Host tooling must reject depth > 3 before
+// building Prover.toml inputs for the main circuit.
+// =============================================================================
+
+global MAX_REVOCATION_WITNESS_DEPTH: Field = 3;
+global MAX_REVOCATION_LEAVES: Field = 8;
+
 fn main(
     credential_secret: Field,
     nullifier_secret: Field,
@@ -22,7 +33,8 @@ fn test_domain_separator() -> Field {
     std::hash::pedersen_hash([0x484152504f4352415445535f5245564f434154494f4e5f5631, 0, 0])
 }
 
-/// Compute the Merkle root for 8 leaves (depth 3, Pedersen).
+/// Compute the Merkle root for MAX_REVOCATION_LEAVES (= 8) leaves
+/// at MAX_REVOCATION_WITNESS_DEPTH (= 3), Pedersen.
 fn compute_merkle_root(
     l0: Field, l1: Field, l2: Field, l3: Field,
     l4: Field, l5: Field, l6: Field, l7: Field,
@@ -68,4 +80,11 @@ fn test_compute_revocation_tree_params() {
     // Bind the values so the compiler doesn't optimize them away.
     // Run `nargo test --show-output` to see the computed fields.
     let _ = (credential_root, nullifier, tree_root, ds, l0, l1, l2, l3, l4, l5, l6, l7);
+}
+
+#[test]
+fn test_revocation_depth_bound_constants() {
+    assert(MAX_REVOCATION_WITNESS_DEPTH == 3);
+    assert(MAX_REVOCATION_LEAVES == 8);
+    let _ = (MAX_REVOCATION_WITNESS_DEPTH, MAX_REVOCATION_LEAVES);
 }

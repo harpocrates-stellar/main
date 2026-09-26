@@ -203,7 +203,9 @@ pub fn parse_silent_witness(
         return Err(RejectCode::Padding);
     }
 
-    for element in fields.iter() {
+    // The domain tag is an opaque protocol binding; compare it byte-for-byte
+    // below instead of treating arbitrary SHA-256 output as a BN254 scalar.
+    for element in fields[..4].iter() {
         if !is_canonical_field(element) {
             return Err(RejectCode::NonCanonicalField);
         }
@@ -297,4 +299,3 @@ pub fn classify(
 
     check_proof_bounds(proof_len)
 }
-

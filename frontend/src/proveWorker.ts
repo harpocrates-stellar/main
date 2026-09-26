@@ -2,6 +2,8 @@ import { UltraHonkBackend } from '@aztec/bb.js'
 import { Noir } from '@noir-lang/noir_js'
 import type { CompiledCircuit } from '@noir-lang/types'
 
+import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+
 type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
@@ -65,11 +67,17 @@ async function generateSilentWitnessProof({
   try {
     const proofData = await backend.generateProof(witness, { keccak: true })
     const proofHex = bytesToHex(proofData.proof)
-    const publicInputHex = proofData.publicInputs.map(fieldToBytes32Hex).join('')
+    const publicInputHex = encodePublicInputs(proofData.publicInputs, [
+      'video_hash_hi',
+      'video_hash_lo',
+      'credential_root',
+      'nullifier',
+      'domain_tag',
+    ])
 
     return {
-      credentialRoot: fieldToBytes32Hex(credentialRoot),
-      nullifier: fieldToBytes32Hex(nullifier),
+      credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),
+      nullifier: encodeFieldToBytes32Hex(nullifier, 'nullifier'),
       proof: proofHex,
       publicInputs: publicInputHex,
       proofBytes: proofData.proof.length,
@@ -96,14 +104,6 @@ async function loadCircuit(path: string) {
     throw new Error(`Unable to load Noir circuit artifact: ${path}`)
   }
   return (await response.json()) as CompiledCircuit
-}
-
-function fieldToBytes32Hex(value: string) {
-  const normalized = value.startsWith('0x') ? value.slice(2) : BigInt(value).toString(16)
-  if (normalized.length > 64) {
-    throw new Error('Noir field is larger than 32 bytes.')
-  }
-  return normalized.padStart(64, '0')
 }
 
 function bytesToHex(bytes: Uint8Array) {

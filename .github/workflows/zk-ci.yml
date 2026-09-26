@@ -62,6 +62,14 @@ jobs:
         # cold/warm aggregation, and deterministic failure modes.
         run: python -m pytest zk/bench -q
 
+      - name: Enforce published proof benchmark thresholds
+        # Hermetic gate: synthetic CI prove/verify must stay under
+        # zk/bench/baselines.lock.json. No witness/proof material is logged.
+        run: |
+          mkdir -p zk/bench/results
+          zk/bench/run.sh run --target ci --synthetic --out zk/bench/results/ci-gate.json
+          zk/bench/run.sh compare --report zk/bench/results/ci-gate.json
+
       - name: Check the toolchain lock parses and is self-consistent
         run: |
           python - <<'PY'
@@ -75,6 +83,15 @@ jobs:
                 f"nargo {lock.toolchain['nargo']['version']}, "
                 f"bb {lock.toolchain['barretenberg']['version']}")
           PY
+
+      - name: Every Noir circuit in the tree is pinned by the lock
+        # A circuit that is not declared in zk/toolchain.lock.json is compiled
+        # by nobody and digested by nothing, yet can still be published to the
+        # browser or verified on chain. Fails in either direction: an
+        # undeclared package, or a declared pin whose package is gone. No
+        # toolchain required and no artifact is read, so nothing that could
+        # carry a witness or a key can reach the log.
+        run: python zk/tools/artifact_manifest.py check-coverage
 
       - name: Verify committed artifacts against the manifest
         # Skipped when no manifest has been committed yet: generated artifacts
@@ -139,13 +156,13 @@ jobs:
       - name: Verify toolchain versions match lock file
         run: |
           python3 -c "
-import json
-lock = json.load(open('zk/toolchain.lock.json'))
-tc = lock['toolchain']
-expected_nargo = tc['nargo']['version']
-expected_bb = tc['barretenberg']['version']
-print(f'Expecting nargo {expected_nargo}, bb {expected_bb}')
-"
+          import json
+          lock = json.load(open('zk/toolchain.lock.json'))
+          tc = lock['toolchain']
+          expected_nargo = tc['nargo']['version']
+          expected_bb = tc['barretenberg']['version']
+          print(f'Expecting nargo {expected_nargo}, bb {expected_bb}')
+          "
           ACTUAL_NARGO="$(nargo --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' | head -n1 || true)"
           ACTUAL_BB="$(bb --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
           echo "Installed: nargo ${ACTUAL_NARGO}, bb ${ACTUAL_BB}"

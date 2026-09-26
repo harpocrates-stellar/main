@@ -16,6 +16,13 @@ use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN};
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
 pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
 
+/// Maximum Merkle depth for the `revocation_witness` circuit (#357).
+/// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
+/// Raising this value requires a new circuit version — do not change it silently.
+pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 3;
+/// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 8).
+pub const MAX_REVOCATION_LEAVES: u32 = 8;
+
 const TIER_SILENT_WITNESS: u32 = 1;
 const TIER_CONSISTENT_SOURCE: u32 = 2;
 const TIER_PUBLIC_SEAL: u32 = 3;
@@ -35,6 +42,33 @@ const DEFAULT_APPROVAL_TTL_SECS: u64 = 86_400;
 const MAX_LINEAGE_DEPTH: u32 = 4;
 const MAX_LINEAGE_FANOUT: u32 = 4;
 const MAX_LINEAGE_PAYLOAD_BYTES: u32 = 4096;
+/// Max children returned by a single `list_lineage_children` page (#335).
+pub const MAX_LINEAGE_CHILDREN_PAGE: u32 = 50;
+/// Max indexed children stored per parent proof/digest (#335).
+pub const MAX_LINEAGE_CHILDREN_PER_PARENT: u32 = 256;
+
+// ---------------------------------------------------------------------------
+// On-chain metadata envelope versioning (#317)
+// ---------------------------------------------------------------------------
+//
+// Off-chain steganography payloads use versioned envelopes (`HRPSTG1` /
+// `HRPSTG2` in `backend/envelope.py`). On-chain we store only the canonical
+// metadata hash plus an explicit envelope version so verifiers can interpret
+// the hash without a second protocol truth and without ever logging media,
+// witnesses, or private keys.
+//
+// Legacy registrations that only supply `metadata_hash` are stamped as V1.
+// V2 is additive; unsupported versions fail closed with a stable error.
+
+/// Envelope version matching backend `HRPSTG1`.
+pub const METADATA_ENVELOPE_V1: u32 = 1;
+/// Envelope version matching backend `HRPSTG2`.
+pub const METADATA_ENVELOPE_V2: u32 = 2;
+/// Highest envelope version this wasm accepts.
+pub const METADATA_ENVELOPE_VERSION_MAX: u32 = METADATA_ENVELOPE_V2;
+/// Default for bare `metadata_hash` registrations (backward compatible).
+pub const METADATA_ENVELOPE_VERSION_DEFAULT: u32 = METADATA_ENVELOPE_V1;
+
 
 // ---------------------------------------------------------------------------
 // Proof-history bounds (#90)
@@ -264,15 +298,40 @@ pub enum ProofVerificationStatus {
     NotFound,
 }
 
+/// On-chain lineage edge for a verifiable derivative.
+///
+/// `parent_proof_ids` retain graph topology for cycle/depth checks.
+/// `parent_commitments` store domain-separated content bindings for each
+/// parent so public boundaries (events / interop) can cite parents without
+/// relying on raw proof identifiers alone. Derived as
+/// `SHA-256("harp_lin_pc" || binding_a || binding_b)` where a proof parent
+/// binds `(video_hash, metadata_hash)` and a lineage parent binds
+/// `(manifest_digest, output_digest)`.
+///
+/// Migration: additive field on new registrations. Pre-existing lineage
+/// rows (if any) lack commitments and must be re-registered after upgrade;
+/// rolling back to a pre-#332 wasm ignores the new event / getter and leaves
+/// stored records readable only by matching wasm.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineageRecord {
     pub parent_proof_ids: SorobanVec<BytesN<32>>,
+    pub parent_commitments: SorobanVec<BytesN<32>>,
     pub manifest_digest: BytesN<32>,
     pub actor: Address,
     pub operation_type: Symbol,
     pub output_digest: BytesN<32>,
     pub depth: u32,
+}
+
+/// One page of child output digests for a lineage parent (#335).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageChildrenPage {
+    pub children: SorobanVec<BytesN<32>>,
+    /// Absolute offset of the next unread child (equals `total` when exhausted).
+    pub next_offset: u32,
+    pub total: u32,
 }
 
 #[contracttype]
@@ -290,6 +349,23 @@ pub struct ProofRecord {
     /// Optional batch size when this proof was registered as part of an
     /// aggregated batch (0 = not part of a batch).
     pub batch_size: u32,
+}
+
+/// Versioned on-chain metadata envelope binding (#317).
+///
+/// Stores only `(version, metadata_hash)` commitments — never raw envelope
+/// bytes, media, witnesses, or secrets. Aligns with backend `envelope.py`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataEnvelope {
+    /// Proof this envelope is bound to.
+    pub proof_id: BytesN<32>,
+    /// Envelope schema version (`METADATA_ENVELOPE_V1` / `V2`).
+    pub version: u32,
+    /// Canonical metadata hash (same value stored on `ProofRecord`).
+    pub metadata_hash: BytesN<32>,
+    /// Ledger timestamp when this envelope binding was written.
+    pub bound_at: u64,
 }
 
 #[contracttype]
@@ -348,6 +424,25 @@ pub struct ProofRegistered {
     pub tier: u32,
     pub status: u32,
     pub batch_size: u32,
+}
+
+// Metadata envelope events (#317) — version + hash only (privacy-safe).
+#[contractevent(topics = ["metadata", "envelope", "bound"])]
+pub struct MetadataEnvelopeBound {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub version: u32,
+    pub metadata_hash: BytesN<32>,
+    pub bound_at: u64,
+}
+
+#[contractevent(topics = ["metadata", "envelope", "upgraded"])]
+pub struct MetadataEnvelopeUpgraded {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    pub previous: u32,
+    pub current: u32,
+    pub metadata_hash: BytesN<32>,
 }
 
 #[contractevent(topics = ["proof", "batch", "reg"])]
@@ -438,6 +533,22 @@ pub struct ProofHistoryEvent {
     pub timestamp: u64,
     pub actor: Option<Address>,
     pub reason_code: u32,
+}
+
+/// Privacy-safe lineage registration signal (#332).
+///
+/// Publishes parent *commitments* (not raw parent proof ids) so indexers and
+/// interoperable consumers can observe derivative linkage without expanding
+/// the public surface beyond opaque 32-byte digests.
+#[contractevent(topics = ["lineage", "reg"])]
+pub struct LineageRegistered {
+    #[topic]
+    pub output_digest: BytesN<32>,
+    pub manifest_digest: BytesN<32>,
+    pub actor: Address,
+    pub operation_type: Symbol,
+    pub depth: u32,
+    pub parent_commitments: SorobanVec<BytesN<32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +989,12 @@ pub enum DataKey {
     Schema(BytesN<32>),
     /// Verifiable derivative lineage record keyed by output digest.
     Lineage(BytesN<32>),
+    /// Count of indexed children for a parent proof/digest (#335).
+    LineageChildSeq(BytesN<32>),
+    /// Child output digest at 1-based sequence for a parent (#335).
+    LineageChild(BytesN<32>, u32),
+    /// Versioned metadata envelope binding keyed by proof_id (#317).
+    MetadataEnvelope(BytesN<32>),
     /// Stores the `DisputeRecord` for a given dispute_id (#dispute).
     Dispute(BytesN<32>),
     /// Counts open (non-terminal) disputes for a proof_id (#dispute).
@@ -987,6 +1104,24 @@ pub enum RegistryError {
     ReporterOnCooldown = 66,
     /// The dispute is not in the state this transition requires.
     InvalidDisputeTransition = 67,
+    /// Lineage registration supplied zero parents (commitments require ≥1).
+    LineageEmptyParents = 76,
+    /// A lineage parent proof is revoked or expired and cannot anchor a derivative.
+    LineageParentUnavailable = 77,
+    /// Lineage output digest is already registered.
+    DuplicateLineage = 78,
+    /// `list_lineage_children` limit was zero or above the page cap (#335).
+    LineageChildrenLimitExceeded = 79,
+    /// Parent already holds MAX_LINEAGE_CHILDREN_PER_PARENT children (#335).
+    LineageChildrenSaturated = 80,
+    /// Metadata envelope version is zero or above `METADATA_ENVELOPE_VERSION_MAX` (#317).
+    UnsupportedMetadataEnvelopeVersion = 68,
+    /// Metadata envelope hash is zero / malformed (#317).
+    InvalidMetadataEnvelope = 69,
+    /// No metadata envelope (and no proof) for the requested id (#317).
+    MetadataEnvelopeNotFound = 70,
+    /// Bound envelope hash does not match the proof's `metadata_hash` (#317).
+    MetadataEnvelopeHashMismatch = 71,
 }
 
 #[contract]
@@ -1546,13 +1681,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), None);
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            None,
-            record.tier,
-        );
         record
     }
 
@@ -1675,13 +1803,6 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         };
 
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            None,
-            record.tier,
-        );
         record
     }
 
@@ -1878,13 +1999,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(source),
-            record.tier,
-        );
         record
     }
 
@@ -1918,13 +2032,6 @@ impl HarpocratesRegistry {
             batch_size: 0,
         };
         save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(issuer),
-            record.tier,
-        );
         record
     }
 
@@ -2131,14 +2238,7 @@ impl HarpocratesRegistry {
             nullifier: None,
             batch_size: 0,
         };
-        save_record(&env, &proof_id, record.clone(), Some(source.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(delegate.clone()),
-            record.tier,
-        );
+        save_record(&env, &proof_id, record.clone(), Some(delegate.clone()));
         DelegationUsed {
             grantor: source,
             delegate,
@@ -2186,14 +2286,7 @@ impl HarpocratesRegistry {
             nullifier: None,
             batch_size: 0,
         };
-        save_record(&env, &proof_id, record.clone(), Some(issuer.clone()));
-        record_proof_history(
-            &env,
-            &proof_id,
-            ProofLifecycleAction::Registered as u32,
-            Some(delegate.clone()),
-            record.tier,
-        );
+        save_record(&env, &proof_id, record.clone(), Some(delegate.clone()));
         DelegationUsed {
             grantor: issuer,
             delegate,
@@ -2287,10 +2380,22 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::NoCorrectionChange);
         }
 
-        record.metadata_hash = new_metadata_hash;
+        record.metadata_hash = new_metadata_hash.clone();
         env.storage()
             .persistent()
             .set(&DataKey::Proof(proof_id.clone()), &record);
+
+        // Keep the versioned envelope hash in sync when present (#317).
+        let envelope_key = DataKey::MetadataEnvelope(proof_id.clone());
+        if let Some(mut envelope) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, MetadataEnvelope>(&envelope_key)
+        {
+            envelope.metadata_hash = new_metadata_hash;
+            envelope.bound_at = env.ledger().timestamp();
+            env.storage().persistent().set(&envelope_key, &envelope);
+        }
 
         record_proof_history(
             &env,
@@ -2328,6 +2433,136 @@ impl HarpocratesRegistry {
             .unwrap_or(0)
     }
 
+
+    // -----------------------------------------------------------------------
+    // On-chain metadata envelope versioning (#317)
+    // -----------------------------------------------------------------------
+
+    /// Bind or upgrade a versioned metadata envelope for an existing proof.
+    ///
+    /// Compatible callers that only use `register_*` with a bare
+    /// `metadata_hash` continue to work: `save_record` stamps V1 automatically.
+    /// This entry point is for explicit V2 (or future) bindings and upgrades.
+    ///
+    /// Rules:
+    /// - `version` must be in `1..=METADATA_ENVELOPE_VERSION_MAX`
+    /// - `metadata_hash` must be non-zero and match the proof's stored hash
+    /// - first bind may set any supported version
+    /// - re-bind may only upgrade version (never downgrade)
+    ///
+    /// Auth: admin, or the proof's source/issuer when present.
+    pub fn bind_metadata_envelope(
+        env: Env,
+        actor: Address,
+        proof_id: BytesN<32>,
+        version: u32,
+        metadata_hash: BytesN<32>,
+    ) -> MetadataEnvelope {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Proof(proof_id.clone()))
+        {
+            panic_with_error!(&env, RegistryError::MetadataEnvelopeNotFound);
+        }
+
+        let proof = get_proof_record(&env, &proof_id);
+        require_metadata_envelope_actor(&env, &actor, &proof);
+        require_supported_metadata_envelope_version(&env, version);
+
+        let zero = BytesN::from_array(&env, &[0u8; 32]);
+        if metadata_hash == zero {
+            panic_with_error!(&env, RegistryError::InvalidMetadataEnvelope);
+        }
+        if metadata_hash != proof.metadata_hash {
+            panic_with_error!(&env, RegistryError::MetadataEnvelopeHashMismatch);
+        }
+
+        let key = DataKey::MetadataEnvelope(proof_id.clone());
+        let previous: Option<MetadataEnvelope> = env.storage().persistent().get(&key);
+        if let Some(ref prev) = previous {
+            if version < prev.version {
+                panic_with_error!(&env, RegistryError::UnsupportedMetadataEnvelopeVersion);
+            }
+            if version == prev.version && metadata_hash == prev.metadata_hash {
+                // Idempotent no-op return.
+                return prev.clone();
+            }
+            if version == prev.version && metadata_hash != prev.metadata_hash {
+                // Same-version hash changes go through `correct_proof`.
+                panic_with_error!(&env, RegistryError::MetadataEnvelopeHashMismatch);
+            }
+        }
+
+        let bound_at = env.ledger().timestamp();
+        let envelope = MetadataEnvelope {
+            proof_id: proof_id.clone(),
+            version,
+            metadata_hash: metadata_hash.clone(),
+            bound_at,
+        };
+        env.storage().persistent().set(&key, &envelope);
+
+        if let Some(prev) = previous {
+            if version > prev.version {
+                MetadataEnvelopeUpgraded {
+                    proof_id: proof_id.clone(),
+                    previous: prev.version,
+                    current: version,
+                    metadata_hash: metadata_hash.clone(),
+                }
+                .publish(&env);
+            }
+        } else {
+            MetadataEnvelopeBound {
+                proof_id: proof_id.clone(),
+                version,
+                metadata_hash: metadata_hash.clone(),
+                bound_at,
+            }
+            .publish(&env);
+        }
+
+        envelope
+    }
+
+    /// Return the versioned metadata envelope for `proof_id`, if stored.
+    pub fn get_metadata_envelope(env: Env, proof_id: BytesN<32>) -> Option<MetadataEnvelope> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MetadataEnvelope(proof_id))
+    }
+
+    /// Resolve the envelope version for a proof.
+    ///
+    /// Returns the stored envelope version when present; otherwise
+    /// `METADATA_ENVELOPE_VERSION_DEFAULT` for proofs that exist without an
+    /// explicit envelope row (pre-#317 / stamped callers). Returns `0` when
+    /// the proof is unknown (callers must treat 0 as not-found).
+    pub fn resolve_metadata_envelope_version(env: Env, proof_id: BytesN<32>) -> u32 {
+        if let Some(envelope) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, MetadataEnvelope>(&DataKey::MetadataEnvelope(proof_id.clone()))
+        {
+            return envelope.version;
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Proof(proof_id))
+        {
+            return METADATA_ENVELOPE_VERSION_DEFAULT;
+        }
+        0
+    }
+
+    /// Whether `version` is accepted by this wasm build.
+    pub fn is_supported_metadata_envelope_version(_env: Env, version: u32) -> bool {
+        version >= METADATA_ENVELOPE_V1 && version <= METADATA_ENVELOPE_VERSION_MAX
+    }
+
+
     pub fn get_proof(env: Env, proof_id: BytesN<32>) -> Option<ProofRecord> {
         env.storage().persistent().get(&DataKey::Proof(proof_id))
     }
@@ -2348,6 +2583,14 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
     }
 
+    /// Register a verifiable derivative lineage edge and persist parent
+    /// content commitments for privacy-preserving public boundaries (#332).
+    ///
+    /// Parent commitments are derived on-chain from each parent's stored
+    /// public fields so callers cannot supply forged bindings. Failure modes
+    /// (empty parents, unknown/revoked/expired parents, cycles, depth/fan-out
+    /// overflow, duplicate output) panic with stable `RegistryError` codes and
+    /// never log media, secrets, or witness material.
     pub fn register_lineage(
         env: Env,
         actor: Address,
@@ -2360,20 +2603,127 @@ impl HarpocratesRegistry {
         actor.require_auth();
         validate_lineage(&env, &parent_proof_ids, &output_digest, depth);
 
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Lineage(output_digest.clone()))
+        {
+            panic_with_error!(&env, RegistryError::DuplicateLineage);
+        }
+
+        let parent_commitments =
+            collect_lineage_parent_commitments(&env, &parent_proof_ids);
+
         let record = LineageRecord {
             parent_proof_ids: parent_proof_ids.clone(),
+            parent_commitments: parent_commitments.clone(),
             manifest_digest: manifest_digest.clone(),
             actor: actor.clone(),
             operation_type: operation_type.clone(),
             output_digest: output_digest.clone(),
             depth,
         };
-        env.storage().persistent().set(&DataKey::Lineage(output_digest.clone()), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Lineage(output_digest.clone()), &record);
+
+        LineageRegistered {
+            output_digest: output_digest.clone(),
+            manifest_digest: manifest_digest.clone(),
+            actor: actor.clone(),
+            operation_type: operation_type.clone(),
+            depth,
+            parent_commitments,
+        }
+        .publish(&env);
+
+        // Index this derivative under each parent for reverse (children) queries (#335).
+        for parent in parent_proof_ids.iter() {
+            append_lineage_child(&env, &parent, &output_digest);
+        }
+
         record
     }
 
     pub fn get_lineage(env: Env, output_digest: BytesN<32>) -> Option<LineageRecord> {
         env.storage().persistent().get(&DataKey::Lineage(output_digest))
+    }
+
+    /// Return only the stored parent commitments for `output_digest` (#332).
+    ///
+    /// Useful for interoperable consumers that must not pull full lineage
+    /// topology (parent proof ids) across a trust boundary.
+    pub fn get_lineage_parent_commitments(
+        env: Env,
+        output_digest: BytesN<32>,
+    ) -> Option<SorobanVec<BytesN<32>>> {
+        let record: Option<LineageRecord> =
+            env.storage().persistent().get(&DataKey::Lineage(output_digest));
+        record.map(|r| r.parent_commitments)
+    }
+
+    /// Return how many child digests are indexed under `parent_proof_id` (#335).
+    pub fn get_lineage_children_count(env: Env, parent_proof_id: BytesN<32>) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LineageChildSeq(parent_proof_id))
+            .unwrap_or(0)
+    }
+
+    /// Paginate child output digests for a parent proof or lineage digest (#335).
+    ///
+    /// - `offset` is 0-based into the stable registration order.
+    /// - `limit` must be in `1..=MAX_LINEAGE_CHILDREN_PAGE`.
+    /// - Missing parents yield an empty page with `total == 0` (privacy-safe).
+    pub fn list_lineage_children(
+        env: Env,
+        parent_proof_id: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> LineageChildrenPage {
+        if limit == 0 || limit > MAX_LINEAGE_CHILDREN_PAGE {
+            panic_with_error!(&env, RegistryError::LineageChildrenLimitExceeded);
+        }
+
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LineageChildSeq(parent_proof_id.clone()))
+            .unwrap_or(0);
+
+        let mut children = SorobanVec::new(&env);
+        if offset >= total {
+            return LineageChildrenPage {
+                children,
+                next_offset: total,
+                total,
+            };
+        }
+
+        let end = if total - offset < limit {
+            total
+        } else {
+            offset + limit
+        };
+
+        let mut idx = offset;
+        while idx < end {
+            let seq = idx + 1; // 1-based storage keys
+            if let Some(child) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, BytesN<32>>(&DataKey::LineageChild(parent_proof_id.clone(), seq))
+            {
+                children.push_back(child);
+            }
+            idx += 1;
+        }
+
+        LineageChildrenPage {
+            children,
+            next_offset: end,
+            total,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -3314,6 +3664,47 @@ fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     }
 }
 
+fn validate_lineage(
+    env: &Env,
+    parent_proof_ids: &SorobanVec<BytesN<32>>,
+    output_digest: &BytesN<32>,
+    depth: u32,
+) {
+    if parent_proof_ids.is_empty() {
+        panic_with_error!(env, RegistryError::InvalidLineage);
+    }
+    if parent_proof_ids.len() > MAX_LINEAGE_FANOUT {
+        panic_with_error!(env, RegistryError::LineageFanOutExceeded);
+    }
+    if depth == 0 || depth > MAX_LINEAGE_DEPTH {
+        panic_with_error!(env, RegistryError::LineageTooDeep);
+    }
+
+    for parent in parent_proof_ids.iter() {
+        if parent == *output_digest {
+            panic_with_error!(env, RegistryError::LineageCycle);
+        }
+        let is_known_parent = env.storage().persistent().has(&DataKey::Proof(parent.clone()))
+            || env.storage().persistent().has(&DataKey::Lineage(parent.clone()));
+        if !is_known_parent {
+            panic_with_error!(env, RegistryError::InvalidLineage);
+        }
+    }
+}
+
+fn append_lineage_child(env: &Env, parent: &BytesN<32>, child: &BytesN<32>) {
+    let seq_key = DataKey::LineageChildSeq(parent.clone());
+    let current: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+    if current >= MAX_LINEAGE_CHILDREN_PER_PARENT {
+        panic_with_error!(env, RegistryError::LineageChildrenSaturated);
+    }
+    let next = current + 1;
+    env.storage()
+        .persistent()
+        .set(&DataKey::LineageChild(parent.clone(), next), child);
+    env.storage().persistent().set(&seq_key, &next);
+}
+
 fn save_record(
     env: &Env,
     proof_id: &BytesN<32>,
@@ -3334,6 +3725,20 @@ fn save_record(
         batch_size: record.batch_size,
     }
     .publish(env);
+    // Registration has one canonical observable order: the domain event is
+    // emitted first, followed by the append-only lifecycle history event.
+    // Keeping both emissions here also covers aggregated registrations and
+    // prevents a new registration path from silently omitting history.
+    record_proof_history(
+        env,
+        proof_id,
+        ProofLifecycleAction::Registered as u32,
+        actor,
+        record.tier,
+    );
+    // Stamp a V1 metadata envelope for bare-hash registrations (#317).
+    // Explicit V2+ bindings use `bind_metadata_envelope` after register.
+    stamp_default_metadata_envelope(env, proof_id, &record.metadata_hash);
     record
 }
 
@@ -3387,31 +3792,159 @@ fn record_proof_history(
     .publish(env);
 }
 
-/// Validate a lineage edge set: bounded fan-out and depth, no self-reference,
-/// and every parent must already be a known proof or lineage record.
+/// Validate a lineage edge set: non-empty, bounded fan-out and depth, no
+/// self-reference, and every parent must already be a usable proof or lineage
+/// record (proofs must not be revoked/expired).
+
+fn require_supported_metadata_envelope_version(env: &Env, version: u32) {
+    if version < METADATA_ENVELOPE_V1 || version > METADATA_ENVELOPE_VERSION_MAX {
+        panic_with_error!(env, RegistryError::UnsupportedMetadataEnvelopeVersion);
+    }
+}
+
+fn require_metadata_envelope_actor(env: &Env, actor: &Address, proof: &ProofRecord) {
+    actor.require_auth();
+
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+    if *actor == admin {
+        return;
+    }
+    if let Some(ref source) = proof.source {
+        if *actor == *source {
+            return;
+        }
+    }
+    if let Some(ref issuer) = proof.issuer {
+        if *actor == *issuer {
+            return;
+        }
+    }
+    panic_with_error!(env, RegistryError::Unauthorized);
+}
+
+/// Idempotently stamp a V1 envelope for newly registered proofs.
+fn stamp_default_metadata_envelope(env: &Env, proof_id: &BytesN<32>, metadata_hash: &BytesN<32>) {
+    let key = DataKey::MetadataEnvelope(proof_id.clone());
+    if env.storage().persistent().has(&key) {
+        return;
+    }
+    let zero = BytesN::from_array(env, &[0u8; 32]);
+    // Zero hash still gets a version stamp so resolve_* stays consistent;
+    // bind_metadata_envelope rejects zero for explicit upgrades.
+    let bound_at = env.ledger().timestamp();
+    let envelope = MetadataEnvelope {
+        proof_id: proof_id.clone(),
+        version: METADATA_ENVELOPE_VERSION_DEFAULT,
+        metadata_hash: if *metadata_hash == zero {
+            zero
+        } else {
+            metadata_hash.clone()
+        },
+        bound_at,
+    };
+    env.storage().persistent().set(&key, &envelope);
+    MetadataEnvelopeBound {
+        proof_id: proof_id.clone(),
+        version: METADATA_ENVELOPE_VERSION_DEFAULT,
+        metadata_hash: envelope.metadata_hash.clone(),
+        bound_at,
+    }
+    .publish(env);
+}
+
 fn validate_lineage(
     env: &Env,
     parent_proof_ids: &SorobanVec<BytesN<32>>,
     output_digest: &BytesN<32>,
     depth: u32,
 ) {
+    if parent_proof_ids.len() == 0 {
+        panic_with_error!(env, RegistryError::LineageEmptyParents);
+    }
     if parent_proof_ids.len() > MAX_LINEAGE_FANOUT as u32 {
         panic_with_error!(env, RegistryError::LineageFanOutExceeded);
     }
     if depth > MAX_LINEAGE_DEPTH {
         panic_with_error!(env, RegistryError::LineageTooDeep);
     }
+    if depth == 0 {
+        panic_with_error!(env, RegistryError::InvalidLineage);
+    }
 
     for parent in parent_proof_ids.iter() {
         if parent == *output_digest {
             panic_with_error!(env, RegistryError::LineageCycle);
         }
-        let is_known_parent = env.storage().persistent().has(&DataKey::Proof(parent.clone()))
-            || env.storage().persistent().has(&DataKey::Lineage(parent.clone()));
-        if !is_known_parent {
-            panic_with_error!(env, RegistryError::InvalidLineage);
+        if env.storage().persistent().has(&DataKey::Proof(parent.clone())) {
+            let status = HarpocratesRegistry::get_proof_status(env.clone(), parent.clone());
+            if status != ProofVerificationStatus::Valid {
+                panic_with_error!(env, RegistryError::LineageParentUnavailable);
+            }
+            continue;
         }
+        if env.storage().persistent().has(&DataKey::Lineage(parent.clone())) {
+            continue;
+        }
+        panic_with_error!(env, RegistryError::InvalidLineage);
     }
+}
+
+/// Derive the domain-separated parent content commitment (#332).
+///
+/// `SHA-256("harp_lin_pc" ‖ binding_a ‖ binding_b)` — opaque, reproducible,
+/// and free of private media / witness material.
+fn derive_lineage_parent_commitment(
+    env: &Env,
+    binding_a: &BytesN<32>,
+    binding_b: &BytesN<32>,
+) -> BytesN<32> {
+    const PREFIX: [u8; 11] = *b"harp_lin_pc";
+    let mut pre_image = [0u8; 75];
+    pre_image[..11].copy_from_slice(&PREFIX);
+    binding_a.copy_into_slice(&mut pre_image[11..43]);
+    binding_b.copy_into_slice(&mut pre_image[43..75]);
+    let pre_image_bytes = Bytes::from_array(env, &pre_image);
+    env.crypto().sha256(&pre_image_bytes)
+}
+
+/// Build the parallel parent-commitment vector for a validated parent set.
+fn collect_lineage_parent_commitments(
+    env: &Env,
+    parent_proof_ids: &SorobanVec<BytesN<32>>,
+) -> SorobanVec<BytesN<32>> {
+    let mut commitments = SorobanVec::new(env);
+    for parent in parent_proof_ids.iter() {
+        if let Some(proof) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, ProofRecord>(&DataKey::Proof(parent.clone()))
+        {
+            commitments.push_back(derive_lineage_parent_commitment(
+                env,
+                &proof.video_hash,
+                &proof.metadata_hash,
+            ));
+            continue;
+        }
+        if let Some(lineage) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, LineageRecord>(&DataKey::Lineage(parent.clone()))
+        {
+            commitments.push_back(derive_lineage_parent_commitment(
+                env,
+                &lineage.manifest_digest,
+                &lineage.output_digest,
+            ));
+            continue;
+        }
+        panic_with_error!(env, RegistryError::InvalidLineage);
+    }
+    commitments
 }
 
 /// Derive the deterministic sub-proof_id for batch element `index`.
@@ -4012,15 +4545,21 @@ mod test_fuzz;
 #[cfg(test)]
 mod test_invariants;
 #[cfg(test)]
+mod test_identity_tier_properties;
+#[cfg(test)]
 mod test_pause;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_registration_replay;
 #[cfg(test)]
 mod test_scoped_nullifier;
 #[cfg(test)]
 mod test_state_machine;
 #[cfg(test)]
 mod test_dispute;
+#[cfg(test)]
+mod test_lineage;
 #[cfg(test)]
 pub mod test_timelock;
 #[cfg(test)]
@@ -4029,3 +4568,9 @@ mod test_schema;
 mod test_selective_disclosure;
 #[cfg(test)]
 mod test_upgrade_compat;
+#[cfg(test)]
+mod test_lineage;
+#[cfg(test)]
+mod test_metadata_envelope;
+#[cfg(test)]
+mod test_deployment_fixture;

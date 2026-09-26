@@ -1,0 +1,175 @@
+{
+  "format": "harpocrates.malformed-public-inputs",
+  "version": 1,
+  "codec": "hpx-vi/1",
+  "description": "Shared malformed public-input hex vectors for the Harpocrates verifier boundary. Backend and browser layers must reject each case with malformed_hex before framing checks. Values are synthetic wire presentations only — never real media, witnesses, or keys.",
+  "regenerate_with": "python zk/vectors/generate_malformed_public_inputs.py",
+  "reject_codes": [
+    "malformed_hex"
+  ],
+  "field": "public_inputs",
+  "cases": [
+    {
+      "id": "mh-neg-001-single-nibble",
+      "field": "public_inputs",
+      "description": "A single hex nibble is not a byte; odd length must fail before decode.",
+      "value": "0",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-002-odd-length-prefix",
+      "field": "public_inputs",
+      "description": "Odd-length hex that would otherwise look like a truncated field.",
+      "value": "abc",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-003-odd-length-near-frame",
+      "field": "public_inputs",
+      "description": "319 hex chars (159.5 bytes): one nibble short of a silent-witness frame.",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-010-letter-out-of-range",
+      "field": "public_inputs",
+      "description": "Latin letters outside a-f must not be accepted as hex digits.",
+      "value": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-011-high-nibble-g",
+      "field": "public_inputs",
+      "description": "Embedded non-hex digit mid-string (g) must fail the alphabet check.",
+      "value": "000000000000000000000000000000000000000000000000000000000000000g0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-012-punctuation",
+      "field": "public_inputs",
+      "description": "Punctuation separators are not part of the wire alphabet.",
+      "value": "00:11",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-020-internal-space",
+      "field": "public_inputs",
+      "description": "Whitespace inside the hex payload must not be silently stripped.",
+      "value": "00 11",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-021-newline",
+      "field": "public_inputs",
+      "description": "Newlines (common copy-paste artifact) must not be accepted.",
+      "value": "00\n11",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-022-tab",
+      "field": "public_inputs",
+      "description": "Tab-separated nibbles must be rejected as malformed hex.",
+      "value": "00\t11",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-023-leading-whitespace",
+      "field": "public_inputs",
+      "description": "Leading whitespace must not be trimmed at the codec boundary.",
+      "value": " 00",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-024-trailing-whitespace",
+      "field": "public_inputs",
+      "description": "Trailing whitespace must not be trimmed at the codec boundary.",
+      "value": "00 ",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-030-0x-prefix",
+      "field": "public_inputs",
+      "description": "A 0x prefix is a presentation form, not part of the wire alphabet.",
+      "value": "0x00",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-031-0x-prefixed-frame-prefix",
+      "field": "public_inputs",
+      "description": "0x followed by otherwise-legal digits must still fail as malformed hex.",
+      "value": "0xabababababababab",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-032-hash-prefix",
+      "field": "public_inputs",
+      "description": "A leading # (CSS/color habit) is not a valid hex wire encoding.",
+      "value": "#0011",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-040-null-token",
+      "field": "public_inputs",
+      "description": "The literal token 'null' must not parse as hex public inputs.",
+      "value": "null",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-041-undefined-token",
+      "field": "public_inputs",
+      "description": "The literal token 'undefined' must not parse as hex public inputs.",
+      "value": "undefined",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-050-unicode-fullwidth-digit",
+      "field": "public_inputs",
+      "description": "Fullwidth digit lookalikes must not pass the ASCII hex alphabet check.",
+      "value": "００",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    },
+    {
+      "id": "mh-neg-051-non-ascii-letter",
+      "field": "public_inputs",
+      "description": "Non-ASCII letters adjacent to hex digits must fail cleanly.",
+      "value": "00ffωω",
+      "expect": {
+        "reject_code": "malformed_hex"
+      }
+    }
+  ]
+}

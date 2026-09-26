@@ -18,6 +18,28 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+## Upload and Verification Load Test
+
+With FFmpeg installed and a local testing backend running, execute a bounded
+load run from this directory:
+
+```bash
+python load_test.py --base-url http://127.0.0.1:5050 --mode load --concurrency 2 --total-ops 10 --output /tmp/harpocrates-load-report.json
+```
+
+The `upload_verification` workload sends generated synthetic video through
+`POST /api/stego/embed`, then sends the returned artifact through
+`POST /api/stego/extract` and checks that its synthetic marker and proof ID
+match. It uses no real media, credentials, proofs, or private keys. Failure
+reports contain status codes or dependency categories, never response bodies;
+the configured URL is reduced to its origin before it is written to a report.
+Run it only against a local or dedicated test backend: successful uploads may
+create ordinary synthetic proof-event records when a database is configured.
+No protocol, API schema, or database migration is introduced. Rollback is
+limited to removing the workload, its focused coverage, and this documentation;
+use normal test-data retention procedures for any synthetic events already
+created.
+
 ## Noir Developer Worker
 
 `POST /api/noir/silent-witness` generates video-specific Silent Witness proof
@@ -95,6 +117,9 @@ METRICS_PATH=/metrics
 NOIR_WORKER_ENABLED=true
 NOIR_PROOF_TIMEOUT_SECONDS=180
 DATABASE_URL=postgresql://...
+VERIFIER_CACHE_MAX_SIZE=10000
+VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
+VERIFIER_CACHE_NEGATIVE_TTL_SECONDS=300.0
 ```
 
 Production notes:
@@ -113,6 +138,23 @@ GET /health   liveness only
 GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
+
+## Verifier Proof Cache
+
+`verifier_cache.py` memoizes Noir verifier results with positive and negative
+TTLs. Cache keys are **domain-separated**: a SHA-256 digest over the versioned
+cryptographic domain tag `harpocrates:verifier-cache:v1` followed by
+length-prefixed `domain`, `network`, `circuit_version`, `verifier_version`,
+`proof_hex`, and `public_inputs_hex` fields. Length-prefixed framing makes the
+payload injective over the field tuple, so separator-like characters in any
+field cannot shift a boundary and collide two distinct results. Proof and
+public-input hex are case- and whitespace-canonicalized so the same proof
+cannot fragment into case-variant entries.
+
+Bump `CACHE_KEY_DOMAIN_TAG` (e.g. to `...:v2`) whenever the key field layout
+changes: it orphans every previously cached entry instead of silently reusing
+results derived under a different scheme. Keys are digests only — proof
+material is never stored in plaintext or logged.
 
 ## Test
 

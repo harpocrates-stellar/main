@@ -37,7 +37,7 @@ function App() {
   const [currentView, setCurrentView] = useState<AppView>(initialView)
   const [isScrolled, setIsScrolled] = useState(false)
 
-  const { wallet, connectWallet } = useWallet()
+  const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
   const verification = useVerification()
 
@@ -142,7 +142,7 @@ function App() {
           <button className="brand" type="button" onClick={() => openView('landing')} title="Home">
             Harpocrates
           </button>
-          <div className="navlinks" aria-label="Primary">
+          <div className="navlinks" role="group" aria-label="Primary">
             <button
               className={currentView === 'studio' ? 'active' : ''}
               aria-current={currentView === 'studio' ? 'page' : undefined}
@@ -169,11 +169,30 @@ function App() {
             </button>
           </div>
           <div className="network-pill">Stellar Testnet</div>
-          <button className="icon-button" type="button" onClick={() => void connectWallet().catch(() => {})} title="Connect wallet">
+          <button
+            className={`icon-button${walletNetworkMismatch ? ' wallet-mismatch' : ''}`}
+            type="button"
+            onClick={() => void connectWallet().catch(() => {})}
+            title={walletNetworkMismatch ? 'Wallet network mismatch — click to reconnect' : 'Connect wallet'}
+            aria-describedby={walletNetworkMismatch ? 'navbar-network-mismatch' : undefined}
+          >
             <Wallet size={18} aria-hidden="true" />
             <span>{wallet ? `${wallet.slice(0, 5)}...${wallet.slice(-4)}` : 'Connect'}</span>
           </button>
         </nav>
+
+        {walletNetworkMismatch ? (
+          <div
+            id="navbar-network-mismatch"
+            className="network-mismatch-banner network-mismatch-banner--global"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+          >
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <span>{walletNetworkMismatch}</span>
+          </div>
+        ) : null}
 
         {currentView === 'landing' ? (
           <LandingView onOpenStudio={() => openView('studio')} onOpenVerify={() => openView('verify')} />
@@ -189,7 +208,7 @@ function App() {
         ) : null}
 
         {currentView === 'verify' ? (
-          <VerifyView wallet={wallet} verification={verification} provenanceRecord={provenanceRecord} />
+          <VerifyView wallet={wallet} networkMismatch={walletNetworkMismatch} verification={verification} provenanceRecord={provenanceRecord} />
         ) : null}
 
         {currentView === 'batch' ? (

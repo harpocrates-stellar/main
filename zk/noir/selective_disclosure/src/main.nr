@@ -17,11 +17,12 @@ unconstrained fn range_predicate_type() -> Field {
     2
 }
 
-fn assert_valid_predicate_type(predicate_type: Field) {
+fn assert_valid_predicate_type(predicate_type: Field, is_active: bool) {
+    let is_eq = predicate_type == eq_predicate_type();
+    let is_set = predicate_type == set_membership_predicate_type();
+    let is_range = predicate_type == range_predicate_type();
     assert(
-        predicate_type == eq_predicate_type()
-        || predicate_type == set_membership_predicate_type()
-        || predicate_type == range_predicate_type(),
+        !is_active | (is_eq | is_set | is_range),
         "unsupported predicate type",
     );
 }
@@ -35,11 +36,10 @@ fn compute_credential_root(
     num_attributes: u32,
 ) -> Field {
     let mut current = commitments[0];
-    let mut i: u32 = 1;
-    for _ in 0..MAX_ATTRIBUTES - 1 {
+    for i in 1..MAX_ATTRIBUTES {
+        let next = pedersen_hash([current, commitments[i]]);
         if i < num_attributes {
-            current = pedersen_hash([current, commitments[i]]);
-            i = i + 1;
+            current = next;
         }
     }
     current
@@ -53,25 +53,29 @@ fn verify_predicate(
     set_len: u32,
     lower_bound: Field,
     upper_bound: Field,
+    is_active: bool,
 ) {
-    if predicate_type == eq_predicate_type() {
-        assert(attr_value == public_value, "equality predicate failed");
-    } else if predicate_type == set_membership_predicate_type() {
-        let mut found = false;
-        for i in 0..MAX_SET_MEMBERS {
-            if i < set_len {
-                if set_values[i] == attr_value {
-                    found = true;
-                }
-            }
-        }
-        assert(found, "set membership predicate failed");
-    } else if predicate_type == range_predicate_type() {
-        assert(attr_value >= lower_bound, "range predicate: below lower bound");
-        assert(attr_value <= upper_bound, "range predicate: above upper bound");
-    } else {
-        assert(false, "unknown predicate type");
+    let is_eq = predicate_type == eq_predicate_type();
+    let is_set = predicate_type == set_membership_predicate_type();
+    let is_range = predicate_type == range_predicate_type();
+    
+    assert(!is_active | (is_eq | is_set | is_range), "unknown predicate type");
+
+    let eq_valid = attr_value == public_value;
+    assert(!(is_active & is_eq) | eq_valid, "equality predicate failed");
+
+    let mut set_found = false;
+    for i in 0..MAX_SET_MEMBERS {
+        let matches = set_values[i] == attr_value;
+        let in_range = i < set_len;
+        set_found = set_found | (matches & in_range);
     }
+    assert(!(is_active & is_set) | set_found, "set membership predicate failed");
+
+    let range_lower_valid = attr_value >= lower_bound;
+    let range_upper_valid = attr_value <= upper_bound;
+    assert(!(is_active & is_range) | range_lower_valid, "range predicate: below lower bound");
+    assert(!(is_active & is_range) | range_upper_valid, "range predicate: above upper bound");
 }
 
 fn compute_predicate_commitment(
@@ -79,17 +83,16 @@ fn compute_predicate_commitment(
     num_predicates: u32,
 ) -> Field {
     let mut current: Field = 0;
-    let mut i: u32 = 0;
-    for _ in 0..MAX_PREDICATES {
+    for i in 0..MAX_PREDICATES {
+        let p = predicates[i];
+        let next = pedersen_hash([
+            current,
+            p.predicate_type,
+            p.attr_index as Field,
+            p.public_value,
+        ]);
         if i < num_predicates {
-            let p = predicates[i];
-            current = pedersen_hash([
-                current,
-                p.predicate_type,
-                p.attr_index as Field,
-                p.public_value,
-            ]);
-            i = i + 1;
+            current = next;
         }
     }
     current
@@ -124,9 +127,8 @@ fn main(
     predicates: [Predicate; MAX_PREDICATES],
 ) {
     for i in 0..MAX_PREDICATES {
-        if i < num_predicates {
-            assert_valid_predicate_type(predicates[i].predicate_type);
-        }
+        let is_active = i < num_predicates;
+        assert_valid_predicate_type(predicates[i].predicate_type, is_active);
     }
 
     assert(
@@ -138,47 +140,40 @@ fn main(
     assert(num_attributes <= MAX_ATTRIBUTES, "too many attributes");
     assert(num_predicates <= MAX_PREDICATES, "too many predicates");
     for i in 0..MAX_PREDICATES {
-        if i < num_predicates {
-            assert(
-                predicates[i].attr_index < num_attributes,
-                "predicate attribute index out of range",
-            );
-            if predicates[i].predicate_type == set_membership_predicate_type() {
-                assert(
-                    predicates[i].set_len > 0,
-                    "set membership predicate requires non-empty set",
-                );
-                assert(
-                    predicates[i].set_len <= MAX_SET_MEMBERS,
-                    "set membership predicate: too many set values",
-                );
-            }
-        }
+        let is_active = i < num_predicates;
+        let valid_attr_index = predicates[i].attr_index < num_attributes;
+        assert(!is_active | valid_attr_index, "predicate attribute index out of range");
+
+        let is_set = predicates[i].predicate_type == set_membership_predicate_type();
+        let check_set = is_active & is_set;
+        let set_len_gt_0 = predicates[i].set_len > 0;
+        let set_len_valid = predicates[i].set_len <= MAX_SET_MEMBERS;
+        assert(!check_set | set_len_gt_0, "set membership predicate requires non-empty set");
+        assert(!check_set | set_len_valid, "set membership predicate: too many set values");
     }
 
     let mut commitments: [Field; MAX_ATTRIBUTES] = [0; MAX_ATTRIBUTES];
     for i in 0..MAX_ATTRIBUTES {
-        if i < num_attributes {
-            commitments[i] = attr_commitment(attr_values[i], attr_blindings[i]);
-        }
+        commitments[i] = attr_commitment(attr_values[i], attr_blindings[i]);
     }
 
     let derived_root = compute_credential_root(commitments, num_attributes);
     assert(derived_root == credential_root, "credential root mismatch");
 
     for i in 0..MAX_PREDICATES {
-        if i < num_predicates {
-            let pred = predicates[i];
-            verify_predicate(
-                pred.predicate_type,
-                attr_values[pred.attr_index],
-                pred.public_value,
-                pred.set_values,
-                pred.set_len,
-                pred.lower_bound,
-                pred.upper_bound,
-            );
-        }
+        let pred = predicates[i];
+        let is_active = i < num_predicates;
+        let safe_attr_index = if pred.attr_index < MAX_ATTRIBUTES { pred.attr_index } else { 0 };
+        verify_predicate(
+            pred.predicate_type,
+            attr_values[safe_attr_index],
+            pred.public_value,
+            pred.set_values,
+            pred.set_len,
+            pred.lower_bound,
+            pred.upper_bound,
+            is_active,
+        );
     }
 
     let derived_pred_commitment = compute_predicate_commitment(predicates, num_predicates);
@@ -252,17 +247,12 @@ fn run_test(
 ) {
     let mut commitments: [Field; 16] = [0; 16];
     for i in 0..16 {
-        if i < num_attributes {
-            commitments[i] = attr_commitment(attr_values[i], attr_blindings[i]);
-        }
+        commitments[i] = attr_commitment(attr_values[i], attr_blindings[i]);
     }
     let credential_root = compute_credential_root(commitments, num_attributes);
     let nullifier = pedersen_hash([credential_root, 1234, 5678, 9999]);
     let predicate_commitment = compute_predicate_commitment(predicates, num_predicates);
     let verifier_digest = 42;
-
-    if expected_fail {
-    }
 
     main(
         schema_hash,
@@ -515,9 +505,7 @@ fn test_circuit_version_downgrade() {
     let num_attributes: u32 = 2;
     let mut commitments: [Field; 16] = [0; 16];
     for i in 0..16 {
-        if i < num_attributes {
-            commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
-        }
+        commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
     }
     let credential_root = compute_credential_root(commitments, num_attributes);
     let nullifier = pedersen_hash([credential_root, 1234, 5678, 9999]);
@@ -616,9 +604,7 @@ fn test_predicate_commitment_mismatch() {
     let num_attributes: u32 = 2;
     let mut commitments: [Field; 16] = [0; 16];
     for i in 0..16 {
-        if i < num_attributes {
-            commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
-        }
+        commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
     }
     let credential_root = compute_credential_root(commitments, num_attributes);
     let nullifier = pedersen_hash([credential_root, 1234, 5678, 9999]);
@@ -651,9 +637,7 @@ fn test_zero_verifier_digest() {
     let num_attributes: u32 = 2;
     let mut commitments: [Field; 16] = [0; 16];
     for i in 0..16 {
-        if i < num_attributes {
-            commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
-        }
+        commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
     }
     let credential_root = compute_credential_root(commitments, num_attributes);
     let nullifier = pedersen_hash([credential_root, 1234, 5678, 9999]);
