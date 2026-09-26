@@ -63,6 +63,13 @@
     }
   },
 
+  "coverage": {
+    "description": "Invariant enforced by `artifact_manifest.py check-coverage`: every Noir package under circuit_root (a directory containing package_file) must declare a build-target ACIR artifact below, and every declared build-target ACIR must have a matching package. A circuit that is neither built nor digested would be a second, unpinned protocol truth at a public boundary.",
+    "circuit_root": "zk/noir",
+    "package_file": "Nargo.toml",
+    "command": "python zk/tools/artifact_manifest.py check-coverage"
+  },
+
   "artifacts": [
     {
       "path": "zk/noir/silent_witness/target/silent_witness.json",
@@ -125,6 +132,12 @@
       "required": false
     },
     {
+      "path": "zk/noir/selective_disclosure/target/selective_disclosure.json",
+      "kind": "json",
+      "role": "acir",
+      "required": true
+    },
+    {
       "path": "frontend/public/noir/silent_witness.json",
       "kind": "json",
       "role": "published_acir",
@@ -147,6 +160,12 @@
       "kind": "json",
       "role": "published_acir",
       "required": false
+    },
+    {
+      "path": "frontend/public/noir/selective_disclosure.json",
+      "kind": "json",
+      "role": "published_acir",
+      "required": false
     }
   ],
 
@@ -163,6 +182,7 @@
     "description": "Bounds applied while walking the tree, so a hostile or corrupted working directory cannot turn a build check into a denial of service.",
     "max_artifact_bytes": 268435456,
     "max_artifacts": 64,
-    "max_provenance_files": 512
+    "max_provenance_files": 512,
+    "max_circuits": 64
   }
 }
