@@ -48,8 +48,8 @@ fn main(
         evidence_digest,
     ]);
 
-    assert(derived_root == credential_root, "credential root mismatch");
-    assert(derived_nullifier == nullifier, "nullifier mismatch");
+    assert(derived_root == credential_root, "malformed");
+    assert(derived_nullifier == nullifier, "malformed");
 
     // --- domain separation constraint ---
     // Bind this proof to the Harpocrates protocol, circuit version 1, and
@@ -59,7 +59,7 @@ fn main(
         DOMAIN_VERSION_FIELD,
         DOMAIN_NETWORK_FIELD,
     ]);
-    assert(domain_tag == expected_domain_tag, "domain tag mismatch");
+    assert(domain_tag == expected_domain_tag, "unsupported");
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ fn test_zero_video_hash() {
 // Negative — wrong private inputs (existing)
 // ============================================================
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_credential_secret() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -200,7 +200,7 @@ fn test_wrong_credential_secret() {
     main(99999, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_nullifier_secret() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -217,7 +217,7 @@ fn test_wrong_nullifier_secret() {
 // Negative — wrong video hash (existing)
 // ============================================================
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_video_hash_hi() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -230,7 +230,7 @@ fn test_wrong_video_hash_hi() {
     main(cs, ns, 99999999999999999999999999999999999999, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_video_hash_lo() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -243,7 +243,7 @@ fn test_wrong_video_hash_lo() {
     main(cs, ns, vhi, 99999999999999999999999999999999999999, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_video_hash_both_halves() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -260,7 +260,7 @@ fn test_wrong_video_hash_both_halves() {
 // Negative — tampered public inputs (existing)
 // ============================================================
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_tampered_credential_root_public_input() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -273,7 +273,7 @@ fn test_tampered_credential_root_public_input() {
     main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_tampered_nullifier_public_input() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -287,7 +287,7 @@ fn test_tampered_nullifier_public_input() {
     main(cs, ns, vhi, vlo, root, nul, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_both_public_inputs_wrong_identity() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -304,7 +304,7 @@ fn test_both_public_inputs_wrong_identity() {
 // Negative — public input ordering attacks (existing)
 // ============================================================
 
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_swapped_credential_root_and_nullifier() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -318,7 +318,7 @@ fn test_swapped_credential_root_and_nullifier() {
     main(cs, ns, vhi, vlo, nul, root, scope, ep, EXPECTED_DOMAIN_TAG);
 }
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_swapped_video_hash_halves() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -338,7 +338,7 @@ fn test_swapped_video_hash_halves() {
 
 // A valid proof for scope=0 must NOT satisfy scope=999.
 // Proves the nullifier binds to the specific verifier_scope.
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_nullifier_from_different_scope() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -354,7 +354,7 @@ fn test_nullifier_from_different_scope() {
 
 // A valid proof for epoch=1 must NOT satisfy epoch=2.
 // Proves the nullifier binds to the specific epoch.
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_nullifier_from_different_epoch() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -372,7 +372,7 @@ fn test_nullifier_from_different_epoch() {
 // Negative -- nullifier/video binding (unchanged from v1)
 // ============================================================
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_nullifier_from_different_video() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -391,7 +391,7 @@ fn test_nullifier_from_different_video() {
 // ============================================================
 
 // Zero domain_tag — never equals the expected Pedersen hash.
-#[test(should_fail_with = "domain tag mismatch")]
+#[test(should_fail_with = "unsupported")]
 fn test_zero_domain_tag_rejected() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -416,7 +416,7 @@ fn nullifier_with_algorithm_id(
     std::hash::pedersen_hash([cs, ns, evidence])
 }
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_algorithm_id_in_nullifier() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -434,7 +434,7 @@ fn test_wrong_algorithm_id_in_nullifier() {
 // Negative -- evidence digest commitment preimage
 // ============================================================
 
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_swapped_algorithm_id_and_video_hash_hi() {
     let cs: Field = 12345;
     let ns: Field = 67890;
