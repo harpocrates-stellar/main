@@ -488,7 +488,11 @@ limitation).
 
 3. Circuit artifact versioning: the compiled `silent_witness.json` in
    `frontend/public/noir/` must match the verifier contract's proving key. There
-   is no on-chain mechanism to detect or enforce this alignment.
+   is no on-chain mechanism to detect or enforce this alignment. The build side is
+   now pinned and drift-checked (`zk/browser.artifacts.manifest.json`,
+   `check-coverage`), but no check yet compares a circuit's verification-key digest
+   to the key the deployed verifier contract was built with.
+   See [Open Risk OR-5](#or-5-circuit-artifact-version-alignment).
 
 **Severity:** Critical (OR-1 stub path). Low (verified path via `register_anonymous_verified`).
 
@@ -625,6 +629,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
 | Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
 | AST-based API Schema generation prevents DB injections and application state side-effects during build/CI | T6, T10 | `devx/generate_api_schema.py` |
+| Domain-separated proof-cache keys: SHA-256 over versioned `harpocrates:verifier-cache:v1` tag + length-prefixed fields; hex canonicalization prevents case-variant cache fragmentation | T2, T8 | `verifier_cache.py` → `CACHE_KEY_DOMAIN_TAG`, `_get_cache_key` |
 
 
 ### 7.3 React Frontend
@@ -641,7 +646,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
 
-### 7.4 Noir ZK Circuit (`silent_witness`)
+### 7.4 Noir ZK Circuits
 
 | Mitigation | Threats addressed | Code reference |
 |------------|------------------|----------------|
@@ -649,6 +654,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `assert(derived_nullifier == nullifier)` — binds nullifier to secrets + video hash | T2, T8 | `silent_witness/src/main.nr` |
 | Nullifier commits to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)` | T2, T5 | `silent_witness/src/main.nr` |
 | Test corpus: tampered public inputs, wrong video hash, swapped fields, cross-video nullifier | T2, T8 | `silent_witness/src/main.nr` → test functions |
+| Pinned toolchain + hermetic build + normalized digest manifest for every circuit, with a double-build check | T4, T8, OR-5 | `zk/toolchain.lock.json`, `zk/noir/scripts/reproducible-build.sh` |
+| `check-coverage` fails when a circuit in the tree is not declared in the lock, so no circuit can reach a public boundary unpinned | T4, T8, OR-5 | `zk/tools/artifact_manifest.py` → `check_coverage` |
+| Published browser ACIR is digest-pinned and, when a build target is present, required to match it | T4, T8, OR-5 | `zk/browser.artifacts.manifest.json` → `verify-browser` |
 
 
 ---
@@ -725,15 +733,26 @@ using a watermarking technique that is more robust to re-encoding.
 **Severity:** Medium  
 **Component:** Frontend / Soroban verifier contract  
 **Description:** The compiled circuit artifacts in `frontend/public/noir/`
-(`silent_witness.json`, `silent_witness_helper.json`) must match the proving
-key embedded in the `SilentWitnessUltraHonkVerifier` contract. There is no
-on-chain or build-time check that enforces this alignment. A circuit upgrade
-that replaces the verifier contract without updating the frontend artifacts (or
-vice versa) will silently break all Tier 1 registrations.  
+(`silent_witness.json`, `silent_witness_helper.json`, `selective_disclosure.json`)
+must match the proving key embedded in the `SilentWitnessUltraHonkVerifier`
+contract. There is no on-chain or build-time check that enforces this alignment.
+A circuit upgrade that replaces the verifier contract without updating the
+frontend artifacts (or vice versa) will silently break all Tier 1 registrations.  
 **Remediation:** Add a build-time check (CI step) that computes a hash of
 `silent_witness.json` and compares it to a value stored alongside the verifier
 contract's WASM hash. Document the circuit upgrade procedure in
 `contracts/VERIFIER_INTEGRATION.md`.
+
+**Partial progress (this repository):** the published-artifact side is now
+covered — `zk/browser.artifacts.manifest.json` pins the digests of every
+`published_acir` bundle and `zk/tools/artifact_manifest.py verify-browser` fails
+on drift, and `check-coverage` fails if a circuit is not declared in
+`zk/toolchain.lock.json` at all (the condition that let
+`selective_disclosure` reach the browser and the registry verifier while sitting
+outside the reproducible-build pipeline). What remains open is the *other* half:
+nothing compares a circuit's verification-key digest to the key the deployed
+verifier contract was built with, so the alignment check is still name-based
+rather than digest-based. See `docs/zk-reproducible-builds.md`.
 
 ---
 

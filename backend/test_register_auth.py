@@ -66,7 +66,9 @@ def client_with(**env: str):
     saved = {name: os.environ.get(name) for name in REGISTER_ENV}
     for name in REGISTER_ENV:
         os.environ.pop(name, None)
-    os.environ["RATELIMIT_ENABLED"] = "false"
+    # Keep the limiter enabled: each fresh app gets its own in-memory store, and
+    # a disabled flask-limiter 4.x instance is not retained by the app.
+    os.environ["RATELIMIT_ENABLED"] = "true"
     os.environ.update(env)
     try:
         yield app_module.create_app().test_client()
@@ -482,13 +484,24 @@ class PrivacyAndConfigTest(unittest.TestCase):
             with client_with(REGISTER_API_KEY=LEGACY_TOKEN, REGISTER_API_KEY_EXPIRES="tomorrow"):
                 pass
 
-    def test_naive_expiry_is_treated_as_utc(self) -> None:
-        with client_with(REGISTER_API_KEY=LEGACY_TOKEN, REGISTER_API_KEY_EXPIRES="2099-01-01T00:00:00"):
-            from config import load_config
+    def test_expiry_requires_timezone_and_normalizes_to_utc(self) -> None:
+        from unittest import mock
 
+        from config import load_config
+
+        with mock.patch.dict(
+            os.environ,
+            {"REGISTER_API_KEY": LEGACY_TOKEN, "REGISTER_API_KEY_EXPIRES": "2099-01-01T00:00:00Z"},
+        ):
             expires = load_config().register_api_key_expires
         self.assertEqual(expires, datetime(2099, 1, 1, tzinfo=timezone.utc))
 
+        with mock.patch.dict(
+            os.environ,
+            {"REGISTER_API_KEY": LEGACY_TOKEN, "REGISTER_API_KEY_EXPIRES": "2099-01-01T00:00:00"},
+        ):
+            with self.assertRaises(RuntimeError):
+                load_config()
 
 if __name__ == "__main__":
     unittest.main()

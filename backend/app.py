@@ -81,6 +81,13 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from c2pa import (
+    C2paParseError,
+    C2paTrustStatus,
+    corroborate_binding,
+    export_c2pa_manifest,
+    parse_c2pa_manifest,
+)
 from logging_utils import log_structured, redact_sensitive
 from errors import (
     INTERNAL_ERROR,
@@ -286,9 +293,13 @@ def create_app() -> Flask:
           endpoint is open (development convenience, unchanged).
         - Otherwise the request must carry ``Authorization: Bearer <key>``.
         - If REGISTER_API_KEY_EXPIRES is set and the current UTC time is at or
-          past that instant every registration credential is expired and the
-          request is rejected with 401, even when the token would match.
-        - The legacy key is unscoped. An owner-scoped key may only register a
+          past that instant the primary and owner-scoped credentials are
+          expired and the request is rejected with 401, even when the token
+          would match.
+        - ``REGISTER_API_KEY_PREVIOUS`` can overlap the primary key during a
+          rotation.  It is accepted until its optional expiry, allowing
+          already-deployed clients to transition without downtime.
+        - The legacy keys are unscoped. An owner-scoped key may only register a
           ``sourceAddress`` equal to its owner (403 otherwise).
 
         This must wrap ``@idempotent``: replays are keyed on the request body
@@ -313,12 +324,6 @@ def create_app() -> Flask:
                 # No credential configured – allow the request (dev mode).
                 return fn(*args, **kwargs)
 
-            # Check expiry before validating the key so that an expired key
-            # is never accepted even if the token matches.
-            expires = config.register_api_key_expires
-            if expires is not None and datetime.now(tz=timezone.utc) >= expires:
-                return reject(register_auth.REASON_EXPIRED, "API key has expired")
-
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return reject(
@@ -326,12 +331,36 @@ def create_app() -> Flask:
                     "Authorization header with Bearer token is required",
                 )
 
+            token = auth_header[len("Bearer "):].strip()
+            now = datetime.now(tz=timezone.utc)
+
+            # Every configured credential is compared on every call; do not
+            # reveal whether a key is primary, previous, scoped, or expired.
             principal = register_auth.authenticate(
-                auth_header[len("Bearer "):],
+                token,
                 legacy_key=legacy_key,
                 scoped_keys=scoped_keys,
             )
+            previous_key = config.register_api_key_previous
+            previous_principal = (
+                register_auth.authenticate(token, legacy_key=previous_key, scoped_keys=())
+                if previous_key
+                else None
+            )
+            # REGISTER_API_KEY_EXPIRES applies to the primary and scoped keys;
+            # REGISTER_API_KEY_PREVIOUS has its own optional expiry.
+            expires = config.register_api_key_expires
+            primary_expired = expires is not None and now >= expires
+            previous_expires = config.register_api_key_previous_expires
+            if primary_expired:
+                principal = None
+            if principal is None and previous_principal is not None and (
+                previous_expires is None or now < previous_expires
+            ):
+                principal = previous_principal
             if principal is None:
+                if primary_expired:
+                    return reject(register_auth.REASON_EXPIRED, "API key has expired")
                 return reject(register_auth.REASON_INVALID, "Invalid API key")
 
             if principal.is_scoped:
@@ -445,6 +474,12 @@ def create_app() -> Flask:
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
+        for dependency in readiness_manager.deps:
+            metrics_collector.record_dependency_status(
+                dependency.name,
+                status.get(dependency.name, "unknown"),
+                dependency.critical,
+            )
         trace = current_trace_fields()
         return jsonify(
             {
@@ -1514,23 +1549,38 @@ def create_app() -> Flask:
     @app.post("/api/c2pa/import")
     def c2pa_import():
         """
-        Parse and validate a C2PA-compatible authenticity manifest.
+        Parse, validate, and corroborate a C2PA-compatible authenticity manifest.
 
         Request body (JSON):
             manifest  string | object  Raw manifest (JSON string or pre-parsed object)
+            expected  object           Optional hashes the caller claims, compared
+                                       against the binding embedded in the manifest.
+                                       Keys: video_hash, metadata_hash, proof_id,
+                                       tier, network, contract_id
 
         Response body (JSON):
-            ok            bool    true
-            binding       object  Extracted Harpocrates binding fields
-            trust_status  string  'signature_not_checked' — always; see note
+            ok              bool    true
+            binding         object  Extracted Harpocrates binding fields
+            trust_status    string  'signature_not_checked' — always; see note
+            hashes_verified bool    true only when *expected* was supplied and every
+                                    supplied field matched the embedded binding
+            hashes_compared list    Field names actually compared ([] when no
+                                    *expected* was supplied)
             unknown_assertions  list  Assertions not recognised by this version
                                       (unsupported_semantics: true)
-            note          string  Trust model clarification
+            note            string  Trust model clarification
+
+        The binding is embedded twice (named assertion and top-level object); a
+        manifest whose two copies disagree is rejected rather than resolved in
+        favour of one of them.  When *expected* is supplied, a submitted value
+        that disagrees with the embedded binding is rejected with
+        VALIDATION_ERROR carrying the offending field *name* only.
 
         The trust_status is always 'signature_not_checked'.  C2PA signature
-        verification is out of scope.  The extracted binding must be corroborated
-        against on-chain records via the standard Harpocrates verification flow
-        before any trust decision is made.
+        verification is out of scope, and a matching *expected* block is
+        integrity corroboration only — never an on-chain or ZK verification.
+        The extracted binding must still be corroborated against on-chain
+        records before any trust decision is made.
         """
         if not request.is_json:
             return error_response(
@@ -1581,6 +1631,51 @@ def create_app() -> Flask:
             )
 
         binding = parsed.binding
+
+        # Submitted-vs-embedded verification. When the caller states which
+        # evidence it is asking about, the manifest's embedded binding must
+        # describe that same evidence; otherwise a validly-exported manifest for
+        # a different video would be accepted here.
+        expected = body.get("expected")
+        if expected is not None and not isinstance(expected, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="expected must be a JSON object of submitted hashes",
+                status=400,
+            )
+
+        corroboration = None
+        if expected is not None:
+            try:
+                corroboration = corroborate_binding(
+                    parsed,
+                    video_hash=expected.get("video_hash"),
+                    metadata_hash=expected.get("metadata_hash"),
+                    proof_id=expected.get("proof_id"),
+                    tier=expected.get("tier"),
+                    network=expected.get("network"),
+                    contract_id=expected.get("contract_id"),
+                )
+            except ValueError as exc:
+                # _validate_hex32/field checks emit the field name and static
+                # text only — never a submitted value.
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+
+            if not corroboration.ok:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=(
+                        "submitted hashes do not match the embedded C2PA binding: "
+                        + ", ".join(corroboration.mismatches)
+                    ),
+                    status=400,
+                    field=corroboration.mismatches[0],
+                )
+
         unknown = [
             {
                 "label": ua.label,
@@ -1600,11 +1695,15 @@ def create_app() -> Flask:
                 "contract_id": binding.contract_id,
             },
             "trust_status": parsed.trust_status.value,
+            # True only when the caller supplied hashes AND all of them matched.
+            "hashes_verified": bool(corroboration is not None and corroboration.ok),
+            "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
-                "verification. Corroborate this binding against on-chain records "
-                "before making any trust decision."
+                "verification. A matching 'expected' block is integrity "
+                "corroboration only. Corroborate this binding against on-chain "
+                "records before making any trust decision."
             ),
         })
 

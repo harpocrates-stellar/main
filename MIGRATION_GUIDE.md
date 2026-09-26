@@ -182,7 +182,11 @@ cargo test --lib
      --scope $ScopeHex `
      --epoch $epochValue
    ```
-3. Verify that v1 proofs work again:
+3. Revert the active deployment interfaces safely using the rollout guard:
+   ```powershell
+   .\scripts\rollback.ps1 -ManifestFile .\release\compatibility-manifest.json
+   ```
+4. Verify that v1 proofs work again:
    ```powershell
    .\scripts\e2e-harpocrates.ps1
    ```

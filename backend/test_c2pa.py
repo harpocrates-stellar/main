@@ -25,6 +25,7 @@ from c2pa import (
     C2PA_HARPOCRATES_MAPPING_VERSION,
     C2paExportedManifest,
     C2paHarpocratesBinding,
+    C2paHashCorroboration,
     C2paParsedManifest,
     C2paParseError,
     C2paTrustStatus,
@@ -33,6 +34,7 @@ from c2pa import (
     _MAX_ASSERTION_LABEL_LEN,
     _MAX_JSON_DEPTH,
     _MAX_MANIFEST_BYTES,
+    corroborate_binding,
     export_c2pa_manifest,
     parse_c2pa_manifest,
     verify_round_trip,
@@ -674,3 +676,246 @@ class TestCompatibilityMatrix:
             with pytest.raises(C2paParseError) as exc_info:
                 parse_c2pa_manifest(_encode(d))
             assert exc_info.value.reason == "mapping_version_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Embedded-binding consistency — the two embedded copies must agree
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedBindingConsistency:
+    """
+    The binding is embedded twice by design: once as the
+    ``harpocrates.binding/v1`` assertion and once as the top-level
+    ``harpocrates_binding`` object. A manifest whose copies disagree must be
+    rejected rather than silently resolved in favour of one of them.
+    """
+
+    def test_two_identical_copies_parse(self):
+        result = parse_c2pa_manifest(_encode(_valid_manifest_dict()))
+        assert result.binding.video_hash == VALID_VIDEO_HASH
+
+    def test_case_difference_between_copies_still_agrees(self):
+        d = _valid_manifest_dict()
+        d["assertions"][0]["data"]["video_hash"] = VALID_VIDEO_HASH.upper()
+        result = parse_c2pa_manifest(_encode(d))
+        assert result.binding.video_hash == VALID_VIDEO_HASH
+
+    @pytest.mark.parametrize("field", ["video_hash", "metadata_hash", "proof_id"])
+    def test_tampered_hex_copy_is_rejected(self, field):
+        d = _valid_manifest_dict()
+        d["assertions"][0]["data"][field] = "dd" * 32
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        assert exc_info.value.reason == "embedded_binding_mismatch"
+        assert exc_info.value.field == field
+
+    @pytest.mark.parametrize(
+        "field,tampered",
+        [
+            # Each tampered value is individually valid for its field, so the
+            # rejection exercised here is the cross-copy disagreement itself.
+            ("tier", "seal"),
+            ("network", "Public Global Stellar Network ; September 2015"),
+            ("contract_id", "CDIFFERENTCONTRACTID0000000000000000000000000000000000000000"),
+        ],
+    )
+    def test_tampered_text_copy_is_rejected(self, field, tampered):
+        d = _valid_manifest_dict()
+        d["assertions"][0]["data"][field] = tampered
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        assert exc_info.value.reason == "embedded_binding_mismatch"
+        assert exc_info.value.field == field
+
+    def test_individually_invalid_copy_fails_validation_first(self):
+        """A copy that is not a valid binding is rejected before any comparison."""
+        d = _valid_manifest_dict()
+        d["assertions"][0]["data"]["tier"] = "not-a-tier"
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        assert exc_info.value.reason == "invalid_value"
+        assert exc_info.value.field == "assertions[0].data.tier"
+
+    def test_mismatch_error_does_not_echo_hashes(self):
+        """Privacy: the mismatch payload carries the field name only."""
+        d = _valid_manifest_dict()
+        tampered = "ee" * 32
+        d["harpocrates_binding"]["metadata_hash"] = tampered
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        rendered = str(exc_info.value.to_dict()) + str(exc_info.value)
+        assert tampered not in rendered
+        assert VALID_META_HASH not in rendered
+
+    def test_duplicate_mapping_assertions_rejected(self):
+        d = _valid_manifest_dict()
+        d["assertions"].append(json.loads(json.dumps(d["assertions"][0])))
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        assert exc_info.value.reason == "embedded_binding_duplicate"
+
+    def test_mapping_assertion_data_not_object(self):
+        d = _valid_manifest_dict()
+        d["assertions"][0]["data"] = "not-an-object"
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        assert exc_info.value.reason == "invalid_type"
+        assert exc_info.value.field == "assertions[0].data"
+
+    def test_mapping_assertion_missing_key(self):
+        d = _valid_manifest_dict()
+        del d["assertions"][0]["data"]["proof_id"]
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(_encode(d))
+        assert exc_info.value.reason == "missing_key"
+        assert exc_info.value.field == "assertions[0].data.proof_id"
+
+    def test_exported_manifest_ships_consistent_copies(self):
+        exported = export_c2pa_manifest(
+            video_hash=VALID_VIDEO_HASH,
+            metadata_hash=VALID_META_HASH,
+            proof_id=VALID_PROOF_ID,
+            tier=VALID_TIER,
+            network=VALID_NETWORK,
+            contract_id=VALID_CONTRACT,
+        )
+        assert exported.manifest["assertions"][0]["data"] == exported.manifest["harpocrates_binding"]
+        parsed = parse_c2pa_manifest(_encode(exported.manifest))
+        assert parsed.binding.video_hash == VALID_VIDEO_HASH
+
+    def test_unknown_assertions_still_preserved(self):
+        d = _valid_manifest_dict()
+        d["assertions"].append({"label": "c2pa.actions", "data": {"actions": []}})
+        result = parse_c2pa_manifest(_encode(d))
+        assert [ua.label for ua in result.unknown_assertions] == ["c2pa.actions"]
+
+
+# ---------------------------------------------------------------------------
+# Submitted-vs-embedded corroboration
+# ---------------------------------------------------------------------------
+
+
+class TestHashCorroboration:
+    """Caller-submitted values must match the binding embedded in the manifest."""
+
+    def _parsed(self) -> C2paParsedManifest:
+        return parse_c2pa_manifest(_encode(_valid_manifest_dict()))
+
+    def _all_fields(self) -> dict:
+        return {
+            "video_hash": VALID_VIDEO_HASH,
+            "metadata_hash": VALID_META_HASH,
+            "proof_id": VALID_PROOF_ID,
+            "tier": VALID_TIER,
+            "network": VALID_NETWORK,
+            "contract_id": VALID_CONTRACT,
+        }
+
+    def test_no_submitted_fields_compares_nothing(self):
+        result = corroborate_binding(self._parsed())
+        assert isinstance(result, C2paHashCorroboration)
+        assert result.ok is True
+        assert result.compared_fields == ()
+        assert result.mismatches == ()
+
+    def test_all_matching_fields_verify(self):
+        result = corroborate_binding(self._parsed(), **self._all_fields())
+        assert result.ok is True
+        assert result.mismatches == ()
+        assert result.compared_fields == (
+            "video_hash",
+            "metadata_hash",
+            "proof_id",
+            "tier",
+            "network",
+            "contract_id",
+        )
+
+    def test_uppercase_submitted_hash_matches(self):
+        result = corroborate_binding(self._parsed(), video_hash=VALID_VIDEO_HASH.upper())
+        assert result.ok is True
+        assert result.mismatches == ()
+
+    def test_surrounding_whitespace_in_network_matches(self):
+        result = corroborate_binding(self._parsed(), network=f"  {VALID_NETWORK}  ")
+        assert result.ok is True
+
+    @pytest.mark.parametrize(
+        "field,submitted",
+        [
+            ("video_hash", "dd" * 32),
+            ("metadata_hash", "dd" * 32),
+            ("proof_id", "dd" * 32),
+            ("tier", "seal"),
+            ("network", "Public Global Stellar Network ; September 2015"),
+            ("contract_id", "CDIFFERENTCONTRACTID0000000000000000000000000000000000000000"),
+        ],
+    )
+    def test_single_mismatch_is_reported(self, field, submitted):
+        result = corroborate_binding(self._parsed(), **{field: submitted})
+        assert result.ok is False
+        assert result.mismatches == (field,)
+        assert result.compared_fields == (field,)
+
+    def test_mismatch_order_is_fixed_regardless_of_kwarg_order(self):
+        result = corroborate_binding(
+            self._parsed(),
+            proof_id="dd" * 32,
+            video_hash="dd" * 32,
+            contract_id="CDIFFERENTCONTRACTID",
+        )
+        assert result.mismatches == ("video_hash", "proof_id", "contract_id")
+
+    def test_only_supplied_fields_are_compared(self):
+        result = corroborate_binding(self._parsed(), tier=VALID_TIER)
+        assert result.ok is True
+        assert result.compared_fields == ("tier",)
+
+    def test_mixed_match_and_mismatch(self):
+        result = corroborate_binding(
+            self._parsed(),
+            video_hash=VALID_VIDEO_HASH,
+            metadata_hash="dd" * 32,
+            tier=VALID_TIER,
+        )
+        assert result.ok is False
+        assert result.mismatches == ("metadata_hash",)
+        assert result.compared_fields == ("video_hash", "metadata_hash", "tier")
+
+    def test_malformed_submitted_hash_raises_value_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            corroborate_binding(self._parsed(), video_hash="zz" * 32)
+        assert "video_hash" in str(exc_info.value)
+        assert "zz" not in str(exc_info.value)
+
+    def test_short_submitted_hash_raises_value_error(self):
+        with pytest.raises(ValueError):
+            corroborate_binding(self._parsed(), proof_id="aa" * 16)
+
+    def test_non_string_submitted_hash_raises_value_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            corroborate_binding(self._parsed(), video_hash=1234)  # type: ignore[arg-type]
+        assert "video_hash" in str(exc_info.value)
+
+    def test_blank_submitted_text_raises_value_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            corroborate_binding(self._parsed(), network="   ")
+        assert "network" in str(exc_info.value)
+
+    def test_non_string_submitted_text_raises_value_error(self):
+        with pytest.raises(ValueError):
+            corroborate_binding(self._parsed(), tier=7)  # type: ignore[arg-type]
+
+    def test_result_never_carries_submitted_or_embedded_values(self):
+        submitted = "dd" * 32
+        result = corroborate_binding(self._parsed(), video_hash=submitted)
+        rendered = repr(result)
+        assert submitted not in rendered
+        assert VALID_VIDEO_HASH not in rendered
+
+    def test_corroboration_is_deterministic(self):
+        args = {"video_hash": "dd" * 32, "tier": "seal"}
+        assert corroborate_binding(self._parsed(), **args) == corroborate_binding(
+            self._parsed(), **args
+        )
