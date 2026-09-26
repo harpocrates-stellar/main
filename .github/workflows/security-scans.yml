@@ -27,6 +27,14 @@ jobs:
           head: HEAD
           extra_args: --debug --only-verified
 
+      - name: Setup Python for custom scanner
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Harpocrates Secret Scanner
+        run: python devx/secret_scanner.py
+
   dependency-scan:
     name: Dependency Vulnerability Checks
     runs-on: ubuntu-latest
