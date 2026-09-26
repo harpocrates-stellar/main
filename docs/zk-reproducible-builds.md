@@ -19,6 +19,7 @@ double-build check, and how to operate and roll back the pipeline.
 | `zk/noir/scripts/reproducible-build.sh` | Hermetic double-build driver |
 | `zk/artifacts.manifest.json` | Committed manifest (written by a build; absent until first published) |
 | `zk/browser.artifacts.manifest.json` | Committed digests for published browser ACIR under `frontend/public/noir/` |
+| `zk/circuit.provenance.json` | Published digests of lock-declared circuit sources (and declared artifact slots) |
 | `.github/workflows/zk-ci.yml` | CI enforcement |
 
 ## Circuit coverage
@@ -175,6 +176,7 @@ python -m pytest zk/tools -q
 python zk/tools/artifact_manifest.py check-coverage
 python zk/tools/artifact_manifest.py verify
 python zk/tools/artifact_manifest.py verify-browser
+python zk/tools/artifact_manifest.py verify-provenance
 ```
 
 ## Configuration
@@ -229,6 +231,28 @@ the leak this pipeline exists to prevent. This is pinned by
 | `1` | Drift detected | Read the `drift.finding` signals; a source digest change is expected after a circuit edit, an artifact-only change is not |
 | `2` | Usage error | Fix the command line |
 | `3` | Fatal | Toolchain mismatch, missing required artifact, or unreadable tree |
+
+
+## Published circuit provenance
+
+Circuit *source* provenance can be published without compiling ACIR or generating
+verification keys. The lock file remains the single declaration of which sources
+define which artifact slots:
+
+```bash
+python zk/tools/artifact_manifest.py write-provenance
+python zk/tools/artifact_manifest.py verify-provenance
+```
+
+`zk/circuit.provenance.json` records:
+
+- pinned toolchain versions and the normalization-policy digest
+- digests of every path matched by `provenance_sources.globs`
+- the lock-declared artifact path/kind/role/required slots (metadata only)
+
+It does **not** embed `.nr` source, witnesses, proofs, or private keys. Drift
+findings name paths and truncated digests only. CI enforces the document once it
+is committed; deleting it makes the provenance step inert again (rollback).
 
 ## Deployment impact and rollout
 

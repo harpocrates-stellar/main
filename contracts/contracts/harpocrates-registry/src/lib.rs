@@ -15,7 +15,7 @@ pub mod verifier_inputs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wasm_budget;
 
-use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN};
+use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN, REVOCATION_PUBLIC_INPUTS_LEN};
 
 /// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
@@ -320,8 +320,8 @@ pub enum ProofVerificationStatus {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineageRecord {
-    pub parent_proof_ids: SorobanVec<BytesN<32>>,
-    pub parent_commitments: SorobanVec<BytesN<32>>,
+    pub parent_proof_ids: soroban_sdk::Vec<BytesN<32>>,
+    pub parent_commitments: soroban_sdk::Vec<BytesN<32>>,
     pub manifest_digest: BytesN<32>,
     pub actor: Address,
     pub operation_type: Symbol,
@@ -333,7 +333,7 @@ pub struct LineageRecord {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineageChildrenPage {
-    pub children: SorobanVec<BytesN<32>>,
+    pub children: soroban_sdk::Vec<BytesN<32>>,
     /// Absolute offset of the next unread child (equals `total` when exhausted).
     pub next_offset: u32,
     pub total: u32,
@@ -432,8 +432,12 @@ pub struct ProofRegistered {
 }
 
 // Metadata envelope events (#317) — version + hash only (privacy-safe).
-#[contractevent(topics = ["metadata", "envelope", "bound"])]
+// Third topic carried as a `Symbol` field (spec allows two literal prefixes);
+// emitted topics stay `["metadata", "envelope", "bound", proof_id]`.
+#[contractevent(topics = ["metadata", "envelope"])]
 pub struct MetadataEnvelopeBound {
+    #[topic]
+    pub bound: Symbol,
     #[topic]
     pub proof_id: BytesN<32>,
     pub version: u32,
@@ -441,8 +445,10 @@ pub struct MetadataEnvelopeBound {
     pub bound_at: u64,
 }
 
-#[contractevent(topics = ["metadata", "envelope", "upgraded"])]
+#[contractevent(topics = ["metadata", "envelope"])]
 pub struct MetadataEnvelopeUpgraded {
+    #[topic]
+    pub upgraded: Symbol,
     #[topic]
     pub proof_id: BytesN<32>,
     pub previous: u32,
@@ -450,8 +456,15 @@ pub struct MetadataEnvelopeUpgraded {
     pub metadata_hash: BytesN<32>,
 }
 
-#[contractevent(topics = ["proof", "batch", "reg"])]
+// The spec allows at most two literal prefix topics
+// (`ScSpecEventV0.prefix_topics` is `VecM<ScSymbol, 2>`), so the third topic
+// is carried as a `Symbol` field. Fields follow the prefix in declaration
+// order, keeping the emitted topic list exactly
+// `["proof", "batch", "reg", batch_id]`.
+#[contractevent(topics = ["proof", "batch"])]
 pub struct BatchProofRegistered {
+    #[topic]
+    pub reg: Symbol,
     #[topic]
     pub batch_id: BytesN<32>,
     pub credential_root: BytesN<32>,
@@ -553,7 +566,7 @@ pub struct LineageRegistered {
     pub actor: Address,
     pub operation_type: Symbol,
     pub depth: u32,
-    pub parent_commitments: SorobanVec<BytesN<32>>,
+    pub parent_commitments: soroban_sdk::Vec<BytesN<32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -795,26 +808,20 @@ const SCOPED_NULLIFIER_V1_DOMAIN: [u8; 32] = [
 
 /// Protocol domain constant ("harpocrates" SHA-256 field element).
 pub const DOMAIN_PROTOCOL_FIELD: [u8; 32] = [
-    0x26, 0x1e, 0x9f, 0x6e, 0x39, 0xe3, 0xc1, 0xae,
-    0x6a, 0xca, 0x9f, 0x29, 0xe8, 0x4c, 0x10, 0xd5,
-    0x9c, 0x82, 0xd5, 0xf4, 0xb4, 0x0c, 0x21, 0xc1,
-    0xb7, 0xe3, 0xc0, 0x1a, 0xd5, 0x71, 0xc2, 0x01,
+    0x26, 0x1e, 0x9f, 0x6e, 0x39, 0xe3, 0xc1, 0xae, 0x6a, 0xca, 0x9f, 0x29, 0xe8, 0x4c, 0x10, 0xd5,
+    0x9c, 0x82, 0xd5, 0xf4, 0xb4, 0x0c, 0x21, 0xc1, 0xb7, 0xe3, 0xc0, 0x1a, 0xd5, 0x71, 0xc2, 0x01,
 ];
 
 /// Circuit version domain constant ("1" SHA-256 field element).
 pub const DOMAIN_VERSION_FIELD: [u8; 32] = [
-    0x0c, 0x89, 0xef, 0xf4, 0xec, 0x8e, 0x39, 0xa0,
-    0x1e, 0x9f, 0x19, 0x54, 0x7a, 0x0c, 0xc9, 0xdd,
-    0x7f, 0xd2, 0xa9, 0x7d, 0x79, 0xba, 0x4d, 0x94,
-    0xfd, 0x32, 0xe9, 0x7a, 0x1f, 0x5a, 0xc6, 0x23,
+    0x0c, 0x89, 0xef, 0xf4, 0xec, 0x8e, 0x39, 0xa0, 0x1e, 0x9f, 0x19, 0x54, 0x7a, 0x0c, 0xc9, 0xdd,
+    0x7f, 0xd2, 0xa9, 0x7d, 0x79, 0xba, 0x4d, 0x94, 0xfd, 0x32, 0xe9, 0x7a, 0x1f, 0x5a, 0xc6, 0x23,
 ];
 
 /// Target network domain constant ("testnet" SHA-256 field element).
 pub const DOMAIN_NETWORK_FIELD: [u8; 32] = [
-    0x2a, 0x2c, 0x3f, 0x48, 0xce, 0x2e, 0x3c, 0x2f,
-    0x1e, 0x6c, 0x89, 0xb1, 0x8d, 0x64, 0xb5, 0xf5,
-    0xc1, 0xf8, 0x8a, 0x59, 0xa0, 0xd9, 0xbc, 0x82,
-    0xcb, 0x61, 0xa1, 0xe8, 0xcb, 0x77, 0xa5, 0x0f,
+    0x2a, 0x2c, 0x3f, 0x48, 0xce, 0x2e, 0x3c, 0x2f, 0x1e, 0x6c, 0x89, 0xb1, 0x8d, 0x64, 0xb5, 0xf5,
+    0xc1, 0xf8, 0x8a, 0x59, 0xa0, 0xd9, 0xbc, 0x82, 0xcb, 0x61, 0xa1, 0xe8, 0xcb, 0x77, 0xa5, 0x0f,
 ];
 
 /// Expected length of v1 public inputs (5 × 32 = 160 bytes, including domain_tag).
@@ -934,10 +941,14 @@ pub struct TimelockEmergencyExec {
     pub executed_at: u64,
 }
 
-#[contractevent(topics = ["timelock", "delay", "set"])]
+// Two literal prefix topics max; the third is a `Symbol` field so the emitted
+// topic list stays exactly `["timelock", "delay", "set", set_by]`.
+#[contractevent(topics = ["timelock", "delay"])]
 pub struct TimelockMinDelaySet {
     pub previous_delay: u64,
     pub new_delay: u64,
+    #[topic]
+    pub set: Symbol,
     #[topic]
     pub set_by: Address,
 }
@@ -1282,7 +1293,9 @@ impl HarpocratesRegistry {
     pub fn set_verifier(env: Env, admin: Address, verifier: Address) {
         require_admin(&env, &admin);
 
-        env.storage().persistent().set(&DataKey::Verifier, &verifier);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Verifier, &verifier);
         env.storage().persistent().remove(&DataKey::VerifierState);
         VerifierSet { verifier }.publish(&env);
     }
@@ -1311,7 +1324,9 @@ impl HarpocratesRegistry {
             rollback_window,
             rollback_window_end: activation_ledger.saturating_add(rollback_window),
         };
-        env.storage().persistent().set(&DataKey::VerifierState, &state);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VerifierState, &state);
         VerifierRotationScheduled {
             active_verifier: active_verifier.clone(),
             pending_verifier: verifier.clone(),
@@ -1326,12 +1341,14 @@ impl HarpocratesRegistry {
         require_admin(&env, &admin);
 
         let mut state = get_verifier_rotation_state(&env);
-        let pending_verifier = state.pending_verifier.clone().unwrap_or_else(|| {
-            panic_with_error!(&env, RegistryError::RotationNotScheduled)
-        });
-        let active_verifier = state.active_verifier.clone().unwrap_or_else(|| {
-            panic_with_error!(&env, RegistryError::RotationNotScheduled)
-        });
+        let pending_verifier = state
+            .pending_verifier
+            .clone()
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::RotationNotScheduled));
+        let active_verifier = state
+            .active_verifier
+            .clone()
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::RotationNotScheduled));
         let current_ledger = u64::from(env.ledger().sequence());
         if current_ledger < state.activation_ledger {
             panic_with_error!(&env, RegistryError::RotationNotReady);
@@ -1340,8 +1357,12 @@ impl HarpocratesRegistry {
         state.active_verifier = Some(pending_verifier.clone());
         state.pending_verifier = None;
         state.rollback_window_end = current_ledger.saturating_add(state.rollback_window.max(0));
-        env.storage().persistent().set(&DataKey::VerifierState, &state);
-        env.storage().persistent().set(&DataKey::Verifier, &pending_verifier);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VerifierState, &state);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Verifier, &pending_verifier);
         VerifierRotationActivated {
             active_verifier: pending_verifier,
             previous_verifier: active_verifier,
@@ -1354,18 +1375,22 @@ impl HarpocratesRegistry {
         require_admin(&env, &admin);
 
         let state = get_verifier_rotation_state(&env);
-        let active_verifier = state.active_verifier.clone().unwrap_or_else(|| {
-            panic_with_error!(&env, RegistryError::RotationNotScheduled)
-        });
-        let previous_verifier = state.previous_verifier.clone().unwrap_or_else(|| {
-            panic_with_error!(&env, RegistryError::RotationNotScheduled)
-        });
+        let active_verifier = state
+            .active_verifier
+            .clone()
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::RotationNotScheduled));
+        let previous_verifier = state
+            .previous_verifier
+            .clone()
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::RotationNotScheduled));
         let current_ledger = u64::from(env.ledger().sequence());
         if state.rollback_window_end == 0 || current_ledger > state.rollback_window_end {
             panic_with_error!(&env, RegistryError::RotationWindowClosed);
         }
 
-        env.storage().persistent().set(&DataKey::Verifier, &previous_verifier);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Verifier, &previous_verifier);
         env.storage().persistent().remove(&DataKey::VerifierState);
         VerifierRotationRolledBack {
             active_verifier: previous_verifier.clone(),
@@ -1457,7 +1482,11 @@ impl HarpocratesRegistry {
     // -----------------------------------------------------------------------
 
     pub fn propose_timelocked_action(
-        env: Env, admin: Address, action: u32, target: Address, payload: BytesN<32>,
+        env: Env,
+        admin: Address,
+        action: u32,
+        target: Address,
+        payload: BytesN<32>,
     ) -> u32 {
         require_admin(&env, &admin);
         if action == 0 || action > 4 {
@@ -1471,17 +1500,27 @@ impl HarpocratesRegistry {
         let min_delay = get_timelock_min_delay(&env);
         let proposal_id = next_proposal_id(&env);
         let proposal = TimelockProposal {
-            action, proposer: admin.clone(), target, payload,
+            action,
+            proposer: admin.clone(),
+            target,
+            payload,
             created_at: now,
             min_execution_at: now.saturating_add(min_delay),
-            executed: false, cancelled: false,
+            executed: false,
+            cancelled: false,
         };
-        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
         TimelockProposalCreated {
-            proposal_id, action, proposer: admin,
-            target: proposal.target, created_at: now,
+            proposal_id,
+            action,
+            proposer: admin,
+            target: proposal.target,
+            created_at: now,
             min_execution_at: proposal.min_execution_at,
-        }.publish(&env);
+        }
+        .publish(&env);
         proposal_id
     }
 
@@ -1495,11 +1534,16 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::AlreadyCancelled);
         }
         proposal.cancelled = true;
-        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
         TimelockProposalCancelled {
-            proposal_id, action: proposal.action,
-            cancelled_by: admin, cancelled_at: env.ledger().timestamp(),
-        }.publish(&env);
+            proposal_id,
+            action: proposal.action,
+            cancelled_by: admin,
+            cancelled_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
     }
 
     pub fn execute_timelocked_proposal(env: Env, caller: Address, proposal_id: u32) {
@@ -1516,18 +1560,21 @@ impl HarpocratesRegistry {
         }
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
-        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &mutable_proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &mutable_proposal);
         caller.require_auth();
         dispatch_timelocked_action(&env, &proposal);
         TimelockProposalExecuted {
-            proposal_id, action: proposal.action,
-            executed_by: caller, executed_at: now,
-        }.publish(&env);
+            proposal_id,
+            action: proposal.action,
+            executed_by: caller,
+            executed_at: now,
+        }
+        .publish(&env);
     }
 
-    pub fn emergency_execute_timelocked_proposal(
-        env: Env, admin: Address, proposal_id: u32,
-    ) {
+    pub fn emergency_execute_timelock(env: Env, admin: Address, proposal_id: u32) {
         require_admin(&env, &admin);
         let proposal = get_timelock_proposal_or_panic(&env, proposal_id);
         if proposal.executed {
@@ -1538,20 +1585,30 @@ impl HarpocratesRegistry {
         }
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
-        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &mutable_proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &mutable_proposal);
         dispatch_timelocked_action(&env, &proposal);
         TimelockEmergencyExec {
-            proposal_id, action: proposal.action,
-            executed_by: admin, executed_at: env.ledger().timestamp(),
-        }.publish(&env);
+            proposal_id,
+            action: proposal.action,
+            executed_by: admin,
+            executed_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
     }
 
     pub fn get_timelock_proposal(env: Env, proposal_id: u32) -> Option<TimelockProposal> {
-        env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
     }
 
     pub fn get_timelock_proposal_count(env: Env) -> u32 {
-        env.storage().persistent().get(&DataKey::ProposalSeq).unwrap_or(0u32)
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProposalSeq)
+            .unwrap_or(0u32)
     }
 
     pub fn get_timelock_min_delay_secs(env: Env) -> u64 {
@@ -1564,10 +1621,16 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::InvalidTimelockDelay);
         }
         let previous = get_timelock_min_delay(&env);
-        env.storage().persistent().set(&DataKey::TimelockMinDelay, &delay_secs);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TimelockMinDelay, &delay_secs);
         TimelockMinDelaySet {
-            previous_delay: previous, new_delay: delay_secs, set_by: admin,
-        }.publish(&env);
+            previous_delay: previous,
+            new_delay: delay_secs,
+            set: Symbol::new(&env, "set"),
+            set_by: admin,
+        }
+        .publish(&env);
     }
 
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
@@ -1594,12 +1657,15 @@ impl HarpocratesRegistry {
     ///
     /// The maximum number of proof IDs in a single batch is bounded (e.g. 100) to
     /// ensure the query always completes within resource limits.
-    pub fn get_proof_statuses(env: Env, proof_ids: SorobanVec<BytesN<32>>) -> SorobanVec<ProofVerificationStatus> {
+    pub fn get_proof_statuses(
+        env: Env,
+        proof_ids: soroban_sdk::Vec<BytesN<32>>,
+    ) -> soroban_sdk::Vec<ProofVerificationStatus> {
         let max_batch_size = 100;
         if proof_ids.len() > max_batch_size {
             panic_with_error!(&env, RegistryError::BatchTooLarge);
         }
-        
+
         let mut statuses = SorobanVec::new(&env);
         for proof_id in proof_ids.iter() {
             statuses.push_back(Self::get_proof_status(env.clone(), proof_id));
@@ -1732,7 +1798,12 @@ impl HarpocratesRegistry {
                 .persistent()
                 .get(&DataKey::Verifier)
                 .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-            verify_external_proof(&env, &verifier, public_inputs, proof);
+            if proof.is_empty() {
+                panic_with_error!(&env, RegistryError::InvalidProof);
+            }
+            if !verify_external_proof(&env, &verifier, public_inputs, proof) {
+                panic_with_error!(&env, RegistryError::InvalidProof);
+            }
 
             env.storage()
                 .persistent()
@@ -1780,7 +1851,12 @@ impl HarpocratesRegistry {
                 .persistent()
                 .get(&DataKey::Verifier)
                 .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-            verify_external_proof(&env, &verifier, public_inputs, proof);
+            if proof.is_empty() {
+                panic_with_error!(&env, RegistryError::InvalidProof);
+            }
+            if !verify_external_proof(&env, &verifier, public_inputs, proof) {
+                panic_with_error!(&env, RegistryError::InvalidProof);
+            }
 
             env.storage()
                 .persistent()
@@ -1850,8 +1926,8 @@ impl HarpocratesRegistry {
         metadata_hash: BytesN<32>,
         public_inputs: Bytes,
         proof: Bytes,
-        video_hashes: SorobanVec<BytesN<32>>,
-    ) -> SorobanVec<ProofRecord> {
+        video_hashes: soroban_sdk::Vec<BytesN<32>>,
+    ) -> soroban_sdk::Vec<ProofRecord> {
         let batch_size = video_hashes.len();
 
         if batch_size == 0 || batch_size > MAX_AGGREGATION_SIZE {
@@ -1875,7 +1951,12 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::Verifier)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-        verify_external_proof(&env, &verifier, public_inputs, proof);
+        if proof.is_empty() {
+            panic_with_error!(&env, RegistryError::InvalidProof);
+        }
+        if !verify_external_proof(&env, &verifier, public_inputs, proof) {
+            panic_with_error!(&env, RegistryError::InvalidProof);
+        }
 
         // 3. Credential root must be registered and active.
         let shared_root = &parsed.elements[0].credential_root;
@@ -1968,6 +2049,7 @@ impl HarpocratesRegistry {
 
         // Emit a top-level batch event.
         BatchProofRegistered {
+            reg: Symbol::new(&env, "reg"),
             batch_id,
             credential_root: shared_root.clone(),
             count: batch_size,
@@ -2181,12 +2263,7 @@ impl HarpocratesRegistry {
     /// every bit of `scope`? Returns `false` for unknown, expired, or
     /// insufficiently scoped delegations rather than erroring, so callers can
     /// pre-flight without a trial transaction.
-    pub fn is_delegation_active(
-        env: Env,
-        grantor: Address,
-        delegate: Address,
-        scope: u32,
-    ) -> bool {
+    pub fn is_delegation_active(env: Env, grantor: Address, delegate: Address, scope: u32) -> bool {
         if scope == 0 || scope & !DELEGATION_SCOPE_ALL != 0 {
             return false;
         }
@@ -2511,6 +2588,7 @@ impl HarpocratesRegistry {
         if let Some(prev) = previous {
             if version > prev.version {
                 MetadataEnvelopeUpgraded {
+                    upgraded: Symbol::new(&env, "upgraded"),
                     proof_id: proof_id.clone(),
                     previous: prev.version,
                     current: version,
@@ -2520,6 +2598,7 @@ impl HarpocratesRegistry {
             }
         } else {
             MetadataEnvelopeBound {
+                bound: Symbol::new(&env, "bound"),
                 proof_id: proof_id.clone(),
                 version,
                 metadata_hash: metadata_hash.clone(),
@@ -2544,7 +2623,7 @@ impl HarpocratesRegistry {
     /// `METADATA_ENVELOPE_VERSION_DEFAULT` for proofs that exist without an
     /// explicit envelope row (pre-#317 / stamped callers). Returns `0` when
     /// the proof is unknown (callers must treat 0 as not-found).
-    pub fn resolve_metadata_envelope_version(env: Env, proof_id: BytesN<32>) -> u32 {
+    pub fn resolve_metadata_envelope_ver(env: Env, proof_id: BytesN<32>) -> u32 {
         if let Some(envelope) = env
             .storage()
             .persistent()
@@ -2563,7 +2642,7 @@ impl HarpocratesRegistry {
     }
 
     /// Whether `version` is accepted by this wasm build.
-    pub fn is_supported_metadata_envelope_version(_env: Env, version: u32) -> bool {
+    pub fn is_supported_envelope_version(_env: Env, version: u32) -> bool {
         version >= METADATA_ENVELOPE_V1 && version <= METADATA_ENVELOPE_VERSION_MAX
     }
 
@@ -2599,7 +2678,7 @@ impl HarpocratesRegistry {
     pub fn register_lineage(
         env: Env,
         actor: Address,
-        parent_proof_ids: SorobanVec<BytesN<32>>,
+        parent_proof_ids: soroban_sdk::Vec<BytesN<32>>,
         manifest_digest: BytesN<32>,
         operation_type: Symbol,
         output_digest: BytesN<32>,
@@ -2651,7 +2730,9 @@ impl HarpocratesRegistry {
     }
 
     pub fn get_lineage(env: Env, output_digest: BytesN<32>) -> Option<LineageRecord> {
-        env.storage().persistent().get(&DataKey::Lineage(output_digest))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Lineage(output_digest))
     }
 
     /// Return only the stored parent commitments for `output_digest` (#332).
@@ -2661,7 +2742,7 @@ impl HarpocratesRegistry {
     pub fn get_lineage_parent_commitments(
         env: Env,
         output_digest: BytesN<32>,
-    ) -> Option<SorobanVec<BytesN<32>>> {
+    ) -> Option<soroban_sdk::Vec<BytesN<32>>> {
         let record: Option<LineageRecord> =
             env.storage().persistent().get(&DataKey::Lineage(output_digest));
         record.map(|r| r.parent_commitments)
@@ -2806,7 +2887,12 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::Verifier)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-        verify_external_proof(&env, &verifier, public_inputs, proof);
+        if proof.is_empty() {
+            panic_with_error!(&env, RegistryError::InvalidProof);
+        }
+        if !verify_external_proof(&env, &verifier, public_inputs, proof) {
+            panic_with_error!(&env, RegistryError::InvalidProof);
+        }
 
         env.storage()
             .persistent()
@@ -2953,7 +3039,7 @@ impl HarpocratesRegistry {
     /// `docs/zk-conformance-vectors.md`; promoting the codec to enforcement is
     /// a separate, versioned migration.
     pub fn classify_public_inputs(
-        env: Env,
+        _env: Env,
         schema_id: u32,
         public_inputs: Bytes,
         proof_len: u32,
@@ -2965,16 +3051,28 @@ impl HarpocratesRegistry {
             return RejectCode::UnknownSchema.as_code();
         }
 
-        if public_inputs.len() as usize != PUBLIC_INPUTS_LEN {
+        // Each schema has its own frame length (silent witness 160 bytes,
+        // revocation 128 bytes), matching `verifier_inputs::classify`.
+        let expected_len: u32 = if schema_id == SCHEMA_ID_SILENT_WITNESS {
+            SILENT_WITNESS_V1_INPUT_LEN
+        } else {
+            REVOCATION_PUBLIC_INPUTS_LEN as u32
+        };
+        if public_inputs.len() != expected_len {
             return RejectCode::Length.as_code();
         }
 
-        let mut frame = [0u8; PUBLIC_INPUTS_LEN];
-        public_inputs.copy_into_slice(&mut frame);
-
         let parsed = if schema_id == SCHEMA_ID_SILENT_WITNESS {
-            verifier_inputs::parse_silent_witness(&frame).map(|_| ())
+            let mut frame = [0u8; PUBLIC_INPUTS_LEN];
+            public_inputs.copy_into_slice(&mut frame);
+            verifier_inputs::parse_silent_witness(
+                &frame,
+                &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
+            )
+            .map(|_| ())
         } else {
+            let mut frame = [0u8; REVOCATION_PUBLIC_INPUTS_LEN];
+            public_inputs.copy_into_slice(&mut frame);
             verifier_inputs::parse_revocation_witness(&frame, &REVOCATION_DOMAIN_SEPARATOR)
                 .map(|_| ())
         };
@@ -3003,7 +3101,11 @@ impl HarpocratesRegistry {
     ) {
         require_admin(&env, &admin);
 
-        if env.storage().persistent().has(&DataKey::Schema(schema_hash.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Schema(schema_hash.clone()))
+        {
             panic_with_error!(&env, RegistryError::DuplicateProof);
         }
 
@@ -3044,18 +3146,16 @@ impl HarpocratesRegistry {
     }
 
     pub fn get_schema(env: Env, schema_hash: BytesN<32>) -> Option<SchemaRecord> {
-        env.storage().persistent().get(&DataKey::Schema(schema_hash))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Schema(schema_hash))
     }
 
     // -----------------------------------------------------------------------
     // Selective disclosure verification
     // -----------------------------------------------------------------------
 
-    pub fn verify_selective_disclosure(
-        env: Env,
-        public_inputs: Bytes,
-        proof: Bytes,
-    ) {
+    pub fn verify_selective_disclosure(env: Env, public_inputs: Bytes, proof: Bytes) {
         let parsed = parse_selective_disclosure_inputs(&env, &public_inputs);
 
         if parsed.circuit_version != CURRENT_SELECTIVE_DISCLOSURE_VERSION as u32 {
@@ -3090,7 +3190,12 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::Verifier)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-        verify_external_proof(&env, &verifier, public_inputs, proof);
+        if proof.is_empty() {
+            panic_with_error!(&env, RegistryError::InvalidProof);
+        }
+        if !verify_external_proof(&env, &verifier, public_inputs, proof) {
+            panic_with_error!(&env, RegistryError::InvalidProof);
+        }
 
         env.storage()
             .persistent()
@@ -3203,9 +3308,10 @@ impl HarpocratesRegistry {
             .set(&DataKey::Dispute(dispute_id.clone()), &record);
 
         // 8. Increment open-dispute counter.
-        env.storage()
-            .persistent()
-            .set(&DataKey::ProofOpenDisputeCount(proof_id.clone()), &(open_count + 1));
+        env.storage().persistent().set(
+            &DataKey::ProofOpenDisputeCount(proof_id.clone()),
+            &(open_count + 1),
+        );
 
         // 9. Emit event.
         DisputeOpened {
@@ -3470,7 +3576,6 @@ impl HarpocratesRegistry {
     }
 }
 
-
 fn require_admin(env: &Env, candidate: &Address) {
     let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
     let admin = admin.unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
@@ -3669,34 +3774,6 @@ fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     }
 }
 
-fn validate_lineage(
-    env: &Env,
-    parent_proof_ids: &SorobanVec<BytesN<32>>,
-    output_digest: &BytesN<32>,
-    depth: u32,
-) {
-    if parent_proof_ids.is_empty() {
-        panic_with_error!(env, RegistryError::InvalidLineage);
-    }
-    if parent_proof_ids.len() > MAX_LINEAGE_FANOUT {
-        panic_with_error!(env, RegistryError::LineageFanOutExceeded);
-    }
-    if depth == 0 || depth > MAX_LINEAGE_DEPTH {
-        panic_with_error!(env, RegistryError::LineageTooDeep);
-    }
-
-    for parent in parent_proof_ids.iter() {
-        if parent == *output_digest {
-            panic_with_error!(env, RegistryError::LineageCycle);
-        }
-        let is_known_parent = env.storage().persistent().has(&DataKey::Proof(parent.clone()))
-            || env.storage().persistent().has(&DataKey::Lineage(parent.clone()));
-        if !is_known_parent {
-            panic_with_error!(env, RegistryError::InvalidLineage);
-        }
-    }
-}
-
 fn append_lineage_child(env: &Env, parent: &BytesN<32>, child: &BytesN<32>) {
     let seq_key = DataKey::LineageChildSeq(parent.clone());
     let current: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
@@ -3853,6 +3930,7 @@ fn stamp_default_metadata_envelope(env: &Env, proof_id: &BytesN<32>, metadata_ha
     };
     env.storage().persistent().set(&key, &envelope);
     MetadataEnvelopeBound {
+        bound: Symbol::new(&env, "bound"),
         proof_id: proof_id.clone(),
         version: METADATA_ENVELOPE_VERSION_DEFAULT,
         metadata_hash: envelope.metadata_hash.clone(),
@@ -3910,10 +3988,10 @@ fn derive_lineage_parent_commitment(
     const PREFIX: [u8; 11] = *b"harp_lin_pc";
     let mut pre_image = [0u8; 75];
     pre_image[..11].copy_from_slice(&PREFIX);
-    binding_a.copy_into_slice(&mut pre_image[11..43]);
-    binding_b.copy_into_slice(&mut pre_image[43..75]);
+    pre_image[11..43].copy_from_slice(&binding_a.to_array());
+    pre_image[43..75].copy_from_slice(&binding_b.to_array());
     let pre_image_bytes = Bytes::from_array(env, &pre_image);
-    env.crypto().sha256(&pre_image_bytes)
+    env.crypto().sha256(&pre_image_bytes).into()
 }
 
 /// Build the parallel parent-commitment vector for a validated parent set.
@@ -3999,17 +4077,6 @@ pub(crate) fn expected_domain_tag(env: &Env) -> BytesN<32> {
     preimage.extend_from_array(&DOMAIN_VERSION_FIELD);
     preimage.extend_from_array(&DOMAIN_NETWORK_FIELD);
     env.crypto().sha256(&preimage).into()
-}
-
-/// Read a 128-byte public-input frame out of `Bytes`, rejecting any other
-/// length before allocating.
-fn read_public_input_frame(env: &Env, public_inputs: &Bytes) -> [u8; PUBLIC_INPUTS_LEN] {
-    if public_inputs.len() as usize != PUBLIC_INPUTS_LEN {
-        panic_with_error!(env, RegistryError::InvalidPublicInputs);
-    }
-    let mut frame = [0u8; PUBLIC_INPUTS_LEN];
-    public_inputs.copy_into_slice(&mut frame);
-    frame
 }
 
 /// Parse the legacy (v1-lenient) silent-witness layout.
@@ -4141,12 +4208,21 @@ fn get_scope_epoch_raw(env: &Env, scope: &BytesN<32>) -> u64 {
         .unwrap_or(DEFAULT_SCOPE_EPOCH)
 }
 
-fn verify_external_proof(env: &Env, verifier: &Address, public_inputs: Bytes, proof: Bytes) {
+fn verify_external_proof(
+    env: &Env,
+    verifier: &Address,
+    public_inputs: Bytes,
+    proof: Bytes,
+) -> bool {
     let mut args: SorobanVec<Val> = SorobanVec::new(env);
     args.push_back(public_inputs.into_val(env));
     args.push_back(proof.into_val(env));
 
-    match env.try_invoke_contract::<(), InvokeError>(verifier, &Symbol::new(env, "verify_proof"), args) {
+    match env.try_invoke_contract::<(), InvokeError>(
+        verifier,
+        &Symbol::new(env, "verify_proof"),
+        args,
+    ) {
         Ok(Ok(_)) => true,
         _ => false,
     }
@@ -4168,7 +4244,13 @@ struct RevocationPublicInputs {
 ///   [ 64.. 96)  domain_separator
 ///   [ 96..128)  credential_root
 fn parse_revocation_public_inputs(env: &Env, public_inputs: &Bytes) -> RevocationPublicInputs {
-    let frame = read_public_input_frame(env, public_inputs);
+    // Revocation frames are 4 × 32-byte fields (128 bytes), not the 160-byte
+    // silent-witness length.
+    if public_inputs.len() as usize != REVOCATION_PUBLIC_INPUTS_LEN {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+    let mut frame = [0u8; REVOCATION_PUBLIC_INPUTS_LEN];
+    public_inputs.copy_into_slice(&mut frame);
 
     let mut revocation_root = [0u8; 32];
     revocation_root.copy_from_slice(&frame[0..32]);
@@ -4192,9 +4274,10 @@ fn parse_revocation_public_inputs(env: &Env, public_inputs: &Bytes) -> Revocatio
 
 /// Parsed element of an aggregated batch proof.
 ///
-/// NOTE: This struct derives `Copy` so it can be used with `[value; N]`
-/// array initialization syntax in the parsing function below.
-#[derive(Clone, Copy)]
+/// NOTE: `BytesN` does not implement `Copy`, so the parsing function below
+/// initializes the element array with `core::array::from_fn` instead of
+/// `[value; N]` repetition.
+#[derive(Clone)]
 struct AggregatedBatchElement {
     video_hash: BytesN<32>,
     credential_root: BytesN<32>,
@@ -4237,19 +4320,18 @@ fn parse_aggregated_public_inputs(
     // Parse domain separator from the first 32 bytes (small stack buffer).
     // NOTE: We must slice first because Bytes.copy_into_slice expects the
     // destination to match the full Bytes length.
-    let domain_slice = public_inputs.slice(0, 32);
+    let domain_slice = public_inputs.slice(0..32);
     let mut domain_bytes = [0u8; 32];
     domain_slice.copy_into_slice(&mut domain_bytes);
     let domain_separator = BytesN::from_array(env, &domain_bytes);
 
-    // Initialize default elements.  Since AggregatedBatchElement is Copy we
-    // can use the `[value; N]` syntax safely.
-    let default_element = AggregatedBatchElement {
+    // Initialize default elements.  `BytesN` is not `Copy`, so build each
+    // slot with `core::array::from_fn` instead of `[value; N]` repetition.
+    let mut elements = core::array::from_fn(|_| AggregatedBatchElement {
         video_hash: BytesN::from_array(env, &[0u8; 32]),
         credential_root: BytesN::from_array(env, &[0u8; 32]),
         nullifier: BytesN::from_array(env, &[0u8; 32]),
-    };
-    let mut elements = [default_element; MAX_AGGREGATION_SIZE as usize];
+    });
 
     // Parse each batch element using a small 128-byte temp buffer.
     // We slice the Bytes at the element offset to avoid allocating a full
@@ -4257,7 +4339,7 @@ fn parse_aggregated_public_inputs(
     let mut element_bytes = [0u8; 128];
     for i in 0..batch_size {
         let element_start = 32 + (i * 128);
-        let element_slice = public_inputs.slice(element_start, element_start + 128);
+        let element_slice = public_inputs.slice(element_start..element_start + 128);
         element_slice.copy_into_slice(&mut element_bytes);
 
         // Reconstruct video hash from the two limbs (same as silent witness parsing).
@@ -4385,10 +4467,12 @@ fn supersession_reverse_key(env: &Env, superseding_proof_id: &BytesN<32>) -> Byt
     // Build a 44-byte pre-image: [PREFIX (12)] ‖ [superseding_proof_id (32)]
     let mut pre_image = [0u8; 44];
     pre_image[..12].copy_from_slice(&PREFIX);
-    superseding_proof_id.copy_into_slice(&mut pre_image[12..]);
+    let mut proof_id_bytes = [0u8; 32];
+    superseding_proof_id.copy_into_slice(&mut proof_id_bytes);
+    pre_image[12..].copy_from_slice(&proof_id_bytes);
 
     let pre_image_bytes = Bytes::from_array(env, &pre_image);
-    env.crypto().sha256(&pre_image_bytes)
+    env.crypto().sha256(&pre_image_bytes).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -4396,29 +4480,49 @@ fn supersession_reverse_key(env: &Env, superseding_proof_id: &BytesN<32>) -> Byt
 // ---------------------------------------------------------------------------
 
 fn get_timelock_min_delay(env: &Env) -> u64 {
-    env.storage().persistent().get(&DataKey::TimelockMinDelay)
+    env.storage()
+        .persistent()
+        .get(&DataKey::TimelockMinDelay)
         .unwrap_or(DEFAULT_TIMELOCK_MIN_DELAY_SECS)
 }
 
 fn get_timelock_proposal_or_panic(env: &Env, proposal_id: u32) -> TimelockProposal {
-    env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+    env.storage()
+        .persistent()
+        .get(&DataKey::Proposal(proposal_id))
         .unwrap_or_else(|| panic_with_error!(env, RegistryError::ProposalNotFound))
 }
 
 fn next_proposal_id(env: &Env) -> u32 {
-    let current: u32 = env.storage().persistent().get(&DataKey::ProposalSeq).unwrap_or(0u32);
+    let current: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProposalSeq)
+        .unwrap_or(0u32);
     let next = current.saturating_add(1);
     env.storage().persistent().set(&DataKey::ProposalSeq, &next);
     next
 }
 
 fn count_pending_proposals(env: &Env) -> u32 {
-    let count: u32 = env.storage().persistent().get(&DataKey::ProposalSeq).unwrap_or(0u32);
-    if count == 0 { return 0; }
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProposalSeq)
+        .unwrap_or(0u32);
+    if count == 0 {
+        return 0;
+    }
     let mut pending = 0u32;
     for pid in 1..=count {
-        if let Some(proposal) = env.storage().persistent().get::<DataKey, TimelockProposal>(&DataKey::Proposal(pid)) {
-            if !proposal.executed && !proposal.cancelled { pending += 1; }
+        if let Some(proposal) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, TimelockProposal>(&DataKey::Proposal(pid))
+        {
+            if !proposal.executed && !proposal.cancelled {
+                pending += 1;
+            }
         }
     }
     pending
@@ -4427,27 +4531,48 @@ fn count_pending_proposals(env: &Env) -> u32 {
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
     match proposal.action {
         1 => {
-            env.storage().persistent().set(&DataKey::Verifier, &proposal.target);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Verifier, &proposal.target);
             env.storage().persistent().remove(&DataKey::VerifierState);
-            VerifierSet { verifier: proposal.target.clone() }.publish(env);
+            VerifierSet {
+                verifier: proposal.target.clone(),
+            }
+            .publish(env);
         }
         2 => {
             let mut record = get_issuer_record(env, &proposal.target);
             record.active = false;
-            env.storage().persistent().set(&DataKey::Issuer(proposal.target.clone()), &record);
-            IssuerRevoked { issuer: proposal.target.clone() }.publish(env);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Issuer(proposal.target.clone()), &record);
+            IssuerRevoked {
+                issuer: proposal.target.clone(),
+            }
+            .publish(env);
         }
         3 => {
+            // `payload` is 32 bytes; the TTL is stored big-endian in the
+            // first 8 bytes (see `ttl_payload` in test_timelock.rs).
+            let mut payload_bytes = [0u8; 32];
+            proposal.payload.copy_into_slice(&mut payload_bytes);
             let mut ttl_bytes = [0u8; 8];
-            proposal.payload.copy_into_slice(&mut ttl_bytes);
+            ttl_bytes.copy_from_slice(&payload_bytes[..8]);
             let ttl_secs = u64::from_be_bytes(ttl_bytes);
-            env.storage().persistent().set(&DataKey::ProofTtl, &ttl_secs);
+            env.storage()
+                .persistent()
+                .set(&DataKey::ProofTtl, &ttl_secs);
         }
         4 => {
             let mut record = get_credential_root_record(env, &proposal.payload);
             record.active = false;
-            env.storage().persistent().set(&DataKey::CredentialRoot(proposal.payload.clone()), &record);
-            CredentialRootRevoked { credential_root: proposal.payload.clone() }.publish(env);
+            env.storage()
+                .persistent()
+                .set(&DataKey::CredentialRoot(proposal.payload.clone()), &record);
+            CredentialRootRevoked {
+                credential_root: proposal.payload.clone(),
+            }
+            .publish(env);
         }
         _ => panic_with_error!(env, RegistryError::InvalidProposalAction),
     }
@@ -4533,6 +4658,59 @@ fn u32_from_be_bytes(bytes: &[u8; 32]) -> u32 {
     u32::from_be_bytes([bytes[28], bytes[29], bytes[30], bytes[31]])
 }
 
+/// Test-only helpers for reading contract events.
+///
+/// `env.events().all()` only reflects the most recent invocation, so callers
+/// must capture events immediately after the call under test.
+#[cfg(test)]
+pub(crate) mod event_test_utils {
+    use crate::Env;
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::xdr::{ContractEventBody, ScVal};
+    use std::format;
+    use std::string::String;
+    use std::vec::Vec;
+
+    /// Symbolic topics of one XDR contract event, in order. Non-symbol topics
+    /// are skipped.
+    pub fn symbol_topics(event: &soroban_sdk::xdr::ContractEvent) -> Vec<String> {
+        let mut out = Vec::new();
+        let ContractEventBody::V0(v0) = &event.body;
+        {
+            for topic in v0.topics.iter() {
+                if let ScVal::Symbol(s) = topic {
+                    out.push(format!("{}", s.0));
+                }
+            }
+        }
+        out
+    }
+
+    /// Number of events from the most recent invocation whose leading symbol
+    /// topics equal `prefix`.
+    pub fn count_events(env: &Env, prefix: &[&str]) -> u32 {
+        let mut count = 0u32;
+        for event in env.events().all().events() {
+            let topics = symbol_topics(event);
+            if topics.len() >= prefix.len()
+                && topics
+                    .iter()
+                    .zip(prefix.iter())
+                    .all(|(t, p)| t.as_str() == *p)
+            {
+                count = count.saturating_add(1);
+            }
+        }
+        count
+    }
+
+    /// True when the most recent invocation emitted at least one event whose
+    /// leading symbol topics equal `prefix`.
+    pub fn has_event(env: &Env, prefix: &[&str]) -> bool {
+        count_events(env, prefix) > 0
+    }
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -4544,38 +4722,36 @@ mod test_conformance;
 #[cfg(test)]
 mod test_delegation;
 #[cfg(test)]
+mod test_deployment_fixture;
+#[cfg(test)]
+mod test_dispute;
+#[cfg(test)]
 mod test_expiry;
 #[cfg(test)]
 mod test_fuzz;
 #[cfg(test)]
-mod test_invariants;
-#[cfg(test)]
 mod test_identity_tier_properties;
+#[cfg(test)]
+mod test_invariants;
 #[cfg(test)]
 mod test_pause;
 #[cfg(test)]
-mod test_revocation;
-#[cfg(test)]
 mod test_registration_replay;
 #[cfg(test)]
-mod test_scoped_nullifier;
-#[cfg(test)]
-mod test_state_machine;
-#[cfg(test)]
-mod test_dispute;
-#[cfg(test)]
-mod test_lineage;
-#[cfg(test)]
-pub mod test_timelock;
+mod test_revocation;
 #[cfg(test)]
 mod test_schema;
 #[cfg(test)]
+mod test_scoped_nullifier;
+#[cfg(test)]
 mod test_selective_disclosure;
+#[cfg(test)]
+mod test_state_machine;
+#[cfg(test)]
+pub mod test_timelock;
 #[cfg(test)]
 mod test_upgrade_compat;
 #[cfg(test)]
 mod test_lineage;
 #[cfg(test)]
 mod test_metadata_envelope;
-#[cfg(test)]
-mod test_deployment_fixture;

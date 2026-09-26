@@ -114,6 +114,16 @@ jobs:
             echo "no committed browser manifest yet; browser drift check is inert"
           fi
 
+      - name: Verify published circuit artifact provenance
+        # Source-digest gate: lock-declared circuit sources must match
+        # zk/circuit.provenance.json. Noir/bb not required. Never logs source bytes.
+        run: |
+          if [ -f zk/circuit.provenance.json ]; then
+            python zk/tools/artifact_manifest.py verify-provenance
+          else
+            echo "no committed circuit provenance yet; provenance check is inert"
+          fi
+
   circuit-build:
     name: Build Noir circuits and verify artifacts
     runs-on: ubuntu-latest

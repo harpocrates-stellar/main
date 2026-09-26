@@ -67,6 +67,13 @@ types restricted to eq / set-membership / range, and bound to
 `CURRENT_CIRCUIT_VERSION` so a proof from another circuit version cannot be
 replayed against the registry.
 
+## Constant-time comparisons
+
+Field equality in these circuits compiles to fixed arithmetic constraints, so
+no circuit branches on secret data, and set membership scans every slot. The
+off-circuit codecs that consume the public inputs compare bindings in constant
+time; see [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md).
+
 ## Tooling
 
 Noir's official installation path uses `noirup`/`nargo`. Barretenberg (`bb`) is the proving backend. On Windows, the official Noir docs recommend using WSL for the full toolchain.

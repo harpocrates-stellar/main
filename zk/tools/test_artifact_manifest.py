@@ -737,6 +737,238 @@ def test_oversized_browser_artifact_is_fatal_for_write(tmp_path: Path, monkeypat
     assert not manifest_path.exists()
 
 
+# ── Published circuit provenance ─────────────────────────────────────────────
+
+
+def test_build_provenance_records_sources_and_declared_artifacts(tmp_path: Path, monkeypatch):
+    lock_raw = {
+        "format": "harpocrates.zk-toolchain-lock",
+        "version": 1,
+        "toolchain": {
+            "nargo": {"version": "1.0.0-beta.9"},
+            "barretenberg": {"version": "0.87.0"},
+            "proving_scheme": "ultra_honk",
+            "oracle_hash": "keccak",
+        },
+        "environment": {"SOURCE_DATE_EPOCH": "0", "TZ": "UTC"},
+        "normalization": {
+            "json": {"volatile_keys": ["debug_symbols"]},
+            "wasm": {"strip_custom_sections": ["name"]},
+        },
+        "limits": {
+            "max_artifact_bytes": 1024 * 1024,
+            "max_artifacts": 64,
+            "max_provenance_files": 512,
+            "max_circuits": 64,
+        },
+        "artifacts": [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            }
+        ],
+        "provenance_sources": {"globs": ["zk/noir/*/src/*.nr", "zk/noir/*/Nargo.toml"]},
+    }
+    lock_path = tmp_path / "toolchain.lock.json"
+    lock_path.write_text(json.dumps(lock_raw), encoding="utf-8")
+    (tmp_path / "zk/noir/demo/src").mkdir(parents=True)
+    (tmp_path / "zk/noir/demo/src/main.nr").write_text("fn main() {}", encoding="utf-8")
+    (tmp_path / "zk/noir/demo/Nargo.toml").write_text("[package]\nname=\"demo\"\n", encoding="utf-8")
+
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    lock = am.load_lock(lock_path)
+    document = am.build_provenance(lock, tmp_path)
+
+    assert document["format"] == am.PROVENANCE_FORMAT
+    assert document["version"] == 1
+    assert "zk/noir/demo/src/main.nr" in document["provenance"]
+    assert "zk/noir/demo/Nargo.toml" in document["provenance"]
+    assert document["declared_artifacts"] == [
+        {
+            "path": "zk/noir/demo/target/demo.json",
+            "kind": "json",
+            "role": "acir",
+            "required": True,
+        }
+    ]
+    # Privacy: digests only — never source bytes.
+    serialized = am.serialize_manifest(document)
+    assert "fn main()" not in serialized
+
+
+def test_build_provenance_rejects_empty_source_set(tmp_path: Path, monkeypatch):
+    lock_raw = {
+        "format": "harpocrates.zk-toolchain-lock",
+        "version": 1,
+        "toolchain": {
+            "nargo": {"version": "1.0.0-beta.9"},
+            "barretenberg": {"version": "0.87.0"},
+            "proving_scheme": "ultra_honk",
+            "oracle_hash": "keccak",
+        },
+        "environment": {"SOURCE_DATE_EPOCH": "0"},
+        "normalization": {
+            "json": {"volatile_keys": []},
+            "wasm": {"strip_custom_sections": []},
+        },
+        "limits": {
+            "max_artifact_bytes": 1024,
+            "max_artifacts": 64,
+            "max_provenance_files": 512,
+            "max_circuits": 64,
+        },
+        "artifacts": [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": False,
+            }
+        ],
+        "provenance_sources": {"globs": ["zk/noir/*/src/*.nr"]},
+    }
+    lock_path = tmp_path / "lock.json"
+    lock_path.write_text(json.dumps(lock_raw), encoding="utf-8")
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    lock = am.load_lock(lock_path)
+    with pytest.raises(am.BuildError, match="matched no circuit sources"):
+        am.build_provenance(lock, tmp_path)
+
+
+def test_compare_provenance_reports_source_and_declared_drift():
+    base = {
+        "format": am.PROVENANCE_FORMAT,
+        "version": 1,
+        "toolchain": {"nargo": "1.0.0-beta.9", "barretenberg": "0.87.0"},
+        "normalization_policy_sha256": "aa" * 32,
+        "provenance_globs": ["zk/noir/*/src/*.nr"],
+        "provenance": {"zk/noir/demo/src/main.nr": "11" * 32},
+        "declared_artifacts": [
+            {"path": "a.json", "kind": "json", "role": "acir", "required": True}
+        ],
+    }
+    drifted = dict(base)
+    drifted["provenance"] = {"zk/noir/demo/src/main.nr": "22" * 32}
+    findings = am.compare_provenance(base, drifted)
+    assert any(f.startswith("source zk/noir/demo/src/main.nr:") for f in findings)
+
+    role_drift = dict(base)
+    role_drift["declared_artifacts"] = [
+        {"path": "a.json", "kind": "json", "role": "published_acir", "required": True}
+    ]
+    findings = am.compare_provenance(base, role_drift)
+    assert any("declared artifact a.json.role:" in f for f in findings)
+
+
+def test_write_and_verify_provenance_round_trip(tmp_path: Path, monkeypatch, capsys):
+    lock_raw = {
+        "format": "harpocrates.zk-toolchain-lock",
+        "version": 1,
+        "toolchain": {
+            "nargo": {"version": "1.0.0-beta.9"},
+            "barretenberg": {"version": "0.87.0"},
+            "proving_scheme": "ultra_honk",
+            "oracle_hash": "keccak",
+        },
+        "environment": {"SOURCE_DATE_EPOCH": "0", "TZ": "UTC"},
+        "normalization": {
+            "json": {"volatile_keys": ["debug_symbols"]},
+            "wasm": {"strip_custom_sections": ["name"]},
+        },
+        "limits": {
+            "max_artifact_bytes": 1024 * 1024,
+            "max_artifacts": 64,
+            "max_provenance_files": 512,
+            "max_circuits": 64,
+        },
+        "artifacts": [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            }
+        ],
+        "provenance_sources": {"globs": ["zk/noir/*/src/*.nr", "zk/noir/*/Nargo.toml"]},
+    }
+    lock_path = tmp_path / "toolchain.lock.json"
+    lock_path.write_text(json.dumps(lock_raw), encoding="utf-8")
+    (tmp_path / "zk/noir/demo/src").mkdir(parents=True)
+    (tmp_path / "zk/noir/demo/src/main.nr").write_text("fn main() {}", encoding="utf-8")
+    (tmp_path / "zk/noir/demo/Nargo.toml").write_text("[package]\nname=\"demo\"\n", encoding="utf-8")
+
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    out = tmp_path / "zk" / "circuit.provenance.json"
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "write-provenance",
+                "--output",
+                str(out),
+            ]
+        )
+        == am.EXIT_OK
+    )
+    assert out.is_file()
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "verify-provenance",
+                "--manifest",
+                str(out),
+            ]
+        )
+        == am.EXIT_OK
+    )
+
+    # Negative: mutate a source and expect drift without logging source bytes.
+    (tmp_path / "zk/noir/demo/src/main.nr").write_text("fn main() { assert(1 == 1); }", encoding="utf-8")
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "verify-provenance",
+                "--manifest",
+                str(out),
+            ]
+        )
+        == am.EXIT_DRIFT
+    )
+    err = capsys.readouterr().err
+    assert "assert(1 == 1)" not in err
+    assert "fn main()" not in err
+
+
+def test_verify_provenance_missing_document_is_fatal(tmp_path: Path):
+    missing = tmp_path / "missing.provenance.json"
+    code = am.main(["verify-provenance", "--manifest", str(missing)])
+    assert code == am.EXIT_FATAL
+
+
+def test_provenance_findings_never_contain_source_bytes():
+    secret = "WITNESS_SECRET_VALUE_SHOULD_NEVER_APPEAR"
+    expected = {
+        "format": am.PROVENANCE_FORMAT,
+        "version": 1,
+        "toolchain": {"nargo": "1.0.0-beta.9"},
+        "normalization_policy_sha256": "aa" * 32,
+        "provenance_globs": ["zk/noir/*/src/*.nr"],
+        "provenance": {"zk/noir/demo/src/main.nr": "11" * 32},
+        "declared_artifacts": [],
+    }
+    actual = dict(expected)
+    actual["provenance"] = {"zk/noir/demo/src/main.nr": "22" * 32}
+    findings = am.compare_provenance(expected, actual)
+    blob = "\n".join(findings)
+    assert secret not in blob
+    assert "11" * 32 not in blob  # full digests truncated via _short
 # ── Circuit coverage ────────────────────────────────────────────────────────
 
 

@@ -25,11 +25,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Events as _},
-    Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec as SorobanVec,
-};
+use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Bytes, BytesN, Env};
 
 #[contract]
 struct MockVerifierUpgrade;
@@ -37,7 +33,7 @@ struct MockVerifierUpgrade;
 #[contractimpl]
 impl MockVerifierUpgrade {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -47,23 +43,10 @@ fn b32(env: &Env, v: u8) -> BytesN<32> {
     BytesN::from_array(env, &[v; 32])
 }
 
-fn schema_upgrade_event_count(env: &Env, contract_id: &Address) -> u32 {
-    let mut count = 0u32;
-    for e in env.events().all().iter() {
-        if &e.0 != contract_id {
-            continue;
-        }
-        let topics: SorobanVec<Val> = e.1.clone();
-        if topics.len() < 2 {
-            continue;
-        }
-        let t0: Symbol = topics.get(0).unwrap().try_into_val(env).unwrap();
-        let t1: Symbol = topics.get(1).unwrap().try_into_val(env).unwrap();
-        if t0 == Symbol::new(env, "schema") && t1 == Symbol::new(env, "upgrade") {
-            count = count.saturating_add(1);
-        }
-    }
-    count
+fn schema_upgrade_event_count(env: &Env, _contract_id: &Address) -> u32 {
+    // These tests invoke only the registry, so no contract filter is needed.
+    // `events().all()` reflects the most recent invocation only.
+    event_test_utils::count_events(env, &["schema", "upgrade"])
 }
 
 fn init_registry() -> (Env, Address, Address) {
@@ -80,7 +63,10 @@ fn init_registry() -> (Env, Address, Address) {
 fn upgrade_compat_init_stamps_v1() {
     let (env, contract_id, _admin) = init_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
 
     let present = env.as_contract(&contract_id, || {
         env.storage().persistent().has(&DataKey::SchemaVersion)
@@ -98,8 +84,14 @@ fn upgrade_compat_idempotent_noop_at_v1() {
     client.upgrade_storage(&admin);
     let after = schema_upgrade_event_count(&env, &contract_id);
 
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
-    assert_eq!(after, before, "idempotent V1 upgrade must not emit SchemaUpgraded");
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
+    assert_eq!(
+        after, before,
+        "idempotent V1 upgrade must not emit SchemaUpgraded"
+    );
 }
 
 #[test]
@@ -127,7 +119,10 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
         "fixture must clear SchemaVersion"
     );
     // Getter remains compatible (treats missing as V1).
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
 
     let before = schema_upgrade_event_count(&env, &contract_id);
     client.upgrade_storage(&admin);
@@ -139,7 +134,10 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
         }),
         "upgrade_storage must stamp SchemaVersion on legacy registries"
     );
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
     assert_eq!(
         after, before,
         "legacy stamp must not emit SchemaUpgraded (no layout migration)"
@@ -161,16 +159,26 @@ fn upgrade_compat_preserves_registered_source_proof() {
 
     client.upgrade_storage(&admin);
 
-    let after = client.get_proof(&proof_id).expect("proof must survive upgrade");
+    let after = client
+        .get_proof(&proof_id)
+        .expect("proof must survive upgrade");
     assert_eq!(after.video_hash, video);
     assert_eq!(after.metadata_hash, meta);
     assert_eq!(after.tier, TIER_CONSISTENT_SOURCE);
     assert_eq!(after.status, STATUS_REGISTERED);
-    let by_video = client.get_by_video(&video).expect("video index must survive upgrade");
+    let by_video = client
+        .get_by_video(&video)
+        .expect("video index must survive upgrade");
     assert_eq!(by_video.video_hash, video);
     assert_eq!(by_video.metadata_hash, meta);
-    assert_eq!(client.get_proof_status(&proof_id), ProofVerificationStatus::Valid);
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_proof_status(&proof_id),
+        ProofVerificationStatus::Valid
+    );
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
 }
 
 #[test]
@@ -187,7 +195,10 @@ fn upgrade_compat_preserves_verifier_boundary() {
         Some(verifier_id),
         "verifier integration pointer must survive upgrade_storage"
     );
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
 }
 
 #[test]
@@ -205,5 +216,8 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
     let end = schema_upgrade_event_count(&env, &contract_id);
 
     assert_eq!(end, mid);
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
 }

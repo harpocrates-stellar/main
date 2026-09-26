@@ -24,6 +24,7 @@ const MATCHING_CHAIN_PROOF: ChainProofRecord = {
   tier: 1,
   status: 1,
   createdAt: '2026-07-25T11:58:30.000Z',
+  expiresAt: 0,
   source: null,
   issuer: null,
 }

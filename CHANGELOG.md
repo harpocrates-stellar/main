@@ -2,6 +2,21 @@
 
 ## 1.0.0 — Unreleased
 
+- External verifier verdicts are now enforced: registrations whose
+  `verify_external_proof` call fails (or that pass an empty proof) revert with
+  `InvalidProof` instead of proceeding silently.
+- Scoped `POST /api/proofs/register` auth to proof ownership: owner-bound bearer keys (`REGISTER_SCOPED_KEYS`, digests only) may register only their own `sourceAddress` and cannot take over another owner's proof; the legacy `REGISTER_API_KEY` is unchanged. Auth now runs before idempotency replay, and the registration route no longer crashes without a `timeAttestation`. See `docs/registration-auth-scoping.md`.
+- Made protocol-binding comparisons constant-time in the Python, browser, and Soroban verifier-input codecs and the `/metrics` token check. Reject codes, circuits, and artifacts are unchanged; see `docs/zk-conformance-vectors.md`.
+- Enforced configured CORS origins server-side in the Flask backend: requests
+  carrying an `Origin` outside `CORS_ORIGINS` are now rejected with a privacy-safe
+  `403 FORBIDDEN_ORIGIN` envelope before route handlers execute, closing the gap
+  where flask-cors only withheld `Access-Control-Allow-Origin` headers (#266).
+  Requests without an `Origin` header and the `/health`, `/ready`, and `/metrics`
+  paths are exempt; rejections are counted in admission-rejection metrics and the
+  origin value is never logged.
+- Published circuit artifact provenance (`zk/circuit.provenance.json`) with `write-provenance` / `verify-provenance` gates that bind lock-declared circuit sources without compiling ACIR (#376).
+- Added issuer trust-state badges to the verification portal and Evidence Studio. The frontend now reads `get_issuer` from the registry and resolves a record's issuer to one of nine stable states (`trusted`, `revoked`, `unknown`, `expired`, `unsupported`, `malformed`, `oversized`, `unavailable`, `checking`). Address shape is validated before any registry read, an unreadable registry is reported as `unavailable` rather than as `unknown`, and the badge surfaces only the issuer address already public on chain. See `frontend/src/provenance/issuerTrust.ts`.
+- Added fail-closed startup verification of applied migration checksums: `backend/migration.py` replays each recorded SHA-256 digest against its in-code definition and aborts startup with `MigrationChecksumError` on mismatch (id/digest-only reporting). `MIGRATION_CHECKSUM_ENFORCEMENT=warn` is the break-glass rollback. See `backend/README.md` and `THREAT_MODEL.md` (T10).
 - Added a fail-closed contract Wasm size budget (`MAX_WASM_SIZE_BYTES = 128_000`,
   just under Soroban's 128 KiB upload cap, plus a minimum-size floor and 15%
   regression band) enforced in Contracts CI against `devx/wasm_size_budget.json`,

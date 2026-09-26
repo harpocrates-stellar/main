@@ -264,6 +264,8 @@ and `metadata_hash` for content they did not actually review.
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
+| The frontend resolves the issuer's current registry standing independently of the record's own `status`, so a seal whose issuer was revoked afterwards is surfaced as `Issuer revoked` instead of looking endorsed | `frontend/src/provenance/issuerTrust.ts`, `frontend/src/hooks/useIssuerTrust.ts` |
+| An issuer read that does not complete is surfaced as `Issuer lookup unavailable` with no trust decision, never as a trusted or unknown issuer | `frontend/src/hooks/useIssuerTrust.ts` |
 
 **Control (#357):** The `revocation_witness` Merkle tree is protocol-bounded at
 `MAX_REVOCATION_WITNESS_DEPTH = 3` (`MAX_REVOCATION_LEAVES = 8`). The Noir
@@ -275,6 +277,9 @@ new circuit version.
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually
 call `revoke_proof` for each fraudulent record — there is no bulk revocation.
+The issuer trust badge makes this state visible to a verifier, but it does not
+change the on-chain record: the seal is still `STATUS_REGISTERED` and any
+caller that reads `status` alone will still see it as registered.
 The `metadata_hash` stored in the issuer's `IssuerRecord` is not verified by
 the contract to match the `metadata_hash` in the proof registration; an issuer
 can register a proof with a `metadata_hash` that differs from their declared
@@ -553,6 +558,7 @@ network-reachable host.
 | Payload size capped at 1 MB | `app.py` → `_enforce_json_size` |
 | `safe_filename` prevents path traversal via `fileName` | `app.py` → `safe_filename` |
 | Parameterized SQL prevents injection | `db.py` → `insert_proof_event` |
+| Applied migration checksums replayed against in-code definitions at startup (fail-closed) | `migration.py` → `run_migrations`, `verify_migration_checksums` |
 
 **Residual risk:** The endpoint has no authentication, HMAC, or bearer token.
 Any caller that can reach the Flask API can write arbitrary rows. The
@@ -620,6 +626,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `secure_filename` (Werkzeug) for `fileName` | T6 | `app.py` → `safe_filename` |
 | BN254 field bounds check on `credentialSecret` / `nullifierSecret` | T6 | `app.py` → `is_field_decimal` |
 | Parameterized SQL (psycopg) for all DB writes | T6, T10 | `db.py` → `insert_proof_event` |
+| Applied migration checksum verification at startup (fail-closed, id/digest-only reporting) | T10 | `migration.py` → `run_migrations`, `verify_migration_checksums` |
 | Sensitive key redaction in structured logs | T5 | `logging_utils.py` → `SENSITIVE_KEYS` |
 | Noir worker disabled in production (`NOIR_WORKER_ENABLED=false`) | T4, T5 | `config.py` → `noir_worker_enabled` |
 | Metrics endpoint token-gated | T6 | `app.py` → `metrics` |
