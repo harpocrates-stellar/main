@@ -75,6 +75,9 @@ export function useEvidence(): UseEvidenceReturn {
   const [message, setMessage] = useState('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+  // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
+  const registrationInFlightRef = useRef(false)
+  const completedRegistrationRef = useRef<string | null>(null)
 
   const proofClientRef = useRef<ProofWorkerClient | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
@@ -184,6 +187,17 @@ export function useEvidence(): UseEvidenceReturn {
       return
     }
 
+    const registrationKey = `${proof.proofId}:${wallet}`
+    if (completedRegistrationRef.current === registrationKey) {
+      setMessage('This proof has already been submitted by this wallet.')
+      return
+    }
+    if (registrationInFlightRef.current) {
+      setMessage('Registration is already in progress. Please wait for its result.')
+      return
+    }
+    registrationInFlightRef.current = true
+
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
     try {
@@ -213,6 +227,7 @@ export function useEvidence(): UseEvidenceReturn {
 
       setRegistration(result)
       setStage('registered')
+      completedRegistrationRef.current = registrationKey
       setMessage(`Registration submitted with Stellar status: ${result.status}.`)
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
@@ -229,6 +244,8 @@ export function useEvidence(): UseEvidenceReturn {
             ? error.message
             : 'Stellar registration failed.'
       setMessage(safeMessage)
+    } finally {
+      registrationInFlightRef.current = false
     }
   }
 
