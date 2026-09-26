@@ -276,3 +276,43 @@ unchanged. Existing depth-3 proofs remain valid.
 new circuit version and coordinated artifact republish; rolling back means
 keeping the depth-3 verifier key. Host tooling must keep rejecting `depth > 3`
 so oversized trees never reach the prover.
+
+## Verifier circuit-version validation (#343)
+
+Every proof-verifying entry point (`register_anonymous_verified`,
+`register_batch_verified`, `check_non_revocation`, `verify_selective_disclosure`)
+now validates the proof's circuit version at the trust boundary before invoking
+the configured verifier.
+
+| Item | Value |
+| --- | --- |
+| Built-in versions | silent-witness v1 = 1, silent-witness v2 (scoped) = 2, revocation-witness = 1, aggregation = 1, selective-disclosure = 1 |
+| Default window | `MIN_SUPPORTED_CIRCUIT_VERSION..=MAX_SUPPORTED_CIRCUIT_VERSION` (1..=2) |
+| Admin entry point | `set_verifier_circuit_versions(admin, min_version, max_version)` |
+| Read entry points | `get_verifier_circuit_versions()`, `is_supported_circuit_version(version)` |
+| Stable failure | `RegistryError::UnsupportedCircuitVersion` (79) for a proof outside the window; `InvalidCircuitVersionRange` (80) for a malformed window |
+
+The window is **additive**: when unset, the full built-in range applies, so
+pre-#343 deployments, existing callers, and stored evidence validate exactly as
+before. `set_verifier` and both verifier-rotation transitions clear the window
+so an incoming verifier cannot inherit the outgoing verifier's claim.
+
+**Migration / rollback:** `DataKey::VerifierCircuitVersions` is a new,
+additive storage key; no data migration is required. Deploying a pre-#343 wasm
+ignores the key and reverts to calling the verifier with no version gate, which
+only widens acceptance and never corrupts stored evidence.
+
+## Bounded delegated issuer expiration (#338)
+
+A proof registered through `register_source_delegated` or
+`register_seal_delegated` is now bounded by the delegation that authorized it:
+its `expires_at` is the delegation's `expires_at` (or the configured proof TTL,
+whichever is sooner). Delegated authority can never mint an artifact that
+outlives it.
+
+- Direct `register_source` / `register_seal` are unchanged; a zero TTL still
+  means "eternal" for non-delegated registrations.
+- Existing stored records are untouched.
+- **Rollback:** deploying a pre-#338 wasm restores the old behavior of an
+  eternal delegated proof; the delegation expiry is still enforced at
+  registration time, so no authority is extended retroactively.

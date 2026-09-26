@@ -80,8 +80,10 @@ impl Lcg {
 #[cfg(test)]
 fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
     let mut data: Vec<u8> = base.to_vec();
-    let field_count = (PUBLIC_INPUTS_LEN / verifier_inputs::FIELD_LEN) as u32;
     let field_len = verifier_inputs::FIELD_LEN;
+    // Derive the field count from the frame itself: silent-witness frames have
+    // five fields (160 bytes), revocation frames four (128 bytes).
+    let field_count = (data.len() / field_len).max(1) as u32;
 
     match mutator {
         // 0: truncate_tail
@@ -193,12 +195,13 @@ fn positive_frame(schema: &str) -> Vec<u8> {
     let nullifier = vec![0x02u8; 32];
     let revocation_root = vec![0x03u8; 32];
 
-    let mut frame = Vec::with_capacity(PUBLIC_INPUTS_LEN);
+    let mut frame = Vec::with_capacity(verifier_inputs::PUBLIC_INPUTS_LEN);
     if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
         frame.extend_from_slice(&hi);
         frame.extend_from_slice(&lo);
         frame.extend_from_slice(&credential_root);
         frame.extend_from_slice(&nullifier);
+        frame.extend_from_slice(&verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE);
     } else {
         frame.extend_from_slice(&revocation_root);
         frame.extend_from_slice(&nullifier);
@@ -228,6 +231,17 @@ fn declared(code: u32) -> bool {
     code <= 9
 }
 
+/// The domain tag the codec must be given for a schema: the silent-witness
+/// tag for silent-witness frames and the revocation separator otherwise.
+#[cfg(test)]
+fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
+    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
+        &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+    } else {
+        &REVOCATION_DOMAIN_SEPARATOR
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Totality — every mutant yields a declared verdict, never a panic
 // ---------------------------------------------------------------------------
@@ -248,7 +262,7 @@ fn codec_never_panics_and_always_yields_a_declared_verdict() {
                     schema,
                     &mutant,
                     64,
-                    &REVOCATION_DOMAIN_SEPARATOR,
+                    expected_domain_for(schema),
                 ) {
                     Ok(()) => verifier_inputs::ACCEPTED_CODE,
                     Err(code) => code.as_code(),
@@ -282,7 +296,7 @@ fn proof_length_sweep_is_bounded_and_declared() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &base,
                 proof_len,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
@@ -316,7 +330,7 @@ fn proof_length_edges_are_exact() {
             verifier_inputs::SCHEMA_SILENT_WITNESS,
             &base,
             proof_len,
-            &REVOCATION_DOMAIN_SEPARATOR,
+            &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
         ) {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),
@@ -351,7 +365,7 @@ fn proof_length_boundary_neighbourhood_is_declared() {
             verifier_inputs::SCHEMA_SILENT_WITNESS,
             &base,
             proof_len,
-            &REVOCATION_DOMAIN_SEPARATOR,
+            &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
         ) {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),
@@ -432,7 +446,7 @@ fn on_chain_and_pure_codec_agree_on_every_mutant() {
                 schema,
                 &mutant,
                 64,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                expected_domain_for(schema),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
@@ -470,7 +484,7 @@ fn a_seed_replays_the_same_mutants_and_verdicts() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &mutant,
                 64,
-                &REVOCATION_DOMAIN_SEPARATOR,
+                &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),

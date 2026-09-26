@@ -43,6 +43,9 @@ fn make_env() -> (
 ) {
     let env = Env::default();
     env.mock_all_auths();
+    // Start at a non-zero ledger time so `resolved_at`/cooldown timestamps are
+    // meaningful (the dispute lifecycle treats time 0 as "never recorded").
+    env.ledger().set_timestamp(1_000_000);
 
     let contract_id = env.register(HarpocratesRegistry, ());
     let client = HarpocratesRegistryClient::new(&env, &contract_id);

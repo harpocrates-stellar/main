@@ -8,7 +8,7 @@ use super::*;
 #[cfg(test)]
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger},
     Address, Bytes, Env,
 };
 
@@ -24,9 +24,10 @@ struct MockScopedVerifier;
 #[contractimpl]
 impl MockScopedVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        // Accept both 128-byte (v1) and 192-byte (v2) inputs
+        // Accept the canonical circuit frames: v1 (160), v2 scoped (224), and
+        // the four-field revocation frame (128).
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if (len != 128 && len != 160 && len != 224) || proof.is_empty() {
             panic!("invalid scoped proof");
         }
     }
@@ -46,7 +47,7 @@ fn proof_buf(env: &Env) -> Bytes {
     Bytes::from_array(env, &[0xAA, 0xBB, 0xCC, 0xDD])
 }
 
-/// Build a v1 (128-byte) silent witness public-input blob.
+/// Build a v1 (160-byte) silent witness public-input blob.
 #[cfg(test)]
 fn v1_public_inputs(
     env: &Env,
@@ -61,15 +62,16 @@ fn v1_public_inputs(
     let mut nu = [0u8; 32];
     nullifier.copy_into_slice(&mut nu);
 
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; 160];
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
+    buf[128..160].copy_from_slice(&expected_domain_tag(env).to_array());
     Bytes::from_array(env, &buf)
 }
 
-/// Build a v2 (192-byte) scoped silent witness public-input blob.
+/// Build a v2 (224-byte) scoped silent witness public-input blob.
 #[cfg(test)]
 fn v2_public_inputs(
     env: &Env,
@@ -95,13 +97,14 @@ fn v2_public_inputs(
         e >>= 8;
     }
 
-    let mut buf = [0u8; 192];
+    let mut buf = [0u8; 224];
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
     buf[128..160].copy_from_slice(&sc);
     buf[160..192].copy_from_slice(&epoch_bytes);
+    buf[192..224].copy_from_slice(&expected_domain_tag(env).to_array());
     Bytes::from_array(env, &buf)
 }
 
@@ -282,7 +285,7 @@ fn test_scoped_registration_explicit_scope_epoch_1() {
 
 /// Rejects stale epoch: proof has epoch 0 but current epoch is 1.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_scoped_rejects_stale_epoch() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -306,7 +309,7 @@ fn test_scoped_rejects_stale_epoch() {
 
 /// Rejects future epoch: proof has epoch 2 but current epoch is 1.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_scoped_rejects_future_epoch() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -615,7 +618,7 @@ fn test_rejects_oversized_inputs() {
 
 /// Registering at epoch 0 then rotating to epoch 1: old epoch proofs rejected.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_epoch_rotation_rejects_old_proofs() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -999,7 +1002,7 @@ fn test_v1_v2_nullifier_distinct_for_same_inputs() {
 /// A proof with epoch 0 is rejected when the scope epoch has been advanced
 /// to 1.  This covers the epoch-boundary rejection case.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_epoch_boundary_rejects_stale_proof() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -1023,7 +1026,7 @@ fn test_epoch_boundary_rejects_stale_proof() {
 /// A proof with epoch 2 is rejected when the scope epoch is 1.
 /// This covers the future-epoch boundary case.
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // StaleEpoch
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_epoch_boundary_rejects_future_proof() {
     let (env, contract_id, admin, credential_root) = init_scoped_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);

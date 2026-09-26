@@ -487,8 +487,12 @@ limitation).
    a misleading `metadata_hash` for a credential root without on-chain enforcement.
 
 3. Circuit artifact versioning: the compiled `silent_witness.json` in
-   `frontend/public/noir/` must match the verifier contract's proving key. There
-   is no on-chain mechanism to detect or enforce this alignment.
+   `frontend/public/noir/` must match the verifier contract's proving key.
+   #343 adds an on-chain *declared window* (`set_verifier_circuit_versions`)
+   that rejects a proof whose circuit version the active verifier was not
+   configured to check, before the verifier is invoked. The mapping from a
+   declared version number to a specific proving key remains an off-chain,
+   operator-verified artifact, so this narrows the gap but does not eliminate it.
 
 **Severity:** Critical (OR-1 stub path). Low (verified path via `register_anonymous_verified`).
 
@@ -598,6 +602,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Credential root allowlist with active/revoked status | T1, T8 | `lib.rs` → `add_credential_root`, `revoke_credential_root` |
 | Issuer allowlist with active/revoked status | T3 | `lib.rs` → `add_issuer`, `revoke_issuer` |
 | External verifier contract hook (`verify_external_proof`) | T8 | `lib.rs` → `verify_external_proof` |
+| Per-call circuit-version gate before the verifier is invoked (`require_supported_circuit_version`) | T8 | `lib.rs` → `require_supported_circuit_version` |
+| Admin-only, wasm-bounded verifier circuit-version window (`set_verifier_circuit_versions`) | T8 | `lib.rs` → `set_verifier_circuit_versions` |
+| Delegated registrations bounded by the delegation's own expiry | T2, T9 | `lib.rs` → `bounded_delegated_expiry` |
 | Public input parsing with exact-length enforcement (128 bytes) | T8 | `lib.rs` → `parse_silent_witness_public_inputs` |
 | `video_hash` cross-check between public inputs and call argument | T8 | `lib.rs` → `register_anonymous_verified` |
 | Proof TTL / expiration (`set_proof_ttl`, `get_proof_status`) | T2 | `lib.rs` → `compute_expires_at`, `get_proof_status` |
