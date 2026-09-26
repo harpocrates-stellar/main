@@ -129,6 +129,11 @@ Production notes:
 - Keep `EXPOSE_METADATA_HEADER=false`; extracted metadata is available through `/api/stego/extract`.
 - Protect the `/metrics` endpoint in production by configuring `METRICS_TOKEN` or restricting access at the reverse proxy/ingress layer.
 - Avoid wildcard CORS. `CORS_ORIGINS=*` requires `ALLOW_WILDCARD_CORS=true`.
+- Configured origins are enforced server-side: requests carrying an `Origin`
+  outside `CORS_ORIGINS` are rejected with `403 FORBIDDEN_ORIGIN` before route
+  handlers run (privacy-safe envelope; the origin value is never echoed or
+  logged). Requests without an `Origin` header and the `/health`, `/ready`, and
+  `/metrics` paths are exempt.
 - Uploaded files are processed in temporary directories and removed after each request.
 
 ## Health
