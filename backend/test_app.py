@@ -144,6 +144,36 @@ def _post_register(
 # ---------------------------------------------------------------------------
 
 class AppHardeningTest(unittest.TestCase):
+
+    def test_verify_batch_success(self) -> None:
+        video_hash = "1" * 64
+        proof_id = "2" * 64
+        app_module.db.insert_proof_event(event_type="extract", video_hash=video_hash, proof_id=proof_id, tx_status="confirmed")
+        
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": video_hash}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["results"][0]["status"], "verified")
+
+    def test_verify_batch_malformed(self) -> None:
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": "not hex"}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["results"][0]["status"], "malformed")
+
+    def test_verify_batch_oversized(self) -> None:
+        proofs = [{"videoHash": "1" * 64} for _ in range(101)]
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": proofs})
+        self.assertEqual(response.status_code, 413)
+
+    def test_verify_batch_not_found(self) -> None:
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": "3" * 64}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["results"][0]["status"], "not_found")
+        
+    def test_verify_batch_failed_dependency(self) -> None:
+        with patch("app.find_proof_events_by_video", side_effect=RuntimeError("db error")):
+            response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": "1" * 64}]})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json["results"][0]["status"], "dependency_failure")
     def setUp(self) -> None:
         metrics_collector.reset()
         self.client = app_module.app.test_client()

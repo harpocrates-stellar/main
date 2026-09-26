@@ -836,6 +836,73 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "manifestDigest": manifest_digest, "db_event": db_event})
 
+    @app.post("/api/proofs/verify-batch")
+    @require_capacity(admission_controller)
+    def verify_batch():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get("proofs"), list):
+            return jsonify({"error": "JSON body with a 'proofs' array is required"}), 400
+
+        proofs = payload["proofs"]
+        if len(proofs) > config.max_batch_size:
+            return jsonify({"error": f"batch size exceeds limit of {config.max_batch_size}"}), 413
+
+        results = []
+        for idx, item in enumerate(proofs):
+            if not isinstance(item, dict):
+                results.append({"status": "malformed", "error": "item must be a JSON object", "index": idx})
+                continue
+            
+            video_hash = item.get("videoHash")
+            proof_id = item.get("proofId")
+            
+            if video_hash is not None and not is_hex_32(video_hash):
+                results.append({"videoHash": video_hash, "proofId": proof_id, "status": "malformed", "error": "invalid videoHash", "index": idx})
+                continue
+            if proof_id is not None and not is_hex_32(proof_id):
+                results.append({"videoHash": video_hash, "proofId": proof_id, "status": "malformed", "error": "invalid proofId", "index": idx})
+                continue
+            if not video_hash and not proof_id:
+                results.append({"status": "malformed", "error": "must provide videoHash or proofId", "index": idx})
+                continue
+
+            try:
+                events = []
+                if video_hash:
+                    events = find_proof_events_by_video(video_hash)
+                    if proof_id:
+                        events = [e for e in events if e.get("proof_id") == proof_id]
+                else:
+                    events = find_proof_events_by_proof_id(proof_id)
+                
+                if not events:
+                    results.append({"videoHash": video_hash, "proofId": proof_id, "status": "not_found", "events": [], "index": idx})
+                else:
+                    # Determine status from db events.
+                    # Since on-chain revocation isn't visible here, we use tx_status if available.
+                    has_confirmed = any(e.get("tx_status") == "confirmed" for e in events)
+                    has_failed = any(e.get("tx_status") == "failed" for e in events)
+                    has_revoked = any(e.get("tx_status") == "revoked" for e in events)  # Future compat
+                    
+                    if has_revoked:
+                        status = "revoked"
+                    elif has_confirmed:
+                        status = "verified"
+                    elif has_failed:
+                        status = "failed"
+                    else:
+                        status = "pending"
+                        
+                    results.append({"videoHash": video_hash, "proofId": proof_id, "status": status, "events": events, "index": idx})
+            except Exception as e:
+                # Catch dependency failure (e.g. database down) gracefully for the batch item
+                results.append({"videoHash": video_hash, "proofId": proof_id, "status": "dependency_failure", "error": str(e), "index": idx})
+
+        return jsonify({"ok": True, "results": results})
+
     @app.post("/api/proofs/register")
     @limiter.limit(config.ratelimit_register)
     @require_register_auth
