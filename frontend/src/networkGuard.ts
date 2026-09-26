@@ -6,6 +6,12 @@
  * the wallet's reported network passphrase with the one compiled into the
  * registry client. A mismatch must block submission so the user never
  * accidentally targets the wrong deployment.
+ *
+ * Privacy notes:
+ *   - Error messages include only the public network name (Testnet, Mainnet,
+ *     etc.), never wallet addresses, private keys, or any witness material.
+ *   - `assertNetworkMatch` throws only a stable, non-identifying string so
+ *     callers can safely surface it to the user or log it.
  */
 
 /** All Stellar network passphrases that this app can interpret by name. */
@@ -30,15 +36,20 @@ export type NetworkCheckResult =
  * Compare the wallet's active network passphrase against the passphrase that
  * the deployed contract was built for.
  *
+ * Accepts `null` or `undefined` in addition to empty string — all three
+ * indicate that the wallet extension is unavailable or did not return a value.
+ *
  * Returns `{ ok: true }` when they match, or `{ ok: false, reason, remediation }`
- * when they do not – including when the wallet returned an empty or unrecognised
- * passphrase that cannot be safely compared.
+ * when they do not – including when the wallet returned an empty, null,
+ * undefined, or unrecognised passphrase that cannot be safely compared.
  */
 export function checkNetworkMatch(
-  walletPassphrase: string,
+  walletPassphrase: string | null | undefined,
   contractPassphrase: string,
 ): NetworkCheckResult {
-  const wallet = walletPassphrase.trim()
+  // Treat null, undefined, and blank strings uniformly: the wallet is
+  // unavailable or locked and cannot be compared.
+  const wallet = (walletPassphrase ?? '').trim()
 
   if (!wallet) {
     return {
@@ -60,5 +71,38 @@ export function checkNetworkMatch(
     ok: false,
     reason: `Wallet is on ${walletLabel} but the contract is deployed on ${contractLabel}.`,
     remediation: `Open Freighter, switch to ${contractLabel}, then reconnect your wallet.`,
+  }
+}
+
+/**
+ * Asserting variant of `checkNetworkMatch`.
+ *
+ * Throws a `NetworkMismatchError` when the wallets's network does not match
+ * `contractPassphrase`. The error message is the same human-readable reason
+ * string so callers can safely surface it without additional transformation.
+ *
+ * Usage:
+ * ```ts
+ * assertNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+ * // proceeds only when networks match
+ * ```
+ */
+export class NetworkMismatchError extends Error {
+  readonly remediation: string
+
+  constructor(reason: string, remediation: string) {
+    super(reason)
+    this.name = 'NetworkMismatchError'
+    this.remediation = remediation
+  }
+}
+
+export function assertNetworkMatch(
+  walletPassphrase: string | null | undefined,
+  contractPassphrase: string,
+): void {
+  const result = checkNetworkMatch(walletPassphrase, contractPassphrase)
+  if (!result.ok) {
+    throw new NetworkMismatchError(result.reason, result.remediation)
   }
 }

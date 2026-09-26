@@ -1,14 +1,21 @@
 // =============================================================================
-// Revocation Witness — Non-Membership Proof in a Sorted Merkle Tree
+// Revocation Witness — Non-Membership Proof in a Bounded Merkle Tree
 //
 // This circuit proves that a credential_root is NOT in the published
-// revocation tree.  The prover supplies every leaf of the depth‑3 Merkle
-// tree (8 leaves) as private inputs.  The circuit recomputes the tree root
+// revocation tree.  The prover supplies every leaf of the depth-bounded
+// Merkle tree as private inputs.  The circuit recomputes the tree root
 // internally and asserts that credential_root differs from every leaf.
+//
+// Depth bound (#357)
+// ------------------
+// MAX_REVOCATION_WITNESS_DEPTH = 3  →  MAX_REVOCATION_LEAVES = 8 (= 2^depth).
+// The circuit is fixed at this depth: oversized trees (depth > 3) cannot be
+// proven here and must be rejected by host tooling before proving.  Raising
+// the bound requires a new circuit version — never change it silently.
 //
 // The verifier learns only the public inputs:
 //   [0] revocation_root  – Merkle root of the revocation tree
-//   [1] nullifier        – binds to the prover (one‑use, replay prevention)
+//   [1] nullifier        – binds to the prover (one-use, replay prevention)
 //   [2] domain_separator – binds to network / contract / version
 //   [3] credential_root  – pseudonymous identity anchor
 //
@@ -17,11 +24,13 @@
 // - The revocation tree leaves are private → the verifier does NOT learn
 //   which credentials are revoked.
 // - credential_root is public but pseudonymous (Pedersen hash of a secret).
-// - nullifier is one‑use, preventing replay of the same non‑revocation proof.
+// - nullifier is one-use, preventing replay of the same non-revocation proof.
+// - Bounding depth caps prover/verifier work and keeps witness size stable,
+//   so malicious oversized trees cannot inflate proving cost at this boundary.
 //
 // Domain binding
 // --------------
-// The domain_separator is computed off‑chain as
+// The domain_separator is computed off-chain as
 //   pedersen_hash(["HARPOCRATES_REVOCATION_V1", network_id_hi, network_id_lo])
 // and injected as a public input.  The Soroban contract independently
 // computes the same value from `env.ledger().network_id()` and asserts
@@ -29,6 +38,12 @@
 // =============================================================================
 
 use std::hash::pedersen_hash;
+
+// Protocol depth bound for the revocation Merkle tree. Must stay in lockstep
+// with MAX_REVOCATION_WITNESS_DEPTH / MAX_REVOCATION_LEAVES in the registry
+// contract, frontend/backend verifier codec, and zk/tools/revocation_depth.py.
+global MAX_REVOCATION_WITNESS_DEPTH: Field = 3;
+global MAX_REVOCATION_LEAVES: Field = 8;
 
 fn main(
     // --- private: witness secrets ---
@@ -60,8 +75,11 @@ fn main(
     assert(derived_nullifier == nullifier, "nullifier mismatch");
 
     // ------------------------------------------------------------------
-    // Merkle root computation (depth 3, 8 leaves, Pedersen)
+    // Merkle root computation (bounded depth = MAX_REVOCATION_WITNESS_DEPTH,
+    // leaf count = MAX_REVOCATION_LEAVES, Pedersen).  The leaf arity is fixed
+    // at compile time to the protocol maximum — there is no unbounded loop.
     // ------------------------------------------------------------------
+    let _ = (MAX_REVOCATION_WITNESS_DEPTH, MAX_REVOCATION_LEAVES);
     let node_01 = pedersen_hash([leaf_0, leaf_1]);
     let node_23 = pedersen_hash([leaf_2, leaf_3]);
     let node_45 = pedersen_hash([leaf_4, leaf_5]);
@@ -412,5 +430,42 @@ fn test_full_tree_non_member() {
     let tree_root = test_tree_root(l0, l1, l2, l3, l4, l5, l6, l7);
     let ds = test_domain_separator();
 
+    main(cs, ns, l0, l1, l2, l3, l4, l5, l6, l7, tree_root, null, ds, root);
+}
+
+
+// ================================================================
+// Depth-bound tests (#357)
+// ================================================================
+
+/// Protocol constants stay at depth 3 / 8 leaves.
+#[test]
+fn test_revocation_depth_bound_constants() {
+    assert(MAX_REVOCATION_WITNESS_DEPTH == 3, "depth bound must be 3");
+    assert(MAX_REVOCATION_LEAVES == 8, "leaf bound must be 2^depth");
+}
+
+/// Positive boundary: a full tree at exactly MAX_REVOCATION_LEAVES still
+/// admits a non-member (depth == MAX is allowed).
+#[test]
+fn test_depth_bound_full_tree_at_max_leaves() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let root = pedersen_hash([cs]);
+    let null = pedersen_hash([cs, ns]);
+
+    let l0 = pedersen_hash([11111]);
+    let l1 = pedersen_hash([22222]);
+    let l2 = pedersen_hash([33333]);
+    let l3 = pedersen_hash([44444]);
+    let l4 = pedersen_hash([55555]);
+    let l5 = pedersen_hash([66666]);
+    let l6 = pedersen_hash([77777]);
+    let l7 = pedersen_hash([88888]);
+    let tree_root = test_tree_root(l0, l1, l2, l3, l4, l5, l6, l7);
+    let ds = test_domain_separator();
+
+    // Exactly MAX_REVOCATION_LEAVES distinct leaves — within the bound.
+    let _ = MAX_REVOCATION_LEAVES;
     main(cs, ns, l0, l1, l2, l3, l4, l5, l6, l7, tree_root, null, ds, root);
 }

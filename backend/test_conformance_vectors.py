@@ -34,9 +34,17 @@ from verifier_inputs import (
 CORPUS_PATH = (
     Path(__file__).resolve().parents[1] / "zk" / "vectors" / "verifier_conformance_v1.json"
 )
+MALFORMED_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "zk"
+    / "vectors"
+    / "malformed_public_inputs_v1.json"
+)
 
 CORPUS = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
 CASES = CORPUS["cases"]
+MALFORMED_CORPUS = json.loads(MALFORMED_PATH.read_text(encoding="utf-8"))
+MALFORMED_CASES = MALFORMED_CORPUS["cases"]
 
 
 def case_id(case: dict) -> str:
@@ -85,13 +93,21 @@ def test_every_reject_code_is_declared():
 
 
 def test_every_declared_reject_code_is_reachable_or_layer_specific():
-    """Codes with no case must be justified: only ``unknown_schema`` is
-    exercised outside the corpus (schema dispatch is not a wire input)."""
+    """Codes with no structural case must be justified.
+
+    ``malformed_hex`` is exercised by the companion corpus
+    ``malformed_public_inputs_v1.json`` (hex decoding is string-layer only).
+    ``unknown_schema`` remains outside both corpora (schema dispatch is not a
+    wire input).
+    """
     exercised = {
         case["expect"]["reject_code"] for case in CASES if case["expect"]["reject_code"]
     }
-    unexercised = set(CORPUS["reject_codes"]) - exercised
-    assert unexercised <= {"malformed_hex"}
+    malformed_exercised = {
+        case["expect"]["reject_code"] for case in MALFORMED_CASES
+    }
+    unexercised = set(CORPUS["reject_codes"]) - exercised - malformed_exercised
+    assert unexercised <= set()
 
 
 # ── The corpus itself ───────────────────────────────────────────────────────
@@ -126,14 +142,52 @@ def test_unknown_schema_is_rejected():
     )
 
 
-@pytest.mark.parametrize(
-    "value",
-    ["0", "0x00", "zz" * 64, "00 11", "00\n11"],
-)
-def test_malformed_hex_is_rejected(value: str):
+def malformed_case_id(case: dict) -> str:
+    return case["id"]
+
+
+def test_malformed_corpus_is_versioned_and_matches_this_codec():
+    assert MALFORMED_CORPUS["format"] == "harpocrates.malformed-public-inputs"
+    assert MALFORMED_CORPUS["version"] == 1
+    assert MALFORMED_CORPUS["codec"] == CODEC_ID
+    assert MALFORMED_CORPUS["reject_codes"] == ["malformed_hex"]
+
+
+def test_malformed_case_ids_are_unique():
+    identifiers = [case["id"] for case in MALFORMED_CASES]
+    assert len(identifiers) == len(set(identifiers))
+    assert len(MALFORMED_CASES) >= 10
+
+
+@pytest.mark.parametrize("case", MALFORMED_CASES, ids=malformed_case_id)
+def test_malformed_public_input_hex_is_rejected(case: dict):
+    """Shared malformed public-input hex vectors (issue #353)."""
     with pytest.raises(VerifierInputError) as excinfo:
-        decode_hex(value, field="public_inputs")
-    assert excinfo.value.code is RejectCode.MALFORMED_HEX
+        decode_hex(case["value"], field=case.get("field", "public_inputs"))
+    assert excinfo.value.code.value == case["expect"]["reject_code"]
+    assert excinfo.value.field == case.get("field", "public_inputs")
+    # Privacy: rejection signal must never echo the malformed presentation.
+    signal = excinfo.value.signal()
+    rendered = json.dumps(signal)
+    assert case["value"] not in rendered
+    assert set(signal) <= {"codec", "reject_code", "field"}
+
+
+@pytest.mark.parametrize("case", MALFORMED_CASES, ids=malformed_case_id)
+def test_malformed_public_input_hex_is_deterministic(case: dict):
+    first = second = None
+    for _ in range(2):
+        try:
+            decode_hex(case["value"], field=case.get("field", "public_inputs"))
+        except VerifierInputError as exc:
+            outcome = (exc.code.value, exc.field)
+        else:
+            outcome = ("accepted", None)
+        if first is None:
+            first = outcome
+        else:
+            second = outcome
+    assert first == second
 
 
 def test_error_signal_never_carries_input_material():

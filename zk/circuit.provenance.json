@@ -1,0 +1,140 @@
+{
+  "declared_artifacts": [
+    {
+      "kind": "json",
+      "path": "zk/noir/silent_witness/target/silent_witness.json",
+      "required": true,
+      "role": "acir"
+    },
+    {
+      "kind": "binary",
+      "path": "zk/noir/silent_witness/target/vk",
+      "required": true,
+      "role": "verification_key"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/silent_witness/target/vk_fields.json",
+      "required": true,
+      "role": "verification_key_fields"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/silent_witness_helper/target/silent_witness_helper.json",
+      "required": true,
+      "role": "acir"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/silent_witness_aggregator/target/silent_witness_aggregator.json",
+      "required": true,
+      "role": "acir"
+    },
+    {
+      "kind": "binary",
+      "path": "zk/noir/silent_witness_aggregator/target/vk",
+      "required": true,
+      "role": "verification_key"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/silent_witness_aggregator/target/vk_fields.json",
+      "required": true,
+      "role": "verification_key_fields"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/silent_witness_aggregator_helper/target/silent_witness_aggregator_helper.json",
+      "required": true,
+      "role": "acir"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/revocation_witness/target/revocation_witness.json",
+      "required": false,
+      "role": "acir"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/revocation_witness_helper/target/revocation_witness_helper.json",
+      "required": false,
+      "role": "acir"
+    },
+    {
+      "kind": "json",
+      "path": "zk/noir/selective_disclosure/target/selective_disclosure.json",
+      "required": true,
+      "role": "acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/silent_witness.json",
+      "required": false,
+      "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/silent_witness_helper.json",
+      "required": false,
+      "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/silent_witness_aggregator.json",
+      "required": false,
+      "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/silent_witness_aggregator_helper.json",
+      "required": false,
+      "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/selective_disclosure.json",
+      "required": false,
+      "role": "published_acir"
+    }
+  ],
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "NARGO_BACKEND_PATH": "",
+    "RUST_BACKTRACE": "0",
+    "SOURCE_DATE_EPOCH": "0",
+    "TZ": "UTC",
+    "description": "Variables that must be pinned for a hermetic build. The build script exports these; any unpinned variable that leaks into an artifact is a reproducibility bug, not a configuration choice."
+  },
+  "format": "harpocrates.zk-circuit-provenance",
+  "normalization_policy_sha256": "ab0d2c5df0ed8fa307d26a748fbbca0d6b671e1fa228e491a8149b5d305565b5",
+  "provenance": {
+    "zk/noir/revocation_witness/Nargo.toml": "f0fe88445ba338a385a63c62df244629256243e32bcfcddc25b73c7a611e5626",
+    "zk/noir/revocation_witness/src/main.nr": "3a7f7a35cf660ba1fe2c960d5bcee605611a9b536a3cae0e441b9343ffa038bd",
+    "zk/noir/revocation_witness_helper/Nargo.toml": "6b5274ddc40cab86b2afb5fc36f85feaa21560715c83af89d586466603ac896d",
+    "zk/noir/revocation_witness_helper/src/main.nr": "3292a22b6c09ce0d797274a6c1187e4f85598607eed1bd77248b097347d8bff2",
+    "zk/noir/selective_disclosure/Nargo.toml": "ba0e59ff45a610313967cce1d995e69fba47ee9ef7d9bfb820c585687114e76f",
+    "zk/noir/selective_disclosure/src/main.nr": "c80dd099a53761b259d3cc33637fc5d30d67920079268567f8efca840c0eddfb",
+    "zk/noir/silent_witness/Nargo.toml": "5409afc3bf8006190be0dc19392c3e28a5c36143791c9fef998e7da6227ce222",
+    "zk/noir/silent_witness/src/main.nr": "9877a0775231019dbc2a86b57c521cadec5fcd20223c6bd5a300db7b301487b3",
+    "zk/noir/silent_witness_aggregator/Nargo.toml": "ba098913c051fa84f6899893c4078b4ffa9b36ff3b7fd1ed9b067c0d1683898e",
+    "zk/noir/silent_witness_aggregator/src/main.nr": "88a947d09e89112f9eba915f3983b13150ffe1e3f26938de5fbbf3222043a00a",
+    "zk/noir/silent_witness_aggregator_helper/Nargo.toml": "9e2a1900cec0bb699b03e1161caa8ec1492ceca575e0fcced6a66a8bef2e0328",
+    "zk/noir/silent_witness_aggregator_helper/src/main.nr": "49eba4c6bfe8f5224b268edb319c6e0a7f7dac36fd64ca4b538a13c54def603a",
+    "zk/noir/silent_witness_helper/Nargo.toml": "c93524fba9d0ffe9c1079749c4a6c629f0e571a5a1df9f011e984d1f87133d94",
+    "zk/noir/silent_witness_helper/src/main.nr": "43b468dbc0655c9bf55b23adcd0a0e24365a85d6f4c693586d31d445356b5c75",
+    "zk/toolchain.lock.json": "08d3488a62aed60e7c7f5069c9ce2ef65ab0bacaf0e074f3d247aacac0d297a9"
+  },
+  "provenance_globs": [
+    "zk/noir/*/src/*.nr",
+    "zk/noir/*/Nargo.toml",
+    "zk/toolchain.lock.json"
+  ],
+  "toolchain": {
+    "barretenberg": "0.87.0",
+    "nargo": "1.0.0-beta.9",
+    "oracle_hash": "keccak",
+    "proving_scheme": "ultra_honk"
+  },
+  "version": 1
+}

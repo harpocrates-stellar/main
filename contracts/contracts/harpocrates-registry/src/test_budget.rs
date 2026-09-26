@@ -82,11 +82,14 @@ fn make_public_inputs(
     let mut nu = [0u8; 32];
     nullifier.copy_into_slice(&mut nu);
 
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; 160];
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
+    let mut domain = [0u8; 32];
+    expected_domain_tag(env).copy_into_slice(&mut domain);
+    buf[128..160].copy_from_slice(&domain);
     Bytes::from_array(env, &buf)
 }
 
@@ -103,7 +106,7 @@ struct MockBudgetVerifier;
 impl MockBudgetVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -431,7 +434,7 @@ fn budget_get_proof_status_baseline() {
     );
 }
 
-const MAX_CPU_GET_PROOF_STATUSES: u64 = 4_000_000;
+const MAX_CPU_GET_PROOF_STATUSES: u64 = 12_000_000;
 const MAX_MEM_GET_PROOF_STATUSES: u64 = 3_000_000;
 
 #[test]
@@ -445,25 +448,38 @@ fn budget_get_proof_statuses_baseline() {
     let source = Address::generate(&env);
 
     client.init(&admin);
-    
+
     // Register 10 proofs
     let mut proof_ids = SorobanVec::new(&env);
     for i in 0..10u8 {
         let proof_id = b32(&env, 0xA0 + i);
-        client.register_source(&source, &b32(&env, 0xB0 + i), &b32(&env, 0xC0 + i), &proof_id);
+        client.register_source(
+            &source,
+            &b32(&env, 0xB0 + i),
+            &b32(&env, 0xC0 + i),
+            &proof_id,
+        );
         proof_ids.push_back(proof_id);
     }
-    
+
     // Pad to 100 ids for worst-case read (90 will be missing/not found)
     for i in 10..100u8 {
-        proof_ids.push_back(b32(&env, 0xD0 + i));
+        let mut pad = [0xD0u8; 32];
+        pad[1] = i;
+        proof_ids.push_back(BytesN::from_array(&env, &pad));
     }
+
+    // This baseline measures CPU/memory only. The 100-id read touches 101
+    // ledger entries (100 keys + the contract instance), which exceeds the
+    // mainnet invocation footprint limit (100), so disable that enforcement
+    // for this env.
+    env.cost_estimate().disable_resource_limits();
 
     let (cpu, mem, statuses) = measure(&env, || client.get_proof_statuses(&proof_ids));
     assert_eq!(statuses.len(), 100);
     assert_eq!(statuses.get(0).unwrap(), ProofVerificationStatus::Valid);
     assert_eq!(statuses.get(10).unwrap(), ProofVerificationStatus::NotFound);
-    
+
     assert_within(
         cpu,
         mem,

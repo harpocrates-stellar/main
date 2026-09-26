@@ -23,7 +23,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HELPER = join(ROOT, 'zk/noir/silent_witness_helper/target/silent_witness_helper.json')
 const MAIN = join(ROOT, 'zk/noir/silent_witness/target/silent_witness.json')
 
-const PUBLIC_INPUTS_LEN = 128
+const PUBLIC_INPUTS_LEN = 160
 const MIN_PROOF_BYTES = 64
 const MAX_PROOF_BYTES = 65536
 

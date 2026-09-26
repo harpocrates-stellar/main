@@ -37,3 +37,24 @@ export type { ChainProofRecord, StellarLookupOptions, TransactionVerification } 
 export { createReceipt, formatReceipt } from './receipt.js'
 export type { VerificationReceipt, VerificationResult } from './receipt.js'
 export { computeResult, networkName } from './normalize.js'
+export {
+  signVerificationReceipt,
+  serializeVerificationReceipt,
+  encodeReceiptForQr,
+  decodeReceiptFromQr,
+  verifyVerificationReceipt,
+} from './signed-receipt.js'
+export type {
+  VerificationReceiptPayload,
+  SignedVerificationReceipt,
+  VerificationReceiptInput,
+  ReceiptVerificationOptions,
+  ReceiptVerificationResult,
+} from './signed-receipt.js'
+export {
+  exportC2paAssertions,
+  parseC2paReceiptInput,
+  serializeC2paExport,
+  c2paExportDigest,
+} from './c2pa.js'
+export type { C2paExport, C2paExportOptions, C2paAssertion } from './c2pa.js'

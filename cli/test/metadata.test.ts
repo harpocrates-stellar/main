@@ -78,3 +78,70 @@ describe('canonicalMetadataHash', () => {
     expect(a).not.toBe(b)
   })
 })
+
+describe('validateMetadata — boundary and regression', () => {
+  it('rejects version as string instead of number', () => {
+    expect(() => validateMetadata({ ...VALID_METADATA, version: '1' })).toThrow('version must be a number')
+  })
+
+  it('rejects sourceHash with uppercase hex', () => {
+    // The regex allows uppercase, so this should pass — confirms case-insensitive hex acceptance
+    expect(() => validateMetadata({ ...VALID_METADATA, sourceHash: 'A'.repeat(64) })).not.toThrow()
+  })
+
+  it('rejects sourceHash that is 63 characters (one short)', () => {
+    expect(() => validateMetadata({ ...VALID_METADATA, sourceHash: 'a'.repeat(63) })).toThrow('sourceHash must be a 32-byte hex')
+  })
+
+  it('rejects sourceHash that is 65 characters (one over)', () => {
+    expect(() => validateMetadata({ ...VALID_METADATA, sourceHash: 'a'.repeat(65) })).toThrow('sourceHash must be a 32-byte hex')
+  })
+
+  it('rejects proofId with non-hex characters', () => {
+    expect(() => validateMetadata({ ...VALID_METADATA, proofId: 'g'.repeat(64) })).toThrow('proofId must be a 32-byte hex')
+  })
+
+  it('rejects missing timestamp field', () => {
+    const { timestamp: _, ...noTimestamp } = VALID_METADATA
+    expect(() => validateMetadata(noTimestamp)).toThrow('missing required field: timestamp')
+  })
+
+  it('accepts extra unknown fields without throwing', () => {
+    expect(() => validateMetadata({ ...VALID_METADATA, extra: 'foo' })).not.toThrow()
+  })
+
+  it('rejects an array as top-level input', () => {
+    // arrays pass the typeof check but fail the required-field check
+    expect(() => validateMetadata([])).toThrow()
+  })
+
+  it('rejects undefined as input', () => {
+    expect(() => validateMetadata(undefined)).toThrow('must be a JSON object')
+  })
+})
+
+describe('canonicalMetadataHash — boundary and regression', () => {
+  it('output is lowercase hex only', () => {
+    const result = canonicalMetadataHash(VALID_METADATA)
+    expect(/^[0-9a-f]{64}$/.test(result)).toBe(true)
+  })
+
+  it('key order does not affect the hash', () => {
+    const ordered = VALID_METADATA
+    const reordered = {
+      timestamp: VALID_METADATA.timestamp,
+      proofId: VALID_METADATA.proofId,
+      tier: VALID_METADATA.tier,
+      version: VALID_METADATA.version,
+      protocol: VALID_METADATA.protocol,
+      sourceHash: VALID_METADATA.sourceHash,
+    }
+    expect(canonicalMetadataHash(ordered)).toBe(canonicalMetadataHash(reordered as typeof VALID_METADATA))
+  })
+
+  it('changing a single field produces a completely different hash', () => {
+    const base = canonicalMetadataHash(VALID_METADATA)
+    const changed = canonicalMetadataHash({ ...VALID_METADATA, tier: 'source' })
+    expect(base).not.toBe(changed)
+  })
+})

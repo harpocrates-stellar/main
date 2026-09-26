@@ -7,6 +7,7 @@ import type {
   SelectiveDisclosureProof,
 } from './types/schema'
 import { SCHEMA_CONSTANTS } from './types/schema'
+import { encodePublicInputs } from './verifierInputs'
 
 let circuitPromise: Promise<CompiledCircuit> | null = null
 let bbPromise: Promise<Barretenberg> | null = null
@@ -121,7 +122,7 @@ export async function generateSelectiveDisclosureProof(
   try {
     const proofData = await backend.generateProof(witness, { keccak: true })
     const proofHex = bytesToHex(proofData.proof)
-    const publicInputHex = proofData.publicInputs.map(fieldToBytes32Hex).join('')
+    const publicInputHex = encodePublicInputs(proofData.publicInputs)
 
     return {
       proof: proofHex,
@@ -143,14 +144,6 @@ async function fetchCircuit(path: string) {
     throw new Error(`Unable to load Noir circuit artifact: ${path}`)
   }
   return (await response.json()) as CompiledCircuit
-}
-
-function fieldToBytes32Hex(value: string) {
-  const normalized = value.startsWith('0x') ? value.slice(2) : BigInt(value).toString(16)
-  if (normalized.length > 64) {
-    throw new Error('Noir field is larger than 32 bytes.')
-  }
-  return normalized.padStart(64, '0')
 }
 
 function bytesToHex(bytes: Uint8Array) {

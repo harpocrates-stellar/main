@@ -1,3 +1,5 @@
+import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+
 type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
@@ -101,11 +103,17 @@ export async function generateSilentWitnessProof({
     // Public inputs in on-chain ordering:
     //   [0] video_hash_hi, [1] video_hash_lo, [2] credential_root,
     //   [3] nullifier,     [4] domain_tag
-    const publicInputHex = proofData.publicInputs.map(fieldToBytes32Hex).join('')
+    const publicInputHex = encodePublicInputs(proofData.publicInputs, [
+      'video_hash_hi',
+      'video_hash_lo',
+      'credential_root',
+      'nullifier',
+      'domain_tag',
+    ])
     return {
-      credentialRoot: fieldToBytes32Hex(credentialRoot),
-      nullifier: fieldToBytes32Hex(nullifier),
-      domainTag: fieldToBytes32Hex(domainTag),
+      credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),
+      nullifier: encodeFieldToBytes32Hex(nullifier, 'nullifier'),
+      domainTag: encodeFieldToBytes32Hex(domainTag, 'domain_tag'),
       proof: proofHex,
       publicInputs: publicInputHex,
       proofBytes: proofData.proof.length,

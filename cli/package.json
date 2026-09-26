@@ -15,12 +15,14 @@
   },
   "exports": {
     ".": "./dist/index.js",
+    "./c2pa": "./dist/c2pa.js",
     "./hashing": "./dist/hashing.js",
     "./metadata": "./dist/metadata.js",
     "./manifest": "./dist/manifest.js",
     "./stellar-lookup": "./dist/stellar-lookup.js",
     "./receipt": "./dist/receipt.js",
-    "./normalize": "./dist/normalize.js"
+    "./normalize": "./dist/normalize.js",
+    "./signed-receipt": "./dist/signed-receipt.js"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^15.1.0"

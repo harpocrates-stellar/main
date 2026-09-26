@@ -101,7 +101,7 @@ describe('parseManifest', () => {
 
   it('accepts legacy v1 and current v2 without changing the input version', () => {
     const current = createProofManifest(VALID_INPUT)
-    expect(parseManifest(JSON.stringify({ ...current, version: 1 } )).version).toBe(1)
+    expect(parseManifest(JSON.stringify({ ...current, version: 1 })).version).toBe(1)
     expect(parseManifest(JSON.stringify(current)).version).toBe(2)
   })
 
@@ -120,5 +120,84 @@ describe('parseManifest', () => {
     const current = createProofManifest(VALID_INPUT)
     expect(() => parseManifest(JSON.stringify({ ...current, verifierScope: '-1' }))).toThrow('scope or epoch')
     expect(() => parseManifest(JSON.stringify({ ...current, epoch: -1 }))).toThrow('scope or epoch')
+  })
+
+  it('throws on null JSON', () => {
+    expect(() => parseManifest('null')).toThrow('must be a JSON object')
+  })
+
+  it('throws on JSON array', () => {
+    // arrays are objects in JS; parseManifest reaches the protocol check
+    expect(() => parseManifest('[]')).toThrow()
+  })
+
+  it('throws when version is missing', () => {
+    const m = createProofManifest(VALID_INPUT)
+    const obj = JSON.parse(serializeManifest(m)) as Record<string, unknown>
+    delete obj['version']
+    expect(() => parseManifest(JSON.stringify(obj))).toThrow('unsupported manifest version')
+  })
+
+  it('throws on unknown tier in manifest', () => {
+    const m = createProofManifest(VALID_INPUT)
+    const obj = JSON.parse(serializeManifest(m)) as Record<string, unknown>
+    obj['tier'] = 'admin'
+    expect(() => parseManifest(JSON.stringify(obj))).toThrow('tier must be one of')
+  })
+
+  it('throws when a required string field is missing', () => {
+    const m = createProofManifest(VALID_INPUT)
+    const obj = JSON.parse(serializeManifest(m)) as Record<string, unknown>
+    delete obj['videoHash']
+    expect(() => parseManifest(JSON.stringify(obj))).toThrow('manifest.videoHash')
+  })
+
+  it('round-trips through serialize then parse for all tiers', () => {
+    for (const tier of ['silent', 'source', 'seal'] as const) {
+      const manifest = createProofManifest({ ...VALID_INPUT, tier })
+      const parsed = parseManifest(serializeManifest(manifest))
+      expect(parsed.tier).toBe(tier)
+      expect(parsed.protocol).toBe('harpocrates')
+    }
+  })
+})
+
+describe('createProofManifest — boundary and regression', () => {
+  it('does not include protocol or version in witness-privacy check', () => {
+    // protocol and version are public; privacy check applies to witness fields only
+    const manifest = createProofManifest(VALID_INPUT)
+    expect(manifest.protocol).toBe('harpocrates')
+    expect(manifest.version).toBe(2)
+  })
+
+  it('serialized output does not contain secret-looking keys even with extra props', () => {
+    // Callers cannot sneak private data into the manifest through extra keys on the input
+    const manifest = createProofManifest(VALID_INPUT)
+    const json = serializeManifest(manifest)
+    const forbidden = ['seed', 'credential', 'nullifier', 'witness', 'private', 'secret']
+    for (const word of forbidden) {
+      expect(json.toLowerCase()).not.toContain(word)
+    }
+  })
+
+  it('serialization is stable across multiple calls (no timestamp drift)', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const first = serializeManifest(manifest)
+    const second = serializeManifest(manifest)
+    const third = serializeManifest(manifest)
+    expect(first).toBe(second)
+    expect(second).toBe(third)
+  })
+
+  it('two manifests with different proofIds produce different JSON', () => {
+    const a = serializeManifest(createProofManifest({ ...VALID_INPUT, proofId: 'a'.repeat(64) }))
+    const b = serializeManifest(createProofManifest({ ...VALID_INPUT, proofId: 'b'.repeat(64) }))
+    expect(a).not.toBe(b)
+  })
+
+  it('two manifests differing only in tier produce different JSON', () => {
+    const a = serializeManifest(createProofManifest({ ...VALID_INPUT, tier: 'silent' }))
+    const b = serializeManifest(createProofManifest({ ...VALID_INPUT, tier: 'seal' }))
+    expect(a).not.toBe(b)
   })
 })

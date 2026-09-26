@@ -32,6 +32,7 @@ const ACTIVE_CHAIN_PROOF: ChainProofRecord = {
   tier: 1,
   status: 1,
   createdAt: '123',
+  expiresAt: 0,
   source: null,
   issuer: null,
 }

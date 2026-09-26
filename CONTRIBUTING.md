@@ -92,6 +92,21 @@ nargo compile
 nargo test
 ```
 
+## 2.6 Coverage Thresholds
+
+Each workspace with a test suite publishes its minimum coverage bar as a
+declarative JSON file under `devx/coverage/thresholds/<workspace>.json` (see
+`devx/coverage/README.md`). CI checks a workspace's coverage report against
+its thresholds file with the same script you can run locally:
+
+```bash
+python3 devx/coverage/check_coverage.py --workspace backend --report backend/coverage.json
+python3 devx/coverage/check_coverage.py --lint-thresholds
+```
+
+The check fails closed: a missing report, invalid JSON, or a malformed
+thresholds file all count as a failure, never a silent pass.
+
 ## 3. Contributor Workflow Guidelines
 
 ### ​3.1 Branch Naming Convention

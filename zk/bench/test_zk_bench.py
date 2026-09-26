@@ -102,7 +102,7 @@ def test_privacy_allows_size_and_digest_fields(lock: zb.Lock):
     zb.assert_privacy_safe(
         {
             "proof_bytes": 1024,
-            "public_input_bytes": 128,
+            "public_input_bytes": 160,
             "hostname_hash": "abcd" * 4,
             "percentiles": {"p50": 12.5},
         },
@@ -172,7 +172,7 @@ def test_synthetic_op_is_deterministic(lock: zb.Lock):
     b = zb.synthetic_op(phase="prove", seed=7, limits=lock.limits)
     assert a.elapsed_ms == b.elapsed_ms
     assert a.proof_bytes == b.proof_bytes
-    assert a.public_input_bytes == 128
+    assert a.public_input_bytes == 160
 
 
 def test_synthetic_honours_cancel(lock: zb.Lock):
@@ -208,7 +208,7 @@ def test_ci_target_run_writes_privacy_safe_report(lock: zb.Lock, tmp_path: Path)
     assert report["phases"]
     for phase in report["phases"]:
         assert "sizes" in phase
-        assert phase["sizes"]["public_input_bytes"] == 128
+        assert phase["sizes"]["public_input_bytes"] == 160
         assert "percentiles" in phase
     zb.assert_privacy_safe(
         report,
@@ -318,8 +318,8 @@ def test_report_oversize_rejected(lock: zb.Lock, tmp_path: Path):
         max_samples=1,
         max_proof_bytes=65536,
         min_proof_bytes=64,
-        max_public_input_bytes=128,
-        min_public_input_bytes=128,
+        max_public_input_bytes=160,
+        min_public_input_bytes=160,
         max_witness_bytes=1,
         max_report_bytes=32,
         max_concurrency=1,
@@ -328,3 +328,46 @@ def test_report_oversize_rejected(lock: zb.Lock, tmp_path: Path):
     report = {"format": zb.REPORT_FORMAT, "version": 1, "target": "ci", "outcome": "ok", "phases": [], "pad": "x" * 100}
     with pytest.raises(zb.BenchError, match="max_report_bytes"):
         zb.write_report(report, tmp_path / "big.json", limits=tiny)
+
+
+def test_published_baselines_load_and_pass_synthetic(lock: zb.Lock):
+    """Committed thresholds must load and pass the hermetic synthetic envelopes."""
+    baselines = zb.load_baselines(zb.DEFAULT_BASELINES)
+    assert baselines is not None, "zk/bench/baselines.lock.json must be published"
+    assert baselines["format"] == zb.BASELINES_FORMAT
+    assert baselines["version"] == 1
+    required = {"ci", "native", "browser", "soroban_adjacent"}
+    assert required <= set(baselines.get("targets", {}).keys())
+    for target in sorted(required):
+        report = zb.run_target(lock, target, force_synthetic=True)
+        assert report["outcome"] == "ok"
+        findings = zb.compare_report(report, baselines)
+        assert not findings, f"{target} synthetic exceeded published thresholds: {findings}"
+        zb.assert_privacy_safe(
+            baselines,
+            forbidden_keys=lock.forbidden_report_keys,
+            forbidden_substrings=lock.forbidden_substrings,
+        )
+
+
+def test_published_baselines_ci_cli_compare(lock: zb.Lock, tmp_path: Path):
+    """CLI compare against the committed baselines must exit 0 for a synthetic CI report."""
+    report = zb.run_target(lock, "ci", force_synthetic=True)
+    report_path = tmp_path / "ci.json"
+    zb.write_report(report, report_path, limits=lock.limits)
+    code = zb.main(
+        ["--lock", str(LOCK_PATH), "compare", "--report", str(report_path), "--baselines", str(zb.DEFAULT_BASELINES)]
+    )
+    assert code == zb.EXIT_OK
+
+
+def test_published_baselines_detect_size_regression(lock: zb.Lock):
+    """Oversized proof bytes against published CI caps must regress."""
+    baselines = zb.load_baselines(zb.DEFAULT_BASELINES)
+    assert baselines is not None
+    report = zb.run_target(lock, "ci", force_synthetic=True)
+    # Inflate proof size past the published CI cap without touching secrets.
+    for phase in report["phases"]:
+        phase["sizes"]["proof_bytes"] = 65535
+    findings = zb.compare_report(report, baselines)
+    assert any("proof_bytes" in f for f in findings), findings

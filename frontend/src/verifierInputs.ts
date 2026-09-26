@@ -18,8 +18,12 @@
 export const CODEC_ID = 'hpx-vi/1'
 
 export const FIELD_LEN = 32
-export const FIELD_COUNT = 4
-export const PUBLIC_INPUTS_LEN = FIELD_LEN * FIELD_COUNT
+export const SILENT_WITNESS_FIELD_COUNT = 5
+export const REVOCATION_FIELD_COUNT = 4
+export const SILENT_WITNESS_PUBLIC_INPUTS_LEN = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT
+export const REVOCATION_PUBLIC_INPUTS_LEN = FIELD_LEN * REVOCATION_FIELD_COUNT
+/** Default frame length for the primary silent-witness verifier boundary. */
+export const PUBLIC_INPUTS_LEN = SILENT_WITNESS_PUBLIC_INPUTS_LEN
 
 export const MIN_PROOF_BYTES = 64
 export const MAX_PROOF_BYTES = 65536
@@ -42,8 +46,21 @@ export const BN254_SCALAR_FIELD_MODULUS =
 export const REVOCATION_DOMAIN_SEPARATOR_HEX =
   '00000000000000484152504f4352415445535f5245564f434154494f4e5f5631'
 
+/** SHA-256(protocol || version || network), embedded by the v1 Noir helper. */
+export const SILENT_WITNESS_DOMAIN_TAG_HEX =
+  '4aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c55'
+
 export const SCHEMA_SILENT_WITNESS = 'silent_witness/v1'
 export const SCHEMA_REVOCATION_WITNESS = 'revocation_witness/v1'
+
+/**
+ * Protocol Merkle-depth bound for `revocation_witness/v1` (#357).
+ * Must match the Noir globals and the Soroban registry constants.
+ * Host tooling must reject depth > this value before proving.
+ */
+export const MAX_REVOCATION_WITNESS_DEPTH = 3
+/** Leaf capacity implied by {@link MAX_REVOCATION_WITNESS_DEPTH} (`2^depth`). */
+export const MAX_REVOCATION_LEAVES = 8
 
 export type VerifierSchema =
   | typeof SCHEMA_SILENT_WITNESS
@@ -86,6 +103,7 @@ export type SilentWitnessInputs = {
   videoHash: Uint8Array
   credentialRoot: Uint8Array
   nullifier: Uint8Array
+  domainTag: Uint8Array
 }
 
 export type RevocationWitnessInputs = {
@@ -131,6 +149,39 @@ function toBigInt(element: Uint8Array): bigint {
   return accumulator
 }
 
+/**
+ * Encode a Noir field using the wire format consumed by every verifier.
+ *
+ * Noir may return either decimal strings or `0x`-prefixed hex strings. The
+ * browser boundary always emits one lowercase, zero-padded 32-byte field and
+ * rejects values outside BN254 instead of silently reducing them modulo the
+ * field. This keeps proof/public-input bytes deterministic across clients.
+ */
+type NoirField = string | bigint | { toString(): string }
+
+export function encodeFieldToBytes32Hex(value: NoirField, field = 'field'): string {
+  let element: bigint
+  try {
+    element = typeof value === 'bigint' ? value : BigInt(value.toString())
+  } catch {
+    throw new VerifierInputError('malformed_hex', field)
+  }
+  if (element < 0n || element >= BN254_SCALAR_FIELD_MODULUS) {
+    throw new VerifierInputError('non_canonical_field', field)
+  }
+  return element.toString(16).padStart(FIELD_LEN * 2, '0')
+}
+
+/** Encode an ordered public-input vector without exposing witness material. */
+export function encodePublicInputs(
+  values: readonly NoirField[],
+  fields: readonly string[] = [],
+): string {
+  return values
+    .map((value, index) => encodeFieldToBytes32Hex(value, fields[index] ?? `field_${index}`))
+    .join('')
+}
+
 /** Is this 32-byte big-endian encoding strictly below the BN254 modulus? */
 export function isCanonicalField(element: Uint8Array): boolean {
   return element.length === FIELD_LEN && toBigInt(element) < BN254_SCALAR_FIELD_MODULUS
@@ -146,12 +197,12 @@ export function checkProofBounds(proof: Uint8Array): void {
   }
 }
 
-function splitFields(publicInputs: Uint8Array): Uint8Array[] {
-  if (publicInputs.length !== PUBLIC_INPUTS_LEN) {
+function splitFields(publicInputs: Uint8Array, fieldCount: number): Uint8Array[] {
+  if (publicInputs.length !== FIELD_LEN * fieldCount) {
     throw new VerifierInputError('length', 'public_inputs')
   }
   const fields: Uint8Array[] = []
-  for (let index = 0; index < FIELD_COUNT; index += 1) {
+  for (let index = 0; index < fieldCount; index += 1) {
     fields.push(publicInputs.slice(index * FIELD_LEN, (index + 1) * FIELD_LEN))
   }
   return fields
@@ -165,18 +216,37 @@ function requireCanonical(fields: Uint8Array[], names: readonly string[]): void 
   }
 }
 
+/**
+ * Compare two byte strings without an early exit on the first difference.
+ *
+ * Every byte is folded into one accumulator, so the work done does not depend
+ * on where (or whether) the inputs diverge. Differing lengths compare unequal;
+ * length is public. Mirrors `constant_time_equals` in `backend/verifier_inputs.py`
+ * and `constant_time_eq` in the Soroban codec.
+ */
+export function constantTimeEquals(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+  let difference = 0
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index]
+  }
+  return difference === 0
+}
+
+const ZERO_FIELD = new Uint8Array(FIELD_LEN)
+
 function requireNonZero(field: Uint8Array, name: string): void {
-  if (field.every((byte) => byte === 0)) {
+  if (constantTimeEquals(field, ZERO_FIELD)) {
     throw new VerifierInputError('zero_field', name)
   }
 }
 
 /** A 128-bit half lives in the low 16 bytes; the high 16 must be zero. */
 function requireHalfPadding(field: Uint8Array, name: string): Uint8Array {
-  for (let index = 0; index < 16; index += 1) {
-    if (field[index] !== 0) {
-      throw new VerifierInputError('padding', name)
-    }
+  if (!constantTimeEquals(field.subarray(0, 16), ZERO_FIELD.subarray(0, 16))) {
+    throw new VerifierInputError('padding', name)
   }
   return field.slice(16)
 }
@@ -193,6 +263,7 @@ const SILENT_WITNESS_FIELDS = [
   'video_hash_lo',
   'credential_root',
   'nullifier',
+  'domain_tag',
 ] as const
 
 const REVOCATION_FIELDS = [
@@ -204,20 +275,30 @@ const REVOCATION_FIELDS = [
 
 /** Parse `silent_witness/v1` public inputs in canonical check order. */
 export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnessInputs {
-  const fields = splitFields(publicInputs)
+  const fields = splitFields(publicInputs, SILENT_WITNESS_FIELD_COUNT)
 
   const high = requireHalfPadding(fields[0], 'video_hash_hi')
   const low = requireHalfPadding(fields[1], 'video_hash_lo')
 
-  requireCanonical(fields, SILENT_WITNESS_FIELDS)
+  // The domain tag is an opaque 32-byte protocol binding, not a user-supplied
+  // BN254 scalar. It is compared byte-for-byte below and is intentionally not
+  // reduced or rejected merely because its digest is above the modulus.
+  requireCanonical(fields.slice(0, 4), SILENT_WITNESS_FIELDS.slice(0, 4))
 
   requireNonZero(fields[2], 'credential_root')
   requireNonZero(fields[3], 'nullifier')
+  requireNonZero(fields[4], 'domain_tag')
+
+  const expectedDomain = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
+  if (!constantTimeEquals(fields[4], expectedDomain)) {
+    throw new VerifierInputError('domain_mismatch', 'domain_tag')
+  }
 
   return {
     videoHash: concat(high, low),
     credentialRoot: fields[2],
     nullifier: fields[3],
+    domainTag: fields[4],
   }
 }
 
@@ -225,7 +306,7 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
 export function parseRevocationWitnessInputs(
   publicInputs: Uint8Array,
 ): RevocationWitnessInputs {
-  const fields = splitFields(publicInputs)
+  const fields = splitFields(publicInputs, REVOCATION_FIELD_COUNT)
 
   requireCanonical(fields, REVOCATION_FIELDS)
 
@@ -235,10 +316,8 @@ export function parseRevocationWitnessInputs(
 
   const expectedDomain = decodeHex(REVOCATION_DOMAIN_SEPARATOR_HEX, 'domain_separator')
   const domain = fields[2]
-  for (let index = 0; index < FIELD_LEN; index += 1) {
-    if (domain[index] !== expectedDomain[index]) {
-      throw new VerifierInputError('domain_mismatch', 'domain_separator')
-    }
+  if (!constantTimeEquals(domain, expectedDomain)) {
+    throw new VerifierInputError('domain_mismatch', 'domain_separator')
   }
 
   return {
@@ -285,4 +364,20 @@ export function classify(
     throw error
   }
   return null
+}
+
+/**
+ * Reject a Merkle depth outside the protocol bound for revocation witnesses.
+ * Privacy-safe: never logs leaves, secrets, or witness material.
+ */
+export function checkRevocationWitnessDepth(depth: number): void {
+  if (!Number.isInteger(depth)) {
+    throw new VerifierInputError('malformed_hex', 'depth')
+  }
+  if (depth < 1) {
+    throw new VerifierInputError('length', 'depth')
+  }
+  if (depth > MAX_REVOCATION_WITNESS_DEPTH) {
+    throw new VerifierInputError('proof_oversize', 'depth')
+  }
 }

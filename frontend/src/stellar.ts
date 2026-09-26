@@ -1,4 +1,4 @@
-import { getNetwork, requestAccess } from '@stellar/freighter-api'
+import { getNetwork, requestAccess, WatchWalletChanges } from '@stellar/freighter-api'
 
 export type {
   ChainProofRecord,
@@ -21,6 +21,9 @@ export {
   verifyProof,
   CONTRACT_NETWORK_PASSPHRASE,
 } from './harpocratesRegistry'
+// Re-export for use by wallet hook and guard code.
+export { WatchWalletChanges }
+export { checkNetworkMatch } from './networkGuard'
 
 export async function connectFreighter() {
   const result = await requestAccess()
