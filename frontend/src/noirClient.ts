@@ -10,10 +10,10 @@ const MAX_AGGREGATION_SIZE = 8
 type SilentWitnessProof = {
   credentialRoot: string
   nullifier: string
-  /** Domain tag as a 32-byte hex string (no 0x prefix). */
-  domainTag: string
+  /** 32-byte hex domain tag, present only when the circuit exposes one. */
+  domainTag?: string
   proof: string
-  /** Hex-encoded verifier frame: five unscoped or seven scoped fields. */
+  /** Hex-encoded public frame: four published-browser, five unscoped, or seven scoped fields. */
   publicInputs: string
   proofBytes: number
   publicInputBytes: number
@@ -47,19 +47,16 @@ let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
 /**
  * Generate a Silent Witness Noir/UltraHonk proof.
  *
- * The helper circuit computes (credential_root, nullifier, domain_tag) from
- * the private inputs so the browser never needs to reproduce the Pedersen
- * hash in JavaScript.  domain_tag binds the proof to the Harpocrates protocol
- * version and network embedded in the circuit constants — a proof generated
- * for testnet will fail the in-circuit assert if submitted to a mainnet
- * verifier with different embedded constants.
+ * The published browser helper computes (credential_root, nullifier). Newer
+ * helper artifacts may also return a domain_tag that binds the proof to the
+ * protocol and network. The browser never fabricates a missing domain tag.
  */
 export async function generateSilentWitnessProof(input: SilentWitnessInput): Promise<SilentWitnessProof> {
   const prepared = prepareSilentWitnessInputs(input)
   try {
     const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
-    const frame = assertArtifactPair(helperCircuit, mainCircuit)
-    if (frame === 'unscoped_v1' && (prepared.verifier_scope !== '0' || prepared.epoch !== '0')) {
+    const frame = await assertArtifactPair(helperCircuit, mainCircuit)
+    if (frame !== 'scoped_v2' && (prepared.verifier_scope !== '0' || prepared.epoch !== '0')) {
       throw new CircuitInputError('unsupported_input_schema')
     }
 
@@ -71,7 +68,7 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
     }
     const helperResult = await new Noir(helperCircuit).execute(helperInputs)
     const returned = helperResult.returnValue
-    if (!Array.isArray(returned) || returned.length !== 3) {
+    if (!Array.isArray(returned) || returned.length !== (frame === 'browser_v1' ? 2 : 3)) {
       throw new CircuitInputError('invalid_proof_output')
     }
     const [credentialRoot, nullifier, domainTag] = returned as string[]
@@ -79,7 +76,7 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
       ...helperInputs,
       credential_root: credentialRoot,
       nullifier,
-      domain_tag: domainTag,
+      ...(domainTag === undefined ? {} : { domain_tag: domainTag }),
     })
 
     const backend = new UltraHonkBackend(mainCircuit.bytecode)
@@ -92,13 +89,13 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
         nullifier,
         verifier_scope: prepared.verifier_scope,
         epoch: prepared.epoch,
-        domain_tag: domainTag,
+        ...(domainTag === undefined ? {} : { domain_tag: domainTag }),
       }, frame)
       const publicInputHex = encodePublicInputs(proofData.publicInputs, PUBLIC_FRAMES[frame])
       return {
         credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),
         nullifier: encodeFieldToBytes32Hex(nullifier, 'nullifier'),
-        domainTag: encodeFieldToBytes32Hex(domainTag, 'domain_tag'),
+        ...(domainTag === undefined ? {} : { domainTag: encodeFieldToBytes32Hex(domainTag, 'domain_tag') }),
         proof: bytesToHex(proofData.proof),
         publicInputs: publicInputHex,
         proofBytes: proofData.proof.length,

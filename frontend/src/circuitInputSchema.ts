@@ -71,10 +71,15 @@ export function prepareSilentWitnessInputs(input: SilentWitnessInput) {
   }
 }
 
-export type PublicFrame = 'unscoped_v1' | 'scoped_v2'
+export type PublicFrame = 'browser_v1' | 'unscoped_v1' | 'scoped_v2'
 
-/** The checked-in four-field artifact must never be relabelled as v1 or v2. */
-export function assertArtifactPair(helper: CompiledCircuit, main: CompiledCircuit): PublicFrame {
+async function bytecodeDigest(bytecode: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(bytecode))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/** The published four-field browser artifact has its own pinned frame. */
+export async function assertArtifactPair(helper: CompiledCircuit, main: CompiledCircuit): Promise<PublicFrame> {
   const matches = (artifact: CompiledCircuit, names: string[], publicStart: number) => {
     const actual = artifact?.abi?.parameters
     const version = (artifact as CompiledCircuit & { noir_version?: string })?.noir_version
@@ -85,7 +90,7 @@ export function assertArtifactPair(helper: CompiledCircuit, main: CompiledCircui
         parameter.visibility === (index < publicStart ? 'private' : 'public'))
   }
 
-  for (const frame of ['unscoped_v1', 'scoped_v2'] as const) {
+  for (const frame of ['browser_v1', 'unscoped_v1', 'scoped_v2'] as const) {
     const abi = schema.artifact_abis[frame]
     const returns = helper?.abi?.return_type
     if (matches(helper, abi.helper_parameters, abi.helper_parameters.length) &&
@@ -94,6 +99,17 @@ export function assertArtifactPair(helper: CompiledCircuit, main: CompiledCircui
         returns.abi_type.fields.length === abi.helper_return_fields &&
         returns.abi_type.fields.every((field) => field.kind === 'field') &&
         main.abi.return_type === null) {
+      if (frame === 'browser_v1') {
+        const pinned = schema.artifact_abis.browser_v1
+        try {
+          if (await bytecodeDigest(helper.bytecode) !== pinned.helper_bytecode_sha256 ||
+              await bytecodeDigest(main.bytecode) !== pinned.main_bytecode_sha256) {
+            throw new CircuitInputError('artifact_mismatch')
+          }
+        } catch {
+          throw new CircuitInputError('artifact_mismatch')
+        }
+      }
       return frame
     }
   }

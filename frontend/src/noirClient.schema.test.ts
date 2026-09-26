@@ -13,18 +13,30 @@ const input = {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('versioned browser proving boundary', () => {
-  it('rejects the stale four-field browser artifacts before execution', async () => {
+  it('rejects scope inputs that the published four-field artifact cannot bind', async () => {
     const fetchArtifact = vi.fn(async (path: string) => ({
       ok: true,
       json: async () => path.includes('helper') ? helper : main,
     }))
     vi.stubGlobal('fetch', fetchArtifact)
 
-    await expect(generateSilentWitnessProof(input)).rejects.toThrowError(
-      new CircuitInputError('artifact_mismatch'),
+    await expect(generateSilentWitnessProof({ ...input, verifierScope: '7' })).rejects.toThrowError(
+      new CircuitInputError('unsupported_input_schema'),
     )
     expect(fetchArtifact).toHaveBeenCalledTimes(2)
   })
+
+  it('generates a four-field proof with the checked-in browser artifacts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => ({
+      ok: true,
+      json: async () => path.includes('helper') ? helper : main,
+    })))
+
+    const result = await generateSilentWitnessProof(input)
+    expect(result.publicInputBytes).toBe(128)
+    expect(result.proofBytes).toBeGreaterThan(64)
+    expect(result.domainTag).toBeUndefined()
+  }, 120_000)
 
   it('rejects invalid aggregation input without fetching or echoing it', async () => {
     const fetchArtifact = vi.fn()

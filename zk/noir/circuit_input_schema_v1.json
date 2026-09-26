@@ -12,6 +12,12 @@
     "epoch"
   ],
   "public_frames": {
+    "browser_v1": [
+      "video_hash_hi",
+      "video_hash_lo",
+      "credential_root",
+      "nullifier"
+    ],
     "unscoped_v1": [
       "video_hash_hi",
       "video_hash_lo",
@@ -30,6 +36,13 @@
     ]
   },
   "artifact_abis": {
+    "browser_v1": {
+      "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo"],
+      "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier"],
+      "helper_return_fields": 2,
+      "helper_bytecode_sha256": "250314ee5f65cc3be8d2a94cab1efbd215ec8531cbba7acd70ed77e17e96fe74",
+      "main_bytecode_sha256": "87b20c8098032b22b145f9c714ce206da15e7c636db428f80bc7a38e96372f1f"
+    },
     "unscoped_v1": {
       "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo"],
       "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier", "domain_tag"],

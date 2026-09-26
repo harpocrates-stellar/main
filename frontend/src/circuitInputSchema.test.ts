@@ -72,9 +72,11 @@ describe('silent witness input schema v1', () => {
     expect(prepared.verifier_scope).toBe('7')
   })
 
-  it('accepts the existing five-field and seven-field verifier orders', () => {
+  it('accepts the published four-field frame and existing verifier orders', () => {
+    const browser = PUBLIC_FRAMES.browser_v1.map((field) => expected[field as keyof typeof expected])
     const unscoped = PUBLIC_FRAMES.unscoped_v1.map((field) => expected[field as keyof typeof expected])
     const scoped = PUBLIC_FRAMES.scoped_v2.map((field) => expected[field as keyof typeof expected])
+    expect(() => assertProofOutput(64, browser, expected, 'browser_v1')).not.toThrow()
     expect(() => assertProofOutput(64, unscoped, expected, 'unscoped_v1')).not.toThrow()
     expect(() => assertProofOutput(64, unscoped.map((field) => `0x${BigInt(field).toString(16)}`), expected, 'unscoped_v1')).not.toThrow()
     expect(() => assertProofOutput(65536, scoped, expected, 'scoped_v2')).not.toThrow()
@@ -109,16 +111,20 @@ describe('silent witness input schema v1', () => {
     }
   })
 
-  it('rejects the stale four-field browser artifacts and recognizes both versioned ABI shapes', () => {
-    expect(() => assertArtifactPair(helper as CompiledCircuit, main as CompiledCircuit)).toThrowError(
+  it('accepts the pinned browser artifacts and rejects bytecode drift', async () => {
+    await expect(assertArtifactPair(helper as CompiledCircuit, main as CompiledCircuit)).resolves.toBe('browser_v1')
+    await expect(assertArtifactPair({ ...helper, bytecode: 'changed' } as CompiledCircuit, main as CompiledCircuit)).rejects.toThrowError(
       new CircuitInputError('artifact_mismatch'),
     )
+  })
+
+  it('recognizes the five-field and seven-field ABI shapes without relabelling browser v1', async () => {
     for (const frame of ['unscoped_v1', 'scoped_v2'] as const) {
       const abi = schema.artifact_abis[frame]
-      expect(assertArtifactPair(
+      await expect(assertArtifactPair(
         syntheticArtifact(abi.helper_parameters, abi.helper_parameters.length, 3),
         syntheticArtifact(abi.main_parameters, 2, 0),
-      )).toBe(frame)
+      )).resolves.toBe(frame)
     }
   })
 })
