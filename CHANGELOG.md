@@ -2,6 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
+- Added a privacy-safe redaction preview in Evidence Studio that discloses truncated public fingerprints while withholding seeds, witness proofs, private keys, and media URLs (`frontend/src/redactionPreview.ts`).
 - Domain-separated proof-cache keys in the backend verifier cache (#373): keys
   are SHA-256 digests over the versioned `harpocrates:verifier-cache:v1` domain
   tag plus length-prefixed fields, eliminating separator-ambiguity collisions

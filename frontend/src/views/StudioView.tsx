@@ -10,6 +10,7 @@ import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
+import { RedactionPreview } from '../components/RedactionPreview'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
@@ -166,6 +167,15 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <dd>{registration?.status ?? 'Not submitted'}</dd>
           </div>
         </dl>
+
+        <RedactionPreview
+          proof={proof}
+          secrets={{
+            credentialSeed: credentialSeed || undefined,
+            nullifierSeed: nullifierSeed || undefined,
+            mediaObjectUrl: processedVideoUrl || undefined,
+          }}
+        />
 
         {processedVideoUrl ? (
           <a
