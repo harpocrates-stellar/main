@@ -2,6 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
+- chore(devx): retain proof artifacts in CI through a privacy-checked allowlist (#398)
 - Domain-separated proof-cache keys in the backend verifier cache (#373): keys
   are SHA-256 digests over the versioned `harpocrates:verifier-cache:v1` domain
   tag plus length-prefixed fields, eliminating separator-ambiguity collisions
