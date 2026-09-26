@@ -2,6 +2,7 @@
 
 ## 1.0.0 — Unreleased
 
+- Added on-chain registration confirmation reconciliation (`POST /api/proofs/reconcile`, worker `verify_tx` handling, Horizon confirmation-depth policy). See `backend/docs/registration-reconciliation.md`.
 - Domain-separated proof-cache keys in the backend verifier cache (#373): keys
   are SHA-256 digests over the versioned `harpocrates:verifier-cache:v1` domain
   tag plus length-prefixed fields, eliminating separator-ambiguity collisions

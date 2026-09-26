@@ -5,15 +5,29 @@ import threading
 import traceback
 from pathlib import Path
 
-from db import lease_job, heartbeat_job, complete_job, fail_job, insert_proof_event, init_db
+from db import (
+    lease_job,
+    heartbeat_job,
+    complete_job,
+    fail_job,
+    insert_proof_event,
+    init_db,
+    database_url,
+    get_connection,
+    update_tx_status,
+)
 from envelope import canonical_metadata_hash
 from stego import embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
 from app import safe_filename, redact_metadata
-from config import load_config
 
 from storage import get_job_input_path, get_job_output_path
 from tx_verification import verify_transaction_status
+from registration_reconcile import (
+    process_verify_tx_job,
+    reconcile_pending_registrations,
+    default_min_confirmations,
+)
 
 LOGGER = logging.getLogger("harpocrates.worker")
 if not LOGGER.handlers:
@@ -111,6 +125,10 @@ def process_silent_witness(job: dict) -> dict:
     
     return {"proof": proof}
 
+def process_verify_tx(job: dict) -> dict:
+    """Reconcile a single registration tx enqueued at proof registration time."""
+    return process_verify_tx_job(job.get("payload") or {})
+
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
         heartbeat_job(job_id, progress=0.5, lease_duration=300)
@@ -118,55 +136,67 @@ def heartbeat_loop(job_id: int, stop_event: threading.Event):
 
 def tx_verification_loop(stop_event: threading.Event):
     """
-    Polls the database for pending Stellar transactions and verifies them against Horizon.
+    Periodically reconcile pending registration confirmations against Horizon.
+
+    Prefer the batch reconciler (confirmation depth + privacy-safe signals). Fall
+    back to the legacy per-row Horizon probe when the DB helpers are unavailable.
     """
-    LOGGER.info("Starting transaction verification loop")
-
-    # Load config once; the dataclass is frozen so these values are stable.
-    _config = load_config()
-
+    LOGGER.info("Starting transaction verification / registration reconcile loop")
     while not stop_event.is_set():
         try:
             if not database_url():
                 stop_event.wait(10)
                 continue
-                
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT id, tx_hash 
-                        FROM proof_events 
-                        WHERE tx_hash IS NOT NULL AND tx_status = 'pending'
-                        LIMIT 50
-                        """
-                    )
-                    rows = [dict(row) for row in cur.fetchall()]
-            
-            for row in rows:
-                if stop_event.is_set():
-                    break
-                    
-                tx_hash = row["tx_hash"]
-                LOGGER.info("Verifying transaction (hash redacted)")
-                status = verify_transaction_status(
-                    tx_hash,
-                    connect_timeout=_config.external_fetch_connect_timeout_seconds,
-                    read_timeout=_config.external_fetch_read_timeout_seconds,
-                    max_response_bytes=_config.external_fetch_max_response_bytes,
+
+            try:
+                report = reconcile_pending_registrations(
+                    limit=50,
+                    min_confirmations=default_min_confirmations(),
                 )
-                
-                # Update DB if terminal or missing
-                if status in ('confirmed', 'failed', 'missing'):
-                    LOGGER.info("Transaction resolved to %s", status)
-                    update_tx_status(tx_hash, status)
-                else:
-                    # Still pending, we will check again next loop
-                    pass
+                summary = report.get("summary") or {}
+                LOGGER.info(
+                    "registration_reconcile_batch scanned=%s updated=%s confirmed=%s failed=%s missing=%s pending=%s error=%s",
+                    summary.get("scanned"),
+                    summary.get("updated"),
+                    summary.get("confirmed"),
+                    summary.get("failed"),
+                    summary.get("missing"),
+                    summary.get("pending"),
+                    summary.get("error"),
+                )
+            except Exception:
+                # Legacy fallback path keeps older deployments moving.
+                with get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT id, tx_hash
+                            FROM proof_events
+                            WHERE tx_hash IS NOT NULL AND tx_status = 'pending'
+                            LIMIT 50
+                            """
+                        )
+                        rows = [dict(row) for row in cur.fetchall()]
+
+                for row in rows:
+                    if stop_event.is_set():
+                        break
+
+                    tx_hash = row["tx_hash"]
+                    LOGGER.info("Verifying transaction %s", str(tx_hash)[:8])
+                    status = verify_transaction_status(tx_hash)
+
+                    if status in ("confirmed", "failed", "missing"):
+                        LOGGER.info(
+                            "Transaction %s resolved to %s",
+                            str(tx_hash)[:8],
+                            status,
+                        )
+                        update_tx_status(tx_hash, status)
 
         except Exception as e:
             LOGGER.error("Error in tx verification loop: %s", type(e).__name__)
-        
+
         stop_event.wait(15)
 
 
@@ -181,7 +211,11 @@ def run_worker():
     
     while True:
         try:
-            job = lease_job(WORKER_ID, ["embed", "extract", "silent_witness"], lease_duration=300)
+            job = lease_job(
+                WORKER_ID,
+                ["embed", "extract", "silent_witness", "verify_tx"],
+                lease_duration=300,
+            )
             if not job:
                 time.sleep(2)
                 continue
@@ -201,6 +235,8 @@ def run_worker():
                     result = process_extract(job)
                 elif job_type == "silent_witness":
                     result = process_silent_witness(job)
+                elif job_type == "verify_tx":
+                    result = process_verify_tx(job)
                 else:
                     raise ValueError(f"Unknown job type {job_type}")
                 
@@ -209,7 +245,10 @@ def run_worker():
             except Exception as e:
                 LOGGER.error(f"Failed job {job_id}: {e}")
                 LOGGER.error(traceback.format_exc())
-                is_fatal = isinstance(e, ValueError)
+                # Dependency / Horizon failures on verify_tx are retryable.
+                is_fatal = isinstance(e, ValueError) and job_type != "verify_tx"
+                if job_type == "verify_tx":
+                    is_fatal = isinstance(e, ValueError)
                 fail_job(job_id, str(e), is_fatal=is_fatal)
             finally:
                 stop_event.set()

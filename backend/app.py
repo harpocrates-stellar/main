@@ -56,6 +56,12 @@ from db import (
     get_job,
     cancel_job,
 )
+from registration_reconcile import (
+    clamp_reconcile_limit,
+    default_min_confirmations,
+    reconcile_pending_registrations,
+    reconcile_registration,
+)
 from idempotency import idempotent
 from lineage import (
     LineageValidationError,
@@ -957,6 +963,95 @@ def create_app() -> Flask:
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+
+    @app.post("/api/proofs/reconcile")
+    def reconcile_registration_confirmations():
+        """Reconcile pending registration tx hashes against on-chain Horizon state.
+
+        Body (all optional):
+        - ``txHash``: reconcile a single hash; omit to batch pending rows
+        - ``limit``: max pending rows when batching (1–50, default 50)
+        - ``minConfirmations``: confirmation depth policy (default TX_MIN_CONFIRMATIONS)
+        - ``force``: overwrite terminal statuses (repair path)
+
+        Responses are privacy-safe: no metadata envelopes, media, or secrets.
+        """
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+
+        payload = request.get_json(silent=True)
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body must be an object",
+                status=400,
+            )
+
+        if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
+            return jsonify({"error": "reconcile payload is too large"}), 413
+
+        force = bool(payload.get("force", False))
+        min_confirmations = payload.get("minConfirmations")
+        if min_confirmations is None:
+            min_confirmations = default_min_confirmations()
+        else:
+            try:
+                min_confirmations = int(min_confirmations)
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="minConfirmations must be an integer >= 1",
+                    status=400,
+                )
+            if min_confirmations < 1:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="minConfirmations must be an integer >= 1",
+                    status=400,
+                )
+
+        tx_hash = payload.get("txHash")
+        if tx_hash is not None:
+            try:
+                result = reconcile_registration(
+                    tx_hash,
+                    previous_status=None if force else "pending",
+                    min_confirmations=min_confirmations,
+                    force=force,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+
+            if result.get("error") == "malformed_tx_hash":
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="txHash must be a 32-byte hex string",
+                    status=400,
+                )
+            if result.get("status") == "error":
+                return jsonify({
+                    "ok": False,
+                    "error": "horizon_dependency_failure",
+                    "result": result,
+                }), 503
+            return jsonify({"ok": True, "result": result})
+
+        try:
+            limit = clamp_reconcile_limit(payload.get("limit", 50))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            report = reconcile_pending_registrations(
+                limit=limit,
+                min_confirmations=min_confirmations,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        return jsonify(report)
 
     @app.post("/api/time-attestation/create")
     def create_time_attestation_endpoint():

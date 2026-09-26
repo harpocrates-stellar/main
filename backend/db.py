@@ -871,20 +871,67 @@ def list_proof_history_events(
             )
             return [dict(row) for row in cursor.fetchall()]
 
-def update_tx_status(tx_hash: str, status: str) -> None:
+def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
+    """Return pending registration rows that still need on-chain reconciliation."""
     if not database_url():
-        return
+        return []
+    page_size = max(1, min(int(limit), 50))
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                update proof_events
-                set tx_status = %s
-                where tx_hash = %s;
+                select id, proof_id, tx_hash, tx_status, contract_id, created_at
+                from proof_events
+                where tx_hash is not null
+                  and tx_status = 'pending'
+                order by id asc
+                limit %s;
                 """,
-                (status, tx_hash)
+                (page_size,),
             )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def update_tx_status(tx_hash: str, status: str, *, force: bool = False) -> bool:
+    """Persist a reconciled tx status.
+
+    By default only transitions rows that are still ``pending`` so terminal
+    confirmations are idempotent and concurrent workers do not clobber each
+    other. Pass ``force=True`` to overwrite a terminal status (repair path).
+
+    Returns True when at least one row was updated.
+    """
+    if not database_url():
+        return False
+    if not isinstance(tx_hash, str) or not tx_hash.strip():
+        return False
+    if status not in {"pending", "confirmed", "failed", "missing"}:
+        raise ValueError("tx status must be pending, confirmed, failed, or missing")
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            if force:
+                cursor.execute(
+                    """
+                    update proof_events
+                    set tx_status = %s
+                    where tx_hash = %s;
+                    """,
+                    (status, tx_hash),
+                )
+            else:
+                cursor.execute(
+                    """
+                    update proof_events
+                    set tx_status = %s
+                    where tx_hash = %s
+                      and (tx_status is null or tx_status = 'pending');
+                    """,
+                    (status, tx_hash),
+                )
+            updated = cursor.rowcount > 0
         connection.commit()
+    return updated
 
 
 def set_legal_hold(proof_id: str, hold: bool) -> None:
@@ -980,3 +1027,51 @@ def cancel_job(job_id: int) -> bool:
         job["status"] = "cancelled"
         return True
     return False
+
+
+def lease_job(
+    worker_id: str,
+    job_types: list[str],
+    lease_duration: int = 300,
+) -> dict[str, Any] | None:
+    """Lease the next pending in-memory job matching ``job_types``."""
+    del lease_duration  # in-memory queue has no TTL enforcement yet
+    for job in _JOBS.values():
+        if job.get("status") == "pending" and job.get("type") in job_types:
+            job["status"] = "running"
+            job["worker_id"] = worker_id
+            return dict(job)
+    return None
+
+
+def heartbeat_job(job_id: int, progress: float = 0.0, lease_duration: int = 300) -> None:
+    """Record a heartbeat against an in-memory job lease."""
+    del lease_duration
+    job = _JOBS.get(job_id)
+    if job and job.get("status") == "running":
+        job["progress"] = progress
+        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def complete_job(job_id: int, result: Any = None) -> None:
+    """Mark an in-memory job completed."""
+    job = _JOBS.get(job_id)
+    if not job:
+        return
+    job["status"] = "completed"
+    job["result"] = result
+    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
+    """Mark an in-memory job failed (fatal) or pending for retry."""
+    job = _JOBS.get(job_id)
+    if not job:
+        return
+    job["error"] = error
+    job["failed_at"] = datetime.now(timezone.utc).isoformat()
+    if is_fatal:
+        job["status"] = "failed"
+    else:
+        job["status"] = "pending"
+        job.pop("worker_id", None)
