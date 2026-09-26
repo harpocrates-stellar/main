@@ -38,11 +38,9 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
   activeRequestId = requestId
   cancelRequestedFor = null
 
-  let credentialSecret = ''
-  let nullifierSecret = ''
   try {
-    credentialSecret = bufToStr(input.credentialSecret)
-    nullifierSecret = bufToStr(input.nullifierSecret)
+    const credentialSecret = bufToStr(input.credentialSecret)
+    const nullifierSecret = bufToStr(input.nullifierSecret)
     // Zero transferable buffers as soon as strings are materialised so a later
     // terminate()/cancel cannot leave secret bytes resident in the ArrayBuffers.
     zeroInput(input)
@@ -81,8 +79,6 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       message: err instanceof Error ? err.message : 'Unknown error during proof generation.',
     })
   } finally {
-    credentialSecret = ''
-    nullifierSecret = ''
     zeroInput(input)
     if (activeRequestId === requestId) {
       activeRequestId = null

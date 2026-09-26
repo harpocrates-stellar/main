@@ -9,6 +9,7 @@ import type { IdentityTier, ProofPackage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
 import type { TimeAttestation } from '../timeAttestation'
 import { ApiClientError, parseActionableApiError } from './apiError'
+import { FlowCancelledError, throwIfAborted } from '../utils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
@@ -22,6 +23,9 @@ export type EmbedResult = {
 /**
  * Send the raw video file to the steganography backend.
  * Returns the embedded blob and its hashes on success.
+ *
+ * Accepts an AbortSignal so the caller can cancel the upload mid-flight
+ * without any intermediate media or hashes being committed anywhere.
  */
 export async function embedVideo(
   file: File,
@@ -29,6 +33,7 @@ export async function embedVideo(
   sourceHash: string,
   proofId: string,
   timestamp: string,
+  signal?: AbortSignal,
 ): Promise<EmbedResult> {
   const metadata = {
     protocol: 'harpocrates',
@@ -44,19 +49,25 @@ export async function embedVideo(
   form.append('video', file)
   form.append('metadata', JSON.stringify(metadata))
 
+  throwIfAborted(signal)
   const response = await fetch(`${API_BASE}/api/stego/embed`, {
     method: 'POST',
     body: form,
+    signal,
   })
+
+  if (signal?.aborted) throw new FlowCancelledError()
 
   if (!response.ok) {
     throw new ApiClientError(await parseActionableApiError(response, 'Steganography service did not accept the video.'))
   }
 
+  throwIfAborted(signal)
   const embeddedBlob = await response.blob()
 
   // Hash the received blob locally to verify integrity.
   const { sha256 } = await import('../utils')
+  throwIfAborted(signal)
   const embeddedHash = await sha256(await embeddedBlob.arrayBuffer())
   const headerHash = response.headers.get('X-Harpocrates-Embedded-Hash')
   const metadataHash = response.headers.get('X-Harpocrates-Metadata-Hash')
@@ -68,6 +79,25 @@ export async function embedVideo(
   return { embeddedBlob, embeddedHash, metadataHash }
 }
 
+type RegistrationPayload = {
+  fileName: string
+  videoHash: string
+  metadataHash: string
+  proofId: string
+  tier: IdentityTier
+  txHash: string
+  txStatus: string
+  sourceAddress: string
+  contractId: string
+  silentWitness?: {
+    credentialRoot: string
+    nullifier: string
+    proofBytes: number
+    publicInputBytes: number
+  }
+  timeAttestation?: TimeAttestation
+}
+
 /**
  * Write a completed Stellar registration event to NeonDB.
  * Fire-and-forget from the UI perspective; errors are surfaced to the caller.
@@ -77,7 +107,7 @@ export async function persistRegistration(
   result: RegisterProofResult,
   sourceAddress: string,
 ): Promise<void> {
-  const payload: any = {
+  const payload: RegistrationPayload = {
     fileName: proof.fileName,
     videoHash: proof.videoHash,
     metadataHash: proof.metadataHash,

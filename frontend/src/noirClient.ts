@@ -1,4 +1,8 @@
+import { UltraHonkBackend } from '@aztec/bb.js'
+import { Noir } from '@noir-lang/noir_js'
+import type { CompiledCircuit } from '@noir-lang/types'
 import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+import { throwIfAborted } from './utils'
 
 type SilentWitnessProof = {
   credentialRoot: string
@@ -12,7 +16,7 @@ type SilentWitnessProof = {
   publicInputBytes: number
 }
 
-type AggregatedProof = {
+export type AggregatedProof = {
   protocol: string
   version: number
   type: string
@@ -36,7 +40,7 @@ type GenerateSilentWitnessInput = {
   epoch?: number
 }
 
-type GenerateAggregatedProofInput = {
+export type GenerateAggregatedProofInput = {
   videoHashes: string[]
   credentialSecret: string
   nullifierSecret: string
@@ -44,8 +48,6 @@ type GenerateAggregatedProofInput = {
 
 let helperCircuitPromise: Promise<CompiledCircuit> | null = null
 let mainCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
 
 /**
  * Generate a Silent Witness Noir/UltraHonk proof.
@@ -56,6 +58,12 @@ let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
  * version and network embedded in the circuit constants — a proof generated
  * for testnet will fail the in-circuit assert if submitted to a mainnet
  * verifier with different embedded constants.
+ *
+ * When `signal` is provided the flow is checked cooperatively between phases
+ * so a cancelled run stops before the next expensive step. The studio runs
+ * this function inside the cancellable module worker
+ * (see workers/proofWorker.ts and workers/proofWorkerClient.ts); it must not
+ * be invoked on the UI thread with witnesses in scope.
  */
 export async function generateSilentWitnessProof({
   videoHash,
@@ -63,8 +71,10 @@ export async function generateSilentWitnessProof({
   nullifierSecret,
   verifierScope = '0',
   epoch = 0,
-}: GenerateSilentWitnessInput): Promise<SilentWitnessProof> {
+}: GenerateSilentWitnessInput, signal?: AbortSignal): Promise<SilentWitnessProof> {
+  throwIfAborted(signal)
   const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
+  throwIfAborted(signal)
 
   const video_hash_hi = BigInt(`0x${videoHash.slice(0, 32)}`).toString(10)
   const video_hash_lo = BigInt(`0x${videoHash.slice(32)}`).toString(10)
@@ -81,6 +91,7 @@ export async function generateSilentWitnessProof({
 
   // Helper returns (credential_root, nullifier, domain_tag).
   const helperResult = await new Noir(helperCircuit).execute(privateInputs)
+  throwIfAborted(signal)
   const [credentialRoot, nullifier, domainTag] = helperResult.returnValue as string[]
 
   const publicInputs = {
@@ -90,14 +101,17 @@ export async function generateSilentWitnessProof({
     epoch: epoch_field,
   }
 
+  throwIfAborted(signal)
   const { witness } = await new Noir(mainCircuit).execute({
     ...privateInputs,
     ...publicInputs,
   })
+  throwIfAborted(signal)
 
   const backend = new UltraHonkBackend(mainCircuit.bytecode)
   try {
     const proofData = await backend.generateProof(witness, { keccak: true })
+    throwIfAborted(signal)
     const proofHex = bytesToHex(proofData.proof)
 
     // Public inputs in on-chain ordering:
@@ -124,8 +138,30 @@ export async function generateSilentWitnessProof({
   }
 }
 
-async function sha256(input: string): Promise<string> {
+export async function sha256(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input)
   const hash = await crypto.subtle.digest('SHA-256', bytes)
   return bytesToHex(new Uint8Array(hash))
+}
+
+async function loadHelperCircuit() {
+  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
+  return helperCircuitPromise
+}
+
+async function loadMainCircuit() {
+  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
+  return mainCircuitPromise
+}
+
+async function loadCircuit(path: string) {
+  const response = await fetch(path, { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(`Unable to load Noir circuit artifact: ${path}`)
+  }
+  return (await response.json()) as CompiledCircuit
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }

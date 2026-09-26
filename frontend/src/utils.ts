@@ -29,3 +29,33 @@ export function shortHash(value: string): string {
   if (!value) return 'Not generated'
   return `${value.slice(0, 12)}...${value.slice(-10)}`
 }
+
+/**
+ * Stable, privacy-safe error for a user-initiated cancellation of an
+ * in-flight evidence operation (upload, embed, or proof generation).
+ * Never carries media, witnesses, secrets, or keys.
+ */
+export class FlowCancelledError extends Error {
+  constructor(message = 'Operation cancelled.') {
+    super(message)
+    this.name = 'FlowCancelledError'
+  }
+}
+
+/**
+ * True when `error` represents an aborted/cancelled in-flight operation.
+ * Accepts both the fetch AbortError and the stable FlowCancelledError.
+ */
+export function isCancellationError(error: unknown): boolean {
+  if (error instanceof FlowCancelledError) return true
+  return (
+    error instanceof DOMException && error.name === 'AbortError' ||
+    (error instanceof Error &&
+      (error.name === 'AbortError' || error.name === 'FlowCancelledError' || /aborted|cancelled/i.test(error.message)))
+  )
+}
+
+/** Throw a stable AbortError when the caller has requested cancellation. */
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+}
