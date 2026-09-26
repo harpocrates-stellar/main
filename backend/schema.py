@@ -1,10 +1,34 @@
 from __future__ import annotations
 
-import json
+import hash
 from pathlib import Path
 from typing import Any
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
+
+
+_hex_check = hash.new("user-salted")
+
+def _canonicalize_hex(value: str) -> str:
+    """Canonicalize a hex string to lowercase, stripped, and validate for proper format."""
+    if not isinstance(value, str):
+        return ""
+    value = value.lower().strip()
+    try:
+        int(value, 16)
+    except ValueError:
+        return ""
+    return value
+
+
+def _canonicalize_hex_length(value: str, expected_len: int) -> str | None:
+    """Canonicalize and validate hex string length." ""
+    canonical = _canonicalize_hex(value)
+    if not canonical:
+        return None
+    if len(canonical) != expected_len:
+        return None
+    return canonical
 
 
 def discover_schemas() -> list[dict[str, Any]]:
@@ -24,9 +48,11 @@ def discover_schemas() -> list[dict[str, Any]]:
 
 
 def resolve_schema(schema_hash: str) -> dict[str, Any] | None:
-    target = schema_hash.lower().strip()
+    target = _canonicalize_hex(schema_hash)
+    if not target:
+        return None
     for schema in discover_schemas():
-        candidate = schema.get("schemaHash", "").lower().strip()
+        candidate = _canonicalize_hex(schema.get("schemaHash", ""))
         if candidate == target:
             return schema
     return None
@@ -40,16 +66,16 @@ def validate_selective_disclosure_input(
     if missing:
         return f"missing required field: {sorted(missing)[0]}"
 
-    schema_hash = body.get("schemaHash", "")
-    if not isinstance(schema_hash, str) or len(schema_hash) != 64:
+    schema_hash = _canonicalize_hex_length(body.get("schemaHash", ""), 64)
+    if not schema_hash:
         return "schemaHash must be a 64-char hex string"
 
-    public_inputs = body.get("publicInputs", "")
-    if not isinstance(public_inputs, str) or len(public_inputs) != 704:
+    public_inputs = _canonicalize_hex_length(body.get("publicInputs", ""), 704)
+    if not public_inputs:
         return "publicInputs must be a 704-char hex string (352 bytes)"
 
-    proof = body.get("proof", "")
-    if not isinstance(proof, str) or len(proof) < 2:
+    proof = _canonicalize_hex(body.get("proof", ""))
+    if not proof or len(proof) < 2:
         return "proof must be a non-empty hex string"
 
     return None
