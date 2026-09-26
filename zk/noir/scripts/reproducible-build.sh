@@ -133,6 +133,8 @@ CIRCUITS=(
   "revocation_witness"
   "revocation_witness_helper"
   "selective_disclosure"
+  "redacted_ancestry"
+  "redacted_ancestry_helper"
 )
 
 build_once() {

@@ -189,6 +189,14 @@ jobs:
             zk/noir/scripts/reproducible-build.sh --single
           fi
 
+      - name: Test the redacted derivative ancestry circuits
+        # Focused positive / negative / boundary corpus for the new
+        # redacted_ancestry circuit (#356). Assert codes never echo witness
+        # values, so test output stays privacy-safe.
+        run: |
+          ( cd zk/noir/redacted_ancestry && nargo test )
+          ( cd zk/noir/redacted_ancestry_helper && nargo test )
+
   conformance-vectors:
     name: Cross-layer conformance vectors
     runs-on: ubuntu-latest
