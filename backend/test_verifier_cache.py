@@ -64,6 +64,13 @@ class TestVerifierCache(unittest.TestCase):
         self.cache.invalidate("d", "n", "c", "v", "p", "pi")
         self.assertIsNone(self.cache.get("d", "n", "c", "v", "p", "pi"))
 
+    def test_invalidate_proof_removes_all_versions(self):
+        self.cache.set("d", "n", "c", "v1", "p1", "pi", True, proof_id="proof")
+        self.cache.set("d", "n", "c", "v2", "p2", "pi", True, proof_id="proof")
+        self.cache.invalidate_proof("proof")
+        self.assertIsNone(self.cache.get("d", "n", "c", "v1", "p1", "pi"))
+        self.assertIsNone(self.cache.get("d", "n", "c", "v2", "p2", "pi"))
+
 
 class TestVerifierCacheKeyDomainSeparation(unittest.TestCase):
     """Focused #373 coverage: domain-separated, unambiguous proof-cache keys."""
