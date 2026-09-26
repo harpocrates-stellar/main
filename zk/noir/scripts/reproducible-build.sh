@@ -11,6 +11,7 @@
 #   zk/noir/scripts/reproducible-build.sh                 # double build + compare
 #   zk/noir/scripts/reproducible-build.sh --single        # one build, write manifest
 #   zk/noir/scripts/reproducible-build.sh --verify        # one build, compare to committed manifest
+#   zk/noir/scripts/reproducible-build.sh --check-coverage  # lock/tree coverage gate only
 #
 # Exit codes (shared with zk/tools/artifact_manifest.py)
 #   0  reproducible
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --single) MODE="single" ;;
     --verify) MODE="verify" ;;
+    --check-coverage) MODE="check-coverage" ;;
     --manifest) shift; MANIFEST="${1:?--manifest requires a path}" ;;
     -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit "$EXIT_OK" ;;
     *) signal "usage.error" "unknown argument: $1"; exit "$EXIT_USAGE" ;;
@@ -72,10 +74,34 @@ export RUST_BACKTRACE=0
 export PYTHONHASHSEED=0
 umask 022
 
-command -v nargo >/dev/null 2>&1 || die "nargo not on PATH; see zk/noir/README.md"
-command -v bb    >/dev/null 2>&1 || die "bb not on PATH; see zk/noir/README.md"
 command -v "$PYTHON" >/dev/null 2>&1 || die "python3 not on PATH"
 [[ -f "$LOCK" ]] || die "toolchain lock missing: zk/toolchain.lock.json"
+[[ -f "$TOOL" ]] || die "manifest tool missing: zk/tools/artifact_manifest.py"
+
+# --- coverage gate ----------------------------------------------------------
+# Fail before spending minutes in nargo when the lock and the tree disagree
+# about which circuits exist. An unbuilt, undigested circuit is an unpinned
+# second truth at a public boundary, and the double build would silently skip
+# it: `for circuit in "${CIRCUITS[@]}"` only ever sees the names listed here.
+coverage_gate() {
+  local status=0
+  "$PYTHON" "$TOOL" --lock "$LOCK" check-coverage || status=$?
+  [[ $status -eq 0 ]] || die "circuit coverage check failed; see drift.finding above"
+}
+
+# The gate reads no artifacts and needs no toolchain, so it is the one mode a
+# contributor can run without installing nargo/bb.
+if [[ "$MODE" == "check-coverage" ]]; then
+  exec "$PYTHON" "$TOOL" --lock "$LOCK" check-coverage
+fi
+
+# Cheapest and most fundamental check first: a coverage failure is a fact about
+# the tree, not about the host, and reporting it before the toolchain checks
+# keeps the diagnosis unambiguous.
+coverage_gate
+
+command -v nargo >/dev/null 2>&1 || die "nargo not on PATH; see zk/noir/README.md"
+command -v bb    >/dev/null 2>&1 || die "bb not on PATH; see zk/noir/README.md"
 
 # --- toolchain pin ---------------------------------------------------------
 lock_value() {
@@ -98,7 +124,7 @@ if [[ "$ACTUAL_BB" != "$EXPECTED_BB" ]]; then
 fi
 signal "toolchain.pinned" "nargo=${ACTUAL_NARGO} bb=${ACTUAL_BB}"
 
-# --- circuits --------------------------------------------------------------
+# --- circuits ---------------------------------------------------------------
 CIRCUITS=(
   "silent_witness"
   "silent_witness_helper"
@@ -106,6 +132,7 @@ CIRCUITS=(
   "silent_witness_aggregator_helper"
   "revocation_witness"
   "revocation_witness_helper"
+  "selective_disclosure"
 )
 
 build_once() {

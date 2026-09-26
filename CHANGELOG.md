@@ -15,6 +15,24 @@
 
 - Bound `revocation_witness` Merkle depth at `MAX_REVOCATION_WITNESS_DEPTH = 3` (8 leaves) across the Noir circuit, registry constants, verifier codec, and host tooling (#357).
 
+- Closed an unpinned-circuit gap in the reproducible Noir build pipeline. The
+  `selective_disclosure` circuit — fetched by the browser at
+  `/noir/selective_disclosure.json` and accepted by the registry's
+  `verify_selective_disclosure` — was not compiled or digested by
+  `zk/noir/scripts/reproducible-build.sh` and was absent from
+  `zk/toolchain.lock.json`, so it was a second, unpinned truth at a public
+  boundary. It is now built, pinned, and publish-declared. Added
+  `artifact_manifest.py check-coverage` (and
+  `reproducible-build.sh --check-coverage`), which fails when a package under
+  `zk/noir/` is not declared in the lock or a declared circuit has no package, so
+  the condition cannot recur silently. The gate reads no artifacts, so bytecode,
+  witnesses, and keys never reach a signal; findings carry circuit names and
+  expected paths only and are deterministically ordered. Additive and inert for
+  existing callers: a new subcommand, one lock limit (`max_circuits`), and new
+  artifact declarations. Rollback is removing the CI step and the
+  `coverage_gate` call. See `docs/zk-reproducible-builds.md` and OR-5 in
+  `THREAT_MODEL.md`.
+
 - Added a CI end-to-end environment matrix (`devx/e2e_env_matrix.py`) that exercises public API boundaries across development/testing/production-like profiles with privacy-safe failure checks.
 
 - Added an atomic compatibility manifest and release gate spanning frontend,
