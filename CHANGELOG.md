@@ -2,6 +2,10 @@
 
 ## 1.0.0 — Unreleased
 
+- Defined verifier failure retry semantics (`hpx-vr/1`) for the registry
+  external-verifier path: stable failure classes, bounded in-tx dependency
+  retries, append-only errors `VerifierDependencyFailure` / `VerifierRetryExhausted`,
+  privacy-safe read helpers, and docs in `contracts/VERIFIER_RETRY.md` (#326).
 - Domain-separated proof-cache keys in the backend verifier cache (#373): keys
   are SHA-256 digests over the versioned `harpocrates:verifier-cache:v1` domain
   tag plus length-prefixed fields, eliminating separator-ambiguity collisions

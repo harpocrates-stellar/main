@@ -300,6 +300,20 @@ verify_proof(public_inputs, proof)
 
 See `VERIFIER_INTEGRATION.md` for the UltraHonk verifier deployment plan.
 
+## Verifier Failure Retry Semantics (#326)
+
+The registry defines a single retry table (`hpx-vr/1`) for verifier-path
+failures. Cryptographic rejects are permanent for the supplied proof material;
+operator-remediable dependency failures may be retried by clients after
+repair, and are bounded to `MAX_VERIFIER_INVOKE_ATTEMPTS` (3) in-transaction.
+
+Read helpers: `get_verifier_retry_policy`, `is_registry_error_retryable`,
+`classify_registry_error_class`. Failure responses never include media,
+secrets, witnesses, or private keys.
+
+See [VERIFIER_RETRY.md](VERIFIER_RETRY.md) for the class table, error codes
+`68`/`69`, migration notes, and threat assumptions.
+
 Current Testnet verifier:
 
 ```text
