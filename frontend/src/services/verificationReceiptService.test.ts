@@ -1,9 +1,13 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   createSignedVerificationReceipt,
   createVerificationReceiptQrPayload,
 } from './verificationReceiptService'
-import type { VerificationReceiptInput } from '../verificationReceipt'
+import {
+  decodeReceiptFromQr,
+  verifyVerificationReceipt,
+  type VerificationReceiptInput,
+} from '../verificationReceipt'
 
 const input: VerificationReceiptInput = {
   result: 'verified',
@@ -20,28 +24,39 @@ const input: VerificationReceiptInput = {
   verifierVersion: 'registry-v1',
 }
 
-let signingKey: CryptoKey
-
-beforeAll(async () => {
-  const pair = await crypto.subtle.generateKey(
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    true,
-    ['sign', 'verify'],
-  )
-
-  signingKey = pair.privateKey
-})
-
 describe('verification receipt service', () => {
-  it('creates a signed QR payload from receipt input', async () => {
+  it('creates a signed QR payload that decodes and verifies', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    )
+
     const receipt = await createSignedVerificationReceipt(input, {
       keyId: 'test-verifier',
-      signingKey,
+      signingKey: pair.privateKey,
     })
 
     const payload = createVerificationReceiptQrPayload(receipt)
 
     expect(payload).toBeTruthy()
     expect(payload.length).toBeLessThanOrEqual(4096)
-  })
-})
+
+    const decoded = decodeReceiptFromQr(payload)
+
+    expect(decoded).toEqual(receipt)
+
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
+
+    const verification = await verifyVerificationReceipt(decoded, {
+      keys: {
+        'test-verifier': publicJwk,
+      },
+    })
+
+    expect(verification).toEqual({
+      valid: true,
+      receipt: decoded,
+    })
+  }) 
+}) 
