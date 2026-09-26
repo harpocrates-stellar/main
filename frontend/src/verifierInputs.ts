@@ -216,18 +216,37 @@ function requireCanonical(fields: Uint8Array[], names: readonly string[]): void 
   }
 }
 
+/**
+ * Compare two byte strings without an early exit on the first difference.
+ *
+ * Every byte is folded into one accumulator, so the work done does not depend
+ * on where (or whether) the inputs diverge. Differing lengths compare unequal;
+ * length is public. Mirrors `constant_time_equals` in `backend/verifier_inputs.py`
+ * and `constant_time_eq` in the Soroban codec.
+ */
+export function constantTimeEquals(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+  let difference = 0
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index]
+  }
+  return difference === 0
+}
+
+const ZERO_FIELD = new Uint8Array(FIELD_LEN)
+
 function requireNonZero(field: Uint8Array, name: string): void {
-  if (field.every((byte) => byte === 0)) {
+  if (constantTimeEquals(field, ZERO_FIELD)) {
     throw new VerifierInputError('zero_field', name)
   }
 }
 
 /** A 128-bit half lives in the low 16 bytes; the high 16 must be zero. */
 function requireHalfPadding(field: Uint8Array, name: string): Uint8Array {
-  for (let index = 0; index < 16; index += 1) {
-    if (field[index] !== 0) {
-      throw new VerifierInputError('padding', name)
-    }
+  if (!constantTimeEquals(field.subarray(0, 16), ZERO_FIELD.subarray(0, 16))) {
+    throw new VerifierInputError('padding', name)
   }
   return field.slice(16)
 }
@@ -271,7 +290,7 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
   requireNonZero(fields[4], 'domain_tag')
 
   const expectedDomain = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
-  if (fields[4].some((byte, index) => byte !== expectedDomain[index])) {
+  if (!constantTimeEquals(fields[4], expectedDomain)) {
     throw new VerifierInputError('domain_mismatch', 'domain_tag')
   }
 
@@ -297,10 +316,8 @@ export function parseRevocationWitnessInputs(
 
   const expectedDomain = decodeHex(REVOCATION_DOMAIN_SEPARATOR_HEX, 'domain_separator')
   const domain = fields[2]
-  for (let index = 0; index < FIELD_LEN; index += 1) {
-    if (domain[index] !== expectedDomain[index]) {
-      throw new VerifierInputError('domain_mismatch', 'domain_separator')
-    }
+  if (!constantTimeEquals(domain, expectedDomain)) {
+    throw new VerifierInputError('domain_mismatch', 'domain_separator')
   }
 
   return {

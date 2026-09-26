@@ -2,6 +2,11 @@
 
 ## 1.0.0 — Unreleased
 
+- External verifier verdicts are now enforced: registrations whose
+  `verify_external_proof` call fails (or that pass an empty proof) revert with
+  `InvalidProof` instead of proceeding silently.
+- Scoped `POST /api/proofs/register` auth to proof ownership: owner-bound bearer keys (`REGISTER_SCOPED_KEYS`, digests only) may register only their own `sourceAddress` and cannot take over another owner's proof; the legacy `REGISTER_API_KEY` is unchanged. Auth now runs before idempotency replay, and the registration route no longer crashes without a `timeAttestation`. See `docs/registration-auth-scoping.md`.
+- Made protocol-binding comparisons constant-time in the Python, browser, and Soroban verifier-input codecs and the `/metrics` token check. Reject codes, circuits, and artifacts are unchanged; see `docs/zk-conformance-vectors.md`.
 - Enforced configured CORS origins server-side in the Flask backend: requests
   carrying an `Origin` outside `CORS_ORIGINS` are now rejected with a privacy-safe
   `403 FORBIDDEN_ORIGIN` envelope before route handlers execute, closing the gap

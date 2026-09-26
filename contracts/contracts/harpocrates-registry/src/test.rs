@@ -14,7 +14,7 @@ struct MockNoirVerifier;
 impl MockNoirVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -26,7 +26,7 @@ struct MockNoirVerifierV2;
 #[contractimpl]
 impl MockNoirVerifierV2 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -203,7 +203,13 @@ fn registers_silent_witness_through_external_verifier() {
         &video_hash,
         &bytes32(&env, 43),
         &bytes32(&env, 44),
-        &silent_public_inputs(&env, &video_hash, &credential_root, &nullifier, &expected_domain_tag_test(&env)),
+        &silent_public_inputs(
+            &env,
+            &video_hash,
+            &credential_root,
+            &nullifier,
+            &expected_domain_tag_test(&env),
+        ),
         &proof_bytes(&env),
     );
 
@@ -238,7 +244,13 @@ fn rejects_revoked_silent_witness_credential_root() {
         &video_hash,
         &bytes32(&env, 55),
         &bytes32(&env, 56),
-        &silent_public_inputs(&env, &video_hash, &credential_root, &nullifier, &expected_domain_tag_test(&env)),
+        &silent_public_inputs(
+            &env,
+            &video_hash,
+            &credential_root,
+            &nullifier,
+            &expected_domain_tag_test(&env),
+        ),
         &proof_bytes(&env),
     );
 }
@@ -297,7 +309,7 @@ fn verifier_rotation_activates_only_after_overlap_window() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #15)")]
+#[should_panic(expected = "Error(Contract, #41)")]
 fn verifier_rotation_cannot_activate_before_activation_ledger() {
     let env = Env::default();
     env.mock_all_auths();
@@ -317,7 +329,7 @@ fn verifier_rotation_cannot_activate_before_activation_ledger() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #16)")]
+#[should_panic(expected = "Error(Contract, #42)")]
 fn verifier_rotation_is_rejected_after_rollback_window_closes() {
     let env = Env::default();
     env.mock_all_auths();
@@ -340,7 +352,8 @@ fn verifier_rotation_is_rejected_after_rollback_window_closes() {
 }
 
 #[test]
-fn verifier_rotation_supports_overlap_with_previous_verifier() {
+#[should_panic(expected = "Error(Contract, #7)")]
+fn verifier_rotation_replacement_verifier_enforced_after_activation() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -362,7 +375,13 @@ fn verifier_rotation_supports_overlap_with_previous_verifier() {
         &bytes32(&env, 71),
         &bytes32(&env, 72),
         &bytes32(&env, 73),
-        &silent_public_inputs(&env, &bytes32(&env, 71), &bytes32(&env, 9), &bytes32(&env, 74)),
+        &silent_public_inputs(
+            &env,
+            &bytes32(&env, 71),
+            &bytes32(&env, 9),
+            &bytes32(&env, 74),
+            &expected_domain_tag_test(&env),
+        ),
         &proof_bytes(&env),
     );
 
@@ -556,7 +575,13 @@ fn accepts_correct_domain_tag() {
         &video_hash,
         &bytes32(&env, 95),
         &bytes32(&env, 96),
-        &silent_public_inputs(&env, &video_hash, &credential_root, &nullifier, &expected_domain_tag_test(&env)),
+        &silent_public_inputs(
+            &env,
+            &video_hash,
+            &credential_root,
+            &nullifier,
+            &expected_domain_tag_test(&env),
+        ),
         &proof_bytes(&env),
     );
 

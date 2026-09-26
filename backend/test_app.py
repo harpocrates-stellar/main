@@ -612,6 +612,18 @@ class AppHardeningTest(unittest.TestCase):
             res_header = token_client.get("/metrics", headers={"X-Metrics-Token": "secret-scraping-token"})
             self.assertEqual(res_header.status_code, 200)
 
+            # Boundary: near-miss tokens (prefix, extension, empty) -> 401
+            for near_miss in ("secret-scraping-toke", "secret-scraping-tokenX", ""):
+                res_near = token_client.get("/metrics", headers={"X-Metrics-Token": near_miss})
+                self.assertEqual(res_near.status_code, 401)
+
+            # Non-ASCII credentials are rejected cleanly instead of raising.
+            res_unicode = token_client.get(
+                "/metrics", headers={"Authorization": "Bearer sécret-scraping-token"}
+            )
+            self.assertEqual(res_unicode.status_code, 401)
+            self.assertEqual(res_unicode.json["error"], "unauthorized metrics access")
+
     def test_metrics_isolation_disabled_endpoint(self) -> None:
         with patch.dict(app_module.os.environ, {"METRICS_ENABLED": "false"}):
             disabled_app = app_module.create_app()
