@@ -18,6 +18,28 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+## Upload and Verification Load Test
+
+With FFmpeg installed and a local testing backend running, execute a bounded
+load run from this directory:
+
+```bash
+python load_test.py --base-url http://127.0.0.1:5050 --mode load --concurrency 2 --total-ops 10 --output /tmp/harpocrates-load-report.json
+```
+
+The `upload_verification` workload sends generated synthetic video through
+`POST /api/stego/embed`, then sends the returned artifact through
+`POST /api/stego/extract` and checks that its synthetic marker and proof ID
+match. It uses no real media, credentials, proofs, or private keys. Failure
+reports contain status codes or dependency categories, never response bodies;
+the configured URL is reduced to its origin before it is written to a report.
+Run it only against a local or dedicated test backend: successful uploads may
+create ordinary synthetic proof-event records when a database is configured.
+No protocol, API schema, or database migration is introduced. Rollback is
+limited to removing the workload, its focused coverage, and this documentation;
+use normal test-data retention procedures for any synthetic events already
+created.
+
 ## Noir Developer Worker
 
 `POST /api/noir/silent-witness` generates video-specific Silent Witness proof
@@ -35,6 +57,39 @@ NOIR_PROOF_TIMEOUT_SECONDS=180
 The product flow now uses browser-side Noir JS and bb.js, so user-entered
 private seeds stay in the browser. This endpoint is kept for local parity tests,
 debugging, and CI-style proof generation.
+
+## Database Migrations
+
+Schema changes run through the ordered, idempotent ledger in `migration.py`.
+`init_db()` applies every pending migration on startup and records the SHA-256
+checksum of the migration SQL in the `schema_migrations` table.
+
+### Checksum Verification at Startup
+
+Before applying anything, startup replays each applied migration's recorded
+checksum against its in-code definition:
+
+- `checksum_mismatch` — an applied migration's SQL changed after it was applied.
+- `missing_checksum` — a ledger row carries no digest.
+- `unknown_migration` — the ledger references an id the code no longer defines.
+
+Any discrepancy aborts startup with `migration.MigrationChecksumError`, so a
+drifted ledger cannot silently serve traffic. The error and the
+`verify_migration_checksums()` helper report only migration ids, names, and
+digests — never migration SQL, media, secrets, witness values, or private keys.
+
+`MIGRATION_CHECKSUM_ENFORCEMENT` selects the failure mode:
+
+```text
+MIGRATION_CHECKSUM_ENFORCEMENT=enforce   # default: abort startup on mismatch
+MIGRATION_CHECKSUM_ENFORCEMENT=warn      # break-glass: report and continue
+```
+
+Rollback: this check is additive and stores no new evidence. Revert the commit
+to restore the previous startup behaviour, or set
+`MIGRATION_CHECKSUM_ENFORCEMENT=warn` for a temporary boot while the ledger is
+reconciled. Never edit an applied migration's SQL to silence a mismatch; add a
+new numbered migration instead.
 
 ## Privacy-Safe Service Metrics
 
@@ -107,6 +162,11 @@ Production notes:
 - Keep `EXPOSE_METADATA_HEADER=false`; extracted metadata is available through `/api/stego/extract`.
 - Protect the `/metrics` endpoint in production by configuring `METRICS_TOKEN` or restricting access at the reverse proxy/ingress layer.
 - Avoid wildcard CORS. `CORS_ORIGINS=*` requires `ALLOW_WILDCARD_CORS=true`.
+- Configured origins are enforced server-side: requests carrying an `Origin`
+  outside `CORS_ORIGINS` are rejected with `403 FORBIDDEN_ORIGIN` before route
+  handlers run (privacy-safe envelope; the origin value is never echoed or
+  logged). Requests without an `Origin` header and the `/health`, `/ready`, and
+  `/metrics` paths are exempt.
 - Uploaded files are processed in temporary directories and removed after each request.
 
 ## Health

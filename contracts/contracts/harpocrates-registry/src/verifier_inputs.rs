@@ -171,6 +171,26 @@ fn has_half_padding(element: &[u8; FIELD_LEN]) -> bool {
     acc == 0
 }
 
+/// Compare two byte slices without an early exit on the first difference.
+///
+/// Every byte is folded into one accumulator, so the work done does not depend
+/// on where (or whether) the inputs diverge. Slices of different lengths
+/// compare unequal; length is public. Mirrors `constant_time_equals` in
+/// `backend/verifier_inputs.py` and `constantTimeEquals` in
+/// `frontend/src/verifierInputs.ts`.
+pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= *a ^ *b;
+    }
+    // `black_box` stops the optimiser from turning the fold back into an
+    // early-exit comparison.
+    core::hint::black_box(difference) == 0
+}
+
 /// Enforce the accepted proof-blob size window.
 pub fn check_proof_bounds(proof_len: u32) -> Result<(), RejectCode> {
     if proof_len < MIN_PROOF_BYTES {
@@ -215,7 +235,7 @@ pub fn parse_silent_witness(
         return Err(RejectCode::ZeroField);
     }
 
-    if &fields[4] != expected_domain {
+    if !constant_time_eq(&fields[4], expected_domain) {
         return Err(RejectCode::DomainMismatch);
     }
 
@@ -261,7 +281,7 @@ pub fn parse_revocation_witness(
         return Err(RejectCode::ZeroField);
     }
 
-    if &fields[2] != expected_domain {
+    if !constant_time_eq(&fields[2], expected_domain) {
         return Err(RejectCode::DomainMismatch);
     }
 
@@ -298,4 +318,99 @@ pub fn classify(
     }
 
     check_proof_bounds(proof_len)
+}
+
+#[cfg(test)]
+mod constant_time_tests {
+    use super::*;
+
+    const REVOCATION_DOMAIN: [u8; FIELD_LEN] = {
+        let mut out = [0u8; FIELD_LEN];
+        let tag = b"HARPOCRATES_REVOCATION_V1";
+        let mut i = 0;
+        while i < tag.len() {
+            out[7 + i] = tag[i];
+            i += 1;
+        }
+        out
+    };
+
+    fn field(last: u8) -> [u8; FIELD_LEN] {
+        let mut out = [0u8; FIELD_LEN];
+        out[FIELD_LEN - 1] = last;
+        out
+    }
+
+    fn half() -> [u8; FIELD_LEN] {
+        let mut out = [0u8; FIELD_LEN];
+        out[16..].fill(0x11);
+        out
+    }
+
+    fn silent_frame(domain: &[u8; FIELD_LEN]) -> [u8; SILENT_WITNESS_PUBLIC_INPUTS_LEN] {
+        let mut frame = [0u8; SILENT_WITNESS_PUBLIC_INPUTS_LEN];
+        for (i, part) in [half(), half(), field(7), field(9), *domain].iter().enumerate() {
+            frame[i * FIELD_LEN..(i + 1) * FIELD_LEN].copy_from_slice(part);
+        }
+        frame
+    }
+
+    fn revocation_frame(domain: &[u8; FIELD_LEN]) -> [u8; REVOCATION_PUBLIC_INPUTS_LEN] {
+        let mut frame = [0u8; REVOCATION_PUBLIC_INPUTS_LEN];
+        for (i, part) in [field(5), field(9), *domain, field(7)].iter().enumerate() {
+            frame[i * FIELD_LEN..(i + 1) * FIELD_LEN].copy_from_slice(part);
+        }
+        frame
+    }
+
+    fn flipped(value: &[u8; FIELD_LEN], index: usize) -> [u8; FIELD_LEN] {
+        let mut out = *value;
+        out[index] ^= 0x01;
+        out
+    }
+
+    #[test]
+    fn constant_time_eq_matches_slice_equality() {
+        assert!(constant_time_eq(&[], &[]));
+        assert!(constant_time_eq(&SILENT_WITNESS_DOMAIN_TAG_BE, &SILENT_WITNESS_DOMAIN_TAG_BE));
+        assert!(!constant_time_eq(&[0u8; 31], &[0u8; 32]));
+        assert!(!constant_time_eq(&[], &[0u8]));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_a_flip_at_every_position() {
+        for index in 0..FIELD_LEN {
+            let tampered = flipped(&SILENT_WITNESS_DOMAIN_TAG_BE, index);
+            assert!(!constant_time_eq(&SILENT_WITNESS_DOMAIN_TAG_BE, &tampered), "byte {index}");
+        }
+    }
+
+    #[test]
+    fn baseline_frames_are_accepted() {
+        assert!(parse_silent_witness(
+            &silent_frame(&SILENT_WITNESS_DOMAIN_TAG_BE),
+            &SILENT_WITNESS_DOMAIN_TAG_BE
+        )
+        .is_ok());
+        assert!(parse_revocation_witness(&revocation_frame(&REVOCATION_DOMAIN), &REVOCATION_DOMAIN)
+            .is_ok());
+    }
+
+    #[test]
+    fn silent_witness_domain_flip_is_rejected_at_every_byte() {
+        for index in 0..FIELD_LEN {
+            let tampered = flipped(&SILENT_WITNESS_DOMAIN_TAG_BE, index);
+            let result = parse_silent_witness(&silent_frame(&tampered), &SILENT_WITNESS_DOMAIN_TAG_BE);
+            assert_eq!(result.err(), Some(RejectCode::DomainMismatch), "byte {index}");
+        }
+    }
+
+    #[test]
+    fn revocation_domain_flip_is_rejected_at_every_byte() {
+        for index in 0..FIELD_LEN {
+            let tampered = flipped(&REVOCATION_DOMAIN, index);
+            let result = parse_revocation_witness(&revocation_frame(&tampered), &REVOCATION_DOMAIN);
+            assert_eq!(result.err(), Some(RejectCode::DomainMismatch), "byte {index}");
+        }
+    }
 }

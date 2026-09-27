@@ -5,6 +5,8 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from register_auth import ScopedKey, parse_scoped_keys
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -48,6 +50,8 @@ class AppConfig:
     external_fetch_connect_timeout_seconds: float
     external_fetch_read_timeout_seconds: float
     external_fetch_max_response_bytes: int
+    # Owner-scoped credentials: each key may only register its own sourceAddress.
+    register_scoped_keys: tuple[ScopedKey, ...] = ()
 
 
 def load_config() -> AppConfig:
@@ -112,6 +116,7 @@ def load_config() -> AppConfig:
         external_fetch_connect_timeout_seconds=_float_env("EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS", 5.0),
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
+        register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
     )
 
 

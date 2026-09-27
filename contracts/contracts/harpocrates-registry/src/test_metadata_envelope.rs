@@ -16,6 +16,17 @@ fn bytes32(env: &Env, value: u8) -> BytesN<32> {
     BytesN::from_array(env, &[value; 32])
 }
 
+#[test]
+fn evidence_metadata_hash_uses_the_fixed_storage_bound() {
+    let (env, client, _) = setup();
+    let (_source, proof_id, _metadata_hash) = register_source_proof(&env, &client);
+
+    let proof = client.get_proof(&proof_id).unwrap();
+    let envelope = client.get_metadata_envelope(&proof_id).unwrap();
+    assert_eq!(proof.metadata_hash.len(), MAX_EVIDENCE_METADATA_HASH_BYTES);
+    assert_eq!(envelope.metadata_hash.len(), MAX_EVIDENCE_METADATA_HASH_BYTES);
+}
+
 fn setup() -> (Env, HarpocratesRegistryClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -48,7 +59,7 @@ fn registration_stamps_default_v1_envelope() {
     assert_eq!(envelope.version, METADATA_ENVELOPE_V1);
     assert_eq!(envelope.metadata_hash, meta);
     assert_eq!(
-        client.resolve_metadata_envelope_version(&proof_id),
+        client.resolve_metadata_envelope_ver(&proof_id),
         METADATA_ENVELOPE_V1
     );
 }
@@ -65,7 +76,7 @@ fn bind_upgrade_to_v2_succeeds() {
     let stored = client.get_metadata_envelope(&proof_id).unwrap();
     assert_eq!(stored.version, METADATA_ENVELOPE_V2);
     assert_eq!(
-        client.resolve_metadata_envelope_version(&proof_id),
+        client.resolve_metadata_envelope_ver(&proof_id),
         METADATA_ENVELOPE_V2
     );
 }
@@ -163,17 +174,17 @@ fn correct_proof_syncs_envelope_hash() {
 fn resolve_version_unknown_proof_is_zero() {
     let (env, client, _) = setup();
     let missing = bytes32(&env, 0xFE);
-    assert_eq!(client.resolve_metadata_envelope_version(&missing), 0);
+    assert_eq!(client.resolve_metadata_envelope_ver(&missing), 0);
     assert!(client.get_metadata_envelope(&missing).is_none());
 }
 
 #[test]
 fn is_supported_version_bounds() {
     let (_env, client, _) = setup();
-    assert!(!client.is_supported_metadata_envelope_version(&0u32));
-    assert!(client.is_supported_metadata_envelope_version(&METADATA_ENVELOPE_V1));
-    assert!(client.is_supported_metadata_envelope_version(&METADATA_ENVELOPE_V2));
-    assert!(!client.is_supported_metadata_envelope_version(&(METADATA_ENVELOPE_VERSION_MAX + 1)));
+    assert!(!client.is_supported_envelope_version(&0u32));
+    assert!(client.is_supported_envelope_version(&METADATA_ENVELOPE_V1));
+    assert!(client.is_supported_envelope_version(&METADATA_ENVELOPE_V2));
+    assert!(!client.is_supported_envelope_version(&(METADATA_ENVELOPE_VERSION_MAX + 1)));
 }
 
 #[test]

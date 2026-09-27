@@ -249,10 +249,38 @@ def init_db() -> None:
 
     This replaces the earlier inline ``CREATE TABLE IF NOT EXISTS`` approach
     with an ordered, auditable migration ledger.  Safe to call repeatedly.
+
+    Before any pending migration is applied, the recorded checksum of every
+    already-applied migration is replayed against its in-code definition; a
+    mismatch raises ``migration.MigrationChecksumError`` so a drifted ledger
+    cannot silently start serving traffic.  Set
+    ``MIGRATION_CHECKSUM_ENFORCEMENT=warn`` only as a temporary break-glass
+    rollback while the ledger is reconciled.
     """
     from migration import run_migrations  # late import to avoid cycles
 
     run_migrations()
+
+
+def verify_migration_checksums() -> list[dict[str, object]]:
+    """Return applied migrations whose recorded checksum no longer matches.
+
+    Each dict has keys ``migration_id``, ``name``, ``issue``, ``expected`` and
+    ``recorded``.  An empty list means every applied migration is intact.
+    Read-only; intended for startup diagnostics and operational tooling.
+    """
+    from migration import verify_migration_checksums as _verify
+
+    return [
+        {
+            "migration_id": issue.migration_id,
+            "name": issue.name,
+            "issue": issue.issue,
+            "expected": issue.expected,
+            "recorded": issue.recorded,
+        }
+        for issue in _verify()
+    ]
 
 
 def detect_drift() -> list[dict[str, str]]:
@@ -573,6 +601,36 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
                 (video_hash,),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+
+def find_proof_owner(proof_id: str) -> str | None:
+    """Return the ``source_address`` that first registered ``proof_id``.
+
+    The earliest register event with a recorded address is authoritative, so a
+    later event cannot re-assign ownership. Returns ``None`` when the proof is
+    unknown, was registered without an address, or no database is configured
+    (the same stub behaviour as :func:`upsert_register_event`). Database errors
+    propagate so callers can fail closed instead of guessing.
+    """
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select source_address
+                from proof_events
+                where proof_id = %s
+                  and event_type = 'register'
+                  and source_address is not null
+                order by id asc
+                limit 1;
+                """,
+                (proof_id,),
+            )
+            row = cursor.fetchone()
+    return row["source_address"] if row else None
 
 
 def make_idempotency_key(video_hash: str, proof_id: str, tx_hash: str | None) -> str:

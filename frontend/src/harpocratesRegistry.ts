@@ -20,6 +20,7 @@ import type {
   ChainProofRecord,
   ChainVerifierState,
   IdentityTier,
+  IssuerRecord,
   NormalizedRegisterProofInput,
   ProofHistoryEntry,
   ProofHistoryResult,
@@ -44,6 +45,20 @@ const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 30000
 
 type SendTransactionResponse = Awaited<ReturnType<rpc.Server['sendTransaction']>>
+
+/**
+ * Read a `u64` field out of a decoded contract value as Unix seconds.
+ *
+ * Soroban decodes `u64` to `bigint`, which JSON-style consumers cannot carry,
+ * so the record types hold plain numbers. An absent or non-finite field stays
+ * `null` rather than becoming `0`, because `0` means "never expires" on chain
+ * and must not be produced by a decoding failure.
+ */
+function toUnixSeconds(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const seconds = Number(value)
+  return Number.isFinite(seconds) ? seconds : null
+}
 
 function initialTxState(status: string): TxState {
   if (status === 'PENDING' || status === 'DUPLICATE') return 'awaiting_confirmation'
@@ -191,6 +206,7 @@ export async function getProofByVideoHash(
     tier: Number(native.tier),
     status: Number(native.status),
     createdAt: native.created_at?.toString?.() ?? String(native.created_at),
+    expiresAt: toUnixSeconds(native.expires_at),
     source: native.source ?? null,
     issuer: native.issuer ?? null,
   }
@@ -317,8 +333,59 @@ export async function getProof(
     tier: Number(native.tier),
     status: Number(native.status),
     createdAt: native.created_at?.toString?.() ?? String(native.created_at),
+    expiresAt: toUnixSeconds(native.expires_at),
     source: native.source ?? null,
     issuer: native.issuer ?? null,
+  }
+}
+
+/**
+ * Read an issuer's registry record.
+ *
+ * The two "no record" cases are deliberately kept apart:
+ * - resolves to `null` when the registry holds no record for the address
+ *   (`get_issuer` returns `None`) — a trust outcome, not a failure;
+ * - throws when the read itself did not complete — a dependency failure.
+ *
+ * Callers must pre-validate the address with
+ * `isLookupEligibleIssuer`; `Address` construction rejects anything that is
+ * not a well-formed StrKey, and that rejection is not a registry answer.
+ */
+export async function getIssuerRecord(
+  contractId: string,
+  issuer: string,
+  sourceAddress?: string,
+): Promise<IssuerRecord | null> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_issuer' satisfies RegistryMethod, new Address(issuer).toScVal()))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    metadataHash: bytesToHex(native.metadata_hash),
+    active: Boolean(native.active),
   }
 }
 
