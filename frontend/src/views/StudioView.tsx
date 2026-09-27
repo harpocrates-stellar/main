@@ -49,6 +49,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
   const { statusLabel, isBusy } = useA11yStage(stage)
   const isProving = stage === 'proving'
+  const revocationProofId =
+    events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -248,7 +250,11 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         <div className="rail-block">
           <h3>Chain Registry</h3>
-          <ChainProofPanel chainProof={chainProof} />
+          <ChainProofPanel
+            chainProof={chainProof}
+            proofId={revocationProofId}
+            sourceAddress={wallet || undefined}
+          />
           <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
           <VerifierSetStatusPanel />
           {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}

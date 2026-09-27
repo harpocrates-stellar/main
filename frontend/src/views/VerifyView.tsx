@@ -52,6 +52,8 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   } = verification
 
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const revocationProofId =
+    events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const isError = status === 'error'
   const isCancelled = status === 'cancelled'
@@ -260,7 +262,11 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
             </p>
           ) : (
             <>
-              <ChainProofPanel chainProof={chainProof} />
+              <ChainProofPanel
+                chainProof={chainProof}
+                proofId={revocationProofId}
+                sourceAddress={wallet || undefined}
+              />
               <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
               <VerifierSetStatusPanel />
             </>
