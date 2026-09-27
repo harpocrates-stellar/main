@@ -156,6 +156,10 @@ in the sequential branch inside `upgrade_storage`, preserve existing proof /
 video / nullifier records, and must never log media, secrets, witnesses, or
 private keys.
 
+A V1 wasm presented with a stored version greater than V1 leaves that version
+and the rest of storage untouched; it does not attempt a downgrade. Operators
+must use a wasm that supports the stored schema version.
+
 Rollback is redeploying a prior wasm: additive `SchemaVersion` keys are
 ignored by older readers, and no proof rewrite is required for the V1 stamp.
 Operators should call `get_storage_schema_version` after upgrade to confirm
