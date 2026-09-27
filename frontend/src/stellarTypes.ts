@@ -142,6 +142,7 @@ export type RegistryMethod =
   | 'verify_selective_disclosure'
   | 'add_schema'
   | 'get_schema'
+  | 'get_verifier_state'
 
 export type ScopedProofScope = {
   /** Field element derived from the scope string (SHA-256 mod BN254). */

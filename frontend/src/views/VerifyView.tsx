@@ -4,6 +4,7 @@ import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
+import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import VerificationTimeline from '../components/VerificationTimeline'
 import { shortHash } from '../utils'
 import ProvenanceCard from '../provenance/ProvenanceCard'
@@ -258,7 +259,11 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               On-chain status was not checked in offline mode. No trust decision was made.
             </p>
           ) : (
-            <ChainProofPanel chainProof={chainProof} />
+            <>
+              <ChainProofPanel chainProof={chainProof} />
+              <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
+              <VerifierSetStatusPanel />
+            </>
           )}
           {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
         </div>

@@ -87,6 +87,7 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
+from verification_receipt import build_verification_receipt
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from c2pa import (
     C2paParseError,
@@ -1528,11 +1529,20 @@ def create_app() -> Flask:
         if err is not None:
             return jsonify({"error": err}), 400
 
-        return jsonify({
+        response = {
             "ok": True,
             "message": "Selective disclosure proof submission accepted.",
             "note": "On-chain verification must be performed via verify_selective_disclosure on the registry contract.",
-        })
+        }
+        receipt_context = payload.get("receiptContext")
+        if receipt_context is not None:
+            if not isinstance(receipt_context, dict):
+                return jsonify({"error": "receiptContext must be a JSON object"}), 400
+            try:
+                response["verificationReceipt"] = build_verification_receipt(receipt_context)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+        return jsonify(response)
 
     # -----------------------------------------------------------------------
     # C2PA interoperability

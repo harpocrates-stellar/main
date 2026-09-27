@@ -6,6 +6,7 @@ import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
+import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
 import ProvenanceCard from '../provenance/ProvenanceCard'
@@ -248,6 +249,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
         <div className="rail-block">
           <h3>Chain Registry</h3>
           <ChainProofPanel chainProof={chainProof} />
+          <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
+          <VerifierSetStatusPanel />
           {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
         </div>
 
