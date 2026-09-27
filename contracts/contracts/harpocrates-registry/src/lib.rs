@@ -247,6 +247,7 @@ pub enum ProposalAction {
     RevokeIssuer = 2,
     SetProofTtl = 3,
     RevokeCredentialRoot = 4,
+    ExpireCredentialRoot = 5,
 }
 
 pub const DEFAULT_SCOPE_EPOCH: u64 = 0;
@@ -438,10 +439,19 @@ pub struct IssuerRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CredentialRootRecord {
+pub struct CredentialRootRecordV1 {
     pub metadata_hash: BytesN<32>,
     pub active: bool,
     pub issued_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialRootRecord {
+    pub metadata_hash: BytesN<32>,
+    pub status: u32,
+    pub issued_at: u64,
+    pub expires_at: u64,
 }
 
 /// Pause record for a single registration domain bit. Presence of a record
@@ -592,6 +602,13 @@ pub struct CredentialRootAdded {
 pub struct CredentialRootRevoked {
     #[topic]
     pub credential_root: BytesN<32>,
+}
+
+#[contractevent(topics = ["credroot", "expire"])]
+pub struct CredentialRootExpired {
+    #[topic]
+    pub credential_root: BytesN<32>,
+    pub expired_at: u64,
 }
 
 /// Domain-separated, privacy-safe proof lifecycle history event (#90).
@@ -1030,6 +1047,7 @@ pub struct TimelockMinDelaySet {
 #[repr(u32)]
 pub enum SchemaVersion {
     V1 = 1,
+    V2 = 2,
 }
 
 #[contractevent(topics = ["schema", "upgrade"])]
@@ -1045,6 +1063,7 @@ pub enum DataKey {
     Video(BytesN<32>),
     Nullifier(BytesN<32>),
     CredentialRoot(BytesN<32>),
+    CredentialRootV2(BytesN<32>),
     Issuer(Address),
     Verifier,
     ProofTtl,
@@ -1174,6 +1193,7 @@ pub enum RegistryError {
     BatchCountMismatch = 56,
     /// A lineage parent proof/lineage record was not found.
     InvalidLineage = 57,
+    ExpiredCredentialRoot = 58,
     /// A lineage edge would introduce a cycle.
     LineageCycle = 58,
     /// The requested lineage depth exceeds `MAX_LINEAGE_DEPTH`.
@@ -1273,7 +1293,7 @@ impl HarpocratesRegistry {
             .get(&DataKey::SchemaVersion)
             .unwrap_or(SchemaVersion::V1 as u32);
 
-        let target_version = SchemaVersion::V1 as u32;
+        let target_version = SchemaVersion::V2 as u32;
 
         // Legacy pre-#85 registries: stamp V1 without a SchemaUpgraded event.
         if !had_version {
@@ -1495,11 +1515,12 @@ impl HarpocratesRegistry {
 
         let issued_at = env.ledger().timestamp();
         env.storage().persistent().set(
-            &DataKey::CredentialRoot(credential_root.clone()),
+            &DataKey::CredentialRootV2(credential_root.clone()),
             &CredentialRootRecord {
                 metadata_hash: metadata_hash.clone(),
-                active: true,
+                status: STATUS_REGISTERED,
                 issued_at,
+                expires_at: 0,
             },
         );
         CredentialRootAdded {
@@ -1514,11 +1535,23 @@ impl HarpocratesRegistry {
         require_admin(&env, &admin);
 
         let mut record = get_credential_root_record(&env, &credential_root);
-        record.active = false;
+        record.status = STATUS_REVOKED;
         env.storage()
             .persistent()
-            .set(&DataKey::CredentialRoot(credential_root.clone()), &record);
+            .set(&DataKey::CredentialRootV2(credential_root.clone()), &record);
         CredentialRootRevoked { credential_root }.publish(&env);
+    }
+
+    pub fn expire_credential_root(env: Env, admin: Address, credential_root: BytesN<32>) {
+        require_admin(&env, &admin);
+
+        let mut record = get_credential_root_record(&env, &credential_root);
+        record.status = STATUS_EXPIRED;
+        record.expires_at = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&DataKey::CredentialRootV2(credential_root.clone()), &record);
+        CredentialRootExpired { credential_root, expired_at: record.expires_at }.publish(&env);
     }
 
     pub fn get_credential_root(
@@ -3948,10 +3981,20 @@ fn get_issuer_record(env: &Env, issuer: &Address) -> IssuerRecord {
 }
 
 fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> CredentialRootRecord {
-    env.storage()
-        .persistent()
-        .get(&DataKey::CredentialRoot(credential_root.clone()))
-        .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownCredentialRoot))
+    let key_v2 = DataKey::CredentialRootV2(credential_root.clone());
+    if let Some(record) = env.storage().persistent().get(&key_v2) {
+        return record;
+    }
+    let key_v1 = DataKey::CredentialRoot(credential_root.clone());
+    if let Some(v1) = env.storage().persistent().get::<_, CredentialRootRecordV1>(&key_v1) {
+        return CredentialRootRecord {
+            metadata_hash: v1.metadata_hash,
+            status: if v1.active { STATUS_REGISTERED } else { STATUS_REVOKED },
+            issued_at: v1.issued_at,
+            expires_at: 0,
+        };
+    }
+    panic_with_error!(env, RegistryError::UnknownCredentialRoot)
 }
 
 fn get_active_verifier(env: &Env) -> Address {
@@ -3978,8 +4021,11 @@ fn get_verifier_rotation_state(env: &Env) -> VerifierState {
 
 fn require_active_credential_root(env: &Env, credential_root: &BytesN<32>) {
     let record = get_credential_root_record(env, credential_root);
-    if !record.active {
+    if record.status == STATUS_REVOKED {
         panic_with_error!(env, RegistryError::RevokedCredentialRoot);
+    }
+    if record.status == STATUS_EXPIRED || (record.expires_at > 0 && env.ledger().timestamp() >= record.expires_at) {
+        panic_with_error!(env, RegistryError::ExpiredCredentialRoot);
     }
 }
 
@@ -4813,12 +4859,25 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
         }
         4 => {
             let mut record = get_credential_root_record(env, &proposal.payload);
-            record.active = false;
+            record.status = STATUS_REVOKED;
             env.storage()
                 .persistent()
-                .set(&DataKey::CredentialRoot(proposal.payload.clone()), &record);
+                .set(&DataKey::CredentialRootV2(proposal.payload.clone()), &record);
             CredentialRootRevoked {
                 credential_root: proposal.payload.clone(),
+            }
+            .publish(env);
+        }
+        5 => {
+            let mut record = get_credential_root_record(env, &proposal.payload);
+            record.status = STATUS_EXPIRED;
+            record.expires_at = env.ledger().timestamp();
+            env.storage()
+                .persistent()
+                .set(&DataKey::CredentialRootV2(proposal.payload.clone()), &record);
+            CredentialRootExpired {
+                credential_root: proposal.payload.clone(),
+                expired_at: record.expires_at,
             }
             .publish(env);
         }
