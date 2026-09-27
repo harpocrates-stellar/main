@@ -26,6 +26,11 @@ SHA-256 digests of both bytecode strings. The browser validates the ABI,
 compiler version, digests, proof bounds, and four public values before returning
 a proof. No domain tag is invented for this artifact.
 
+The browser prover also needs JavaScript Noir and Barretenberg versions that can
+execute these published artifacts. Dependency alignment is handled separately
+from this input-envelope change; changing the package versions alone does not
+change the public-input frame or make the proof verifier-compatible.
+
 The verifier separately recognizes a five-field unscoped `silent_witness/v1`
 frame (`video_hash_hi`, `video_hash_lo`, `credential_root`, `nullifier`,
 `domain_tag`) and a seven-field scoped `silent_witness/v2` frame with
