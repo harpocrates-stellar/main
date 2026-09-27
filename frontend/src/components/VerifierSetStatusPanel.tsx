@@ -5,7 +5,7 @@ export function VerifierSetStatusPanel() {
 
   if (loading) {
     return (
-      <div className="chain-grid" aria-label="Verifier set status loading">
+      <div className="chain-grid" role="group" aria-label="Verifier set status loading">
         <p className="muted">Loading verifier status...</p>
       </div>
     )
@@ -13,7 +13,7 @@ export function VerifierSetStatusPanel() {
 
   if (error) {
     return (
-      <div className="chain-grid" aria-label="Verifier set status error">
+      <div className="chain-grid" role="group" aria-label="Verifier set status error">
         <p className="muted" style={{ color: 'var(--text-error)' }}>
           Failed to load verifier state
         </p>
@@ -23,7 +23,7 @@ export function VerifierSetStatusPanel() {
 
   if (!verifierState) {
     return (
-      <div className="chain-grid" aria-label="Verifier set status not found">
+      <div className="chain-grid" role="group" aria-label="Verifier set status not found">
         <p className="muted">Verifier state not found on-chain.</p>
       </div>
     )
@@ -39,7 +39,7 @@ export function VerifierSetStatusPanel() {
   } = verifierState
 
   return (
-    <div className="chain-grid" aria-label="Verifier set status panel">
+    <div className="chain-grid" role="group" aria-label="Verifier set status panel">
       <span>Active Verifier</span>
       <code>{activeVerifier ? activeVerifier.slice(0, 8) + '...' + activeVerifier.slice(-4) : 'None'}</code>
 
