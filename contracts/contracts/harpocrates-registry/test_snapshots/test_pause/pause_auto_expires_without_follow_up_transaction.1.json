@@ -768,6 +768,9 @@
                 "symbol": "metadata"
               },
               {
+                "symbol": "envelope"
+              },
+              {
                 "symbol": "bound"
               },
               {

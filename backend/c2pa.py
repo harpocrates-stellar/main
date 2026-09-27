@@ -81,6 +81,12 @@ _REQUIRED_BINDING_KEYS: frozenset[str] = frozenset(
 # Allowed identity tiers (mirrors envelope.ALLOWED_TIERS).
 _ALLOWED_TIERS: frozenset[str] = frozenset({"silent", "source", "seal"})
 
+#: Binding fields that carry 32-byte hex digests. Compared case-insensitively.
+_BINDING_HASH_FIELDS: tuple[str, ...] = ("video_hash", "metadata_hash", "proof_id")
+
+#: Binding fields that carry free text. Compared after stripping whitespace.
+_BINDING_TEXT_FIELDS: tuple[str, ...] = ("tier", "network", "contract_id")
+
 # Hex-32 pattern (64 lower-case hex chars).
 _HEX32_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -153,6 +159,8 @@ class _Reason:
     DIGEST_MISMATCH = "digest_mismatch"
     MAPPING_VERSION_MISMATCH = "mapping_version_mismatch"
     RECURSION_DETECTED = "recursion_detected"
+    EMBEDDED_BINDING_MISMATCH = "embedded_binding_mismatch"
+    EMBEDDED_BINDING_DUPLICATE = "embedded_binding_duplicate"
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +224,21 @@ class C2paExportedManifest:
 
     manifest: dict[str, Any]
     digest: str   # hex-encoded SHA-256 of canonical JSON
+
+
+@dataclass(frozen=True)
+class C2paHashCorroboration:
+    """
+    Result of comparing caller-submitted hashes against an embedded binding.
+
+    ``compared_fields`` and ``mismatches`` carry field *names* only — never a
+    hash value, digest byte, or manifest content — so the result is safe to log
+    and safe to return to a caller.
+    """
+
+    ok: bool
+    compared_fields: tuple[str, ...] = ()
+    mismatches: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +311,7 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
         raise C2paParseError(_Reason.ASSERTION_COUNT_EXCEEDED, "assertions")
 
     unknown: list[C2paUnknownAssertion] = []
+    assertion_bindings: list[C2paHarpocratesBinding] = []
     for idx, assertion in enumerate(assertions_raw):
         if not isinstance(assertion, dict):
             raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}]")
@@ -303,15 +327,22 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
             raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}]")
         if len(assertion_bytes) > _MAX_ASSERTION_DATA_BYTES:
             raise C2paParseError(_Reason.ASSERTION_DATA_TOO_LARGE, f"assertions[{idx}]")
-        # Preserve unknown assertions.
-        if label != _MAPPING_LABEL:
-            unknown.append(
-                C2paUnknownAssertion(
-                    label=label,
-                    data=assertion.get("data"),
-                    unsupported_semantics=True,
-                )
+        # The binding is embedded a second time as a named assertion (see
+        # docs/c2pa-interoperability.md); parse it so the two copies can be
+        # required to agree below.
+        if label == _MAPPING_LABEL:
+            assertion_bindings.append(
+                _parse_binding(assertion.get("data"), prefix=f"assertions[{idx}].data")
             )
+            continue
+        # Preserve unknown assertions.
+        unknown.append(
+            C2paUnknownAssertion(
+                label=label,
+                data=assertion.get("data"),
+                unsupported_semantics=True,
+            )
+        )
 
     # 9. algorithm check (optional field; only SHA-256 supported).
     if "alg" in data:
@@ -324,6 +355,14 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
     # 10. harpocrates_binding.
     binding_raw = data["harpocrates_binding"]
     binding = _parse_binding(binding_raw)
+
+    # 11. The same binding is embedded twice (named assertion + top-level
+    #     object). Assertion-based and direct consumers must read identical
+    #     hashes, so a contradiction is a parse failure, not a silent choice.
+    if len(assertion_bindings) > 1:
+        raise C2paParseError(_Reason.EMBEDDED_BINDING_DUPLICATE, _MAPPING_LABEL)
+    if assertion_bindings:
+        _require_consistent_embedded_binding(binding, assertion_bindings[0])
 
     return C2paParsedManifest(
         claim_generator=claim_generator.strip(),
@@ -450,46 +489,122 @@ def verify_round_trip(exported: C2paExportedManifest) -> bool:
     return re_exported.digest == exported.digest
 
 
+def corroborate_binding(
+    parsed: C2paParsedManifest,
+    *,
+    video_hash: str | None = None,
+    metadata_hash: str | None = None,
+    proof_id: str | None = None,
+    tier: str | None = None,
+    network: str | None = None,
+    contract_id: str | None = None,
+) -> C2paHashCorroboration:
+    """Verify caller-submitted values against the binding embedded in *parsed*.
+
+    This is the submitted-vs-embedded half of C2PA import: an ``export`` digest
+    binds hashes *inside* the manifest, but nothing there ties them to the
+    evidence a caller is asking about. Passing the hashes the caller claims
+    (typically the registered ``video_hash``/``metadata_hash``/``proof_id``)
+    makes the import reject a manifest whose embedded binding describes
+    different evidence.
+
+    Only the fields the caller supplies are compared, in a fixed order —
+    ``video_hash``, ``metadata_hash``, ``proof_id``, ``tier``, ``network``,
+    ``contract_id`` — so identical inputs always produce the same result.
+
+    A mismatch is *reported*, not raised: the caller chooses the policy (the
+    ``/api/c2pa/import`` endpoint rejects with a stable 400). Malformed
+    submitted values raise :class:`ValueError` whose message contains the field
+    name and static text only.
+
+    Returns:
+        A :class:`C2paHashCorroboration`. ``ok`` is True only when every
+        supplied field matched the embedded binding.
+    """
+    submitted: dict[str, str | None] = {
+        "video_hash": video_hash,
+        "metadata_hash": metadata_hash,
+        "proof_id": proof_id,
+        "tier": tier,
+        "network": network,
+        "contract_id": contract_id,
+    }
+
+    compared: list[str] = []
+    mismatches: list[str] = []
+
+    for field_name in _BINDING_HASH_FIELDS + _BINDING_TEXT_FIELDS:
+        supplied = submitted[field_name]
+        if supplied is None:
+            continue
+
+        if field_name in _BINDING_HASH_FIELDS:
+            _validate_hex32(supplied, field_name)  # raises ValueError on malformed hex
+            normalised = supplied.lower()
+        else:
+            if not isinstance(supplied, str) or not supplied.strip():
+                raise ValueError(f"{field_name} must be a non-empty string")
+            normalised = supplied.strip()
+
+        compared.append(field_name)
+        if normalised != getattr(parsed.binding, field_name):
+            mismatches.append(field_name)
+
+    return C2paHashCorroboration(
+        ok=not mismatches,
+        compared_fields=tuple(compared),
+        mismatches=tuple(mismatches),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _parse_binding(raw: Any) -> C2paHarpocratesBinding:
+def _parse_binding(
+    raw: Any, *, prefix: str = "harpocrates_binding"
+) -> C2paHarpocratesBinding:
+    """Validate one embedded copy of the Harpocrates binding.
+
+    ``prefix`` names the location of the copy in the manifest so error payloads
+    point at the offending path (``harpocrates_binding`` or
+    ``assertions[i].data``) without echoing any value.
+    """
     if not isinstance(raw, dict):
-        raise C2paParseError(_Reason.INVALID_TYPE, "harpocrates_binding")
+        raise C2paParseError(_Reason.INVALID_TYPE, prefix)
 
     for key in _REQUIRED_BINDING_KEYS:
         if key not in raw:
-            raise C2paParseError(_Reason.MISSING_KEY, f"harpocrates_binding.{key}")
+            raise C2paParseError(_Reason.MISSING_KEY, f"{prefix}.{key}")
 
     mv = raw["mapping_version"]
     if not isinstance(mv, int) or mv < 1:
-        raise C2paParseError(_Reason.INVALID_TYPE, "harpocrates_binding.mapping_version")
+        raise C2paParseError(_Reason.INVALID_TYPE, f"{prefix}.mapping_version")
     if mv != C2PA_HARPOCRATES_MAPPING_VERSION:
         raise C2paParseError(
             _Reason.MAPPING_VERSION_MISMATCH,
-            "harpocrates_binding.mapping_version",
+            f"{prefix}.mapping_version",
         )
 
-    for hex_field in ("video_hash", "metadata_hash", "proof_id"):
+    for hex_field in _BINDING_HASH_FIELDS:
         val = raw[hex_field]
         if not isinstance(val, str):
-            raise C2paParseError(_Reason.INVALID_TYPE, f"harpocrates_binding.{hex_field}")
+            raise C2paParseError(_Reason.INVALID_TYPE, f"{prefix}.{hex_field}")
         if not _HEX32_RE.match(val.lower()):
-            raise C2paParseError(_Reason.INVALID_VALUE, f"harpocrates_binding.{hex_field}")
+            raise C2paParseError(_Reason.INVALID_VALUE, f"{prefix}.{hex_field}")
 
     tier = raw["tier"]
     if not isinstance(tier, str) or tier not in _ALLOWED_TIERS:
-        raise C2paParseError(_Reason.INVALID_VALUE, "harpocrates_binding.tier")
+        raise C2paParseError(_Reason.INVALID_VALUE, f"{prefix}.tier")
 
     network = raw["network"]
     if not isinstance(network, str) or not network.strip():
-        raise C2paParseError(_Reason.INVALID_VALUE, "harpocrates_binding.network")
+        raise C2paParseError(_Reason.INVALID_VALUE, f"{prefix}.network")
 
     contract_id = raw["contract_id"]
     if not isinstance(contract_id, str) or not contract_id.strip():
-        raise C2paParseError(_Reason.INVALID_VALUE, "harpocrates_binding.contract_id")
+        raise C2paParseError(_Reason.INVALID_VALUE, f"{prefix}.contract_id")
 
     return C2paHarpocratesBinding(
         mapping_version=mv,
@@ -500,6 +615,26 @@ def _parse_binding(raw: Any) -> C2paHarpocratesBinding:
         network=network.strip(),
         contract_id=contract_id.strip(),
     )
+
+
+def _require_consistent_embedded_binding(
+    top_level: C2paHarpocratesBinding,
+    assertion: C2paHarpocratesBinding,
+) -> None:
+    """Reject a manifest whose two embedded copies of the binding disagree.
+
+    The binding is embedded twice by design (named assertion plus top-level
+    object) so that both assertion-based and direct consumers can read it. A
+    manifest that carries contradictory hashes in the two copies must not be
+    accepted: which copy a consumer reads would otherwise decide the verdict.
+    Only the offending field *name* is reported.
+    """
+    if top_level.mapping_version != assertion.mapping_version:
+        raise C2paParseError(_Reason.EMBEDDED_BINDING_MISMATCH, "mapping_version")
+
+    for field_name in _BINDING_HASH_FIELDS + _BINDING_TEXT_FIELDS:
+        if getattr(top_level, field_name) != getattr(assertion, field_name):
+            raise C2paParseError(_Reason.EMBEDDED_BINDING_MISMATCH, field_name)
 
 
 def _validate_hex32(value: Any, name: str) -> None:

@@ -24,10 +24,9 @@ struct MockScopedVerifier;
 #[contractimpl]
 impl MockScopedVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        // Accept the canonical circuit frames: v1 (160), v2 scoped (224), and
-        // the four-field revocation frame (128).
+        // Accept the legal frame lengths: revocation (128), v1 silent (160), v2 scoped (224)
         let len = public_inputs.len();
-        if (len != 128 && len != 160 && len != 224) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
             panic!("invalid scoped proof");
         }
     }
@@ -67,7 +66,9 @@ fn v1_public_inputs(
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
-    buf[128..160].copy_from_slice(&expected_domain_tag(env).to_array());
+    let mut domain = [0u8; 32];
+    expected_domain_tag(env).copy_into_slice(&mut domain);
+    buf[128..160].copy_from_slice(&domain);
     Bytes::from_array(env, &buf)
 }
 
@@ -104,7 +105,9 @@ fn v2_public_inputs(
     buf[96..128].copy_from_slice(&nu);
     buf[128..160].copy_from_slice(&sc);
     buf[160..192].copy_from_slice(&epoch_bytes);
-    buf[192..224].copy_from_slice(&expected_domain_tag(env).to_array());
+    let mut domain = [0u8; 32];
+    expected_domain_tag(env).copy_into_slice(&mut domain);
+    buf[192..224].copy_from_slice(&domain);
     Bytes::from_array(env, &buf)
 }
 
@@ -241,7 +244,14 @@ fn test_scoped_registration_global_scope_epoch_0() {
     let scope = b32(&env, 0x00); // global scope (zero)
     let epoch: u64 = 0;
 
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     let record = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x03),
@@ -270,7 +280,14 @@ fn test_scoped_registration_explicit_scope_epoch_1() {
     // Set the epoch for this scope
     client.set_scope_epoch(&admin, &scope, &epoch);
 
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     let record = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x12),
@@ -399,7 +416,14 @@ fn test_scoped_rejects_wrong_video_hash() {
     let scope = b32(&env, 0x00);
 
     // Proof is for wrong_video_hash, but we pass video_hash as the first arg
-    let pi = v2_public_inputs(&env, &wrong_video_hash, &credential_root, &nullifier, &scope, 0);
+    let pi = v2_public_inputs(
+        &env,
+        &wrong_video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+    );
     client.register_anonymous_verified(
         &video_hash, // different from what's in the proof
         &b32(&env, 0x53),
@@ -427,7 +451,14 @@ fn test_cross_scope_different_nullifiers() {
     let scope_b = b32(&env, 0x02);
 
     // Both at epoch 0, different scopes → different nullifiers
-    let pi_a = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier_a, &scope_a, 0);
+    let pi_a = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier_a,
+        &scope_a,
+        0,
+    );
     let r1 = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x63),
@@ -438,7 +469,14 @@ fn test_cross_scope_different_nullifiers() {
 
     // Different video_hash needed since video uniqueness is global
     let video_hash2 = b32(&env, 0x65);
-    let pi_b = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_b, &scope_b, 0);
+    let pi_b = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_b,
+        &scope_b,
+        0,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x66),
@@ -517,7 +555,14 @@ fn test_v1_backward_compatibility() {
     let video_hash_v2 = b32(&env, 0x84);
     let nullifier_v2 = b32(&env, 0x85);
     let scope = b32(&env, 0x00);
-    let pi_v2 = v2_public_inputs(&env, &video_hash_v2, &credential_root, &nullifier_v2, &scope, 0);
+    let pi_v2 = v2_public_inputs(
+        &env,
+        &video_hash_v2,
+        &credential_root,
+        &nullifier_v2,
+        &scope,
+        0,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash_v2,
         &b32(&env, 0x86),
@@ -557,7 +602,14 @@ fn test_v1_v2_nullifiers_are_different() {
     // v2 proof (different video since video uniqueness is global)
     let video_hash2 = b32(&env, 0x95);
     let scope = b32(&env, 0x00);
-    let pi_v2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_v2, &scope, 0);
+    let pi_v2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_v2,
+        &scope,
+        0,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x96),
@@ -574,7 +626,7 @@ fn test_v1_v2_nullifiers_are_different() {
 // Rejects invalid input lengths
 // ===========================================================================
 
-/// Rejects public inputs that are neither 128 nor 192 bytes.
+/// Rejects public inputs that are neither 160 (v1) nor 224 (v2) bytes.
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")] // InvalidPublicInputs
 fn test_rejects_wrong_input_length() {
@@ -672,7 +724,14 @@ fn test_independent_scope_epochs() {
     // Register in scope_a at epoch 5
     let video_hash1 = b32(&env, 0xC0);
     let nullifier1 = b32(&env, 0xC1);
-    let pi1 = v2_public_inputs(&env, &video_hash1, &credential_root, &nullifier1, &scope_a, 5);
+    let pi1 = v2_public_inputs(
+        &env,
+        &video_hash1,
+        &credential_root,
+        &nullifier1,
+        &scope_a,
+        5,
+    );
     client.register_anonymous_verified(
         &video_hash1,
         &b32(&env, 0xC2),
@@ -684,7 +743,14 @@ fn test_independent_scope_epochs() {
     // Register in scope_b at epoch 3 (independent)
     let video_hash2 = b32(&env, 0xC4);
     let nullifier2 = b32(&env, 0xC5);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &scope_b, 3);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &scope_b,
+        3,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0xC6),
@@ -742,7 +808,14 @@ fn test_global_scope_epoch_management() {
     // Register at epoch 10 — should succeed
     let video_hash = b32(&env, 0xE0);
     let nullifier = b32(&env, 0xE1);
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &global_scope, 10);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &global_scope,
+        10,
+    );
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0xE2),
@@ -754,7 +827,14 @@ fn test_global_scope_epoch_management() {
     // Register at epoch 9 (stale) — should fail
     let video_hash2 = b32(&env, 0xE4);
     let nullifier2 = b32(&env, 0xE5);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &global_scope, 9);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &global_scope,
+        9,
+    );
     let result = client.try_register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0xE6),
@@ -762,7 +842,10 @@ fn test_global_scope_epoch_management() {
         &pi2,
         &proof_buf(&env),
     );
-    assert!(result.is_err(), "expected StaleEpoch for epoch 9 when epoch is 10");
+    assert!(
+        result.is_err(),
+        "expected StaleEpoch for epoch 9 when epoch is 10"
+    );
 }
 
 // ===========================================================================
@@ -815,7 +898,14 @@ fn test_same_scope_epoch_replay_rejected() {
 
     let video_hash1 = b32(&env, 0x10);
     let nullifier = b32(&env, 0x11);
-    let pi1 = v2_public_inputs(&env, &video_hash1, &credential_root, &nullifier, &scope, epoch);
+    let pi1 = v2_public_inputs(
+        &env,
+        &video_hash1,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash1,
         &b32(&env, 0x12),
@@ -826,7 +916,14 @@ fn test_same_scope_epoch_replay_rejected() {
 
     // Replay the same nullifier in the same scope/epoch with a different video
     let video_hash2 = b32(&env, 0x14);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x15),
@@ -862,7 +959,14 @@ fn test_cross_scope_different_nullifiers_unlinkable() {
     let video_hash1 = b32(&env, 0xCC);
     let video_hash2 = b32(&env, 0xDD);
 
-    let pi_a = v2_public_inputs(&env, &video_hash1, &credential_root, &nullifier_a, &scope_a, epoch);
+    let pi_a = v2_public_inputs(
+        &env,
+        &video_hash1,
+        &credential_root,
+        &nullifier_a,
+        &scope_a,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash1,
         &b32(&env, 0xEE),
@@ -871,7 +975,14 @@ fn test_cross_scope_different_nullifiers_unlinkable() {
         &proof_buf(&env),
     );
 
-    let pi_b = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_b, &scope_b, epoch);
+    let pi_b = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_b,
+        &scope_b,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0xF0),
@@ -918,7 +1029,14 @@ fn test_verifier_change_preserves_nullifier_history() {
     let nullifier = b32(&env, 0x11);
 
     // Register with verifier A
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x12),
@@ -936,7 +1054,14 @@ fn test_verifier_change_preserves_nullifier_history() {
     // A new proof with the new verifier must succeed
     let video_hash2 = b32(&env, 0x20);
     let nullifier2 = b32(&env, 0x21);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &scope,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x22),
@@ -981,7 +1106,14 @@ fn test_v1_v2_nullifier_distinct_for_same_inputs() {
 
     // Register v2 proof (different video since video uniqueness is global)
     let video_hash2 = b32(&env, 0x95);
-    let pi_v2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier_v2, &scope, epoch);
+    let pi_v2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier_v2,
+        &scope,
+        epoch,
+    );
     let r2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x96),
@@ -1065,7 +1197,14 @@ fn test_stale_ledger_valid_proof_still_accepted() {
 
     let video_hash = b32(&env, 0x50);
     let nullifier = b32(&env, 0x51);
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     let record = client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x52),
@@ -1078,12 +1217,20 @@ fn test_stale_ledger_valid_proof_still_accepted() {
     assert!(client.has_nullifier(&nullifier));
 
     // Advance the ledger far into the future
-    env.ledger().set_timestamp(env.ledger().timestamp() + 100_000);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 100_000);
 
     // A new proof with the same scope/epoch should still be accepted
     let video_hash2 = b32(&env, 0x60);
     let nullifier2 = b32(&env, 0x61);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier2, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier2,
+        &scope,
+        epoch,
+    );
     let record2 = client.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x62),
@@ -1117,7 +1264,14 @@ fn test_nullifier_scope_isolation() {
     // Register in scope A
     let video_hash_a = b32(&env, 0x80);
     let nullifier_a = b32(&env, 0x81);
-    let pi_a = v2_public_inputs(&env, &video_hash_a, &credential_root, &nullifier_a, &scope_a, epoch);
+    let pi_a = v2_public_inputs(
+        &env,
+        &video_hash_a,
+        &credential_root,
+        &nullifier_a,
+        &scope_a,
+        epoch,
+    );
     client.register_anonymous_verified(
         &video_hash_a,
         &b32(&env, 0x82),
@@ -1130,7 +1284,14 @@ fn test_nullifier_scope_isolation() {
     // must fail with DuplicateNullifier because the nullifier is globally tracked.
     let video_hash_b = b32(&env, 0x90);
     let nullifier_b_attempt = b32(&env, 0x81); // same value as nullifier_a
-    let pi_b = v2_public_inputs(&env, &video_hash_b, &credential_root, &nullifier_b_attempt, &scope_b, epoch);
+    let pi_b = v2_public_inputs(
+        &env,
+        &video_hash_b,
+        &credential_root,
+        &nullifier_b_attempt,
+        &scope_b,
+        epoch,
+    );
     let result = client.try_register_anonymous_verified(
         &video_hash_b,
         &b32(&env, 0x91),
@@ -1138,7 +1299,10 @@ fn test_nullifier_scope_isolation() {
         &pi_b,
         &proof_buf(&env),
     );
-    assert!(result.is_err(), "replaying nullifier across scopes must fail");
+    assert!(
+        result.is_err(),
+        "replaying nullifier across scopes must fail"
+    );
 }
 
 // ===========================================================================
@@ -1179,7 +1343,14 @@ fn test_cross_network_isolation() {
     let nullifier = b32(&env, 0x11);
 
     // Register on contract A
-    let pi = v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, epoch);
+    let pi = v2_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client_a.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0x12),
@@ -1194,7 +1365,14 @@ fn test_cross_network_isolation() {
     // Register the same nullifier on contract B — must succeed because
     // contract B has its own independent nullifier set
     let video_hash2 = b32(&env, 0x20);
-    let pi2 = v2_public_inputs(&env, &video_hash2, &credential_root, &nullifier, &scope, epoch);
+    let pi2 = v2_public_inputs(
+        &env,
+        &video_hash2,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+    );
     client_b.register_anonymous_verified(
         &video_hash2,
         &b32(&env, 0x22),

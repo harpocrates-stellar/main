@@ -7,9 +7,13 @@ match their source and the pinned toolchain in ``zk/toolchain.lock.json``.
     write           normalize every declared artifact, digest it, and emit a manifest
     verify          re-digest the working tree and fail on any drift from a manifest
     compare         diff two manifests (the double-build reproducibility check)
+    check-coverage  fail when the lock and the source tree disagree about which
+                    circuits exist, so no circuit can ship unpinned
     write-browser   digest published browser ACIR and emit the browser manifest
     verify-browser  fail if published ACIR drifts from the browser manifest or
                     from the matching build-target ACIR when both are on disk
+    write-provenance  digest lock-declared circuit sources and emit published provenance
+    verify-provenance fail if circuit sources drift from the committed provenance
 
 State machine
 -------------
@@ -63,7 +67,13 @@ DEFAULT_MANIFEST = REPO_ROOT / "zk" / "artifacts.manifest.json"
 DEFAULT_BROWSER_MANIFEST = REPO_ROOT / "zk" / "browser.artifacts.manifest.json"
 
 BROWSER_MANIFEST_FORMAT = "harpocrates.zk-browser-artifact-manifest"
+PROVENANCE_FORMAT = "harpocrates.zk-circuit-provenance"
+DEFAULT_PROVENANCE = REPO_ROOT / "zk" / "circuit.provenance.json"
 PUBLISHED_ACIR_ROLE = "published_acir"
+ACIR_ROLE = "acir"
+
+DEFAULT_CIRCUIT_ROOT = "zk/noir"
+DEFAULT_PACKAGE_FILE = "Nargo.toml"
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -111,6 +121,7 @@ class Limits:
     max_artifact_bytes: int
     max_artifacts: int
     max_provenance_files: int
+    max_circuits: int
 
 
 @dataclass(frozen=True)
@@ -121,6 +132,8 @@ class Lock:
     strip_custom_sections: frozenset[str]
     artifacts: tuple[dict, ...]
     provenance_globs: tuple[str, ...]
+    circuit_root: str
+    package_file: str
 
     @property
     def toolchain(self) -> dict:
@@ -149,6 +162,7 @@ def load_lock(path: Path) -> Lock:
         max_artifact_bytes=int(limits_raw["max_artifact_bytes"]),
         max_artifacts=int(limits_raw["max_artifacts"]),
         max_provenance_files=int(limits_raw["max_provenance_files"]),
+        max_circuits=int(limits_raw["max_circuits"]),
     )
 
     artifacts = tuple(raw["artifacts"])
@@ -156,6 +170,13 @@ def load_lock(path: Path) -> Lock:
         raise BuildError(
             f"lock declares {len(artifacts)} artifacts, above the cap of {limits.max_artifacts}"
         )
+
+    coverage = raw.get("coverage") or {}
+    circuit_root = str(coverage.get("circuit_root", DEFAULT_CIRCUIT_ROOT))
+    package_file = str(coverage.get("package_file", DEFAULT_PACKAGE_FILE))
+    for label, value in (("circuit_root", circuit_root), ("package_file", package_file)):
+        if not value or value.startswith("/") or ".." in value.split("/"):
+            raise BuildError(f"toolchain lock declares an unusable coverage {label}: {value!r}")
 
     return Lock(
         raw=raw,
@@ -166,6 +187,8 @@ def load_lock(path: Path) -> Lock:
         ),
         artifacts=artifacts,
         provenance_globs=tuple(raw["provenance_sources"]["globs"]),
+        circuit_root=circuit_root,
+        package_file=package_file,
     )
 
 
@@ -511,6 +534,173 @@ def _short(digest: str | None) -> str:
 
 
 
+
+# ── Published circuit provenance ─────────────────────────────────────────────
+
+
+def build_provenance(lock: Lock, root: Path) -> dict:
+    """Publish digests of the circuit sources that define declared artifacts.
+
+    This is the toolchain-bound provenance slice of a full artifact manifest,
+    writable without compiling ACIR or generating verification keys. It does not
+    create a second protocol truth: globs, limits, toolchain, and declared
+    artifact slots all come from ``zk/toolchain.lock.json``.
+    """
+    sources = collect_provenance(lock, root)
+    if not sources:
+        raise BuildError(
+            "provenance globs matched no circuit sources; provenance not written"
+        )
+
+    declared = []
+    for entry in lock.artifacts:
+        declared.append(
+            {
+                "path": entry["path"],
+                "kind": entry["kind"],
+                "role": entry.get("role", "unknown"),
+                "required": bool(entry.get("required", False)),
+            }
+        )
+
+    return {
+        "format": PROVENANCE_FORMAT,
+        "version": MANIFEST_VERSION,
+        "toolchain": {
+            "nargo": lock.toolchain["nargo"]["version"],
+            "barretenberg": lock.toolchain["barretenberg"]["version"],
+            "proving_scheme": lock.toolchain["proving_scheme"],
+            "oracle_hash": lock.toolchain["oracle_hash"],
+        },
+        "environment": dict(sorted(lock.environment.items())),
+        "normalization_policy_sha256": sha256_hex(
+            json.dumps(lock.raw["normalization"], sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ),
+        "provenance_globs": list(lock.provenance_globs),
+        "provenance": sources,
+        "declared_artifacts": declared,
+    }
+
+
+def compare_provenance(expected: dict, actual: dict) -> list[str]:
+    """Diff two provenance documents. Paths and digests only; no source bytes."""
+    findings: list[str] = []
+
+    for key in ("format", "version"):
+        if expected.get(key) != actual.get(key):
+            findings.append(
+                f"provenance {key}: expected {expected.get(key)!r}, got {actual.get(key)!r}"
+            )
+
+    for key, expected_value in sorted(expected.get("toolchain", {}).items()):
+        actual_value = actual.get("toolchain", {}).get(key)
+        if expected_value != actual_value:
+            findings.append(
+                f"toolchain.{key}: expected {expected_value!r}, got {actual_value!r}"
+            )
+
+    if expected.get("normalization_policy_sha256") != actual.get(
+        "normalization_policy_sha256"
+    ):
+        findings.append(
+            "normalization policy changed; provenance digested under different rules"
+        )
+
+    expected_globs = list(expected.get("provenance_globs") or [])
+    actual_globs = list(actual.get("provenance_globs") or [])
+    if expected_globs != actual_globs:
+        findings.append(
+            "provenance_globs changed; source set is no longer comparable under the same policy"
+        )
+
+    expected_sources = expected.get("provenance", {})
+    actual_sources = actual.get("provenance", {})
+    for path in sorted(set(expected_sources) | set(actual_sources)):
+        before = expected_sources.get(path)
+        after = actual_sources.get(path)
+        if before != after:
+            findings.append(f"source {path}: {_short(before)} -> {_short(after)}")
+
+    expected_declared = {
+        entry["path"]: entry for entry in expected.get("declared_artifacts", [])
+    }
+    actual_declared = {
+        entry["path"]: entry for entry in actual.get("declared_artifacts", [])
+    }
+    for path in sorted(set(expected_declared) | set(actual_declared)):
+        before = expected_declared.get(path)
+        after = actual_declared.get(path)
+        if before is None:
+            findings.append(
+                f"declared artifact {path}: unexpected, not present in published provenance"
+            )
+            continue
+        if after is None:
+            findings.append(
+                f"declared artifact {path}: missing from lock-declared artifact set"
+            )
+            continue
+        for field in ("kind", "role", "required"):
+            if before.get(field) != after.get(field):
+                findings.append(
+                    f"declared artifact {path}.{field}: "
+                    f"expected {before.get(field)!r}, got {after.get(field)!r}"
+                )
+
+    return findings
+
+
+def _load_provenance(path: Path) -> dict:
+    if not path.is_file():
+        raise BuildError(f"circuit provenance not found: {_rel(path)}")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BuildError(f"circuit provenance is not valid JSON: {_rel(path)}") from exc
+    if document.get("format") != PROVENANCE_FORMAT:
+        raise BuildError(f"not a circuit provenance document: {_rel(path)}")
+    if document.get("version") != MANIFEST_VERSION:
+        raise BuildError(
+            f"unsupported circuit provenance version: {document.get('version')!r}"
+        )
+    return document
+
+
+def command_write_provenance(args: argparse.Namespace) -> int:
+    lock = load_lock(Path(args.lock))
+    document = build_provenance(lock, REPO_ROOT)
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(serialize_manifest(document), encoding="utf-8")
+    signal(
+        "provenance.written",
+        path=_rel(output),
+        sources=len(document["provenance"]),
+        declared_artifacts=len(document["declared_artifacts"]),
+    )
+    return EXIT_OK
+
+
+def command_verify_provenance(args: argparse.Namespace) -> int:
+    """Verify lock-declared circuit sources against committed provenance."""
+    lock = load_lock(Path(args.lock))
+    expected = _load_provenance(Path(args.manifest))
+    actual = build_provenance(lock, REPO_ROOT)
+
+    findings = compare_provenance(expected, actual)
+    if findings:
+        for finding in findings:
+            signal("drift.finding", detail=finding)
+        signal("provenance.verify.failed", findings=len(findings))
+        return EXIT_DRIFT
+
+    signal("provenance.verify.ok", sources=len(actual["provenance"]))
+    return EXIT_OK
+
+
 # ── Browser published ACIR ──────────────────────────────────────────────────
 
 
@@ -778,6 +968,102 @@ def command_verify_browser(args: argparse.Namespace) -> int:
 
 
 
+# ── Circuit coverage ─────────────────────────────────────────────────────────
+#
+# The digest manifest is only as complete as the lock file. A circuit that is
+# added to zk/noir but never declared would be compiled by nobody, digested by
+# nothing, and still reachable at a public boundary — a second, unpinned
+# protocol truth. This gate makes that state a build failure instead of a silent
+# gap, in either direction: an undeclared package, or a declared artifact whose
+# package has been renamed or removed.
+
+
+def declared_circuit_names(lock: Lock) -> set[str]:
+    """Circuit names the lock declares a build-target ACIR for.
+
+    Read off the artifact paths themselves rather than a parallel list, so the
+    lock file stays the single declaration of which circuits are pinned. Only
+    the canonical ``<root>/<name>/target/<name>.json`` shape counts: a declared
+    path that does not have that shape is not evidence of coverage.
+    """
+    prefix = f"{lock.circuit_root}/"
+    names: set[str] = set()
+    for entry in lock.artifacts:
+        if entry.get("role") != ACIR_ROLE:
+            continue
+        relative = str(entry.get("path", ""))
+        if not relative.startswith(prefix):
+            continue
+        parts = relative[len(prefix) :].split("/")
+        if len(parts) != 3 or parts[1] != "target" or not parts[2].endswith(".json"):
+            continue
+        name = parts[2][: -len(".json")]
+        if name and name == parts[0]:
+            names.add(name)
+    return names
+
+
+def discover_circuit_packages(lock: Lock, root: Path) -> list[str]:
+    """Every Noir package in the tree, i.e. every directory holding a Nargo.toml.
+
+    A sibling directory without one (``scripts/``, ``tools/``) is not a circuit
+    and is ignored, so neither a helper script nor a stray build directory can
+    fail the gate. The walk is sorted and capped by ``limits.max_circuits``.
+    """
+    base = root / lock.circuit_root
+    if not base.is_dir():
+        return []
+
+    names: list[str] = []
+    for path in sorted(base.iterdir()):
+        if not (path.is_dir() and (path / lock.package_file).is_file()):
+            continue
+        if len(names) >= lock.limits.max_circuits:
+            raise BuildError(
+                f"circuit count exceeds {lock.limits.max_circuits}; refusing to continue"
+            )
+        names.append(path.name)
+    return names
+
+
+def check_coverage(lock: Lock, root: Path) -> list[str]:
+    """Findings for circuits that exist but are unpinned, and pins with no circuit.
+
+    Findings name circuits and paths only. No artifact is read, so nothing that
+    could carry witness or key material can reach a finding.
+    """
+    on_disk = set(discover_circuit_packages(lock, root))
+    declared = declared_circuit_names(lock)
+
+    findings: list[str] = []
+    for name in sorted(on_disk - declared):
+        findings.append(
+            f"circuit {name}: package on disk declares no "
+            f"{lock.circuit_root}/{name}/target/{name}.json artifact; "
+            "it would be built and digested by nothing"
+        )
+    for name in sorted(declared - on_disk):
+        findings.append(
+            f"circuit {name}: declared artifact has no "
+            f"{lock.circuit_root}/{name}/{lock.package_file} package; "
+            "the pin can never be rebuilt"
+        )
+    return findings
+
+
+def command_check_coverage(args: argparse.Namespace) -> int:
+    lock = load_lock(Path(args.lock))
+    findings = check_coverage(lock, REPO_ROOT)
+    if findings:
+        for finding in findings:
+            signal("drift.finding", detail=finding)
+        signal("coverage.failed", findings=len(findings))
+        return EXIT_DRIFT
+
+    signal("coverage.ok", circuits=len(declared_circuit_names(lock)))
+    return EXIT_OK
+
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 
@@ -876,6 +1162,12 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("second")
     compare.set_defaults(handler=command_compare)
 
+    coverage = subparsers.add_parser(
+        "check-coverage",
+        help="fail when the lock and the source tree disagree about which circuits exist",
+    )
+    coverage.set_defaults(handler=command_check_coverage)
+
     write_browser = subparsers.add_parser(
         "write-browser",
         help="write a manifest for published browser ACIR under frontend/public/noir",
@@ -890,6 +1182,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_browser.add_argument("--manifest", default=str(DEFAULT_BROWSER_MANIFEST))
     verify_browser.set_defaults(handler=command_verify_browser)
+
+    write_provenance = subparsers.add_parser(
+        "write-provenance",
+        help="write published circuit source provenance from the toolchain lock",
+    )
+    write_provenance.add_argument("--output", default=str(DEFAULT_PROVENANCE))
+    write_provenance.set_defaults(handler=command_write_provenance)
+
+    verify_provenance = subparsers.add_parser(
+        "verify-provenance",
+        help="fail if circuit sources drift from the committed provenance document",
+    )
+    verify_provenance.add_argument("--manifest", default=str(DEFAULT_PROVENANCE))
+    verify_provenance.set_defaults(handler=command_verify_provenance)
 
     return parser
 

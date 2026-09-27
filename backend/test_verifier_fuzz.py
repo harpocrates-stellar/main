@@ -436,6 +436,16 @@ def test_regression_corpus_is_versioned():
     assert REGRESSIONS["version"] == 1
 
 
+def test_regression_corpus_is_bounded_and_uses_declared_rejections():
+    """Keep the shared negative-proof corpus safe and deterministic to replay."""
+    for entry in REGRESSIONS["entries"]:
+        assert entry["schema"] in SCHEMAS
+        assert entry["expect_reject_code"] in DECLARED_CODES
+        assert entry["description"].strip()
+        assert len(entry["public_inputs_hex"]) <= MAX_HEX_CHARS
+        assert len(entry["proof_hex"]) <= MAX_HEX_CHARS
+
+
 @pytest.mark.parametrize(
     "entry", REGRESSIONS["entries"], ids=lambda entry: entry["id"]
 )

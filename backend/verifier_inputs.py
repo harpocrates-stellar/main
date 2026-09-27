@@ -24,6 +24,7 @@ Design rules
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Sequence
@@ -81,6 +82,8 @@ SCHEMA_REVOCATION_WITNESS: Final[str] = "revocation_witness/v1"
 MAX_REVOCATION_WITNESS_DEPTH: Final[int] = 3
 #: Leaf capacity implied by ``MAX_REVOCATION_WITNESS_DEPTH`` (``2**depth``).
 MAX_REVOCATION_LEAVES: Final[int] = 8
+
+_ZERO_FIELD: Final[bytes] = b"\x00" * FIELD_LEN
 
 _HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")
 
@@ -140,6 +143,17 @@ class RevocationWitnessInputs:
 
 
 # ── Primitives ──────────────────────────────────────────────────────────────
+
+
+def constant_time_equals(left: bytes, right: bytes) -> bool:
+    """Compare two byte strings without an early exit on the first difference.
+
+    Protocol bindings (domain tags, separators, zero sentinels) are compared
+    through this helper on every layer so that the time taken to reject a
+    tampered value does not reveal how many leading bytes matched. Inputs of
+    different lengths compare unequal; length is public.
+    """
+    return hmac.compare_digest(left, right)
 
 
 def decode_hex(
@@ -236,13 +250,13 @@ def _require_canonical(fields: list[bytes], names: tuple[str, ...]) -> None:
 
 
 def _require_non_zero(field_value: bytes, name: str) -> None:
-    if field_value == b"\x00" * FIELD_LEN:
+    if constant_time_equals(field_value, _ZERO_FIELD):
         raise VerifierInputError(RejectCode.ZERO_FIELD, name)
 
 
 def _require_half_padding(field_value: bytes, name: str) -> bytes:
     """A 128-bit half is carried in the low 16 bytes; the high 16 must be zero."""
-    if field_value[:16] != b"\x00" * 16:
+    if not constant_time_equals(field_value[:16], _ZERO_FIELD[:16]):
         raise VerifierInputError(RejectCode.PADDING, name)
     return field_value[16:]
 
@@ -290,7 +304,7 @@ def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
     _require_non_zero(fields[3], "nullifier")
     _require_non_zero(fields[4], "domain_tag")
 
-    if fields[4] != SILENT_WITNESS_DOMAIN_TAG:
+    if not constant_time_equals(fields[4], SILENT_WITNESS_DOMAIN_TAG):
         raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_tag")
 
     return SilentWitnessInputs(
@@ -313,7 +327,7 @@ def parse_revocation_witness_inputs(public_inputs: bytes) -> RevocationWitnessIn
     _require_non_zero(fields[1], "nullifier")
     _require_non_zero(fields[3], "credential_root")
 
-    if fields[2] != REVOCATION_DOMAIN_SEPARATOR:
+    if not constant_time_equals(fields[2], REVOCATION_DOMAIN_SEPARATOR):
         raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_separator")
 
     return RevocationWitnessInputs(

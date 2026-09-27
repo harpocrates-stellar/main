@@ -182,7 +182,11 @@ cargo test --lib
      --scope $ScopeHex `
      --epoch $epochValue
    ```
-3. Verify that v1 proofs work again:
+3. Revert the active deployment interfaces safely using the rollout guard:
+   ```powershell
+   .\scripts\rollback.ps1 -ManifestFile .\release\compatibility-manifest.json
+   ```
+4. Verify that v1 proofs work again:
    ```powershell
    .\scripts\e2e-harpocrates.ps1
    ```
@@ -290,7 +294,7 @@ the configured verifier.
 | Default window | `MIN_SUPPORTED_CIRCUIT_VERSION..=MAX_SUPPORTED_CIRCUIT_VERSION` (1..=2) |
 | Admin entry point | `set_verifier_circuit_versions(admin, min_version, max_version)` |
 | Read entry points | `get_verifier_circuit_versions()`, `is_supported_circuit_version(version)` |
-| Stable failure | `RegistryError::UnsupportedCircuitVersion` (79) for a proof outside the window; `InvalidCircuitVersionRange` (80) for a malformed window |
+| Stable failure | `RegistryError::UnsupportedCircuitVersion` (81) for a proof outside the window; `InvalidCircuitVersionRange` (82) for a malformed window |
 
 The window is **additive**: when unset, the full built-in range applies, so
 pre-#343 deployments, existing callers, and stored evidence validate exactly as

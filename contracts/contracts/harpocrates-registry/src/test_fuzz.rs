@@ -59,10 +59,7 @@ impl Lcg {
     }
 
     fn next_u32(&mut self) -> u32 {
-        self.state = self
-            .state
-            .wrapping_mul(1664525)
-            .wrapping_add(1013904223);
+        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
         self.state
     }
 
@@ -81,9 +78,9 @@ impl Lcg {
 fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
     let mut data: Vec<u8> = base.to_vec();
     let field_len = verifier_inputs::FIELD_LEN;
-    // Derive the field count from the frame itself: silent-witness frames have
-    // five fields (160 bytes), revocation frames four (128 bytes).
-    let field_count = (data.len() / field_len).max(1) as u32;
+    // Field mutators index whole 32-byte words of *this* frame — silent
+    // witness frames are 5 words, revocation frames are 4.
+    let field_count = (data.len() / field_len) as u32;
 
     match mutator {
         // 0: truncate_tail
@@ -121,11 +118,7 @@ fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
         // 4: field_zero
         4 => {
             let index = rng.below(field_count) as usize;
-            for byte in data
-                .iter_mut()
-                .skip(index * field_len)
-                .take(field_len)
-            {
+            for byte in data.iter_mut().skip(index * field_len).take(field_len) {
                 *byte = 0x00;
             }
             data
@@ -133,11 +126,7 @@ fn mutate(base: &[u8], mutator: u32, rng: &mut Lcg) -> Vec<u8> {
         // 5: field_saturate
         5 => {
             let index = rng.below(field_count) as usize;
-            for byte in data
-                .iter_mut()
-                .skip(index * field_len)
-                .take(field_len)
-            {
+            for byte in data.iter_mut().skip(index * field_len).take(field_len) {
                 *byte = 0xff;
             }
             data
@@ -195,7 +184,7 @@ fn positive_frame(schema: &str) -> Vec<u8> {
     let nullifier = vec![0x02u8; 32];
     let revocation_root = vec![0x03u8; 32];
 
-    let mut frame = Vec::with_capacity(verifier_inputs::PUBLIC_INPUTS_LEN);
+    let mut frame = Vec::with_capacity(PUBLIC_INPUTS_LEN);
     if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
         frame.extend_from_slice(&hi);
         frame.extend_from_slice(&lo);
@@ -209,6 +198,17 @@ fn positive_frame(schema: &str) -> Vec<u8> {
         frame.extend_from_slice(&credential_root);
     }
     frame
+}
+
+/// Expected domain tag for `schema`, mirroring the per-schema selection the
+/// on-chain `classify_public_inputs` applies.
+#[cfg(test)]
+fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
+    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
+        &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
+    } else {
+        &REVOCATION_DOMAIN_SEPARATOR
+    }
 }
 
 #[cfg(test)]
@@ -229,17 +229,6 @@ fn schema_id_of(schema: &str) -> u32 {
 #[cfg(test)]
 fn declared(code: u32) -> bool {
     code <= 9
-}
-
-/// The domain tag the codec must be given for a schema: the silent-witness
-/// tag for silent-witness frames and the revocation separator otherwise.
-#[cfg(test)]
-fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
-    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
-        &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
-    } else {
-        &REVOCATION_DOMAIN_SEPARATOR
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,11 +290,15 @@ fn proof_length_sweep_is_bounded_and_declared() {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
             };
-            assert!(declared(verdict), "proof_len={} gave {}", proof_len, verdict);
+            assert!(
+                declared(verdict),
+                "proof_len={} gave {}",
+                proof_len,
+                verdict
+            );
         }
     }
 }
-
 
 #[test]
 fn proof_length_edges_are_exact() {
@@ -316,13 +309,22 @@ fn proof_length_edges_are_exact() {
             verifier_inputs::MIN_PROOF_BYTES - 1,
             verifier_inputs::RejectCode::ProofUndersize.as_code(),
         ),
-        (verifier_inputs::MIN_PROOF_BYTES, verifier_inputs::ACCEPTED_CODE),
-        (verifier_inputs::MAX_PROOF_BYTES, verifier_inputs::ACCEPTED_CODE),
+        (
+            verifier_inputs::MIN_PROOF_BYTES,
+            verifier_inputs::ACCEPTED_CODE,
+        ),
+        (
+            verifier_inputs::MAX_PROOF_BYTES,
+            verifier_inputs::ACCEPTED_CODE,
+        ),
         (
             verifier_inputs::MAX_PROOF_BYTES + 1,
             verifier_inputs::RejectCode::ProofOversize.as_code(),
         ),
-        (u32::MAX, verifier_inputs::RejectCode::ProofOversize.as_code()),
+        (
+            u32::MAX,
+            verifier_inputs::RejectCode::ProofOversize.as_code(),
+        ),
     ];
 
     for &(proof_len, expected) in cases {
@@ -442,15 +444,11 @@ fn on_chain_and_pure_codec_agree_on_every_mutant() {
             let mutator = rng.below(MUTATOR_COUNT);
             let mutant = mutate(&base, mutator, &mut rng);
 
-            let pure = match verifier_inputs::classify(
-                schema,
-                &mutant,
-                64,
-                expected_domain_for(schema),
-            ) {
-                Ok(()) => verifier_inputs::ACCEPTED_CODE,
-                Err(code) => code.as_code(),
-            };
+            let pure =
+                match verifier_inputs::classify(schema, &mutant, 64, expected_domain_for(schema)) {
+                    Ok(()) => verifier_inputs::ACCEPTED_CODE,
+                    Err(code) => code.as_code(),
+                };
             let on_chain =
                 client.classify_public_inputs(&schema_id, &Bytes::from_slice(&env, &mutant), &64);
 
@@ -501,7 +499,9 @@ fn a_seed_replays_the_same_mutants_and_verdicts() {
 fn distinct_seeds_explore_distinct_paths() {
     let trace = |seed: u32| {
         let mut rng = Lcg::new(seed);
-        (0..64).map(|_| rng.below(MUTATOR_COUNT)).collect::<Vec<_>>()
+        (0..64)
+            .map(|_| rng.below(MUTATOR_COUNT))
+            .collect::<Vec<_>>()
     };
     assert_ne!(trace(SEEDS[0]), trace(SEEDS[1]));
 }

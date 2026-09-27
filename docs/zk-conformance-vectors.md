@@ -213,6 +213,36 @@ sw-neg-020-credential-root-equals-modulus: expected 'non_canonical_field', got N
 The Rust runner collects **all** mismatches before asserting, so a systematic
 divergence shows as a list rather than one case at a time.
 
+## Constant-time comparisons
+
+Every layer compares protocol bindings (`domain_tag`, the revocation
+`domain_separator`, zero sentinels, half-padding) with a helper that folds all
+bytes into one accumulator instead of exiting on the first difference:
+
+| Layer | Helper |
+| --- | --- |
+| Python (`backend/verifier_inputs.py`) | `constant_time_equals` (`hmac.compare_digest`) |
+| Browser (`frontend/src/verifierInputs.ts`) | `constantTimeEquals` |
+| Soroban codec (`verifier_inputs.rs`) | `constant_time_eq` |
+
+The backend metrics token check (`/metrics`) uses `hmac.compare_digest` on both
+candidate headers, matching the existing register API key check.
+
+**Threat model.** Public-input bytes are not secret, so this is defense in
+depth: a caller probing the verifier boundary cannot learn how many leading
+bytes of an expected binding matched from rejection latency. The metrics token
+*is* a secret, where this closes a real timing oracle. Length is public and a
+length mismatch returns early.
+
+**Circuits are unchanged.** `Field ==` in Noir lowers to fixed arithmetic
+constraints and the set-membership predicate scans every slot, so circuit
+behaviour is already data-independent. No ACIR, verification key, or entry in
+`zk/browser.artifacts.manifest.json` changes.
+
+**Compatibility and rollback.** Accept/reject decisions and reject codes are
+identical, so the corpus needs no version bump and stored evidence is
+unaffected. Rolling back is a plain revert with no migration.
+
 ## Privacy
 
 Rejections carry a stable machine code and at most a field *name* — never

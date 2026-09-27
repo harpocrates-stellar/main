@@ -167,8 +167,14 @@ fn version_window_defaults_to_the_full_builtin_range() {
 fn supported_version_constants_are_consistent() {
     // The implicit versions are read off the existing codec boundaries, not
     // invented here.
-    assert_eq!(CIRCUIT_VERSION_SILENT_WITNESS_V1, MIN_SUPPORTED_CIRCUIT_VERSION);
-    assert_eq!(CIRCUIT_VERSION_SILENT_WITNESS_V2, MAX_SUPPORTED_CIRCUIT_VERSION);
+    assert_eq!(
+        CIRCUIT_VERSION_SILENT_WITNESS_V1,
+        MIN_SUPPORTED_CIRCUIT_VERSION
+    );
+    assert_eq!(
+        CIRCUIT_VERSION_SILENT_WITNESS_V2,
+        MAX_SUPPORTED_CIRCUIT_VERSION
+    );
     assert_eq!(
         CIRCUIT_VERSION_SELECTIVE_DISCLOSURE,
         CURRENT_SELECTIVE_DISCLOSURE_VERSION
@@ -190,21 +196,21 @@ fn non_admin_cannot_set_the_version_window() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #80)")] // InvalidCircuitVersionRange
+#[should_panic(expected = "Error(Contract, #82)")] // InvalidCircuitVersionRange
 fn an_empty_version_window_is_rejected() {
     let (_, _, client, admin) = setup(true);
     client.set_verifier_circuit_versions(&admin, &2, &1);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #80)")] // InvalidCircuitVersionRange
+#[should_panic(expected = "Error(Contract, #82)")] // InvalidCircuitVersionRange
 fn a_window_below_the_wasm_range_is_rejected() {
     let (_, _, client, admin) = setup(true);
     client.set_verifier_circuit_versions(&admin, &0, &2);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #80)")] // InvalidCircuitVersionRange
+#[should_panic(expected = "Error(Contract, #82)")] // InvalidCircuitVersionRange
 fn a_window_above_the_wasm_range_is_rejected() {
     let (_, _, client, admin) = setup(true);
     client.set_verifier_circuit_versions(&admin, &1, &3);
@@ -236,7 +242,7 @@ fn exact_min_equals_max_window_is_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #79)")] // UnsupportedCircuitVersion
+#[should_panic(expected = "Error(Contract, #81)")] // UnsupportedCircuitVersion
 fn a_version_outside_the_window_is_rejected() {
     let (env, _, client, admin) = setup(false);
     let (schema_hash, credential_root) = seed_selective_disclosure(&env, &client, &admin);
@@ -253,7 +259,7 @@ fn a_version_outside_the_window_is_rejected() {
         1,
     );
     // The rejecting verifier would surface #7 (InvalidProof) if it were reached;
-    // #79 proves the version gate runs first.
+    // #81 proves the version gate runs first.
     client.verify_selective_disclosure(&inputs, &Bytes::from_array(&env, &[1, 2, 3, 4]));
 }
 
@@ -305,7 +311,13 @@ fn configuring_a_new_verifier_resets_the_window_to_default() {
 // #338 — delegated registration never outlives its delegation
 // ---------------------------------------------------------------------------
 
-fn delegation_setup() -> (Env, HarpocratesRegistryClient<'static>, Address, Address, Address) {
+fn delegation_setup() -> (
+    Env,
+    HarpocratesRegistryClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
@@ -348,7 +360,12 @@ fn delegated_issuer_seal_is_bounded_by_the_delegation() {
     let (env, client, admin, issuer, delegate) = delegation_setup();
     client.add_issuer(&admin, &issuer, &b32(&env, 0x07));
 
-    client.grant_delegation(&issuer, &delegate, &DELEGATION_SCOPE_REGISTER_SEAL, &one_day());
+    client.grant_delegation(
+        &issuer,
+        &delegate,
+        &DELEGATION_SCOPE_REGISTER_SEAL,
+        &one_day(),
+    );
 
     let record = client.register_seal_delegated(
         &delegate,

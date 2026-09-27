@@ -15,6 +15,32 @@ The base circuit proves:
 
 The creator can register evidence without revealing the credential secret.
 
+### `redacted_ancestry`
+
+Proves that a **redacted** derivative descends from a committed parent evidence
+object without revealing the unredacted parent hash, the redaction mask
+preimage, or the credential secrets. The operation is bound to the canonical
+lineage `redact` identifier (the ASCII field element `0x726564616374`, matching
+the registry `Symbol`), and the ancestry depth is bounded to `1..=4` to match
+`backend/lineage.py`.
+
+Public statement: `parent_commitment`, `derivative_digest`,
+`parameters_digest`, `operation_type`, `ancestry_root`, `nullifier`, `depth`,
+`domain_tag`. Private witness: parent hash halves, parent blinding, mask
+commitment, redaction seed, and the credential / nullifier secrets.
+
+Companion helper: `redacted_ancestry_helper` derives the public statement from
+the private openings for the browser/native proving path.
+
+Synthetic vectors: [`fixtures/redacted_ancestry_vectors.json`](fixtures/redacted_ancestry_vectors.json).  
+Spec: [`docs/zk-redacted-ancestry-spec.md`](../../docs/zk-redacted-ancestry-spec.md).
+
+```bash
+cd zk/noir/redacted_ancestry && nargo test
+cd zk/noir/redacted_ancestry_helper && nargo test
+python -m pytest zk/tools -q
+```
+
 ### `silent_witness_aggregator` (NEW)
 
 Bounded aggregation circuit that bundles up to **8** individual Silent Witness
@@ -58,6 +84,22 @@ Key properties:
 Helper circuit that derives `credential_root` / `nullifier` and Merkle root
 parameters for the depth-bounded revocation tree (same MAX constants).
 
+### `selective_disclosure`
+
+Attribute-selective circuit behind `frontend/src/selectiveDisclosure.ts`
+(`/noir/selective_disclosure.json`) and the registry's
+`verify_selective_disclosure`. Bounded at **MAX_ATTRIBUTES = 16** with predicate
+types restricted to eq / set-membership / range, and bound to
+`CURRENT_CIRCUIT_VERSION` so a proof from another circuit version cannot be
+replayed against the registry.
+
+## Constant-time comparisons
+
+Field equality in these circuits compiles to fixed arithmetic constraints, so
+no circuit branches on secret data, and set membership scans every slot. The
+off-circuit codecs that consume the public inputs compare bindings in constant
+time; see [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md).
+
 ## Tooling
 
 Noir's official installation path uses `noirup`/`nargo`. Barretenberg (`bb`) is the proving backend. On Windows, the official Noir docs recommend using WSL for the full toolchain.
@@ -83,8 +125,17 @@ The double-build reproducibility check is:
 ```bash
 zk/noir/scripts/reproducible-build.sh          # build twice, compare, write manifest
 zk/noir/scripts/reproducible-build.sh --verify # build once, compare to the committed manifest
+zk/noir/scripts/reproducible-build.sh --check-coverage  # every circuit pinned? (no toolchain needed)
+python zk/tools/artifact_manifest.py check-coverage     # same gate, tool only
 python -m pytest zk/tools -q                   # tooling unit tests, no toolchain needed
 ```
+
+`--check-coverage` fails when a package under `zk/noir/` is not declared in the
+lock file, or when a declared circuit has no package. A circuit that is neither
+built nor digested is an unpinned second truth at a public boundary — that is how
+`selective_disclosure` reached the browser and the registry verifier while sitting
+outside this pipeline. Adding a circuit means updating `zk/toolchain.lock.json`
+*and* `CIRCUITS` in the build script; the gate fails until both agree.
 
 See [docs/zk-reproducible-builds.md](../../docs/zk-reproducible-builds.md).
 

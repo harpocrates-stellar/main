@@ -153,7 +153,7 @@ the batch must be identical (same identity).
 
 Every entry point that calls the external verifier validates the proof's
 circuit version **before** the verifier is invoked. An unsupported version fails
-closed with `UnsupportedCircuitVersion` (79) instead of reaching a dependency
+closed with `UnsupportedCircuitVersion` (81) instead of reaching a dependency
 that cannot answer it.
 
 | Circuit | Implied version |

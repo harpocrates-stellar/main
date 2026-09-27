@@ -2,9 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Events as _, Ledger},
-    xdr::ContractEventBody, Address, Bytes, BytesN, Env, Symbol, TryFromVal,
+    testutils::{Address as _, Ledger},
+    Address, BytesN, Env,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,20 +37,6 @@ fn setup_env() -> (Env, Address) {
 
 fn advance_time(env: &Env, secs: u64) {
     env.ledger().set_timestamp(env.ledger().timestamp() + secs);
-}
-
-/// Extract the first two `Symbol` topics from an emitted contract event.
-fn event_topics(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> Option<(Symbol, Symbol)> {
-    let v0 = match &event.body {
-        ContractEventBody::V0(v0) => v0,
-        _ => return None,
-    };
-    if v0.topics.len() < 2 {
-        return None;
-    }
-    let t0 = Symbol::try_from_val(env, v0.topics.get(0).unwrap()).ok()?;
-    let t1 = Symbol::try_from_val(env, v0.topics.get(1).unwrap()).ok()?;
-    Some((t0, t1))
 }
 
 // ---------------------------------------------------------------------------
@@ -107,17 +92,13 @@ fn test_cancel_timelocked_proposal() {
         &zero_payload(&env),
     );
 
-    // Cancel before execution. Read events immediately: `env.events().all()`
-    // only exposes the most recent invocation's events.
+    // Cancel before execution
     client.cancel_timelocked_proposal(&admin, &proposal_id);
 
-    let has_timelock = env
-        .events()
-        .all()
-        .events()
-        .iter()
-        .any(|e| matches!(event_topics(&env, e), Some((t0, _)) if t0 == Symbol::new(&env, "timelock")));
-    assert!(has_timelock, "should have timelock events");
+    // Verify events — `env.events().all()` only reflects the most recent
+    // invocation, so capture them before any read-only call below.
+    let has_timelock_event = event_test_utils::has_event(&env, &["timelock"]);
+    assert!(has_timelock_event, "should have timelock events");
 
     let proposal = client.get_timelock_proposal(&proposal_id).unwrap();
     assert!(proposal.cancelled);
@@ -127,7 +108,6 @@ fn test_cancel_timelocked_proposal() {
 #[test]
 fn test_execute_timelocked_proposal_after_delay() {
     let (env, admin) = setup_env();
-    let env_clone = env.clone();
     let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
     client.init(&admin);
 
@@ -154,7 +134,10 @@ fn test_execute_timelocked_proposal_after_delay() {
 
     // Verifier should now be set
     let verifier = client.get_verifier().unwrap();
-    assert_eq!(verifier, new_verifier, "verifier should be updated by timelock");
+    assert_eq!(
+        verifier, new_verifier,
+        "verifier should be updated by timelock"
+    );
 }
 
 #[test]
@@ -201,7 +184,10 @@ fn test_cannot_execute_cancelled_proposal() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.execute_timelocked_proposal(&executor, &proposal_id);
     }));
-    assert!(result.is_err(), "execution of cancelled proposal should panic");
+    assert!(
+        result.is_err(),
+        "execution of cancelled proposal should panic"
+    );
 }
 
 #[test]
@@ -252,7 +238,10 @@ fn test_emergency_execute_before_delay() {
     client.emergency_execute_timelock(&admin, &proposal_id);
 
     let verifier = client.get_verifier().unwrap();
-    assert_eq!(verifier, new_verifier, "verifier should be set by emergency");
+    assert_eq!(
+        verifier, new_verifier,
+        "verifier should be set by emergency"
+    );
 }
 
 #[test]
@@ -408,25 +397,22 @@ fn test_timelock_proposal_events_emitted() {
         &zero_payload(&env),
     );
 
-    // Capture the propose event now: `env.events().all()` only exposes the most
-    // recent invocation's events, so the execute call below would evict it.
-    let has_propose = env.events().all().events().iter().any(|e| {
-        matches!(event_topics(&env, e), Some((t0, t1))
-            if t0 == Symbol::new(&env, "timelock") && t1 == Symbol::new(&env, "propose"))
-    });
+    // `events().all()` only reflects the most recent invocation, so assert the
+    // proposal event before making the next call.
+    assert!(
+        event_test_utils::has_event(&env, &["timelock", "propose"]),
+        "should have TimelockProposalCreated event"
+    );
 
     advance_time(&env, DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
 
     let executor = Address::generate(&env);
     client.execute_timelocked_proposal(&executor, &proposal_id);
 
-    let has_exec = env.events().all().events().iter().any(|e| {
-        matches!(event_topics(&env, e), Some((t0, t1))
-            if t0 == Symbol::new(&env, "timelock") && t1 == Symbol::new(&env, "exec"))
-    });
-
-    assert!(has_propose, "should have TimelockProposalCreated event");
-    assert!(has_exec, "should have TimelockProposalExecuted event");
+    assert!(
+        event_test_utils::has_event(&env, &["timelock", "exec"]),
+        "should have TimelockProposalExecuted event"
+    );
 }
 
 // ---------------------------------------------------------------------------

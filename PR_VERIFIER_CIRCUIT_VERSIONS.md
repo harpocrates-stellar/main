@@ -24,7 +24,7 @@ active verifier can actually answer.
 - **Per-call version gate.** `require_verified_proof` now takes the proof's
   circuit version and calls `require_supported_circuit_version` first. An
   unsupported version fails closed with the stable
-  `RegistryError::UnsupportedCircuitVersion` (79) instead of reaching a verifier
+  `RegistryError::UnsupportedCircuitVersion` (81) instead of reaching a verifier
   that cannot answer it.
 - **Single source of truth.** The implicit versions are read off the existing
   codec/domain boundaries, not invented:
@@ -39,20 +39,21 @@ active verifier can actually answer.
   lets the admin declare which versions the active verifier can check. It is
   admin-only, bounded by the wasm's own framable range, and emits a
   version-only event (`verif`/`versions`). A window that is empty or outside the
-  wasm range fails with `InvalidCircuitVersionRange` (80).
+  wasm range fails with `InvalidCircuitVersionRange` (82).
 - **Read-only pre-flight.** `get_verifier_circuit_versions()` and
   `is_supported_circuit_version(version)` let callers check without a trial
   transaction.
 - **Fail-closed reset.** `set_verifier` and both verifier-rotation transitions
   clear the window so an incoming verifier cannot inherit the outgoing
   verifier's claim.
-- **SDK 27 repair (required to compile and test).** The workspace was bumped to
-  `soroban-sdk 27` upstream but the contracts did not compile. This PR repairs
-  the registry and its test suite for SDK 27: two-topic events, the `Vec`
-  rename, `slice(Range)`, `BytesN::to_array`, `InvokeError` handling,
-  per-invocation event capture, and regenerated committed snapshots. `classify_public_inputs`
-  dispatches on schema (silent-witness 160 B vs revocation 128 B) with
-  per-schema frame buffers.
+- **SDK 27.** The workspace runs `soroban-sdk 27`. The registry and its test
+  suite are already repaired for it on `main` (two-topic events, the
+  `soroban_sdk::Vec` qualification, `slice(Range)`, `BytesN::to_array`,
+  `InvokeError` handling, per-invocation event capture, and per-schema
+  `classify_public_inputs` frame buffers), so this PR layers the two features
+  below on top of that repair rather than redoing it. The meaningful review
+  surface is `require_supported_circuit_version`, `set_verifier_circuit_versions`,
+  the `require_verified_proof` call sites, and `bounded_delegated_expiry`.
 
 ### Behavior for hostile inputs
 
@@ -60,9 +61,9 @@ active verifier can actually answer.
 | --- | --- |
 | Malformed / wrong-length frame | `InvalidPublicInputs` (10) or classifier `RejectCode::Length` (2) |
 | Oversized proof blob | classifier `RejectCode::ProofOversize` (8) |
-| Unsupported circuit version | `UnsupportedCircuitVersion` (79) |
+| Unsupported circuit version | `UnsupportedCircuitVersion` (81) |
 | Verifier rejects or dependency fails | `InvalidProof` (7) |
-| Rotation in overlap window | previous verifier accepted |
+| Rotation activated | replacement verifier enforced immediately |
 | Expired / revoked credential | `Expired` status / `RevokedCredentialRoot` (12) |
 
 ---
@@ -95,15 +96,16 @@ proof while holding only a short-lived grant.
   never leaves the contract.
 - No witness values, public inputs, proofs, secrets, media, or private keys are
   logged. The only new event carries two integers (`verif`/`versions`).
-- Failure responses are the pre-existing stable typed codes; one new code (79)
-  is append-only and documented.
+- Failure responses are the pre-existing stable typed codes; the two new codes
+  (81, 82) are append-only and documented in `contracts/ERROR_ABI.md`.
 - Delegation expiry remains enforced at registration time; the new bound only
   shortens a derived artifact's lifetime.
 
 ## Migration and compatibility
 
 - **Additive only.** `DataKey::VerifierCircuitVersions` is a new storage key;
-  `RegistryError` codes are appended (79, 80). No existing key or code changes.
+  `RegistryError` codes are appended (81, 82), immediately after the highest code
+  already published in `contracts/ERROR_ABI.md`. No existing key or code changes.
 - **Backward compatible.** An unset window applies the full built-in range, so
   pre-#343 deployments, existing callers, and stored evidence validate exactly
   as before. Existing stored records are never rewritten.
@@ -115,7 +117,7 @@ proof while holding only a short-lived grant.
 
 ```
 cd contracts
-cargo test -p harpocrates-registry --lib     # 375 passed / 0 failed (15 new)
+cargo test -p harpocrates-registry --lib     # 414 passed / 0 failed (15 new)
 cargo build -p harpocrates-registry --target wasm32v1-none --release
 ```
 
@@ -125,8 +127,8 @@ New coverage in `src/test_verifier_versions.rs`:
   accepted; widening the window restores acceptance; const consistency with the
   codec boundaries.
 - **Negative / authorization:** non-admin cannot set the window (`Unauthorized`
-  3); empty, below-range, and above-range windows rejected (`80`); a version
-  outside the window rejected (`79`) *with a rejecting verifier behind it*,
+  3); empty, below-range, and above-range windows rejected (`82`); a version
+  outside the window rejected (`81`) *with a rejecting verifier behind it*,
   proving the gate precedes the external call.
 - **Boundary:** version `0` and `MAX+1` unsupported via pre-flight; `min == max`
   boundary accepted; shorter proof TTL wins over the delegation.
@@ -136,9 +138,15 @@ New coverage in `src/test_verifier_versions.rs`:
 
 ## Notes for reviewers
 
-- `rustfmt` and `clippy` components were not installed in this environment; the
-  source is formatted to the existing style and the pre-existing warnings
-  (unused consts, unread struct fields) are unchanged.
-- The SDK 27 repair is mechanical but large; the meaningful review surface is
-  `require_supported_circuit_version`, `set_verifier_circuit_versions`, the
-  `require_verified_proof` call sites, and `bounded_delegated_expiry`.
+- Two behaviours here were merged with newer `main` work rather than taken from
+  the original branch, and both resolve in `main`'s favour:
+  - **Error codes are 81/82, not 79/80.** `main` published 79 and 80 for
+    `LineageChildrenLimitExceeded` / `LineageChildrenSaturated` in the frozen
+    `hpx-err/1` ABI. The new codes were appended after them and published in
+    `contracts/ERROR_ABI.md`.
+  - **Verifier rotation stays strict.** `require_verified_proof` validates the
+    version and then consults only the active verifier. It does not fall back to
+    the previous verifier during a rotation's overlap window, because `main`
+    asserts that a rotation swaps enforcement immediately
+    (`verifier_rotation_replacement_verifier_enforced_after_activation`).
+- The pre-existing warnings (unused consts, unread struct fields) are unchanged.

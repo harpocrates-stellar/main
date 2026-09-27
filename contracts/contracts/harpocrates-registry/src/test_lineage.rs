@@ -13,12 +13,9 @@ fn expected_parent_commitment(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> Byte
     pre_image[..11].copy_from_slice(&PREFIX);
     pre_image[11..43].copy_from_slice(&a.to_array());
     pre_image[43..75].copy_from_slice(&b.to_array());
-    env.crypto().sha256(&Bytes::from_array(env, &pre_image)).into()
-}
-
-/// Wrap a contract error the way the SDK 27 generated client reports it.
-fn contract_err(error: RegistryError) -> soroban_sdk::Error {
-    soroban_sdk::Error::from_contract_error(error as u32)
+    env.crypto()
+        .sha256(&Bytes::from_array(env, &pre_image))
+        .into()
 }
 
 #[test]
@@ -149,7 +146,12 @@ fn rejects_compose_fanout_above_limit() {
         &bytes32(&env, 7),
         &1,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageFanOutExceeded))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageFanOutExceeded as u32
+        )))
+    );
 }
 
 #[test]
@@ -174,7 +176,12 @@ fn rejects_self_referential_lineage_cycle() {
         &digest,
         &1,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageCycle))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageCycle as u32
+        )))
+    );
 }
 
 #[test]
@@ -196,7 +203,12 @@ fn rejects_empty_parents() {
         &bytes32(&env, 5),
         &1,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageEmptyParents))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageEmptyParents as u32
+        )))
+    );
 }
 
 #[test]
@@ -218,7 +230,12 @@ fn rejects_unknown_parent() {
         &bytes32(&env, 5),
         &1,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::InvalidLineage))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::InvalidLineage as u32
+        )))
+    );
 }
 
 #[test]
@@ -244,7 +261,12 @@ fn rejects_revoked_parent_proof() {
         &bytes32(&env, 5),
         &1,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageParentUnavailable))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageParentUnavailable as u32
+        )))
+    );
 }
 
 #[test]
@@ -278,7 +300,12 @@ fn rejects_duplicate_lineage_output() {
         &output,
         &1,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::DuplicateLineage))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::DuplicateLineage as u32
+        )))
+    );
 }
 
 #[test]
@@ -303,7 +330,12 @@ fn rejects_excessive_depth() {
         &bytes32(&env, 5),
         &5,
     );
-    assert_eq!(result, Err(Ok(contract_err(RegistryError::LineageTooDeep))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageTooDeep as u32
+        )))
+    );
 }
 
 #[test]
@@ -319,4 +351,100 @@ fn get_lineage_parent_commitments_missing_is_none() {
     assert!(client
         .get_lineage_parent_commitments(&bytes32(&env, 99))
         .is_none());
+}
+
+#[test]
+fn paginates_lineage_children_in_registration_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    let parent = bytes32(&env, 10);
+
+    client.init(&admin);
+    client.register_source(&actor, &bytes32(&env, 11), &bytes32(&env, 12), &parent);
+
+    let child_a = bytes32(&env, 20);
+    let child_b = bytes32(&env, 21);
+    let child_c = bytes32(&env, 22);
+
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent.clone()]),
+        &bytes32(&env, 30),
+        &Symbol::new(&env, "crop"),
+        &child_a,
+        &1,
+    );
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent.clone()]),
+        &bytes32(&env, 31),
+        &Symbol::new(&env, "blur"),
+        &child_b,
+        &1,
+    );
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent.clone()]),
+        &bytes32(&env, 32),
+        &Symbol::new(&env, "redact"),
+        &child_c,
+        &1,
+    );
+
+    assert_eq!(client.get_lineage_children_count(&parent), 3);
+
+    let page1 = client.list_lineage_children(&parent, &0, &2);
+    assert_eq!(page1.total, 3);
+    assert_eq!(page1.next_offset, 2);
+    assert_eq!(page1.children.len(), 2);
+    assert_eq!(page1.children.get(0).unwrap(), child_a);
+    assert_eq!(page1.children.get(1).unwrap(), child_b);
+
+    let page2 = client.list_lineage_children(&parent, &page1.next_offset, &2);
+    assert_eq!(page2.total, 3);
+    assert_eq!(page2.next_offset, 3);
+    assert_eq!(page2.children.len(), 1);
+    assert_eq!(page2.children.get(0).unwrap(), child_c);
+
+    let empty = client.list_lineage_children(&parent, &3, &2);
+    assert_eq!(empty.total, 3);
+    assert_eq!(empty.next_offset, 3);
+    assert_eq!(empty.children.len(), 0);
+
+    let unknown = client.list_lineage_children(&bytes32(&env, 99), &0, &10);
+    assert_eq!(unknown.total, 0);
+    assert_eq!(unknown.children.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #79)")]
+fn rejects_zero_children_page_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    client.list_lineage_children(&bytes32(&env, 1), &0, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #79)")]
+fn rejects_oversized_children_page_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    client.list_lineage_children(&bytes32(&env, 1), &0, &(MAX_LINEAGE_CHILDREN_PAGE + 1));
 }

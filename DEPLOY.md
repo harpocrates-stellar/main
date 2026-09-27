@@ -120,6 +120,14 @@ For deployments leveraging an API Gateway, WAF, or Swagger UI, you can generate 
 python devx/generate_api_schema.py --output openapi.json
 ```
 
+**8. Rollback**
+
+If a deployment introduces critical failures or regressions, you can orchestrate a privacy-safe rollback using the provided CLI tooling. This rolls back the active containers bounds safely without leaking credentials, media, or breaking backwards compatibility.
+
+```powershell
+.\scripts\rollback.ps1 -ManifestFile .\release\compatibility-manifest.json
+```
+
 ### Caddy reverse proxy example
 
 ```
