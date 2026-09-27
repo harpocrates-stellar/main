@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
@@ -48,6 +48,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
   const { statusLabel, isBusy } = useA11yStage(stage)
   const isProving = stage === 'proving'
 
+  const studioInputRef = useRef<HTMLInputElement | null>(null)
+
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
     return {
@@ -77,12 +79,28 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
-        <label className="dropzone">
+        {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
+        <label
+          className="dropzone"
+          role="button"
+          tabIndex={0}
+          aria-label={file ? `Evidence file: ${file.name}. Press Enter or Space to choose a different file` : 'Drop or choose a video file. Press Enter or Space to open file picker'}
+          aria-disabled={isBusy}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              if (!isBusy) studioInputRef.current?.click()
+            }
+          }}
+        >
           <Upload size={20} aria-hidden="true" />
-          <span>{file ? file.name : 'Drop or choose a video file'}</span>
+          <span aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</span>
           <input
+            ref={studioInputRef}
             type="file"
             accept="video/*"
+            tabIndex={-1}
+            aria-hidden="true"
             onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
           />
         </label>
