@@ -21,6 +21,7 @@ docs/zk-conformance-vectors.md.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -43,7 +44,45 @@ BN254_R_HEX = "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001"
 # 7 zero bytes of BN254 padding followed by the 25 ASCII bytes of
 # "HARPOCRATES_REVOCATION_V1".
 DOMAIN_HEX = ("00" * 7) + b"HARPOCRATES_REVOCATION_V1".hex()
-DOMAIN_TAG_HEX = "4aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c55"
+
+# Silent-witness domain tag: SHA-256(protocol || circuit-version || network).
+# The three component fields are byte-for-byte counterparts of
+# backend/verifier_inputs.py (DOMAIN_*_FIELD), so a proof is bound to exactly
+# this (protocol, circuit version, network) tuple.
+DOMAIN_PROTOCOL_FIELD = bytes.fromhex(
+    "261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201"
+)
+DOMAIN_VERSION_FIELD = bytes.fromhex(
+    "0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623"
+)
+DOMAIN_NETWORK_FIELD = bytes.fromhex(
+    "2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f"
+)
+
+
+def _domain_tag(protocol: bytes, version: bytes, network: bytes) -> str:
+    return hashlib.sha256(protocol + version + network).hexdigest()
+
+
+def _bump_last_byte(field: bytes) -> bytes:
+    return field[:-1] + bytes([(field[-1] + 1) % 256])
+
+
+DOMAIN_TAG_HEX = _domain_tag(DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD)
+
+# Single-component mutations: each tag is recomputed with exactly one domain
+# component changed, modelling cross-protocol / cross-version / cross-network
+# proof replay. They stay canonical, non-zero 32-byte values, so the expected
+# failure is a domain *mismatch* rather than a framing/canonicity error.
+DOMAIN_TAG_WRONG_PROTOCOL_HEX = _domain_tag(
+    _bump_last_byte(DOMAIN_PROTOCOL_FIELD), DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD
+)
+DOMAIN_TAG_WRONG_VERSION_HEX = _domain_tag(
+    DOMAIN_PROTOCOL_FIELD, _bump_last_byte(DOMAIN_VERSION_FIELD), DOMAIN_NETWORK_FIELD
+)
+DOMAIN_TAG_WRONG_NETWORK_HEX = _domain_tag(
+    DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, _bump_last_byte(DOMAIN_NETWORK_FIELD)
+)
 
 ZERO = "00" * FIELD_LEN
 ONES = "ff" * FIELD_LEN
@@ -333,6 +372,55 @@ def build_cases() -> list[dict[str, object]]:
             "silent_witness/v1",
             "Silent-witness domain tag must match the protocol binding.",
             silent(VIDEO_HI, VIDEO_LO, CREDENTIAL_ROOT, NULLIFIER, ONES),
+            "domain_mismatch",
+        )
+    )
+    # Cross-component rejection vectors: the domain tag binds
+    # SHA-256(protocol || circuit-version || network), so a proof carrying a tag
+    # computed for a *different* protocol, circuit version, or network must be
+    # rejected even though it is otherwise canonical and non-zero.
+    cases.append(
+        case(
+            "sw-neg-045-domain-wrong-protocol",
+            "silent_witness/v1",
+            "Domain tag recomputed with a different protocol component (cross-protocol replay).",
+            silent(
+                VIDEO_HI,
+                VIDEO_LO,
+                CREDENTIAL_ROOT,
+                NULLIFIER,
+                DOMAIN_TAG_WRONG_PROTOCOL_HEX,
+            ),
+            "domain_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw-neg-046-domain-wrong-circuit-version",
+            "silent_witness/v1",
+            "Domain tag recomputed with a different circuit version (cross-version replay).",
+            silent(
+                VIDEO_HI,
+                VIDEO_LO,
+                CREDENTIAL_ROOT,
+                NULLIFIER,
+                DOMAIN_TAG_WRONG_VERSION_HEX,
+            ),
+            "domain_mismatch",
+        )
+    )
+    cases.append(
+        case(
+            "sw-neg-047-domain-wrong-network",
+            "silent_witness/v1",
+            "Domain tag recomputed with a different network component (cross-network replay).",
+            silent(
+                VIDEO_HI,
+                VIDEO_LO,
+                CREDENTIAL_ROOT,
+                NULLIFIER,
+                DOMAIN_TAG_WRONG_NETWORK_HEX,
+            ),
             "domain_mismatch",
         )
     )

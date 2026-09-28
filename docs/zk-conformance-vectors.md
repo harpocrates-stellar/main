@@ -52,6 +52,26 @@ bytes of `HARPOCRATES_REVOCATION_V1`, i.e.
 byte-identical to `REVOCATION_DOMAIN_SEPARATOR` in the registry contract, and
 the Rust runner asserts that directly rather than through a case.
 
+### Domain-binding rejection vectors
+
+`domain_tag` binds a proof to an exact `(protocol, circuit version, network)`
+tuple, so it is not enough that *a* tag is present — it must be the tag for
+*this* deployment. The corpus isolates each component so a regression in any one
+is caught by name:
+
+| Case | Rejected because |
+| --- | --- |
+| `sw-neg-045-domain-wrong-protocol` | tag recomputed with a different protocol component |
+| `sw-neg-046-domain-wrong-circuit-version` | tag recomputed with a different circuit version (cross-version replay) |
+| `sw-neg-047-domain-wrong-network` | tag recomputed with a different network component (cross-network replay) |
+
+`generate_vectors.py` recomputes each tag as
+`SHA-256(protocol' || version' || network')` with exactly one component changed,
+so the value stays canonical and non-zero: the failure is a genuine
+`domain_mismatch`, not a framing or canonicity error. The revocation separator
+gets the equivalent treatment (`rv-neg-041-domain-off-by-one`, the V1 → V2
+version byte).
+
 ### Canonical check order
 
 The order is part of the contract — two layers that reject the same input for
