@@ -122,6 +122,36 @@ scrape_configs:
       - targets: ['127.0.0.1:5050']
 ```
 
+  ## OpenTelemetry Tracing
+
+  Tracing is opt-in and does not change HTTP routes, response schemas, proof encodings, or database schemas. Enable it per backend process and send OTLP/HTTP traces to a trusted collector:
+
+  ```text
+  OTEL_ENABLED=true
+  OTEL_SERVICE_NAME=harpocrates-backend
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://otel-collector.example/v1/traces
+  OTEL_TRACES_SAMPLER_ARG=0.1
+  OTEL_EXPORT_TIMEOUT_SECONDS=5
+  ```
+
+  `OTEL_ENABLED` defaults to `false`. When enabled, the traces endpoint is required and must be an HTTP(S) URL without embedded credentials or a query string. Configure collector authorization using `OTEL_EXPORTER_OTLP_HEADERS` through the deployment secret store. The SDK uses deterministic trace-ID-ratio sampling; inbound `traceparent` flags cannot raise the configured sample rate. The exporter queue is bounded to 2,048 spans, batches at most 256 spans, and times out within 1 to 60 seconds.
+
+  ### Instrumentation and Privacy
+
+  - Server spans accept valid W3C `traceparent` parents and use parameterized route names. Malformed parents are ignored; baggage is not extracted.
+  - Child spans cover media embed/extract, PostgreSQL connection lifetimes, Noir proof generation, and Stellar Horizon transaction verification. Errors record only the exception class and status, never exception messages or stack traces.
+  - Internal queued jobs carry only a validated `traceparent` link outside their payload. The job-status API omits this internal field. Workers create linked spans rather than pretending delayed work is a synchronous child.
+  - Span attributes do not include media bytes, file paths, filenames, evidence/proof hashes, proof contents, witness values, secrets, authorization headers, database URLs, raw request URLs, or transaction hashes.
+  - Existing structured request logs contain the trace ID. Prometheus metrics keep their existing low-cardinality method/route/status labels; correlate metrics to traces through these shared dimensions and the request log, not trace-ID metric labels.
+
+  ### Rollout, Rollback, and Troubleshooting
+
+  No migration, durable artifact, or data repair is required. Install the pinned OpenTelemetry dependencies with the backend requirements, deploy with tracing disabled, then enable it for a canary and verify spans at the collector before increasing the sample ratio. Collector outages do not block request processing; bounded export batches time out and may be dropped. Sampling can be reduced to `0` or tracing disabled immediately with `OTEL_ENABLED=false`.
+
+  Rollback by setting `OTEL_ENABLED=false` and restarting the backend; existing request/trace response headers and privacy-safe logs remain compatible. Reverting the feature also requires removing the three OpenTelemetry pins from `requirements.txt`. No job payload or database migration cleanup is needed. Check collector reachability/TLS, endpoint configuration, sample ratio, and backend exporter warnings when spans are missing. A missing parent usually means the caller omitted or supplied an invalid `traceparent`.
+
+  Limitations: backend Stellar spans cover Horizon transaction-status reads; this backend does not submit Soroban contract transactions. The current queued-job implementation is process-local, so trace links survive only as long as its in-memory job record; this change does not claim cross-process job durability. The API does not expose trace IDs as metric labels or support baggage propagation.
+
 ## Run
 
 ```powershell

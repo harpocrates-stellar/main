@@ -13,6 +13,7 @@ from typing import Any, Iterator
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from tracing import job_trace_context, span
 
 logger = logging.getLogger(__name__)
 
@@ -233,15 +234,16 @@ def get_connection() -> Iterator[psycopg.Connection]:
     ``DB_CONNECT_TIMEOUT_SECONDS`` per try and ``DB_CONNECT_DEADLINE_SECONDS``
     overall so readiness / request paths stay bounded.
     """
-    url = database_url()
-    if not url:
-        raise RuntimeError("DATABASE_URL is not configured")
+    with span("db.connection", attributes={"db.system.name": "postgresql"}):
+        url = database_url()
+        if not url:
+            raise RuntimeError("DATABASE_URL is not configured")
 
-    connection = _connect_with_retry(url)
-    try:
-        yield connection
-    finally:
-        connection.close()
+        connection = _connect_with_retry(url)
+        try:
+            yield connection
+        finally:
+            connection.close()
 
 
 def init_db() -> None:
@@ -1019,6 +1021,7 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "id": job_id,
         "type": job_type,
         "payload": payload,
+        "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
         "created_at": datetime.now(timezone.utc).isoformat(),

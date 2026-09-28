@@ -111,6 +111,11 @@ from trace_fields import (
     format_traceparent,
     merge_trace_into_event,
 )
+from tracing import (
+    begin_request_span,
+    configure_tracing,
+    finish_request_span,
+)
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
@@ -184,6 +189,14 @@ def _make_key_func(config):
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
+    configure_tracing(
+        enabled=config.tracing_enabled,
+        service_name=config.tracing_service_name,
+        endpoint=config.tracing_endpoint,
+        sample_ratio=config.tracing_sample_ratio,
+        export_timeout_seconds=config.tracing_export_timeout_seconds,
+        service_version=config.release_id,
+    )
     app = Flask(__name__)
     CORS(app, **cors_kwargs(config.cors_origins))
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
@@ -231,6 +244,28 @@ def create_app() -> Flask:
         g.request_started_at = time.perf_counter()
 
     @app.before_request
+    def initialize_trace_context():
+        g.trace_fields = build_trace_fields(
+            request.headers,
+            request_id=g.request_id,
+            method=request.method,
+            route=request.url_rule.rule if request.url_rule else request.path,
+            path=request.path,
+        )
+        g.request_id = g.trace_fields["request_id"]
+        g.otel_request_span = begin_request_span(
+            request.headers,
+            method=request.method,
+            route=request.url_rule.rule if request.url_rule else g.trace_fields["endpoint_pattern"],
+            request_id=g.request_id,
+        )
+        span_context = g.otel_request_span.span.get_span_context()
+        if span_context.is_valid:
+            g.trace_fields["trace_id"] = f"{span_context.trace_id:032x}"
+            g.trace_fields["span_id"] = f"{span_context.span_id:016x}"
+            g.trace_fields["trace_flags"] = f"{int(span_context.trace_flags):02x}"
+
+    @app.before_request
     def enforce_cors_origins():
         """Reject browser requests whose Origin is not on the configured allow-list.
 
@@ -276,17 +311,6 @@ def create_app() -> Flask:
             message="request origin is not allowed",
             status=403,
         )
-        # Privacy-safe trace fields for log correlation (no secrets/media/PII).
-        g.trace_fields = build_trace_fields(
-            request.headers,
-            request_id=g.request_id,
-            method=request.method,
-            route=request.url_rule.rule if request.url_rule else request.path,
-            path=request.path,
-        )
-        # Keep request_id aligned with normalized opaque ID from trace builder.
-        g.request_id = g.trace_fields["request_id"]
-
     @app.after_request
     def process_response(response: Response):
         # X-Request-ID and the body-level request_id are applied by the
@@ -338,7 +362,20 @@ def create_app() -> Flask:
                 trace,
             ),
         )
+        finish_request_span(
+            getattr(g, "otel_request_span", None),
+            status_code=response.status_code,
+        )
         return response
+
+    @app.teardown_request
+    def finish_unhandled_request_span(error: BaseException | None):
+        if getattr(g, "otel_request_span", None) is not None:
+            finish_request_span(
+                g.otel_request_span,
+                status_code=500 if error is not None else 200,
+                error=error,
+            )
 
     def require_register_auth(fn):
         """Decorator that enforces ownership-scoped auth on proof registration.
@@ -1386,7 +1423,8 @@ def create_app() -> Flask:
         job = get_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        return jsonify({"ok": True, "job": job})
+        public_job = {key: value for key, value in job.items() if key != "_trace_context"}
+        return jsonify({"ok": True, "job": public_job})
 
     @app.get("/api/jobs/<int:job_id>/download")
     def download_job_result(job_id: int):
