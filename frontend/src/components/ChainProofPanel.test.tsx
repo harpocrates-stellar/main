@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { useIssuerTrust } from '../hooks/useIssuerTrust'
+import { useProofRevocationReason } from '../hooks/useProofRevocationReason'
 import type { ChainProofRecord } from '../stellarTypes'
 import { STELLAR_STRKEY_LENGTH, type IssuerTrust } from '../provenance/issuerTrust'
-import { ChainProofPanel } from './ChainProofPanel'
+import { ChainProofPanel, formatProofExpiry } from './ChainProofPanel'
 
 // The registry read lives in the hook and is covered by useIssuerTrust.test.ts.
 // This suite pins the panel's wiring: which inputs reach the hook, and how the
@@ -11,8 +12,12 @@ import { ChainProofPanel } from './ChainProofPanel'
 vi.mock('../hooks/useIssuerTrust', () => ({
   useIssuerTrust: vi.fn(),
 }))
+vi.mock('../hooks/useProofRevocationReason', () => ({
+  useProofRevocationReason: vi.fn(),
+}))
 
 const mockedUseIssuerTrust = vi.mocked(useIssuerTrust)
+const mockedUseProofRevocationReason = vi.mocked(useProofRevocationReason)
 
 const ISSUER = `G${'B'.repeat(STELLAR_STRKEY_LENGTH - 1)}`
 
@@ -41,6 +46,19 @@ function trustStub(overrides: Partial<IssuerTrust> = {}): IssuerTrust {
 beforeEach(() => {
   mockedUseIssuerTrust.mockReset()
   mockedUseIssuerTrust.mockReturnValue(trustStub())
+  mockedUseProofRevocationReason.mockReset()
+  mockedUseProofRevocationReason.mockReturnValue(null)
+})
+
+describe('formatProofExpiry', () => {
+  it('renders never-expiring, valid, and unavailable values safely', () => {
+    expect(formatProofExpiry(0)).toBe('Never')
+    expect(formatProofExpiry(1_900_000_000)).toBe('2030-03-17T17:46:40.000Z')
+    expect(formatProofExpiry(null)).toBe('Unavailable')
+    expect(formatProofExpiry(Number.NaN)).toBe('Unavailable')
+    expect(formatProofExpiry(1.5)).toBe('Unavailable')
+    expect(formatProofExpiry(Number.MAX_SAFE_INTEGER)).toBe('Unavailable')
+  })
 })
 
 describe('ChainProofPanel', () => {
@@ -74,6 +92,8 @@ describe('ChainProofPanel', () => {
     expect(screen.getByText('Issuer trusted')).toBeInTheDocument()
     expect(screen.getByText('Metadata')).toBeInTheDocument()
     expect(screen.getByText('Tier')).toBeInTheDocument()
+    expect(screen.getByText('Expires')).toBeInTheDocument()
+    expect(screen.getByText('Never')).toBeInTheDocument()
   })
 
   it('renders a revoked badge even though the record itself is still registered', () => {
@@ -85,11 +105,29 @@ describe('ChainProofPanel', () => {
       }),
     )
 
-    render(<ChainProofPanel chainProof={CHAIN_PROOF} />)
+    mockedUseProofRevocationReason.mockReturnValue(
+      'Reason code 1. The registry publishes no narrative reason.',
+    )
+    render(<ChainProofPanel chainProof={{ ...CHAIN_PROOF, status: 2 }} proofId={'d'.repeat(64)} />)
 
     const badge = screen.getByRole('status')
     expect(badge).toHaveAttribute('data-state', 'revoked')
     expect(badge).toHaveAttribute('data-severity', 'critical')
+    expect(screen.getByText('Revocation reason')).toBeInTheDocument()
+    expect(screen.getByText('Reason code 1. The registry publishes no narrative reason.')).toBeInTheDocument()
+    expect(mockedUseProofRevocationReason).toHaveBeenCalledWith({
+      proofId: 'd'.repeat(64),
+      sourceAddress: undefined,
+      revoked: true,
+    })
+  })
+
+  it('does not invent a reason when lifecycle history is unavailable', () => {
+    mockedUseProofRevocationReason.mockReturnValue('Revocation reason unavailable.')
+    render(<ChainProofPanel chainProof={{ ...CHAIN_PROOF, status: 2 }} proofId={'d'.repeat(64)} />)
+
+    expect(screen.getByText('Revocation reason')).toBeInTheDocument()
+    expect(screen.getByText('Revocation reason unavailable.')).toBeInTheDocument()
   })
 
   it('renders an unavailable badge without exposing the failure detail', () => {
