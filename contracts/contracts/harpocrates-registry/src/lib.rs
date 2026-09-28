@@ -218,6 +218,47 @@ pub const MAX_DELEGATION_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
 pub const MAX_DELEGATIONS_PER_GRANTOR: u32 = 32;
 
 // ---------------------------------------------------------------------------
+// Issuer rotation grace windows (#323)
+// ---------------------------------------------------------------------------
+//
+// A Tier 3 issuer key rotates out by activating a replacement and retiring the
+// old key. Retiring the key must not make evidence it already signed
+// unverifiable in the same transaction: the off-chain key-transparency
+// directory keeps pre-rotation signatures valid inside the predecessor's
+// validity window (`docs/issuer-key-transparency.md`), and the registry has to
+// express the same bounded window or the two public boundaries disagree.
+//
+// A rotation retires the previous key immediately — it can no longer sign new
+// seals — and opens a bounded grace window during which the evidence it already
+// signed stays verifiable. The window is lazy: readers compare
+// `grace_expires_at` against ledger time, so it lapses without a transaction,
+// and any caller may settle the record afterwards with
+// `finalize_issuer_rotation`, which publishes the grace-expiry event.
+//
+// `grace_secs == 0` selects `DEFAULT_ISSUER_ROTATION_GRACE_SECS`, so a rotation
+// can never silently drop the window. A request above
+// `MAX_ISSUER_ROTATION_GRACE_SECS`, or one whose `rotated_at + grace_secs`
+// overflows, fails closed with `InvalidIssuerRotationGrace`.
+//
+// Revocation outranks the window: `revoke_issuer`, its timelocked twin, and
+// `add_issuer` all clear any rotation record, so a withdrawn or re-onboarded
+// key never keeps standing it should not have.
+//
+// Migration. `DataKey::IssuerRotation(issuer)` is a new, additive key and the
+// stored `IssuerRecord` keeps its exact `{metadata_hash, active}` shape, so
+// records written by an earlier wasm still decode unchanged and a deployment
+// that never rotates reads as "no rotation" with standing decided by `active`
+// alone. Rolling back to a pre-#323 wasm ignores the key and falls back to the
+// `active` flag, which only widens acceptance for a retired key — never for a
+// revoked one, and never for new evidence after an explicit `revoke_issuer`.
+
+/// Grace window applied when `rotate_issuer` is called with `grace_secs == 0`
+/// (90 days). A rotation never silently leaves pre-rotation evidence uncovered.
+pub const DEFAULT_ISSUER_ROTATION_GRACE_SECS: u64 = 90 * 24 * 60 * 60;
+/// Longest grace window an admin may open in a single rotation (365 days).
+pub const MAX_ISSUER_ROTATION_GRACE_SECS: u64 = 365 * 24 * 60 * 60;
+
+// ---------------------------------------------------------------------------
 // Verifier circuit-version validation (#343)
 // ---------------------------------------------------------------------------
 //
@@ -485,6 +526,29 @@ pub struct IssuerRecord {
     pub active: bool,
 }
 
+/// Rotation grace record for an issuer key that has rotated out (#323).
+///
+/// Keyed by the *previous* (retired) key at `DataKey::IssuerRotation(Address)`
+/// so the stored `IssuerRecord` keeps its byte-identical `{metadata_hash,
+/// active}` shape and records written by an earlier wasm still decode.
+/// Presence means "this key was rotated, not revoked, and the evidence it
+/// already signed stays verifiable until `grace_expires_at`".
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerRotationRecord {
+    /// The key that rotated out — also the record's storage key.
+    pub previous_issuer: Address,
+    /// The active key that replaced it.
+    pub replacement_issuer: Address,
+    /// Ledger timestamp at which the rotation was accepted.
+    pub rotated_at: u64,
+    /// Epoch seconds after which the grace window has lapsed. A reader at
+    /// exactly this timestamp sees the window as already closed.
+    pub grace_expires_at: u64,
+    /// Resolved window length (the protocol default when the caller passed 0).
+    pub grace_secs: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialRootRecord {
@@ -596,6 +660,29 @@ pub struct IssuerAdded {
 pub struct IssuerRevoked {
     #[topic]
     pub issuer: Address,
+}
+
+/// Emitted when an active issuer key rotates to a replacement (#323).
+///
+/// Carries addresses, ledger time, and the grace bound only — never key
+/// material, metadata preimages, witnesses, media, or secrets.
+#[contractevent(topics = ["issuer", "rotate"])]
+pub struct IssuerRotated {
+    #[topic]
+    pub previous_issuer: Address,
+    pub replacement_issuer: Address,
+    pub rotated_at: u64,
+    pub grace_expires_at: u64,
+    pub grace_secs: u64,
+}
+
+/// Emitted when a rotation grace window is settled after it lapses (#323).
+#[contractevent(topics = ["issuer", "grace"])]
+pub struct IssuerRotationGraceExpired {
+    #[topic]
+    pub issuer: Address,
+    pub replacement_issuer: Address,
+    pub grace_expires_at: u64,
 }
 
 #[contractevent(topics = ["verif", "set"])]
@@ -1105,6 +1192,8 @@ pub enum DataKey {
     Nullifier(BytesN<32>),
     CredentialRoot(BytesN<32>),
     Issuer(Address),
+    /// Rotation grace record for an issuer key that has rotated out (#323).
+    IssuerRotation(Address),
     Verifier,
     ProofTtl,
     /// Optional emergency-pause guardian, distinct from admin (#87).
@@ -1285,6 +1374,16 @@ pub enum RegistryError {
     UnsupportedCircuitVersion = 81,
     /// Requested circuit-version window is empty or outside the wasm range (#343).
     InvalidCircuitVersionRange = 82,
+    /// Requested rotation grace window is above `MAX_ISSUER_ROTATION_GRACE_SECS`
+    /// or overflows ledger time (#323).
+    InvalidIssuerRotationGrace = 83,
+    /// A rotation named the same issuer key twice; absent or inactive keys
+    /// report `UnknownIssuer` instead (#323).
+    InvalidIssuerRotation = 84,
+    /// No issuer rotation grace record exists for the requested key (#323).
+    IssuerRotationNotFound = 85,
+    /// The issuer rotation grace window has not lapsed yet (#323).
+    IssuerRotationGraceStillActive = 86,
 }
 
 #[contract]
@@ -1430,6 +1529,12 @@ impl HarpocratesRegistry {
                 active: true,
             },
         );
+        // Re-adding a key makes it the current key again, so a leftover
+        // rotation grace record for it would be a second, contradictory answer
+        // to `is_issuer_verifiable` (#323).
+        env.storage()
+            .persistent()
+            .remove(&DataKey::IssuerRotation(issuer.clone()));
         IssuerAdded {
             issuer,
             metadata_hash,
@@ -1699,7 +1804,183 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Issuer(issuer.clone()), &record);
+        // Revocation outranks any rotation grace window: a withdrawn or
+        // compromised key must never keep standing through a rotation record
+        // (#323).
+        env.storage()
+            .persistent()
+            .remove(&DataKey::IssuerRotation(issuer.clone()));
         IssuerRevoked { issuer }.publish(&env);
+    }
+
+    /// Rotate an active issuer key to a replacement, opening a bounded grace
+    /// window over the retiring key's pre-rotation evidence (#323).
+    ///
+    /// Admin-only. `previous_issuer` and `replacement_issuer` must be distinct,
+    /// both registered, and both active. The rotation retires `previous_issuer`
+    /// immediately — it can no longer sign new seals, directly or through a
+    /// delegation — while the evidence it already signed stays verifiable until
+    /// `grace_expires_at`, after which [`Self::is_issuer_verifiable`] fails
+    /// closed.
+    ///
+    /// `grace_secs == 0` selects [`DEFAULT_ISSUER_ROTATION_GRACE_SECS`].
+    /// Returns the absolute `grace_expires_at` so a caller can record the
+    /// deadline without re-reading storage. The window is lazy — it lapses with
+    /// no transaction — and [`Self::finalize_issuer_rotation`] settles the
+    /// record afterwards.
+    ///
+    /// # Reverts
+    ///
+    /// - `Unauthorized`               if the caller is not the admin
+    /// - `InvalidIssuerRotation`      if previous and replacement are equal
+    /// - `UnknownIssuer`              if either key is absent or inactive
+    /// - `InvalidIssuerRotationGrace` if `grace_secs` exceeds
+    ///   [`MAX_ISSUER_ROTATION_GRACE_SECS`] or the window would overflow ledger
+    ///   time
+    pub fn rotate_issuer(
+        env: Env,
+        admin: Address,
+        previous_issuer: Address,
+        replacement_issuer: Address,
+        grace_secs: u64,
+    ) -> u64 {
+        require_admin(&env, &admin);
+
+        if previous_issuer == replacement_issuer {
+            panic_with_error!(&env, RegistryError::InvalidIssuerRotation);
+        }
+
+        let mut previous = get_issuer_record(&env, &previous_issuer);
+        if !previous.active {
+            panic_with_error!(&env, RegistryError::UnknownIssuer);
+        }
+        let replacement = get_issuer_record(&env, &replacement_issuer);
+        if !replacement.active {
+            panic_with_error!(&env, RegistryError::UnknownIssuer);
+        }
+
+        // `0` means "use the protocol default", never "no window": a rotation
+        // that left pre-rotation evidence unverifiable in the same transaction
+        // would break the boundary this feature exists to keep.
+        let resolved_grace = if grace_secs == 0 {
+            DEFAULT_ISSUER_ROTATION_GRACE_SECS
+        } else {
+            grace_secs
+        };
+        if resolved_grace > MAX_ISSUER_ROTATION_GRACE_SECS {
+            panic_with_error!(&env, RegistryError::InvalidIssuerRotationGrace);
+        }
+
+        let rotated_at = env.ledger().timestamp();
+        let grace_expires_at = rotated_at
+            .checked_add(resolved_grace)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvalidIssuerRotationGrace));
+
+        // Retire the previous key immediately: a rotated-out key must not sign
+        // anything new, grace window or not.
+        previous.active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Issuer(previous_issuer.clone()), &previous);
+
+        env.storage().persistent().set(
+            &DataKey::IssuerRotation(previous_issuer.clone()),
+            &IssuerRotationRecord {
+                previous_issuer: previous_issuer.clone(),
+                replacement_issuer: replacement_issuer.clone(),
+                rotated_at,
+                grace_expires_at,
+                grace_secs: resolved_grace,
+            },
+        );
+
+        IssuerRotated {
+            previous_issuer,
+            replacement_issuer,
+            rotated_at,
+            grace_expires_at,
+            grace_secs: resolved_grace,
+        }
+        .publish(&env);
+
+        grace_expires_at
+    }
+
+    /// Settle a lapsed issuer-rotation grace window (#323).
+    ///
+    /// Permissionless by design: the transition is fully determined by the
+    /// stored `grace_expires_at`, so any caller may close the record once the
+    /// window has lapsed, and no admin key is needed to stop a retired key from
+    /// holding standing. Callable at exactly `grace_expires_at` and after it;
+    /// the record is removed and `IssuerRotationGraceExpired` is published.
+    ///
+    /// # Reverts
+    ///
+    /// - `IssuerRotationNotFound`         if no rotation record exists
+    /// - `IssuerRotationGraceStillActive` if the window has not lapsed
+    pub fn finalize_issuer_rotation(env: Env, issuer: Address) {
+        let record: IssuerRotationRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::IssuerRotation(issuer.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::IssuerRotationNotFound));
+
+        if env.ledger().timestamp() < record.grace_expires_at {
+            panic_with_error!(&env, RegistryError::IssuerRotationGraceStillActive);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::IssuerRotation(issuer.clone()));
+
+        IssuerRotationGraceExpired {
+            issuer,
+            replacement_issuer: record.replacement_issuer,
+            grace_expires_at: record.grace_expires_at,
+        }
+        .publish(&env);
+    }
+
+    /// The rotation grace record for `issuer`, when the key has rotated out and
+    /// the window has not been settled yet (#323).
+    ///
+    /// `None` for an unknown key, an active key, a revoked key, and a key whose
+    /// lapsed window was already finalized. In each of those cases
+    /// [`Self::is_issuer_verifiable`] is the read that decides standing.
+    pub fn get_issuer_rotation(env: Env, issuer: Address) -> Option<IssuerRotationRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IssuerRotation(issuer))
+    }
+
+    /// Whether `issuer` may still anchor verification of evidence it issued
+    /// (#323).
+    ///
+    /// True while the registry lists the issuer as active, and true for a
+    /// rotated-out key until its grace window lapses. False for an unknown key,
+    /// a revoked key, and a key at or past `grace_expires_at` — a lapsed window
+    /// fails closed rather than being silently extended. Never panics, so a
+    /// caller can pre-flight an unknown, revoked, or unsupported issuer without
+    /// risking a reverted transaction.
+    pub fn is_issuer_verifiable(env: Env, issuer: Address) -> bool {
+        let record: Option<IssuerRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Issuer(issuer.clone()));
+        match record {
+            None => false,
+            Some(current) if current.active => true,
+            Some(_) => {
+                let rotation: Option<IssuerRotationRecord> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::IssuerRotation(issuer));
+                match rotation {
+                    Some(window) => env.ledger().timestamp() < window.grace_expires_at,
+                    None => false,
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -5058,6 +5339,11 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
             env.storage()
                 .persistent()
                 .set(&DataKey::Issuer(proposal.target.clone()), &record);
+            // A timelocked revocation clears any rotation grace record too: the
+            // two retirements must never contradict each other (#323).
+            env.storage()
+                .persistent()
+                .remove(&DataKey::IssuerRotation(proposal.target.clone()));
             IssuerRevoked {
                 issuer: proposal.target.clone(),
             }
@@ -5247,6 +5533,8 @@ mod test_fuzz;
 mod test_identity_tier_properties;
 #[cfg(test)]
 mod test_invariants;
+#[cfg(test)]
+mod test_issuer_rotation;
 #[cfg(test)]
 mod test_lineage;
 #[cfg(test)]

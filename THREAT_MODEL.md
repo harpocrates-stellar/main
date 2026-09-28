@@ -274,6 +274,22 @@ verifier codec) rejects oversized depth before proving so hostile trees cannot
 inflate witness size or proving cost at this boundary. Depth changes require a
 new circuit version.
 
+**Control (#323):** Issuer rotation is explicit and bounded. `rotate_issuer`
+retires the previous issuer key immediately — it can no longer sign new seals,
+directly or through a delegation — and opens a grace window defaulting to
+`DEFAULT_ISSUER_ROTATION_GRACE_SECS` (90 days) and capped at
+`MAX_ISSUER_ROTATION_GRACE_SECS` (365 days); a longer or overflowing request, and
+a rotation that names the same key twice, fail closed. During the window
+`is_issuer_verifiable(previous)` stays true so pre-rotation seals keep a
+defensible endorsement, and at `grace_expires_at` it fails closed, so a retired
+key can never hold standing indefinitely. `revoke_issuer`, the timelocked
+`RevokeIssuer` action, and `add_issuer` all clear the rotation record, so
+compromise response and re-onboarding are never shadowed by a grace window.
+Typed `IssuerRotated` / `IssuerRotationGraceExpired` events carry addresses,
+ledger time, and the window bound only — no key material, metadata preimages,
+witnesses, media, or reasons. The window is stored under the additive
+`DataKey::IssuerRotation` key, so pre-#323 deployments read as "no rotation".
+
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually
 call `revoke_proof` for each fraudulent record — there is no bulk revocation.
@@ -612,6 +628,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Nullifier set on first use, `DuplicateNullifier` on replay | T2 | `lib.rs` → `DataKey::Nullifier` |
 | Credential root allowlist with active/revoked status | T1, T8 | `lib.rs` → `add_credential_root`, `revoke_credential_root` |
 | Issuer allowlist with active/revoked status | T3 | `lib.rs` → `add_issuer`, `revoke_issuer` |
+| Bounded issuer rotation grace window (`rotate_issuer`, `is_issuer_verifiable`, expired at `grace_expires_at`, settled by `finalize_issuer_rotation`) | T3 | `lib.rs` → `rotate_issuer` |
 | External verifier contract hook (`verify_external_proof`) | T8 | `lib.rs` → `verify_external_proof` |
 | Per-call circuit-version gate before the verifier is invoked (`require_supported_circuit_version`) | T8 | `lib.rs` → `require_supported_circuit_version` |
 | Admin-only, wasm-bounded verifier circuit-version window (`set_verifier_circuit_versions`) | T8 | `lib.rs` → `set_verifier_circuit_versions` |

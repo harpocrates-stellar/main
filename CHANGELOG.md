@@ -2,6 +2,19 @@
 
 ## 1.0.0 — Unreleased
 
+- Added bounded **issuer rotation grace windows** to the Soroban registry (#323).
+  `rotate_issuer` retires an active issuer key in favour of a replacement and
+  opens a bounded window (default `DEFAULT_ISSUER_ROTATION_GRACE_SECS`, capped by
+  `MAX_ISSUER_ROTATION_GRACE_SECS`) during which the retired key's pre-rotation
+  evidence stays verifiable, while the retired key itself — and its delegates —
+  can no longer sign new seals. `is_issuer_verifiable` / `get_issuer_rotation`
+  expose standing without panicking, and `finalize_issuer_rotation` settles a
+  lapsed window and emits the grace-expiry event. `revoke_issuer`, its
+  timelocked twin, and `add_issuer` all clear a rotation record. Additive on
+  chain: `DataKey::IssuerRotation` is a new key and `IssuerRecord` keeps its
+  existing serialization, so stored evidence and compatible callers are
+  unaffected. New ABI codes 83–86 in `contracts/ERROR_ABI.md`; see
+  `MIGRATION_GUIDE.md` and `THREAT_MODEL.md` (T3).
 - Added a privacy-safe redaction preview in Evidence Studio that discloses truncated public fingerprints while withholding seeds, witness proofs, private keys, and media URLs (`frontend/src/redactionPreview.ts`).
 - chore(devx): retain proof artifacts in CI through a privacy-checked allowlist (#398)
 - Added the `redacted_ancestry` Noir circuit and helper (#356): proves a redacted
