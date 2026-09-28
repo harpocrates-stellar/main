@@ -138,6 +138,32 @@ if not LOGGER.handlers:
 LOGGER.setLevel(logging.INFO)
 LOGGER.propagate = False
 
+# ---------------------------------------------------------------------------
+# Declared upload-body budget
+# ---------------------------------------------------------------------------
+# A ``multipart/form-data`` upload carries framing bytes (boundaries, part
+# headers, and the small metadata part) on top of the video/chunk payload, so
+# the declared ``Content-Length`` budget allows a fixed overhead on top of the
+# per-file budget.  Without this allowance a payload sitting exactly on
+# ``MAX_VIDEO_BYTES`` would be rejected purely because of framing.
+UPLOAD_MULTIPART_OVERHEAD_BYTES = 1_048_576
+
+
+def declared_upload_limit_bytes(config) -> int:
+    """Return the largest acceptable declared ``Content-Length`` for an upload.
+
+    The per-file budget is ``UPLOAD_MAX_BYTES`` when the deployment sets it,
+    otherwise ``MAX_VIDEO_BYTES``; multipart framing is permitted on top of it.
+    The whole body must still fit under ``MAX_CONTENT_LENGTH`` when that cap is
+    the lower of the two, so the effective limit is the minimum of the two.
+    """
+    per_file = int(getattr(config, "upload_max_bytes", 0) or config.max_video_bytes)
+    limit = per_file + UPLOAD_MULTIPART_OVERHEAD_BYTES
+    global_cap = int(getattr(config, "max_content_length", 0) or 0)
+    if global_cap and limit > global_cap:
+        limit = global_cap
+    return limit
+
 
 def _make_key_func(config):
     """Return a rate-limit key function that uses the real client IP.
@@ -286,6 +312,53 @@ def create_app() -> Flask:
         )
         # Keep request_id aligned with normalized opaque ID from trace builder.
         g.request_id = g.trace_fields["request_id"]
+
+    @app.before_request
+    def enforce_upload_content_length():
+        """Reject declared-oversized uploads before the body is buffered.
+
+        ``MAX_CONTENT_LENGTH`` only takes effect once Werkzeug starts reading
+        the body, and the streaming wrapper deliberately defers that read until
+        ``save()`` so large uploads never land in memory.  That leaves a window
+        where a client can declare an over-budget ``Content-Length`` and make
+        the server spool up to the video limit to disk before the mid-stream
+        bound fires.  This hook closes the window using the request headers
+        alone: no multipart parsing, no temp-file buffering, no streaming.
+
+        Requests that arrive with ``Transfer-Encoding: chunked`` (no declared
+        length) are left to the bounded streaming ``save()``, which still
+        aborts mid-stream, and non-upload routes are untouched.
+        """
+        if request.method not in {"POST", "PUT", "PATCH"}:
+            return None
+        if not request.path.startswith("/api/stego/"):
+            return None
+        if request.mimetype != "multipart/form-data":
+            return None
+        declared = request.content_length
+        if declared is None:
+            return None
+        if declared <= declared_upload_limit_bytes(config):
+            return None
+        metrics_collector.record_rejection(
+            "upload_content_length_exceeded",
+            request.url_rule.rule if request.url_rule else request.path,
+        )
+        log_structured(
+            LOGGER,
+            logging.WARNING,
+            {
+                "event": "upload_content_length_rejected",
+                "request_id": request_id(),
+                "method": request.method,
+                "path": request.path,
+            },
+        )
+        return error_response(
+            code=PAYLOAD_TOO_LARGE,
+            message="upload exceeds size limit",
+            status=413,
+        )
 
     @app.after_request
     def process_response(response: Response):
