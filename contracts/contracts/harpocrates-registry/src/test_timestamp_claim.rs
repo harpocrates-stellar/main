@@ -85,13 +85,8 @@ fn absence_of_claimed_time_is_valid() {
     env.ledger().set_timestamp(1_700_000_000);
 
     let (client, _admin, source, proof_id) = setup_with_source_proof(&env);
-    let claim = client.anchor_timestamp_claim(
-        &source,
-        &proof_id,
-        &bytes32(&env, 55),
-        &0u64,
-        &zero32(&env),
-    );
+    let claim =
+        client.anchor_timestamp_claim(&source, &proof_id, &bytes32(&env, 55), &0u64, &zero32(&env));
     assert_eq!(claim.claimed_time, 0);
     assert_eq!(claim.sources & TIMESTAMP_SOURCE_CLAIMED, 0);
     assert!(client.has_independent_timestamp_anchor(&proof_id));
@@ -160,13 +155,7 @@ fn allows_rfc3161_upgrade_reanchor() {
     env.ledger().set_timestamp(1_700_000_000);
 
     let (client, _admin, source, proof_id) = setup_with_source_proof(&env);
-    client.anchor_timestamp_claim(
-        &source,
-        &proof_id,
-        &bytes32(&env, 44),
-        &0u64,
-        &zero32(&env),
-    );
+    client.anchor_timestamp_claim(&source, &proof_id, &bytes32(&env, 44), &0u64, &zero32(&env));
     let upgraded = client.anchor_timestamp_claim(
         &source,
         &proof_id,

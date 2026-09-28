@@ -638,12 +638,7 @@ fn deployment_fixture_legacy_upgrade_preserves_deployed_state() {
     let expired_id = slot(&f.env, domains::PROOF, 0x14);
     let expired_video = slot(&f.env, domains::VIDEO, 0x14);
     let expired_metadata = slot(&f.env, domains::METADATA, 0x14);
-    let expired = client.register_source(
-        &f.source,
-        &expired_video,
-        &expired_metadata,
-        &expired_id,
-    );
+    let expired = client.register_source(&f.source, &expired_video, &expired_metadata, &expired_id);
 
     f.env.ledger().with_mut(|ledger| {
         ledger.timestamp = FIXTURE_TIMESTAMP + 2;
@@ -656,11 +651,17 @@ fn deployment_fixture_legacy_upgrade_preserves_deployed_state() {
     f.env.as_contract(&f.contract_id, || {
         f.env.storage().persistent().remove(&DataKey::SchemaVersion);
     });
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
 
     client.upgrade_storage(&f.admin);
 
-    assert_eq!(client.get_storage_schema_version(), SchemaVersion::V1 as u32);
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V1 as u32
+    );
     assert_eq!(f.env.events().all().events().len(), 0);
     assert_eq!(client.get_proof(&anonymous_id), Some(anonymous));
     assert_eq!(client.get_proof(&source_id), Some(source.clone()));
@@ -673,10 +674,12 @@ fn deployment_fixture_legacy_upgrade_preserves_deployed_state() {
         ProofVerificationStatus::Expired
     );
     assert!(!client.get_issuer(&f.issuer).unwrap().active);
-    assert!(!client
-        .get_credential_root(&f.credential_root)
-        .unwrap()
-        .active);
+    assert!(
+        !client
+            .get_credential_root(&f.credential_root)
+            .unwrap()
+            .active
+    );
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
 
     let post_upgrade_id = slot(&f.env, domains::PROOF, 0x15);

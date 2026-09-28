@@ -349,7 +349,10 @@ mod constant_time_tests {
 
     fn silent_frame(domain: &[u8; FIELD_LEN]) -> [u8; SILENT_WITNESS_PUBLIC_INPUTS_LEN] {
         let mut frame = [0u8; SILENT_WITNESS_PUBLIC_INPUTS_LEN];
-        for (i, part) in [half(), half(), field(7), field(9), *domain].iter().enumerate() {
+        for (i, part) in [half(), half(), field(7), field(9), *domain]
+            .iter()
+            .enumerate()
+        {
             frame[i * FIELD_LEN..(i + 1) * FIELD_LEN].copy_from_slice(part);
         }
         frame
@@ -372,7 +375,10 @@ mod constant_time_tests {
     #[test]
     fn constant_time_eq_matches_slice_equality() {
         assert!(constant_time_eq(&[], &[]));
-        assert!(constant_time_eq(&SILENT_WITNESS_DOMAIN_TAG_BE, &SILENT_WITNESS_DOMAIN_TAG_BE));
+        assert!(constant_time_eq(
+            &SILENT_WITNESS_DOMAIN_TAG_BE,
+            &SILENT_WITNESS_DOMAIN_TAG_BE
+        ));
         assert!(!constant_time_eq(&[0u8; 31], &[0u8; 32]));
         assert!(!constant_time_eq(&[], &[0u8]));
     }
@@ -381,7 +387,10 @@ mod constant_time_tests {
     fn constant_time_eq_rejects_a_flip_at_every_position() {
         for index in 0..FIELD_LEN {
             let tampered = flipped(&SILENT_WITNESS_DOMAIN_TAG_BE, index);
-            assert!(!constant_time_eq(&SILENT_WITNESS_DOMAIN_TAG_BE, &tampered), "byte {index}");
+            assert!(
+                !constant_time_eq(&SILENT_WITNESS_DOMAIN_TAG_BE, &tampered),
+                "byte {index}"
+            );
         }
     }
 
@@ -392,16 +401,24 @@ mod constant_time_tests {
             &SILENT_WITNESS_DOMAIN_TAG_BE
         )
         .is_ok());
-        assert!(parse_revocation_witness(&revocation_frame(&REVOCATION_DOMAIN), &REVOCATION_DOMAIN)
-            .is_ok());
+        assert!(parse_revocation_witness(
+            &revocation_frame(&REVOCATION_DOMAIN),
+            &REVOCATION_DOMAIN
+        )
+        .is_ok());
     }
 
     #[test]
     fn silent_witness_domain_flip_is_rejected_at_every_byte() {
         for index in 0..FIELD_LEN {
             let tampered = flipped(&SILENT_WITNESS_DOMAIN_TAG_BE, index);
-            let result = parse_silent_witness(&silent_frame(&tampered), &SILENT_WITNESS_DOMAIN_TAG_BE);
-            assert_eq!(result.err(), Some(RejectCode::DomainMismatch), "byte {index}");
+            let result =
+                parse_silent_witness(&silent_frame(&tampered), &SILENT_WITNESS_DOMAIN_TAG_BE);
+            assert_eq!(
+                result.err(),
+                Some(RejectCode::DomainMismatch),
+                "byte {index}"
+            );
         }
     }
 
@@ -410,7 +427,11 @@ mod constant_time_tests {
         for index in 0..FIELD_LEN {
             let tampered = flipped(&REVOCATION_DOMAIN, index);
             let result = parse_revocation_witness(&revocation_frame(&tampered), &REVOCATION_DOMAIN);
-            assert_eq!(result.err(), Some(RejectCode::DomainMismatch), "byte {index}");
+            assert_eq!(
+                result.err(),
+                Some(RejectCode::DomainMismatch),
+                "byte {index}"
+            );
         }
     }
 }

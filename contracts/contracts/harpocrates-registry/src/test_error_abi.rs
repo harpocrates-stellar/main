@@ -140,6 +140,8 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::DuplicateLineage => "DuplicateLineage",
         RegistryError::LineageChildrenLimitExceeded => "LineageChildrenLimitExceeded",
         RegistryError::LineageChildrenSaturated => "LineageChildrenSaturated",
+        RegistryError::UnsupportedCircuitVersion => "UnsupportedCircuitVersion",
+        RegistryError::InvalidCircuitVersionRange => "InvalidCircuitVersionRange",
     }
 }
 
@@ -227,6 +229,8 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::DuplicateLineage,
     RegistryError::LineageChildrenLimitExceeded,
     RegistryError::LineageChildrenSaturated,
+    RegistryError::UnsupportedCircuitVersion,
+    RegistryError::InvalidCircuitVersionRange,
 ];
 
 #[cfg(test)]
@@ -266,7 +270,10 @@ fn published_rows() -> Vec<AbiRow> {
 #[cfg(test)]
 #[test]
 fn abi_version_is_published() {
-    assert_eq!(ABI_VERSION, 1, "ABI version bumped without updating this suite");
+    assert_eq!(
+        ABI_VERSION, 1,
+        "ABI version bumped without updating this suite"
+    );
     assert!(
         ABI_DOC.contains("ABI version: 1"),
         "ERROR_ABI.md must publish the ABI version"
@@ -286,7 +293,8 @@ fn every_variant_is_published_exactly_once() {
         let row = &rows[index];
         let code = *variant as u32;
         assert_eq!(
-            row.code, code,
+            row.code,
+            code,
             "code {} drifted from RegistryError::{}",
             row.code,
             canonical_name(*variant)
@@ -382,5 +390,8 @@ fn published_rows_carry_no_input_material() {
             );
         }
     }
-    assert!(!ABI_DOC.contains("-----BEGIN"), "ABI must not embed key material");
+    assert!(
+        !ABI_DOC.contains("-----BEGIN"),
+        "ABI must not embed key material"
+    );
 }

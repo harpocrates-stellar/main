@@ -1147,6 +1147,9 @@ def test_check_coverage_command_passes_on_the_repo_lock(capsys):
 def test_check_coverage_command_reports_drift(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
     _package(tmp_path, "unpinned_circuit")
+    # A lock that pins no circuit, so the single finding is the package on disk
+    # that the lock does not declare.
+    _lock_for(tmp_path, [])
     lock_path = tmp_path / "lock.json"
 
     assert am.main(["--lock", str(lock_path), "check-coverage"]) == am.EXIT_DRIFT
@@ -1168,6 +1171,9 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     target = circuit_dir / "target"
     target.mkdir()
     target.joinpath("unpinned_circuit.json").write_bytes(b'{"bytecode":"AAA"}')
+    # Same drift setup as above: a lock that pins no circuit, so the gate has
+    # to report the unpinned package rather than fail on a missing lock file.
+    _lock_for(tmp_path, [])
 
     assert am.main(["--lock", str(tmp_path / "lock.json"), "check-coverage"]) == am.EXIT_DRIFT
 

@@ -13,7 +13,9 @@ fn expected_parent_commitment(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> Byte
     pre_image[..11].copy_from_slice(&PREFIX);
     pre_image[11..43].copy_from_slice(&a.to_array());
     pre_image[43..75].copy_from_slice(&b.to_array());
-    env.crypto().sha256(&Bytes::from_array(env, &pre_image)).into()
+    env.crypto()
+        .sha256(&Bytes::from_array(env, &pre_image))
+        .into()
 }
 
 #[test]
@@ -144,7 +146,12 @@ fn rejects_compose_fanout_above_limit() {
         &bytes32(&env, 7),
         &1,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::LineageFanOutExceeded as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageFanOutExceeded as u32
+        )))
+    );
 }
 
 #[test]
@@ -169,7 +176,12 @@ fn rejects_self_referential_lineage_cycle() {
         &digest,
         &1,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::LineageCycle as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageCycle as u32
+        )))
+    );
 }
 
 #[test]
@@ -191,7 +203,12 @@ fn rejects_empty_parents() {
         &bytes32(&env, 5),
         &1,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::LineageEmptyParents as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageEmptyParents as u32
+        )))
+    );
 }
 
 #[test]
@@ -213,7 +230,12 @@ fn rejects_unknown_parent() {
         &bytes32(&env, 5),
         &1,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::InvalidLineage as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::InvalidLineage as u32
+        )))
+    );
 }
 
 #[test]
@@ -239,7 +261,12 @@ fn rejects_revoked_parent_proof() {
         &bytes32(&env, 5),
         &1,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::LineageParentUnavailable as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageParentUnavailable as u32
+        )))
+    );
 }
 
 #[test]
@@ -273,7 +300,12 @@ fn rejects_duplicate_lineage_output() {
         &output,
         &1,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::DuplicateLineage as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::DuplicateLineage as u32
+        )))
+    );
 }
 
 #[test]
@@ -298,7 +330,12 @@ fn rejects_excessive_depth() {
         &bytes32(&env, 5),
         &5,
     );
-    assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(RegistryError::LineageTooDeep as u32))));
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageTooDeep as u32
+        )))
+    );
 }
 
 #[test]

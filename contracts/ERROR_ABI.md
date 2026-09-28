@@ -129,6 +129,8 @@ new evidence before the call can succeed.
 | 78 | `DuplicateLineage` | conflict | no | The lineage output digest is already registered. |
 | 79 | `LineageChildrenLimitExceeded` | oversized | no | The `list_lineage_children` limit is zero or above the page cap. |
 | 80 | `LineageChildrenSaturated` | resource | no | The parent reached `MAX_LINEAGE_CHILDREN_PER_PARENT`. |
+| 81 | `UnsupportedCircuitVersion` | unsupported | no | The proof's circuit version is outside the active verifier's declared window. |
+| 82 | `InvalidCircuitVersionRange` | malformed | no | The requested circuit-version window is empty or outside the wasm build's range. |
 
 ## Privacy Rules
 
@@ -145,7 +147,7 @@ new evidence before the call can succeed.
 
 ## Compatibility And Migration
 
-- **Additive only.** Codes `1..=80` are frozen at this ABI version. A future change
+- **Additive only.** Codes `1..=82` are frozen at this ABI version. A future change
   that needs a new failure appends the next unused discriminant and adds a row here;
   it must not insert, reorder, or reuse a code.
 - **No storage impact.** The ABI describes revert values. It does not add storage
