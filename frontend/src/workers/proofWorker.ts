@@ -83,6 +83,7 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
           artifact_mismatch: 'ARTIFACT_MISMATCH',
           invalid_proof_output: 'INVALID_PROOF_OUTPUT',
           circuit_load_failed: 'CIRCUIT_LOAD_FAILED',
+          proof_worker_memory_exceeded: 'MEMORY_LIMIT_EXCEEDED',
           proof_generation_failed: 'PROOF_GENERATION_FAILED',
         } as const)[err.code]
       : 'PROOF_GENERATION_FAILED'

@@ -146,6 +146,17 @@ def test_invalid_public_inputs_length(lock: zb.Lock):
     assert exc.value.code == "public_inputs_len"
 
 
+def test_oversized_witness_fails_deterministically(lock: zb.Lock):
+    with pytest.raises(zb.RejectedError) as exc:
+        zb.validate_sizes(
+            proof_bytes=128,
+            public_input_bytes=160,
+            witness_bytes=lock.limits.max_witness_bytes + 1,
+            limits=lock.limits,
+        )
+    assert exc.value.code == "witness_oversized"
+
+
 def test_concurrency_capacity_rejected(lock: zb.Lock):
     with pytest.raises(zb.RejectedError) as exc:
         zb.ensure_concurrency_allowed(
