@@ -1,0 +1,116 @@
+name: conformance
+
+# Black-box protocol conformance (issue #133). Read-only, no secrets, no deployment.
+on:
+  pull_request:
+    paths:
+      - "conformance/**"
+      - "zk/vectors/**"
+      - "cli/src/**"
+      - "frontend/src/**"
+      - "contracts/ERROR_ABI.md"
+      - "contracts/METADATA_ENVELOPE.md"
+      - ".github/workflows/conformance.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integrity:
+    name: fixtures, lock, lint, suite self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install cryptography          # generator only; the runner needs nothing
+      - name: Fixtures equal a fresh regeneration (no silent regeneration)
+        run: python conformance/tools/gen_fixtures.py --check
+      - name: Hash lock, external corpora pins, synthetic-only lint
+        run: |
+          python conformance/runner/hpx_conformance.py check-lock
+          python conformance/runner/hpx_conformance.py lint
+      - name: Suite self-tests (seeded-bug detection, hostile adapters, independence)
+        run: python -m unittest discover -s conformance/tests -v
+
+  reference:
+    name: reference adapter (python)
+    needs: integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: |
+          mkdir -p reports
+          python conformance/runner/hpx_conformance.py run \
+            --adapter "python conformance/adapters/reference_py/adapter.py" --report reports/reference-py.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: report-reference-py, path: reports/ }
+
+  typescript:
+    name: shipped TypeScript (${{ matrix.impl }})
+    needs: integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        impl: [cli, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Install (the adapter imports the real cli/ and frontend/ sources)
+        run: |
+          npm ci --prefix cli
+          npm ci --prefix frontend
+          npm install --prefix conformance/adapters/ts --no-audit --no-fund
+      - name: Run
+        env:
+          HPX_IMPL: ${{ matrix.impl }}
+        run: |
+          mkdir -p reports
+          python conformance/runner/hpx_conformance.py run --allow-missing-ops \
+            --adapter "node conformance/adapters/ts/node_modules/tsx/dist/cli.mjs conformance/adapters/ts/adapter.ts" \
+            --report reports/${{ matrix.impl }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: report-${{ matrix.impl }}, path: reports/ }
+
+  publish:
+    name: compatibility matrix + bundle
+    needs: [reference, typescript]
+    if: always() && needs.integrity.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: report-*, path: reports, merge-multiple: true }
+      - name: Matrix
+        run: |
+          python conformance/runner/hpx_conformance.py matrix --reports reports --out reports/matrix.md
+          cat reports/matrix.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Bundle for independent implementers
+        run: python conformance/tools/bundle.py --out dist/harpocrates-conformance.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report-and-bundle
+          path: |
+            reports/
+            dist/

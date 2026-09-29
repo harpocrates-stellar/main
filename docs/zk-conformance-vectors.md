@@ -183,6 +183,10 @@ contract accepts. That migration must:
 restores the previous surface exactly. Nothing persists that a rolled-back
 contract would misread — the entry point writes no storage.
 
+## Wider conformance suite
+
+The `hpx-vi/1` corpus is one area of the black-box suite in `conformance/` (issue #133), which also covers metadata envelopes, manifests, receipts, Stellar encodings, events, status/revocation/expiry, lineage, network guards and the error ABI. This corpus is consumed **by reference** (pinned by SHA-256), never copied, so it stays the single source of truth. See `conformance/README.md`.
+
 ## Running the runners
 
 ```bash
@@ -267,4 +271,4 @@ errors, so the on-chain error surface discloses nothing new.
   than a JSON crate, to keep third-party code out of a contract crate. It
   depends on the generator's stable key ordering; a structurally reordered
   corpus parses as zero cases, which `corpus_is_non_empty_and_versioned`
-  rejects.
+  rejects.

@@ -1,0 +1,1275 @@
+{
+  "area": "proof-manifest",
+  "cases": [
+    {
+      "description": "Omitted verifierScope/epoch default to '0' and 0; version is always 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "41a0b888d4cbaeed58fd013c53a8f91fbba714da7a903fced6c0abb167e1981c"
+        }
+      },
+      "id": "pm-create-001-defaults",
+      "input": {
+        "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+        "metadataHash": "f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d",
+        "network": "Test SDF Network ; September 2015",
+        "proofId": "dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360",
+        "sourceHash": "b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2",
+        "tier": "silent",
+        "timestamp": "2026-01-15T12:00:00.000Z",
+        "transactionRef": "5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b",
+        "videoHash": "de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd"
+      },
+      "op": "manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "Explicit scope and epoch are kept.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":7,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"12345\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "b4d65e39e0e514a8d5e1cb8deb625b71fcc9c4fe70079b2fe867bbaf3e9c6114"
+        }
+      },
+      "id": "pm-create-002-explicit-scope",
+      "input": {
+        "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+        "epoch": 7,
+        "metadataHash": "f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d",
+        "network": "Test SDF Network ; September 2015",
+        "proofId": "dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360",
+        "sourceHash": "b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2",
+        "tier": "silent",
+        "timestamp": "2026-01-15T12:00:00.000Z",
+        "transactionRef": "5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b",
+        "verifierScope": "12345",
+        "videoHash": "de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd"
+      },
+      "op": "manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "scopeName is included when non-empty.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"scopeName\":\"Example Verifier\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "3e6818ff32bbd1e599428ad00a458d470a82bd569b3f1dc9639e57b39739aeef"
+        }
+      },
+      "id": "pm-create-003-scope-name",
+      "input": {
+        "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+        "metadataHash": "f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d",
+        "network": "Test SDF Network ; September 2015",
+        "proofId": "dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360",
+        "scopeName": "Example Verifier",
+        "sourceHash": "b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2",
+        "tier": "silent",
+        "timestamp": "2026-01-15T12:00:00.000Z",
+        "transactionRef": "5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b",
+        "videoHash": "de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd"
+      },
+      "op": "manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "An empty scopeName is omitted, not serialized as an empty string.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "41a0b888d4cbaeed58fd013c53a8f91fbba714da7a903fced6c0abb167e1981c"
+        }
+      },
+      "id": "pm-create-004-empty-scope-name-omitted",
+      "input": {
+        "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+        "metadataHash": "f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d",
+        "network": "Test SDF Network ; September 2015",
+        "proofId": "dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360",
+        "scopeName": "",
+        "sourceHash": "b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2",
+        "tier": "silent",
+        "timestamp": "2026-01-15T12:00:00.000Z",
+        "transactionRef": "5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b",
+        "videoHash": "de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd"
+      },
+      "op": "manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "Tier passes through.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"seal\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "aba387aaa86f4ba3245f6f2856e1a609059e3ccb6c2eecdbd5360620ea7caa01"
+        }
+      },
+      "id": "pm-create-005-tier-seal",
+      "input": {
+        "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+        "metadataHash": "f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d",
+        "network": "Test SDF Network ; September 2015",
+        "proofId": "dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360",
+        "sourceHash": "b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2",
+        "tier": "seal",
+        "timestamp": "2026-01-15T12:00:00.000Z",
+        "transactionRef": "5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b",
+        "videoHash": "de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd"
+      },
+      "op": "manifest_create",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "The nested disclosure object must survive serialization. The deployed `serializeManifest` (`JSON.stringify(m, Object.keys(m).sort())`) serializes it as {} because the array replacer also filters nested keys.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"selectiveDisclosure\":{\"circuitVersion\":1,\"predicateCommitment\":\"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\",\"publicInputs\":\"00ff\",\"schemaHash\":\"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\"},\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "2ef4bf9bc4a13078dc86657fa7dc25bd042870801053dc63e8abaa62bb7381a1"
+        }
+      },
+      "id": "pm-create-010-selective-disclosure",
+      "input": {
+        "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+        "metadataHash": "f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d",
+        "network": "Test SDF Network ; September 2015",
+        "proofId": "dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360",
+        "selectiveDisclosure": {
+          "circuitVersion": 1,
+          "predicateCommitment": "f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9",
+          "publicInputs": "00ff",
+          "schemaHash": "8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460"
+        },
+        "sourceHash": "b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2",
+        "tier": "silent",
+        "timestamp": "2026-01-15T12:00:00.000Z",
+        "transactionRef": "5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b",
+        "videoHash": "de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd"
+      },
+      "op": "manifest_create",
+      "tier": "advisory"
+    },
+    {
+      "description": "A complete v2 manifest.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "41a0b888d4cbaeed58fd013c53a8f91fbba714da7a903fced6c0abb167e1981c"
+        }
+      },
+      "id": "pm-pos-001-v2-minimal",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "v1 manifests have no scope or epoch and stay valid.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"version\":1,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "c19adcd0e44abda78ce736c6ee9af6f95fd677b0fb0f4b0567db2a727b997691"
+        }
+      },
+      "id": "pm-pos-002-v1-legacy",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 1, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Hex digests are case-insensitive on input and are NOT rewritten by parsing.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"DC66E3B524775982D5D8BB2D3EAEF669DD5E822A31226A0E423150AFE577D360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"DE3A9611328FE6CA26EA61BD18BAC475C380478F49FD0FE4B5F3BABF722A68CD\"}",
+          "sha256": "3a57cb026ae26274003282c6babd907701685cf5ebfc90bd2e3abaa4c9c9b439"
+        }
+      },
+      "id": "pm-pos-003-uppercase-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"DC66E3B524775982D5D8BB2D3EAEF669DD5E822A31226A0E423150AFE577D360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"DE3A9611328FE6CA26EA61BD18BAC475C380478F49FD0FE4B5F3BABF722A68CD\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Largest safe epoch, long decimal scope.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":9007199254740991,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"999999999999999999999999999999\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "a9195e44bb225ff1aacca7f346ebd071199c6b7e488bbcb0212331dd2473bc80"
+        }
+      },
+      "id": "pm-pos-004-scope-and-epoch",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"999999999999999999999999999999\", \"epoch\": 9007199254740991}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "scopeName of exactly 128 UTF-16 code units.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"scopeName\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "e7e9e8d107583e5e13c610096e29d049ddc998636344eed8653c2febee5f77cb"
+        }
+      },
+      "id": "pm-pos-005-scope-name-128",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"scopeName\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "64 emoji = 128 UTF-16 code units = 64 code points: accepted. Length is counted in UTF-16 code units.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"scopeName\":\"\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\",\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "2194928c8786a50de69daedddbb9f005ef1d220a18a380c8d38d3d754f1be6f3"
+        }
+      },
+      "id": "pm-pos-006-scope-name-64-emoji",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"scopeName\": \"\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Well-formed selective disclosure block; the canonical form must include it. Deployed `serializeManifest` drops the nested object (array replacer), so the parsed manifest re-serializes with `selectiveDisclosure: {}`.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"selectiveDisclosure\":{\"circuitVersion\":1,\"predicateCommitment\":\"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\",\"publicInputs\":\"00ff\",\"schemaHash\":\"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\"},\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "2ef4bf9bc4a13078dc86657fa7dc25bd042870801053dc63e8abaa62bb7381a1"
+        }
+      },
+      "id": "pm-pos-007-disclosure",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\", \"publicInputs\": \"00ff\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Empty publicInputs hex is accepted (same canonicalization defect as pm-pos-007).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"epoch\":0,\"metadataHash\":\"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\",\"protocol\":\"harpocrates\",\"selectiveDisclosure\":{\"circuitVersion\":1,\"predicateCommitment\":\"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\",\"publicInputs\":\"\",\"schemaHash\":\"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\"},\"sourceHash\":\"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"transactionRef\":\"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\"}",
+          "sha256": "4981d823b07b6b056be55b7ad90352b879353a6eededf7e4be5e25456d4494cc"
+        }
+      },
+      "id": "pm-pos-008-disclosure-empty-public-inputs",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\", \"publicInputs\": \"\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "description": "Not JSON.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "pm-neg-001-not-json",
+      "input": {
+        "text": "{nope"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Top level must be an object.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "pm-neg-002-array",
+      "input": {
+        "text": "[]"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "null.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "pm-neg-003-null",
+      "input": {
+        "text": "null"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "A JSON string.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "pm-neg-004-string",
+      "input": {
+        "text": "\"harpocrates\""
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Manifests are closed: unknown top-level fields are rejected.",
+      "expect": {
+        "code": "unsupported_field",
+        "ok": false
+      },
+      "id": "pm-neg-005-unsupported-field",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"extra\": 1}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "A smuggled signature field is rejected, not ignored.",
+      "expect": {
+        "code": "unsupported_field",
+        "ok": false
+      },
+      "id": "pm-neg-006-signature-field",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"signature\": \"00\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Protocol is case-sensitive.",
+      "expect": {
+        "code": "bad_protocol",
+        "ok": false
+      },
+      "id": "pm-neg-010-protocol-case",
+      "input": {
+        "text": "{\"protocol\": \"Harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Future versions fail closed.",
+      "expect": {
+        "code": "unsupported_version",
+        "ok": false
+      },
+      "id": "pm-neg-011-version-3",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 3, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Version 0.",
+      "expect": {
+        "code": "unsupported_version",
+        "ok": false
+      },
+      "id": "pm-neg-012-version-0",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 0, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Version must be the number 2 (or 1).",
+      "expect": {
+        "code": "unsupported_version",
+        "ok": false
+      },
+      "id": "pm-neg-013-version-string",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": \"2\", \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown tier.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "pm-neg-014-tier-unknown",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"gold\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Numeric tier.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "pm-neg-015-tier-numeric",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": 1, \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "proofId is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "proofId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-020-empty-proofId",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "network is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "network"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-021-empty-network",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "contractId is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "contractId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-022-empty-contractId",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "transactionRef is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "transactionRef"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-023-empty-transactionRef",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "videoHash is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "videoHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-024-empty-videoHash",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "metadataHash is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "metadataHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-025-empty-metadataHash",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "sourceHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-026-empty-sourceHash",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "timestamp is empty.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "timestamp"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-027-empty-timestamp",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Missing network.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "network"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-028-missing-network",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Non-string contractId.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "contractId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-029-contract-id-number",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": 5, \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: 63 hex chars.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "proofId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-030-proofId-short",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"86c30e356864d46a4514a37d5dc710305ce78325f7adff4688264dbb163a9e8\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: non-hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "proofId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-031-proofId-non-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"g6c30e356864d46a4514a37d5dc710305ce78325f7adff4688264dbb163a9e84\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: trailing newline (Python `$` matches before it).",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "proofId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-032-proofId-trailing-newline",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"86c30e356864d46a4514a37d5dc710305ce78325f7adff4688264dbb163a9e84\\n\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: 0x prefix.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "proofId"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-033-proofId-0x",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"0xc30e356864d46a4514a37d5dc710305ce78325f7adff4688264dbb163a9e84\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "videoHash: 63 hex chars.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "videoHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-035-videoHash-short",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"2fdd37b414d13aed4861af63dcafe09dbbad33de5ba78930a0a4a0745a4cdf8\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "videoHash: non-hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "videoHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-036-videoHash-non-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"gfdd37b414d13aed4861af63dcafe09dbbad33de5ba78930a0a4a0745a4cdf8d\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "videoHash: trailing newline (Python `$` matches before it).",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "videoHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-037-videoHash-trailing-newline",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"2fdd37b414d13aed4861af63dcafe09dbbad33de5ba78930a0a4a0745a4cdf8d\\n\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "videoHash: 0x prefix.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "videoHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-038-videoHash-0x",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"0xdd37b414d13aed4861af63dcafe09dbbad33de5ba78930a0a4a0745a4cdf8d\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "metadataHash: 63 hex chars.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "metadataHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-040-metadataHash-short",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"c15f51f59df38c11270bd19c0b90a1b31b83cfbd5ac3930a3696ad610dd1a61\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "metadataHash: non-hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "metadataHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-041-metadataHash-non-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"g15f51f59df38c11270bd19c0b90a1b31b83cfbd5ac3930a3696ad610dd1a610\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "metadataHash: trailing newline (Python `$` matches before it).",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "metadataHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-042-metadataHash-trailing-newline",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"c15f51f59df38c11270bd19c0b90a1b31b83cfbd5ac3930a3696ad610dd1a610\\n\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "metadataHash: 0x prefix.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "metadataHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-043-metadataHash-0x",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"0x5f51f59df38c11270bd19c0b90a1b31b83cfbd5ac3930a3696ad610dd1a610\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: 63 hex chars.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "sourceHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-045-sourceHash-short",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"311b43ef1ecbcf6d2b7bf1570741f0ac8a5e2a60ea3b087d5a1fd4ee6c0a3b8\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: non-hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "sourceHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-046-sourceHash-non-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"g11b43ef1ecbcf6d2b7bf1570741f0ac8a5e2a60ea3b087d5a1fd4ee6c0a3b85\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: trailing newline (Python `$` matches before it).",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "sourceHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-047-sourceHash-trailing-newline",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"311b43ef1ecbcf6d2b7bf1570741f0ac8a5e2a60ea3b087d5a1fd4ee6c0a3b85\\n\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: 0x prefix.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "sourceHash"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-048-sourceHash-0x",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"0x1b43ef1ecbcf6d2b7bf1570741f0ac8a5e2a60ea3b087d5a1fd4ee6c0a3b85\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "transactionRef: 63 hex chars.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "transactionRef"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-050-transactionRef-short",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"d1628a6724c897fa24c6566505bf36a6faf1b87dc52301128fc6ac6d1884c53\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "transactionRef: non-hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "transactionRef"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-051-transactionRef-non-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"g1628a6724c897fa24c6566505bf36a6faf1b87dc52301128fc6ac6d1884c535\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "transactionRef: trailing newline (Python `$` matches before it).",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "transactionRef"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-052-transactionRef-trailing-newline",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"d1628a6724c897fa24c6566505bf36a6faf1b87dc52301128fc6ac6d1884c535\\n\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "transactionRef: 0x prefix.",
+      "expect": {
+        "code": "bad_hex32",
+        "detail": {
+          "field": "transactionRef"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-053-transactionRef-0x",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"0x628a6724c897fa24c6566505bf36a6faf1b87dc52301128fc6ac6d1884c535\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Two faults: every string field is checked before any hex field.",
+      "expect": {
+        "code": "bad_string_field",
+        "detail": {
+          "field": "network"
+        },
+        "ok": false
+      },
+      "id": "pm-neg-060-order-string-before-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"zz\", \"tier\": \"silent\", \"network\": \"\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Tier is checked before field contents.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "pm-neg-061-order-tier-before-fields",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"\", \"tier\": \"gold\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Unparseable timestamp.",
+      "expect": {
+        "code": "bad_timestamp",
+        "ok": false
+      },
+      "id": "pm-neg-070-timestamp-garbage",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"not-a-date\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Impossible calendar date.",
+      "expect": {
+        "code": "bad_timestamp",
+        "ok": false
+      },
+      "id": "pm-neg-071-timestamp-month-13",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-13-45T00:00:00Z\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Deployed `Date.parse` accepts many non-ISO strings ('2026', 'Jan 1 2026'); require RFC 3339.",
+      "expect": {
+        "code": "bad_timestamp",
+        "ok": false
+      },
+      "id": "pm-neg-072-timestamp-year-only",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026\", \"verifierScope\": \"0\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "description": "Decimal scope must be canonical (no leading zero).",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-080-scope-leading-zero",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"01\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Negative scope.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-081-scope-negative",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"-1\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Scope must be a decimal string.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-082-scope-number",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": 0, \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "v2 requires verifierScope.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-083-scope-missing",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "v2 requires epoch.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-084-epoch-missing",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Negative epoch.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-085-epoch-negative",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": -1}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Fractional epoch.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-086-epoch-fractional",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 1.5}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "String epoch.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-087-epoch-string",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": \"0\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Epoch 2^53 is not a safe integer.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-088-epoch-unsafe",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 9007199254740992}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "The scope is a BN254 field element; a value >= the modulus is non-canonical. Deployed parsing only checks the decimal shape.",
+      "expect": {
+        "code": "bad_scope_epoch",
+        "ok": false
+      },
+      "id": "pm-neg-089-scope-at-modulus",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"21888242871839275222246405745257275088548364400416034343698204186575808495617\", \"epoch\": 0}"
+      },
+      "op": "manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "description": "129 code units.",
+      "expect": {
+        "code": "bad_scope_name",
+        "ok": false
+      },
+      "id": "pm-neg-090-scope-name-129",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"scopeName\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "65 emoji = 130 UTF-16 code units but only 65 code points. Length is measured in UTF-16 code units (deployed JS `.length`); a code-point counter would wrongly accept this.",
+      "expect": {
+        "code": "bad_scope_name",
+        "ok": false
+      },
+      "id": "pm-neg-091-scope-name-65-emoji",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"scopeName\": \"\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\\ud83d\\ude00\"}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Non-string scopeName.",
+      "expect": {
+        "code": "bad_scope_name",
+        "ok": false
+      },
+      "id": "pm-neg-092-scope-name-number",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"scopeName\": 5}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "null disclosure.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-100-disclosure-null",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": null}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Array disclosure.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-101-disclosure-array",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": []}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown disclosure key.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-102-disclosure-extra-key",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\", \"publicInputs\": \"00ff\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1, \"extra\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Missing schemaHash.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-103-disclosure-missing-schema",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"publicInputs\": \"00ff\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Short schemaHash.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-104-disclosure-short-hash",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"736c06c969e03d782b116fcbc73350b2542d63e50fef165e50eadc95d1232f\", \"publicInputs\": \"00ff\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Non-hex publicInputs.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-105-disclosure-non-hex-inputs",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\", \"publicInputs\": \"0g\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "description": "Fractional circuitVersion.",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-106-disclosure-circuit-fractional",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\", \"publicInputs\": \"00ff\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1.5}}"
+      },
+      "op": "manifest_parse",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Odd-length hex is not a byte string; deployed parsing accepts it (regex only).",
+      "expect": {
+        "code": "bad_disclosure",
+        "ok": false
+      },
+      "id": "pm-neg-107-disclosure-odd-public-inputs",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"proofId\": \"dc66e3b524775982d5d8bb2d3eaef669dd5e822a31226a0e423150afe577d360\", \"tier\": \"silent\", \"network\": \"Test SDF Network ; September 2015\", \"contractId\": \"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\", \"transactionRef\": \"5107a862d814012783a387445ce7e4ada61d81046234ebc3c3383d87280a7c4b\", \"videoHash\": \"de3a9611328fe6ca26ea61bd18bac475c380478f49fd0fe4b5f3babf722a68cd\", \"metadataHash\": \"f7a53cee0ffe6a238a5f852e8a71f9f45905ca7e98807320c17aebd4c64f765d\", \"sourceHash\": \"b268e360b464f00e02a1c9bf39af294decf6e887acfea1304663fb7ec0e69bb2\", \"timestamp\": \"2026-01-15T12:00:00.000Z\", \"verifierScope\": \"0\", \"epoch\": 0, \"selectiveDisclosure\": {\"schemaHash\": \"8d5b0785c546500cd3807aac83a74c84219119f5c903fb43429416a5d03c5460\", \"publicInputs\": \"abc\", \"predicateCommitment\": \"f09bb936e16aadf04498e1d7d4cbb63f6b3e5d05e303fd4464b2bccbc9fde7d9\", \"circuitVersion\": 1}}"
+      },
+      "op": "manifest_parse",
+      "tier": "advisory"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Proof manifest creation, serialization, and strict parsing"
+}

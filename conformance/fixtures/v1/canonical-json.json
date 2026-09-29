@@ -1,0 +1,467 @@
+{
+  "area": "canonical-json",
+  "cases": [
+    {
+      "description": "Keys are sorted.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"a\":2,\"b\":1}",
+          "sha256": "d3626ac30a87e6f7a6428233b3c68299976865fa5508e4267c5415c76af7a772"
+        }
+      },
+      "id": "cj-pos-001-flat-sorted",
+      "input": {
+        "json_text": "{\"b\":1,\"a\":2}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Sorting is recursive, including objects inside arrays.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"a\":[{\"p\":2,\"q\":1}],\"z\":{\"x\":{\"c\":2,\"d\":1},\"y\":1}}",
+          "sha256": "b2dec6eef72f256454d3633ba15b1c63be6dd43c990182397bf989d8a4d41f0c"
+        }
+      },
+      "id": "cj-pos-002-nested-sorted",
+      "input": {
+        "json_text": "{\"z\":{\"y\":1,\"x\":{\"d\":1,\"c\":2}},\"a\":[{\"q\":1,\"p\":2}]}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Array element order is significant and preserved.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "[3,1,2,{\"a\":2,\"b\":1}]",
+          "sha256": "5e21d54df1a71703f6f25216ff0c5dbd78bca73255f936a50c0128cb5e801c5b"
+        }
+      },
+      "id": "cj-pos-003-array-order-kept",
+      "input": {
+        "json_text": "[3,1,2,{\"b\":1,\"a\":2}]"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Insignificant input whitespace never reaches the output.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"a\":null,\"b\":[1,2]}",
+          "sha256": "ee743f2fa2570a1b5e3270cc405d0456b983ba03ab9cb27552fc6c1a720183c7"
+        }
+      },
+      "id": "cj-pos-004-input-whitespace",
+      "input": {
+        "json_text": " {\n \"b\" : [ 1 , 2 ],\t\"a\" : null } "
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Non-ASCII is emitted literally, not as \\uXXXX (ensure_ascii=False).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"k\":\"caf\u00e9\"}",
+          "sha256": "2303df0176226e83b89fa2a9311d76a8a4c29b0e8ae83ffaa0e431fa4f8b5359"
+        }
+      },
+      "id": "cj-pos-005-utf8-literal",
+      "input": {
+        "json_text": "{\"k\":\"caf\\u00e9\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Surrogate-pair escapes decode to one literal astral character.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"k\":\"\ud83d\ude00\"}",
+          "sha256": "f073f1f05c0a1e01bf604e8ec5f389a64fdeb334e00f9456008269e852b1ff4a"
+        }
+      },
+      "id": "cj-pos-006-astral-literal",
+      "input": {
+        "json_text": "{\"k\":\"\\ud83d\\ude00\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Keys sort by UTF-16 code units: U+1F600 (D83D..) sorts before U+FF5E. Code-point order (the Python default) puts them the other way round.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"\ud83d\ude00\":2,\"\uff5e\":1}",
+          "sha256": "c44a324298283d910e4120a2ff3c2d7746b4a5c9f2d9625c67f6abb58748cf31"
+        }
+      },
+      "id": "cj-pos-007-key-order-utf16",
+      "input": {
+        "json_text": "{\"\\uff5e\":1,\"\\ud83d\\ude00\":2}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Control chars use short escapes or lowercase \\u00xx; DEL is literal.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"k\":\"a\\u001fb\\nc\\u0000d\u007f\"}",
+          "sha256": "a55a4f1187a36d57d6869315e5205f48cc51e6fa035689f0b7d4fda499880c60"
+        }
+      },
+      "id": "cj-pos-008-control-escapes",
+      "input": {
+        "json_text": "{\"k\":\"a\\u001fb\\nc\\u0000d\\u007f\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Solidus is never escaped.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"k\":\"a/b\"}",
+          "sha256": "2df8c51747b2319a3820aea161c47aa9641e8d555a69da59ed5c7c4a1b5f6e3d"
+        }
+      },
+      "id": "cj-pos-009-solidus-literal",
+      "input": {
+        "json_text": "{\"k\":\"a\\/b\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "U+2028/U+2029 stay literal (JSON.stringify does not escape them).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"k\":\"\u2028\u2029\"}",
+          "sha256": "4bce7ce75d13dc32564fdce8d75f8bee43d0dc94b9dc5bcf73d249dc49ebe1f7"
+        }
+      },
+      "id": "cj-pos-010-line-separators",
+      "input": {
+        "json_text": "{\"k\":\"\\u2028\\u2029\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Negative zero canonicalizes to 0.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"a\":-5,\"b\":0,\"c\":0}",
+          "sha256": "9bfd31c685f9dc054e70a8504ac2ebb02c2a391a1c5f74ae7ce66859a88d3dcd"
+        }
+      },
+      "id": "cj-pos-011-negative-and-zero",
+      "input": {
+        "json_text": "{\"a\":-5,\"b\":0,\"c\":-0}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "true/false/null pass through.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"f\":false,\"n\":null,\"t\":true}",
+          "sha256": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e"
+        }
+      },
+      "id": "cj-pos-012-literals",
+      "input": {
+        "json_text": "{\"t\":true,\"f\":false,\"n\":null}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Empty containers.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"a\":[],\"o\":{}}",
+          "sha256": "9bee7ebfc94b459dacb8cbc72cb2900e61f0aa42189df18329f84f92568f4f89"
+        }
+      },
+      "id": "cj-pos-013-empty-containers",
+      "input": {
+        "json_text": "{\"o\":{},\"a\":[]}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Largest exactly-representable integers.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "[9007199254740991,-9007199254740991]",
+          "sha256": "84bad60c1793654a7cdca854230af90af531ecc8f7656e2c7b2bd91890017b37"
+        }
+      },
+      "id": "cj-pos-014-max-safe-int",
+      "input": {
+        "json_text": "[9007199254740991,-9007199254740991]"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Keys are unescaped before sorting.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"a\":2,\"b\":1}",
+          "sha256": "d3626ac30a87e6f7a6428233b3c68299976865fa5508e4267c5415c76af7a772"
+        }
+      },
+      "id": "cj-pos-015-escaped-key",
+      "input": {
+        "json_text": "{\"\\u0062\":1,\"a\":2}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "No Unicode normalization: e + U+0301 stays two code points.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"k\":\"e\u0301\"}",
+          "sha256": "4cb477ab754099c91e4c79f77deaab085090978b8abbc981c8eefde872575da8"
+        }
+      },
+      "id": "cj-pos-016-combining-not-normalized",
+      "input": {
+        "json_text": "{\"k\":\"e\\u0301\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing comma.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-020-trailing-comma",
+      "input": {
+        "json_text": "{\"a\":1,}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Empty input.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-021-empty-text",
+      "input": {
+        "json_text": ""
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing bytes after the value.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-022-trailing-garbage",
+      "input": {
+        "json_text": "{\"a\":1} x"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "NaN is not JSON.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-023-nan-literal",
+      "input": {
+        "json_text": "{\"a\":NaN}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "A byte-order mark is not JSON whitespace.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-024-bom-prefix",
+      "input": {
+        "json_text": "\ufeff{\"a\":1}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Single-quoted strings.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-025-single-quotes",
+      "input": {
+        "json_text": "{'a':1}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Unquoted key.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-026-unquoted-key",
+      "input": {
+        "json_text": "{a:1}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Leading zero.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-027-leading-zero",
+      "input": {
+        "json_text": "{\"a\":01}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "description": "Raw TAB inside a string.",
+      "expect": {
+        "code": "invalid_json",
+        "ok": false
+      },
+      "id": "cj-neg-028-raw-control-in-string",
+      "input": {
+        "json_text": "{\"a\":\"x\ty\"}"
+      },
+      "op": "canonicalize",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "1.0 prints as 1 in JS and 1.0 in Python; forbid non-integers.",
+      "expect": {
+        "code": "unsupported_number",
+        "ok": false
+      },
+      "id": "cj-neg-030-float-integral",
+      "input": {
+        "json_text": "{\"a\":1.0}"
+      },
+      "op": "canonicalize",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Exponent form is engine-dependent.",
+      "expect": {
+        "code": "unsupported_number",
+        "ok": false
+      },
+      "id": "cj-neg-031-exponent",
+      "input": {
+        "json_text": "{\"a\":1e2}"
+      },
+      "op": "canonicalize",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "JS rounds beyond 2^53-1 silently; Python keeps the exact value.",
+      "expect": {
+        "code": "unsupported_number",
+        "ok": false
+      },
+      "id": "cj-neg-032-beyond-safe-int",
+      "input": {
+        "json_text": "{\"a\":9007199254740992}"
+      },
+      "op": "canonicalize",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "JS and Python keep the last value, Rust serde rejects; ambiguity must be an error.",
+      "expect": {
+        "code": "duplicate_key",
+        "ok": false
+      },
+      "id": "cj-neg-033-duplicate-keys",
+      "input": {
+        "json_text": "{\"a\":1,\"a\":2}"
+      },
+      "op": "canonicalize",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "A lone surrogate has no UTF-8 encoding; Python raises on encode, JS emits \\ud800.",
+      "expect": {
+        "code": "invalid_unicode",
+        "ok": false
+      },
+      "id": "cj-neg-034-lone-surrogate",
+      "input": {
+        "json_text": "{\"a\":\"\\ud800\"}"
+      },
+      "op": "canonicalize",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Bounded resource use: depth > 64 is rejected.",
+      "expect": {
+        "code": "nesting_too_deep",
+        "ok": false
+      },
+      "id": "cj-neg-035-nesting-too-deep",
+      "input": {
+        "json_text": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+      },
+      "op": "canonicalize",
+      "tier": "advisory"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Canonical JSON (hpx-cj/1) byte-exactness"
+}

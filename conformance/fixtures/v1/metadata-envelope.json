@@ -1,0 +1,1340 @@
+{
+  "area": "metadata-envelope",
+  "cases": [
+    {
+      "description": "All six required fields, tier silent.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "me-pos-001-minimal",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Tier source.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "me-pos-002-tier-source",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "source",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Tier seal.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "me-pos-003-tier-seal",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "seal",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Hex digests are case-insensitive on input.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "me-pos-004-uppercase-hex",
+      "input": {
+        "metadata": {
+          "proofId": "DFDB4B20CE7587CE77B673471F3959300978A486C059F0646EF499B45A95F5EF",
+          "protocol": "harpocrates",
+          "sourceHash": "B0336DC95106955F2CC33D9EBCB3513B4081F923E829C34BBF7E8D3DFD6FBE0A",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown keys are tolerated: metadata is the extension point.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "me-pos-005-extension-keys",
+      "input": {
+        "metadata": {
+          "extensions": {
+            "n": 1,
+            "note": "synthetic"
+          },
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1,
+          "x_extra": true
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Layer-local validation accepts any numeric version; envelope support is a separate check (envelope_version_check).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "me-pos-006-version-2",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 2
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "null is not an object.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "me-neg-001-null",
+      "input": {
+        "metadata": null
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "A string is not an object.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "me-neg-002-string",
+      "input": {
+        "metadata": "harpocrates"
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "A number is not an object.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "me-neg-003-number",
+      "input": {
+        "metadata": 7
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing protocol.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "protocol"
+        },
+        "ok": false
+      },
+      "id": "me-neg-010-missing-protocol",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing version.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "version"
+        },
+        "ok": false
+      },
+      "id": "me-neg-011-missing-version",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z"
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing tier.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "me-neg-012-missing-tier",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing sourceHash.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "sourceHash"
+        },
+        "ok": false
+      },
+      "id": "me-neg-013-missing-sourceHash",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing proofId.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "proofId"
+        },
+        "ok": false
+      },
+      "id": "me-neg-014-missing-proofId",
+      "input": {
+        "metadata": {
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing timestamp.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "timestamp"
+        },
+        "ok": false
+      },
+      "id": "me-neg-015-missing-timestamp",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Protocol is case-sensitive.",
+      "expect": {
+        "code": "bad_protocol",
+        "ok": false
+      },
+      "id": "me-neg-020-protocol-case",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "Harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Foreign protocol id.",
+      "expect": {
+        "code": "bad_protocol",
+        "ok": false
+      },
+      "id": "me-neg-021-protocol-other",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "other",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Version must be a JSON number.",
+      "expect": {
+        "code": "bad_version",
+        "ok": false
+      },
+      "id": "me-neg-022-version-string",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": "1"
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "null version.",
+      "expect": {
+        "code": "bad_version",
+        "ok": false
+      },
+      "id": "me-neg-023-version-null",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": null
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown tier.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "me-neg-024-tier-unknown",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "gold",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Tier is case-sensitive.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "me-neg-025-tier-case",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "Silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Numeric tier is not the wire form.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "me-neg-026-tier-numeric",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": 1,
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: 63 hex chars.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-030-sourceHash-short",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "0c5f505da23de81ff316ff30444f33269e51bb75c6698f1d1c3e34e4da37668",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: 65 hex chars.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-031-sourceHash-long",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "0c5f505da23de81ff316ff30444f33269e51bb75c6698f1d1c3e34e4da3766890",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: non-hex char.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-032-sourceHash-non-hex",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "gc5f505da23de81ff316ff30444f33269e51bb75c6698f1d1c3e34e4da376689",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: trailing newline. Python `re.match('^...$')` accepts this; JS does not. Use fullmatch.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-033-sourceHash-trailing-newline",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "0c5f505da23de81ff316ff30444f33269e51bb75c6698f1d1c3e34e4da376689\n",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: 0x prefix.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-034-sourceHash-0x-prefix",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "0x5f505da23de81ff316ff30444f33269e51bb75c6698f1d1c3e34e4da376689",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: not a string.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-035-sourceHash-number",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": 5,
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "sourceHash: fullwidth digits (U+FF10) are not hex; Python str.isdigit/int() would accept them.",
+      "expect": {
+        "code": "bad_source_hash",
+        "ok": false
+      },
+      "id": "me-neg-036-sourceHash-fullwidth",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: 63 hex chars.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-040-proofId-short",
+      "input": {
+        "metadata": {
+          "proofId": "d7b6b7a1cce2e073f78f34623fd4626f5311b1170523043d40ae2c9fff13839",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: 65 hex chars.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-041-proofId-long",
+      "input": {
+        "metadata": {
+          "proofId": "d7b6b7a1cce2e073f78f34623fd4626f5311b1170523043d40ae2c9fff1383970",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: non-hex char.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-042-proofId-non-hex",
+      "input": {
+        "metadata": {
+          "proofId": "g7b6b7a1cce2e073f78f34623fd4626f5311b1170523043d40ae2c9fff138397",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: trailing newline. Python `re.match('^...$')` accepts this; JS does not. Use fullmatch.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-043-proofId-trailing-newline",
+      "input": {
+        "metadata": {
+          "proofId": "d7b6b7a1cce2e073f78f34623fd4626f5311b1170523043d40ae2c9fff138397\n",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: 0x prefix.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-044-proofId-0x-prefix",
+      "input": {
+        "metadata": {
+          "proofId": "0xb6b7a1cce2e073f78f34623fd4626f5311b1170523043d40ae2c9fff138397",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: not a string.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-045-proofId-number",
+      "input": {
+        "metadata": {
+          "proofId": 5,
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "proofId: fullwidth digits (U+FF10) are not hex; Python str.isdigit/int() would accept them.",
+      "expect": {
+        "code": "bad_proof_id",
+        "ok": false
+      },
+      "id": "me-neg-046-proofId-fullwidth",
+      "input": {
+        "metadata": {
+          "proofId": "\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Two faults: tier is reported before sourceHash.",
+      "expect": {
+        "code": "bad_tier",
+        "ok": false
+      },
+      "id": "me-neg-050-order-tier-before-hash",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "zz",
+          "tier": "gold",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing-field scan precedes value checks.",
+      "expect": {
+        "code": "missing_field",
+        "detail": {
+          "field": "timestamp"
+        },
+        "ok": false
+      },
+      "id": "me-neg-051-order-missing-before-protocol",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "x",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Deployed validation ignores timestamp entirely.",
+      "expect": {
+        "code": "bad_timestamp",
+        "ok": false
+      },
+      "id": "me-neg-060-timestamp-number",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": 12345,
+          "version": 1
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Deployed validation accepts any number, including 0, -1 and 1.5.",
+      "expect": {
+        "code": "bad_version",
+        "ok": false
+      },
+      "id": "me-neg-061-version-zero",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 0
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Fractional version.",
+      "expect": {
+        "code": "bad_version",
+        "ok": false
+      },
+      "id": "me-neg-062-version-fractional",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1.5
+        }
+      },
+      "op": "metadata_validate",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Deployed code reports missing_field for arrays because typeof [] is 'object'.",
+      "expect": {
+        "code": "not_object",
+        "ok": false
+      },
+      "id": "me-neg-063-array-input",
+      "input": {
+        "metadata": []
+      },
+      "op": "metadata_validate",
+      "tier": "advisory"
+    },
+    {
+      "description": "Flat metadata: sorted keys, no whitespace, sha256 of the UTF-8 bytes.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"proofId\":\"dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"version\":1}",
+          "sha256": "2b51f73cb7b6361ab7dea1884f76d6053dd5f2a5c252c9b4ede720d3c9e85043"
+        }
+      },
+      "id": "me-hash-001-flat",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_hash",
+      "tier": "required"
+    },
+    {
+      "description": "Scalar extension keys are hashed.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"proofId\":\"dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"version\":1,\"x_n\":3,\"x_note\":\"synthetic\"}",
+          "sha256": "1d69e5082136ea48c4004a2b59a6387a8bfa3f0306f0e1f3b7244922ab682778"
+        }
+      },
+      "id": "me-hash-002-flat-extension-scalar",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1,
+          "x_n": 3,
+          "x_note": "synthetic"
+        }
+      },
+      "op": "metadata_hash",
+      "tier": "required"
+    },
+    {
+      "description": "Non-ASCII stays literal UTF-8 in the hashed bytes (backend must not use ensure_ascii=True).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"proofId\":\"dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"version\":1,\"x_label\":\"caf\u00e9 \u2603\"}",
+          "sha256": "664ba5f0d7c1801fd10280a2390343b435f0d6928d3ddf973cb86927a0dcb93b"
+        }
+      },
+      "id": "me-hash-003-non-ascii-value",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1,
+          "x_label": "caf\u00e9 \u2603"
+        }
+      },
+      "op": "metadata_hash",
+      "tier": "required"
+    },
+    {
+      "description": "Insertion order of the input never changes the hash.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"proofId\":\"dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"version\":1}",
+          "sha256": "2b51f73cb7b6361ab7dea1884f76d6053dd5f2a5c252c9b4ede720d3c9e85043"
+        }
+      },
+      "id": "me-hash-004-key-order-independent",
+      "input": {
+        "metadata": {
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_hash",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Nested extension objects must contribute to the hash. The deployed TypeScript `canonicalMetadataHash` uses an array replacer that silently DROPS nested keys, so `extensions` hashes as {}.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"extensions\":{\"b\":1,\"note\":\"synthetic\"},\"proofId\":\"dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"version\":1}",
+          "sha256": "55b308ebcb643bccf9f633315f9185fe51faf895779449a20f468ade36d2a1ef"
+        }
+      },
+      "id": "me-hash-010-nested-extension-object",
+      "input": {
+        "metadata": {
+          "extensions": {
+            "b": 1,
+            "note": "synthetic"
+          },
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_hash",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Only nested keys that happen to equal a top-level key survive the deployed replacer.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"extensions\":{\"tier\":\"shadow\",\"zeta\":1},\"proofId\":\"dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef\",\"protocol\":\"harpocrates\",\"sourceHash\":\"b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a\",\"tier\":\"silent\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"version\":1}",
+          "sha256": "93e1dcace365369d5b11a2dfeda4803b33969dcaf8929f54ab39fa9d1f201127"
+        }
+      },
+      "id": "me-hash-011-nested-key-collides-with-top-level",
+      "input": {
+        "metadata": {
+          "extensions": {
+            "tier": "shadow",
+            "zeta": 1
+          },
+          "proofId": "dfdb4b20ce7587ce77b673471f3959300978a486c059f0646ef499b45a95f5ef",
+          "protocol": "harpocrates",
+          "sourceHash": "b0336dc95106955f2cc33d9ebcb3513b4081f923e829c34bbf7e8d3dfd6fbe0a",
+          "tier": "silent",
+          "timestamp": "2026-01-15T12:00:00.000Z",
+          "version": 1
+        }
+      },
+      "op": "metadata_hash",
+      "tier": "advisory"
+    },
+    {
+      "description": "Envelope version 1 is supported.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "supported": true
+        }
+      },
+      "id": "me-env-pos-001-supported-v1",
+      "input": {
+        "version": 1
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "Envelope version 2 is supported.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "supported": true
+        }
+      },
+      "id": "me-env-pos-002-supported-v2",
+      "input": {
+        "version": 2
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "Version 0 fails closed (#68).",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-env-neg-003-zero",
+      "input": {
+        "version": 0
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "Version 3 fails closed (#68).",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-env-neg-004-above-max",
+      "input": {
+        "version": 3
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "Version 4294967295 fails closed (#68).",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-env-neg-005-u32-max",
+      "input": {
+        "version": 4294967295
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "A negative version is not a u32 and fails closed.",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-env-neg-006-negative",
+      "input": {
+        "version": -1
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "A fractional version fails closed.",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-env-neg-007-fractional",
+      "input": {
+        "version": 1.5
+      },
+      "op": "envelope_version_check",
+      "tier": "required"
+    },
+    {
+      "description": "Stored row wins.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "version": 2
+        }
+      },
+      "id": "me-res-001-stored-v2",
+      "input": {
+        "proof_exists": true,
+        "stored_version": 2
+      },
+      "op": "envelope_version_resolve",
+      "tier": "required"
+    },
+    {
+      "description": "Proof without a row is V1.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "version": 1
+        }
+      },
+      "id": "me-res-002-legacy-no-row",
+      "input": {
+        "proof_exists": true,
+        "stored_version": null
+      },
+      "op": "envelope_version_resolve",
+      "tier": "required"
+    },
+    {
+      "description": "0 means unknown proof.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "version": 0
+        }
+      },
+      "id": "me-res-003-unknown-proof",
+      "input": {
+        "proof_exists": false,
+        "stored_version": null
+      },
+      "op": "envelope_version_resolve",
+      "tier": "required"
+    },
+    {
+      "description": "First bind may set any supported version.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "bound",
+          "version": 2
+        }
+      },
+      "id": "me-bind-001-first-v2",
+      "input": {
+        "current_hash": null,
+        "current_version": null,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "v1 -> v2 upgrade emits one upgrade event.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "upgraded",
+          "version": 2
+        }
+      },
+      "id": "me-bind-002-upgrade",
+      "input": {
+        "current_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "current_version": 1,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Re-bind of identical data is a no-op with no event.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "none",
+          "version": 2
+        }
+      },
+      "id": "me-bind-003-idempotent",
+      "input": {
+        "current_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "current_version": 2,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Downgrade fails closed (#68).",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-bind-004-downgrade",
+      "input": {
+        "current_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "current_version": 2,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 1
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown proof (#70).",
+      "expect": {
+        "code": "metadata_envelope_not_found",
+        "ok": false
+      },
+      "id": "me-bind-005-unknown-proof",
+      "input": {
+        "current_hash": null,
+        "current_version": null,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": false,
+        "stored_hash": null,
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "All-zero hash (#69).",
+      "expect": {
+        "code": "invalid_metadata_envelope",
+        "ok": false
+      },
+      "id": "me-bind-006-zero-hash",
+      "input": {
+        "current_hash": null,
+        "current_version": null,
+        "metadata_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Hash differs from the stored proof hash (#71).",
+      "expect": {
+        "code": "metadata_envelope_hash_mismatch",
+        "ok": false
+      },
+      "id": "me-bind-007-hash-mismatch",
+      "input": {
+        "current_hash": null,
+        "current_version": null,
+        "metadata_hash": "6a3c11e7d6b76b9ad1d9ad8084ae268845ab2b8743e773ed1254b5b3e8defa1d",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Version above max (#68) is checked before the hash.",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-bind-008-unsupported-version",
+      "input": {
+        "current_hash": null,
+        "current_version": null,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 9
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: proof exists, version supported, non-zero hash, hash matches, then downgrade rules.",
+      "expect": {
+        "code": "unsupported_metadata_envelope_version",
+        "ok": false
+      },
+      "id": "me-bind-009-version-checked-before-zero-hash",
+      "input": {
+        "current_hash": null,
+        "current_version": null,
+        "metadata_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 0
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    },
+    {
+      "description": "Same-version hash edits go through correct_proof, never through bind (#71).",
+      "expect": {
+        "code": "metadata_envelope_hash_mismatch",
+        "ok": false
+      },
+      "id": "me-bind-010-same-version-different-row-hash",
+      "input": {
+        "current_hash": "6a3c11e7d6b76b9ad1d9ad8084ae268845ab2b8743e773ed1254b5b3e8defa1d",
+        "current_version": 2,
+        "metadata_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "proof_exists": true,
+        "stored_hash": "da2836b5bc84913c1008e8b6bc331f137cfeba88ad10444e092ab80a2752a22f",
+        "version": 2
+      },
+      "op": "envelope_bind",
+      "tier": "required"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Metadata validation, canonical hash, and envelope-version semantics"
+}

@@ -1,0 +1,1628 @@
+{
+  "area": "error-abi",
+  "cases": [
+    {
+      "description": "Code 1 is `AlreadyInitialized` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "AlreadyInitialized",
+          "reason_code": "already_initialized",
+          "retryable": false
+        }
+      },
+      "id": "ea-001-already_initialized",
+      "input": {
+        "code": 1
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 2 is `NotInitialized` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "NotInitialized",
+          "reason_code": "not_initialized",
+          "retryable": false
+        }
+      },
+      "id": "ea-002-not_initialized",
+      "input": {
+        "code": 2
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 3 is `Unauthorized` (auth, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "auth",
+          "name": "Unauthorized",
+          "reason_code": "unauthorized",
+          "retryable": false
+        }
+      },
+      "id": "ea-003-unauthorized",
+      "input": {
+        "code": 3
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 4 is `DuplicateProof` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "DuplicateProof",
+          "reason_code": "duplicate_proof",
+          "retryable": false
+        }
+      },
+      "id": "ea-004-duplicate_proof",
+      "input": {
+        "code": 4
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 5 is `DuplicateVideo` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "DuplicateVideo",
+          "reason_code": "duplicate_video",
+          "retryable": false
+        }
+      },
+      "id": "ea-005-duplicate_video",
+      "input": {
+        "code": 5
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 6 is `DuplicateNullifier` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "DuplicateNullifier",
+          "reason_code": "duplicate_nullifier",
+          "retryable": false
+        }
+      },
+      "id": "ea-006-duplicate_nullifier",
+      "input": {
+        "code": 6
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 7 is `InvalidProof` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidProof",
+          "reason_code": "invalid_proof",
+          "retryable": false
+        }
+      },
+      "id": "ea-007-invalid_proof",
+      "input": {
+        "code": 7
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 8 is `UnknownIssuer` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "UnknownIssuer",
+          "reason_code": "unknown_issuer",
+          "retryable": false
+        }
+      },
+      "id": "ea-008-unknown_issuer",
+      "input": {
+        "code": 8
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 9 is `VerifierNotSet` (dependency, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "dependency",
+          "name": "VerifierNotSet",
+          "reason_code": "verifier_not_set",
+          "retryable": false
+        }
+      },
+      "id": "ea-009-verifier_not_set",
+      "input": {
+        "code": 9
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 10 is `InvalidPublicInputs` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidPublicInputs",
+          "reason_code": "invalid_public_inputs",
+          "retryable": false
+        }
+      },
+      "id": "ea-010-invalid_public_inputs",
+      "input": {
+        "code": 10
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 11 is `UnknownCredentialRoot` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "UnknownCredentialRoot",
+          "reason_code": "unknown_credential_root",
+          "retryable": false
+        }
+      },
+      "id": "ea-011-unknown_credential_root",
+      "input": {
+        "code": 11
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 12 is `RevokedCredentialRoot` (revoked, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "revoked",
+          "name": "RevokedCredentialRoot",
+          "reason_code": "revoked_credential_root",
+          "retryable": false
+        }
+      },
+      "id": "ea-012-revoked_credential_root",
+      "input": {
+        "code": 12
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 13 is `HistorySaturated` (resource, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "resource",
+          "name": "HistorySaturated",
+          "reason_code": "history_saturated",
+          "retryable": false
+        }
+      },
+      "id": "ea-013-history_saturated",
+      "input": {
+        "code": 13
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 14 is `InvalidHistoryAction` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidHistoryAction",
+          "reason_code": "invalid_history_action",
+          "retryable": false
+        }
+      },
+      "id": "ea-014-invalid_history_action",
+      "input": {
+        "code": 14
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 15 is `InvalidReasonCode` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidReasonCode",
+          "reason_code": "invalid_reason_code",
+          "retryable": false
+        }
+      },
+      "id": "ea-015-invalid_reason_code",
+      "input": {
+        "code": 15
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 16 is `HistoryLimitExceeded` (oversized, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "oversized",
+          "name": "HistoryLimitExceeded",
+          "reason_code": "history_limit_exceeded",
+          "retryable": false
+        }
+      },
+      "id": "ea-016-history_limit_exceeded",
+      "input": {
+        "code": 16
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 17 is `AlreadyExpired` (expired, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "expired",
+          "name": "AlreadyExpired",
+          "reason_code": "already_expired",
+          "retryable": false
+        }
+      },
+      "id": "ea-017-already_expired",
+      "input": {
+        "code": 17
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 18 is `NoCorrectionChange` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "NoCorrectionChange",
+          "reason_code": "no_correction_change",
+          "retryable": false
+        }
+      },
+      "id": "ea-018-no_correction_change",
+      "input": {
+        "code": 18
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 19 is `HistoryCorruption` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "HistoryCorruption",
+          "reason_code": "history_corruption",
+          "retryable": false
+        }
+      },
+      "id": "ea-019-history_corruption",
+      "input": {
+        "code": 19
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 20 is `NoPendingAdmin` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "NoPendingAdmin",
+          "reason_code": "no_pending_admin",
+          "retryable": false
+        }
+      },
+      "id": "ea-020-no_pending_admin",
+      "input": {
+        "code": 20
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 21 is `Paused` (state, retryable=yes).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "Paused",
+          "reason_code": "paused",
+          "retryable": true
+        }
+      },
+      "id": "ea-021-paused",
+      "input": {
+        "code": 21
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 22 is `InvalidPauseDomain` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidPauseDomain",
+          "reason_code": "invalid_pause_domain",
+          "retryable": false
+        }
+      },
+      "id": "ea-022-invalid_pause_domain",
+      "input": {
+        "code": 22
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 23 is `InvalidPauseDuration` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidPauseDuration",
+          "reason_code": "invalid_pause_duration",
+          "retryable": false
+        }
+      },
+      "id": "ea-023-invalid_pause_duration",
+      "input": {
+        "code": 23
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 24 is `InvalidDelegationScope` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidDelegationScope",
+          "reason_code": "invalid_delegation_scope",
+          "retryable": false
+        }
+      },
+      "id": "ea-024-invalid_delegation_scope",
+      "input": {
+        "code": 24
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 25 is `InvalidDelegationDuration` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidDelegationDuration",
+          "reason_code": "invalid_delegation_duration",
+          "retryable": false
+        }
+      },
+      "id": "ea-025-invalid_delegation_duration",
+      "input": {
+        "code": 25
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 26 is `DelegationNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "DelegationNotFound",
+          "reason_code": "delegation_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-026-delegation_not_found",
+      "input": {
+        "code": 26
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 27 is `DelegationExpired` (expired, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "expired",
+          "name": "DelegationExpired",
+          "reason_code": "delegation_expired",
+          "retryable": false
+        }
+      },
+      "id": "ea-027-delegation_expired",
+      "input": {
+        "code": 27
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 28 is `DelegationScopeExceeded` (auth, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "auth",
+          "name": "DelegationScopeExceeded",
+          "reason_code": "delegation_scope_exceeded",
+          "retryable": false
+        }
+      },
+      "id": "ea-028-delegation_scope_exceeded",
+      "input": {
+        "code": 28
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 29 is `DelegationsSaturated` (resource, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "resource",
+          "name": "DelegationsSaturated",
+          "reason_code": "delegations_saturated",
+          "retryable": false
+        }
+      },
+      "id": "ea-029-delegations_saturated",
+      "input": {
+        "code": 29
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 30 is `SelfDelegation` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "SelfDelegation",
+          "reason_code": "self_delegation",
+          "retryable": false
+        }
+      },
+      "id": "ea-030-self_delegation",
+      "input": {
+        "code": 30
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 31 is `ProposalNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "ProposalNotFound",
+          "reason_code": "proposal_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-031-proposal_not_found",
+      "input": {
+        "code": 31
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 32 is `ProposalNotReady` (state, retryable=yes).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "ProposalNotReady",
+          "reason_code": "proposal_not_ready",
+          "retryable": true
+        }
+      },
+      "id": "ea-032-proposal_not_ready",
+      "input": {
+        "code": 32
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 33 is `ProposalAlreadyExecuted` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "ProposalAlreadyExecuted",
+          "reason_code": "proposal_already_executed",
+          "retryable": false
+        }
+      },
+      "id": "ea-033-proposal_already_executed",
+      "input": {
+        "code": 33
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 34 is `ProposalCancelled` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "ProposalCancelled",
+          "reason_code": "proposal_cancelled",
+          "retryable": false
+        }
+      },
+      "id": "ea-034-proposal_cancelled",
+      "input": {
+        "code": 34
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 35 is `InvalidProposalAction` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidProposalAction",
+          "reason_code": "invalid_proposal_action",
+          "retryable": false
+        }
+      },
+      "id": "ea-035-invalid_proposal_action",
+      "input": {
+        "code": 35
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 36 is `InvalidProposalPayload` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidProposalPayload",
+          "reason_code": "invalid_proposal_payload",
+          "retryable": false
+        }
+      },
+      "id": "ea-036-invalid_proposal_payload",
+      "input": {
+        "code": 36
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 37 is `ProposalsSaturated` (resource, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "resource",
+          "name": "ProposalsSaturated",
+          "reason_code": "proposals_saturated",
+          "retryable": false
+        }
+      },
+      "id": "ea-037-proposals_saturated",
+      "input": {
+        "code": 37
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 38 is `InvalidTimelockDelay` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidTimelockDelay",
+          "reason_code": "invalid_timelock_delay",
+          "retryable": false
+        }
+      },
+      "id": "ea-038-invalid_timelock_delay",
+      "input": {
+        "code": 38
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 39 is `AlreadyCancelled` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "AlreadyCancelled",
+          "reason_code": "already_cancelled",
+          "retryable": false
+        }
+      },
+      "id": "ea-039-already_cancelled",
+      "input": {
+        "code": 39
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 40 is `RotationNotScheduled` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "RotationNotScheduled",
+          "reason_code": "rotation_not_scheduled",
+          "retryable": false
+        }
+      },
+      "id": "ea-040-rotation_not_scheduled",
+      "input": {
+        "code": 40
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 41 is `RotationNotReady` (state, retryable=yes).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "RotationNotReady",
+          "reason_code": "rotation_not_ready",
+          "retryable": true
+        }
+      },
+      "id": "ea-041-rotation_not_ready",
+      "input": {
+        "code": 41
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 42 is `RotationWindowClosed` (expired, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "expired",
+          "name": "RotationWindowClosed",
+          "reason_code": "rotation_window_closed",
+          "retryable": false
+        }
+      },
+      "id": "ea-042-rotation_window_closed",
+      "input": {
+        "code": 42
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 43 is `BatchTooLarge` (oversized, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "oversized",
+          "name": "BatchTooLarge",
+          "reason_code": "batch_too_large",
+          "retryable": false
+        }
+      },
+      "id": "ea-043-batch_too_large",
+      "input": {
+        "code": 43
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 44 is `InvalidScopeEpoch` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidScopeEpoch",
+          "reason_code": "invalid_scope_epoch",
+          "retryable": false
+        }
+      },
+      "id": "ea-044-invalid_scope_epoch",
+      "input": {
+        "code": 44
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 45 is `DisputeNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "DisputeNotFound",
+          "reason_code": "dispute_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-045-dispute_not_found",
+      "input": {
+        "code": 45
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 46 is `DisputeAlreadyResolved` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "DisputeAlreadyResolved",
+          "reason_code": "dispute_already_resolved",
+          "retryable": false
+        }
+      },
+      "id": "ea-046-dispute_already_resolved",
+      "input": {
+        "code": 46
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 47 is `SupersessionCycleDetected` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "SupersessionCycleDetected",
+          "reason_code": "supersession_cycle_detected",
+          "retryable": false
+        }
+      },
+      "id": "ea-047-supersession_cycle_detected",
+      "input": {
+        "code": 47
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 48 is `SupersessionNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "SupersessionNotFound",
+          "reason_code": "supersession_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-048-supersession_not_found",
+      "input": {
+        "code": 48
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 49 is `DomainTagMismatch` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "DomainTagMismatch",
+          "reason_code": "domain_tag_mismatch",
+          "retryable": false
+        }
+      },
+      "id": "ea-049-domain_tag_mismatch",
+      "input": {
+        "code": 49
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 50 is `UnknownSchema` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "UnknownSchema",
+          "reason_code": "unknown_schema",
+          "retryable": false
+        }
+      },
+      "id": "ea-050-unknown_schema",
+      "input": {
+        "code": 50
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 51 is `InactiveSchema` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "InactiveSchema",
+          "reason_code": "inactive_schema",
+          "retryable": false
+        }
+      },
+      "id": "ea-051-inactive_schema",
+      "input": {
+        "code": 51
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 52 is `SchemaVersionMismatch` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "SchemaVersionMismatch",
+          "reason_code": "schema_version_mismatch",
+          "retryable": false
+        }
+      },
+      "id": "ea-052-schema_version_mismatch",
+      "input": {
+        "code": 52
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 53 is `StaleEpoch` (expired, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "expired",
+          "name": "StaleEpoch",
+          "reason_code": "stale_epoch",
+          "retryable": false
+        }
+      },
+      "id": "ea-053-stale_epoch",
+      "input": {
+        "code": 53
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 54 is `BatchSizeExceeded` (oversized, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "oversized",
+          "name": "BatchSizeExceeded",
+          "reason_code": "batch_size_exceeded",
+          "retryable": false
+        }
+      },
+      "id": "ea-054-batch_size_exceeded",
+      "input": {
+        "code": 54
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 55 is `BatchCredentialRootMismatch` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "BatchCredentialRootMismatch",
+          "reason_code": "batch_credential_root_mismatch",
+          "retryable": false
+        }
+      },
+      "id": "ea-055-batch_credential_root_mismatch",
+      "input": {
+        "code": 55
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 56 is `BatchCountMismatch` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "BatchCountMismatch",
+          "reason_code": "batch_count_mismatch",
+          "retryable": false
+        }
+      },
+      "id": "ea-056-batch_count_mismatch",
+      "input": {
+        "code": 56
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 57 is `InvalidLineage` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidLineage",
+          "reason_code": "invalid_lineage",
+          "retryable": false
+        }
+      },
+      "id": "ea-057-invalid_lineage",
+      "input": {
+        "code": 57
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 58 is `LineageCycle` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "LineageCycle",
+          "reason_code": "lineage_cycle",
+          "retryable": false
+        }
+      },
+      "id": "ea-058-lineage_cycle",
+      "input": {
+        "code": 58
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 59 is `LineageTooDeep` (oversized, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "oversized",
+          "name": "LineageTooDeep",
+          "reason_code": "lineage_too_deep",
+          "retryable": false
+        }
+      },
+      "id": "ea-059-lineage_too_deep",
+      "input": {
+        "code": 59
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 60 is `LineageFanOutExceeded` (oversized, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "oversized",
+          "name": "LineageFanOutExceeded",
+          "reason_code": "lineage_fan_out_exceeded",
+          "retryable": false
+        }
+      },
+      "id": "ea-060-lineage_fan_out_exceeded",
+      "input": {
+        "code": 60
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 61 is `TooManyOpenDisputes` (resource, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "resource",
+          "name": "TooManyOpenDisputes",
+          "reason_code": "too_many_open_disputes",
+          "retryable": false
+        }
+      },
+      "id": "ea-061-too_many_open_disputes",
+      "input": {
+        "code": 61
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 62 is `DisputeWindowExpired` (expired, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "expired",
+          "name": "DisputeWindowExpired",
+          "reason_code": "dispute_window_expired",
+          "retryable": false
+        }
+      },
+      "id": "ea-062-dispute_window_expired",
+      "input": {
+        "code": 62
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 63 is `DisputeAlreadyClosed` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "DisputeAlreadyClosed",
+          "reason_code": "dispute_already_closed",
+          "retryable": false
+        }
+      },
+      "id": "ea-063-dispute_already_closed",
+      "input": {
+        "code": 63
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 64 is `DisputeCyclicSupersession` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "DisputeCyclicSupersession",
+          "reason_code": "dispute_cyclic_supersession",
+          "retryable": false
+        }
+      },
+      "id": "ea-064-dispute_cyclic_supersession",
+      "input": {
+        "code": 64
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 65 is `UnauthorizedResponder` (auth, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "auth",
+          "name": "UnauthorizedResponder",
+          "reason_code": "unauthorized_responder",
+          "retryable": false
+        }
+      },
+      "id": "ea-065-unauthorized_responder",
+      "input": {
+        "code": 65
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 66 is `ReporterOnCooldown` (expired, retryable=yes).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "expired",
+          "name": "ReporterOnCooldown",
+          "reason_code": "reporter_on_cooldown",
+          "retryable": true
+        }
+      },
+      "id": "ea-066-reporter_on_cooldown",
+      "input": {
+        "code": 66
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 67 is `InvalidDisputeTransition` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidDisputeTransition",
+          "reason_code": "invalid_dispute_transition",
+          "retryable": false
+        }
+      },
+      "id": "ea-067-invalid_dispute_transition",
+      "input": {
+        "code": 67
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 68 is `UnsupportedMetadataEnvelopeVersion` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "UnsupportedMetadataEnvelopeVersion",
+          "reason_code": "unsupported_metadata_envelope_version",
+          "retryable": false
+        }
+      },
+      "id": "ea-068-unsupported_metadata_envelope_version",
+      "input": {
+        "code": 68
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 69 is `InvalidMetadataEnvelope` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidMetadataEnvelope",
+          "reason_code": "invalid_metadata_envelope",
+          "retryable": false
+        }
+      },
+      "id": "ea-069-invalid_metadata_envelope",
+      "input": {
+        "code": 69
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 70 is `MetadataEnvelopeNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "MetadataEnvelopeNotFound",
+          "reason_code": "metadata_envelope_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-070-metadata_envelope_not_found",
+      "input": {
+        "code": 70
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 71 is `MetadataEnvelopeHashMismatch` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "MetadataEnvelopeHashMismatch",
+          "reason_code": "metadata_envelope_hash_mismatch",
+          "retryable": false
+        }
+      },
+      "id": "ea-071-metadata_envelope_hash_mismatch",
+      "input": {
+        "code": 71
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 72 is `InvalidTimestampClaim` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidTimestampClaim",
+          "reason_code": "invalid_timestamp_claim",
+          "retryable": false
+        }
+      },
+      "id": "ea-072-invalid_timestamp_claim",
+      "input": {
+        "code": 72
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 73 is `TimestampClaimNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "TimestampClaimNotFound",
+          "reason_code": "timestamp_claim_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-073-timestamp_claim_not_found",
+      "input": {
+        "code": 73
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 74 is `TimestampClaimAlreadyAnchored` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "TimestampClaimAlreadyAnchored",
+          "reason_code": "timestamp_claim_already_anchored",
+          "retryable": false
+        }
+      },
+      "id": "ea-074-timestamp_claim_already_anchored",
+      "input": {
+        "code": 74
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 75 is `UnauthorizedTimestampActor` (auth, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "auth",
+          "name": "UnauthorizedTimestampActor",
+          "reason_code": "unauthorized_timestamp_actor",
+          "retryable": false
+        }
+      },
+      "id": "ea-075-unauthorized_timestamp_actor",
+      "input": {
+        "code": 75
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 76 is `LineageEmptyParents` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "LineageEmptyParents",
+          "reason_code": "lineage_empty_parents",
+          "retryable": false
+        }
+      },
+      "id": "ea-076-lineage_empty_parents",
+      "input": {
+        "code": 76
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 77 is `LineageParentUnavailable` (revoked, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "revoked",
+          "name": "LineageParentUnavailable",
+          "reason_code": "lineage_parent_unavailable",
+          "retryable": false
+        }
+      },
+      "id": "ea-077-lineage_parent_unavailable",
+      "input": {
+        "code": 77
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 78 is `DuplicateLineage` (conflict, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "conflict",
+          "name": "DuplicateLineage",
+          "reason_code": "duplicate_lineage",
+          "retryable": false
+        }
+      },
+      "id": "ea-078-duplicate_lineage",
+      "input": {
+        "code": 78
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 79 is `LineageChildrenLimitExceeded` (oversized, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "oversized",
+          "name": "LineageChildrenLimitExceeded",
+          "reason_code": "lineage_children_limit_exceeded",
+          "retryable": false
+        }
+      },
+      "id": "ea-079-lineage_children_limit_exceeded",
+      "input": {
+        "code": 79
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 80 is `LineageChildrenSaturated` (resource, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "resource",
+          "name": "LineageChildrenSaturated",
+          "reason_code": "lineage_children_saturated",
+          "retryable": false
+        }
+      },
+      "id": "ea-080-lineage_children_saturated",
+      "input": {
+        "code": 80
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 81 is `UnsupportedCircuitVersion` (unsupported, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "unsupported",
+          "name": "UnsupportedCircuitVersion",
+          "reason_code": "unsupported_circuit_version",
+          "retryable": false
+        }
+      },
+      "id": "ea-081-unsupported_circuit_version",
+      "input": {
+        "code": 81
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 82 is `InvalidCircuitVersionRange` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidCircuitVersionRange",
+          "reason_code": "invalid_circuit_version_range",
+          "retryable": false
+        }
+      },
+      "id": "ea-082-invalid_circuit_version_range",
+      "input": {
+        "code": 82
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 83 is `InvalidIssuerRotationGrace` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidIssuerRotationGrace",
+          "reason_code": "invalid_issuer_rotation_grace",
+          "retryable": false
+        }
+      },
+      "id": "ea-083-invalid_issuer_rotation_grace",
+      "input": {
+        "code": 83
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 84 is `InvalidIssuerRotation` (malformed, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "malformed",
+          "name": "InvalidIssuerRotation",
+          "reason_code": "invalid_issuer_rotation",
+          "retryable": false
+        }
+      },
+      "id": "ea-084-invalid_issuer_rotation",
+      "input": {
+        "code": 84
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 85 is `IssuerRotationNotFound` (state, retryable=no).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "IssuerRotationNotFound",
+          "reason_code": "issuer_rotation_not_found",
+          "retryable": false
+        }
+      },
+      "id": "ea-085-issuer_rotation_not_found",
+      "input": {
+        "code": 85
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 86 is `IssuerRotationGraceStillActive` (state, retryable=yes).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "class": "state",
+          "name": "IssuerRotationGraceStillActive",
+          "reason_code": "issuer_rotation_grace_still_active",
+          "retryable": true
+        }
+      },
+      "id": "ea-086-issuer_rotation_grace_still_active",
+      "input": {
+        "code": 86
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 0 is not assigned; readers must treat it as an opaque failure, not guess.",
+      "expect": {
+        "code": "unknown_error_code",
+        "ok": false
+      },
+      "id": "ea-neg-001-unknown-0",
+      "input": {
+        "code": 0
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 87 is not assigned; readers must treat it as an opaque failure, not guess.",
+      "expect": {
+        "code": "unknown_error_code",
+        "ok": false
+      },
+      "id": "ea-neg-002-unknown-87",
+      "input": {
+        "code": 87
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 9999 is not assigned; readers must treat it as an opaque failure, not guess.",
+      "expect": {
+        "code": "unknown_error_code",
+        "ok": false
+      },
+      "id": "ea-neg-003-unknown-9999",
+      "input": {
+        "code": 9999
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Code 4294967295 is not assigned; readers must treat it as an opaque failure, not guess.",
+      "expect": {
+        "code": "unknown_error_code",
+        "ok": false
+      },
+      "id": "ea-neg-004-unknown-4294967295",
+      "input": {
+        "code": 4294967295
+      },
+      "op": "classify_error",
+      "tier": "required"
+    },
+    {
+      "description": "Negative codes are never assigned.",
+      "expect": {
+        "code": "unknown_error_code",
+        "ok": false
+      },
+      "id": "ea-neg-005-negative",
+      "input": {
+        "code": -1
+      },
+      "op": "classify_error",
+      "tier": "required"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "source": {
+    "path": "contracts/ERROR_ABI.md",
+    "rows": 86,
+    "sha256": "46a401d9be2b8784413d8fd68393fda5314c302cf83c807d7db7b6a5ca75c729"
+  },
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Frozen numeric error ABI (hpx-err/1)"
+}

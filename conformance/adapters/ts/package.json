@@ -1,0 +1,13 @@
+{
+  "name": "@harpocrates/conformance-adapter-ts",
+  "private": true,
+  "type": "module",
+  "description": "Adapter that drives the shipped cli/ and frontend/ TypeScript through the conformance protocol.",
+  "scripts": {
+    "adapter": "tsx adapter.ts"
+  },
+  "devDependencies": {
+    "@stellar/stellar-sdk": "^15.1.0",
+    "tsx": "^4.19.0"
+  }
+}

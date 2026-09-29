@@ -1,0 +1,878 @@
+{
+  "area": "stellar-encoding",
+  "cases": [
+    {
+      "description": "Lowercase passes unchanged.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+        }
+      },
+      "id": "se-hex32-pos-001-lower",
+      "input": {
+        "value": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Uppercase is normalized to lowercase.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+        }
+      },
+      "id": "se-hex32-pos-002-upper-lowered",
+      "input": {
+        "value": "53346B94CC26D2CCBF15BF5546CAB17125AC73FFE4B4375098C3144A4CE05C25"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Mixed case is normalized.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+        }
+      },
+      "id": "se-hex32-pos-003-mixed",
+      "input": {
+        "value": "53346B94CC26D2CCBF15BF5546CAB17125ac73ffe4b4375098c3144a4ce05c25"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "63 chars.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-001-short",
+      "input": {
+        "value": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c2"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "65 chars.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-002-long",
+      "input": {
+        "value": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c250"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Empty string.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-003-empty",
+      "input": {
+        "value": ""
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Non-hex character.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-004-non-hex",
+      "input": {
+        "value": "g3346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing newline: Python `$` accepts it, JS does not.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-005-trailing-newline",
+      "input": {
+        "value": "53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25\n"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Leading whitespace.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-006-leading-space",
+      "input": {
+        "value": " 53346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c2"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "0x prefix.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-007-0x-prefix",
+      "input": {
+        "value": "0x346b94cc26d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Fullwidth digits U+FF10 are not hex.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-008-fullwidth-digits",
+      "input": {
+        "value": "\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Embedded NUL.",
+      "expect": {
+        "code": "invalid_hex32",
+        "ok": false
+      },
+      "id": "se-hex32-neg-009-embedded-nul",
+      "input": {
+        "value": "53346b94cc\u00006d2ccbf15bf5546cab17125ac73ffe4b4375098c3144a4ce05c25"
+      },
+      "op": "hex32_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Empty byte string is valid.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": ""
+        }
+      },
+      "id": "se-hexb-pos-001-empty",
+      "input": {
+        "value": ""
+      },
+      "op": "hex_bytes_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Lowercased.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": "00ffab"
+        }
+      },
+      "id": "se-hexb-pos-002-upper",
+      "input": {
+        "value": "00FFaB"
+      },
+      "op": "hex_bytes_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Odd length.",
+      "expect": {
+        "code": "invalid_hex_bytes",
+        "ok": false
+      },
+      "id": "se-hexb-neg-001-odd",
+      "input": {
+        "value": "abc"
+      },
+      "op": "hex_bytes_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Non-hex.",
+      "expect": {
+        "code": "invalid_hex_bytes",
+        "ok": false
+      },
+      "id": "se-hexb-neg-002-non-hex",
+      "input": {
+        "value": "zz"
+      },
+      "op": "hex_bytes_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing newline.",
+      "expect": {
+        "code": "invalid_hex_bytes",
+        "ok": false
+      },
+      "id": "se-hexb-neg-003-trailing-newline",
+      "input": {
+        "value": "ab\n"
+      },
+      "op": "hex_bytes_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Embedded space.",
+      "expect": {
+        "code": "invalid_hex_bytes",
+        "ok": false
+      },
+      "id": "se-hexb-neg-004-space",
+      "input": {
+        "value": "ab cd"
+      },
+      "op": "hex_bytes_normalize",
+      "tier": "required"
+    },
+    {
+      "description": "Zero-padded lowercase pairs.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": "00010f10ff"
+        }
+      },
+      "id": "se-b2h-pos-001-basic",
+      "input": {
+        "bytes": [
+          0,
+          1,
+          15,
+          16,
+          255
+        ]
+      },
+      "op": "bytes_to_hex",
+      "tier": "required"
+    },
+    {
+      "description": "Empty.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "hex": ""
+        }
+      },
+      "id": "se-b2h-pos-002-empty",
+      "input": {
+        "bytes": []
+      },
+      "op": "bytes_to_hex",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Deployed `bytesToHex` prints 256 as '100' (3 chars) instead of rejecting, silently producing malformed hex.",
+      "expect": {
+        "code": "invalid_byte",
+        "ok": false
+      },
+      "id": "se-b2h-adv-001-out-of-range",
+      "input": {
+        "bytes": [
+          256
+        ]
+      },
+      "op": "bytes_to_hex",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Deployed `bytesToHex` prints -1 as '-1'.",
+      "expect": {
+        "code": "invalid_byte",
+        "ok": false
+      },
+      "id": "se-b2h-adv-002-negative",
+      "input": {
+        "bytes": [
+          -1
+        ]
+      },
+      "op": "bytes_to_hex",
+      "tier": "advisory"
+    },
+    {
+      "description": "A valid C... contract id.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "payload_hex": "fab004e85074120390c2007243bc8d102c0dc0095b3d9cfda9d5b71e1da7c68d",
+          "type": "contract"
+        }
+      },
+      "id": "se-strkey-pos-001-contract",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "A valid G... account id.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "payload_hex": "520a265119bd9605ef11e69c374c6fb012f66b68cd94dbf1c77e84e1c89cca9b",
+          "type": "account"
+        }
+      },
+      "id": "se-strkey-pos-002-account",
+      "input": {
+        "expect": "account",
+        "strkey": "GBJAUJSRDG6ZMBPPCHTJYN2MN6YBF5TLNDGZJW7RY57IJYOITTFJWSJT"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Last character changed: CRC16 mismatch.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-001-bad-checksum",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3754"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "A contract id where an account id is required.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-002-wrong-type-expected-account",
+      "input": {
+        "expect": "account",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "An account id where a contract id is required.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-003-wrong-type-expected-contract",
+      "input": {
+        "expect": "contract",
+        "strkey": "GBJAUJSRDG6ZMBPPCHTJYN2MN6YBF5TLNDGZJW7RY57IJYOITTFJWSJT"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Strkey is upper-case only; Python b32decode(casefold=True) would accept.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-004-lowercase",
+      "input": {
+        "expect": "contract",
+        "strkey": "cd5labhikb2bea4qyiaheq54ruicydoabfnt3hh5vhk3ohq5u7di3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "55 characters.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-005-truncated",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI375"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "57 characters.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-006-extended",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753A"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing newline.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-007-trailing-newline",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753\n"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Base32 padding characters are not part of strkey.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-008-padding",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753===="
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "'1' is not in the RFC 4648 base32 alphabet.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-009-alphabet-1",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LA1HIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "'0' is not in the base32 alphabet.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-010-alphabet-0",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LA0HIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Embedded space.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-011-embedded-space",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LA HIKB2BEA4QYIAHEQ54RUICYDOABFNT3HH5VHK3OHQ5U7DI3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Empty string.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-012-empty",
+      "input": {
+        "expect": "contract",
+        "strkey": ""
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Mixed case.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-013-mixed-case",
+      "input": {
+        "expect": "contract",
+        "strkey": "CD5LABHIKB2bea4qyiaheq54ruicydoabfnt3hh5vhk3ohq5u7di3753"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "A 64-char hex digest is not a strkey.",
+      "expect": {
+        "code": "strkey_invalid",
+        "ok": false
+      },
+      "id": "se-strkey-neg-014-hex-instead",
+      "input": {
+        "expect": "contract",
+        "strkey": "fab004e85074120390c2007243bc8d102c0dc0095b3d9cfda9d5b71e1da7c68d"
+      },
+      "op": "strkey_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Network id of the Mainnet passphrase is SHA-256 of its UTF-8 bytes.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979"
+        }
+      },
+      "id": "se-netid-pos-001-mainnet",
+      "input": {
+        "passphrase": "Public Global Stellar Network ; September 2015"
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "Network id of the Testnet passphrase is SHA-256 of its UTF-8 bytes.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472"
+        }
+      },
+      "id": "se-netid-pos-002-testnet",
+      "input": {
+        "passphrase": "Test SDF Network ; September 2015"
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "Network id of the Futurenet passphrase is SHA-256 of its UTF-8 bytes.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "a3a1c6a78286713e29be0e9785670fa838d13917cd8eaeb4a3579ff1debc7fd5"
+        }
+      },
+      "id": "se-netid-pos-003-futurenet",
+      "input": {
+        "passphrase": "Test SDF Future Network ; October 2022"
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "Network id of the Sandbox passphrase is SHA-256 of its UTF-8 bytes.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "9a8931194023c5a25b7006a217b0ea590c5eaea9f6c61a356989899bbcf478bc"
+        }
+      },
+      "id": "se-netid-pos-004-sandbox",
+      "input": {
+        "passphrase": "Local Sandbox Stellar Network ; September 2022"
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "Network id of the Standalone passphrase is SHA-256 of its UTF-8 bytes.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "baefd734b8d3e48472cff83912375fedbc7573701912fe308af730180f97d74a"
+        }
+      },
+      "id": "se-netid-pos-005-standalone",
+      "input": {
+        "passphrase": "Standalone Network ; February 2017"
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "Hashed as UTF-8, not Latin-1 or UTF-16.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "3121f2b87ae6b749a054faaa19cb6bffdf73fe1019b87fbd08e8d34a2d08ef94"
+        }
+      },
+      "id": "se-netid-pos-006-non-ascii",
+      "input": {
+        "passphrase": "Caf\u00e9 Net ; 2026"
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "No trimming: a trailing space is a different network.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "network_id": "225063690d9e25cc4ff383ac0094766b6416c663b58bb09bcbb5f6ef804b982f"
+        }
+      },
+      "id": "se-netid-pos-007-trailing-space-differs",
+      "input": {
+        "passphrase": "Test SDF Network ; September 2015 "
+      },
+      "op": "network_id",
+      "tier": "required"
+    },
+    {
+      "description": "Known passphrase -> Mainnet.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "Mainnet"
+        }
+      },
+      "id": "se-netname-pos-001",
+      "input": {
+        "passphrase": "Public Global Stellar Network ; September 2015"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "Known passphrase -> Testnet.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "Testnet"
+        }
+      },
+      "id": "se-netname-pos-002",
+      "input": {
+        "passphrase": "Test SDF Network ; September 2015"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "Known passphrase -> Futurenet.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "Futurenet"
+        }
+      },
+      "id": "se-netname-pos-003",
+      "input": {
+        "passphrase": "Test SDF Future Network ; October 2022"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "Known passphrase -> Sandbox.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "Sandbox"
+        }
+      },
+      "id": "se-netname-pos-004",
+      "input": {
+        "passphrase": "Local Sandbox Stellar Network ; September 2022"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "Known passphrase -> Standalone.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "Standalone"
+        }
+      },
+      "id": "se-netname-pos-005",
+      "input": {
+        "passphrase": "Standalone Network ; February 2017"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown passphrases are echoed unchanged.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "Private Net ; 2026"
+        }
+      },
+      "id": "se-netname-pos-006-unknown-falls-back",
+      "input": {
+        "passphrase": "Private Net ; 2026"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "Passphrase lookup is exact and case-sensitive.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "name": "test sdf network ; september 2015"
+        }
+      },
+      "id": "se-netname-pos-007-case-sensitive",
+      "input": {
+        "passphrase": "test sdf network ; september 2015"
+      },
+      "op": "network_name",
+      "tier": "required"
+    },
+    {
+      "description": "32-byte value: discriminant 13, u32 length, data, zero padding to a 4-byte boundary.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "xdr_hex": "0000000d000000204eb318f670592aa9e07b649a41654ce9514c835eb0286cbbf4f029766b378750"
+        }
+      },
+      "id": "se-scval-pos-001-len-32",
+      "input": {
+        "hex": "4eb318f670592aa9e07b649a41654ce9514c835eb0286cbbf4f029766b378750"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "5-byte value: discriminant 13, u32 length, data, zero padding to a 4-byte boundary.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "xdr_hex": "0000000d00000005874e03113a000000"
+        }
+      },
+      "id": "se-scval-pos-002-len-5",
+      "input": {
+        "hex": "874e03113a"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "0-byte value: discriminant 13, u32 length, data, zero padding to a 4-byte boundary.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "xdr_hex": "0000000d00000000"
+        }
+      },
+      "id": "se-scval-pos-003-len-0",
+      "input": {
+        "hex": ""
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "1-byte value: discriminant 13, u32 length, data, zero padding to a 4-byte boundary.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "xdr_hex": "0000000d00000001fd000000"
+        }
+      },
+      "id": "se-scval-pos-004-len-1",
+      "input": {
+        "hex": "fd"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "4-byte value: discriminant 13, u32 length, data, zero padding to a 4-byte boundary.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "xdr_hex": "0000000d0000000403b308dc"
+        }
+      },
+      "id": "se-scval-pos-005-len-4",
+      "input": {
+        "hex": "03b308dc"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "33-byte value: discriminant 13, u32 length, data, zero padding to a 4-byte boundary.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "xdr_hex": "0000000d00000021ea38bb320e47e665022e68b2cc64f967fc067df96c7fa7b866b3fb83574d94bdea000000"
+        }
+      },
+      "id": "se-scval-pos-006-len-33",
+      "input": {
+        "hex": "ea38bb320e47e665022e68b2cc64f967fc067df96c7fa7b866b3fb83574d94bdea"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "Odd-length hex.",
+      "expect": {
+        "code": "invalid_hex_bytes",
+        "ok": false
+      },
+      "id": "se-scval-neg-001-odd-hex",
+      "input": {
+        "hex": "abc"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    },
+    {
+      "description": "Non-hex.",
+      "expect": {
+        "code": "invalid_hex_bytes",
+        "ok": false
+      },
+      "id": "se-scval-neg-002-non-hex",
+      "input": {
+        "hex": "zz"
+      },
+      "op": "scval_bytes_xdr",
+      "tier": "required"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Hex, strkey, network id, and Soroban ScVal byte encodings"
+}

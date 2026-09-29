@@ -1,0 +1,305 @@
+{
+  "area": "network-guard",
+  "cases": [
+    {
+      "description": "Identical passphrases.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "match": true
+        }
+      },
+      "id": "ng-pos-001-same",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Test SDF Network ; September 2015"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "The wallet value is trimmed before comparison.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "match": true
+        }
+      },
+      "id": "ng-pos-002-wallet-trimmed",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "  Test SDF Network ; September 2015\n"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "U+00A0 is ECMAScript whitespace and is trimmed.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "match": true
+        }
+      },
+      "id": "ng-pos-003-nbsp-trimmed",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "\u00a0Test SDF Network ; September 2015\u00a0"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "U+FEFF (ZWNBSP) is ECMAScript whitespace and IS trimmed; Python str.strip() does not trim it.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "match": true
+        }
+      },
+      "id": "ng-pos-004-bom-trimmed",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Test SDF Network ; September 2015\ufeff"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Unicode Zs spaces are trimmed.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "match": true
+        }
+      },
+      "id": "ng-pos-005-ideographic-space-trimmed",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "\u3000Test SDF Network ; September 2015\u2003"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "U+2028/U+2029 are line terminators and are trimmed.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "match": true
+        }
+      },
+      "id": "ng-pos-006-line-separators-trimmed",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "\u2028Test SDF Network ; September 2015\u2029"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "null: wallet locked or unavailable.",
+      "expect": {
+        "code": "wallet_network_unavailable",
+        "ok": false
+      },
+      "id": "ng-neg-001-null",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": null
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Member absent (undefined).",
+      "expect": {
+        "code": "wallet_network_unavailable",
+        "ok": false
+      },
+      "id": "ng-neg-002-absent",
+      "input": {
+        "contract": "Test SDF Network ; September 2015"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Empty string.",
+      "expect": {
+        "code": "wallet_network_unavailable",
+        "ok": false
+      },
+      "id": "ng-neg-003-empty",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": ""
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Whitespace only.",
+      "expect": {
+        "code": "wallet_network_unavailable",
+        "ok": false
+      },
+      "id": "ng-neg-004-blank",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": " \t\n "
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Wallet on Mainnet, contract on Testnet.",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Testnet",
+          "wallet_network": "Mainnet"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-010-mainnet-vs-testnet",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Public Global Stellar Network ; September 2015"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Wallet on Testnet, contract on Mainnet.",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Mainnet",
+          "wallet_network": "Testnet"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-011-testnet-vs-mainnet",
+      "input": {
+        "contract": "Public Global Stellar Network ; September 2015",
+        "wallet": "Test SDF Network ; September 2015"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Futurenet vs Testnet.",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Testnet",
+          "wallet_network": "Futurenet"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-012-futurenet-vs-testnet",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Test SDF Future Network ; October 2022"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown wallet network is reported by its raw passphrase.",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Testnet",
+          "wallet_network": "Private Net ; 2026"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-013-unknown-wallet-network",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Private Net ; 2026"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Comparison is exact; case differences are a mismatch.",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Testnet",
+          "wallet_network": "test sdf network ; september 2015"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-014-case-differs",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "test sdf network ; september 2015"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "Only the wallet value is trimmed; a padded contract passphrase never matches.",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Test SDF Network ; September 2015 ",
+          "wallet_network": "Testnet"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-015-contract-side-not-trimmed",
+      "input": {
+        "contract": "Test SDF Network ; September 2015 ",
+        "wallet": "Test SDF Network ; September 2015"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "U+0085 is not ECMAScript whitespace: it is not trimmed, so the value differs (Python strip() would trim it).",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Testnet",
+          "wallet_network": "Test SDF Network ; September 2015\u0085"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-016-nel-is-not-js-whitespace",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Test SDF Network ; September 2015\u0085"
+      },
+      "op": "network_check",
+      "tier": "required"
+    },
+    {
+      "description": "U+001F is not ECMAScript whitespace (Python str.strip() strips it).",
+      "expect": {
+        "code": "network_mismatch",
+        "detail": {
+          "contract_network": "Testnet",
+          "wallet_network": "Test SDF Network ; September 2015\u001f"
+        },
+        "ok": false
+      },
+      "id": "ng-neg-017-unit-separator-is-not-js-whitespace",
+      "input": {
+        "contract": "Test SDF Network ; September 2015",
+        "wallet": "Test SDF Network ; September 2015\u001f"
+      },
+      "op": "network_check",
+      "tier": "required"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Wallet/contract network mismatch guard (fail closed)"
+}

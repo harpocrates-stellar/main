@@ -1,0 +1,2455 @@
+{
+  "area": "receipt",
+  "cases": [
+    {
+      "description": "A well-formed, correctly signed receipt.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-001-verified",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "An 'unverified' receipt may carry null ledger and transaction hash.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-002-unverified-null-fields",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": null,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "unverified",
+          "signature": "GkBWSZamuznhA9Mp6gkkwdQboCL_5jXXPPlLLPa5EtWN3zYEJDIRvjk8wMmdRF5ceXD9NEuUYXYrAeSsrxAcXw",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": null,
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "The key is selected by signer.keyId.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-003-second-key-selected",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          },
+          "conformance-key-2": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "uDFlQEMag-hHrpSZt6okVTESnzqo2KXnkNu25CYwThk",
+            "y": "kpWO7mZrAEAItCZ3FR3UzcgMyNwTb3ynm8tT5-T1aaU"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "HOctZMMemMeQsGfV5OQPQBqBUXR9jM_nz4T07HZYUYaBQ_IGhCXnZIBi2X97DJAEvFwCLjQOsV1-FclksltpIQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-2"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Expected network equals the receipt network.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-004-expected-network-match",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "expectedNetworkPassphrase": "Test SDF Network ; September 2015",
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Expected proof id equals the receipt proof id.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-005-expected-proof-match",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "expectedProofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "verifiedAt exactly on notBefore and notAfter (and now == notAfter) is valid.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-006-key-window-inclusive",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "keyValidity": {
+            "conformance-key-1": {
+              "notAfter": "2026-01-15T12:00:00.000Z",
+              "notBefore": "2026-01-15T12:00:00.000Z"
+            }
+          },
+          "now": "2026-01-15T12:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Non-ASCII in a string field is signed as literal UTF-8.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-007-unicode-contract-field",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "RokrjqLTPyxVuEXQmchzvnOHwjJjPnkk1XH5114s9qsqFC10GBI_plVNMGTfQTolp5eiOA-GM1Pztv-1QEme_g",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "v1-caf\u00e9-\ud83d\ude00",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Flipping result invalidates the signature.",
+      "expect": {
+        "code": "receipt_signature_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-001-tampered-result",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "unverified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "One changed hex digit invalidates the signature.",
+      "expect": {
+        "code": "receipt_signature_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-002-tampered-proof-id",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "039b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "An ASN.1 DER signature is not the IEEE P1363 r||s form WebCrypto verifies.",
+      "expect": {
+        "code": "receipt_signature_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-003-der-signature",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "MEQCIAvI_mnjDvhIriLjOCQ5b7P0RR9x6_xzCe5tPDjoTJIxAiA3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Signed by a different key than the one registered under keyId.",
+      "expect": {
+        "code": "receipt_signature_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-004-wrong-key",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "3qZRjsnKYGD-4jufFd5lLwLLzJHHzKxucRbNZzZp-GnrHwFXxLdaZvbLrmxeXHcDWBRtxCNGjF1_Wxj7TvjSSg",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "signer.keyId has no registered key.",
+      "expect": {
+        "code": "receipt_key_unknown",
+        "ok": false
+      },
+      "id": "rc-neg-005-unknown-key-id",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "PHBG2KAewLKk4e3K4VNk8BV7GxGR5_qCzIvyCxLpL8ZMLGOoA0_zuDk9OBcxhzSE0aGQ5Qfa3icVYkSH2myEQA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "nobody"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "No signature member.",
+      "expect": {
+        "code": "receipt_signature_missing",
+        "ok": false
+      },
+      "id": "rc-neg-006-missing-signature",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Empty signature.",
+      "expect": {
+        "code": "receipt_signature_missing",
+        "ok": false
+      },
+      "id": "rc-neg-007-empty-signature",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "base64url must be unpadded.",
+      "expect": {
+        "code": "receipt_signature_malformed",
+        "ok": false
+      },
+      "id": "rc-neg-008-padded-signature",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA==",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "'+' and '/' belong to standard base64, not base64url.",
+      "expect": {
+        "code": "receipt_signature_malformed",
+        "ok": false
+      },
+      "id": "rc-neg-009-standard-base64-alphabet",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-E+uIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Wrong protocol id.",
+      "expect": {
+        "code": "receipt_unsupported_version",
+        "ok": false
+      },
+      "id": "rc-neg-010-protocol-wrong",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "something-else",
+          "result": "verified",
+          "signature": "zPKSPLkyR8ICYmHIgXDNzUOFP2-ioiUqBc7b1bfDQC55IT6xJ8_eHGLvSUDO4I3_F-Ie8BAQ6Vy3W6Oy6Pzo0Q",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Future receipt version fails closed.",
+      "expect": {
+        "code": "receipt_unsupported_version",
+        "ok": false
+      },
+      "id": "rc-neg-011-version-2",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "YOi9Lii6jWjd4gb8DCNxg_V09aWBF57VytgHu5fraElUHuGMTMWV-W6To-K9iY9S6sszoLbg-YjjJmM-iGZ5SQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 2,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Only verified/unverified exist on signed receipts.",
+      "expect": {
+        "code": "receipt_result_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-012-result-pending",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "pending",
+          "signature": "ofabPjA9qfN0Lde9SOnJxctTakj0Rz_ayaL1JS8uQu_hJnMJyc79J6cOkd17jtB5OmhwdqLa0jGtSSkdboQwQA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "proofId is not 32-byte hex.",
+      "expect": {
+        "code": "receipt_digest_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-013-digest-short-proofId",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "736c06c969e03d782b116fcbc73350b2542d63e50fef165e50eadc95d1232f5",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "BpBM0E1DmRuRF0PRv3md-Y0BqZoHpOpY7UCUPlli4u_v75mWoHyWdm2b2_BWIcadUSRsEsp5-iDh60mlQqqBcA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "videoHash is not 32-byte hex.",
+      "expect": {
+        "code": "receipt_digest_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-014-digest-short-videoHash",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "wk25pKeCCBhP3hovBGztTymEQ0umfl-txUs0tIdujV8_nl65L9SFt3cXnWc5MVJEmzT3vNIBtFDn6DXPNi1jww",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "736c06c969e03d782b116fcbc73350b2542d63e50fef165e50eadc95d1232f5"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "metadataHash is not 32-byte hex.",
+      "expect": {
+        "code": "receipt_digest_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-015-digest-short-metadataHash",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "736c06c969e03d782b116fcbc73350b2542d63e50fef165e50eadc95d1232f5",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "_tZhS1YIeiPLh1Mgcf3ylw9k2IzZBXwKjMb_4ZKpRDPYras1FsyXUVk8FlvZGizgc6SWdyc0sRq-W2l_rj042w",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing newline after 64 hex chars.",
+      "expect": {
+        "code": "receipt_digest_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-016-digest-trailing-newline",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9\n",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "ZjtBGLlvCHsc7FMHEbrbajomf17ugOJEU04zAaQqDHk0XzWr9OSZ7KpPSEQShiH0mlXVIlv75OgmHpcSsc2ZCw",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown tier.",
+      "expect": {
+        "code": "receipt_tier_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-017-tier-unknown",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "u1ifimnvDE8HUlFDk8SIvEmwFtlqkfWjPHGmJ4bDNrcoBVHtlSV9LpK7npNkF80FoVGql0irviHxiUMczJA9hQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "gold",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Empty circuitVersion.",
+      "expect": {
+        "code": "receipt_metadata_incomplete",
+        "ok": false
+      },
+      "id": "rc-neg-018-circuit-version-empty",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "nkGOQcYxTS4-x_GvCtBGkAJA3G__6HMaBjNlfl_-xqfow7Ov_ObGaaNlnTofv5FIyQN02-CDmuol0WExIYQnwg",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Whitespace-only verifierVersion.",
+      "expect": {
+        "code": "receipt_metadata_incomplete",
+        "ok": false
+      },
+      "id": "rc-neg-019-verifier-version-blank",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "yG11yVnUMeKRiQ3IzVdWHfcheO3e05pWl4e7wdYisKQoboKl2p1lLu52ayC57JAt4aHR4RIBqy6CmuBmSsgiuQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "   ",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Empty networkPassphrase.",
+      "expect": {
+        "code": "receipt_metadata_incomplete",
+        "ok": false
+      },
+      "id": "rc-neg-020-network-empty",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "NfPdyg_5fJ-oy5nAT1DsdT9wfH6hdYQx9X5JqIVNJGQWh81ttXxU1hQLp6wLhW6PKSnyETS485R7TduHbaJUOA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Algorithm id must be ECDSA_P256_SHA256.",
+      "expect": {
+        "code": "receipt_signer_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-021-signer-algorithm",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "QmQB4_QTMYg-05hUy4VlgmLTJl9I7CCR-gueROZFrO6hBP1cPyvfZ2vYSWlejdgiOFEcXZR2bJ2we2dPXb2RrA",
+          "signer": {
+            "algorithm": "ES256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Empty keyId.",
+      "expect": {
+        "code": "receipt_signer_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-022-signer-key-id-empty",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "Zb39PGud0e5zNIKJkO4lRoPZimbSRhN9HuzGNmCk17gC0EpM2gpO8lPpCwMjKE-a0fudIOTJawB0x87dms90yw",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": ""
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Fractional ledger sequence.",
+      "expect": {
+        "code": "receipt_ledger_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-023-ledger-fractional",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 1.5,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "-ke3am6LojVO1zQMC5LhH6Bzw1YJiG7s3dTf_-7sL2j3vfhXMQ7vXAfHHFUqwAxXAWlpgRCCBpUEbwuU54HfoA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "String ledger sequence.",
+      "expect": {
+        "code": "receipt_ledger_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-024-ledger-string",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": "5",
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "I-Xj1ALc2QGZZYaoapy_3R-vGqhQrKaCVMIEYgukpxacLViqfuhjlieaN8TKtwERe3qU_zHbrYjpBg8obPmjjQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Malformed transaction hash.",
+      "expect": {
+        "code": "receipt_txhash_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-025-tx-hash-short",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "OLF8eC5WntkP1hPx7WzbgyBEFdIxHVgWs6zo_7KrdFIJaVdSH2q0fe_q04521XXioV4FAEhJyWlQgD0jFLYuHg",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "abc",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Empty verifiedAt.",
+      "expect": {
+        "code": "receipt_time_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-026-verified-at-empty",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "eStxwha_EITMK1r11gfA0ClVP8dNmACxyNuwN28S0Ye8bP-9i4IIlavUF0M-0iMciZLPNCdOdjk_LbBizXariw",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Unparseable verifiedAt.",
+      "expect": {
+        "code": "receipt_time_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-027-verified-at-garbage",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "2PZix7zxMOtFkgeF9JtPL4-PkCaFyiNQfMEEHkj_oMn9SzBoAO-OGNC_eGhjwB_kDnvAAFBp3aUIjPYrGjk4TQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "yesterday-ish",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Expected network differs from the receipt's.",
+      "expect": {
+        "code": "receipt_network_mismatch",
+        "ok": false
+      },
+      "id": "rc-neg-028-network-mismatch",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "expectedNetworkPassphrase": "Public Global Stellar Network ; September 2015",
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Expected proof id differs.",
+      "expect": {
+        "code": "receipt_proof_mismatch",
+        "ok": false
+      },
+      "id": "rc-neg-029-proof-mismatch",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "expectedProofId": "2d8379d2f9460f88614ec1be0de6318ee99afbc3ed2d812c0ceb698a42d12cf6",
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "verifiedAt is before the key's notBefore.",
+      "expect": {
+        "code": "receipt_key_stale",
+        "ok": false
+      },
+      "id": "rc-neg-030-key-not-yet-valid",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "keyValidity": {
+            "conformance-key-1": {
+              "notBefore": "2026-01-16T00:00:00.000Z"
+            }
+          },
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "verifiedAt is after the key's notAfter.",
+      "expect": {
+        "code": "receipt_key_stale",
+        "ok": false
+      },
+      "id": "rc-neg-031-key-expired-before-signing",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "keyValidity": {
+            "conformance-key-1": {
+              "notAfter": "2026-01-14T00:00:00.000Z"
+            }
+          },
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "The key has expired as of `now`, even though it was valid at verifiedAt.",
+      "expect": {
+        "code": "receipt_key_stale",
+        "ok": false
+      },
+      "id": "rc-neg-032-key-expired-now",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "keyValidity": {
+            "conformance-key-1": {
+              "notAfter": "2026-02-01T00:00:00.000Z"
+            }
+          },
+          "now": "2026-03-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: network is compared before the signer key is looked up.",
+      "expect": {
+        "code": "receipt_network_mismatch",
+        "ok": false
+      },
+      "id": "rc-neg-033-order-network-before-key",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "expectedNetworkPassphrase": "Public Global Stellar Network ; September 2015",
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "PHBG2KAewLKk4e3K4VNk8BV7GxGR5_qCzIvyCxLpL8ZMLGOoA0_zuDk9OBcxhzSE0aGQ5Qfa3icVYkSH2myEQA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "nobody"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: payload structure is validated before the signature is decoded.",
+      "expect": {
+        "code": "receipt_tier_invalid",
+        "ok": false
+      },
+      "id": "rc-neg-034-order-structure-before-signature",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "!!not-base64!!",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "gold",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: a missing signature is reported before an expected-network mismatch.",
+      "expect": {
+        "code": "receipt_signature_missing",
+        "ok": false
+      },
+      "id": "rc-neg-035-order-signature-missing-before-network",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "expectedNetworkPassphrase": "x",
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Canonical receipt of exactly 8192 bytes is accepted.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "rc-pos-008-size-at-limit",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "iqDB4BxKuJ0YODVg75KLnlURcUQj_sNF9XmtOGgz8NwmC97eaW8FTmcMXN6MdZTWa-fwQDSS6omuH62NgmUBwA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "8193 canonical bytes is rejected.",
+      "expect": {
+        "code": "receipt_too_large",
+        "ok": false
+      },
+      "id": "rc-neg-036-size-over-limit",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "rfO7jq8LIG12DlpGAoe3163tiT8mHXrJ-OGANNDD0YwreEzW7nzEwbCPlVd3qFix8EVmZJw6EAa2wdYizzuN4Q",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Fewer than 8192 characters but more than 8192 UTF-8 bytes: the limit is in bytes.",
+      "expect": {
+        "code": "receipt_too_large",
+        "ok": false
+      },
+      "id": "rc-neg-037-size-counts-bytes-not-chars",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "3Mtttl-ABxFVCjhe0rizjkc1T_wObIxCCVxCocJctBxx6NIWbuUCQlcNsKRKxu2NSOrqIJ3mysmPizfZ5iPQBw",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: size precedes structure.",
+      "expect": {
+        "code": "receipt_too_large",
+        "ok": false
+      },
+      "id": "rc-neg-038-size-before-structure",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "rfO7jq8LIG12DlpGAoe3163tiT8mHXrJ-OGANNDD0YwreEzW7nzEwbCPlVd3qFix8EVmZJw6EAa2wdYizzuN4Q",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "golden",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Deployed code accepts anything `new Date()` parses; require RFC 3339.",
+      "expect": {
+        "code": "receipt_time_invalid",
+        "ok": false
+      },
+      "id": "rc-adv-001-verified-at-year-only",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "FNEFdxYk2Y4gxg5JeUOgRmo9nsYkFftOW01wGeRsrhpe2WxHS1sk7Lb8_SliBnbz-qSdHHIe0B8Rcy5RxlUEaQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "A ledger sequence is a u32; deployed code accepts any integer.",
+      "expect": {
+        "code": "receipt_ledger_invalid",
+        "ok": false
+      },
+      "id": "rc-adv-002-ledger-negative",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": -1,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "Mjw9fzrkbhT_ZFlHfHPzhKXlbOsLjm0aV46ZkC3Pm-ZfvA3eHy_y0UeQkjQJKKG7OMWsLGEUjE6FV5ormyICqg",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Above u32::MAX.",
+      "expect": {
+        "code": "receipt_ledger_invalid",
+        "ok": false
+      },
+      "id": "rc-adv-003-ledger-above-u32",
+      "input": {
+        "keys": {
+          "conformance-key-1": {
+            "crv": "P-256",
+            "kty": "EC",
+            "x": "Q6odTc-SSkeD6xBg8fS1BxDY-Q6rhTEQSBw8XOi7pdk",
+            "y": "dpUto2dFd0k8UTPHHV5ia16iELDOUawEa8HDfy2fql4"
+          }
+        },
+        "options": {
+          "now": "2026-02-01T00:00:00.000Z"
+        },
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 4294967296,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "RAQdbtaPlWGeWdhfjoj3lFCIaBjv2Id5hJxJTptFX_hT3-FboO7v5MCEJle7AgXlH0Mg1ZqIn6mmg77Kx4rPzQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_verify",
+      "tier": "advisory"
+    },
+    {
+      "description": "A signed receipt round-trips through the QR encoding.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"circuitVersion\":\"1.0.0\",\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"ledgerSequence\":123456,\"metadataHash\":\"113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679\",\"networkPassphrase\":\"Test SDF Network ; September 2015\",\"proofId\":\"b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9\",\"protocol\":\"harpocrates-verification-receipt\",\"result\":\"verified\",\"signature\":\"C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA\",\"signer\":{\"algorithm\":\"ECDSA_P256_SHA256\",\"keyId\":\"conformance-key-1\"},\"tier\":\"silent\",\"transactionHash\":\"9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376\",\"verifiedAt\":\"2026-01-15T12:00:00.000Z\",\"verifierVersion\":\"1.0.0\",\"version\":1,\"videoHash\":\"07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be\"}",
+          "sha256": "d0e410ee41d0ff350dd8135b557f59ba42a02e4a6620547e3b1f503d126bec77"
+        }
+      },
+      "id": "rc-qr-decode-001-roundtrip",
+      "input": {
+        "encoded": "eyJjaXJjdWl0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJDOGotYWVNTy1FaXVJdU00SkRsdnNfUkZIM0hyX0hNSjdtMDhPT2hNa2pFM0tsUUxiVmxJdVVqWWZjb1BuSW1ScnBIYnRYU0dhS3lWX3FnWVFKRF9sQSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiMS4wLjAiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "A signed receipt round-trips through the QR encoding. (encode direction)",
+      "expect": {
+        "ok": true,
+        "output": {
+          "encoded": "eyJjaXJjdWl0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJDOGotYWVNTy1FaXVJdU00SkRsdnNfUkZIM0hyX0hNSjdtMDhPT2hNa2pFM0tsUUxiVmxJdVVqWWZjb1BuSW1ScnBIYnRYU0dhS3lWX3FnWVFKRF9sQSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiMS4wLjAiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0"
+        }
+      },
+      "id": "rc-qre-encode-001-roundtrip",
+      "input": {
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "C8j-aeMO-EiuIuM4JDlvs_RFH3Hr_HMJ7m08OOhMkjE3KlQLbVlIuUjYfcoPnImRrpHbtXSGaKyV_qgYQJD_lA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_qr_encode",
+      "tier": "required"
+    },
+    {
+      "description": "Non-ASCII survives the QR round trip byte-exactly.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"circuitVersion\":\"1.0.0\",\"contractId\":\"CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B\",\"ledgerSequence\":123456,\"metadataHash\":\"113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679\",\"networkPassphrase\":\"Test SDF Network ; September 2015\",\"proofId\":\"b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9\",\"protocol\":\"harpocrates-verification-receipt\",\"result\":\"verified\",\"signature\":\"Exx2pd6392rdLorpD0SBcyboo6e3sblHDixyLjdWU7ujdrTLxIeXrxuJdohO8LBtys3zFURvXDOzhRuuQ-G7cQ\",\"signer\":{\"algorithm\":\"ECDSA_P256_SHA256\",\"keyId\":\"conformance-key-1\"},\"tier\":\"silent\",\"transactionHash\":\"9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376\",\"verifiedAt\":\"2026-01-15T12:00:00.000Z\",\"verifierVersion\":\"caf\u00e9\",\"version\":1,\"videoHash\":\"07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be\"}",
+          "sha256": "70c4869f442263e86ce0f8a32932713489b32ebf59fed18ebd0dbd4a2898c04d"
+        }
+      },
+      "id": "rc-qr-decode-002-unicode",
+      "input": {
+        "encoded": "eyJjaXJjdWl0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJFeHgycGQ2MzkycmRMb3JwRDBTQmN5Ym9vNmUzc2JsSERpeHlMamRXVTd1amRyVEx4SWVYcnh1SmRvaE84TEJ0eXMzekZVUnZYRE96aFJ1dVEtRzdjUSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiY2Fmw6kiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Non-ASCII survives the QR round trip byte-exactly. (encode direction)",
+      "expect": {
+        "ok": true,
+        "output": {
+          "encoded": "eyJjaXJjdWl0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJFeHgycGQ2MzkycmRMb3JwRDBTQmN5Ym9vNmUzc2JsSERpeHlMamRXVTd1amRyVEx4SWVYcnh1SmRvaE84TEJ0eXMzekZVUnZYRE96aFJ1dVEtRzdjUSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiY2Fmw6kiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0"
+        }
+      },
+      "id": "rc-qre-encode-002-unicode",
+      "input": {
+        "receipt": {
+          "circuitVersion": "1.0.0",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "Exx2pd6392rdLorpD0SBcyboo6e3sblHDixyLjdWU7ujdrTLxIeXrxuJdohO8LBtys3zFURvXDOzhRuuQ-G7cQ",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "caf\u00e9",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_qr_encode",
+      "tier": "required"
+    },
+    {
+      "description": "'+' and '/' are not base64url.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-001-standard-alphabet",
+      "input": {
+        "encoded": "eyJjaXJj+/l0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJDOGotYWVNTy1FaXVJdU00SkRsdnNfUkZIM0hyX0hNSjdtMDhPT2hNa2pFM0tsUUxiVmxJdVVqWWZjb1BuSW1ScnBIYnRYU0dhS3lWX3FnWVFKRF9sQSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiMS4wLjAiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Padding is not allowed.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-002-padded",
+      "input": {
+        "encoded": "eyJjaXJjdWl0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJDOGotYWVNTy1FaXVJdU00SkRsdnNfUkZIM0hyX0hNSjdtMDhPT2hNa2pFM0tsUUxiVmxJdVVqWWZjb1BuSW1ScnBIYnRYU0dhS3lWX3FnWVFKRF9sQSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiMS4wLjAiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0="
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "A base64 length of 1 mod 4 is impossible.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-003-length-mod-4-is-1",
+      "input": {
+        "encoded": "eyJjaXJjdWl0VmVyc2lvbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJDOGotYWVNTy1FaXVJdU00SkRsdnNfUkZIM0hyX0hNSjdtMDhPT2hNa2pFM0tsUUxiVmxJdVVqWWZjb1BuSW1ScnBIYnRYU0dhS3lWX3FnWVFKRF9sQSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiMS4wLjAiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0M"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Decodes, but is not JSON.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-004-not-json",
+      "input": {
+        "encoded": "dGhpcyBpcyBub3QganNvbg"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Empty payload.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-005-empty",
+      "input": {
+        "encoded": ""
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Embedded newline.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-006-whitespace",
+      "input": {
+        "encoded": "eyJjaXJjdWl0VmVyc2lv\nbiI6IjEuMC4wIiwiY29udHJhY3RJZCI6IkNCMjM1RFBQUkJaU1JEVTJGNUtEQjRFTVRTWjJJRk5UNVRYV1Q0S0JCMlZKM1daSldTUkQ0QjdCIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1NiwibWV0YWRhdGFIYXNoIjoiMTEzZTMxOWU1NzZmNjA5YmViNjdmMjliODViNjljYjFhNmM2ZGE5MGNmNDFhNGNiNDhiYmQ0NTZkNWE0MTY3OSIsIm5ldHdvcmtQYXNzcGhyYXNlIjoiVGVzdCBTREYgTmV0d29yayA7IFNlcHRlbWJlciAyMDE1IiwicHJvb2ZJZCI6ImIzOWI4NzNiYzRhMzlkYzg5YWU3YWFlNmNhYmQ1MzcwNjFmZmQ5MDFhNWQ3ZTVhYTIzMmE3YzczMDMzNzMwZTkiLCJwcm90b2NvbCI6ImhhcnBvY3JhdGVzLXZlcmlmaWNhdGlvbi1yZWNlaXB0IiwicmVzdWx0IjoidmVyaWZpZWQiLCJzaWduYXR1cmUiOiJDOGotYWVNTy1FaXVJdU00SkRsdnNfUkZIM0hyX0hNSjdtMDhPT2hNa2pFM0tsUUxiVmxJdVVqWWZjb1BuSW1ScnBIYnRYU0dhS3lWX3FnWVFKRF9sQSIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoiY29uZm9ybWFuY2Uta2V5LTEifSwidGllciI6InNpbGVudCIsInRyYW5zYWN0aW9uSGFzaCI6IjllM2ViMzYwZjdjOTdhZDk3NGU4MjIzYjNlOGNiZWNhNmE5YWRjZDRlZTQ0YTViN2Q4MjA5NDQwYjliZGEzNzYiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wMS0xNVQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoiMS4wLjAiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiIwN2U0ODVkMTgzMzdjODQxZmVmNzBjNDZkN2UzOTdlMTMzOTg3NDAyODAxMDlhZmVhNDgxMmZlOTU4N2Q0MGJlIn0"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "4097 characters exceeds the QR budget.",
+      "expect": {
+        "code": "qr_too_large",
+        "ok": false
+      },
+      "id": "rc-qr-neg-007-over-qr-limit",
+      "input": {
+        "encoded": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "Not valid UTF-8 JSON.",
+      "expect": {
+        "code": "qr_invalid_encoding",
+        "ok": false
+      },
+      "id": "rc-qr-neg-008-utf8-invalid",
+      "input": {
+        "encoded": "__57fQ"
+      },
+      "op": "receipt_qr_decode",
+      "tier": "required"
+    },
+    {
+      "description": "A 3200-byte receipt is a valid receipt but exceeds the 4096-character QR budget once base64url-encoded.",
+      "expect": {
+        "code": "qr_too_large",
+        "ok": false
+      },
+      "id": "rc-qr-neg-009-encode-over-limit",
+      "input": {
+        "receipt": {
+          "circuitVersion": "1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractId": "CB235DPPRBZSRDU2F5KDB4EMTSZ2IFNT5TXWT4KBB2VJ3WZJWSRD4B7B",
+          "ledgerSequence": 123456,
+          "metadataHash": "113e319e576f609beb67f29b85b69cb1a6c6da90cf41a4cb48bbd456d5a41679",
+          "networkPassphrase": "Test SDF Network ; September 2015",
+          "proofId": "b39b873bc4a39dc89ae7aae6cabd537061ffd901a5d7e5aa232a7c73033730e9",
+          "protocol": "harpocrates-verification-receipt",
+          "result": "verified",
+          "signature": "-q5hWAycYrWrRfx1zPKSkmZHRCcNyQAU8Szq30LmLNjgpfDI8m-1UFCDDoYVN2ezPbWjnqASg2kbdrId6ZBmSA",
+          "signer": {
+            "algorithm": "ECDSA_P256_SHA256",
+            "keyId": "conformance-key-1"
+          },
+          "tier": "silent",
+          "transactionHash": "9e3eb360f7c97ad974e8223b3e8cbeca6a9adcd4ee44a5b7d8209440b9bda376",
+          "verifiedAt": "2026-01-15T12:00:00.000Z",
+          "verifierVersion": "1.0.0",
+          "version": 1,
+          "videoHash": "07e485d18337c841fef70c46d7e397e13398740280109afea4812fe9587d40be"
+        }
+      },
+      "op": "receipt_qr_encode",
+      "tier": "required"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Signed verification receipts: structure, signature, key validity, QR transport"
+}

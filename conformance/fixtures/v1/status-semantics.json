@@ -1,0 +1,252 @@
+{
+  "area": "status-semantics",
+  "cases": [
+    {
+      "description": "No record: NotFound.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "not_found"
+        }
+      },
+      "id": "ss-001-unknown-proof",
+      "input": {
+        "now": 1800000000,
+        "record": null
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "expires_at == 0 means the proof never expires.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "valid"
+        }
+      },
+      "id": "ss-002-registered-no-ttl",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 0,
+          "status": 1
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "Not yet expired.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "valid"
+        }
+      },
+      "id": "ss-003-registered-far-future",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 2800000000,
+          "status": 1
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "now == expires_at is still valid (strict >).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "valid"
+        }
+      },
+      "id": "ss-004-expiry-boundary-equal",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 1800000000,
+          "status": 1
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "One second past expires_at is expired.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "expired"
+        }
+      },
+      "id": "ss-005-expiry-boundary-plus-one",
+      "input": {
+        "now": 1800000001,
+        "record": {
+          "expires_at": 1800000000,
+          "status": 1
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "Stored status 3 is expired regardless of expires_at.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "expired"
+        }
+      },
+      "id": "ss-006-stored-expired",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 0,
+          "status": 3
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "Stored status 2 is revoked.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "revoked"
+        }
+      },
+      "id": "ss-007-stored-revoked",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 0,
+          "status": 2
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "Revocation outranks clock expiry.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "revoked"
+        }
+      },
+      "id": "ss-008-revoked-beats-expired-clock",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 1799999995,
+          "status": 2
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "Revocation is reported even when also past expiry.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "revoked"
+        }
+      },
+      "id": "ss-009-revoked-beats-stored-expired-order",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 1,
+          "status": 2
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "u64::MAX boundary: equal is valid; no overflow.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "valid"
+        }
+      },
+      "id": "ss-010-u64-max-expiry",
+      "input": {
+        "now": 18446744073709551615,
+        "record": {
+          "expires_at": 18446744073709551615,
+          "status": 1
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "description": "Large clock values do not wrap.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "status": "expired"
+        }
+      },
+      "id": "ss-011-u64-max-now",
+      "input": {
+        "now": 18446744073709551615,
+        "record": {
+          "expires_at": 1,
+          "status": 1
+        }
+      },
+      "op": "proof_status",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Deployed `get_proof_status` treats an unrecognised stored status as Valid (fail-open) while the CLI classifier returns 'error' (fail-closed). Unreachable via current entry points, but the layers disagree.",
+      "expect": {
+        "code": "unknown_status",
+        "ok": false
+      },
+      "id": "ss-012-unknown-stored-status",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 0,
+          "status": 9
+        }
+      },
+      "op": "proof_status",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "known_defect",
+      "description": "Status 0 is not defined; must not read as Valid.",
+      "expect": {
+        "code": "unknown_status",
+        "ok": false
+      },
+      "id": "ss-013-zero-stored-status",
+      "input": {
+        "now": 1800000000,
+        "record": {
+          "expires_at": 0,
+          "status": 0
+        }
+      },
+      "op": "proof_status",
+      "tier": "advisory"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "On-chain proof status: revocation, expiry, and boundary behaviour"
+}

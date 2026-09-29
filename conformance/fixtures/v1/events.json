@@ -1,0 +1,1756 @@
+{
+  "area": "events",
+  "cases": [
+    {
+      "description": "Registration event.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "proof_registered"
+        }
+      },
+      "id": "ev-pos-001-proof-registered",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Revocation event.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "proof_revoked"
+        }
+      },
+      "id": "ev-pos-002-proof-revoked",
+      "input": {
+        "data": {
+          "status": 2
+        },
+        "topics": [
+          "proof",
+          "revoke",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Envelope bound.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "metadata_envelope_bound"
+        }
+      },
+      "id": "ev-pos-003-envelope-bound",
+      "input": {
+        "data": {
+          "bound_at": "1800000000",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Envelope upgraded.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "metadata_envelope_upgraded"
+        }
+      },
+      "id": "ev-pos-004-envelope-upgraded",
+      "input": {
+        "data": {
+          "current": 2,
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "previous": 1
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "upgraded",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "History with an actor.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "proof_history"
+        }
+      },
+      "id": "ev-pos-005-history-with-actor",
+      "input": {
+        "data": {
+          "action": 3,
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINI",
+          "reason_code": 255,
+          "timestamp": "1800000000"
+        },
+        "topics": [
+          "proof",
+          "history",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "History with no actor; u64 zero.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "proof_history"
+        }
+      },
+      "id": "ev-pos-006-history-null-actor",
+      "input": {
+        "data": {
+          "action": 1,
+          "actor": null,
+          "reason_code": 0,
+          "timestamp": "0"
+        },
+        "topics": [
+          "proof",
+          "history",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Lineage registration with a contract actor.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "lineage_registered"
+        }
+      },
+      "id": "ev-pos-007-lineage",
+      "input": {
+        "data": {
+          "actor": "CBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4YMIR",
+          "depth": 4,
+          "manifest_digest": "b44e55dca2a84bbfc8d11f6b97e38414a9f14b7597c9734542ef73f86217930f",
+          "operation_type": "crop",
+          "parent_commitments": [
+            "d181fc2de618f0e0b77fb7762d35f7d1a63645b01e7d6b563ef54f03b1ce0f76",
+            "141a6ad285d60017075c93644f17249486d75b42fa2fd1dea09b3bd7fedd99a3"
+          ]
+        },
+        "topics": [
+          "lineage",
+          "reg",
+          "2ccdc33521212483a894f975896345f8dbd98e7992da1629a52a1517b6752e1e"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "u32 maximum batch size; tier/status upper bounds.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "proof_registered"
+        }
+      },
+      "id": "ev-pos-008-batch-size",
+      "input": {
+        "data": {
+          "batch_size": 4294967295,
+          "status": 3,
+          "tier": 3,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "u64::MAX as a string: no float rounding.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "event": "metadata_envelope_bound"
+        }
+      },
+      "id": "ev-pos-009-u64-max",
+      "input": {
+        "data": {
+          "bound_at": "18446744073709551615",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 1
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `nullifier` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "nullifier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-001-privacy-nullifier",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "nullifier": "bcd26b60c33bf605b1e55261bc473af5e9c809e51ea693a8e1f716e782f67006",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `witness` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "witness"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-002-privacy-witness",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710",
+          "witness": "ec1dfad03e5b90556825b70b512bf35b5302556cc057734305a7ca03cd8dabf7"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `proof_bytes` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "proof_bytes"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-003-privacy-proof_bytes",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "proof_bytes": "0f557f70be5afe3a7e6865c57cf16e75972509f92f71f9fc06fd0042cec4549b",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `public_inputs` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "public_inputs"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-004-privacy-public_inputs",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "public_inputs": "7d2d5b26a733538695a3e0e61cf9d32282a39396ccf365b7751d1c737ab93b45",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `credential_secret` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "credential_secret"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-005-privacy-credential_secret",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "credential_secret": "b0552a78ad133c55270f5fbf11f74cdbdd6531abe747c7969d6ecc051963de67",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `private_key` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "private_key"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-006-privacy-private_key",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "private_key": "63724f8a9d766f32f9752a4211968d987f158b4ce080cc4715d662c6d4660eab",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `seed` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "seed"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-007-privacy-seed",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "seed": "9b7e4cd1cfeabec00559149c0ef2aade55f8982abbd72e90d1c6583e695dc96e",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `media` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "media"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-008-privacy-media",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "media": "9989bd3d786de193414cf48845c149ce997256c430b75ca4edbaaba265dca29d",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `raw_metadata` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "raw_metadata"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-009-privacy-raw_metadata",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "raw_metadata": "a1786b10c5d74c8a51b81e591b064f5d07a9625139c52ce9b79916db5e77dbd5",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An event carrying `envelope_bytes` leaks private material and must be rejected.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "envelope_bytes"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-010-privacy-envelope_bytes",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "envelope_bytes": "1f58b964cdac7fd44752b3fc270ff7ea60a629b5a3e1da72e2a8f480fcbbc161",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Field-name matching is case-insensitive.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "Nullifier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-011-privacy-case-insensitive",
+      "input": {
+        "data": {
+          "Nullifier": "a9ae53fb1008233bffa02743c1ae86f7381207dfd1d22952642f050adc51c694",
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Privacy is checked before the event is even recognised.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "private_key"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-012-privacy-on-unknown-event",
+      "input": {
+        "data": {
+          "private_key": "776cee64a7a95e871031644d97bdf70613b36262c115da228c6fdfd86dd73049"
+        },
+        "topics": [
+          "totally",
+          "unknown",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Forbidden names are found at any depth.",
+      "expect": {
+        "code": "event_privacy_violation",
+        "detail": {
+          "field": "nullifier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-013-privacy-nested",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "extra": {
+            "nullifier": "b8095d6f8a5199047f3ed6d76f4f6e0dbc03c101950c099789ad9d7fb4969054"
+          },
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown topic prefix.",
+      "expect": {
+        "code": "event_unknown",
+        "ok": false
+      },
+      "id": "ev-neg-020-unknown-event",
+      "input": {
+        "data": {
+          "status": 1
+        },
+        "topics": [
+          "proof",
+          "explode",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "No topics.",
+      "expect": {
+        "code": "event_unknown",
+        "ok": false
+      },
+      "id": "ev-neg-021-no-topics",
+      "input": {
+        "data": {},
+        "topics": []
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "The proof id topic is missing.",
+      "expect": {
+        "code": "event_topics_invalid",
+        "ok": false
+      },
+      "id": "ev-neg-022-topic-missing-id",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "One topic too many.",
+      "expect": {
+        "code": "event_topics_invalid",
+        "ok": false
+      },
+      "id": "ev-neg-023-topic-extra",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Short id topic.",
+      "expect": {
+        "code": "event_topics_invalid",
+        "ok": false
+      },
+      "id": "ev-neg-024-topic-short-id",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e0"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Non-string topic.",
+      "expect": {
+        "code": "event_topics_invalid",
+        "ok": false
+      },
+      "id": "ev-neg-025-topic-non-string",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          5
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Trailing newline in the id topic.",
+      "expect": {
+        "code": "event_topics_invalid",
+        "ok": false
+      },
+      "id": "ev-neg-026-topic-trailing-newline",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081\n"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "The bound/upgraded literal topic is missing.",
+      "expect": {
+        "code": "event_unknown",
+        "ok": false
+      },
+      "id": "ev-neg-027-envelope-missing-verb",
+      "input": {
+        "data": {
+          "bound_at": "1",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 1
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing `video_hash`.",
+      "expect": {
+        "code": "event_field_missing",
+        "detail": {
+          "field": "video_hash"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-30-missing-video_hash",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing `tier`.",
+      "expect": {
+        "code": "event_field_missing",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-31-missing-tier",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing `status`.",
+      "expect": {
+        "code": "event_field_missing",
+        "detail": {
+          "field": "status"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-32-missing-status",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Missing `batch_size`.",
+      "expect": {
+        "code": "event_field_missing",
+        "detail": {
+          "field": "batch_size"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-33-missing-batch_size",
+      "input": {
+        "data": {
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Unknown data field.",
+      "expect": {
+        "code": "event_field_unexpected",
+        "detail": {
+          "field": "memo"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-034-unexpected-field",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "memo": "x",
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "u32 must be a JSON integer, not a string.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-035-tier-string",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": "1",
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "A JSON boolean is not an integer (Python: isinstance(True, int)).",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-036-tier-bool",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": true,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Fractional u32.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-037-tier-float",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1.5,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Tier 0 is out of range.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-038-tier-zero",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 0,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Tier 4 is out of range.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "tier"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-039-tier-four",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 4,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Status 0 is out of range.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "status"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-040-status-zero",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 0,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "u32 overflow.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "batch_size"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-041-u32-overflow",
+      "input": {
+        "data": {
+          "batch_size": 4294967296,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Negative u32.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "batch_size"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-042-u32-negative",
+      "input": {
+        "data": {
+          "batch_size": -1,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Short hash.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "video_hash"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-043-hash-short",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372cc0a8238694d8c7b37858408a82d7c78213112e7c983f4c1900858171"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "A revoke event must carry status 2.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "status"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-044-revoke-wrong-status",
+      "input": {
+        "data": {
+          "status": 1
+        },
+        "topics": [
+          "proof",
+          "revoke",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "u64 must be a decimal string, never a JSON number.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "bound_at"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-045-u64-number",
+      "input": {
+        "data": {
+          "bound_at": 1,
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Non-canonical decimal.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "bound_at"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-046-u64-leading-zero",
+      "input": {
+        "data": {
+          "bound_at": "01",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Negative u64.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "bound_at"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-047-u64-negative",
+      "input": {
+        "data": {
+          "bound_at": "-1",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "u64 overflow.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "bound_at"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-048-u64-overflow",
+      "input": {
+        "data": {
+          "bound_at": "18446744073709551616",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Explicit plus sign.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "bound_at"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-049-u64-plus",
+      "input": {
+        "data": {
+          "bound_at": "+5",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Fullwidth digit: Python int('\uff11') == 1.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "bound_at"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-050-u64-fullwidth",
+      "input": {
+        "data": {
+          "bound_at": "\uff11",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Envelope version above max.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "version"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-051-version-three",
+      "input": {
+        "data": {
+          "bound_at": "1",
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "version": 3
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "bound",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "An upgrade must strictly increase the version.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "current"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-052-upgrade-not-increasing",
+      "input": {
+        "data": {
+          "current": 2,
+          "metadata_hash": "6310bd5cadcd9fa9c644cf32af461ff526dcb27825f8b57fb765a861b15b7a39",
+          "previous": 2
+        },
+        "topics": [
+          "metadata",
+          "envelope",
+          "upgraded",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "reason_code is bounded to 0..=255.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "reason_code"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-053-reason-256",
+      "input": {
+        "data": {
+          "action": 1,
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINI",
+          "reason_code": 256,
+          "timestamp": "1"
+        },
+        "topics": [
+          "proof",
+          "history",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Address with a bad checksum.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "actor"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-054-actor-bad-checksum",
+      "input": {
+        "data": {
+          "action": 1,
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINA",
+          "reason_code": 0,
+          "timestamp": "1"
+        },
+        "topics": [
+          "proof",
+          "history",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "`actor` must be present (null is allowed, absent is not).",
+      "expect": {
+        "code": "event_field_missing",
+        "detail": {
+          "field": "actor"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-055-actor-missing",
+      "input": {
+        "data": {
+          "action": 1,
+          "reason_code": 0,
+          "timestamp": "1"
+        },
+        "topics": [
+          "proof",
+          "history",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Lineage actor is required.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "actor"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-056-lineage-null-actor",
+      "input": {
+        "data": {
+          "actor": null,
+          "depth": 1,
+          "manifest_digest": "b44e55dca2a84bbfc8d11f6b97e38414a9f14b7597c9734542ef73f86217930f",
+          "operation_type": "crop",
+          "parent_commitments": [
+            "d8ab8959e538cf2d5df33d53c26b9568af240b93ab7ec7f1748f8e4dfe71589c"
+          ]
+        },
+        "topics": [
+          "lineage",
+          "reg",
+          "2ccdc33521212483a894f975896345f8dbd98e7992da1629a52a1517b6752e1e"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "At least one parent commitment.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "parent_commitments"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-057-lineage-no-parents",
+      "input": {
+        "data": {
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINI",
+          "depth": 1,
+          "manifest_digest": "b44e55dca2a84bbfc8d11f6b97e38414a9f14b7597c9734542ef73f86217930f",
+          "operation_type": "crop",
+          "parent_commitments": []
+        },
+        "topics": [
+          "lineage",
+          "reg",
+          "2ccdc33521212483a894f975896345f8dbd98e7992da1629a52a1517b6752e1e"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "At most four parent commitments.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "parent_commitments"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-058-lineage-five-parents",
+      "input": {
+        "data": {
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINI",
+          "depth": 1,
+          "manifest_digest": "b44e55dca2a84bbfc8d11f6b97e38414a9f14b7597c9734542ef73f86217930f",
+          "operation_type": "crop",
+          "parent_commitments": [
+            "21e594678915a2e19c5972f4f360a0a6d635f0d548990f62b2fe08936f26e5da",
+            "d181fc2de618f0e0b77fb7762d35f7d1a63645b01e7d6b563ef54f03b1ce0f76",
+            "141a6ad285d60017075c93644f17249486d75b42fa2fd1dea09b3bd7fedd99a3",
+            "de2009c755e366e7fe8ff96a6b207d1db864cb57f7d68ad9b2c0a2254a312c15",
+            "de3babdbec595a4b520f353a3f270fe9fcbb135f8bddf4ccbbac24e9f6879ea8"
+          ]
+        },
+        "topics": [
+          "lineage",
+          "reg",
+          "2ccdc33521212483a894f975896345f8dbd98e7992da1629a52a1517b6752e1e"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Depth above MAX_LINEAGE_DEPTH.",
+      "expect": {
+        "code": "event_value_out_of_range",
+        "detail": {
+          "field": "depth"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-059-lineage-depth-five",
+      "input": {
+        "data": {
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINI",
+          "depth": 5,
+          "manifest_digest": "b44e55dca2a84bbfc8d11f6b97e38414a9f14b7597c9734542ef73f86217930f",
+          "operation_type": "crop",
+          "parent_commitments": [
+            "d8ab8959e538cf2d5df33d53c26b9568af240b93ab7ec7f1748f8e4dfe71589c"
+          ]
+        },
+        "topics": [
+          "lineage",
+          "reg",
+          "2ccdc33521212483a894f975896345f8dbd98e7992da1629a52a1517b6752e1e"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Malformed commitment.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "parent_commitments"
+        },
+        "ok": false
+      },
+      "id": "ev-neg-060-lineage-bad-commitment",
+      "input": {
+        "data": {
+          "actor": "GBUYQGH76KZBYTWGWBS7UKWJBE3YYBADJ2QH36OTUIXG5UXMPYK4ZINI",
+          "depth": 1,
+          "manifest_digest": "b44e55dca2a84bbfc8d11f6b97e38414a9f14b7597c9734542ef73f86217930f",
+          "operation_type": "crop",
+          "parent_commitments": [
+            "xyz"
+          ]
+        },
+        "topics": [
+          "lineage",
+          "reg",
+          "2ccdc33521212483a894f975896345f8dbd98e7992da1629a52a1517b6752e1e"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Registry events carry canonical lowercase hex; an uppercase digest signals a re-encoding bug upstream.",
+      "expect": {
+        "code": "event_field_type",
+        "detail": {
+          "field": "video_hash"
+        },
+        "ok": false
+      },
+      "id": "ev-adv-001-uppercase-hash",
+      "input": {
+        "data": {
+          "batch_size": 0,
+          "status": 1,
+          "tier": 1,
+          "video_hash": "700372CC0A8238694D8C7B37858408A82D7C78213112E7C983F4C19008581710"
+        },
+        "topics": [
+          "proof",
+          "reg",
+          "d2ea4625b091061d6ee1950bfec427be06136557076ec042e76172000056e081"
+        ]
+      },
+      "op": "event_validate",
+      "tier": "advisory"
+    }
+  ],
+  "encoding": {
+    "address": "strkey G... or C... with valid checksum, or JSON null where the schema allows",
+    "hex32": "64 lowercase hex characters",
+    "u32": "JSON integer 0..4294967295 (booleans are not integers)",
+    "u64": "base-10 string, canonical (no sign, no leading zeros), 0..18446744073709551615"
+  },
+  "event_schemas": {
+    "lineage_registered": {
+      "fields": [
+        [
+          "manifest_digest",
+          "hex32"
+        ],
+        [
+          "actor",
+          "address"
+        ],
+        [
+          "operation_type",
+          "string"
+        ],
+        [
+          "depth",
+          "u32:1..4"
+        ],
+        [
+          "parent_commitments",
+          "hex32[1..4]"
+        ]
+      ],
+      "topics": [
+        "lineage",
+        "reg",
+        "$hex32"
+      ]
+    },
+    "metadata_envelope_bound": {
+      "fields": [
+        [
+          "version",
+          "u32:1..2"
+        ],
+        [
+          "metadata_hash",
+          "hex32"
+        ],
+        [
+          "bound_at",
+          "u64"
+        ]
+      ],
+      "topics": [
+        "metadata",
+        "envelope",
+        "bound",
+        "$hex32"
+      ]
+    },
+    "metadata_envelope_upgraded": {
+      "fields": [
+        [
+          "previous",
+          "u32:1..2"
+        ],
+        [
+          "current",
+          "u32:1..2"
+        ],
+        [
+          "metadata_hash",
+          "hex32"
+        ]
+      ],
+      "rule": "current > previous",
+      "topics": [
+        "metadata",
+        "envelope",
+        "upgraded",
+        "$hex32"
+      ]
+    },
+    "proof_history": {
+      "fields": [
+        [
+          "action",
+          "u32"
+        ],
+        [
+          "timestamp",
+          "u64"
+        ],
+        [
+          "actor",
+          "address|null"
+        ],
+        [
+          "reason_code",
+          "u32:0..255"
+        ]
+      ],
+      "topics": [
+        "proof",
+        "history",
+        "$hex32"
+      ]
+    },
+    "proof_registered": {
+      "fields": [
+        [
+          "video_hash",
+          "hex32"
+        ],
+        [
+          "tier",
+          "u32:1..3"
+        ],
+        [
+          "status",
+          "u32:1..3"
+        ],
+        [
+          "batch_size",
+          "u32"
+        ]
+      ],
+      "topics": [
+        "proof",
+        "reg",
+        "$hex32"
+      ]
+    },
+    "proof_revoked": {
+      "fields": [
+        [
+          "status",
+          "u32:2..2"
+        ]
+      ],
+      "topics": [
+        "proof",
+        "revoke",
+        "$hex32"
+      ]
+    }
+  },
+  "fixture_version": 1,
+  "forbidden_field_names": [
+    "nullifier",
+    "witness",
+    "proof_bytes",
+    "public_inputs",
+    "credential_secret",
+    "private_key",
+    "seed",
+    "media",
+    "raw_metadata",
+    "envelope_bytes"
+  ],
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Registry events: schema, encodings, and privacy (no secrets in any event)"
+}

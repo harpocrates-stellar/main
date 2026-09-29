@@ -1,0 +1,911 @@
+{
+  "area": "verification-result",
+  "cases": [
+    {
+      "description": "Confirmed tx, registered record, matching fields.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-001-valid",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "contractMatch=true is fine.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-002-valid-contract-match-true",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": true,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "contractMatch=false overrides everything else.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "contract_mismatch"
+        }
+      },
+      "id": "vr-003-contract-mismatch-wins",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": false,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Even with a missing transaction.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "contract_mismatch"
+        }
+      },
+      "id": "vr-004-contract-mismatch-beats-missing",
+      "input": {
+        "chain_record": null,
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": false,
+          "status": "missing"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Transaction not found on the network.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "not_found"
+        }
+      },
+      "id": "vr-005-tx-missing",
+      "input": {
+        "chain_record": null,
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "missing"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "A failed transaction is never valid, even if a record exists.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "failed"
+        }
+      },
+      "id": "vr-006-tx-failed",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "failed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Pending transaction.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "pending"
+        }
+      },
+      "id": "vr-007-tx-pending",
+      "input": {
+        "chain_record": null,
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "pending"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Pending outranks a matching record.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "pending"
+        }
+      },
+      "id": "vr-008-tx-pending-with-record",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "pending"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Confirmed tx but no registry record.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "not_found"
+        }
+      },
+      "id": "vr-009-confirmed-no-record",
+      "input": {
+        "chain_record": null,
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Registry status 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "revoked"
+        }
+      },
+      "id": "vr-010-revoked",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 2,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Registry status 3.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "expired"
+        }
+      },
+      "id": "vr-011-expired-status",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 3,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Unrecognised registry status fails closed.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-012-unknown-status",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 9,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Status 0 fails closed.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-013-status-zero",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 0,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "expiresAt one second in the past.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "expired"
+        }
+      },
+      "id": "vr-014-expired-by-clock",
+      "input": {
+        "chain_record": {
+          "expiresAt": "1799999999",
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "expiresAt == now is still valid.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-015-expiry-boundary-equal",
+      "input": {
+        "chain_record": {
+          "expiresAt": "1800000000",
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "expiresAt '0' means no expiry.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-016-expires-zero-never",
+      "input": {
+        "chain_record": {
+          "expiresAt": "0",
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "u64::MAX as a decimal string: no float rounding.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-017-expires-u64-string",
+      "input": {
+        "chain_record": {
+          "expiresAt": "18446744073709551615",
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "9007199254740995 < 9007199254740996 exactly; as IEEE doubles both round to 9007199254740996 and the record would wrongly read as unexpired. Compare as integers (BigInt), never floats.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "expired"
+        }
+      },
+      "id": "vr-018-expires-bigint-precision",
+      "input": {
+        "chain_record": {
+          "expiresAt": "9007199254740995",
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 9007199254740996,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Registry record is for a different video hash.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-019-video-hash-mismatch",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "2d8379d2f9460f88614ec1be0de6318ee99afbc3ed2d812c0ceb698a42d12cf6"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Registry record has different metadata.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-020-metadata-hash-mismatch",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "2d8379d2f9460f88614ec1be0de6318ee99afbc3ed2d812c0ceb698a42d12cf6",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Manifest says silent (1) but the record says source (2).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-021-tier-mismatch",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 2,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Hex comparison ignores case.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-022-hash-compare-case-insensitive",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "54F9E920415CF6533C4B8DCCDF853CEEF69B67AEB503FF893CA6797FCA7ECACC"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Field disagreement is reported as error before revocation.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-023-mismatch-beats-revoked",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 2,
+          "tier": 1,
+          "videoHash": "2d8379d2f9460f88614ec1be0de6318ee99afbc3ed2d812c0ceb698a42d12cf6"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "With a record present, a field mismatch outranks pending.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "error"
+        }
+      },
+      "id": "vr-024-mismatch-beats-pending",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 1,
+          "videoHash": "2d8379d2f9460f88614ec1be0de6318ee99afbc3ed2d812c0ceb698a42d12cf6"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "silent",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "pending"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "Tier seal maps to 3.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "result": "valid"
+        }
+      },
+      "id": "vr-025-tier-seal",
+      "input": {
+        "chain_record": {
+          "expiresAt": null,
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "status": 1,
+          "tier": 3,
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "manifest": {
+          "metadataHash": "f0b6e2c1641f00696f695f16bf979c73b59a18184171c2813f4f3812f9e9f2ad",
+          "tier": "seal",
+          "videoHash": "54f9e920415cf6533c4b8dccdf853ceef69b67aeb503ff893ca6797fca7ecacc"
+        },
+        "now_seconds": 1800000000,
+        "transaction": {
+          "contractMatch": null,
+          "status": "confirmed"
+        }
+      },
+      "op": "verification_classify",
+      "tier": "required"
+    },
+    {
+      "description": "'valid' exits with 0.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 0
+        }
+      },
+      "id": "vr-exit-001-valid",
+      "input": {
+        "result": "valid"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'expired' exits with 1.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 1
+        }
+      },
+      "id": "vr-exit-002-expired",
+      "input": {
+        "result": "expired"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'revoked' exits with 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 2
+        }
+      },
+      "id": "vr-exit-003-revoked",
+      "input": {
+        "result": "revoked"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'not_found' exits with 3.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 3
+        }
+      },
+      "id": "vr-exit-004-not_found",
+      "input": {
+        "result": "not_found"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'network_mismatch' exits with 4.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 4
+        }
+      },
+      "id": "vr-exit-005-network_mismatch",
+      "input": {
+        "result": "network_mismatch"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'contract_mismatch' exits with 5.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 5
+        }
+      },
+      "id": "vr-exit-006-contract_mismatch",
+      "input": {
+        "result": "contract_mismatch"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'pending' exits with 6.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 6
+        }
+      },
+      "id": "vr-exit-007-pending",
+      "input": {
+        "result": "pending"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'failed' exits with 7.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 7
+        }
+      },
+      "id": "vr-exit-008-failed",
+      "input": {
+        "result": "failed"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "'error' exits with 8.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 8
+        }
+      },
+      "id": "vr-exit-009-error",
+      "input": {
+        "result": "error"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    },
+    {
+      "description": "Anything unrecognised exits 8 (error).",
+      "expect": {
+        "ok": true,
+        "output": {
+          "exit_code": 8
+        }
+      },
+      "id": "vr-exit-010-unknown-result",
+      "input": {
+        "result": "bogus"
+      },
+      "op": "result_exit_code",
+      "tier": "required"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "CLI verification classification and exit codes"
+}

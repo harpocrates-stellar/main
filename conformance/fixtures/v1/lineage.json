@@ -1,0 +1,856 @@
+{
+  "area": "lineage",
+  "cases": [
+    {
+      "description": "One valid parent at depth 1.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "ln-rule-001-one-valid-parent",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Fan-out and depth exactly at the limits.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "ln-rule-002-four-parents",
+      "input": {
+        "depth": 4,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "f8217aa3993f3641b9703034c1077269d20fdc83ff92e8b50d9e9130622fc74a",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "3a93ee788597994cc8100d6df1c8dc12112c0521565ef83e4ee6aa187bb7e06a",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "d5340555e9b99508ba5ffba0cfaa0255cef084a454bd3a3d56d19dfcd0e8a094",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "A parent that is itself a lineage record needs no status.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "valid": true
+        }
+      },
+      "id": "ln-rule-003-lineage-parent",
+      "input": {
+        "depth": 2,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "lineage",
+            "status": null
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Zero parents.",
+      "expect": {
+        "code": "lineage_empty_parents",
+        "ok": false
+      },
+      "id": "ln-rule-004-empty-parents",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": []
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Fan-out 5 > 4.",
+      "expect": {
+        "code": "lineage_fan_out_exceeded",
+        "ok": false
+      },
+      "id": "ln-rule-005-five-parents",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "f8217aa3993f3641b9703034c1077269d20fdc83ff92e8b50d9e9130622fc74a",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "3a93ee788597994cc8100d6df1c8dc12112c0521565ef83e4ee6aa187bb7e06a",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "d5340555e9b99508ba5ffba0cfaa0255cef084a454bd3a3d56d19dfcd0e8a094",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "b51304c8c73053c932a4a00ab9e77724394ce228a0b289dbfa8a631d5fc282dc",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Depth 5 > 4.",
+      "expect": {
+        "code": "lineage_too_deep",
+        "ok": false
+      },
+      "id": "ln-rule-006-depth-five",
+      "input": {
+        "depth": 5,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Depth 0 is not a derivation.",
+      "expect": {
+        "code": "invalid_lineage",
+        "ok": false
+      },
+      "id": "ln-rule-007-depth-zero",
+      "input": {
+        "depth": 0,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Output equal to a parent is a cycle.",
+      "expect": {
+        "code": "lineage_cycle",
+        "ok": false
+      },
+      "id": "ln-rule-008-self-parent",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Revoked parent proof.",
+      "expect": {
+        "code": "lineage_parent_unavailable",
+        "ok": false
+      },
+      "id": "ln-rule-009-revoked-parent",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "revoked"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Expired parent proof.",
+      "expect": {
+        "code": "lineage_parent_unavailable",
+        "ok": false
+      },
+      "id": "ln-rule-010-expired-parent",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "expired"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Parent that is neither a proof nor a lineage record.",
+      "expect": {
+        "code": "invalid_lineage",
+        "ok": false
+      },
+      "id": "ln-rule-011-unknown-parent",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "unknown",
+            "status": null
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Output digest already registered.",
+      "expect": {
+        "code": "duplicate_lineage",
+        "ok": false
+      },
+      "id": "ln-rule-012-duplicate-output",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": true,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: empty parents before depth.",
+      "expect": {
+        "code": "lineage_empty_parents",
+        "ok": false
+      },
+      "id": "ln-rule-013-order-empty-before-depth",
+      "input": {
+        "depth": 9,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": []
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: fan-out before depth.",
+      "expect": {
+        "code": "lineage_fan_out_exceeded",
+        "ok": false
+      },
+      "id": "ln-rule-014-order-fanout-before-depth",
+      "input": {
+        "depth": 9,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "f8217aa3993f3641b9703034c1077269d20fdc83ff92e8b50d9e9130622fc74a",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "3a93ee788597994cc8100d6df1c8dc12112c0521565ef83e4ee6aa187bb7e06a",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "d5340555e9b99508ba5ffba0cfaa0255cef084a454bd3a3d56d19dfcd0e8a094",
+            "kind": "proof",
+            "status": "valid"
+          },
+          {
+            "id": "b51304c8c73053c932a4a00ab9e77724394ce228a0b289dbfa8a631d5fc282dc",
+            "kind": "proof",
+            "status": "valid"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Check order: depth before per-parent checks.",
+      "expect": {
+        "code": "lineage_too_deep",
+        "ok": false
+      },
+      "id": "ln-rule-015-order-depth-before-parents",
+      "input": {
+        "depth": 5,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "revoked"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Per parent: cycle is checked before availability.",
+      "expect": {
+        "code": "lineage_cycle",
+        "ok": false
+      },
+      "id": "ln-rule-016-order-cycle-before-availability",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+            "kind": "proof",
+            "status": "revoked"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Parents are examined in order; the first failure is reported.",
+      "expect": {
+        "code": "lineage_parent_unavailable",
+        "ok": false
+      },
+      "id": "ln-rule-017-first-failing-parent-wins",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": false,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "revoked"
+          },
+          {
+            "id": "f8217aa3993f3641b9703034c1077269d20fdc83ff92e8b50d9e9130622fc74a",
+            "kind": "unknown",
+            "status": null
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Duplicate-output is only reached after every rule passes.",
+      "expect": {
+        "code": "lineage_parent_unavailable",
+        "ok": false
+      },
+      "id": "ln-rule-018-duplicate-checked-last",
+      "input": {
+        "depth": 1,
+        "output_digest": "f65ffb637bfdb4b6d201b05b1f9865e5ca235e455599e6c7515e2d0a236c0d2a",
+        "output_registered": true,
+        "parents": [
+          {
+            "id": "bf1fe94b854f3e5a4b3dd71e3e0161b87db9208d766ca21cd084329a0118997d",
+            "kind": "proof",
+            "status": "revoked"
+          }
+        ]
+      },
+      "op": "lineage_validate",
+      "tier": "required"
+    },
+    {
+      "description": "Operation 'crop' is supported; version is always 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"crop\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\",\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "3ecd1fbdc862762063ad9487de5fc7b26195959b2f85264a1cf63a8170715bea"
+        }
+      },
+      "id": "ln-man-pos-001-crop",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "crop",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "Operation 'transcode' is supported; version is always 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"transcode\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\",\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "750aee425892150602ee5e67ad9c4835ca8d5dfed4261f1b6ee3d4e69293f1c0"
+        }
+      },
+      "id": "ln-man-pos-002-transcode",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "transcode",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "Operation 'blur' is supported; version is always 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"blur\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\",\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "850c2315cf9ef3e5b53a1c9dbdff8e135b2be993d1b7aed81594b54d30efde32"
+        }
+      },
+      "id": "ln-man-pos-003-blur",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "blur",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "Operation 'redact' is supported; version is always 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"redact\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\",\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "a64430a8d853588f2288ffa8e13f6354aa216db9150878084bd6c56fb06bbe95"
+        }
+      },
+      "id": "ln-man-pos-004-redact",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "redact",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "Operation 'compose' is supported; version is always 2.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"compose\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\",\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "82a4bad8c91c423b086b19aac39bd204a11a3e308ef4c1c089bc70d97d15166f"
+        }
+      },
+      "id": "ln-man-pos-005-compose",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "compose",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "parentProofIds order is significant and is not sorted.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"crop\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\",\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "3f6d8ddda4a1ab6a4b7e0046e5e9df96485cd48815427295355a4b19be57919c"
+        }
+      },
+      "id": "ln-man-pos-006-parent-order-preserved",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "crop",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e",
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "operationType 'Crop' is not in the supported set (exact, case-sensitive).",
+      "expect": {
+        "code": "unsupported_operation",
+        "ok": false
+      },
+      "id": "ln-man-neg-001-op-case",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "Crop",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "operationType 'resize' is not in the supported set (exact, case-sensitive).",
+      "expect": {
+        "code": "unsupported_operation",
+        "ok": false
+      },
+      "id": "ln-man-neg-002-op-unknown",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "resize",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "operationType '' is not in the supported set (exact, case-sensitive).",
+      "expect": {
+        "code": "unsupported_operation",
+        "ok": false
+      },
+      "id": "ln-man-neg-003-op-empty",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "description": "operationType 'crop ' is not in the supported set (exact, case-sensitive).",
+      "expect": {
+        "code": "unsupported_operation",
+        "ok": false
+      },
+      "id": "ln-man-neg-004-op-space",
+      "input": {
+        "actorAddress": "GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "crop ",
+        "outputDigest": "e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560",
+        "parametersDigest": "5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a",
+        "parentProofIds": [
+          "004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656",
+          "04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e"
+        ],
+        "toolIdentity": "example-tool",
+        "toolVersion": "1.0.0"
+      },
+      "op": "lineage_manifest_create",
+      "tier": "required"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "A well-formed v2 transformation manifest parses.",
+      "expect": {
+        "ok": true,
+        "output": {
+          "canonical": "{\"actorAddress\":\"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\",\"network\":\"Test SDF Network ; September 2015\",\"operationType\":\"crop\",\"outputDigest\":\"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\",\"parametersDigest\":\"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\",\"parentProofIds\":[\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\",\"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"example-tool\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+          "sha256": "3ecd1fbdc862762063ad9487de5fc7b26195959b2f85264a1cf63a8170715bea"
+        }
+      },
+      "id": "ln-ext-001-v2-accepted",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Future manifest versions fail closed.",
+      "expect": {
+        "code": "unsupported_version",
+        "ok": false
+      },
+      "id": "ln-ext-002-version-3-fails-closed",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 3, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Transformation manifests are closed like proof manifests: unknown members are rejected, never silently dropped.",
+      "expect": {
+        "code": "unsupported_field",
+        "ok": false
+      },
+      "id": "ln-ext-003-unknown-field-rejected",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\", \"futureExtension\": {\"x\": 1}}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "At least one parent.",
+      "expect": {
+        "code": "lineage_empty_parents",
+        "ok": false
+      },
+      "id": "ln-ext-004-empty-parents",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "At most four parents.",
+      "expect": {
+        "code": "lineage_fan_out_exceeded",
+        "ok": false
+      },
+      "id": "ln-ext-005-five-parents",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"6278836219ea1f834644b67285d279f645e9f57c336e91af807809f327bbd684\", \"db09672237083b61a60e66dd1192a8e801f4d1be17ad844070fc1d18f19e8144\", \"b54095c789831a9e2be7c0031bdbdd482aad7dd86c072076da86ead27b6e75ff\", \"2a4f7c884c01fc8405d5b7af5bae239b0325df34838e052ce9ddac6390d784b3\", \"e007d8f597288bcf689767b7aacd54de85a5f6f7eb525ce66c070bd5f0eefb90\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Parent ids are 32-byte hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "ok": false
+      },
+      "id": "ln-ext-006-parent-not-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"nope\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "outputDigest is 32-byte hex.",
+      "expect": {
+        "code": "bad_hex32",
+        "ok": false
+      },
+      "id": "ln-ext-007-output-not-hex",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"nope\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Unsupported operation.",
+      "expect": {
+        "code": "unsupported_operation",
+        "ok": false
+      },
+      "id": "ln-ext-008-unsupported-operation",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"resize\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"example-tool\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "Canonical manifest above 4096 bytes.",
+      "expect": {
+        "code": "payload_too_large",
+        "ok": false
+      },
+      "id": "ln-ext-009-payload-too-large",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    },
+    {
+      "advisory_reason": "proposed_hardening",
+      "description": "~2100 characters but > 4096 UTF-8 bytes: the bound is in bytes.",
+      "expect": {
+        "code": "payload_too_large",
+        "ok": false
+      },
+      "id": "ln-ext-010-payload-at-limit-bytes-not-chars",
+      "input": {
+        "text": "{\"protocol\": \"harpocrates\", \"version\": 2, \"parentProofIds\": [\"004f01d37d83969beef8f108ee9b56424d0941d4da7a03a21a2bb307fb1b2656\", \"04e9d6adc60781252af275833beb2b946ba729f928ed16e5671f4124666fd44e\"], \"operationType\": \"crop\", \"parametersDigest\": \"5d2b0035f5a369b7016474144b93013facc9f64962ee0e0ee76ffbdf3f14fe9a\", \"toolIdentity\": \"\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\", \"toolVersion\": \"1.0.0\", \"outputDigest\": \"e21d3680bfe98782579cc837e9736c7b25d77c4affd6ee2a96d7aebfe050c560\", \"network\": \"Test SDF Network ; September 2015\", \"actorAddress\": \"GBS4JLTNLSH33NTLC7MPOQFUML2SSMGBBLKVSBHI6CYHP72EV4GQKEFD\"}"
+      },
+      "op": "lineage_manifest_parse",
+      "tier": "advisory"
+    }
+  ],
+  "fixture_version": 1,
+  "format": "harpocrates.conformance",
+  "limits": {
+    "max_depth": 4,
+    "max_fanout": 4,
+    "max_payload_bytes": 4096
+  },
+  "suite_version": "1.0.0",
+  "synthetic": true,
+  "title": "Lineage rules (contract), transformation manifests, and extension handling"
+}

@@ -1,0 +1,274 @@
+{
+  "codes": {
+    "bad_disclosure": {
+      "first_area": "proof-manifest",
+      "meaning": "selectiveDisclosure is malformed."
+    },
+    "bad_hex32": {
+      "first_area": "proof-manifest",
+      "meaning": "A digest member is not 32-byte hex."
+    },
+    "bad_proof_id": {
+      "first_area": "metadata-envelope",
+      "meaning": "proofId is not 32-byte hex."
+    },
+    "bad_protocol": {
+      "first_area": "metadata-envelope",
+      "meaning": "protocol is not the expected literal."
+    },
+    "bad_scope_epoch": {
+      "first_area": "proof-manifest",
+      "meaning": "verifierScope or epoch is malformed."
+    },
+    "bad_scope_name": {
+      "first_area": "proof-manifest",
+      "meaning": "scopeName is not a string of at most 128 UTF-16 code units."
+    },
+    "bad_source_hash": {
+      "first_area": "metadata-envelope",
+      "meaning": "sourceHash is not 32-byte hex."
+    },
+    "bad_string_field": {
+      "first_area": "proof-manifest",
+      "meaning": "A required string member is missing, non-string, or empty."
+    },
+    "bad_tier": {
+      "first_area": "metadata-envelope",
+      "meaning": "tier is not one of silent, source, seal."
+    },
+    "bad_timestamp": {
+      "first_area": "metadata-envelope",
+      "meaning": "timestamp is not a valid date-time."
+    },
+    "bad_version": {
+      "first_area": "metadata-envelope",
+      "meaning": "version is not an acceptable number."
+    },
+    "duplicate_key": {
+      "first_area": "canonical-json",
+      "meaning": "An object repeats a key."
+    },
+    "duplicate_lineage": {
+      "first_area": "lineage",
+      "meaning": "Output digest already registered (ABI #78)."
+    },
+    "event_field_missing": {
+      "first_area": "events",
+      "meaning": "A schema field is absent."
+    },
+    "event_field_type": {
+      "first_area": "events",
+      "meaning": "A field has the wrong type or encoding."
+    },
+    "event_field_unexpected": {
+      "first_area": "events",
+      "meaning": "A field outside the schema is present."
+    },
+    "event_privacy_violation": {
+      "first_area": "events",
+      "meaning": "An event carries a field that may hold private material."
+    },
+    "event_topics_invalid": {
+      "first_area": "events",
+      "meaning": "Topic list has the wrong shape."
+    },
+    "event_unknown": {
+      "first_area": "events",
+      "meaning": "Topics do not identify a known event."
+    },
+    "event_value_out_of_range": {
+      "first_area": "events",
+      "meaning": "A field is outside its allowed range."
+    },
+    "invalid_byte": {
+      "first_area": "stellar-encoding",
+      "meaning": "A byte value is outside 0..255."
+    },
+    "invalid_hex32": {
+      "first_area": "stellar-encoding",
+      "meaning": "Not a 64-character hex string."
+    },
+    "invalid_hex_bytes": {
+      "first_area": "stellar-encoding",
+      "meaning": "Not an even-length hex string."
+    },
+    "invalid_json": {
+      "first_area": "canonical-json",
+      "meaning": "Input text is not valid JSON."
+    },
+    "invalid_lineage": {
+      "first_area": "lineage",
+      "meaning": "Depth 0 or an unknown parent (ABI #57)."
+    },
+    "invalid_metadata_envelope": {
+      "first_area": "metadata-envelope",
+      "meaning": "Envelope hash is zero (ABI #69)."
+    },
+    "invalid_unicode": {
+      "first_area": "canonical-json",
+      "meaning": "A string contains a lone surrogate."
+    },
+    "lineage_cycle": {
+      "first_area": "lineage",
+      "meaning": "Output equals a parent (ABI #58)."
+    },
+    "lineage_empty_parents": {
+      "first_area": "lineage",
+      "meaning": "Lineage has no parents (ABI #76)."
+    },
+    "lineage_fan_out_exceeded": {
+      "first_area": "lineage",
+      "meaning": "More than 4 parents (ABI #60)."
+    },
+    "lineage_parent_unavailable": {
+      "first_area": "lineage",
+      "meaning": "Parent proof is revoked or expired (ABI #77)."
+    },
+    "lineage_too_deep": {
+      "first_area": "lineage",
+      "meaning": "Depth above 4 (ABI #59)."
+    },
+    "metadata_envelope_hash_mismatch": {
+      "first_area": "metadata-envelope",
+      "meaning": "Envelope hash differs from the proof's metadata hash (ABI #71)."
+    },
+    "metadata_envelope_not_found": {
+      "first_area": "metadata-envelope",
+      "meaning": "No proof or envelope for the id (ABI #70)."
+    },
+    "missing_field": {
+      "first_area": "metadata-envelope",
+      "meaning": "A required member is absent."
+    },
+    "nesting_too_deep": {
+      "first_area": "canonical-json",
+      "meaning": "Nesting exceeds 64 levels."
+    },
+    "network_mismatch": {
+      "first_area": "network-guard",
+      "meaning": "Wallet and contract networks differ."
+    },
+    "not_object": {
+      "first_area": "metadata-envelope",
+      "meaning": "The value is not a JSON object."
+    },
+    "payload_too_large": {
+      "first_area": "lineage",
+      "meaning": "Canonical manifest exceeds 4096 UTF-8 bytes."
+    },
+    "qr_invalid_encoding": {
+      "first_area": "receipt",
+      "meaning": "QR payload is not base64url canonical JSON."
+    },
+    "qr_too_large": {
+      "first_area": "receipt",
+      "meaning": "QR payload exceeds 4096 characters."
+    },
+    "receipt_digest_invalid": {
+      "first_area": "receipt",
+      "meaning": "A receipt digest is not 32-byte hex."
+    },
+    "receipt_key_stale": {
+      "first_area": "receipt",
+      "meaning": "Signer key was not valid at verification time or has expired."
+    },
+    "receipt_key_unknown": {
+      "first_area": "receipt",
+      "meaning": "No key is registered for signer.keyId."
+    },
+    "receipt_ledger_invalid": {
+      "first_area": "receipt",
+      "meaning": "ledgerSequence is not an integer or null."
+    },
+    "receipt_metadata_incomplete": {
+      "first_area": "receipt",
+      "meaning": "A required receipt string is empty."
+    },
+    "receipt_network_mismatch": {
+      "first_area": "receipt",
+      "meaning": "Receipt network differs from the expected network."
+    },
+    "receipt_proof_mismatch": {
+      "first_area": "receipt",
+      "meaning": "Receipt proof id differs from the expected proof id."
+    },
+    "receipt_result_invalid": {
+      "first_area": "receipt",
+      "meaning": "result is not verified/unverified."
+    },
+    "receipt_signature_invalid": {
+      "first_area": "receipt",
+      "meaning": "Signature does not verify."
+    },
+    "receipt_signature_malformed": {
+      "first_area": "receipt",
+      "meaning": "Signature is not unpadded base64url."
+    },
+    "receipt_signature_missing": {
+      "first_area": "receipt",
+      "meaning": "No signature present."
+    },
+    "receipt_signer_invalid": {
+      "first_area": "receipt",
+      "meaning": "signer.keyId or signer.algorithm is invalid."
+    },
+    "receipt_tier_invalid": {
+      "first_area": "receipt",
+      "meaning": "Receipt tier is invalid."
+    },
+    "receipt_time_invalid": {
+      "first_area": "receipt",
+      "meaning": "verifiedAt is not a valid date-time."
+    },
+    "receipt_too_large": {
+      "first_area": "receipt",
+      "meaning": "Canonical receipt exceeds 8192 UTF-8 bytes."
+    },
+    "receipt_txhash_invalid": {
+      "first_area": "receipt",
+      "meaning": "transactionHash is not 32-byte hex or null."
+    },
+    "receipt_unsupported_version": {
+      "first_area": "receipt",
+      "meaning": "Receipt protocol or version is not recognised."
+    },
+    "strkey_invalid": {
+      "first_area": "stellar-encoding",
+      "meaning": "Not a valid strkey of the expected type."
+    },
+    "unknown_error_code": {
+      "first_area": "error-abi",
+      "meaning": "The numeric error code is not assigned."
+    },
+    "unknown_status": {
+      "first_area": "status-semantics",
+      "meaning": "Stored status is not 1, 2 or 3."
+    },
+    "unsupported_field": {
+      "first_area": "proof-manifest",
+      "meaning": "A closed object contains an unknown member."
+    },
+    "unsupported_metadata_envelope_version": {
+      "first_area": "metadata-envelope",
+      "meaning": "Envelope version is 0, above the supported maximum, or a downgrade (ABI #68)."
+    },
+    "unsupported_number": {
+      "first_area": "canonical-json",
+      "meaning": "Number is not an integer within +/-(2^53-1)."
+    },
+    "unsupported_operation": {
+      "first_area": "lineage",
+      "meaning": "operationType is not in the supported set."
+    },
+    "unsupported_version": {
+      "first_area": "proof-manifest",
+      "meaning": "Manifest version is not supported."
+    },
+    "wallet_network_unavailable": {
+      "first_area": "network-guard",
+      "meaning": "The wallet reported no network."
+    }
+  },
+  "format": "harpocrates.conformance.reason-codes",
+  "suite_version": "1.0.0"
+}
