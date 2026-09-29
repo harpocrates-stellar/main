@@ -41,6 +41,7 @@ from errors import (
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
     error_response,
 )
@@ -113,7 +114,7 @@ from trace_fields import (
 from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
-from quarantine import QuarantineError, isolate_upload
+from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
@@ -653,7 +654,11 @@ def create_app() -> Flask:
                 embedded_hash = workspace.sha256("embedded.mp4")
                 metadata_hash = canonical_metadata_hash(metadata)
         except QuarantineError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return error_response(
+                code=UNSUPPORTED_MEDIA_TYPE,
+                message=str(exc),
+                status=400,
+            )
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -757,6 +762,16 @@ def create_app() -> Flask:
             max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
         )
 
+        # Sniff assembled file before handing it to ffmpeg.
+        try:
+            sniff_media_type_path(combined_path)
+        except QuarantineError as exc:
+            return error_response(
+                code=UNSUPPORTED_MEDIA_TYPE,
+                message=str(exc),
+                status=400,
+            )
+
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
             output_path = Path(tmp_dir) / "embedded.mp4"
             embed_metadata(combined_path, output_path, metadata)
@@ -836,7 +851,11 @@ def create_app() -> Flask:
                 video_hash = workspace.sha256("source.video")
                 metadata_hash = canonical_metadata_hash(metadata) if metadata else None
         except QuarantineError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return error_response(
+                code=UNSUPPORTED_MEDIA_TYPE,
+                message=str(exc),
+                status=400,
+            )
 
         retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
         if retention_class not in config.retention_classes:
@@ -1871,11 +1890,40 @@ def is_field_decimal(value: object) -> bool:
 
 
 def validate_video_upload(video) -> None:
+    """Validate an uploaded video *before* it is saved to disk or handed to ffmpeg.
+
+    Checks (in order):
+    1. Filename is present.
+    2. Declared ``Content-Type`` is in the ``video/*`` family or the generic
+       ``application/octet-stream`` wildcard.
+    3. **Media-type sniff** — reads the first 32 bytes of the upload stream and
+       verifies that a recognised video magic signature is present and consistent
+       with both the filename extension and the declared content type.  The stream
+       is rewound to offset 0 after the read so subsequent ``save()`` calls are
+       unaffected.
+
+    Raises :class:`QuarantineError` (a ``ValueError`` subclass) on any failure so
+    the existing ``except ValueError`` / ``except QuarantineError`` call sites keep
+    working unchanged.
+    """
     if not video.filename:
         raise ValueError("video filename is required")
+
     content_type = (video.content_type or "").lower()
     if content_type and not content_type.startswith("video/") and content_type != "application/octet-stream":
-        raise ValueError("video upload must use a video content type")
+        raise QuarantineError("video upload must use a video/* or application/octet-stream content type")
+
+    # Stream-level magic-byte sniff: detects mismatches between declared type
+    # and actual file contents before the file is persisted anywhere.
+    stream = getattr(video, "stream", None)
+    if stream is None:
+        # Fallback for duck-typed objects (e.g. test stubs) that expose .read()
+        stream = video
+    sniff_media_type_stream(
+        stream,
+        filename=video.filename,
+        content_type=video.content_type,
+    )
 
 
 
