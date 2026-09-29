@@ -1,9 +1,10 @@
 import { useMemo, useRef } from 'react'
-import { CheckCircle2, Loader2, RefreshCw, Upload, XCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
+import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import VerificationTimeline from '../components/VerificationTimeline'
 import { shortHash } from '../utils'
 import ProvenanceCard from '../provenance/ProvenanceCard'
@@ -20,11 +21,11 @@ type Props = {
   provenanceRecord: ProvenanceRecord | null
 }
 
-function statusLabel(status: UseVerificationReturn['status']): string {
+function statusLabel(status: UseVerificationReturn['status'], offline: boolean): string {
   switch (status) {
     case 'validating': return 'Validating file…'
     case 'hashing': return 'Hashing evidence…'
-    case 'verifying': return 'Inspecting evidence…'
+    case 'verifying': return offline ? 'Inspecting evidence locally…' : 'Inspecting evidence…'
     case 'success': return 'Verification complete.'
     case 'error': return 'Verification did not confirm this artifact.'
     case 'cancelled': return 'Verification cancelled.'
@@ -41,6 +42,8 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
     status,
     errorCode,
     isVerifying,
+    offline,
+    setOffline,
     verifyEvidence,
     loadEvents,
     cancel,
@@ -49,6 +52,8 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   } = verification
 
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const revocationProofId =
+    events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const isError = status === 'error'
   const isCancelled = status === 'cancelled'
@@ -103,7 +108,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           ) : (
             <Upload size={20} aria-hidden="true" />
           )}
-          <span>{isVerifying ? statusLabel(status) : 'Drop or choose a received video'}</span>
+          <span>{isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video'}</span>
           <span className="muted" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             MP4, WebM, or MOV · up to 100 MB
           </span>
@@ -121,6 +126,25 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           />
         </label>
 
+        {/* Verification mode — offline runs entirely in the browser, online uses backend + registry */}
+        <div className="verify-mode" role="group" aria-label="Verification mode">
+          <button
+            type="button"
+            className={`mode-toggle ${offline ? 'active' : ''}`}
+            aria-pressed={offline}
+            disabled={isVerifying}
+            onClick={() => setOffline(!offline)}
+          >
+            <WifiOff size={14} aria-hidden="true" />
+            <span>Offline local check</span>
+          </button>
+          <p className="muted" style={{ fontSize: 11 }}>
+            {offline
+              ? 'Runs fully local: hashes, extracts, and validates the embedded envelope in this browser with no network calls. It never yields a confirmed trust decision and produces no shareable verification link.'
+              : 'Runs against the backend API, the NeonDB event feed, and the Stellar registry.'}
+          </p>
+        </div>
+
         {/* Progress / status live region — always present so mobile screen readers observe changes */}
         <div
           className="verify-progress"
@@ -132,7 +156,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           {isVerifying ? (
             <div className="verify-progress-row">
               <Loader2 size={14} className="spin" aria-hidden="true" />
-              <span>{statusLabel(status)}</span>
+              <span>{statusLabel(status, offline)}</span>
             </div>
           ) : null}
         </div>
@@ -150,7 +174,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           )}
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
-              {verifyResult || statusLabel(status)}
+              {verifyResult || statusLabel(status, offline)}
             </p>
             {errorCode ? (
               <p className="muted" style={{ marginTop: 4, fontSize: 11 }}>
@@ -205,7 +229,13 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           {showRetry ? null : null}
         </div>
 
-        <ShareVerificationLink input={shareLinkInput} />
+        {offline ? (
+          <p className="muted" style={{ fontSize: 11 }} role="status">
+            Offline mode produces no shareable verification link and no on-chain receipt.
+          </p>
+        ) : (
+          <ShareVerificationLink input={shareLinkInput} />
+        )}
 
         <dl className="data-list">
           <div>
@@ -214,7 +244,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           </div>
           <div>
             <dt>Chain Status</dt>
-            <dd>{chainProof ? (chainProof.status === 2 ? 'Revoked' : chainProof.status === 3 ? 'Expired' : 'Confirmed') : 'Not loaded'}</dd>
+            <dd>{offline ? 'Not checked (offline)' : chainProof ? (chainProof.status === 2 ? 'Revoked' : chainProof.status === 3 ? 'Expired' : 'Confirmed') : 'Not loaded'}</dd>
           </div>
           <div>
             <dt>Wallet</dt>
@@ -226,13 +256,33 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
       <aside className="side-rail">
         <div className="rail-block">
           <h3>Chain Registry</h3>
-          <ChainProofPanel chainProof={chainProof} />
+          {offline ? (
+            <p className="muted" style={{ fontSize: 11 }} role="status">
+              On-chain status was not checked in offline mode. No trust decision was made.
+            </p>
+          ) : (
+            <>
+              <ChainProofPanel
+                chainProof={chainProof}
+                proofId={revocationProofId}
+                sourceAddress={wallet || undefined}
+              />
+              <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
+              <VerifierSetStatusPanel />
+            </>
+          )}
           {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
         </div>
 
         <div className="rail-block">
           <h3>Events</h3>
-          <EventList events={events} onRefresh={() => void loadEvents()} />
+          {offline ? (
+            <p className="muted" style={{ fontSize: 11 }} role="status">
+              NeonDB events were not queried in offline mode.
+            </p>
+          ) : (
+            <EventList events={events} onRefresh={() => void loadEvents()} />
+          )}
         </div>
       </aside>
     </section>

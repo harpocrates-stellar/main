@@ -68,6 +68,19 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
+FORBIDDEN = "FORBIDDEN"
+"""The credential is valid but not authorized for this proof owner (403)."""
+
+DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+"""A required backing service failed; the request was rejected, not applied (503)."""
+
+FORBIDDEN_ORIGIN = "FORBIDDEN_ORIGIN"
+"""The request's Origin is not on the configured CORS allow-list (403).
+
+The offending origin value is intentionally absent from the envelope: error
+payloads must stay privacy-safe and must not echo attacker-controlled input.
+"""
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -78,24 +91,31 @@ def error_response(
     code: str,
     message: str,
     status: int,
+    field: str | None = None,
 ) -> tuple[Response, int]:
     """Return a Flask response tuple for a standardized error envelope.
 
     Args:
-        code: Machine-readable error code (one of the module-level constants).
-        message: Human-readable error description.
+        code: Machine-readable error code (one of the module-level constants,
+            or a canonical code from :mod:`metadata_errors`).
+        message: Human-readable error description. Must be privacy-safe.
         status: HTTP status code.
+        field: Optional *name* of the offending field. Only field names may be
+            exposed here; field values must never be echoed back.
     """
     request_id = _get_request_id()
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": request_id,
+    }
+    if field:
+        error["field"] = field
     return (
         jsonify(
             {
                 "ok": False,
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "request_id": request_id,
-                },
+                "error": error,
             },
         ),
         status,

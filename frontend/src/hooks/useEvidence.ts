@@ -1,12 +1,20 @@
 /**
  * useEvidence — manages the full evidence creation flow:
  * hashing → embedding → (optional) Noir proving → Stellar registration.
+ *
+ * Silent Witness proving runs in a cancellable Web Worker so the UI stays
+ * responsive and in-flight proofs can be aborted without leaking witness
+ * material (see docs/proof-worker.md).
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, Fingerprint, KeyRound } from 'lucide-react'
 import type { IdentityTier, ProofPackage, Stage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
+import {
+  ProofWorkerClient,
+  ProofWorkerError,
+} from '../workers/proofWorkerClient'
 
 export const TIERS = [
   {
@@ -52,6 +60,15 @@ export type UseEvidenceReturn = {
   networkMismatch: string | null
   handleEvidence: (nextFile: File | null) => Promise<void>
   registerProof: (wallet: string) => Promise<void>
+  /** Cancel an in-flight Silent Witness proof generation (no-op if idle). */
+  cancelProving: () => void
+}
+
+type PendingRegistration = {
+  key: string
+  proof: ProofPackage
+  result: RegisterProofResult
+  wallet: string
 }
 
 export function useEvidence(): UseEvidenceReturn {
@@ -65,11 +82,44 @@ export function useEvidence(): UseEvidenceReturn {
   const [message, setMessage] = useState('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+  // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
+  const registrationInFlightRef = useRef(false)
+  const completedRegistrationRef = useRef<string | null>(null)
+  const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
+
+  const proofClientRef = useRef<ProofWorkerClient | null>(null)
+  const activeRequestIdRef = useRef<string | null>(null)
+  const proveAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    return () => {
+      proveAbortRef.current?.abort()
+      proveAbortRef.current = null
+      activeRequestIdRef.current = null
+      proofClientRef.current?.destroy()
+      proofClientRef.current = null
+    }
+  }, [])
 
   const selectedTierMeta = useMemo(
     () => TIERS.find((t) => t.id === selectedTier) ?? TIERS[0],
     [selectedTier],
   )
+
+  function getProofClient(): ProofWorkerClient {
+    if (!proofClientRef.current) {
+      proofClientRef.current = new ProofWorkerClient()
+    }
+    return proofClientRef.current
+  }
+
+  function cancelProving() {
+    const requestId = activeRequestIdRef.current
+    proveAbortRef.current?.abort()
+    if (requestId && proofClientRef.current) {
+      proofClientRef.current.cancel(requestId)
+    }
+  }
 
   async function handleEvidence(nextFile: File | null) {
     if (!nextFile) return
@@ -145,6 +195,45 @@ export function useEvidence(): UseEvidenceReturn {
       return
     }
 
+    const registrationKey = `${proof.proofId}:${wallet}`
+    if (completedRegistrationRef.current === registrationKey) {
+      setMessage('This proof has already been submitted by this wallet.')
+      return
+    }
+    const pendingPersistence = pendingPersistenceRef.current
+    if (pendingPersistence) {
+      if (pendingPersistence.key !== registrationKey) {
+        setMessage('A completed registration still needs to be saved. Please retry it first.')
+        return
+      }
+      if (registrationInFlightRef.current) {
+        setMessage('Registration is already in progress. Please wait for its result.')
+        return
+      }
+      registrationInFlightRef.current = true
+      setMessage('Saving the completed Stellar registration.')
+      try {
+        const { persistRegistration } = await import('../services/evidenceService')
+        await persistRegistration(pendingPersistence.proof, pendingPersistence.result, wallet)
+        pendingPersistenceRef.current = null
+        completedRegistrationRef.current = registrationKey
+        setRegistration(pendingPersistence.result)
+        setStage('registered')
+        setMessage(`Registration submitted with Stellar status: ${pendingPersistence.result.status}.`)
+      } catch (error) {
+        setStage('error')
+        setMessage(error instanceof Error ? error.message : 'Could not save the Stellar registration.')
+      } finally {
+        registrationInFlightRef.current = false
+      }
+      return
+    }
+    if (registrationInFlightRef.current) {
+      setMessage('Registration is already in progress. Please wait for its result.')
+      return
+    }
+    registrationInFlightRef.current = true
+
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
     try {
@@ -169,15 +258,40 @@ export function useEvidence(): UseEvidenceReturn {
           : undefined,
       })
 
+      // Preserve the confirmed chain result before persistence. A retry after
+      // a database failure must save this result, never submit the proof again.
+      pendingPersistenceRef.current = {
+        key: registrationKey,
+        proof: proofForRegistration,
+        result,
+        wallet,
+      }
+      setRegistration(result)
+
       const { persistRegistration } = await import('../services/evidenceService')
       await persistRegistration(proofForRegistration, result, wallet)
 
-      setRegistration(result)
+      pendingPersistenceRef.current = null
       setStage('registered')
+      completedRegistrationRef.current = registrationKey
       setMessage(`Registration submitted with Stellar status: ${result.status}.`)
     } catch (error) {
+      if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
+        setStage('ready')
+        setMessage('Proof generation cancelled. Witness buffers were discarded; you can register again when ready.')
+        return
+      }
       setStage('error')
-      setMessage(error instanceof Error ? error.message : 'Stellar registration failed.')
+      // Privacy: never surface raw worker payloads that might echo inputs.
+      const safeMessage =
+        error instanceof ProofWorkerError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Stellar registration failed.'
+      setMessage(safeMessage)
+    } finally {
+      registrationInFlightRef.current = false
     }
   }
 
@@ -187,7 +301,7 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     setStage('proving')
-    setMessage('Generating Noir UltraHonk proof in this browser.')
+    setMessage('Generating Noir UltraHonk proof in a cancellable browser worker.')
 
     const { fieldSecret } = await import('../utils')
     const [credentialSecret, nullifierSecret] = await Promise.all([
@@ -195,16 +309,36 @@ export function useEvidence(): UseEvidenceReturn {
       fieldSecret('nullifier', nullifierSeed.trim()),
     ])
 
-    const { generateSilentWitnessProof } = await import('../noirClient')
-    const silentWitness = await generateSilentWitnessProof({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
+    const client = getProofClient()
+    const abort = new AbortController()
+    proveAbortRef.current = abort
 
-    const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
-    setProof(nextWithProof)
-    return nextWithProof
+    const { requestId, result } = client.generate(
+      {
+        videoHash: nextProof.videoHash,
+        credentialSecret,
+        nullifierSecret,
+      },
+      (stageName) => {
+        setMessage(`Generating proof (${stageName.replace(/_/g, ' ')})…`)
+      },
+      abort.signal,
+    )
+    activeRequestIdRef.current = requestId
+
+    try {
+      const silentWitness = await result
+      const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
+      setProof(nextWithProof)
+      return nextWithProof
+    } finally {
+      if (activeRequestIdRef.current === requestId) {
+        activeRequestIdRef.current = null
+      }
+      if (proveAbortRef.current === abort) {
+        proveAbortRef.current = null
+      }
+    }
   }
 
   return {
@@ -224,5 +358,6 @@ export function useEvidence(): UseEvidenceReturn {
     networkMismatch,
     handleEvidence,
     registerProof,
+    cancelProving,
   }
 }

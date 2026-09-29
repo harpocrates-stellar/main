@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { validateMetadata, canonicalMetadataHash } from '../src/metadata.js'
-import { redactSensitive, REDACTED_VALUE } from '../src/logging.js'
+import { createProofManifest, serializeManifest } from '../src/manifest.js'
+import { redactSensitive, logStructured, REDACTED_VALUE } from '../src/logging.js'
 
 // Load fixtures
 const FIXTURES = {
@@ -353,5 +354,101 @@ describe('Privacy Boundary — Redaction Function', () => {
     expect(redactSensitive('string')).toBe('string')
     expect(redactSensitive(123)).toBe(123)
     expect(redactSensitive(true)).toBe(true)
+  })
+})
+
+describe('Privacy Boundary — Structured Diagnostics (production output path)', () => {
+  const SENSITIVE_VALUE = 'do-not-leak-to-diagnostics'
+
+  function captureConsole(): { lines: string[]; console: Console } {
+    const lines: string[] = []
+    const log = (message: string) => lines.push(message)
+    return { lines, console: { info: log, warn: log, error: log, debug: log } as unknown as Console }
+  }
+
+  it('logStructured emits redacted JSON via the production sink', () => {
+    const { lines, console } = captureConsole()
+    logStructured(console, 'debug', {
+      event: 'manifest.input_metadata',
+      metadata: { proofId: 'a'.repeat(64), nullifierSecret: SENSITIVE_VALUE },
+    })
+    expect(lines).toHaveLength(1)
+    const emitted = JSON.parse(lines[0])
+    expect(emitted.metadata.proofId).toBe('a'.repeat(64))
+    expect(emitted.metadata.nullifierSecret).toBe(REDACTED_VALUE)
+    expect(lines[0]).not.toContain(SENSITIVE_VALUE)
+  })
+
+  it('does not leak fixture sensitive values through structured output', () => {
+    const fixture = FIXTURES.malformed.default
+    const sample = fixture.cases.find(c => c.id.endsWith('nested-secret')) ?? fixture.cases[0]
+    const { lines, console } = captureConsole()
+    logStructured(console, 'error', { event: 'test', input: sample.input })
+    for (const secret of (sample.expect.must_not_log ?? [])) {
+      expect(lines.join('\n')).not.toContain(secret)
+    }
+  })
+
+  it('redacts private key material that could otherwise reach diagnostics', () => {
+    const { lines, console } = captureConsole()
+    logStructured(console, 'info', { event: 'verify-receipt.keys', privateKey: 'secret-exponent' })
+    expect(lines.join('\n')).not.toContain('secret-exponent')
+    expect(lines.join('\n')).toContain(REDACTED_VALUE)
+  })
+})
+
+describe('Privacy Boundary — Manifest Store Boundary', () => {
+  const VALID = {
+    protocol: 'harpocrates',
+    version: 1,
+    tier: 'silent',
+    sourceHash: 'ab'.repeat(32),
+    proofId: 'cd'.repeat(32),
+    timestamp: '2026-07-24T12:00:00.000Z',
+  }
+
+  it('secrets supplied to metadata never reach the persisted manifest', () => {
+    const metadata = {
+      ...VALID,
+      nullifierSecret: 'fnord-fnord-fnord-secret',
+      witnessData: ['witness-input-1'],
+      authorization: 'Bearer leaked-token',
+    }
+    const manifest = createProofManifest({
+      proofId: metadata.proofId,
+      tier: metadata.tier,
+      network: 'Test SDF Network ; September 2015',
+      contractId: 'C' + '1'.repeat(55),
+      transactionRef: 'ef'.repeat(32),
+      videoHash: '01'.repeat(32),
+      metadataHash: canonicalMetadataHash(metadata),
+      sourceHash: metadata.sourceHash,
+      timestamp: metadata.timestamp,
+    })
+    const serialized = serializeManifest(manifest)
+    expect(serialized).not.toContain('fnord-fnord-fnord-secret')
+    expect(serialized).not.toContain('witness-input-1')
+    expect(serialized).not.toContain('leaked-token')
+    expect(serialized).not.toContain('nullifierSecret')
+    expect(serialized).not.toContain('witnessData')
+  })
+
+  it('keeps public proof identifiers intact in the persisted manifest', () => {
+    const manifest = createProofManifest({
+      proofId: VALID.proofId,
+      tier: VALID.tier,
+      network: 'Test SDF Network ; September 2015',
+      contractId: 'C' + '2'.repeat(55),
+      transactionRef: 'aa'.repeat(32),
+      videoHash: 'bb'.repeat(32),
+      metadataHash: 'cc'.repeat(32),
+      sourceHash: VALID.sourceHash,
+      timestamp: VALID.timestamp,
+    })
+    const serialized = serializeManifest(manifest)
+    const parsed = JSON.parse(serialized)
+    expect(parsed.proofId).toBe(VALID.proofId)
+    expect(parsed.sourceHash).toBe(VALID.sourceHash)
+    expect(parsed.videoHash).toBe('bb'.repeat(32))
   })
 })

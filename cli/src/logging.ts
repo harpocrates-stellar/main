@@ -1,29 +1,33 @@
 /**
  * Privacy-safe logging utilities.
  * Ensures sensitive fields are redacted before reaching logs or storage.
+ *
+ * The key set mirrors the backend `logging_utils.SENSITIVE_KEYS` so CLI and
+ * server redaction behave identically. Keys are matched exactly (case and
+ * punctuation-insensitive) so public protocol identifiers such as `proofId`
+ * and `metadataHash` survive redaction.
  */
 
 export const REDACTED_VALUE = '[REDACTED]'
 
-const SENSITIVE_KEY_PATTERNS = [
-  /proof/i,
-  /nullifiersecret/i,
-  /credentialsecret/i,
-  /witness/i,
-  /publicinput/i,
-  /authorization/i,
-  /private/i,
-  /secret/i,
-  /key/i,
-  /token/i,
-  /password/i,
-  /mnemonic/i,
-  /seed/i,
-]
+const SENSITIVE_KEYS = new Set([
+  'authorization',
+  'cookie',
+  'credentialsecret',
+  'nullifiersecret',
+  'password',
+  'privatekey',
+  'proof',
+  'publicinputs',
+  'rawbytes',
+  'secret',
+  'token',
+  'witness',
+])
 
 function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase()
-  return SENSITIVE_KEY_PATTERNS.some(pattern => pattern.test(normalized))
+  const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+  return SENSITIVE_KEYS.has(normalized) || normalized.includes('witness')
 }
 
 function redactValue(value: unknown): unknown {
@@ -58,7 +62,10 @@ export function redactSensitive<T extends Record<string, unknown>>(obj: T): T {
   return redactValue(obj) as T
 }
 
-export function logStructured(logger: Console, level: 'info' | 'warn' | 'error' | 'debug', data: Record<string, unknown>): void {
+export type StructuredLogLevel = 'info' | 'warn' | 'error' | 'debug'
+export type StructuredLogger = Record<StructuredLogLevel, (message: string) => void>
+
+export function logStructured(logger: StructuredLogger, level: StructuredLogLevel, data: Record<string, unknown>): void {
   const redacted = redactSensitive(data)
   const message = JSON.stringify(redacted)
   logger[level](message)

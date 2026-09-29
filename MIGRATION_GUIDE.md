@@ -182,7 +182,11 @@ cargo test --lib
      --scope $ScopeHex `
      --epoch $epochValue
    ```
-3. Verify that v1 proofs work again:
+3. Revert the active deployment interfaces safely using the rollout guard:
+   ```powershell
+   .\scripts\rollback.ps1 -ManifestFile .\release\compatibility-manifest.json
+   ```
+4. Verify that v1 proofs work again:
    ```powershell
    .\scripts\e2e-harpocrates.ps1
    ```
@@ -276,3 +280,82 @@ unchanged. Existing depth-3 proofs remain valid.
 new circuit version and coordinated artifact republish; rolling back means
 keeping the depth-3 verifier key. Host tooling must keep rejecting `depth > 3`
 so oversized trees never reach the prover.
+
+## Verifier circuit-version validation (#343)
+
+Every proof-verifying entry point (`register_anonymous_verified`,
+`register_batch_verified`, `check_non_revocation`, `verify_selective_disclosure`)
+now validates the proof's circuit version at the trust boundary before invoking
+the configured verifier.
+
+| Item | Value |
+| --- | --- |
+| Built-in versions | silent-witness v1 = 1, silent-witness v2 (scoped) = 2, revocation-witness = 1, aggregation = 1, selective-disclosure = 1 |
+| Default window | `MIN_SUPPORTED_CIRCUIT_VERSION..=MAX_SUPPORTED_CIRCUIT_VERSION` (1..=2) |
+| Admin entry point | `set_verifier_circuit_versions(admin, min_version, max_version)` |
+| Read entry points | `get_verifier_circuit_versions()`, `is_supported_circuit_version(version)` |
+| Stable failure | `RegistryError::UnsupportedCircuitVersion` (81) for a proof outside the window; `InvalidCircuitVersionRange` (82) for a malformed window |
+
+The window is **additive**: when unset, the full built-in range applies, so
+pre-#343 deployments, existing callers, and stored evidence validate exactly as
+before. `set_verifier` and both verifier-rotation transitions clear the window
+so an incoming verifier cannot inherit the outgoing verifier's claim.
+
+**Migration / rollback:** `DataKey::VerifierCircuitVersions` is a new,
+additive storage key; no data migration is required. Deploying a pre-#343 wasm
+ignores the key and reverts to calling the verifier with no version gate, which
+only widens acceptance and never corrupts stored evidence.
+
+## Bounded delegated issuer expiration (#338)
+
+A proof registered through `register_source_delegated` or
+`register_seal_delegated` is now bounded by the delegation that authorized it:
+its `expires_at` is the delegation's `expires_at` (or the configured proof TTL,
+whichever is sooner). Delegated authority can never mint an artifact that
+outlives it.
+
+- Direct `register_source` / `register_seal` are unchanged; a zero TTL still
+  means "eternal" for non-delegated registrations.
+- Existing stored records are untouched.
+- **Rollback:** deploying a pre-#338 wasm restores the old behavior of an
+  eternal delegated proof; the delegation expiry is still enforced at
+  registration time, so no authority is extended retroactively.
+
+## Issuer rotation grace windows (#323)
+
+A Tier 3 issuer key can now rotate to a replacement instead of being revoked
+outright, with a bounded window during which the evidence it already signed stays
+verifiable.
+
+| Item | Value |
+| --- | --- |
+| Admin entry point | `rotate_issuer(admin, previous_issuer, replacement_issuer, grace_secs)` |
+| Read entry points | `get_issuer_rotation(issuer)`, `is_issuer_verifiable(issuer)` |
+| Settlement entry point | `finalize_issuer_rotation(issuer)` — permissionless once the window lapses |
+| Default window | `DEFAULT_ISSUER_ROTATION_GRACE_SECS` (90 days) when `grace_secs == 0` |
+| Maximum window | `MAX_ISSUER_ROTATION_GRACE_SECS` (365 days) |
+| Events | `IssuerRotated` (`issuer/rotate`), `IssuerRotationGraceExpired` (`issuer/grace`) |
+| Stable failures | `InvalidIssuerRotationGrace` (83), `InvalidIssuerRotation` (84), `IssuerRotationNotFound` (85), `IssuerRotationGraceStillActive` (86); `UnknownIssuer` (8) for an absent or inactive key |
+
+**Semantics.** Rotation retires the previous key immediately — it can no longer
+sign new seals, directly or through a delegation — and keeps the evidence it
+already signed verifiable until `grace_expires_at`. The window is lazy
+(`now < grace_expires_at` against ledger time), so it lapses with no transaction;
+`finalize_issuer_rotation` closes the record afterwards and emits the grace-expiry
+event. `revoke_issuer`, the timelocked `RevokeIssuer` action, and `add_issuer` all
+clear the rotation record, so revocation and re-onboarding always outrank a grace
+window.
+
+**Migration / rollback:** `DataKey::IssuerRotation(Address)` is a new, additive
+storage key and the stored `IssuerRecord` keeps its existing
+`{metadata_hash, active}` serialization, so records written by earlier wasm decode
+unchanged, no data migration is required, and a deployment that never rotates
+reads as "no rotation" with standing decided by `active` alone. Deploying a
+pre-#323 wasm ignores the key: `register_seal` falls back to the `active` flag,
+which only widens acceptance for a retired key — never for a revoked one, and
+never for new evidence after an explicit `revoke_issuer`.
+
+**Compatibility:** existing entry points are unchanged and `get_issuer` returns
+the same `IssuerRecord` shape. `is_issuer_verifiable` and `get_issuer_rotation`
+never panic, so callers can pre-flight an unknown, revoked, or unsupported issuer
+without risking a reverted transaction.
