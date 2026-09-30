@@ -82,13 +82,31 @@ function tryParseEnvelope(envelope: xdr.TransactionEnvelope): { operationCount: 
 export async function pollTransactionStatus(
   txHash: string,
   expectedContractId?: string,
-  options?: { maxAttempts?: number; intervalMs?: number; server?: rpc.Server },
+  options?: {
+    maxAttempts?: number
+    intervalMs?: number
+    timeoutMs?: number
+    server?: rpc.Server
+  },
 ): Promise<TransactionVerification> {
   const maxAttempts = options?.maxAttempts ?? 10
   const intervalMs = options?.intervalMs ?? 3000
+  const timeoutMs = options?.timeoutMs ?? 30000
   const server = options?.server
 
+  const startTime = Date.now()
+
+  // Check bounded timeout before starting
+  if (timeoutMs <= 0) {
+    return { status: 'pending', txHash }
+  }
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Check bounded timeout before each attempt
+    if (Date.now() - startTime >= timeoutMs) {
+      return { status: 'pending', txHash }
+    }
+
     const result = await verifyTransactionStatus(txHash, expectedContractId, server)
 
     if (result.status === 'confirmed' || result.status === 'failed') {
@@ -96,7 +114,15 @@ export async function pollTransactionStatus(
     }
 
     if (attempt < maxAttempts - 1) {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      // Check timeout before sleeping
+      const elapsed = Date.now() - startTime
+      const remainingTime = timeoutMs - elapsed
+      if (remainingTime <= 0) {
+        return { status: 'pending', txHash }
+      }
+      // Sleep for the lesser of intervalMs or remaining time
+      const sleepMs = Math.min(intervalMs, remainingTime)
+      await new Promise((resolve) => setTimeout(resolve, sleepMs))
     }
   }
 

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
 import { ApiClientError, toVerificationErrorCode } from '../services/apiError'
+import type { VerificationSharePayload } from '../verificationShareLink'
 
 export type VerificationStatus = 'idle' | 'validating' | 'hashing' | 'verifying' | 'success' | 'error' | 'cancelled'
 
@@ -88,6 +89,7 @@ export type UseVerificationReturn = {
   loadEvents: () => Promise<void>
   cancel: () => void
   retry: () => Promise<void>
+  loadSharedVerification: (payload: VerificationSharePayload) => Promise<void>
   clear: () => void
 }
 
@@ -144,6 +146,32 @@ export function useVerification(): UseVerificationReturn {
       setEvents(loaded)
     } catch {
       // keep existing events; surface no sensitive detail
+    }
+  }, [])
+
+  const loadSharedVerification = useCallback(async (payload: VerificationSharePayload) => {
+    setVerifyHash(payload.videoHash)
+    setErrorCode(null)
+    setStatus('verifying')
+    setVerifyResult('Loading the public verification record…')
+    try {
+      const { fetchProofEventsByVideo, getOnChainProof } = await import('../services/verificationService')
+      const [dbMatches, onChain] = await Promise.all([
+        fetchProofEventsByVideo(payload.videoHash),
+        getOnChainProof(payload.videoHash),
+      ])
+      setEvents(dbMatches)
+      setChainProof(onChain)
+      setVerifyResult(
+        dbMatches.length > 0 || onChain
+          ? 'Public verification record loaded. Confirm the embedded artifact before treating it as authentic.'
+          : 'No public verification record was found for this artifact.',
+      )
+      setStatus('success')
+    } catch (error) {
+      setStatus('error')
+      setErrorCode(toVerificationErrorCode(error) ?? 'DEPENDENCY_UNAVAILABLE')
+      setVerifyResult('The public verification record could not be loaded.')
     }
   }, [])
 
@@ -421,6 +449,7 @@ export function useVerification(): UseVerificationReturn {
     loadEvents,
     cancel,
     retry,
+    loadSharedVerification,
     clear,
   }
 }

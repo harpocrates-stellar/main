@@ -108,6 +108,23 @@ The contract provides:
 - `get_lineage()` - Retrieves a stored lineage record
 - Validates bounded depth, fan-out, and payload size on-chain
 
+### ZK redacted ancestry (`zk/noir/redacted_ancestry`)
+
+Issue #356 adds a Noir circuit that **proves** a redacted derivative's ancestry
+against a Pedersen parent commitment without revealing unredacted media:
+
+- Public: `parent_commitment`, `derivative_digest`, `parameters_digest`,
+  `operation_type` (the canonical `redact` identifier), `ancestry_root`,
+  `nullifier`, `depth`, `domain_tag`
+- Private: parent hash halves + blinding, mask commitment, redaction seed,
+  credential / nullifier secrets
+- Depth bound matches this document (`1..=4`); failures are stable assert codes
+- Spec: `docs/zk-redacted-ancestry-spec.md`; vectors:
+  `zk/noir/fixtures/redacted_ancestry_vectors.json`
+
+This is additive to the HTTP lineage API and Soroban `register_lineage` path -
+it does not create a second protocol truth for manifests or operation codes.
+
 ## Validation Rules
 
 ### Constraints Enforced
@@ -165,3 +182,25 @@ The contract provides:
 - Contract event indexing and re-indexing from Testnet
 - Dashboard visualization of lineage chains
 - Advanced query support (reverse lineage, transitive closure)
+
+## Parent Commitments (#332)
+
+Lineage registrations now persist a parallel `parent_commitments` vector on each
+`LineageRecord`, derived on-chain as:
+
+```
+SHA-256("harp_lin_pc" || binding_a || binding_b)
+```
+
+- Proof parent: `(video_hash, metadata_hash)`
+- Lineage parent: `(manifest_digest, output_digest)`
+
+Public `LineageRegistered` events emit commitments (not raw parent proof ids).
+`get_lineage_parent_commitments(output_digest)` exposes the same digests for
+interop without expanding the trust boundary. Revoked or expired proof parents
+are rejected with `LineageParentUnavailable`.
+
+Migration: additive on new registrations; re-register any pre-upgrade lineage
+rows that need commitments. Rollback to pre-#332 wasm simply stops writing the
+new field/event.
+

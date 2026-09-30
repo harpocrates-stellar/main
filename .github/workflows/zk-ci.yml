@@ -84,6 +84,15 @@ jobs:
                 f"bb {lock.toolchain['barretenberg']['version']}")
           PY
 
+      - name: Every Noir circuit in the tree is pinned by the lock
+        # A circuit that is not declared in zk/toolchain.lock.json is compiled
+        # by nobody and digested by nothing, yet can still be published to the
+        # browser or verified on chain. Fails in either direction: an
+        # undeclared package, or a declared pin whose package is gone. No
+        # toolchain required and no artifact is read, so nothing that could
+        # carry a witness or a key can reach the log.
+        run: python zk/tools/artifact_manifest.py check-coverage
+
       - name: Verify committed artifacts against the manifest
         # Skipped when no manifest has been committed yet: generated artifacts
         # are not tracked, so this becomes enforcing once a build publishes one.
@@ -103,6 +112,16 @@ jobs:
             python zk/tools/artifact_manifest.py verify-browser
           else
             echo "no committed browser manifest yet; browser drift check is inert"
+          fi
+
+      - name: Verify published circuit artifact provenance
+        # Source-digest gate: lock-declared circuit sources must match
+        # zk/circuit.provenance.json. Noir/bb not required. Never logs source bytes.
+        run: |
+          if [ -f zk/circuit.provenance.json ]; then
+            python zk/tools/artifact_manifest.py verify-provenance
+          else
+            echo "no committed circuit provenance yet; provenance check is inert"
           fi
 
   circuit-build:
@@ -170,6 +189,23 @@ jobs:
             zk/noir/scripts/reproducible-build.sh --single
           fi
 
+      - name: Test the redacted derivative ancestry circuits
+        # Focused positive / negative / boundary corpus for the new
+        # redacted_ancestry circuit (#356). Assert codes never echo witness
+        # values, so test output stays privacy-safe.
+        run: |
+          ( cd zk/noir/redacted_ancestry && nargo test )
+          ( cd zk/noir/redacted_ancestry_helper && nargo test )
+
+      - name: Test the silent witness circuits
+        # #368 added the public `circuit_version` input that the circuit asserts
+        # against CURRENT_CIRCUIT_VERSION in-circuit. Without this step nothing in
+        # CI ever ran that assertion, so a proof built from a stale circuit could
+        # claim a version the statement does not commit to.
+        run: |
+          ( cd zk/noir/silent_witness && nargo test )
+          ( cd zk/noir/silent_witness_helper && nargo test )
+
   conformance-vectors:
     name: Cross-layer conformance vectors
     runs-on: ubuntu-latest
@@ -193,9 +229,11 @@ jobs:
       - name: Vectors are byte-identical to their generator
         # A hand-edited corpus would silently weaken every layer's assertions.
         run: |
-          cp zk/vectors/verifier_conformance_v1.json /tmp/committed.json
+          cp zk/vectors/verifier_conformance_v1.json /tmp/committed-v1.json
+          cp zk/vectors/verifier_conformance_v2.json /tmp/committed-v2.json
           python zk/vectors/generate_vectors.py
-          diff -u /tmp/committed.json zk/vectors/verifier_conformance_v1.json
+          diff -u /tmp/committed-v1.json zk/vectors/verifier_conformance_v1.json
+          diff -u /tmp/committed-v2.json zk/vectors/verifier_conformance_v2.json
 
       - name: Python conformance runner
         working-directory: backend

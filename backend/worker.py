@@ -9,11 +9,12 @@ from db import lease_job, heartbeat_job, complete_job, fail_job, insert_proof_ev
 from envelope import canonical_metadata_hash
 from stego import embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
+from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path
 from tx_verification import verify_transaction_status
+from tracing import traced_job
 
 LOGGER = logging.getLogger("harpocrates.worker")
 if not LOGGER.handlers:
@@ -24,6 +25,7 @@ LOGGER.setLevel(logging.INFO)
 
 WORKER_ID = f"worker-{os.getpid()}"
 
+@traced_job("job.media.embed")
 def process_embed(job: dict) -> dict:
     payload = job["payload"]
     job_id = job["id"]
@@ -45,7 +47,7 @@ def process_embed(job: dict) -> dict:
     
     db_event = insert_proof_event(
         event_type="embed",
-        file_name=safe_filename(filename),
+        file_name=normalize_filename(filename),
         video_hash=embedded_hash,
         metadata_hash=metadata_hash,
         proof_id=metadata.get("proofId"),
@@ -63,6 +65,7 @@ def process_embed(job: dict) -> dict:
         "db_event": db_event
     }
 
+@traced_job("job.media.extract")
 def process_extract(job: dict) -> dict:
     payload = job["payload"]
     job_id = job["id"]
@@ -79,7 +82,7 @@ def process_extract(job: dict) -> dict:
     
     db_event = insert_proof_event(
         event_type="extract",
-        file_name=safe_filename(filename),
+        file_name=normalize_filename(filename),
         video_hash=video_hash,
         metadata_hash=metadata_hash,
         proof_id=metadata.get("proofId") if metadata else None,
@@ -96,6 +99,7 @@ def process_extract(job: dict) -> dict:
         "db_event": db_event
     }
 
+@traced_job("job.proof.noir")
 def process_silent_witness(job: dict) -> dict:
     payload = job["payload"]
     

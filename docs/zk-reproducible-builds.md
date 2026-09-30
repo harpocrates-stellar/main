@@ -13,13 +13,74 @@ double-build check, and how to operate and roll back the pipeline.
 
 | Path | Role |
 | --- | --- |
-| `zk/toolchain.lock.json` | Pinned toolchain versions, hermetic environment, normalization policy, declared artifacts, resource limits |
-| `zk/tools/artifact_manifest.py` | Normalizes, digests, writes, verifies, and diffs manifests |
-| `zk/tools/test_artifact_manifest.py` | Unit tests for normalization, the state machine, drift detection, and the privacy properties |
+| `zk/toolchain.lock.json` | Pinned toolchain versions, hermetic environment, normalization policy, declared artifacts, circuit-coverage invariant, resource limits |
+| `zk/tools/artifact_manifest.py` | Normalizes, digests, writes, verifies, diffs, and coverage-checks |
+| `zk/tools/test_artifact_manifest.py` | Unit tests for normalization, the state machine, drift detection, the coverage gate, and the privacy properties |
 | `zk/noir/scripts/reproducible-build.sh` | Hermetic double-build driver |
 | `zk/artifacts.manifest.json` | Committed manifest (written by a build; absent until first published) |
 | `zk/browser.artifacts.manifest.json` | Committed digests for published browser ACIR under `frontend/public/noir/` |
+| `zk/circuit.provenance.json` | Published digests of lock-declared circuit sources (and declared artifact slots) |
 | `.github/workflows/zk-ci.yml` | CI enforcement |
+
+## Circuit coverage
+
+A digest manifest is only as complete as the lock file. A circuit that exists in
+`zk/noir/` but is not declared in `zk/toolchain.lock.json` is compiled by nobody
+and digested by nothing — and can still be fetched by the browser
+(`/noir/<name>.json`) or accepted by the on-chain verifier. That is a second,
+unpinned protocol truth at a public boundary, created by omission rather than by
+intent, and no amount of double-building detects it.
+
+`check-coverage` makes that state a build failure:
+
+```bash
+python zk/tools/artifact_manifest.py check-coverage   # no toolchain needed
+zk/noir/scripts/reproducible-build.sh --check-coverage # same, via the driver
+```
+
+The gate runs in both directions and is derived from the lock file rather than a
+parallel list:
+
+| Finding | Meaning |
+| --- | --- |
+| `circuit <name>: package on disk declares no zk/noir/<name>/target/<name>.json artifact` | The circuit exists but is unpinned. This is the `selective_disclosure` case that motivated the gate: the browser fetches `/noir/selective_disclosure.json` and `harpocrates-registry` verifies it, while the reproducible-build pipeline did not name it. |
+| `circuit <name>: declared artifact has no zk/noir/<name>/Nargo.toml package` | The pin cannot be rebuilt — a renamed or deleted package would otherwise leave a manifest entry nothing can reproduce. |
+
+A directory under `zk/noir/` without a `Nargo.toml` (`scripts/`, `tools/`) is not
+a circuit and is ignored, so neither helper tooling nor a stray build directory
+fails the gate. Only the canonical `<name>/target/<name>.json` shape counts as a
+pin: a verification key, a differently-named target, or a `published_acir` copy
+is **not** coverage. `published_acir` is a copy of a build target, so treating it
+as coverage would let a circuit ship to the browser with nothing building it.
+
+**Trust boundary.** The gate moves "which circuits exist" from an implicit
+by-product of the build script's array to an enforced, versioned declaration. The
+lock file stays the single source of truth; the gate and the build script's
+`CIRCUITS` list are cross-checked against it, so renaming a circuit without
+updating both fails rather than silently dropping it from the build.
+
+**Privacy.** The gate reads no artifacts. It compares directory names to declared
+paths, so bytecode, witnesses, and keys cannot reach a finding or a CI log.
+Findings carry a circuit name and an expected path only, and are deterministically
+ordered so two runs produce the same first line.
+
+**Compatibility.** Additive. A new subcommand, one lock key (`limits.max_circuits`),
+and new artifact declarations. `write`, `verify`, `compare`, `write-browser`, and
+`verify-browser` are unchanged; `zk/browser.artifacts.manifest.json` compares
+artifacts, not the `skipped` list, so declaring
+`frontend/public/noir/selective_disclosure.json` before it is published does not
+fail `verify-browser`.
+
+**Migration.** None required for existing callers. `selective_disclosure` moves
+from unpinned to pinned: the next `--single` or `--verify` run now compiles it and
+digests its ACIR, which adds one entry to `zk/artifacts.manifest.json`. Because
+that manifest is not committed yet, CI is unaffected until one is.
+
+**Rollback.** Drop the `check-coverage` step from CI and the `coverage_gate` call
+from the build script to disable enforcement; the lock declarations are inert on
+their own. Restoring the previous `zk/toolchain.lock.json` reopens the
+`selective_disclosure` gap, so treat that as a deliberate, reviewed revert.
+
 
 ## Threat assumptions
 
@@ -39,6 +100,10 @@ The pipeline defends against:
 It does **not** defend against a compromised `nargo`/`bb` binary that produces
 consistently malicious output on every host. That is a supply-chain concern
 addressed by the pinned installer commands in the lock file, not by digesting.
+
+A third, separate gap is an **unpinned circuit**: one that exists in the tree but
+is absent from the lock file. Digesting cannot detect it, because there is no
+declared artifact to compare. See [Circuit coverage](#circuit-coverage).
 
 ## Normalization
 
@@ -103,10 +168,15 @@ zk/noir/scripts/reproducible-build.sh --single
 # One build, compare against the committed manifest.
 zk/noir/scripts/reproducible-build.sh --verify
 
+# Coverage gate only — no nargo/bb required.
+zk/noir/scripts/reproducible-build.sh --check-coverage
+
 # Tooling only — no toolchain required.
 python -m pytest zk/tools -q
+python zk/tools/artifact_manifest.py check-coverage
 python zk/tools/artifact_manifest.py verify
 python zk/tools/artifact_manifest.py verify-browser
+python zk/tools/artifact_manifest.py verify-provenance
 ```
 
 ## Configuration
@@ -125,7 +195,8 @@ the build script:
 Resource limits (`limits` in the lock file) bound the walk so a corrupted or
 hostile working directory cannot turn a build check into a denial of service:
 `max_artifact_bytes` (256 MiB), `max_artifacts` (64), `max_provenance_files`
-(512). Exceeding any of them is a fatal, typed failure — never a hang.
+(512), `max_circuits` (64). Exceeding any of them is a fatal, typed failure —
+never a hang.
 
 ## Signals
 
@@ -141,6 +212,7 @@ Both the script and the tool emit single-line JSON on **stderr**:
 | `drift.finding` | `detail` | One drift finding |
 | `verify.ok` / `verify.failed` | `artifacts` / `findings` | Verdict |
 | `compare.ok` / `compare.failed` | `artifacts` / `findings` | Double-build verdict |
+| `coverage.ok` / `coverage.failed` | `circuits` / `findings` | Circuit-coverage verdict |
 | `run.fatal` / `run.error` / `run.cancelled` | `path`, `state`, `reason` | Terminal failure |
 
 **Privacy.** Signals carry only repo-relative paths, byte counts, digests, and
@@ -159,6 +231,28 @@ the leak this pipeline exists to prevent. This is pinned by
 | `1` | Drift detected | Read the `drift.finding` signals; a source digest change is expected after a circuit edit, an artifact-only change is not |
 | `2` | Usage error | Fix the command line |
 | `3` | Fatal | Toolchain mismatch, missing required artifact, or unreadable tree |
+
+
+## Published circuit provenance
+
+Circuit *source* provenance can be published without compiling ACIR or generating
+verification keys. The lock file remains the single declaration of which sources
+define which artifact slots:
+
+```bash
+python zk/tools/artifact_manifest.py write-provenance
+python zk/tools/artifact_manifest.py verify-provenance
+```
+
+`zk/circuit.provenance.json` records:
+
+- pinned toolchain versions and the normalization-policy digest
+- digests of every path matched by `provenance_sources.globs`
+- the lock-declared artifact path/kind/role/required slots (metadata only)
+
+It does **not** embed `.nr` source, witnesses, proofs, or private keys. Drift
+findings name paths and truncated digests only. CI enforces the document once it
+is committed; deleting it makes the provenance step inert again (rollback).
 
 ## Deployment impact and rollout
 
@@ -248,9 +342,11 @@ zk/noir/scripts/reproducible-build.sh --verify
 1. Create the new Noir package under `zk/noir/<circuit-name>/`.
 2. Add its expected artifact paths to `zk/toolchain.lock.json`.
 3. Add the circuit name to `CIRCUITS` in `zk/noir/scripts/reproducible-build.sh`.
-4. Run `zk/noir/scripts/reproducible-build.sh --single` to generate artifacts.
-5. Copy any published ACIR to `frontend/public/noir/`.
-6. Run the double-build and commit the manifest.
+4. Run `python zk/tools/artifact_manifest.py check-coverage` — it fails until
+   steps 2 and 3 agree with the tree.
+5. Run `zk/noir/scripts/reproducible-build.sh --single` to generate artifacts.
+6. Copy any published ACIR to `frontend/public/noir/`.
+7. Run the double-build and commit the manifest.
 
 ## Troubleshooting
 
@@ -271,6 +367,17 @@ rather than the tool directly.
 **Drift in `provenance` only** — a circuit source changed but the artifacts did
 not. Either the artifacts are stale (rebuild) or the source change was
 comment-only (rebuild and re-commit the manifest).
+
+**`circuit <name>: package on disk declares no ... artifact`** — a Noir package
+exists in `zk/noir/` that the lock does not pin. Add the build-target and (if it
+ships to the browser) the `published_acir` entry to `zk/toolchain.lock.json` and
+the name to `CIRCUITS` in the build script, then re-run the gate. Do not silence
+it by adding a matching-but-wrong path: only
+`<name>/target/<name>.json` counts as a pin.
+
+**`circuit <name>: declared artifact has no .../Nargo.toml package`** — a circuit
+was renamed or removed without updating the lock. Either restore the package or
+drop its declarations in the same commit.
 
 
 ## Browser artifact manifest
@@ -312,3 +419,8 @@ with `write-browser`.
 - The lock file pins versions, not binary digests, of `nargo` and `bb`. Pinning
   installer digests would require an upstream distribution channel that
   publishes them.
+- The coverage gate is name-based: it proves every package under `zk/noir/` is
+  declared, not that a declared circuit is the one the verifier contract expects.
+  Closing that last mile — comparing the circuit's VK digest to the deployed
+  verifier contract — is [OR-5](../../THREAT_MODEL.md#or-5-circuit-artifact-version-alignment)
+  and is still open.
