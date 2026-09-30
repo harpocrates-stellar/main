@@ -107,7 +107,7 @@ fn test_verify_selective_disclosure_valid() {
 
     client.verify_selective_disclosure(&inputs, &valid_proof(&env));
 
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 #[test]

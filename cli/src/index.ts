@@ -51,3 +51,11 @@ export type {
   ReceiptVerificationOptions,
   ReceiptVerificationResult,
 } from './signed-receipt.js'
+export { redactSensitive, logStructured, REDACTED_VALUE } from './logging.js'
+export {
+  exportC2paAssertions,
+  parseC2paReceiptInput,
+  serializeC2paExport,
+  c2paExportDigest,
+} from './c2pa.js'
+export type { C2paExport, C2paExportOptions, C2paAssertion } from './c2pa.js'

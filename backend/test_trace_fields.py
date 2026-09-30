@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 
 from http_security import (
     CORS_ALLOW_HEADERS,
@@ -204,6 +205,24 @@ class TraceFieldsFlaskIntegrationTests(unittest.TestCase):
         dumped = json.dumps(event)
         self.assertNotIn("credentialSecret", dumped)
         self.assertNotIn("nullifierSecret", dumped)
+
+    def test_job_status_does_not_expose_internal_trace_link(self) -> None:
+        with patch.object(
+            self.app_module,
+            "get_job",
+            return_value={
+                "id": 7,
+                "type": "embed",
+                "status": "pending",
+                "_trace_context": {"traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01"},
+            },
+        ):
+            response = self.client.get("/api/jobs/7")
+
+        self.assertEqual(response.status_code, 200)
+        job = response.get_json()["job"]
+        self.assertEqual(job["id"], 7)
+        self.assertNotIn("_trace_context", job)
 
 
 class TraceHeaderCorsPropagationTests(unittest.TestCase):

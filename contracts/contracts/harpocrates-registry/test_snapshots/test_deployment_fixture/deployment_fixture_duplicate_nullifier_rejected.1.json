@@ -241,6 +241,66 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "MetadataEnvelope"
+                  },
+                  {
+                    "bytes": "a36005060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "bound_at"
+                    },
+                    "val": {
+                      "u64": "1750000000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata_hash"
+                    },
+                    "val": {
+                      "bytes": "a2600405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "proof_id"
+                    },
+                    "val": {
+                      "bytes": "a36005060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "version"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Nullifier"
                   },
                   {

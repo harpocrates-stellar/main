@@ -24,6 +24,7 @@ Design rules
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Sequence
@@ -31,12 +32,24 @@ from typing import Final
 
 CODEC_ID: Final[str] = "hpx-vi/1"
 
+#: Circuit-versioned codec id for the ``silent_witness/v2`` envelope (#368).
+CODEC_ID_V2: Final[str] = "hpx-vi/2"
+
 FIELD_LEN: Final[int] = 32
 SILENT_WITNESS_FIELD_COUNT: Final[int] = 5
 REVOCATION_FIELD_COUNT: Final[int] = 4
 SILENT_WITNESS_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT  # 160
 REVOCATION_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * REVOCATION_FIELD_COUNT          # 128
 PUBLIC_INPUTS_LEN: Final[int] = SILENT_WITNESS_PUBLIC_INPUTS_LEN  # default (largest schema)
+
+#: ``silent_witness/v2`` is the scoped frame (7 fields) plus a trailing 8th
+#: field that commits the circuit version (#368).
+SILENT_WITNESS_V2_FIELD_COUNT: Final[int] = 8
+SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN: Final[int] = FIELD_LEN * SILENT_WITNESS_V2_FIELD_COUNT  # 256
+
+#: The only circuit version accepted by the ``silent_witness/v2`` codec. Must
+#: match ``CURRENT_CIRCUIT_VERSION`` in zk/noir/silent_witness/src/main.nr.
+EXPECTED_CIRCUIT_VERSION: Final[int] = 2
 
 MIN_PROOF_BYTES: Final[int] = 64
 MAX_PROOF_BYTES: Final[int] = 65_536
@@ -75,12 +88,15 @@ SILENT_WITNESS_DOMAIN_TAG: Final[bytes] = hashlib.sha256(
 
 SCHEMA_SILENT_WITNESS: Final[str] = "silent_witness/v1"
 SCHEMA_REVOCATION_WITNESS: Final[str] = "revocation_witness/v1"
+SCHEMA_SILENT_WITNESS_V2: Final[str] = "silent_witness/v2"
 
 #: Protocol Merkle-depth bound for ``revocation_witness/v1`` (#357).
 #: Must match the Noir globals and the Soroban registry constants.
 MAX_REVOCATION_WITNESS_DEPTH: Final[int] = 3
 #: Leaf capacity implied by ``MAX_REVOCATION_WITNESS_DEPTH`` (``2**depth``).
 MAX_REVOCATION_LEAVES: Final[int] = 8
+
+_ZERO_FIELD: Final[bytes] = b"\x00" * FIELD_LEN
 
 _HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")
 
@@ -97,6 +113,7 @@ class RejectCode(str, Enum):
     PROOF_UNDERSIZE = "proof_undersize"
     PROOF_OVERSIZE = "proof_oversize"
     UNKNOWN_SCHEMA = "unknown_schema"
+    VERSION_MISMATCH = "version_mismatch"
 
 
 class VerifierInputError(ValueError):
@@ -127,6 +144,12 @@ class SilentWitnessInputs:
     credential_root: bytes
     nullifier: bytes
     domain_tag: bytes
+    #: Verifier scope of the ``silent_witness/v2`` scoped frame; ``None`` for v1.
+    verifier_scope: bytes | None = None
+    #: Raw 32-byte epoch field element of a v2 frame; ``None`` for v1.
+    epoch: bytes | None = None
+    #: Circuit version committed to the rightmost trailing field (``hpx-vi/2``).
+    circuit_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +163,17 @@ class RevocationWitnessInputs:
 
 
 # ── Primitives ──────────────────────────────────────────────────────────────
+
+
+def constant_time_equals(left: bytes, right: bytes) -> bool:
+    """Compare two byte strings without an early exit on the first difference.
+
+    Protocol bindings (domain tags, separators, zero sentinels) are compared
+    through this helper on every layer so that the time taken to reject a
+    tampered value does not reveal how many leading bytes matched. Inputs of
+    different lengths compare unequal; length is public.
+    """
+    return hmac.compare_digest(left, right)
 
 
 def decode_hex(
@@ -236,15 +270,26 @@ def _require_canonical(fields: list[bytes], names: tuple[str, ...]) -> None:
 
 
 def _require_non_zero(field_value: bytes, name: str) -> None:
-    if field_value == b"\x00" * FIELD_LEN:
+    if constant_time_equals(field_value, _ZERO_FIELD):
         raise VerifierInputError(RejectCode.ZERO_FIELD, name)
 
 
 def _require_half_padding(field_value: bytes, name: str) -> bytes:
     """A 128-bit half is carried in the low 16 bytes; the high 16 must be zero."""
-    if field_value[:16] != b"\x00" * 16:
+    if not constant_time_equals(field_value[:16], _ZERO_FIELD[:16]):
         raise VerifierInputError(RejectCode.PADDING, name)
     return field_value[16:]
+
+
+def _version_of(field_value: bytes) -> int:
+    """Read a 32-byte circuit-version field as a big-endian u32.
+
+    The upper 28 bytes must be zero; otherwise a sentinel is returned so the
+    caller's equality check fails, mirroring the Rust ``circuit_version_of``.
+    """
+    if field_value[:28] != b"\x00" * 28:
+        return 0xFFFFFFFF
+    return int.from_bytes(field_value[28:32], "big")
 
 
 # ── Schema parsers ──────────────────────────────────────────────────────────
@@ -255,6 +300,17 @@ _SILENT_WITNESS_FIELDS: Final[tuple[str, ...]] = (
     "credential_root",
     "nullifier",
     "domain_tag",
+)
+
+_SILENT_WITNESS_V2_FIELDS: Final[tuple[str, ...]] = (
+    "video_hash_hi",
+    "video_hash_lo",
+    "credential_root",
+    "nullifier",
+    "verifier_scope",
+    "epoch",
+    "domain_tag",
+    "circuit_version",
 )
 
 _REVOCATION_FIELDS: Final[tuple[str, ...]] = (
@@ -290,7 +346,7 @@ def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
     _require_non_zero(fields[3], "nullifier")
     _require_non_zero(fields[4], "domain_tag")
 
-    if fields[4] != SILENT_WITNESS_DOMAIN_TAG:
+    if not constant_time_equals(fields[4], SILENT_WITNESS_DOMAIN_TAG):
         raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_tag")
 
     return SilentWitnessInputs(
@@ -298,6 +354,56 @@ def parse_silent_witness_inputs(public_inputs: bytes) -> SilentWitnessInputs:
         credential_root=fields[2],
         nullifier=fields[3],
         domain_tag=fields[4],
+    )
+
+
+def parse_silent_witness_v2_inputs(public_inputs: bytes) -> SilentWitnessInputs:
+    """Parse ``silent_witness/v2`` public inputs in canonical check order (#368).
+
+    Layout (8 × 32 bytes = 256 bytes):
+      [0] video_hash_hi     — 128-bit half (low 16 bytes only)
+      [1] video_hash_lo     — 128-bit half (low 16 bytes only)
+      [2] credential_root
+      [3] nullifier
+      [4] verifier_scope
+      [5] epoch
+      [6] domain_tag        — Pedersen hash of the DOMAIN_*_FIELD constants
+      [7] circuit_version   — u32 in the low 4 bytes; upper 28 bytes must be zero
+
+    The check order is the codec contract: length → half padding → circuit
+    version → canonicity → zero → domain. The domain tag and circuit version
+    are protocol bindings rather than user scalars, so they are compared
+    byte-for-byte and never reduced modulo BN254.
+    """
+    fields = _split_fields(
+        public_inputs, SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN, SILENT_WITNESS_V2_FIELD_COUNT
+    )
+
+    high = _require_half_padding(fields[0], "video_hash_hi")
+    low = _require_half_padding(fields[1], "video_hash_lo")
+
+    # Checked before the identity fields so a frame from another circuit reads
+    # as a version problem, never as a malformed-identity problem.
+    if _version_of(fields[7]) != EXPECTED_CIRCUIT_VERSION:
+        raise VerifierInputError(RejectCode.VERSION_MISMATCH, "circuit_version")
+
+    _require_canonical(fields[:6], _SILENT_WITNESS_V2_FIELDS[:6])
+
+    _require_non_zero(fields[2], "credential_root")
+    _require_non_zero(fields[3], "nullifier")
+    _require_non_zero(fields[6], "domain_tag")
+
+    if not constant_time_equals(fields[6], SILENT_WITNESS_DOMAIN_TAG):
+        raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_tag")
+
+    return SilentWitnessInputs(
+        video_hash=high + low,
+        credential_root=fields[2],
+        nullifier=fields[3],
+        domain_tag=fields[6],
+        verifier_scope=fields[4],
+        epoch=fields[5],
+        circuit_version=EXPECTED_CIRCUIT_VERSION,
     )
 
 
@@ -313,7 +419,7 @@ def parse_revocation_witness_inputs(public_inputs: bytes) -> RevocationWitnessIn
     _require_non_zero(fields[1], "nullifier")
     _require_non_zero(fields[3], "credential_root")
 
-    if fields[2] != REVOCATION_DOMAIN_SEPARATOR:
+    if not constant_time_equals(fields[2], REVOCATION_DOMAIN_SEPARATOR):
         raise VerifierInputError(RejectCode.DOMAIN_MISMATCH, "domain_separator")
 
     return RevocationWitnessInputs(
@@ -330,6 +436,8 @@ def parse_public_inputs(
     """Dispatch to the parser for ``schema``."""
     if schema == SCHEMA_SILENT_WITNESS:
         return parse_silent_witness_inputs(public_inputs)
+    if schema == SCHEMA_SILENT_WITNESS_V2:
+        return parse_silent_witness_v2_inputs(public_inputs)
     if schema == SCHEMA_REVOCATION_WITNESS:
         return parse_revocation_witness_inputs(public_inputs)
     raise VerifierInputError(RejectCode.UNKNOWN_SCHEMA, "schema")
@@ -371,3 +479,19 @@ def check_revocation_witness_depth(depth: object) -> None:
         raise VerifierInputError(RejectCode.LENGTH, "depth")
     if depth > MAX_REVOCATION_WITNESS_DEPTH:
         raise VerifierInputError(RejectCode.PROOF_OVERSIZE, "depth")
+
+
+def check_aggregation_batch_size(batch_size: object) -> int:
+    """Reject an aggregation proof count outside the protocol bound (#497).
+
+    Privacy-safe: raises :class:`VerifierInputError` with a stable code and the
+    field name ``batch_size`` only — never video hashes, secrets, or witness material.
+    """
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise VerifierInputError(RejectCode.MALFORMED_HEX, "batch_size")
+    if batch_size < MIN_AGGREGATION_SIZE:
+        raise VerifierInputError(RejectCode.LENGTH, "batch_size")
+    if batch_size > MAX_AGGREGATION_SIZE:
+        raise VerifierInputError(RejectCode.PROOF_OVERSIZE, "batch_size")
+    return batch_size
+

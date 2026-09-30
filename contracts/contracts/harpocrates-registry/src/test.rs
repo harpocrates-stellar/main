@@ -13,8 +13,10 @@ struct MockNoirVerifier;
 #[contractimpl]
 impl MockNoirVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
+        // Legal frame lengths: revocation (128), v1 silent (160), v2 scoped
+        // (224), and the circuit-versioned v2 envelope (256, #368).
         let len = public_inputs.len();
-        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -26,7 +28,7 @@ struct MockNoirVerifierV2;
 #[contractimpl]
 impl MockNoirVerifierV2 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224 | 256) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -110,7 +112,7 @@ fn registers_all_identity_tiers() {
     );
     assert_eq!(anonymous.tier, TIER_SILENT_WITNESS);
     assert_eq!(anonymous.nullifier, Some(bytes32(&env, 4)));
-    assert!(client.has_nullifier(&bytes32(&env, 4)));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &bytes32(&env, 4)));
 
     let pseudonymous = client.register_source(
         &source,
@@ -216,7 +218,7 @@ fn registers_silent_witness_through_external_verifier() {
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
     assert_eq!(record.video_hash, video_hash);
     assert_eq!(record.nullifier, Some(nullifier.clone()));
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
     // Non-batch registration has batch_size = 0
     assert_eq!(record.batch_size, 0);
 }

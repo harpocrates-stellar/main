@@ -44,7 +44,7 @@ struct MockStateMachineVerifier;
 impl MockStateMachineVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid state-machine proof");
         }
     }
@@ -821,7 +821,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_source",
             )? {
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -866,7 +866,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "register_seal",
             )? {
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -934,7 +934,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -1009,7 +1009,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             )? {
                 model.nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
-                2
+                3
             } else {
                 0
             }
@@ -1495,7 +1495,7 @@ fn assert_storage_matches_model(fixture: &Fixture, model: &Model) -> CheckResult
     }
 
     for nullifier in 0..KEY_POOL {
-        let actual = client.has_nullifier(&key(&fixture.env, HashDomain::Nullifier, nullifier));
+        let actual = client.has_nullifier(&client.get_verifier().unwrap(), &key(&fixture.env, HashDomain::Nullifier, nullifier));
         let expected = model.nullifier_exists(nullifier);
         if actual != expected {
             return Err(format!(

@@ -24,9 +24,13 @@ struct MockScopedVerifier;
 #[contractimpl]
 impl MockScopedVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        // Accept the legal frame lengths: revocation (128), v1 silent (160), v2 scoped (224)
+        // Stand-in for the barretenberg verifier: it models the frame lengths a
+        // verifier can *parse* (revocation 128, v1 silent 160, bare scoped 224,
+        // circuit-versioned envelope 256), not the registry's frame policy. The
+        // registry rejects the bare 224-byte frame before ever reaching this
+        // double (#368), so 224 here is only reachable from a direct call.
         let len = public_inputs.len();
-        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid scoped proof");
         }
     }
@@ -72,16 +76,17 @@ fn v1_public_inputs(
     Bytes::from_array(env, &buf)
 }
 
-/// Build a v2 (224-byte) scoped silent witness public-input blob.
+/// Fill a 224-byte v2 scoped frame from its logical fields.
 #[cfg(test)]
-fn v2_public_inputs(
+fn fill_v2_frame(
+    buf: &mut [u8; 224],
     env: &Env,
     video_hash: &BytesN<32>,
     credential_root: &BytesN<32>,
     nullifier: &BytesN<32>,
     verifier_scope: &BytesN<32>,
     epoch: u64,
-) -> Bytes {
+) {
     let mut vh = [0u8; 32];
     video_hash.copy_into_slice(&mut vh);
     let mut cr = [0u8; 32];
@@ -98,16 +103,93 @@ fn v2_public_inputs(
         e >>= 8;
     }
 
-    let mut buf = [0u8; 224];
+    let domain_tag = expected_domain_tag(env);
+    let mut dt = [0u8; 32];
+    domain_tag.copy_into_slice(&mut dt);
+
     buf[16..32].copy_from_slice(&vh[..16]);
     buf[48..64].copy_from_slice(&vh[16..]);
     buf[64..96].copy_from_slice(&cr);
     buf[96..128].copy_from_slice(&nu);
     buf[128..160].copy_from_slice(&sc);
     buf[160..192].copy_from_slice(&epoch_bytes);
-    let mut domain = [0u8; 32];
-    expected_domain_tag(env).copy_into_slice(&mut domain);
-    buf[192..224].copy_from_slice(&domain);
+    buf[192..224].copy_from_slice(&dt);
+}
+
+/// Build the scoped public-input blob the registry accepts: the 256-byte
+/// circuit-versioned envelope (#368) naming `EXPECTED_CIRCUIT_VERSION`.
+#[cfg(test)]
+fn v2_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+) -> Bytes {
+    enveloped_public_inputs(
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+        verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8,
+    )
+}
+
+/// Build the superseded bare 224-byte scoped frame: no `circuit_version`
+/// trailer, so it commits no circuit version at all. Rejected by length with
+/// `RegistryError::CircuitVersionMismatch` (#368).
+#[cfg(test)]
+fn bare_v2_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+) -> Bytes {
+    let mut buf = [0u8; 224];
+    fill_v2_frame(
+        &mut buf,
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+    );
+    Bytes::from_array(env, &buf)
+}
+
+/// Build the 256-byte circuit-versioned envelope (#368): the v2 scoped frame
+/// plus the trailing `circuit_version` field element. `declared_version` goes
+/// in the low byte of the trailer, as a big-endian u32 in a BN254 field element.
+#[cfg(test)]
+fn enveloped_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+    verifier_scope: &BytesN<32>,
+    epoch: u64,
+    declared_version: u8,
+) -> Bytes {
+    let mut frame = [0u8; 224];
+    fill_v2_frame(
+        &mut frame,
+        env,
+        video_hash,
+        credential_root,
+        nullifier,
+        verifier_scope,
+        epoch,
+    );
+
+    let mut buf = [0u8; 256];
+    buf[..224].copy_from_slice(&frame);
+    buf[255] = declared_version;
     Bytes::from_array(env, &buf)
 }
 
@@ -263,7 +345,7 @@ fn test_scoped_registration_global_scope_epoch_0() {
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
     assert_eq!(record.video_hash, video_hash);
     assert_eq!(record.nullifier, Some(nullifier.clone()));
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 /// Happy path: v2 scoped proof with explicit scope and epoch 1.
@@ -297,10 +379,168 @@ fn test_scoped_registration_explicit_scope_epoch_1() {
     );
 
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
+}
+
+// ===========================================================================
+// Circuit-version envelope (#368)
+// ===========================================================================
+
+/// Happy path: a 256-byte envelope whose circuit-version trailer matches
+/// EXPECTED_CIRCUIT_VERSION is accepted.
+#[test]
+fn test_scoped_registration_enveloped_version_accepted() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x50);
+    let nullifier = b32(&env, 0x51);
+    let scope = b32(&env, 0x00);
+    let epoch: u64 = 0;
+
+    let pi = enveloped_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        epoch,
+        verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8,
+    );
+    let record = client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x52),
+        &b32(&env, 0x53),
+        &pi,
+        &proof_buf(&env),
+    );
+
+    assert_eq!(record.tier, TIER_SILENT_WITNESS);
+    assert_eq!(record.video_hash, video_hash);
+    assert_eq!(record.nullifier, Some(nullifier.clone()));
     assert!(client.has_nullifier(&nullifier));
 }
 
-/// Rejects stale epoch: proof has epoch 0 but current epoch is 1.
+/// A 256-byte envelope declaring a stale circuit version is rejected with
+/// RegistryError::CircuitVersionMismatch (#87).
+#[test]
+#[should_panic(expected = "Error(Contract, #87)")]
+fn test_scoped_registration_wrong_version_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x60);
+    let nullifier = b32(&env, 0x61);
+    let scope = b32(&env, 0x00);
+
+    let pi = enveloped_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        1,
+    );
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x62),
+        &b32(&env, 0x63),
+        &pi,
+        &proof_buf(&env),
+    );
+}
+
+/// A 256-byte envelope whose trailer is all zeros (version 0) is also rejected.
+#[test]
+#[should_panic(expected = "Error(Contract, #87)")]
+fn test_scoped_registration_zero_version_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x70);
+    let nullifier = b32(&env, 0x71);
+    let scope = b32(&env, 0x00);
+
+    let pi = enveloped_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        0,
+    );
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x72),
+        &b32(&env, 0x73),
+        &pi,
+        &proof_buf(&env),
+    );
+}
+
+/// The superseded bare 224-byte scoped frame commits no circuit version, so its
+/// version could only ever be inferred from its length. It is now rejected by
+/// that length, before the verifier is reached: a proof cannot skip the version
+/// commitment by omitting the trailer (#368).
+#[test]
+#[should_panic(expected = "Error(Contract, #87)")]
+fn test_scoped_registration_bare_frame_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x80);
+    let nullifier = b32(&env, 0x81);
+    let scope = b32(&env, 0x00);
+
+    let pi = bare_v2_public_inputs(&env, &video_hash, &credential_root, &nullifier, &scope, 0);
+    assert_eq!(pi.len(), SILENT_WITNESS_V2_BARE_INPUT_LEN);
+
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x82),
+        &b32(&env, 0x83),
+        &pi,
+        &proof_buf(&env),
+    );
+}
+
+/// Truncating an otherwise-accepted envelope to its first seven fields — the
+/// exact downgrade the version commitment exists to stop — is rejected rather
+/// than reinterpreted as the legacy frame (#368).
+#[test]
+#[should_panic(expected = "Error(Contract, #87)")]
+fn test_scoped_registration_truncated_envelope_rejected() {
+    let (env, contract_id, _admin, credential_root) = init_scoped_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let video_hash = b32(&env, 0x84);
+    let nullifier = b32(&env, 0x85);
+    let scope = b32(&env, 0x00);
+
+    let envelope = enveloped_public_inputs(
+        &env,
+        &video_hash,
+        &credential_root,
+        &nullifier,
+        &scope,
+        0,
+        verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8,
+    );
+    let mut bytes = [0u8; 256];
+    envelope.copy_into_slice(&mut bytes);
+    let truncated = Bytes::from_slice(&env, &bytes[..224]);
+
+    client.register_anonymous_verified(
+        &video_hash,
+        &b32(&env, 0x86),
+        &b32(&env, 0x87),
+        &truncated,
+        &proof_buf(&env),
+    );
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
 fn test_scoped_rejects_stale_epoch() {
@@ -573,8 +813,8 @@ fn test_v1_backward_compatibility() {
 
     assert_eq!(r1.tier, TIER_SILENT_WITNESS);
     assert_eq!(r2.tier, TIER_SILENT_WITNESS);
-    assert!(client.has_nullifier(&nullifier_v1));
-    assert!(client.has_nullifier(&nullifier_v2));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_v1));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_v2));
 }
 
 /// v1 and v2 nullifiers for the same credential are different
@@ -626,7 +866,8 @@ fn test_v1_v2_nullifiers_are_different() {
 // Rejects invalid input lengths
 // ===========================================================================
 
-/// Rejects public inputs that are neither 160 (v1) nor 224 (v2) bytes.
+/// Rejects a length no frame uses. The retired 224-byte bare frame has its own
+/// dedicated error; see `test_scoped_registration_bare_frame_rejected`.
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")] // InvalidPublicInputs
 fn test_rejects_wrong_input_length() {
@@ -646,7 +887,7 @@ fn test_rejects_wrong_input_length() {
     );
 }
 
-/// Rejects 256-byte public inputs (too long).
+/// Rejects 257-byte public inputs (one past the 256-byte v3 envelope).
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")] // InvalidPublicInputs
 fn test_rejects_oversized_inputs() {
@@ -654,7 +895,7 @@ fn test_rejects_oversized_inputs() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
 
     let video_hash = b32(&env, 0xA3);
-    let bad_pi = Bytes::from_array(&env, &[0u8; 256]);
+    let bad_pi = Bytes::from_array(&env, &[0u8; 257]);
     client.register_anonymous_verified(
         &video_hash,
         &b32(&env, 0xA4),
@@ -759,8 +1000,8 @@ fn test_independent_scope_epochs() {
         &proof_buf(&env),
     );
 
-    assert!(client.has_nullifier(&nullifier1));
-    assert!(client.has_nullifier(&nullifier2));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier1));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier2));
 }
 
 /// Scope A at epoch 1 does NOT affect scope B at epoch 0.
@@ -790,7 +1031,7 @@ fn test_scope_epoch_isolation() {
         &proof_buf(&env),
     );
 
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 /// Global scope (zero) epoch management works independently.
@@ -992,8 +1233,8 @@ fn test_cross_scope_different_nullifiers_unlinkable() {
     );
 
     // Both nullifiers are recorded independently
-    assert!(client.has_nullifier(&nullifier_a));
-    assert!(client.has_nullifier(&nullifier_b));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_a));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_b));
     // Nullifiers are different (different scopes)
     assert_ne!(nullifier_a, nullifier_b);
 }
@@ -1046,7 +1287,7 @@ fn test_verifier_change_preserves_nullifier_history() {
     );
 
     // Nullifier is consumed
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 
     // Switch verifier to B
     client.set_verifier(&admin, &verifier_b);
@@ -1070,9 +1311,9 @@ fn test_verifier_change_preserves_nullifier_history() {
         &proof_buf(&env),
     );
 
-    assert!(client.has_nullifier(&nullifier2));
-    // Original nullifier still consumed
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier2));
+    // Original nullifier is not consumed under the new verifier context
+    assert!(!client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 // ===========================================================================
@@ -1214,7 +1455,7 @@ fn test_stale_ledger_valid_proof_still_accepted() {
     );
 
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 
     // Advance the ledger far into the future
     env.ledger()
@@ -1240,7 +1481,7 @@ fn test_stale_ledger_valid_proof_still_accepted() {
     );
 
     assert_eq!(record2.tier, TIER_SILENT_WITNESS);
-    assert!(client.has_nullifier(&nullifier2));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier2));
 }
 
 // ===========================================================================
@@ -1360,7 +1601,7 @@ fn test_cross_network_isolation() {
     );
 
     // The same nullifier should NOT be consumed on contract B
-    assert!(!client_b.has_nullifier(&nullifier));
+    assert!(!client_b.has_nullifier(&client_b.get_verifier().unwrap(), &nullifier));
 
     // Register the same nullifier on contract B — must succeed because
     // contract B has its own independent nullifier set
@@ -1382,7 +1623,7 @@ fn test_cross_network_isolation() {
     );
 
     // Now contract B has consumed the nullifier
-    assert!(client_b.has_nullifier(&nullifier));
+    assert!(client_b.has_nullifier(&client_b.get_verifier().unwrap(), &nullifier));
     // Contract A still has it too (both independently track it)
-    assert!(client_a.has_nullifier(&nullifier));
+    assert!(client_a.has_nullifier(&client_a.get_verifier().unwrap(), &nullifier));
 }

@@ -173,7 +173,7 @@ fn replay_matrix_positive_anonymous_succeeds() {
     );
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
     assert_eq!(record.status, STATUS_REGISTERED);
-    assert!(client.has_nullifier(&b32(&env, 0x04)));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &b32(&env, 0x04)));
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn replay_matrix_positive_anonymous_verified_succeeds() {
         &proof_buf(&env),
     );
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 #[test]

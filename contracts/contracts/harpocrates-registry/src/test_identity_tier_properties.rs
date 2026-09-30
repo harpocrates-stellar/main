@@ -28,7 +28,7 @@ struct MockTierVerifier;
 impl MockTierVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -322,7 +322,7 @@ fn check_lookups(client: &HarpocratesRegistryClient<'_>, model: &Model, env: &En
         );
         if let Some(n) = p.nullifier {
             assert!(
-                client.has_nullifier(&b32(env, slot_byte(0xD4, n))),
+                client.has_nullifier(&client.get_verifier().unwrap(), &b32(env, slot_byte(0xD4, n))),
                 "{label}: missing nullifier slot={n}"
             );
         }

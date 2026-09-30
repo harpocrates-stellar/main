@@ -188,3 +188,13 @@ on them. The codec and the conformance corpus stand on their own.
 - The contract harness runs against the Soroban test environment, not a live
   network. Host-level resource accounting differences on a real network are out
   of its reach.
+
+## Scheduled fuzzing in CI
+
+`.github/workflows/fuzz-scheduled.yml` runs the circuit/proof-input fuzzing and the parser/codec fuzzing weekly (Sunday 03:17 UTC) and on demand.
+
+- Run on demand: `gh workflow run fuzz-scheduled.yml -f iterations=20000` (optionally `-f seed=<digits>`).
+- Reproduce a failure locally: the run log prints `fuzz seed: <n>`; run the same commands with that seed.
+- Failing inputs are uploaded only on failure, for 7 days. They are synthetic fuzz inputs; real media, secrets, witness values and private keys are never used or logged.
+- The workflow uses a read-only token, no secrets, and validated inputs.
+- GitHub only runs schedules from the default branch and disables them after 60 days without repository activity; re-enable from the Actions tab if that happens.

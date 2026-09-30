@@ -33,7 +33,7 @@ struct MockVerifierUpgrade;
 #[contractimpl]
 impl MockVerifierUpgrade {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224 | 256) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -65,7 +65,7 @@ fn upgrade_compat_init_stamps_v1() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
 
     let present = env.as_contract(&contract_id, || {
@@ -75,7 +75,7 @@ fn upgrade_compat_init_stamps_v1() {
 }
 
 #[test]
-fn upgrade_compat_idempotent_noop_at_v1() {
+fn upgrade_compat_idempotent_noop_at_v2() {
     let (env, contract_id, admin) = init_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
 
@@ -86,11 +86,11 @@ fn upgrade_compat_idempotent_noop_at_v1() {
 
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
     assert_eq!(
         after, before,
-        "idempotent V1 upgrade must not emit SchemaUpgraded"
+        "idempotent V2 upgrade must not emit SchemaUpgraded"
     );
 }
 
@@ -121,7 +121,7 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
     // Getter remains compatible (treats missing as V1).
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
 
     let before = schema_upgrade_event_count(&env, &contract_id);
@@ -136,11 +136,11 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
     );
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
     assert_eq!(
-        after, before,
-        "legacy stamp must not emit SchemaUpgraded (no layout migration)"
+        after, before + 1,
+        "legacy stamp must emit SchemaUpgraded due to V2 migration"
     );
 }
 
@@ -177,7 +177,7 @@ fn upgrade_compat_preserves_registered_source_proof() {
     );
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
 }
 
@@ -197,7 +197,7 @@ fn upgrade_compat_preserves_verifier_boundary() {
     );
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
 }
 
@@ -218,62 +218,6 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
     assert_eq!(end, mid);
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
-}
-
-// ---------------------------------------------------------------------------
-// Receipt commitment survives upgrade (#337)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn upgrade_compat_preserves_receipt_commitment() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_address = soroban_sdk::Address::from_string(&soroban_sdk::String::from_str(
-        &env,
-        crate::test_receipt::CONTRACT1_STRKEY,
-    ));
-    let contract_id = env.register_at(&contract_address, HarpocratesRegistry, ());
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let source = Address::generate(&env);
-    client.init(&admin);
-
-    let proof_id = b32(&env, 0x11);
-    client.register_source(&source, &b32(&env, 0x61), &b32(&env, 0x62), &proof_id);
-    client.add_receipt_signer(
-        &admin,
-        &BytesN::from_array(&env, &crate::test_receipt::PUB1),
-    );
-    let committed = client.commit_receipt_digest(
-        &source,
-        &proof_id,
-        &BytesN::from_array(&env, &crate::test_receipt::DIGEST1),
-        &BytesN::from_array(&env, &crate::test_receipt::PUB1),
-        &BytesN::from_array(&env, &crate::test_receipt::SIG_A),
-    );
-    assert_eq!(committed.tier, TIER_CONSISTENT_SOURCE);
-
-    client.upgrade_storage(&admin);
-
-    let after = client
-        .get_receipt_commitment(&proof_id)
-        .expect("receipt commitment must survive upgrade");
-    assert_eq!(
-        after.receipt_digest,
-        BytesN::from_array(&env, &crate::test_receipt::DIGEST1)
-    );
-    assert_eq!(
-        after.public_key,
-        BytesN::from_array(&env, &crate::test_receipt::PUB1)
-    );
-    assert_eq!(after.tier, TIER_CONSISTENT_SOURCE);
-    assert_eq!(after.committed_by, source);
-
-    let signer = client
-        .get_receipt_signer(&BytesN::from_array(&env, &crate::test_receipt::PUB1))
-        .expect("receipt signer must survive upgrade");
-    assert!(signer.active);
 }

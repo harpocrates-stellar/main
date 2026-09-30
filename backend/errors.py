@@ -51,10 +51,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALIDATION_ERROR = "VALIDATION_ERROR"
-"""Client-supplied data failed validation (400)."""
+"""Legacy client-validation code retained for compatibility (400)."""
 
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
-"""Request body exceeds the configured size limit (413)."""
+"""Legacy payload-limit code retained for compatibility (413)."""
 
 NOT_FOUND = "NOT_FOUND"
 """The requested resource or capability is unavailable (404)."""
@@ -68,6 +68,19 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
+FORBIDDEN = "FORBIDDEN"
+"""The credential is valid but not authorized for this proof owner (403)."""
+
+DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+"""A required backing service failed; the request was rejected, not applied (503)."""
+
+FORBIDDEN_ORIGIN = "FORBIDDEN_ORIGIN"
+"""The request's Origin is not on the configured CORS allow-list (403).
+
+The offending origin value is intentionally absent from the envelope: error
+payloads must stay privacy-safe and must not echo attacker-controlled input.
+"""
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -78,24 +91,36 @@ def error_response(
     code: str,
     message: str,
     status: int,
+    field: str | None = None,
 ) -> tuple[Response, int]:
     """Return a Flask response tuple for a standardized error envelope.
 
+    The legacy ``code`` value remains the stable public contract for compatible
+    callers. A second ``cli_code`` field is added for CLI and automation tooling
+    that needs a lowercase, shell-friendly identifier without breaking existing
+    integrations.
+
     Args:
-        code: Machine-readable error code (one of the module-level constants).
-        message: Human-readable error description.
+        code: Machine-readable error code (one of the module-level constants,
+            or a canonical code from :mod:`metadata_errors`).
+        message: Human-readable error description. Must be privacy-safe.
         status: HTTP status code.
+        field: Optional *name* of the offending field. Only field names may be
+            exposed here; field values must never be echoed back.
     """
     request_id = _get_request_id()
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": request_id,
+    }
+    if field:
+        error["field"] = field
     return (
         jsonify(
             {
                 "ok": False,
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "request_id": request_id,
-                },
+                "error": error,
             },
         ),
         status,
