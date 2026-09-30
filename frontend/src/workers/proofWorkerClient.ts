@@ -6,43 +6,11 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './proofWorker.types'
+import { assessWorkerSupport } from './multiBrowserWorkerSupport'
 
-export const PROOF_TIMEOUT_MS = 60_000
-export const MAX_SECRET_BYTES = 256
-export const HEX64 = /^[0-9a-fA-F]{64}$/
-
-export type GenerateSilentWitnessInput = {
-  videoHash: string
-  credentialSecret: string
-  nullifierSecret: string
-}
-
-export type FallbackLimits = {
-  timeoutMs: number
-  maxSecretBytes: number
-}
-
-export const DEFAULT_FALLBACK_LIMITS: Readonly<FallbackLimits> = {
-  timeoutMs: PROOF_TIMEOUT_MS,
-  maxSecretBytes: MAX_SECRET_BYTES,
-}
-
-export type FallbackProver = (input: GenerateSilentWitnessInput) => Promise<SilentWitnessProof>
-
-export type ProofWorkerClientOptions = {
-  /** 'auto' prefers the worker and falls back; 'worker' never falls back; 'main' always proves on the main thread. */
-  runtime?: 'auto' | 'worker' | 'main'
-  /** Allow falling back to main-thread proving. No effect when runtime is 'main'. Default true. */
-  enableFallback?: boolean
-  /** Per-request timeout for the worker and fallback paths. Default PROOF_TIMEOUT_MS. */
-  timeoutMs?: number
-  /** Explicit bound on secret byte length for the fallback path. Default MAX_SECRET_BYTES. */
-  maxSecretBytes?: number
-  /** Override the main-thread prover (tests only). Defaults to noirClient.generateSilentWitnessProof. */
-  prover?: FallbackProver
-  /** Override the Web Worker factory (tests only). A null/yielding factory disables the worker. */
-  workerFactory?: () => Worker | null
-}
+const PROOF_TIMEOUT_MS = 60_000
+const HEX64 = /^[0-9a-fA-F]{64}$/
+const MAX_SECRET_BYTES = 256
 
 function validateInput(input: GenerateSilentWitnessInput): ProofWorkerError | null {
   if (!HEX64.test(input.videoHash)) {
@@ -59,26 +27,20 @@ function validateInput(input: GenerateSilentWitnessInput): ProofWorkerError | nu
   return null
 }
 
-/**
- * Classify a fallback (main-thread) failure into a stable error code.
- * The raw error is used only for classification and is never surfaced, so
- * secret or witness data embedded in an exception can never leak to the UI.
- */
-function toFallbackError(error: unknown): ProofWorkerError {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-  if (/CIRCUIT|ACIR|artifact|fetch|network|noir|wasm|panicked/i.test(message)) {
-    return new ProofWorkerError('CIRCUIT_LOAD_FAILED', 'Failed to load or execute a Noir circuit on the main thread.')
-  }
-  if (/timed out|timeout/i.test(message)) {
-    return new ProofWorkerError('TIMEOUT', 'Proof generation timed out on the main thread.')
-  }
-  return new ProofWorkerError('PROOF_GENERATION_FAILED', 'Proof generation failed on the main thread. Please retry.')
+export type GenerateSilentWitnessInput = {
+  videoHash: string
+  credentialSecret: string
+  nullifierSecret: string
+  inputSchemaVersion?: number
+  verifierScope?: string
+  epoch?: number
 }
 
 export class ProofWorkerError extends Error {
   code: ProofErrorCode
   constructor(code: ProofErrorCode, message: string) {
     super(message)
+    this.name = 'ProofWorkerError'
     this.code = code
   }
 }
@@ -87,12 +49,23 @@ type PendingJob = {
   resolve: (proof: SilentWitnessProof) => void
   reject: (err: ProofWorkerError) => void
   onProgress?: (stage: string) => void
+  timeoutId: ReturnType<typeof setTimeout>
+  generation: number
 }
 
-type FallbackPendingJob = {
-  requestId: string
-  reject: (err: ProofWorkerError) => void
-}
+/**
+ * Main-thread client for cancellable Silent Witness proving.
+ *
+ * Cancel / timeout / crash all terminate the worker and respawn a fresh one so
+ * in-flight UltraHonk work cannot continue holding witness material. Secrets
+ * are transferred (detached) into the worker and never logged.
+ */
+export class ProofWorkerClient {
+  private worker: Worker
+  private pending: Map<string, PendingJob> = new Map()
+  /** Monotonic generation so messages from a terminated worker are ignored. */
+  private generation = 0
+  private destroyed = false
 
 export type ProofWorkerClientResult = {
   requestId: string
@@ -152,36 +125,22 @@ export class ProofWorkerClient {
     this.runtimeMode = 'unavailable'
   }
 
-  /** 'worker' | 'main-thread' when proof generation is possible, 'unavailable' otherwise. */
-  get mode(): RuntimeMode | 'unavailable' {
-    return this.runtimeMode
-  }
-
-  /** Why the main thread is being used, or null when not in the fallback. */
-  get fallbackReason(): FallbackReason | null {
-    return this.reason
-  }
-
-  get isFallbackEnabled(): boolean {
-    return this.allowFallback
-  }
-
-  get limits(): Readonly<FallbackLimits> {
-    return this.fallbackLimits
-  }
-
-  private spawnWorker(): Worker | null {
-    if (typeof Worker === 'undefined') return null
-    try {
-      const worker = this.workerFactory()
-      if (!worker) return null
-      worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.handleMessage(event.data)
-      worker.onerror = () => this.handleCrash()
-      worker.onmessageerror = () => this.handleCrash()
-      return worker
-    } catch {
-      return null
+  private spawn(): Worker {
+    const worker = new Worker(new URL('./proofWorker.ts', import.meta.url), { type: 'module' })
+    const generation = this.generation
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      if (generation !== this.generation) return
+      this.handleMessage(event.data)
     }
+    worker.onerror = () => {
+      if (generation !== this.generation) return
+      this.handleCrash()
+    }
+    worker.onmessageerror = () => {
+      if (generation !== this.generation) return
+      this.handleCrash()
+    }
+    return worker
   }
 
   private handleMessage(msg: WorkerResponse) {
@@ -191,65 +150,75 @@ export class ProofWorkerClient {
     if (msg.type === 'PROGRESS') {
       job.onProgress?.(msg.stage)
     } else if (msg.type === 'RESULT') {
-      this.pending.delete(msg.requestId)
-      job.resolve(msg.proof)
+      this.settle(msg.requestId, (j) => j.resolve(msg.proof))
     } else if (msg.type === 'ERROR') {
-      this.pending.delete(msg.requestId)
-      job.reject(new ProofWorkerError(msg.code, msg.message))
+      this.settle(msg.requestId, (j) => j.reject(new ProofWorkerError(msg.code, msg.message)))
     } else if (msg.type === 'CANCELLED') {
-      this.pending.delete(msg.requestId)
-      job.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+      this.settle(msg.requestId, (j) =>
+        j.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.')),
+      )
+    }
+  }
+
+  private settle(requestId: string, apply: (job: PendingJob) => void) {
+    const job = this.pending.get(requestId)
+    if (!job) return
+    this.pending.delete(requestId)
+    clearTimeout(job.timeoutId)
+    apply(job)
+  }
+
+  private rejectAll(code: ProofErrorCode, message: string) {
+    const jobs = [...this.pending.entries()]
+    this.pending.clear()
+    for (const [, job] of jobs) {
+      clearTimeout(job.timeoutId)
+      job.reject(new ProofWorkerError(code, message))
+    }
+  }
+
+  private respawnWorker() {
+    this.generation += 1
+    try {
+      this.worker.terminate()
+    } catch {
+      // ignore
+    }
+    if (!this.destroyed) {
+      this.worker = this.spawn()
     }
   }
 
   private handleCrash() {
-    for (const [, job] of this.pending) {
-      job.reject(new ProofWorkerError('CRASHED', 'The proof worker crashed unexpectedly.'))
-    }
-    this.pending.clear()
-    this.worker?.terminate()
-    this.worker = null
-    const replacement = this.spawnWorker()
-    if (replacement) {
-      this.worker = replacement
-      return
-    }
-    this.failOverToMainThread('worker_crashed')
-  }
-
-  private failOverToMainThread(reason: FallbackReason) {
-    if (!this.allowFallback) {
-      this.runtimeMode = 'unavailable'
-      this.reason = null
-      return
-    }
-    this.runtimeMode = 'main-thread'
-    this.reason = reason
-  }
-
-  private respawnOrFailOver() {
-    const replacement = this.spawnWorker()
-    if (replacement) {
-      this.worker = replacement
-      return
-    }
-    this.failOverToMainThread('worker_crashed')
+    this.rejectAll('CRASHED', 'The proof worker crashed unexpectedly.')
+    this.respawnWorker()
   }
 
   private timeoutJob(requestId: string) {
     const job = this.pending.get(requestId)
     if (!job) return
     this.pending.delete(requestId)
+    clearTimeout(job.timeoutId)
     job.reject(new ProofWorkerError('TIMEOUT', 'Proof generation timed out.'))
-    this.worker?.terminate()
-    this.worker = null
-    this.respawnOrFailOver()
+    this.respawnWorker()
   }
 
+  /**
+   * Start proof generation. At most one in-flight request per client.
+   * Concurrent calls reject with BUSY without posting to the worker.
+   */
   generate(
     input: GenerateSilentWitnessInput,
     onProgress?: (stage: string) => void,
-  ): ProofWorkerClientResult {
+    signal?: AbortSignal,
+  ): { requestId: string; result: Promise<SilentWitnessProof> } {
+    if (this.destroyed) {
+      return {
+        requestId: '',
+        result: Promise.reject(new ProofWorkerError('CANCELLED', 'Proof worker has been destroyed.')),
+      }
+    }
+
     const validationError = validateInput(input)
     if (validationError) {
       return this.requestResult('', Promise.reject(validationError))
@@ -265,31 +234,79 @@ export class ProofWorkerClient {
         ),
       )
     }
+
+    // Fail closed before any secret crosses the worker boundary when the
+    // multi-browser capability floor is not met.
+    const support = assessWorkerSupport()
+    if (!support.ok) {
+      return {
+        requestId: '',
+        result: Promise.reject(
+          new ProofWorkerError('UNSUPPORTED_ENVIRONMENT', support.reason),
+        ),
+      }
+    }
+
+    // Reject concurrent work on the client without posting another message
+    // (matches the documented BUSY contract).
+    if (this.pending.size > 0) {
+      return {
+        requestId: '',
+        result: Promise.reject(
+          new ProofWorkerError('BUSY', 'A proof is already being generated.'),
+        ),
+      }
+    }
+
+    if (signal?.aborted) {
+      return {
+        requestId: '',
+        result: Promise.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.')),
+      }
+    }
+
     const requestId = crypto.randomUUID()
     const credentialSecret = new TextEncoder().encode(input.credentialSecret).buffer
     const nullifierSecret = new TextEncoder().encode(input.nullifierSecret).buffer
+    const generation = this.generation
 
     const result = new Promise<SilentWitnessProof>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.timeoutJob(requestId)
       }, this.fallbackLimits.timeoutMs)
 
+      const onAbort = () => {
+        this.cancel(requestId)
+      }
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+
       this.pending.set(requestId, {
         resolve: (proof) => {
-          clearTimeout(timeoutId)
+          if (signal) signal.removeEventListener('abort', onAbort)
           resolve(proof)
         },
         reject: (err) => {
-          clearTimeout(timeoutId)
+          if (signal) signal.removeEventListener('abort', onAbort)
           reject(err)
         },
         onProgress,
+        timeoutId,
+        generation,
       })
 
       const msg: WorkerRequest = {
         type: 'GENERATE_PROOF',
         requestId,
-        input: { videoHash: input.videoHash, credentialSecret, nullifierSecret },
+        input: {
+          videoHash: input.videoHash,
+          credentialSecret,
+          nullifierSecret,
+          inputSchemaVersion: input.inputSchemaVersion,
+          verifierScope: input.verifierScope,
+          epoch: input.epoch,
+        },
       }
       this.worker!.postMessage(msg, [credentialSecret, nullifierSecret])
     })
@@ -358,28 +375,39 @@ export class ProofWorkerClient {
     return { requestId, result, mode, fallbackReason: mode === 'main-thread' ? this.reason : null }
   }
 
+  /**
+   * Cancel an in-flight proof safely:
+   * 1. Post CANCEL so the worker can mark cooperative cancel + zero buffers
+   * 2. Reject the pending promise with a stable CANCELLED code (no secrets)
+   * 3. Terminate + respawn so UltraHonk cannot keep running with witness data
+   */
   cancel(requestId: string) {
-    if (this.runtimeMode !== 'main-thread') {
-      const job = this.pending.get(requestId)
-      if (!job) return
-      this.pending.delete(requestId)
-      job.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
-      this.worker?.terminate()
-      this.worker = null
-      this.respawnOrFailOver()
-      return
+    const job = this.pending.get(requestId)
+    if (!job) return
+
+    try {
+      const msg: WorkerRequest = { type: 'CANCEL', requestId }
+      this.worker.postMessage(msg)
+    } catch {
+      // Worker may already be dead; terminate path below still settles.
     }
-    if (this.fallbackPending && this.fallbackPending.requestId === requestId) {
-      const job = this.fallbackPending
-      this.fallbackPending = null
-      job.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
-    }
+
+    this.pending.delete(requestId)
+    clearTimeout(job.timeoutId)
+    job.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+    this.respawnWorker()
   }
 
+  /** Tear down the worker and reject any in-flight job as CANCELLED. */
   destroy() {
-    this.worker?.terminate()
-    this.worker = null
-    this.pending.clear()
-    this.fallbackPending = null
+    if (this.destroyed) return
+    this.destroyed = true
+    this.rejectAll('CANCELLED', 'Proof generation was cancelled.')
+    this.generation += 1
+    try {
+      this.worker.terminate()
+    } catch {
+      // ignore
+    }
   }
 }

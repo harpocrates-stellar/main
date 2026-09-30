@@ -1,4 +1,4 @@
-import { Barretenberg, UltraHonkBackend, Fr } from '@aztec/bb.js'
+import { Barretenberg, Fr, UltraHonkBackend } from '@aztec/bb.js'
 import { Noir } from '@noir-lang/noir_js'
 import type { CompiledCircuit } from '@noir-lang/types'
 import type {
@@ -19,9 +19,7 @@ async function getBB(): Promise<Barretenberg> {
 
 async function pedersenHash(inputs: bigint[]): Promise<bigint> {
   const bb = await getBB()
-  // std::hash::pedersen_hash in the circuit uses hash index 0; Fr wraps each
-  // input so the field encoding matches what the circuit hashes.
-  const result = await bb.pedersenHash(inputs.map((v) => new Fr(v)), 0)
+  const result = await bb.pedersenHash(inputs.map((input) => new Fr(input)), 0)
   return BigInt(result.toString())
 }
 

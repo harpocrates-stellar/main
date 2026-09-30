@@ -1,60 +1,131 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { ProofWorkerClient, ProofWorkerError } from './proofWorkerClient'
+import * as multiBrowser from './multiBrowserWorkerSupport'
+
+const validInput = {
+  videoHash: '0'.repeat(64),
+  credentialSecret: 'secret1',
+  nullifierSecret: 'secret2',
+}
 
 describe('ProofWorkerClient', () => {
-  it('rejects a second concurrent request with BUSY', async () => {
+  const clients: ProofWorkerClient[] = []
+
+  afterEach(() => {
+    while (clients.length) {
+      clients.pop()?.destroy()
+    }
+    vi.restoreAllMocks()
+  })
+
+  function createClient() {
     const client = new ProofWorkerClient()
-    const first = client.generate({
-      videoHash: '0'.repeat(64),
-      credentialSecret: 'secret1',
-      nullifierSecret: 'secret2',
-    })
-    const second = client.generate({
-      videoHash: '0'.repeat(64),
-      credentialSecret: 'secret1',
-      nullifierSecret: 'secret2',
-    })
+    clients.push(client)
+    return client
+  }
+
+  it('rejects a second concurrent request with BUSY without queuing', async () => {
+    const client = createClient()
+    const first = client.generate(validInput)
+    const second = client.generate(validInput)
 
     await expect(second.result).rejects.toMatchObject({ code: 'BUSY' })
+    expect(second.requestId).toBe('')
 
     // first is expected to fail in this test env (jsdom can't fetch relative
     // circuit URLs) — assert on it explicitly so it's not left unhandled.
     await expect(first.result).rejects.toBeInstanceOf(ProofWorkerError)
-
-    client.destroy()
   })
-})
-it('rejects a pending request as CANCELLED and respawns a working worker', async () => {
-    const client = new ProofWorkerClient()
-    const first = client.generate({
-      videoHash: '0'.repeat(64),
-      credentialSecret: 'secret1',
-      nullifierSecret: 'secret2',
-    })
 
+  it('rejects a pending request as CANCELLED and respawns a working worker', async () => {
+    const client = createClient()
+    const first = client.generate(validInput)
+
+    expect(first.requestId).toBeTruthy()
     client.cancel(first.requestId)
     await expect(first.result).rejects.toMatchObject({ code: 'CANCELLED' })
 
-    client.destroy()
-  }, 15000)
-
-  it('rejects invalid input deterministically without touching the worker', async () => {
-    const client = new ProofWorkerClient()
-    const { result } = client.generate({
-      videoHash: 'not-valid-hex',
-      credentialSecret: 'secret1',
-      nullifierSecret: 'secret2',
+    // After cancel, a new generate must be accepted (not stuck BUSY forever).
+    const next = client.generate({
+      videoHash: 'a'.repeat(64),
+      credentialSecret: 'secret3',
+      nullifierSecret: 'secret4',
     })
+    expect(next.requestId).toBeTruthy()
+    client.cancel(next.requestId)
+    await expect(next.result).rejects.toMatchObject({ code: 'CANCELLED' })
+  }, 15_000)
+
+  it('honours AbortSignal by settling CANCELLED', async () => {
+    const client = createClient()
+    const controller = new AbortController()
+    const first = client.generate(
+      {
+        videoHash: '0'.repeat(64),
+        credentialSecret: 'secret1',
+        nullifierSecret: 'secret2',
+      },
+      undefined,
+      controller.signal,
+    )
+
+    controller.abort()
+    await expect(first.result).rejects.toMatchObject({ code: 'CANCELLED' })
+  }, 15_000)
+
+  it('rejects invalid videoHash deterministically without touching the worker', async () => {
+    const client = createClient()
+    const { result, requestId } = client.generate({
+      ...validInput,
+      videoHash: 'not-valid-hex',
+    })
+    expect(requestId).toBe('')
     await expect(result).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('rejects empty secrets as INVALID_INPUT (boundary)', async () => {
+    const client = createClient()
+    await expect(
+      client.generate({ ...validInput, credentialSecret: '' }).result,
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await expect(
+      client.generate({ ...validInput, nullifierSecret: '' }).result,
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('rejects oversized secrets as INVALID_INPUT (boundary)', async () => {
+    const client = createClient()
+    const oversized = 'x'.repeat(257)
+    await expect(
+      client.generate({ ...validInput, credentialSecret: oversized }).result,
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('rejects when multi-browser worker support is missing (unsupported env)', async () => {
+    vi.spyOn(multiBrowser, 'assessWorkerSupport').mockReturnValue({
+      ok: false,
+      tier: 'unsupported',
+      missing: ['WebAssembly'],
+      reason: 'Browser proving unavailable; missing capability: WebAssembly.',
+    })
+    const client = createClient()
+    const { requestId, result } = client.generate(validInput)
+    expect(requestId).toBe('')
+    await expect(result).rejects.toMatchObject({
+      code: 'UNSUPPORTED_ENVIRONMENT',
+      message: expect.stringContaining('WebAssembly'),
+    })
+    // Privacy: rejection must not echo fixture secrets
+    await result.catch((err: ProofWorkerError) => {
+      expect(err.message).not.toContain('secret1')
+      expect(err.message).not.toContain('secret2')
+    })
     client.destroy()
   })
+
   it('recovers from a worker crash and respawns cleanly', async () => {
     const client = new ProofWorkerClient()
-    const first = client.generate({
-      videoHash: '0'.repeat(64),
-      credentialSecret: 'secret1',
-      nullifierSecret: 'secret2',
-    })
+    const first = client.generate(validInput)
 
     // simulate a real crash by triggering the worker's onerror handler directly
     // @ts-expect-error - accessing private field for test purposes
@@ -62,156 +133,88 @@ it('rejects a pending request as CANCELLED and respawns a working worker', async
     worker.onerror?.(new ErrorEvent('error', { message: 'simulated crash' }))
 
     await expect(first.result).rejects.toMatchObject({ code: 'CRASHED' })
-
-    client.destroy()
   }, 15000)
 
-describe('ProofWorkerClient fallback', () => {
-  const VALID = {
-    videoHash: '0'.repeat(64),
-    credentialSecret: 'secret1',
-    nullifierSecret: 'secret2',
-  }
-  const resolvedProof = {
-    credentialRoot: 'c'.repeat(64),
-    nullifier: 'd'.repeat(64),
-    proof: 'ee',
-    publicInputs: 'ff',
-    proofBytes: 2,
-    publicInputBytes: 2,
-  }
-
-  it('proves on the main thread when the worker cannot be spawned', async () => {
-    const prover = vi.fn(async () => resolvedProof)
-    const client = new ProofWorkerClient({ workerFactory: () => null, prover })
-
-    expect(client.mode).toBe('main-thread')
-    expect(client.fallbackReason).toBe('worker_spawn_failed')
-
-    const { result, mode, fallbackReason } = client.generate(VALID)
-    await expect(result).resolves.toEqual(resolvedProof)
-    expect(prover).toHaveBeenCalledTimes(1)
-    expect(mode).toBe('main-thread')
-    expect(fallbackReason).toBe('worker_spawn_failed')
-
-    client.destroy()
-  })
-
-  it('rejects with WORKER_UNAVAILABLE when fallback is disabled', async () => {
-    const client = new ProofWorkerClient({
-      runtime: 'worker',
-      workerFactory: () => null,
-      enableFallback: false,
+  it('propagates memory cap failures with a stable privacy-safe code', async () => {
+    const client = createClient()
+    const secret = 'credentialSecret=do-not-leak'
+    const first = client.generate({
+      ...validInput,
+      credentialSecret: secret,
     })
 
-    expect(client.mode).toBe('unavailable')
-    const { result } = client.generate(VALID)
-    await expect(result).rejects.toMatchObject({ code: 'WORKER_UNAVAILABLE' })
-
-    client.destroy()
-  })
-
-  it('always uses the main thread when runtime is "main" without touching Worker', async () => {
-    const prover = vi.fn(async () => resolvedProof)
-    const client = new ProofWorkerClient({
-      runtime: 'main',
-      prover,
-      workerFactory: () => {
-        throw new Error('Worker must not be constructed in main runtime')
+    // @ts-expect-error - accessing private field for test purposes
+    const worker = client.worker
+    worker.onmessage?.(new MessageEvent('message', {
+      data: {
+        type: 'ERROR',
+        requestId: first.requestId,
+        code: 'MEMORY_LIMIT_EXCEEDED',
+        message: 'proof_worker_memory_exceeded',
       },
+    }))
+
+    await expect(first.result).rejects.toMatchObject({
+      code: 'MEMORY_LIMIT_EXCEEDED',
+      message: 'proof_worker_memory_exceeded',
     })
+    await first.result.catch((error: ProofWorkerError) => {
+      expect(error.message).not.toContain(secret)
+    })
+  }, 15_000)
 
-    expect(client.mode).toBe('main-thread')
-    expect(client.fallbackReason).toBe('runtime_forced_main')
-    await expect(client.generate(VALID).result).resolves.toEqual(resolvedProof)
-
-    client.destroy()
-  })
-
-  it('enforces the explicit fallback secret-byte boundary', async () => {
-    const prover = vi.fn(async () => resolvedProof)
-    const client = new ProofWorkerClient({ runtime: 'main', prover, maxSecretBytes: 8 })
-
-    // exactly 8 bytes on each secret is within the explicit limit
-    const atBoundary = {
+  it('destroy rejects in-flight work as CANCELLED and blocks new generates', async () => {
+    const client = createClient()
+    const first = client.generate({
       videoHash: '0'.repeat(64),
-      credentialSecret: '12345678',
-      nullifierSecret: '12345678',
-    }
-    await expect(client.generate(atBoundary).result).resolves.toEqual(resolvedProof)
+      credentialSecret: 'secret1',
+      nullifierSecret: 'secret2',
+    })
+    client.destroy()
+    await expect(first.result).rejects.toMatchObject({ code: 'CANCELLED' })
 
-    // 9 bytes crosses the explicit fallback limit
-    const overLimit = {
+    const after = client.generate({
       videoHash: '0'.repeat(64),
-      credentialSecret: '123456789',
-      nullifierSecret: '12345678',
+      credentialSecret: 'secret1',
+      nullifierSecret: 'secret2',
+    })
+    await expect(after.result).rejects.toMatchObject({ code: 'CANCELLED' })
+  }, 15_000)
+
+  it('CANCELLED errors never include secret material in the message', async () => {
+    const client = createClient()
+    const secret = 'super-secret-witness-value-do-not-leak'
+    const first = client.generate({
+      videoHash: '0'.repeat(64),
+      credentialSecret: secret,
+      nullifierSecret: secret,
+    })
+    client.cancel(first.requestId)
+    try {
+      await first.result
+      expect.unreachable('should have rejected')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProofWorkerError)
+      const message = err instanceof Error ? err.message : String(err)
+      expect(message).not.toContain(secret)
+      expect(message.toLowerCase()).not.toContain('witness')
     }
-    await expect(client.generate(overLimit).result).rejects.toMatchObject({
-      code: 'FALLBACK_LIMIT_EXCEEDED',
-    })
-    expect(prover).toHaveBeenCalledTimes(1)
-
-    client.destroy()
   })
 
-  it('rejects a second concurrent main-thread request with BUSY', async () => {
-    const gates: Array<() => void> = []
-    const prover = vi.fn(
-      () =>
-        new Promise<typeof resolvedProof>((resolve) => {
-          gates.push(() => resolve(resolvedProof))
-        }),
-    )
-    const client = new ProofWorkerClient({ runtime: 'main', prover })
-
-    const first = client.generate(VALID)
-    const second = client.generate(VALID)
-
-    await expect(second.result).rejects.toMatchObject({ code: 'BUSY' })
-    gates[0]()
-    await expect(first.result).resolves.toEqual(resolvedProof)
-
-    client.destroy()
-  })
-
-  it('times out a main-thread proof generation', async () => {
-    const client = new ProofWorkerClient({
-      runtime: 'main',
-      prover: () => new Promise(() => {}),
-      timeoutMs: 50,
+  it('error messages stay privacy-safe on INVALID_INPUT', async () => {
+    const client = new ProofWorkerClient()
+    const secret = 'nullifier-should-never-appear-in-errors'
+    await expect(
+      client.generate({
+        videoHash: 'zz',
+        credentialSecret: secret,
+        nullifierSecret: secret,
+      }).result,
+    ).rejects.toSatisfy((err: ProofWorkerError) => {
+      expect(err.code).toBe('INVALID_INPUT')
+      expect(err.message).not.toContain(secret)
+      return true
     })
-    await expect(client.generate(VALID).result).rejects.toMatchObject({ code: 'TIMEOUT' })
-    client.destroy()
-  })
-
-  it('never leaks secret material in fallback errors', async () => {
-    const secret = 'super-secret-credential-value'
-    const prover = vi.fn(async () => {
-      throw new Error(`internal failure while hashing ${secret}`)
-    })
-    const client = new ProofWorkerClient({ runtime: 'main', prover })
-
-    const error = await client
-      .generate({ ...VALID, credentialSecret: secret })
-      .result.catch((err: unknown) => err)
-
-    const typed = error as ProofWorkerError
-    expect(typed).toBeInstanceOf(ProofWorkerError)
-    expect(typed.code).toBe('PROOF_GENERATION_FAILED')
-    expect(typed.message).not.toContain(secret)
-
-    client.destroy()
-  })
-
-  it('maps main-thread circuit/artifact failures to CIRCUIT_LOAD_FAILED', async () => {
-    const prover = vi.fn(async () => {
-      throw new Error('fetch failed for /noir/silent_witness.json (network)')
-    })
-    const client = new ProofWorkerClient({ runtime: 'main', prover })
-
-    const error = await client.generate(VALID).result.catch((err: unknown) => err)
-    expect((error as ProofWorkerError).code).toBe('CIRCUIT_LOAD_FAILED')
-
     client.destroy()
   })
 })

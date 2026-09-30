@@ -1,0 +1,351 @@
+{
+  "schemaVersion": 1,
+  "category": "malformed",
+  "description": "Malformed input vectors that must be rejected at the privacy boundary before any processing",
+  "cases": [
+    {
+      "id": "mal-001-invalid-hex-source-hash",
+      "description": "sourceHash with non-hex characters must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958428Z"
+      },
+      "expect": {
+        "reject_code": "invalid_hash_format",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-002-invalid-hex-proof-id",
+      "description": "proofId with non-hex characters must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "timestamp": "2026-09-25T06:37:59.958914Z"
+      },
+      "expect": {
+        "reject_code": "invalid_hash_format",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-003-short-source-hash",
+      "description": "sourceHash with 63 characters (one short) must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958919Z"
+      },
+      "expect": {
+        "reject_code": "invalid_hash_format",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-004-long-source-hash",
+      "description": "sourceHash with 65 characters (one over) must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958923Z"
+      },
+      "expect": {
+        "reject_code": "invalid_hash_format",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-005-wrong-protocol",
+      "description": "Unknown protocol must be rejected",
+      "input": {
+        "protocol": "unknown-protocol",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958926Z"
+      },
+      "expect": {
+        "reject_code": "unsupported_protocol",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-006-invalid-tier",
+      "description": "Invalid tier must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "premium",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958929Z"
+      },
+      "expect": {
+        "reject_code": "invalid_tier",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-007-version-as-string",
+      "description": "Version as string instead of number must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": "1",
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958932Z"
+      },
+      "expect": {
+        "reject_code": "invalid_version_type",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-008-missing-timestamp",
+      "description": "Missing timestamp field must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      },
+      "expect": {
+        "reject_code": "missing_required_field",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-009-naive-timestamp",
+      "description": "Naive datetime (no timezone) must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-07-24T12:00:00"
+      },
+      "expect": {
+        "reject_code": "invalid_timestamp_format",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-010-future-timestamp",
+      "description": "Timestamp in the future beyond drift window must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2126-09-01T06:37:59.958944Z"
+      },
+      "expect": {
+        "reject_code": "timestamp_out_of_range",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-011-null-input",
+      "description": "Null as top-level input must be rejected",
+      "input": null,
+      "expect": {
+        "reject_code": "invalid_input_type",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-012-array-input",
+      "description": "Array as top-level input must be rejected",
+      "input": [],
+      "expect": {
+        "reject_code": "invalid_input_type",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "mal-013-nested-secret-proof-field",
+      "description": "Nested 'proof' field containing sensitive data must be redacted and rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958955Z",
+        "inner": {
+          "proof": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sensitive-jwt-token"
+        }
+      },
+      "expect": {
+        "reject_code": "sensitive_field_detected",
+        "must_not_log": [
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sensitive-jwt-token"
+        ],
+        "must_not_store": [
+          "inner.proof"
+        ]
+      }
+    },
+    {
+      "id": "mal-014-nested-nullifier-secret",
+      "description": "Nested 'nullifierSecret' field must be redacted and rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958958Z",
+        "outer": {
+          "middle": {
+            "nullifierSecret": "super-secret-nullifier-value"
+          }
+        }
+      },
+      "expect": {
+        "reject_code": "sensitive_field_detected",
+        "must_not_log": [
+          "super-secret-nullifier-value"
+        ],
+        "must_not_store": [
+          "outer.middle.nullifierSecret"
+        ]
+      }
+    },
+    {
+      "id": "mal-015-witness-data-in-list",
+      "description": "witnessData in list items must be redacted and rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958962Z",
+        "items": [
+          {
+            "witnessData": "witness-value-1",
+            "index": 0
+          },
+          {
+            "witnessData": "witness-value-2",
+            "index": 1
+          }
+        ]
+      },
+      "expect": {
+        "reject_code": "sensitive_field_detected",
+        "must_not_log": [
+          "witness-value-1",
+          "witness-value-2"
+        ],
+        "must_not_store": [
+          "items[0].witnessData",
+          "items[1].witnessData"
+        ]
+      }
+    },
+    {
+      "id": "mal-016-public-inputs-field",
+      "description": "publicInputs field must be redacted and rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958965Z",
+        "publicInputs": [
+          "input1",
+          "input2",
+          "input3"
+        ]
+      },
+      "expect": {
+        "reject_code": "sensitive_field_detected",
+        "must_not_log": [
+          "input1",
+          "input2",
+          "input3"
+        ],
+        "must_not_store": [
+          "publicInputs"
+        ]
+      }
+    },
+    {
+      "id": "mal-017-credential-secret-field",
+      "description": "credentialSecret field must be redacted and rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958968Z",
+        "credentialSecret": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+      },
+      "expect": {
+        "reject_code": "sensitive_field_detected",
+        "must_not_log": [
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ],
+        "must_not_store": [
+          "credentialSecret"
+        ]
+      }
+    },
+    {
+      "id": "mal-018-authorization-header",
+      "description": "Authorization header with bearer token must be redacted and rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.958971Z",
+        "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-token"
+      },
+      "expect": {
+        "reject_code": "sensitive_field_detected",
+        "must_not_log": [
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-token"
+        ],
+        "must_not_store": [
+          "authorization"
+        ]
+      }
+    }
+  ]
+}

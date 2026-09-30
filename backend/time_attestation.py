@@ -19,6 +19,17 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from datetime import datetime, timezone
 
+try:
+    from rfc3161_chain import (
+        TrustStore,
+        validate_rfc3161_certificate_chain,
+        trust_store_from_b64_roots,
+    )
+except ImportError:  # pragma: no cover - package layout / optional path
+    TrustStore = None  # type: ignore[misc, assignment]
+    validate_rfc3161_certificate_chain = None  # type: ignore[misc, assignment]
+    trust_store_from_b64_roots = None  # type: ignore[misc, assignment]
+
 # ── Constants ──────────────────────────────────────────────────────────────
 
 PROFILE_ID = "harpocrates-time-attestation/v1"
@@ -78,6 +89,9 @@ class RFC3161Anchor:
     cert_fingerprint: str | None = None  # SHA-256 of TSA signing cert
     verification_status: VerificationStatus = "unverified"
     verification_error: str | None = None
+    # Optional leaf-first base64 DER TSA certificate chain for offline validation.
+    # Absence keeps the historical "unverified" protocol state (lower assurance).
+    certificate_chain: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -142,8 +156,9 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
         ]
     
     if attestation.rfc3161_anchors:
-        obj["rfc3161Anchors"] = [
-            {
+        obj["rfc3161Anchors"] = []
+        for anchor in attestation.rfc3161_anchors:
+            entry = {
                 "tokenBytes": anchor.token_bytes,
                 "tsaUrl": anchor.tsa_url,
                 "genTime": anchor.gen_time,
@@ -152,8 +167,9 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
                 "verificationStatus": anchor.verification_status,
                 "verificationError": anchor.verification_error,
             }
-            for anchor in attestation.rfc3161_anchors
-        ]
+            if anchor.certificate_chain is not None:
+                entry["certificateChain"] = list(anchor.certificate_chain)
+            obj["rfc3161Anchors"].append(entry)
     
     return obj
 
@@ -202,6 +218,7 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
                 cert_fingerprint=anchor_obj.get("certFingerprint"),
                 verification_status=anchor_obj.get("verificationStatus", "unverified"),
                 verification_error=anchor_obj.get("verificationError"),
+                certificate_chain=anchor_obj.get("certificateChain"),
             )
         )
     
@@ -452,6 +469,7 @@ def add_rfc3161_anchor(
     cert_fingerprint: str | None = None,
     verification_status: VerificationStatus = "unverified",
     verification_error: str | None = None,
+    certificate_chain: list[str] | None = None,
 ) -> TimeAttestation:
     """Add an RFC 3161 timestamp token anchor to an existing attestation."""
     if len(attestation.stellar_anchors) + len(attestation.rfc3161_anchors) >= MAX_ANCHOR_COUNT:
@@ -468,6 +486,7 @@ def add_rfc3161_anchor(
         cert_fingerprint=cert_fingerprint,
         verification_status=verification_status,
         verification_error=verification_error,
+        certificate_chain=certificate_chain,
     )
     
     return TimeAttestation(
@@ -478,6 +497,106 @@ def add_rfc3161_anchor(
         observed_time=attestation.observed_time,
         stellar_anchors=attestation.stellar_anchors,
         rfc3161_anchors=[*attestation.rfc3161_anchors, new_anchor],
+    )
+
+
+
+def verify_rfc3161_anchor_chain(
+    anchor: RFC3161Anchor,
+    trust_store: "TrustStore | None" = None,
+    trust_roots_b64: list[str] | None = None,
+    revoked_serials_hex: list[str] | None = None,
+) -> RFC3161Anchor:
+    """Validate the TSA certificate chain for an RFC 3161 anchor.
+
+    When no certificate_chain is present, returns the anchor unchanged with
+    status "unverified" (valid protocol state, lower assurance).
+
+    Failure statuses are stable and privacy-safe (no PEM/DER in error text).
+    """
+    if not anchor.certificate_chain:
+        if anchor.verification_status == "unverified":
+            return anchor
+        return RFC3161Anchor(
+            token_bytes=anchor.token_bytes,
+            tsa_url=anchor.tsa_url,
+            gen_time=anchor.gen_time,
+            policy_oid=anchor.policy_oid,
+            cert_fingerprint=anchor.cert_fingerprint,
+            verification_status="unverified",
+            verification_error=anchor.verification_error or "certificate chain not provided",
+            certificate_chain=anchor.certificate_chain,
+        )
+
+    if validate_rfc3161_certificate_chain is None or TrustStore is None:
+        return RFC3161Anchor(
+            token_bytes=anchor.token_bytes,
+            tsa_url=anchor.tsa_url,
+            gen_time=anchor.gen_time,
+            policy_oid=anchor.policy_oid,
+            cert_fingerprint=anchor.cert_fingerprint,
+            verification_status="unverified",
+            verification_error="dependency_failure",
+            certificate_chain=anchor.certificate_chain,
+        )
+
+    store = trust_store
+    if store is None:
+        assert trust_store_from_b64_roots is not None
+        store = trust_store_from_b64_roots(trust_roots_b64 or [], revoked_serials_hex or [])
+
+    at_time = datetime.fromtimestamp(anchor.gen_time / 1000.0, tz=timezone.utc)
+    result = validate_rfc3161_certificate_chain(
+        anchor.certificate_chain,
+        trust_store=store,
+        at_time=at_time,
+    )
+
+    status: VerificationStatus
+    if result.status in ("valid", "invalid", "unverified", "expired", "untrusted"):
+        status = result.status  # type: ignore[assignment]
+    else:
+        status = "invalid"
+
+    return RFC3161Anchor(
+        token_bytes=anchor.token_bytes,
+        tsa_url=anchor.tsa_url,
+        gen_time=anchor.gen_time,
+        policy_oid=anchor.policy_oid,
+        cert_fingerprint=result.leaf_fingerprint or anchor.cert_fingerprint,
+        verification_status=status,
+        verification_error=None if result.ok else (result.error_code or result.error_message),
+        certificate_chain=anchor.certificate_chain,
+    )
+
+
+def verify_rfc3161_anchors(
+    attestation: TimeAttestation,
+    trust_store: "TrustStore | None" = None,
+    trust_roots_b64: list[str] | None = None,
+    revoked_serials_hex: list[str] | None = None,
+) -> TimeAttestation:
+    """Return a copy of attestation with RFC 3161 anchors chain-verified."""
+    if not attestation.rfc3161_anchors:
+        return attestation
+
+    verified = [
+        verify_rfc3161_anchor_chain(
+            anchor,
+            trust_store=trust_store,
+            trust_roots_b64=trust_roots_b64,
+            revoked_serials_hex=revoked_serials_hex,
+        )
+        for anchor in attestation.rfc3161_anchors
+    ]
+    return TimeAttestation(
+        version=attestation.version,
+        protocol=attestation.protocol,
+        evidence_digest=attestation.evidence_digest,
+        claimed_time=attestation.claimed_time,
+        observed_time=attestation.observed_time,
+        stellar_anchors=attestation.stellar_anchors,
+        rfc3161_anchors=verified,
     )
 
 

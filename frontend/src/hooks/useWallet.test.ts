@@ -101,6 +101,7 @@ beforeEach(async () => {
   stellar.getWalletNetwork.mockResolvedValue(TESTNET)
 
   const guard = await getNetworkGuardMock()
+  guard.checkNetworkMatch.mockReset()
   guard.checkNetworkMatch.mockReturnValue({ ok: true })
 })
 
@@ -315,6 +316,78 @@ describe('useWallet – mid-session wallet changes', () => {
 
     expect(result.current.networkMismatch).toBeTruthy()
     expect(result.current.wallet).toBe('')
+  })
+
+  it('recovers automatically when the wallet returns to the expected network', async () => {
+    const guard = await getNetworkGuardMock()
+    guard.checkNetworkMatch
+      .mockReturnValueOnce({ ok: true })
+      .mockReturnValueOnce({
+        ok: false,
+        reason: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+        remediation: 'Switch to Testnet.',
+      })
+      .mockReturnValueOnce({ ok: true })
+
+    const { result } = renderHook(() => useWallet())
+    await act(async () => {
+      await result.current.connectWallet()
+    })
+
+    act(() => {
+      latestWatcher!.fire({
+        address: 'GPUBLIC_KEY_123',
+        network: 'PUBLIC',
+        networkPassphrase: MAINNET,
+      })
+    })
+    expect(result.current.wallet).toBe('')
+    expect(result.current.networkMismatch).toContain('Mainnet')
+
+    act(() => {
+      latestWatcher!.fire({
+        address: 'GPUBLIC_KEY_123',
+        network: 'TESTNET',
+        networkPassphrase: TESTNET,
+      })
+    })
+    expect(result.current.wallet).toBe('GPUBLIC_KEY_123')
+    expect(result.current.networkMismatch).toBeNull()
+  })
+
+  it('ignores stale callbacks from a watcher replaced by a reconnect', async () => {
+    const guard = await getNetworkGuardMock()
+    guard.checkNetworkMatch.mockReturnValue({ ok: true })
+
+    const { result } = renderHook(() => useWallet())
+    await act(async () => {
+      await result.current.connectWallet()
+    })
+    const firstWatcher = latestWatcher
+
+    await act(async () => {
+      await result.current.connectWallet()
+    })
+    const secondWatcher = latestWatcher
+
+    act(() => {
+      firstWatcher!.fire({
+        address: 'STALE_ADDRESS',
+        network: 'PUBLIC',
+        networkPassphrase: MAINNET,
+      })
+    })
+    expect(result.current.wallet).toBe('GPUBLIC_KEY_123')
+    expect(result.current.networkMismatch).toBeNull()
+
+    act(() => {
+      secondWatcher!.fire({
+        address: 'NEW_ADDRESS',
+        network: 'TESTNET',
+        networkPassphrase: TESTNET,
+      })
+    })
+    expect(result.current.wallet).toBe('NEW_ADDRESS')
   })
 
   it('stops the watcher on unmount', async () => {

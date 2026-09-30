@@ -19,7 +19,7 @@ rollout/rollback, and limitations.
 | `zk/bench/run.sh` | Hermetic environment wrapper |
 | `zk/bench/browser_runner.mjs` | Node/bb.js prove+verify timings (browser-equivalent) |
 | `zk/bench/results/` | Local reports (gitignored; never commit proof material) |
-| `zk/bench/baselines.lock.json` | Optional committed thresholds (absent ⇒ compare is inert) |
+| `zk/bench/baselines.lock.json` | Published proof benchmark thresholds (absent ⇒ compare is inert) |
 | `.github/workflows/zk-ci.yml` | Runs `pytest zk/bench` alongside artifact tooling |
 
 ## Targets
@@ -58,8 +58,10 @@ The harness defends against:
 
 - **Unbounded work.** Sample counts, proof/public-input/witness byte ceilings,
   concurrency, per-sample timeouts, and a wall-clock cap are enforced by
-  `bench.lock.json`. Oversized or capacity-exceeding work fails with a typed
-  reject code — never hangs.
+  `bench.lock.json`. The Evidence Studio proof worker imports the same witness,
+  proof, and public-input ceilings, while browser ACIR byte ceilings come from
+  `zk/browser.artifacts.manifest.json`. Oversized or capacity-exceeding work
+  fails with a typed reject code — never hangs.
 - **Partial promotion.** A report is written only when `outcome=ok`. Timeouts,
   cancellations, rejections, and fatals abort without leaving a trusted report.
 - **Evidence leakage.** Reports and stderr signals carry timings, percentiles,
@@ -117,8 +119,9 @@ node zk/bench/browser_runner.mjs --mode main --cold 1 --warm 1
 | --- | --- | --- |
 | per-target sample counts / timeouts | `zk/bench/bench.lock.json` | Bound work |
 | size ceilings | `limits.*` | Reject oversized proof/PI/witness/report |
+| proof-worker memory | `limits.max_witness_bytes` + browser manifest raw bytes | Bound browser ACIR, witness, proof, and public-input memory before expensive worker/prover boundaries |
 | privacy forbidden keys | `privacy.*` | Fail closed if a report grows a sensitive field |
-| baselines path | `thresholds.baselines_path` | Optional regression gate |
+| baselines path | `thresholds.baselines_path` | Published regression gate (`baselines.lock.json`) |
 
 Hermetic env vars mirror the reproducible-build pipeline: `SOURCE_DATE_EPOCH=0`,
 `TZ=UTC`, `LC_ALL=C`, `PYTHONHASHSEED=0`.
@@ -148,12 +151,16 @@ Single-line JSON on **stderr**:
 
 ## Deployment impact and rollout
 
-1. Land harness + unit tests + docs. CI runs **unit tests only** (synthetic).
-2. Collect reports manually or via optional workflows on pinned hardware.
-3. Calibrate and commit `zk/bench/baselines.lock.json` with percentile/size caps.
-4. From that commit on, `zk_bench.py compare` fails regressions.
+1. Harness + unit tests + docs are landed; CI runs unit tests and a synthetic
+   prove/verify gate against committed thresholds.
+2. `zk/bench/baselines.lock.json` publishes percentile, size, and RSS caps for
+   `ci`, `native`, `browser`, and `soroban_adjacent`.
+3. CI enforces the `ci` target: `run --target ci --synthetic` then `compare`.
+4. Operators collecting native/browser reports on pinned hardware should run
+   `zk/bench/run.sh compare --report …` before promoting a release candidate.
 
-Until baselines exist, compare prints `inert` and exits 0 — same pattern as the
+Compare is **enforcing** while `baselines.lock.json` is present. Deleting that
+file returns compare to the inert (exit 0) path — same rollback pattern as the
 artifact manifest drift check.
 
 ## Rollback
@@ -174,7 +181,7 @@ timing envelope.
 **`missing_artifacts` from `browser_runner.mjs`** — compile circuits first
 (`zk/noir/scripts/build-silent-witness.sh` or the reproducible build).
 
-**Compare always inert** — expected until baselines are committed.
+**Compare reports regression** — expected when a report exceeds `baselines.lock.json`; delete that file only to disable enforcement.
 
 ## Limitations
 

@@ -109,19 +109,21 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
     if (item.manifest) {
       manifests.push(item.manifest)
     } else if (item.status === 'confirmed' && item.videoHash && item.metadataHash && item.tier) {
-      manifests.push(
-        createProofManifest({
-          proofId: item.chainProof?.metadataHash ?? item.videoHash,
-          tier: (item.tier as 'silent' | 'source' | 'seal') || 'source',
-          network: 'testnet',
-          contractId: item.chainProof?.issuer ?? '',
-          transactionRef: item.events[0]?.tx_hash ?? '',
-          videoHash: item.videoHash,
-          metadataHash: item.metadataHash,
-          sourceHash: item.sourceHash ?? item.videoHash,
-          timestamp: new Date().toISOString(),
-        }),
-      )
+      manifests.push({
+        protocol: 'harpocrates',
+        version: 1,
+        proofId: item.chainProof?.metadataHash ?? item.videoHash,
+        tier: (item.tier as 'silent' | 'source' | 'seal') || 'source',
+        network: 'testnet',
+        contractId: item.chainProof?.issuer ?? '',
+        transactionRef: item.events[0]?.tx_hash ?? '',
+        videoHash: item.videoHash,
+        metadataHash: item.metadataHash,
+        sourceHash: item.sourceHash ?? item.videoHash,
+        timestamp: new Date().toISOString(),
+        verifierScope: '0',
+        epoch: 0,
+      })
     }
   }
 

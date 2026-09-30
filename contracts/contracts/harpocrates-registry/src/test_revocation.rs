@@ -10,8 +10,9 @@
 //! ### How it works
 //!
 //! 1. The admin publishes a Merkle root of revoked credential_roots via
-//!    `set_revocation_root`.  The tree is depth‑3 (8 leaves) and uses
-//!    Pedersen hashes, matching the Silent Witness circuit.
+//!    `set_revocation_root`.  The tree is depth-bounded at
+//!    [`MAX_REVOCATION_WITNESS_DEPTH`] (= 3, so [`MAX_REVOCATION_LEAVES`] = 8)
+//!    and uses Pedersen hashes (#357).
 //!
 //! 2. A user who wants to prove their credential is still valid constructs a
 //!    Noir proof using the `revocation_witness` circuit.  The circuit takes
@@ -71,7 +72,7 @@ struct MockRevocationVerifier;
 impl MockRevocationVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid revocation proof");
         }
     }
@@ -260,7 +261,7 @@ fn test_check_non_revocation_succeeds() {
     client.check_non_revocation(&pi, &proof);
 
     // Nullifier should be consumed (this proves the proof was accepted).
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 /// Rejects when no revocation root has been published.
@@ -468,7 +469,7 @@ fn test_check_non_revocation_rejects_reused_nullifier() {
 
     // First submission — succeeds
     client.check_non_revocation(&pi, &proof);
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 
     // Second submission with same nullifier — must panic
     client.check_non_revocation(&pi, &proof);
@@ -575,4 +576,12 @@ fn test_check_non_revocation_emits_event() {
         [].as_slice(),
         "expected NonRevocationChecked event after check_non_revocation"
     );
+}
+
+#[cfg(test)]
+#[test]
+fn revocation_depth_bound_constants() {
+    assert_eq!(MAX_REVOCATION_WITNESS_DEPTH, 3);
+    assert_eq!(MAX_REVOCATION_LEAVES, 8);
+    assert_eq!(MAX_REVOCATION_LEAVES, 1u32 << MAX_REVOCATION_WITNESS_DEPTH);
 }
