@@ -6,9 +6,13 @@ on:
       - 'release/**'
       - 'devx/**'
       - 'frontend/**'
+      - 'cli/**'
       - 'backend/**'
       - 'contracts/**'
       - 'zk/**'
+      - '.github/labels.yml'
+      - '.github/labeler.yml'
+      - '.github/dependabot.yml'
       - '.github/workflows/release-gate.yml'
   push:
     branches: [main]
@@ -16,9 +20,13 @@ on:
       - 'release/**'
       - 'devx/**'
       - 'frontend/**'
+      - 'cli/**'
       - 'backend/**'
       - 'contracts/**'
       - 'zk/**'
+      - '.github/labels.yml'
+      - '.github/labeler.yml'
+      - '.github/dependabot.yml'
 
 permissions:
   contents: read
@@ -34,16 +42,28 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Verify dependency pins and lockfiles
+        run: python3 devx/check_dependency_pins.py
+      - name: Install backend dependencies
+        run: python3 -m pip install --requirement backend/requirements.txt
       - name: Verify manifest and digests
         run: python3 devx/release_guard.py
       - name: Publish cross-layer compatibility report
         run: |
           python3 devx/compatibility_report.py --write --stable --check
           python3 devx/compatibility_report.py --verify-existing --stable --check
-      - name: Validate deployment containers non-root execution
-        run: python3 devx/validate_deployment_containers.py --check
+      - name: Run threat-model checklist
+        run: python3 devx/threat_model_check.py
+      - name: Validate label taxonomy
+        run: |
+          pip install pyyaml --quiet
+          python3 devx/label_config.py --check .github/labels.yml
+          python3 devx/label_config.py --check-labeler \
+            .github/labeler.yml .github/labels.yml
+      - name: Validate Dependabot configuration
+        run: python3 devx/dependabot_config.py --check .github/dependabot.yml
       - name: Exercise negative release-gate paths
         run: python3 -m unittest discover -s devx -p 'test_*.py' -v
