@@ -13,12 +13,14 @@ from typing import Any, Iterator
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from tracing import job_trace_context, span
 
 logger = logging.getLogger(__name__)
 
 # Max page size for GET /api/proofs cursor pagination.
 PROOF_EVENTS_MAX_LIMIT = 100
 PROOF_EVENTS_DEFAULT_LIMIT = 25
+RETENTION_BATCH_MAX_SIZE = 100
 
 # Libpq / Postgres connection-class SQLSTATEs that are typically transient on
 # Neon (cold start, compute wake, brief network blips, pooler pressure).
@@ -233,15 +235,16 @@ def get_connection() -> Iterator[psycopg.Connection]:
     ``DB_CONNECT_TIMEOUT_SECONDS`` per try and ``DB_CONNECT_DEADLINE_SECONDS``
     overall so readiness / request paths stay bounded.
     """
-    url = database_url()
-    if not url:
-        raise RuntimeError("DATABASE_URL is not configured")
+    with span("db.connection", attributes={"db.system.name": "postgresql"}):
+        url = database_url()
+        if not url:
+            raise RuntimeError("DATABASE_URL is not configured")
 
-    connection = _connect_with_retry(url)
-    try:
-        yield connection
-    finally:
-        connection.close()
+        connection = _connect_with_retry(url)
+        try:
+            yield connection
+        finally:
+            connection.close()
 
 
 def init_db() -> None:
@@ -249,10 +252,38 @@ def init_db() -> None:
 
     This replaces the earlier inline ``CREATE TABLE IF NOT EXISTS`` approach
     with an ordered, auditable migration ledger.  Safe to call repeatedly.
+
+    Before any pending migration is applied, the recorded checksum of every
+    already-applied migration is replayed against its in-code definition; a
+    mismatch raises ``migration.MigrationChecksumError`` so a drifted ledger
+    cannot silently start serving traffic.  Set
+    ``MIGRATION_CHECKSUM_ENFORCEMENT=warn`` only as a temporary break-glass
+    rollback while the ledger is reconciled.
     """
     from migration import run_migrations  # late import to avoid cycles
 
     run_migrations()
+
+
+def verify_migration_checksums() -> list[dict[str, object]]:
+    """Return applied migrations whose recorded checksum no longer matches.
+
+    Each dict has keys ``migration_id``, ``name``, ``issue``, ``expected`` and
+    ``recorded``.  An empty list means every applied migration is intact.
+    Read-only; intended for startup diagnostics and operational tooling.
+    """
+    from migration import verify_migration_checksums as _verify
+
+    return [
+        {
+            "migration_id": issue.migration_id,
+            "name": issue.name,
+            "issue": issue.issue,
+            "expected": issue.expected,
+            "recorded": issue.recorded,
+        }
+        for issue in _verify()
+    ]
 
 
 def detect_drift() -> list[dict[str, str]]:
@@ -428,9 +459,11 @@ def insert_proof_event(
                     contract_id,
                     retention_class,
                     expires_at,
-                    metadata
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at;
                 """,
                 (
@@ -575,36 +608,34 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
 
 
-def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
+def find_proof_owner(proof_id: str) -> str | None:
+    """Return the ``source_address`` that first registered ``proof_id``.
+
+    The earliest register event with a recorded address is authoritative, so a
+    later event cannot re-assign ownership. Returns ``None`` when the proof is
+    unknown, was registered without an address, or no database is configured
+    (the same stub behaviour as :func:`upsert_register_event`). Database errors
+    propagate so callers can fail closed instead of guessing.
+    """
     if not database_url():
-        return []
+        return None
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select
-                    id,
-                    event_type,
-                    file_name,
-                    video_hash,
-                    metadata_hash,
-                    proof_id,
-                    tier,
-                    embedded_hash,
-                    tx_hash,
-                    tx_status,
-                    source_address,
-                    contract_id,
-                    metadata,
-                    created_at
+                select source_address
                 from proof_events
                 where proof_id = %s
-                order by id desc;
+                  and event_type = 'register'
+                  and source_address is not null
+                order by id asc
+                limit 1;
                 """,
                 (proof_id,),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            row = cursor.fetchone()
+    return row["source_address"] if row else None
 
 
 def make_idempotency_key(video_hash: str, proof_id: str, tx_hash: str | None) -> str:
@@ -936,7 +967,7 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
-def purge_expired_events() -> list[dict[str, Any]]:
+def purge_expired_events(batch_size: int = RETENTION_BATCH_MAX_SIZE) -> list[dict[str, Any]]:
     """Delete proof events past their expiration that are not on legal hold.
 
     Returns a list of deletion receipts (proof_id, deleted_at, etc.) for
@@ -944,38 +975,35 @@ def purge_expired_events() -> list[dict[str, Any]]:
     """
     if not database_url():
         return []
-    now = datetime.now(timezone.utc)
-    receipts: list[dict[str, Any]] = []
+    batch_size = max(1, min(batch_size, RETENTION_BATCH_MAX_SIZE))
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, proof_id, video_hash, metadata_hash,
-                       retention_class, tier
-                from proof_events
-                where expires_at is not null
-                  and expires_at <= %s
-                  and legal_hold = false;
+                with expired as (
+                    select id, proof_id, video_hash, metadata_hash
+                    from proof_events
+                    where expires_at is not null
+                      and expires_at <= now()
+                      and legal_hold = false
+                    order by id
+                    limit %s
+                    for update skip locked
+                ), deleted as (
+                    delete from proof_events
+                    using expired
+                    where proof_events.id = expired.id
+                    returning proof_events.id, proof_events.proof_id,
+                              proof_events.video_hash, proof_events.metadata_hash
+                )
+                insert into deletion_receipts (event_id, proof_id, video_hash, metadata_hash)
+                select id, proof_id, video_hash, metadata_hash
+                from deleted
+                returning id, event_id, proof_id, video_hash, metadata_hash, deleted_at;
                 """,
-                (now,),
+                (batch_size,),
             )
-            expired = [dict(row) for row in cursor.fetchall()]
-            for event in expired:
-                cursor.execute(
-                    """
-                    insert into deletion_receipts (proof_id, video_hash, metadata_hash)
-                    values (%s, %s, %s)
-                    returning id, created_at;
-                    """,
-                    (event["proof_id"], event.get("video_hash"), event.get("metadata_hash")),
-                )
-                receipt = cursor.fetchone()
-                if receipt:
-                    receipts.append(dict(receipt))
-                cursor.execute(
-                    "delete from proof_events where id = %s;",
-                    (event["id"],),
-                )
+            receipts = [dict(row) for row in cursor.fetchall()]
         connection.commit()
     return receipts
 
@@ -993,6 +1021,7 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "id": job_id,
         "type": job_type,
         "payload": payload,
+        "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
         "created_at": datetime.now(timezone.utc).isoformat(),

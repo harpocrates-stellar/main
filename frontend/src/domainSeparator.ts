@@ -38,6 +38,15 @@
  *   zk/noir/silent_witness/src/main.nr
  *   zk/noir/silent_witness_helper/src/main.nr
  * and redeploy the contract with the new embedded expected_domain_tag.
+ *
+ * NOTE (#368): The domain tag and the envelope circuit version are independent
+ * version axes. The domain tag above remains bound to CIRCUIT_VERSION (1) so
+ * legacy v1 proofs stay valid, while the proof *envelope* separately commits a
+ * circuit version that the registry requires to equal EXPECTED_CIRCUIT_VERSION
+ * in `verifierInputs.ts` (currently 2, matching CURRENT_CIRCUIT_VERSION in
+ * zk/noir/silent_witness/src/main.nr). Do not bump CIRCUIT_VERSION here just
+ * because the circuit changed unless the DOMAIN_*_FIELD constants and every
+ * verifier's expected domain tag are re-derived in lockstep.
  */
 
 /** Supported deployment networks. */

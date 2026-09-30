@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import secret_scanner
+
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "release" / "compatibility-manifest.json"
 DEFAULT_BINDING = ROOT / "release" / "verifier-binding.json"
@@ -184,6 +187,12 @@ def verify(manifest_path: Path, require_active: bool = False) -> None:
             mismatches.append(f"artifact exceeds 512 MiB limit: {artifact['path']}")
         elif sha256_file(path) != artifact["sha256"]:
             mismatches.append(f"digest mismatch: {artifact['path']}")
+            
+        # Secret scan the artifact
+        scan_errors = secret_scanner.scan_file(path)
+        if scan_errors:
+            mismatches.append(f"secret scan failed for {artifact['path']}: " + ", ".join(set(scan_errors)))
+            
     if mismatches:
         raise ManifestError("; ".join(mismatches))
 

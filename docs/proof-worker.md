@@ -11,6 +11,7 @@ Implementation:
 - `src/workers/proofWorker.ts` — runs inside the worker, wraps `noirClient.ts`
 - `src/workers/proofWorker.types.ts` — shared message/state types
 - `src/workers/proofWorkerClient.ts` — main-thread client (`ProofWorkerClient`)
+- `src/proofWorkerMemory.ts` — worker memory and artifact-size budget checks
 - `src/hooks/useEvidence.ts` — Evidence Studio integration + Cancel button
 - `src/workers/multiBrowserWorkerSupport.ts` — multi-browser capability floor for module-worker proving
 
@@ -27,6 +28,13 @@ Implementation:
 - The worker assumes hostile/malformed input is possible (oversized secrets,
   non-hex video hashes) and validates before ever touching the worker or the
   network — see `INVALID_INPUT` below.
+- The worker budget is derived from existing canonical metadata:
+  `zk/bench/bench.lock.json` supplies witness/proof/public-input ceilings, and
+  `zk/browser.artifacts.manifest.json` supplies published browser ACIR byte
+  ceilings. The runtime does not introduce a second circuit/proof truth.
+- Browser ACIR is size-checked before JSON parsing when the response exposes a
+  stream or content length. Witness, proof, and public-input byte counts are
+  checked before crossing the next expensive proof boundary.
 - A stuck or unresponsive worker (e.g. due to a WASM-level hang) is treated
   the same as a crash: it is terminated and replaced, never left running
   indefinitely.
@@ -43,6 +51,7 @@ at most one active proof request at a time.
 idle --generate()--> running --resolves/rejects--> idle
 running --generate() again--> immediately rejected with BUSY (no worker post)
 running --cancel() / AbortSignal--> CANCEL msg + terminate + respawn → CANCELLED
+running --memory cap exceeded--> MEMORY_LIMIT_EXCEEDED
 running --60s elapsed--> worker terminated + respawned → TIMEOUT
 running --worker crash--> worker terminated + respawned → CRASHED
 destroyed --generate()--> CANCELLED
@@ -66,7 +75,21 @@ worker so they cannot settle a newer request.
 | `TIMEOUT` | Proof generation exceeded `PROOF_TIMEOUT_MS` (60s). |
 | `CRASHED` | The worker fired `onerror`/`onmessageerror` unexpectedly. |
 | `CIRCUIT_LOAD_FAILED` | Fetching a compiled circuit artifact failed. |
+| `MEMORY_LIMIT_EXCEEDED` | A published ACIR, witness estimate, proof, public-input frame, or total worker runtime estimate exceeded the pinned proof-worker budget. |
 | `PROOF_GENERATION_FAILED` | Witness execution or proof generation threw (e.g. invalid field value). |
+
+## Input and dependency outcomes
+
+| Condition | Worker behavior |
+|---|---|
+| Malformed input | `INVALID_INPUT`; rejected before any worker/network activity. |
+| Oversized secret input | `INVALID_INPUT`; rejected before transfer. |
+| Oversized artifact/witness/proof output | `MEMORY_LIMIT_EXCEEDED`; stable message `proof_worker_memory_exceeded`. |
+| Unsupported input schema or scoped request against browser-v1 ACIR | `UNSUPPORTED_INPUT_SCHEMA`. |
+| Browser capability missing | `UNSUPPORTED_ENVIRONMENT`; rejected before transfer. |
+| Artifact fetch/parse dependency failure | `CIRCUIT_LOAD_FAILED`. |
+| Prover dependency failure after valid inputs | `PROOF_GENERATION_FAILED`. |
+| Expired or revoked evidence | Not decided by proof generation; verification/registry paths retain their existing `EXPIRED_EVIDENCE` and `REVOKED_EVIDENCE` handling. |
 
 ## Local verification
 
@@ -74,7 +97,7 @@ Run the worker's automated tests:
 
 ```bash
 cd frontend
-npx vitest run src/workers/proofWorkerClient.test.ts
+npx vitest run src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
 For a manual end-to-end check in a real browser (bypassing the rest of the
@@ -104,18 +127,23 @@ without risk of leaking sensitive data.
 
 - Proof / public-input encodings are unchanged (`noirClient.ts` remains the
   single proving implementation; the worker only wraps it).
+- The memory cap is a browser-worker runtime guard only. It does not change
+  Noir source, ACIR semantics, public-input frames, proof verification,
+  contracts, or stored evidence.
 - Call site moved from a direct `noirClient` import in the evidence flow to
   `ProofWorkerClient.generate()` inside `useEvidence.attachSilentWitnessProof`.
 - No artifact, contract, or stored-evidence migration is required.
-- Rollback: revert `useEvidence.ts` to call `generateSilentWitnessProof` from
-  `noirClient.ts` on the main thread and hide the Cancel button. No data repair.
+- Rollback: revert the worker budget module/client mapping and, if needed,
+  revert `useEvidence.ts` to call `generateSilentWitnessProof` from
+  `noirClient.ts` on the main thread and hide the Cancel button. No data repair
+  or chain migration is required.
 
 ## Trust boundary notes
 
 | Boundary | Behaviour on cancel |
 |---|---|
 | Main thread | Pending promise rejects `CANCELLED`; AbortController cleared; no secrets retained (buffers already transferred/detached). |
-| Worker | CANCEL acknowledged; secret `ArrayBuffer`s zeroed; worker then terminated so WASM heap is discarded. |
+| Worker | CANCEL acknowledged; secret `ArrayBuffer`s zeroed; ACIR/witness/proof memory bounded; worker then terminated so WASM heap is discarded. |
 | UI | Stage returns to `ready` with a privacy-safe status message (no seeds/proof hex). |
 
 ## Known limitations
@@ -157,6 +185,6 @@ Focused coverage lives in:
 
 ```bash
 cd frontend
-npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/workers/proofWorkerClient.test.ts
+npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 

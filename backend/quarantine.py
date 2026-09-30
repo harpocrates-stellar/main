@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import os
 import tempfile
 from pathlib import Path
-from typing import NamedTuple
+from typing import IO, NamedTuple, Union
 
 
 class QuarantineError(ValueError):
@@ -256,6 +257,134 @@ class SignatureScanner:
                     )
 
         return True, None
+
+
+# ---------------------------------------------------------------------------
+# Stream-level media-type sniffer
+# ---------------------------------------------------------------------------
+
+def sniff_media_type_stream(
+    stream: Union[IO[bytes], bytes],
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+) -> str:
+    """Sniff the media type of an uploaded file from its raw bytes *before* it
+    is saved to disk or handed to ffmpeg.
+
+    Reads at most ``_HEADER_BYTES`` (32) bytes from *stream* — which may be a
+    seekable :class:`io.IOBase` object or a plain ``bytes`` value — and then
+    rewinds it to position 0 so callers can re-read from the start.
+
+    Parameters
+    ----------
+    stream:
+        A seekable binary stream (e.g. ``flask.request.files[…].stream``) or a
+        ``bytes`` object containing at least the first ``_HEADER_BYTES`` of the
+        upload.  The stream is always rewound to offset 0 before this function
+        returns (even on error).
+    filename:
+        Optional original filename for cross-validation (extension check).
+    content_type:
+        Optional declared MIME type for cross-validation.  The value
+        ``application/octet-stream`` is treated as a wildcard.
+
+    Returns
+    -------
+    str
+        The canonical format-family name (e.g. ``"MP4"``, ``"Matroska"``,
+        ``"AVI"``).
+
+    Raises
+    ------
+    QuarantineError
+        When the header bytes do not match any known video signature, or when
+        the detected format is inconsistent with *filename* or *content_type*.
+    """
+    # ── 1. Read header bytes without touching the file on disk ──────────────
+    if isinstance(stream, (bytes, bytearray)):
+        header = bytes(stream[:_HEADER_BYTES])
+    else:
+        try:
+            header = stream.read(_HEADER_BYTES)
+        finally:
+            # Always rewind so the caller can still save() / read() the upload.
+            try:
+                stream.seek(0)
+            except (AttributeError, OSError):
+                pass
+
+    if len(header) < 12:
+        raise QuarantineError(
+            "uploaded file is too small to contain a valid video header; "
+            "minimum 12 bytes required"
+        )
+
+    # ── 2. Detect format from magic bytes ────────────────────────────────────
+    detected = _detect_format_family(header)
+    if detected is None:
+        raise QuarantineError(
+            "uploaded file failed media-type sniff: "
+            "no recognised video signature found in file header"
+        )
+
+    # ── 3. Cross-validate extension (if provided) ────────────────────────────
+    if filename:
+        ext = _normalise_extension(filename)
+        if ext:
+            fmt_by_ext = _fmt_by_extension(ext)
+            if fmt_by_ext is None:
+                raise QuarantineError(
+                    f"uploaded file has unsupported extension '{ext}'; "
+                    f"accepted extensions: mp4, mov, avi, webm, mkv, 3gp"
+                )
+            if fmt_by_ext.name != detected:
+                raise QuarantineError(
+                    f"uploaded file claims to be '{ext}' but its header "
+                    f"signature matches {detected}; possible content-type spoofing"
+                )
+
+    # ── 4. Cross-validate declared MIME type (octet-stream = wildcard) ───────
+    if content_type:
+        mime = _normalise_mime(content_type)
+        if mime and mime != "application/octet-stream":
+            fmt_by_mime_val = _fmt_by_mime(mime)
+            if fmt_by_mime_val is None:
+                raise QuarantineError(
+                    f"uploaded file declares unsupported content type '{mime}'"
+                )
+            if fmt_by_mime_val.name != detected:
+                raise QuarantineError(
+                    f"uploaded file declares '{mime}' but its header "
+                    f"signature matches {detected}; possible content-type spoofing"
+                )
+
+    return detected
+
+
+def sniff_media_type_path(
+    path: Path,
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+) -> str:
+    """Sniff the media type of a file already written to *path*.
+
+    Wraps :func:`sniff_media_type_stream` for the chunked-upload commit path
+    where the assembled video lives on disk before ffmpeg is invoked.
+
+    Returns the detected format-family name or raises :class:`QuarantineError`.
+    """
+    header = _read_header(path)
+    if header is None:
+        raise QuarantineError(
+            "assembled video file is empty, too small, or unreadable"
+        )
+    return sniff_media_type_stream(
+        header,
+        filename=filename,
+        content_type=content_type,
+    )
 
 
 @contextlib.contextmanager

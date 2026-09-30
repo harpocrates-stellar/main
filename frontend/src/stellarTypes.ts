@@ -94,8 +94,37 @@ export type ChainProofRecord = {
   tier: number
   status: number
   createdAt: string
+  /**
+   * `ProofRecord.expires_at` in Unix seconds. `0` means the record never
+   * expires, matching the registry's expiry policy.
+   */
+  expiresAt: number | null
   source: string | null
   issuer: string | null
+}
+
+export type ProofHistoryAction = 1 | 2 | 3 | 4 | 5 | 6
+
+export type ProofHistoryEntry = {
+  action: ProofHistoryAction
+  timestamp: string
+  actor: string | null
+  reasonCode: number
+}
+
+export type ProofHistoryResult = {
+  entries: ProofHistoryEntry[]
+  count: number
+}
+
+/**
+ * `IssuerRecord` from the registry: an institutional issuer's standing.
+ * `active` is the registry's own flag, so revocation is authoritative here
+ * rather than inferred from the proof record.
+ */
+export type IssuerRecord = {
+  metadataHash: string
+  active: boolean
 }
 
 export type SupportedPredicateType = 'Equality' | 'SetMembership' | 'Range'
@@ -121,11 +150,15 @@ export type RegistryMethod =
   | 'register_source'
   | 'register_seal'
   | 'get_by_video'
+  | 'get_issuer'
+  | 'get_proof_history_at'
+  | 'get_proof_history_count'
   | 'set_scope_epoch'
   | 'get_scope_epoch'
   | 'verify_selective_disclosure'
   | 'add_schema'
   | 'get_schema'
+  | 'get_verifier_state'
 
 export type ScopedProofScope = {
   /** Field element derived from the scope string (SHA-256 mod BN254). */

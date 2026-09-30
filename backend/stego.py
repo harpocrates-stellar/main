@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tracing import traced
+
 import numpy as np
 
 from envelope import (
@@ -48,6 +50,7 @@ def canonical_metadata_hash_compat(metadata: dict[str, Any]) -> str:
     return canonical_metadata_hash(metadata)
 
 
+@traced("media.embed", attributes={"media.operation": "embed"})
 def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: dict[str, Any]) -> None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
@@ -93,6 +96,7 @@ def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: d
         _close_process(process_out)
 
 
+@traced("media.extract", attributes={"media.operation": "extract"})
 def extract_metadata(source_path: Path | str) -> dict[str, Any] | None:
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)

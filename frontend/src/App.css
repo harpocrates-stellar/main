@@ -948,6 +948,45 @@ body::-webkit-scrollbar-thumb:hover,
   font-size: 12px;
 }
 
+.hash-progress {
+  margin: 6px 0 2px;
+}
+
+.hash-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.hash-progress progress {
+  width: 100%;
+  height: 6px;
+  margin-top: 6px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  appearance: none;
+}
+
+.hash-progress progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hash-progress progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: #fff;
+}
+
+.hash-progress progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: #fff;
+}
+
 .verify-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1031,6 +1070,89 @@ body::-webkit-scrollbar-thumb:hover,
 
 .chain-grid code {
   margin: 0;
+}
+
+.chain-grid__value {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Issuer trust-state badge. Severity carries the colour; `data-state` carries
+   the exact state for tests and future per-state overrides. */
+.issuer-trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.issuer-trust-badge__icon {
+  flex: 0 0 auto;
+}
+
+.issuer-trust-badge__label {
+  white-space: nowrap;
+}
+
+.issuer-trust-badge__issuer {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+
+.issuer-trust-positive {
+  border-color: rgba(120, 230, 170, 0.35);
+  background: rgba(60, 200, 130, 0.08);
+  color: #8fe6b8;
+}
+
+.issuer-trust-neutral {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.issuer-trust-caution {
+  border-color: rgba(255, 190, 92, 0.32);
+  background: rgba(101, 54, 0, 0.28);
+  color: #ffd59a;
+}
+
+.issuer-trust-critical {
+  border-color: rgba(255, 108, 108, 0.38);
+  background: rgba(120, 20, 20, 0.28);
+  color: #ff9d9d;
+}
+
+/* Mobile: the side rail narrows to a single column, so let the badge fill the
+   cell and wrap its label instead of truncating it. */
+@media (max-width: 480px) {
+  .issuer-trust-badge {
+    width: 100%;
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
+  .issuer-trust-badge__label {
+    white-space: normal;
+  }
 }
 
 .provenance-card {
@@ -1602,3 +1724,192 @@ input:focus-visible,
 .share-link-status {
   overflow-wrap: anywhere;
 }
+
+/* ── Privacy-safe redaction preview (Evidence Studio) ───────────────────── */
+.redaction-preview {
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(12, 14, 22, 0.72);
+}
+
+.redaction-preview__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.redaction-preview h3,
+.redaction-preview__header h3 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.redaction-preview__summary {
+  margin: 0 0 12px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 13px;
+}
+
+.redaction-preview__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.redaction-preview__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.redaction-preview__row:last-child {
+  border-bottom: none;
+}
+
+.redaction-preview__label {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 12px;
+}
+
+.redaction-preview__value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.78);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.redaction-preview__row--redacted .redaction-preview__value {
+  color: rgba(255, 190, 120, 0.78);
+}
+
+.redaction-preview__footnote {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.redaction-preview--empty,
+.redaction-preview--error {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.redaction-preview--error {
+  border-color: rgba(255, 120, 100, 0.35);
+}
+
+/* ── OS high-contrast support (Issue #318) ─────────────────────────────────
+   The app has no JS theme system by design: high-contrast rendering follows
+   the operating system's `prefers-contrast` / `forced-colors` signals through
+   these CSS-only overrides. There is no theme toggle, no persisted theme
+   state, and no second source of truth — the canonical dark tokens above
+   remain the only theme. These blocks only strengthen the existing tokens
+   (solid text, thicker focus rings, visible borders) when the OS requests
+   more contrast, and remap to system colors under Forced Colors mode so
+   content stays readable when the platform overrides author colors. */
+@media (prefers-contrast: more) {
+  .data-list dt,
+  .rail-block h3,
+  .redaction-preview__summary,
+  .redaction-preview__label,
+  .redaction-preview__value,
+  .redaction-preview--empty,
+  .redaction-preview--error {
+    color: #fff;
+  }
+
+  .data-list dd,
+  .page-header p,
+  .lede {
+    color: #fff;
+  }
+
+  :focus-visible,
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  [role="radio"]:focus-visible,
+  .mode-toggle:focus-visible,
+  .skip-link:focus {
+    outline-width: 3px;
+  }
+
+  .tier-tab.active {
+    background: rgba(255, 255, 255, 0.22);
+    box-shadow: inset 0 0 0 2px #fff;
+  }
+
+  .network-mismatch-banner,
+  .redaction-preview--error,
+  .icon-button.wallet-mismatch {
+    border-width: 2px;
+  }
+}
+
+@media (forced-colors: active) {
+  .app-shell {
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .signal-background,
+  .prismatic-veil,
+  .app-shell::before,
+  .app-shell::after {
+    display: none;
+  }
+
+  .data-list dt,
+  .data-list dd,
+  .rail-block h3,
+  .page-header p,
+  .lede,
+  .redaction-preview__summary,
+  .redaction-preview__value,
+  .redaction-preview__label {
+    color: CanvasText;
+  }
+
+  .tier-tab.active {
+    border: 2px solid Highlight;
+    box-shadow: none;
+  }
+
+  :focus-visible,
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  [role="radio"]:focus-visible,
+  .mode-toggle:focus-visible,
+  .skip-link:focus {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .network-mismatch-banner,
+  .redaction-preview--error {
+    border: 2px solid CanvasText;
+  }
+
+  .skip-link {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+  }
+}
+
