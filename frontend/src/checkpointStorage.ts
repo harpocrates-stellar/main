@@ -1,4 +1,5 @@
 import type { IdentityTier, TxState } from './stellar'
+import { safeLocalStorage } from './safeStorage'
 
 const CHECKPOINT_STORAGE_KEY = 'harpocrates:evidence-checkpoint'
 const CHECKPOINT_VERSION = 1
@@ -14,7 +15,7 @@ export type SilentWitnessProofData = {
 }
 
 export type EvidenceStateData = {
-  stage: 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error'
+  stage: 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registering' | 'registered' | 'error'
   tier: IdentityTier
   fileName?: string
   sourceHash?: string
@@ -73,7 +74,7 @@ async function deriveKey(password: string, salt: ArrayBuffer): Promise<CryptoKey
 
 export class CheckpointStorage {
   static hasCheckpoint(): boolean {
-    return !!window.localStorage.getItem(CHECKPOINT_STORAGE_KEY)
+    return !!safeLocalStorage.getItem(CHECKPOINT_STORAGE_KEY)
   }
 
   static async save(password: string, state: EvidenceStateData): Promise<void> {
@@ -100,11 +101,11 @@ export class CheckpointStorage {
       ct: bufToHex(ct),
     }
 
-    window.localStorage.setItem(CHECKPOINT_STORAGE_KEY, JSON.stringify(envelope))
+    safeLocalStorage.setItem(CHECKPOINT_STORAGE_KEY, JSON.stringify(envelope))
   }
 
   static async load(password: string, maxAgeMs = 24 * 60 * 60 * 1000): Promise<EvidenceStateData | null> {
-    const stored = window.localStorage.getItem(CHECKPOINT_STORAGE_KEY)
+    const stored = safeLocalStorage.getItem(CHECKPOINT_STORAGE_KEY)
     if (!stored) return null
 
     let envelope: CheckpointEnvelope
@@ -144,12 +145,12 @@ export class CheckpointStorage {
       }
 
       return state
-    } catch (e) {
-      throw new Error('Invalid checkpoint password')
+    } catch (error) {
+      throw new Error('Invalid checkpoint password', { cause: error })
     }
   }
 
   static clear(): void {
-    window.localStorage.removeItem(CHECKPOINT_STORAGE_KEY)
+    safeLocalStorage.removeItem(CHECKPOINT_STORAGE_KEY)
   }
 }

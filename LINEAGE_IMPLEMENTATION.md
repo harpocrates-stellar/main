@@ -39,6 +39,12 @@ The backend provides:
   - Cycle detection: Prevents self-referential and transitive cycles
   - Actor validation: Requires non-empty actor address
 
+See [`contracts/LINEAGE.md`](contracts/LINEAGE.md) for the on-chain enforcement
+of the same bounds: the registry bounds both directions of the edge, derives the
+depth from the parents instead of trusting the caller, and rejects empty,
+repeated, and unknown parents as well as re-registrations of an existing output
+digest.
+
 ### Backend API Endpoints
 
 #### Register Lineage
@@ -106,7 +112,29 @@ CREATE INDEX lineage_events_actor_idx ON lineage_events (actor_address);
 The contract provides:
 - `register_lineage()` - Records a lineage transformation on-chain
 - `get_lineage()` - Retrieves a stored lineage record
-- Validates bounded depth, fan-out, and payload size on-chain
+- `get_lineage_child_count()` - Derivatives already charged against a parent
+- Bounds the fan-out in both directions, derives the depth from the parents
+  (rejecting a claim that disagrees with the graph), and refuses an empty,
+  repeated, or unknown parent and a re-registration of an existing output digest
+- Keeps `MAX_LINEAGE_FANOUT` parent digests inside `MAX_LINEAGE_PAYLOAD_BYTES`
+  with a compile-time assertion; the manifest body bound belongs to the backend
+
+### ZK redacted ancestry (`zk/noir/redacted_ancestry`)
+
+Issue #356 adds a Noir circuit that **proves** a redacted derivative's ancestry
+against a Pedersen parent commitment without revealing unredacted media:
+
+- Public: `parent_commitment`, `derivative_digest`, `parameters_digest`,
+  `operation_type` (the canonical `redact` identifier), `ancestry_root`,
+  `nullifier`, `depth`, `domain_tag`
+- Private: parent hash halves + blinding, mask commitment, redaction seed,
+  credential / nullifier secrets
+- Depth bound matches this document (`1..=4`); failures are stable assert codes
+- Spec: `docs/zk-redacted-ancestry-spec.md`; vectors:
+  `zk/noir/fixtures/redacted_ancestry_vectors.json`
+
+This is additive to the HTTP lineage API and Soroban `register_lineage` path -
+it does not create a second protocol truth for manifests or operation codes.
 
 ## Validation Rules
 
@@ -115,8 +143,13 @@ The contract provides:
 2. **Cycle Detection**: 
    - Direct cycles (output digest appears in parents) are rejected
    - Transitive cycles (output would create circular dependency) are rejected
-3. **Bounded Depth**: Maximum 4 levels of transformation chain
+3. **Bounded Depth**: Maximum 4 levels of transformation chain; the registry
+   derives the depth from the parents and rejects a caller-supplied `depth` that
+   disagrees with the graph (`LineageDepthMismatch`), so the cap cannot be
+   bypassed by asserting a smaller number
 4. **Bounded Fan-out**: Maximum 4 parent proofs per derivative
+   (`LineageFanOutExceeded`) and maximum 4 derivatives per parent
+   (`LineageFanOutSaturated`)
 5. **Payload Size**: Maximum 4KB for manifest
 6. **Actor Requirement**: Every transformation must have an authorized actor address
 7. **Hex Validation**: All IDs must be valid 32-byte hex strings
@@ -136,6 +169,19 @@ The contract provides:
 - Direct cycle detection
 - Missing actor validation
 - Valid graph acceptance
+
+### Contract Tests (`contracts/contracts/harpocrates-registry/src/test_lineage.rs`)
+- Parent set at the fan-out cap accepted; above the cap rejected
+- Empty, repeated, and unknown parents rejected
+- Self-referential edge rejected
+- Depth derived from the deepest parent
+- Understated and overstated depth rejected
+- Deepest legal chain accepted; one level deeper rejected
+- Per-parent derivative cap enforced, and a saturated parent refuses an edge
+  without charging an available parent named alongside it
+- A rejected edge leaves the parent's budget untouched
+- Re-registration of an existing output digest rejected, original record intact
+- A derivative is itself a valid parent
 
 ### Frontend Tests (`frontend/src/lineageManifest.test.ts`)
 - Manifest creation with deterministic serialization
@@ -165,3 +211,25 @@ The contract provides:
 - Contract event indexing and re-indexing from Testnet
 - Dashboard visualization of lineage chains
 - Advanced query support (reverse lineage, transitive closure)
+
+## Parent Commitments (#332)
+
+Lineage registrations now persist a parallel `parent_commitments` vector on each
+`LineageRecord`, derived on-chain as:
+
+```
+SHA-256("harp_lin_pc" || binding_a || binding_b)
+```
+
+- Proof parent: `(video_hash, metadata_hash)`
+- Lineage parent: `(manifest_digest, output_digest)`
+
+Public `LineageRegistered` events emit commitments (not raw parent proof ids).
+`get_lineage_parent_commitments(output_digest)` exposes the same digests for
+interop without expanding the trust boundary. Revoked or expired proof parents
+are rejected with `LineageParentUnavailable`.
+
+Migration: additive on new registrations; re-register any pre-upgrade lineage
+rows that need commitments. Rollback to pre-#332 wasm simply stops writing the
+new field/event.
+

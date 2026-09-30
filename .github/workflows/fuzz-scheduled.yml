@@ -1,0 +1,88 @@
+name: Scheduled fuzzing
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"   # weekly, Sunday 03:17 UTC (off the hour on purpose)
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Iterations per fuzz target (digits only)"
+        required: false
+        default: "10000"
+      seed:
+        description: "Fuzz seed (digits only). Empty = run id"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-fuzzing
+  cancel-in-progress: false
+
+jobs:
+  circuit-fuzz:
+    name: Circuit and proof-input fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ITERATIONS: ${{ inputs.iterations || '10000' }}
+      FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # SET THIS: paste the toolchain setup steps from the existing zk workflow
+      # (pinned nargo / bb). Do not change any versions.
+
+      - name: Validate inputs
+        run: |
+          [[ "$ITERATIONS" =~ ^[0-9]{1,7}$ ]] || { echo "invalid iterations"; exit 1; }
+          [[ "$FUZZ_SEED" =~ ^[0-9]{1,18}$ ]] || { echo "invalid seed"; exit 1; }
+          echo "fuzz seed: $FUZZ_SEED"
+
+      - name: Fuzz circuit and proof inputs
+        run: SET THIS   # command from docs/zk-fuzzing.md; use $ITERATIONS and $FUZZ_SEED if it supports them
+
+      - name: Upload synthetic failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: circuit-fuzz-failures
+          path: SET THIS   # the fuzzer's crash/failing-input directory
+          retention-days: 7
+          if-no-files-found: ignore
+
+  parser-fuzz:
+    name: Parser and codec fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ITERATIONS: ${{ inputs.iterations || '10000' }}
+      FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # SET THIS: language/runtime setup for the parser fuzzer (copy from an existing workflow).
+
+      - name: Validate inputs
+        run: |
+          [[ "$ITERATIONS" =~ ^[0-9]{1,7}$ ]] || { echo "invalid iterations"; exit 1; }
+          [[ "$FUZZ_SEED" =~ ^[0-9]{1,18}$ ]] || { echo "invalid seed"; exit 1; }
+          echo "fuzz seed: $FUZZ_SEED"
+
+      - name: Fuzz parsers and verifier-input codec
+        run: SET THIS   # command from docs/zk-fuzzing.md / docs/zk-conformance-vectors.md
+
+      - name: Upload synthetic failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-fuzz-failures
+          path: SET THIS
+          retention-days: 7
+          if-no-files-found: ignore

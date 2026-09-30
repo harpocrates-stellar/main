@@ -75,10 +75,6 @@ describe('embedVideo', () => {
   })
 
   it('surfaces the API error message on non-OK responses with a JSON body', async () => {
-    const blob = makeMockBlob('embedded-video-bytes')
-    const { hex } = await import('../utils')
-    const realHash = hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))
-
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValueOnce({
@@ -112,6 +108,41 @@ describe('embedVideo', () => {
     await expect(
       embedVideo(file, 'source', 'a'.repeat(64), 'b'.repeat(64), new Date().toISOString()),
     ).rejects.toThrow('invalid evidence package')
+  })
+
+  it('forwards the AbortSignal to fetch so an upload can be cancelled', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<never>((_resolve, reject) => {
+          // The fetch mock honours the signal the way the browser fetch does.
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const file = makeFile()
+    const pending = embedVideo(file, 'source', 'a'.repeat(64), 'b'.repeat(64), new Date().toISOString(), controller.signal)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(options.signal).toBe(controller.signal)
+
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects with a stable cancellation error when aborted before the response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new DOMException('The user aborted a request.', 'AbortError'))),
+    )
+
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      embedVideo(makeFile(), 'source', 'a'.repeat(64), 'b'.repeat(64), new Date().toISOString(), controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
   })
 })
 
