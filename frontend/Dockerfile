@@ -24,7 +24,20 @@ RUN npm run build
 FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build --chown=nginx:nginx /app/dist /usr/share/nginx/html
+
+# Configure nginx to run as unprivileged non-root user (nginx: UID/GID 101):
+# 1. Update PID path to /tmp/nginx.pid where unprivileged user has write access
+# 2. Comment out the 'user' directive to prevent runtime master-process warnings
+# 3. Grant ownership on runtime directories (/var/cache/nginx, /var/log/nginx, /etc/nginx/conf.d, web root)
+RUN sed -i 's|^user\s\+nginx;|# user nginx;|' /etc/nginx/nginx.conf \
+    && sed -i 's|/var/run/nginx.pid|/tmp/nginx.pid|g; s|/run/nginx.pid|/tmp/nginx.pid|g' /etc/nginx/nginx.conf \
+    && (grep -q "pid /tmp/nginx.pid;" /etc/nginx/nginx.conf || sed -i '1i pid /tmp/nginx.pid;' /etc/nginx/nginx.conf) \
+    && touch /tmp/nginx.pid \
+    && chown -R nginx:nginx /tmp/nginx.pid /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /usr/share/nginx/html \
+    && chmod -R 755 /usr/share/nginx/html
+
+USER nginx:nginx
 
 EXPOSE 8080
 

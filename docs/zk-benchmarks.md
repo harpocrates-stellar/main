@@ -41,8 +41,10 @@ The harness defends against:
 
 - **Unbounded work.** Sample counts, proof/public-input/witness byte ceilings,
   concurrency, per-sample timeouts, and a wall-clock cap are enforced by
-  `bench.lock.json`. Oversized or capacity-exceeding work fails with a typed
-  reject code — never hangs.
+  `bench.lock.json`. The Evidence Studio proof worker imports the same witness,
+  proof, and public-input ceilings, while browser ACIR byte ceilings come from
+  `zk/browser.artifacts.manifest.json`. Oversized or capacity-exceeding work
+  fails with a typed reject code — never hangs.
 - **Partial promotion.** A report is written only when `outcome=ok`. Timeouts,
   cancellations, rejections, and fatals abort without leaving a trusted report.
 - **Evidence leakage.** Reports and stderr signals carry timings, percentiles,
@@ -98,6 +100,7 @@ node zk/bench/browser_runner.mjs --cold 1 --warm 2
 | --- | --- | --- |
 | per-target sample counts / timeouts | `zk/bench/bench.lock.json` | Bound work |
 | size ceilings | `limits.*` | Reject oversized proof/PI/witness/report |
+| proof-worker memory | `limits.max_witness_bytes` + browser manifest raw bytes | Bound browser ACIR, witness, proof, and public-input memory before expensive worker/prover boundaries |
 | privacy forbidden keys | `privacy.*` | Fail closed if a report grows a sensitive field |
 | baselines path | `thresholds.baselines_path` | Published regression gate (`baselines.lock.json`) |
 

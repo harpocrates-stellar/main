@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { VerifyView } from './VerifyView'
@@ -86,5 +86,84 @@ describe('VerifyView – offline local verification mode', () => {
     renderView({ status: 'success' })
     // share link is present but disabled when public fields are unavailable
     expect(screen.getByRole('button', { name: /copy shareable verification link/i })).toBeInTheDocument()
+  })
+})
+
+// ─── Keyboard accessibility – dropzone (issue #288) ─────────────────────────
+
+describe('VerifyView – dropzone keyboard accessibility', () => {
+  it('dropzone label is rendered with role=button and tabIndex=0 when idle', () => {
+    renderView()
+    const dropzone = screen.getByRole('button', {
+      name: /Drop or choose a received video/i,
+    })
+    expect(dropzone).toHaveAttribute('tabindex', '0')
+  })
+
+  it('dropzone aria-label includes keyboard instruction', () => {
+    renderView()
+    const dropzone = screen.getByRole('button', {
+      name: /Drop or choose a received video/i,
+    })
+    expect(dropzone.getAttribute('aria-label')).toMatch(/press enter or space/i)
+  })
+
+  it('hidden file input has tabIndex=-1', () => {
+    renderView()
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    expect(fileInput).not.toBeNull()
+    expect(fileInput.tabIndex).toBe(-1)
+  })
+
+  it('pressing Enter on the dropzone fires a click on the hidden input', () => {
+    renderView()
+    const dropzone = screen.getByRole('button', {
+      name: /Drop or choose a received video/i,
+    })
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    let clicked = false
+    fileInput.addEventListener('click', () => { clicked = true })
+
+    fireEvent.keyDown(dropzone, { key: 'Enter', code: 'Enter' })
+
+    expect(clicked).toBe(true)
+  })
+
+  it('pressing Space on the dropzone fires a click on the hidden input', () => {
+    renderView()
+    const dropzone = screen.getByRole('button', {
+      name: /Drop or choose a received video/i,
+    })
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    let clicked = false
+    fileInput.addEventListener('click', () => { clicked = true })
+
+    fireEvent.keyDown(dropzone, { key: ' ', code: 'Space' })
+
+    expect(clicked).toBe(true)
+  })
+
+  it('dropzone is not keyboard-focusable while verifying (tabIndex=-1)', () => {
+    renderView({ isVerifying: true, status: 'verifying' })
+    const dropzone = screen.getByRole('button', { name: /inspecting evidence/i })
+    expect(dropzone).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('dropzone has aria-disabled=true while verifying', () => {
+    renderView({ isVerifying: true, status: 'verifying' })
+    const dropzone = screen.getByRole('button', { name: /inspecting evidence/i })
+    expect(dropzone).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('Enter key is blocked while verifying (no click on input)', () => {
+    renderView({ isVerifying: true, status: 'verifying' })
+    const dropzone = screen.getByRole('button', { name: /inspecting evidence/i })
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    let clicked = false
+    fileInput.addEventListener('click', () => { clicked = true })
+
+    fireEvent.keyDown(dropzone, { key: 'Enter', code: 'Enter' })
+
+    expect(clicked).toBe(false)
   })
 })

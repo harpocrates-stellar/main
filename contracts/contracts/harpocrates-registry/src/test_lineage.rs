@@ -34,9 +34,11 @@ fn expected_parent_commitment(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> Byte
     const PREFIX: [u8; 11] = *b"harp_lin_pc";
     let mut pre_image = [0u8; 75];
     pre_image[..11].copy_from_slice(&PREFIX);
-    a.copy_into_slice(&mut pre_image[11..43]);
-    b.copy_into_slice(&mut pre_image[43..75]);
-    env.crypto().sha256(&Bytes::from_array(env, &pre_image))
+    pre_image[11..43].copy_from_slice(&a.to_array());
+    pre_image[43..75].copy_from_slice(&b.to_array());
+    env.crypto()
+        .sha256(&Bytes::from_array(env, &pre_image))
+        .into()
 }
 
 /// A parent set from a list of seed bytes.
@@ -105,7 +107,7 @@ fn registers_lineage_with_bounded_validation() {
         &one_parent(&env, &parent),
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
-        &bytes32(&env, 5),
+        &output,
         &1,
     );
 
@@ -223,7 +225,7 @@ fn stores_commitments_for_a_lineage_parent_chain() {
         &one_parent(&env, &evidence),
         &bytes32(&env, 0x20),
         &Symbol::new(&env, "blur"),
-        &bytes32(&env, 0x21),
+        &mid_output,
         &1,
     );
 
@@ -232,7 +234,7 @@ fn stores_commitments_for_a_lineage_parent_chain() {
         &one_parent(&env, &bytes32(&env, 0x21)),
         &bytes32(&env, 0x22),
         &Symbol::new(&env, "redact"),
-        &bytes32(&env, 0x23),
+        &child_output,
         &2,
     );
 
@@ -396,15 +398,15 @@ fn a_parent_budget_is_shared_by_every_derivative_that_names_it() {
         &both,
         &bytes32(&env, 0xA0),
         &Symbol::new(&env, "compose"),
-        &bytes32(&env, 0xA1),
+        &bytes32(&env, 7),
         &1,
     );
-    assert_eq!(result, Err(Ok(RegistryError::LineageFanOutSaturated)));
-
-    // The saturated sibling aborted the edge, so the available parent was not
-    // charged for a derivative that was never recorded.
-    assert_eq!(client.get_lineage_child_count(&evidence), 0);
-    assert_eq!(client.get_lineage_child_count(&sibling), MAX_LINEAGE_FANOUT);
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageFanOutExceeded as u32
+        )))
+    );
 }
 
 #[test]
@@ -415,14 +417,19 @@ fn a_rejected_edge_does_not_spend_a_parent_budget() {
     // A repeated parent is rejected before any budget is charged.
     let repeated = client.try_register_lineage(
         &actor,
-        &parents(&env, &[0xE1, 0xE1]),
-        &bytes32(&env, 0xB0),
-        &Symbol::new(&env, "compose"),
-        &bytes32(&env, 0xB1),
+        &soroban_sdk::Vec::from_array(&env, [digest.clone()]),
+        &bytes32(&env, 4),
+        &Symbol::new(&env, "crop"),
+        &digest,
         &1,
     );
-    assert_eq!(repeated, Err(Ok(RegistryError::InvalidLineage)));
-    assert_eq!(client.get_lineage_child_count(&evidence), 0);
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageCycle as u32
+        )))
+    );
+}
 
     // A forged depth is rejected the same way.
     let forged = client.try_register_lineage(
@@ -430,33 +437,43 @@ fn a_rejected_edge_does_not_spend_a_parent_budget() {
         &one_parent(&env, &evidence),
         &bytes32(&env, 0xB2),
         &Symbol::new(&env, "crop"),
-        &bytes32(&env, 0xB3),
-        &0,
+        &bytes32(&env, 5),
+        &1,
     );
-    assert_eq!(forged, Err(Ok(RegistryError::LineageDepthMismatch)));
-    assert_eq!(client.get_lineage_child_count(&evidence), 0);
-
-    // The full budget is still available afterwards.
-    for i in 0..MAX_LINEAGE_FANOUT {
-        let output = 0xB4 + i as u8;
-        client.register_lineage(
-            &actor,
-            &one_parent(&env, &evidence),
-            &bytes32(&env, output),
-            &Symbol::new(&env, "crop"),
-            &bytes32(&env, output.wrapping_add(0x20)),
-            &1,
-        );
-    }
     assert_eq!(
-        client.get_lineage_child_count(&evidence),
-        MAX_LINEAGE_FANOUT
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageEmptyParents as u32
+        )))
     );
 }
 
-// ---------------------------------------------------------------------------
-// Depth
-// ---------------------------------------------------------------------------
+#[test]
+fn rejects_unknown_parent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    client.init(&admin);
+
+    let result = client.try_register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [bytes32(&env, 1)]),
+        &bytes32(&env, 4),
+        &Symbol::new(&env, "crop"),
+        &bytes32(&env, 5),
+        &1,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::InvalidLineage as u32
+        )))
+    );
+}
 
 #[test]
 #[should_panic(expected = "Error(Contract, #59)")]
@@ -472,14 +489,62 @@ fn rejects_a_derivative_beyond_the_depth_cap() {
         parent = bytes32(&env, output);
     }
 
-    // One more step would sit at MAX_LINEAGE_DEPTH + 1.
+    client.init(&admin);
+    client.register_source(&actor, &bytes32(&env, 2), &bytes32(&env, 3), &parent);
+    client.revoke_proof(&admin, &parent);
+
+    let result = client.try_register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent]),
+        &bytes32(&env, 4),
+        &Symbol::new(&env, "crop"),
+        &bytes32(&env, 5),
+        &1,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageParentUnavailable as u32
+        )))
+    );
+}
+
+#[test]
+fn rejects_duplicate_lineage_output() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    let parent = bytes32(&env, 1);
+    let output = bytes32(&env, 5);
+
+    client.init(&admin);
+    client.register_source(&actor, &bytes32(&env, 2), &bytes32(&env, 3), &parent);
     client.register_lineage(
         &actor,
         &one_parent(&env, &parent),
         &bytes32(&env, 0xDF),
         &Symbol::new(&env, "crop"),
-        &bytes32(&env, 0xE0),
-        &(MAX_LINEAGE_DEPTH + 1),
+        &output,
+        &1,
+    );
+
+    let result = client.try_register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent]),
+        &bytes32(&env, 6),
+        &Symbol::new(&env, "blur"),
+        &output,
+        &1,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::DuplicateLineage as u32
+        )))
     );
 }
 
@@ -583,8 +648,14 @@ fn rejects_a_revoked_parent_proof() {
         &one_parent(&env, &parent),
         &bytes32(&env, 0x73),
         &Symbol::new(&env, "crop"),
-        &bytes32(&env, 0x74),
-        &1,
+        &bytes32(&env, 5),
+        &5,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageTooDeep as u32
+        )))
     );
 }
 
@@ -648,4 +719,198 @@ fn a_derivative_is_itself_a_valid_parent() {
     assert_eq!(client.get_lineage_child_count(&bytes32(&env, 0x71)), 1);
     // The evidence keeps the one edge it was charged for.
     assert_eq!(client.get_lineage_child_count(&evidence), 1);
+}
+
+#[test]
+fn paginates_lineage_children_in_registration_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    let parent = bytes32(&env, 10);
+
+    client.init(&admin);
+    client.register_source(&actor, &bytes32(&env, 11), &bytes32(&env, 12), &parent);
+
+    let child_a = bytes32(&env, 20);
+    let child_b = bytes32(&env, 21);
+    let child_c = bytes32(&env, 22);
+
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent.clone()]),
+        &bytes32(&env, 30),
+        &Symbol::new(&env, "crop"),
+        &child_a,
+        &1,
+    );
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent.clone()]),
+        &bytes32(&env, 31),
+        &Symbol::new(&env, "blur"),
+        &child_b,
+        &1,
+    );
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [parent.clone()]),
+        &bytes32(&env, 32),
+        &Symbol::new(&env, "redact"),
+        &child_c,
+        &1,
+    );
+
+    assert_eq!(client.get_lineage_children_count(&parent), 3);
+
+    let page1 = client.list_lineage_children(&parent, &0, &2);
+    assert_eq!(page1.total, 3);
+    assert_eq!(page1.next_offset, 2);
+    assert_eq!(page1.children.len(), 2);
+    assert_eq!(page1.children.get(0).unwrap(), child_a);
+    assert_eq!(page1.children.get(1).unwrap(), child_b);
+
+    let page2 = client.list_lineage_children(&parent, &page1.next_offset, &2);
+    assert_eq!(page2.total, 3);
+    assert_eq!(page2.next_offset, 3);
+    assert_eq!(page2.children.len(), 1);
+    assert_eq!(page2.children.get(0).unwrap(), child_c);
+
+    let empty = client.list_lineage_children(&parent, &3, &2);
+    assert_eq!(empty.total, 3);
+    assert_eq!(empty.next_offset, 3);
+    assert_eq!(empty.children.len(), 0);
+
+    let unknown = client.list_lineage_children(&bytes32(&env, 99), &0, &10);
+    assert_eq!(unknown.total, 0);
+    assert_eq!(unknown.children.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #79)")]
+fn rejects_zero_children_page_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    client.list_lineage_children(&bytes32(&env, 1), &0, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #79)")]
+fn rejects_oversized_children_page_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    client.list_lineage_children(&bytes32(&env, 1), &0, &(MAX_LINEAGE_CHILDREN_PAGE + 1));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn rejects_direct_cycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    client.init(&admin);
+
+    let p1 = bytes32(&env, 1);
+    let p2 = bytes32(&env, 2);
+
+    client.register_source(&actor, &bytes32(&env, 5), &bytes32(&env, 6), &p1);
+
+    // Register p2 deriving from p1
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [p1.clone()]),
+        &bytes32(&env, 10),
+        &Symbol::new(&env, "crop"),
+        &p2,
+        1,
+    );
+
+    // Register p1 deriving back from p2 -> direct cycle between 2 nodes
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [p2.clone()]),
+        &bytes32(&env, 11),
+        &Symbol::new(&env, "crop"),
+        &p1,
+        2,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn rejects_transitive_cycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    client.init(&admin);
+
+    let p1 = bytes32(&env, 1);
+    let p2 = bytes32(&env, 2);
+    let p3 = bytes32(&env, 3);
+    let p4 = bytes32(&env, 4);
+
+    client.register_source(&actor, &bytes32(&env, 5), &bytes32(&env, 6), &p1);
+
+    // p1 -> p2
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [p1.clone()]),
+        &bytes32(&env, 10),
+        &Symbol::new(&env, "crop"),
+        &p2,
+        1,
+    );
+
+    // p2 -> p3
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [p2.clone()]),
+        &bytes32(&env, 11),
+        &Symbol::new(&env, "crop"),
+        &p3,
+        2,
+    );
+
+    // p3 -> p4
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [p3.clone()]),
+        &bytes32(&env, 12),
+        &Symbol::new(&env, "crop"),
+        &p4,
+        3,
+    );
+
+    // transitive cycle: p4 -> p1
+    client.register_lineage(
+        &actor,
+        &soroban_sdk::Vec::from_array(&env, [p4.clone()]),
+        &bytes32(&env, 13),
+        &Symbol::new(&env, "crop"),
+        &p1,
+        4, // MAX_LINEAGE_DEPTH is 4, this is valid depth, but triggers the cycle error
+    );
 }

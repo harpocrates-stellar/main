@@ -119,6 +119,23 @@ The contract provides:
 - Keeps `MAX_LINEAGE_FANOUT` parent digests inside `MAX_LINEAGE_PAYLOAD_BYTES`
   with a compile-time assertion; the manifest body bound belongs to the backend
 
+### ZK redacted ancestry (`zk/noir/redacted_ancestry`)
+
+Issue #356 adds a Noir circuit that **proves** a redacted derivative's ancestry
+against a Pedersen parent commitment without revealing unredacted media:
+
+- Public: `parent_commitment`, `derivative_digest`, `parameters_digest`,
+  `operation_type` (the canonical `redact` identifier), `ancestry_root`,
+  `nullifier`, `depth`, `domain_tag`
+- Private: parent hash halves + blinding, mask commitment, redaction seed,
+  credential / nullifier secrets
+- Depth bound matches this document (`1..=4`); failures are stable assert codes
+- Spec: `docs/zk-redacted-ancestry-spec.md`; vectors:
+  `zk/noir/fixtures/redacted_ancestry_vectors.json`
+
+This is additive to the HTTP lineage API and Soroban `register_lineage` path -
+it does not create a second protocol truth for manifests or operation codes.
+
 ## Validation Rules
 
 ### Constraints Enforced

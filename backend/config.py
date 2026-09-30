@@ -5,6 +5,8 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from register_auth import ScopedKey, parse_scoped_keys
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -30,6 +32,11 @@ class AppConfig:
     metrics_enabled: bool
     metrics_token: str | None
     metrics_path: str
+    tracing_enabled: bool
+    tracing_service_name: str
+    tracing_endpoint: str | None
+    tracing_sample_ratio: float
+    tracing_export_timeout_seconds: float
     register_api_key: str | None
     register_api_key_expires: datetime | None
     register_api_key_previous: str | None
@@ -48,6 +55,8 @@ class AppConfig:
     external_fetch_connect_timeout_seconds: float
     external_fetch_read_timeout_seconds: float
     external_fetch_max_response_bytes: int
+    # Owner-scoped credentials: each key may only register its own sourceAddress.
+    register_scoped_keys: tuple[ScopedKey, ...] = ()
 
 
 def load_config() -> AppConfig:
@@ -95,6 +104,11 @@ def load_config() -> AppConfig:
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
         metrics_token=_str_env("METRICS_TOKEN"),
         metrics_path=os.getenv("METRICS_PATH", "/metrics").strip(),
+        tracing_enabled=_bool_env("OTEL_ENABLED", False),
+        tracing_service_name=_str_env("OTEL_SERVICE_NAME") or "harpocrates-backend",
+        tracing_endpoint=_str_env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+        tracing_sample_ratio=_sample_ratio_env("OTEL_TRACES_SAMPLER_ARG", 0.1),
+        tracing_export_timeout_seconds=_float_env("OTEL_EXPORT_TIMEOUT_SECONDS", 5.0),
         register_api_key=register_api_key,
         register_api_key_expires=register_api_key_expires,
         register_api_key_previous=register_api_key_previous,
@@ -112,6 +126,7 @@ def load_config() -> AppConfig:
         external_fetch_connect_timeout_seconds=_float_env("EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS", 5.0),
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
+        register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
     )
 
 
@@ -201,4 +216,17 @@ def _float_env(name: str, default: float) -> float:
     parsed = float(value)
     if parsed <= 0.0:
         raise RuntimeError(f"{name} must be positive")
+    return parsed
+
+
+def _sample_ratio_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be between 0 and 1") from exc
+    if not 0.0 <= parsed <= 1.0:
+        raise RuntimeError(f"{name} must be between 0 and 1")
     return parsed

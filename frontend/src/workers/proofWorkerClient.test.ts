@@ -135,6 +135,34 @@ describe('ProofWorkerClient', () => {
     await expect(first.result).rejects.toMatchObject({ code: 'CRASHED' })
   }, 15000)
 
+  it('propagates memory cap failures with a stable privacy-safe code', async () => {
+    const client = createClient()
+    const secret = 'credentialSecret=do-not-leak'
+    const first = client.generate({
+      ...validInput,
+      credentialSecret: secret,
+    })
+
+    // @ts-expect-error - accessing private field for test purposes
+    const worker = client.worker
+    worker.onmessage?.(new MessageEvent('message', {
+      data: {
+        type: 'ERROR',
+        requestId: first.requestId,
+        code: 'MEMORY_LIMIT_EXCEEDED',
+        message: 'proof_worker_memory_exceeded',
+      },
+    }))
+
+    await expect(first.result).rejects.toMatchObject({
+      code: 'MEMORY_LIMIT_EXCEEDED',
+      message: 'proof_worker_memory_exceeded',
+    })
+    await first.result.catch((error: ProofWorkerError) => {
+      expect(error.message).not.toContain(secret)
+    })
+  }, 15_000)
+
   it('destroy rejects in-flight work as CANCELLED and blocks new generates', async () => {
     const client = createClient()
     const first = client.generate({

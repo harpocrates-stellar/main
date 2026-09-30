@@ -542,3 +542,10 @@ fn test_nullifier_from_different_video() {
         z + 60, z + 60, cr, std::hash::pedersen_hash([cs, ns, z + 60, z + 60]),
     );
 }
+
+/// Verify aggregation bound constants.
+#[test]
+fn test_aggregation_bound_constants() {
+    assert(MAX_AGGREGATION_SIZE == 8);
+}
+

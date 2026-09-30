@@ -51,9 +51,11 @@ from verifier_inputs import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CORPUS_PATH = REPO_ROOT / "zk" / "vectors" / "verifier_conformance_v1.json"
+CORPUS_V2_PATH = REPO_ROOT / "zk" / "vectors" / "verifier_conformance_v2.json"
 REGRESSIONS_PATH = REPO_ROOT / "zk" / "vectors" / "fuzz_regressions_v1.json"
 
 CORPUS = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+CORPUS_V2 = json.loads(CORPUS_V2_PATH.read_text(encoding="utf-8"))
 REGRESSIONS = json.loads(REGRESSIONS_PATH.read_text(encoding="utf-8"))
 
 #: Deterministic seeds. Fixed, small, and shared with the other layers — the
@@ -66,7 +68,7 @@ ITERATIONS_PER_SEED = 400
 
 DECLARED_CODES = frozenset(code.value for code in RejectCode)
 
-SCHEMAS = ("silent_witness/v1", "revocation_witness/v1")
+SCHEMAS = ("silent_witness/v1", "silent_witness/v2", "revocation_witness/v1")
 
 
 # ── Deterministic PRNG (mirrored across all three layers) ───────────────────
@@ -175,9 +177,13 @@ def mutate(base: bytes, mutator: str, rng: Lcg) -> bytes:
 
 
 def _positive_frames() -> dict[str, bytes]:
-    """One canonical frame per schema, taken from the conformance corpus."""
+    """One canonical frame per schema, taken from the conformance corpora."""
     frames: dict[str, bytes] = {}
     for case in CORPUS["cases"]:
+        if case["expect"]["accept"] and case["schema"] not in frames:
+            frames[case["schema"]] = bytes.fromhex(case["public_inputs_hex"])
+    # The v2 codec is exercised through its own envelope corpus (#368).
+    for case in CORPUS_V2["cases"]:
         if case["expect"]["accept"] and case["schema"] not in frames:
             frames[case["schema"]] = bytes.fromhex(case["public_inputs_hex"])
     return frames
@@ -434,6 +440,16 @@ def test_rejection_signals_never_echo_mutant_bytes(seed: int):
 def test_regression_corpus_is_versioned():
     assert REGRESSIONS["format"] == "harpocrates.fuzz-regressions"
     assert REGRESSIONS["version"] == 1
+
+
+def test_regression_corpus_is_bounded_and_uses_declared_rejections():
+    """Keep the shared negative-proof corpus safe and deterministic to replay."""
+    for entry in REGRESSIONS["entries"]:
+        assert entry["schema"] in SCHEMAS
+        assert entry["expect_reject_code"] in DECLARED_CODES
+        assert entry["description"].strip()
+        assert len(entry["public_inputs_hex"]) <= MAX_HEX_CHARS
+        assert len(entry["proof_hex"]) <= MAX_HEX_CHARS
 
 
 @pytest.mark.parametrize(

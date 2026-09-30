@@ -26,6 +26,7 @@ class MetricsCollector:
         self._cache_hits = 0
         self._cache_misses = 0
         self._cache_evictions = 0
+        self._deleted_events = 0
 
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
@@ -38,6 +39,7 @@ class MetricsCollector:
             self._cache_hits = 0
             self._cache_misses = 0
             self._cache_evictions = 0
+            self._deleted_events = 0
 
     def record_request(
         self,
@@ -114,6 +116,11 @@ class MetricsCollector:
         """Record a verifier cache eviction."""
         with self._lock:
             self._cache_evictions += 1
+
+    def record_deleted_event(self) -> None:
+        """Record a proof event removed by the retention worker."""
+        with self._lock:
+            self._deleted_events += 1
 
     def record_dependency_status(self, name: str, status: str, critical: bool) -> None:
         """Record the latest bounded readiness state for one dependency."""
@@ -214,6 +221,11 @@ class MetricsCollector:
             lines.append("# HELP harpocrates_verifier_cache_evictions_total Total count of verifier cache evictions.")
             lines.append("# TYPE harpocrates_verifier_cache_evictions_total counter")
             lines.append(f"harpocrates_verifier_cache_evictions_total {self._cache_evictions}")
+
+            lines.append("")
+            lines.append("# HELP harpocrates_retention_deleted_events_total Total proof events removed by retention.")
+            lines.append("# TYPE harpocrates_retention_deleted_events_total counter")
+            lines.append(f"harpocrates_retention_deleted_events_total {self._deleted_events}")
 
         lines.append("")
         return "\n".join(lines)

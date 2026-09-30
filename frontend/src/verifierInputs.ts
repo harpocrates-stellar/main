@@ -1,5 +1,10 @@
 /**
- * Canonical verifier-input codec for Harpocrates (codec `hpx-vi/1`).
+ * Canonical verifier-input codecs for Harpocrates (`hpx-vi/1` and `hpx-vi/2`).
+ *
+ * `hpx-vi/1` covers `silent_witness/v1` and `revocation_witness/v1`.
+ * `hpx-vi/2` covers `silent_witness/v2`, which appends the circuit version as a
+ * trailing field so the wire format commits to the exact circuit that produced
+ * the proof (#368).
  *
  * Browser/TypeScript side of a three-way codec that must agree byte for byte
  * with:
@@ -7,8 +12,9 @@
  *   backend/verifier_inputs.py                          (Python)
  *   contracts/contracts/harpocrates-registry/src/lib.rs (Soroban / Rust)
  *
- * Agreement is enforced by the shared corpus in
- * `zk/vectors/verifier_conformance_v1.json`; see docs/zk-conformance-vectors.md.
+ * Agreement is enforced by the shared corpora in
+ * `zk/vectors/verifier_conformance_v1.json` and
+ * `zk/vectors/verifier_conformance_v2.json`; see docs/zk-conformance-vectors.md.
  *
  * Every entry point is bounded, deterministic, and silent: rejections carry a
  * stable machine code and at most a field *name* — never witness material,
@@ -17,6 +23,9 @@
 
 export const CODEC_ID = 'hpx-vi/1'
 
+/** Codec id for the circuit-versioned silent-witness envelope. */
+export const CODEC_ID_V2 = 'hpx-vi/2'
+
 export const FIELD_LEN = 32
 export const SILENT_WITNESS_FIELD_COUNT = 5
 export const REVOCATION_FIELD_COUNT = 4
@@ -24,6 +33,20 @@ export const SILENT_WITNESS_PUBLIC_INPUTS_LEN = FIELD_LEN * SILENT_WITNESS_FIELD
 export const REVOCATION_PUBLIC_INPUTS_LEN = FIELD_LEN * REVOCATION_FIELD_COUNT
 /** Default frame length for the primary silent-witness verifier boundary. */
 export const PUBLIC_INPUTS_LEN = SILENT_WITNESS_PUBLIC_INPUTS_LEN
+
+/**
+ * `silent_witness/v2` is the scoped frame (7 fields) plus a trailing 8th field
+ * that commits the circuit version (#368).
+ */
+export const SILENT_WITNESS_V2_FIELD_COUNT = 8
+export const SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN =
+  FIELD_LEN * SILENT_WITNESS_V2_FIELD_COUNT // 256
+
+/**
+ * The only circuit version accepted by the `silent_witness/v2` codec. Must
+ * match `CURRENT_CIRCUIT_VERSION` in zk/noir/silent_witness/src/main.nr.
+ */
+export const EXPECTED_CIRCUIT_VERSION = 2
 
 export const MIN_PROOF_BYTES = 64
 export const MAX_PROOF_BYTES = 65536
@@ -52,6 +75,7 @@ export const SILENT_WITNESS_DOMAIN_TAG_HEX =
 
 export const SCHEMA_SILENT_WITNESS = 'silent_witness/v1'
 export const SCHEMA_REVOCATION_WITNESS = 'revocation_witness/v1'
+export const SCHEMA_SILENT_WITNESS_V2 = 'silent_witness/v2'
 
 /**
  * Protocol Merkle-depth bound for `revocation_witness/v1` (#357).
@@ -62,9 +86,17 @@ export const MAX_REVOCATION_WITNESS_DEPTH = 3
 /** Leaf capacity implied by {@link MAX_REVOCATION_WITNESS_DEPTH} (`2^depth`). */
 export const MAX_REVOCATION_LEAVES = 8
 
+/**
+ * Protocol aggregation proof count bounds for silent witness batch aggregation (#497).
+ * Must match the Noir globals and the Soroban registry constants.
+ */
+export const MAX_AGGREGATION_SIZE = 8
+export const MIN_AGGREGATION_SIZE = 1
+
 export type VerifierSchema =
   | typeof SCHEMA_SILENT_WITNESS
   | typeof SCHEMA_REVOCATION_WITNESS
+  | typeof SCHEMA_SILENT_WITNESS_V2
 
 export type RejectCode =
   | 'malformed_hex'
@@ -76,6 +108,7 @@ export type RejectCode =
   | 'proof_undersize'
   | 'proof_oversize'
   | 'unknown_schema'
+  | 'version_mismatch'
 
 /** Rejection carrying a stable machine code and, at most, a field name. */
 export class VerifierInputError extends Error {
@@ -104,6 +137,12 @@ export type SilentWitnessInputs = {
   credentialRoot: Uint8Array
   nullifier: Uint8Array
   domainTag: Uint8Array
+  /** Verifier scope of a `silent_witness/v2` scoped frame; absent for v1. */
+  verifierScope?: Uint8Array
+  /** Raw 32-byte epoch field element of a v2 frame; absent for v1. */
+  epoch?: Uint8Array
+  /** Circuit version committed to the rightmost trailing field (`hpx-vi/2`). */
+  circuitVersion?: number
 }
 
 export type RevocationWitnessInputs = {
@@ -216,18 +255,37 @@ function requireCanonical(fields: Uint8Array[], names: readonly string[]): void 
   }
 }
 
+/**
+ * Compare two byte strings without an early exit on the first difference.
+ *
+ * Every byte is folded into one accumulator, so the work done does not depend
+ * on where (or whether) the inputs diverge. Differing lengths compare unequal;
+ * length is public. Mirrors `constant_time_equals` in `backend/verifier_inputs.py`
+ * and `constant_time_eq` in the Soroban codec.
+ */
+export function constantTimeEquals(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+  let difference = 0
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index]
+  }
+  return difference === 0
+}
+
+const ZERO_FIELD = new Uint8Array(FIELD_LEN)
+
 function requireNonZero(field: Uint8Array, name: string): void {
-  if (field.every((byte) => byte === 0)) {
+  if (constantTimeEquals(field, ZERO_FIELD)) {
     throw new VerifierInputError('zero_field', name)
   }
 }
 
 /** A 128-bit half lives in the low 16 bytes; the high 16 must be zero. */
 function requireHalfPadding(field: Uint8Array, name: string): Uint8Array {
-  for (let index = 0; index < 16; index += 1) {
-    if (field[index] !== 0) {
-      throw new VerifierInputError('padding', name)
-    }
+  if (!constantTimeEquals(field.subarray(0, 16), ZERO_FIELD.subarray(0, 16))) {
+    throw new VerifierInputError('padding', name)
   }
   return field.slice(16)
 }
@@ -247,12 +305,42 @@ const SILENT_WITNESS_FIELDS = [
   'domain_tag',
 ] as const
 
+const SILENT_WITNESS_V2_FIELDS = [
+  'video_hash_hi',
+  'video_hash_lo',
+  'credential_root',
+  'nullifier',
+  'verifier_scope',
+  'epoch',
+  'domain_tag',
+  'circuit_version',
+] as const
+
 const REVOCATION_FIELDS = [
   'revocation_root',
   'nullifier',
   'domain_separator',
   'credential_root',
 ] as const
+
+/**
+ * Read the 32-byte circuit-version field as a big-endian u32. The upper 28
+ * bytes must be zero; otherwise the encoding is dirty and a sentinel value is
+ * returned so the caller's equality check fails.
+ */
+function versionOf(field: Uint8Array): number {
+  for (let index = 0; index < FIELD_LEN - 4; index += 1) {
+    if (field[index] !== 0) {
+      return 0xffffffff
+    }
+  }
+  return (
+    (field[FIELD_LEN - 4] << 24) |
+    (field[FIELD_LEN - 3] << 16) |
+    (field[FIELD_LEN - 2] << 8) |
+    field[FIELD_LEN - 1]
+  )
+}
 
 /** Parse `silent_witness/v1` public inputs in canonical check order. */
 export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnessInputs {
@@ -271,7 +359,7 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
   requireNonZero(fields[4], 'domain_tag')
 
   const expectedDomain = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
-  if (fields[4].some((byte, index) => byte !== expectedDomain[index])) {
+  if (!constantTimeEquals(fields[4], expectedDomain)) {
     throw new VerifierInputError('domain_mismatch', 'domain_tag')
   }
 
@@ -280,6 +368,54 @@ export function parseSilentWitnessInputs(publicInputs: Uint8Array): SilentWitnes
     credentialRoot: fields[2],
     nullifier: fields[3],
     domainTag: fields[4],
+  }
+}
+
+/**
+ * Parse `silent_witness/v2` public inputs in canonical check order (#368).
+ *
+ * The scoped frame (video hash halves, credential root, nullifier, verifier
+ * scope, epoch, domain tag) gains a trailing circuit-version field, so the wire
+ * format itself states which circuit produced the proof.
+ *
+ * The check order is the codec contract: length → half padding → circuit
+ * version → canonicity → zero → domain. The domain tag and circuit version are
+ * protocol bindings rather than user scalars, so they are compared
+ * byte-for-byte and never reduced modulo BN254.
+ */
+export function parseSilentWitnessV2Inputs(
+  publicInputs: Uint8Array,
+): SilentWitnessInputs {
+  const fields = splitFields(publicInputs, SILENT_WITNESS_V2_FIELD_COUNT)
+
+  const high = requireHalfPadding(fields[0], 'video_hash_hi')
+  const low = requireHalfPadding(fields[1], 'video_hash_lo')
+
+  // Checked before the identity fields so a frame from another circuit reads
+  // as a version problem, never as a malformed-identity problem.
+  if (versionOf(fields[7]) !== EXPECTED_CIRCUIT_VERSION) {
+    throw new VerifierInputError('version_mismatch', 'circuit_version')
+  }
+
+  requireCanonical(fields.slice(0, 6), SILENT_WITNESS_V2_FIELDS.slice(0, 6))
+
+  requireNonZero(fields[2], 'credential_root')
+  requireNonZero(fields[3], 'nullifier')
+  requireNonZero(fields[6], 'domain_tag')
+
+  const expectedDomain = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX, 'domain_tag')
+  if (!constantTimeEquals(fields[6], expectedDomain)) {
+    throw new VerifierInputError('domain_mismatch', 'domain_tag')
+  }
+
+  return {
+    videoHash: concat(high, low),
+    credentialRoot: fields[2],
+    nullifier: fields[3],
+    domainTag: fields[6],
+    verifierScope: fields[4],
+    epoch: fields[5],
+    circuitVersion: EXPECTED_CIRCUIT_VERSION,
   }
 }
 
@@ -297,10 +433,8 @@ export function parseRevocationWitnessInputs(
 
   const expectedDomain = decodeHex(REVOCATION_DOMAIN_SEPARATOR_HEX, 'domain_separator')
   const domain = fields[2]
-  for (let index = 0; index < FIELD_LEN; index += 1) {
-    if (domain[index] !== expectedDomain[index]) {
-      throw new VerifierInputError('domain_mismatch', 'domain_separator')
-    }
+  if (!constantTimeEquals(domain, expectedDomain)) {
+    throw new VerifierInputError('domain_mismatch', 'domain_separator')
   }
 
   return {
@@ -318,6 +452,9 @@ export function parsePublicInputs(
 ): SilentWitnessInputs | RevocationWitnessInputs {
   if (schema === SCHEMA_SILENT_WITNESS) {
     return parseSilentWitnessInputs(publicInputs)
+  }
+  if (schema === SCHEMA_SILENT_WITNESS_V2) {
+    return parseSilentWitnessV2Inputs(publicInputs)
   }
   if (schema === SCHEMA_REVOCATION_WITNESS) {
     return parseRevocationWitnessInputs(publicInputs)
@@ -364,3 +501,21 @@ export function checkRevocationWitnessDepth(depth: number): void {
     throw new VerifierInputError('proof_oversize', 'depth')
   }
 }
+
+/**
+ * Reject an aggregation proof count / batch size outside the protocol bound (#497).
+ * Privacy-safe: never logs video hashes, secrets, or witness material.
+ */
+export function checkAggregationBatchSize(batchSize: number): number {
+  if (!Number.isInteger(batchSize)) {
+    throw new VerifierInputError('malformed_hex', 'batch_size')
+  }
+  if (batchSize < MIN_AGGREGATION_SIZE) {
+    throw new VerifierInputError('length', 'batch_size')
+  }
+  if (batchSize > MAX_AGGREGATION_SIZE) {
+    throw new VerifierInputError('proof_oversize', 'batch_size')
+  }
+  return batchSize
+}
+

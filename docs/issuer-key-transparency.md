@@ -60,6 +60,8 @@ Use `require_fresh_checkpoint(..., high_assurance=True)` before accepting high-a
 
 Key rotation sets `validUntil` on the predecessor. Signatures whose timestamp falls inside the key’s validity window remain valid after rotation. Compromised keys similarly retain validity for pre-compromise timestamps; verifiers must surface compromise status for post-compromise risk decisions.
 
+The registry expresses the same window on chain: `rotate_issuer` retires the predecessor key immediately (it can no longer sign new seals, directly or through a delegation) and records a bounded `grace_expires_at` during which `is_issuer_verifiable(predecessor)` keeps pre-rotation evidence verifiable. The window lapses on its own against ledger time and `finalize_issuer_rotation` settles the record. Because the on-chain window is capped by `MAX_ISSUER_ROTATION_GRACE_SECS`, a retired key’s manifest `validUntil` should not be set beyond that bound; `revoke_issuer` and `add_issuer` clear the on-chain record, so a compromised or re-onboarded key is never covered by a stale grace window.
+
 ## Operational procedures
 
 ### Onboarding an issuer
@@ -104,7 +106,7 @@ Key rotation sets `validUntil` on the predecessor. Signatures whose timestamp fa
 
 - Module: `backend/issuer_key_transparency.py`
 - Tests: `backend/test_issuer_key_transparency.py`
-- On-chain issuer allowlist (`add_issuer` / `revoke_issuer`) remains the standing authority; this directory adds auditable key history beside it, not a parallel allowlist.
+- On-chain issuer allowlist (`add_issuer` / `revoke_issuer` / `rotate_issuer`) remains the standing authority; this directory adds auditable key history beside it, not a parallel allowlist. `rotate_issuer` (#323) records a bounded on-chain grace window for a retired key, which is the contract-side counterpart of a manifest’s `validUntil`.
 - Schema version is explicit (`version: 1`); future versions require migration notes in this document.
 
 ## Threat model notes
