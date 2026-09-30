@@ -2,8 +2,8 @@
 
 **Scope:** Evidence Studio, Verification Portal, landing page, navigation, and all shared UI  
 **Standard:** WCAG 2.2 Level AA  
-**Date:** 2026-07-24  
-**Status:** Implemented and verified
+**Date:** 2026-07-24 (automated axe-core CI enforcement added 2026-09-25)  
+**Status:** Implemented, verified, and continuously enforced in CI
 
 ---
 
@@ -122,6 +122,34 @@ No evidence file names, video hash values, proof bytes, wallet addresses, or see
 
 ## Local Verification Workflow
 
+### Offline local verification mode
+
+The Verification Portal can verify a received video entirely in the browser
+with zero network calls via the **Offline local check** toggle (a focusable
+`<button type="button">` with `aria-pressed="true"` when active, next to the
+dropzone):
+
+- The received file is hashed locally and its embedded Harpocrates envelope is
+  extracted with the same `stego.extractMetadata` loader the online flow and
+  the batch workspace use — never a second protocol truth.
+- Embedded metadata is structurally validated against the backend envelope
+  grammar; when the envelope carries a video hash, the file is bound to it
+  (`bound` / `tampered` / `unavailable`). Envelopes carrying secret-shaped keys
+  are rejected and rendered as null.
+- Offline mode is only a *local check*: it never produces a confirmed trust
+  decision, never produces a shareable verification link, and never queries a
+  chain, registry, database, or event source. Chain Status reads
+  "Not checked (offline)".
+
+Accessibility notes for offline mode:
+
+- The toggle is keyboard reachable, has `aria-pressed`, disabled while a
+  verification is in flight, and keeps a 44px touch target (`.mode-toggle`).
+- Offline rail blocks announce the reduced trust boundary through
+  `role="status"` regions ("On-chain status was not checked in offline mode.",
+  "NeonDB events were not queried in offline mode.").
+- Offline status copy contains no file names, video hashes, or secret material.
+
 ### 1. Start the dev server
 
 ```bash
@@ -138,6 +166,22 @@ cd frontend
 npm test
 # Expected: 8 test files, 96 tests, all pass
 ```
+
+### 2b. Automated axe-core WCAG 2.2 AA checks
+
+```bash
+cd frontend
+npm run test:a11y
+# Expected: src/a11y.axe.test.tsx — 10 tests, all pass
+```
+
+The axe suite renders each public view (landing, evidence studio × both tiers,
+verify, batch workspace) and asserts that no WCAG-tagged rule reports a
+violation, using the shared configuration in `src/test/axeA11y.ts`. It also
+proves the harness has teeth (a synthetic broken-tree fixture must be flagged),
+bounds the only jsdom-unrunnable rule (`color-contrast`), and fails closed if a
+new "incomplete" rule ever appears without a documented acknowledgement. See
+["Automated axe-core Enforcement (CI)"](#automated-axe-core-enforcement-ci).
 
 The `useA11y.test.ts` file contains 27 tests covering:
 - `useLiveRegion`: empty message, safe passthrough, hex redaction, Stellar key/contract ID redaction, path redaction, empty string, multi-value, politeness param
@@ -159,6 +203,7 @@ Open `http://localhost:5173` and test with keyboard only (Tab / Shift+Tab / Ente
 - [ ] Credential Seed and Nullifier Seed inputs are reachable; their labels are spoken by VoiceOver/NVDA
 - [ ] The "Register proof" button shows `aria-busy="true"` during processing stages
 - [ ] The verify page file input is reachable by keyboard and labelled
+- [ ] The "Offline local check" toggle is reachable and shows `aria-pressed` toggling in DevTools
 
 ### 4. Screen reader smoke test (macOS VoiceOver)
 
@@ -182,6 +227,49 @@ Use browser DevTools Accessibility panel or the [WebAIM Contrast Checker](https:
 
 ---
 
+## Automated axe-core Enforcement (CI)
+
+The frontend CI job (`frontend-ci.yml`) runs `npm run test:a11y` after linting,
+so every frontend pull request is scanned for WCAG 2.2 A/AA violations against
+the rendered app before merge.
+
+### What runs and what cannot
+
+- **Rules:** the `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, and `wcag22aa`
+  tag set, executed by `axe-core` (`src/test/axeA11y.ts`).
+- **Views scanned:** landing, evidence studio with the silent tier (credential
+  and nullifier seed inputs rendered) and the source tier, verify, and batch
+  verification workspace — each asserted to report zero violations.
+- **jsdom limitation:** `color-contrast` requires real computed layout and is
+  the only documented `MANUAL_ONLY_RULES` entry. It is enforced by the manual
+  contrast checklist in this document instead.
+- **Fail-closed discipline:** any axe rule that returns `incomplete` for a
+  reason other than a documented `MANUAL_ONLY_RULES` entry fails the suite, so
+  an environment limitation can never mask a defect without an explicit,
+  reviewed acknowledgement.
+
+### Privacy
+
+The suite renders only idle application states with synthetic fixture data —
+no real video media, seeds, proof witnesses, credentials, or private keys are
+involved, and violation messages are never logged with sensitive material. The
+negative "the harness has teeth" test uses inline browser-style markup only.
+
+### Version, migration, and rollback
+
+- Additive dev-only dependency: `axe-core@^4.13.0` (no runtime bundle impact;
+  the test files live under `src/test` and `**/*.test.tsx`, which the build
+  excludes).
+- No protocol, artifact, contract, or stored-evidence changes; the two landing
+  page labelling fixes are non-breaking HTML attribute additions that align the
+  code with this document's prior claims (`<title>`/`aria-labelledby` on the
+  workflow SVG, `role="group"` on the protocol-status and primary-nav groups).
+- Rollback: revert `App.tsx`, `LandingView.tsx`, the package/lock files, the
+  two new test source files, and the CI step. CI simply stops running axe;
+  no data migration is required.
+
+---
+
 ## Deployment Impact
 
 - No backend changes. This is a pure frontend concern.
@@ -190,6 +278,7 @@ Use browser DevTools Accessibility panel or the [WebAIM Contrast Checker](https:
 - No new runtime dependencies (the hooks use only React built-ins).
 - Bundle size impact: ~2 KB for `useA11y.ts` (minified + gzipped ≈ 0.7 KB).
 - The `.sr-only` elements and live regions add ~5 DOM nodes unconditionally; no performance impact.
+- Offline verification (`offlineVerification.ts`) is a pure client module with an injectable extractor and adds no runtime dependencies; its dynamic `stego` import is code-split so the online-only bundle is unaffected.
 
 ---
 
@@ -204,6 +293,12 @@ This change is additive — it only adds ARIA attributes, live regions, focus ma
 
 No data migrations, localStorage schema changes, or contract state changes are involved.
 
+For the offline local verification mode specifically: delete
+`frontend/src/offlineVerification.ts` and its test, revert
+`frontend/src/hooks/useVerification.ts`, `frontend/src/views/VerifyView.tsx`,
+and `frontend/src/App.css`, and the portal ships with the online-only flow.
+Offline mode persists nothing and writes no storage, so rollback is lossless.
+
 ---
 
 ## Operational Signals
@@ -215,6 +310,9 @@ No data migrations, localStorage schema changes, or contract state changes are i
 | Proving started | `#live-status` + `#studio-status` | polite | safe |
 | Evidence ready | `#live-status` + `#studio-status` | polite | safe |
 | Registration submitted | `#live-status` + `#studio-status` | polite | safe (status code only) |
+| Offline check started | verify progress region | polite | safe |
+| Offline result (local check only) | verify result region | polite | safe (never a confirm framing) |
+| Offline dependency unavailable | verify result region | assertive | safe ("No trust decision was made.") |
 | Wallet connected | `#live-status` | polite | safe (no key in message) |
 | Network mismatch | `#live-alert` + banner `role="alert"` | assertive | safe |
 | Any error | `#live-alert` | assertive | sanitised |
@@ -229,7 +327,14 @@ No data migrations, localStorage schema changes, or contract state changes are i
 
 3. **Freighter wallet extension:** The wallet connection UX depends on the Freighter browser extension injecting its own UI. That UI is outside the scope of this audit.
 
-4. **No automated axe integration:** `axe-core` / `jest-axe` is not in the test suite. The unit tests cover hook logic and DOM semantics via Testing Library queries. A future CI step could run `@axe-core/playwright` against the running dev server for full rule coverage.
+4. **Layout-dependent rules are not covered by jsdom axe:** `axe-core` runs
+   inside jsdom with the WCAG 2.2 A/AA rule set, but jsdom has no rendering
+   engine. `color-contrast` (and any future layout-dependent rule) therefore
+   cannot be evaluated there and is explicitly documented in
+   `MANUAL_ONLY_RULES` (step 5 and the section below). Focus-ring visuality,
+   `:focus-visible` appearance, target size at 200% zoom, and reduced-motion
+   behavior likewise remain in the manual checklist, as they require a real
+   browser.
 
 5. **Colour contrast on animations:** The WebGL EvilEye background and prismatic veil are `aria-hidden` and decorative. Their colours are not subject to contrast requirements. Reduced-motion users see them frozen or at 1 ms duration.
 
@@ -281,3 +386,8 @@ Each nav button (`Evidence`, `Verify`, `Batch Workspace`) has `aria-current="pag
 | `src/App.css` | Existing: skip-link, sr-only, focus-visible rings, touch targets, contrast, reduced-motion |
 | `src/views/StudioView.tsx` | Updated: aria-busy on section, role="status" on status p, aria-pressed on tier tabs, aria-label on data-list, aria-label on studio section, aria-label on download link, visible sr-only statusLabel region |
 | `src/App.test.tsx` | Updated: 8 new integration tests for accessibility features |
+| `src/a11y.axe.test.tsx` | New: automated axe-core WCAG 2.2 AA checks over every public view + negative/boundary/regression coverage |
+| `src/test/axeA11y.ts` | New: shared axe rule set, `MANUAL_ONLY_RULES`, and fail-closed `expectNoA11yViolations` assertion |
+| `src/App.tsx` | Updated: `role="group"` on the primary-navigation button group |
+| `src/views/LandingView.tsx` | Updated: workflow SVG now carries its own `<title>`/`aria-labelledby`; `role="group"` on the protocol-status panel |
+| `.github/workflows/frontend-ci.yml` | Updated: runs `npm run test:a11y` on every frontend CI run |

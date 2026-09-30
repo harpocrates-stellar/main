@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from tracing import traced
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SINGLE_SCRIPT_PATH = ROOT_DIR / "zk" / "noir" / "scripts" / "generate-silent-witness-wsl.ps1"
@@ -18,6 +20,7 @@ from verifier_inputs import (
 )
 
 
+@traced("proof.noir.generate", attributes={"proof.system": "noir"})
 def generate_silent_witness(
     video_hash: str,
     credential_secret: str,
@@ -64,6 +67,7 @@ def generate_silent_witness(
     raise RuntimeError("Noir proof generator did not return JSON.")
 
 
+@traced("proof.noir.aggregate", attributes={"proof.system": "noir"})
 def generate_aggregated_proof(
     video_hashes: list[str],
     credential_secret: str,

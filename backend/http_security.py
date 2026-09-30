@@ -13,6 +13,12 @@ from typing import Mapping, MutableMapping
 # of truth for both create_app() and focused CORS tests.
 CORS_METHODS: tuple[str, ...] = ("GET", "POST", "OPTIONS")
 
+# Server-side endpoints exempt from strict Origin enforcement. Server-to-server
+# callers (health probes, metrics scrapers, contract/webhook workers) legitimately
+# send no ``Origin`` header at all — a missing Origin is not a cross-origin
+# browser request and must never be rejected.
+CORS_EXEMPT_PATHS: frozenset[str] = frozenset({"/health", "/ready", "/metrics"})
+
 # Request headers the public API accepts from browser clients. The trace /
 # correlation headers are emitted by the request middleware in ``app.py``
 # (``trace_fields.build_trace_fields``); they must be allowed here so a
@@ -47,6 +53,13 @@ CORS_EXPOSE_HEADERS: tuple[str, ...] = (
     "X-Harpocrates-Retention-Class",
 )
 
+# Canonical scheme://host pairs the backend treats as trusted. Configuration
+# remains authoritative for anything beyond these defaults.
+CANONICAL_CORS_ORIGINS: tuple[str, ...] = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
 # Privacy-preserving defaults applied on every response when enabled.
 SECURITY_HEADERS: dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
@@ -66,13 +79,58 @@ def cors_kwargs(origins: list[str]) -> dict[str, object]:
     }
 
 
-def is_origin_allowed(origin: str | None, allowed_origins: list[str]) -> bool:
-    """Return True when *origin* is permitted by the configured allow-list."""
+def normalize_origin(origin: str | None) -> str | None:
+    """Return a canonical ``scheme://host[:port]`` form of *origin*, else None.
+
+    Normalization is deliberately narrow: surrounding whitespace is stripped and
+    the value is lowercased (schemes and hosts are case-insensitive). Path,
+    query, and fragment components are rejected because a CORS origin never
+    carries them — an Origin such as ``https://app.example.com/evil`` is not the
+    trusted origin ``https://app.example.com`` and must not match it.
+    Returns ``None`` for anything empty, malformed, or path-bearing so strict
+    allow-list matching can reject it.
+    """
     if not origin:
-        return False
+        return None
+    candidate = origin.strip().lower()
+    if not candidate or any(c in candidate for c in "?#"):
+        return None
+    # A well-formed origin has exactly one "://" separating scheme and host.
+    if candidate.count("://") != 1:
+        return None
+    scheme, _, host = candidate.partition("://")
+    if not scheme or not host:
+        return None
+    # Path/query/fragment components never belong to an origin; reject values
+    # such as "https://app.example.com/evil" outright.
+    if any(c in host for c in "/?#"):
+        return None
+    # Reject credentials smuggled into the authority (user:pass@host).
+    if "@" in host:
+        return None
+    # Reject a missing or malformed port (":", "abc:", ":port", "1:2:3").
+    if ":" in host:
+        _, _, port = host.rpartition(":")
+        if not port or not port.isdigit() or not 1 <= int(port) <= 65535:
+            return None
+    return candidate
+
+
+def is_origin_allowed(origin: str | None, allowed_origins: list[str]) -> bool:
+    """Strictly decide whether *origin* is permitted by the configured allow-list.
+
+    Both sides are normalized first, so case or whitespace variations of a
+    configured origin cannot smuggle a match, while path/query-bearing values
+    are rejected outright. A wildcard entry (``*``) is honored only because
+    ``load_config`` already gates it behind ``ALLOW_WILDCARD_CORS=true`` and
+    forbids it in production.
+    """
     if "*" in allowed_origins:
         return True
-    return origin in allowed_origins
+    canonical = normalize_origin(origin)
+    if canonical is None:
+        return False
+    return canonical in {normalize_origin(entry) for entry in allowed_origins}
 
 
 def is_cors_method_allowed(method: str | None) -> bool:

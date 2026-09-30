@@ -14,6 +14,7 @@ import type { View } from './types'
 import { createProofManifest } from './proofManifest'
 import { CONTRACT_NETWORK_PASSPHRASE } from './stellar'
 import { buildProvenanceRecord } from './provenance/provenanceModel'
+import { parseVerificationShareLink, type VerificationSharePayload } from './verificationShareLink'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
@@ -30,16 +31,29 @@ function methodForTier(tier: IdentityTier) {
 
 function initialView(): AppView {
   const hash = window.location.hash.replace('#', '')
-  return hash === 'studio' || hash === 'verify' || hash === 'batch' ? hash : 'landing'
+  const view = hash.split('?')[0]
+  return view === 'studio' || view === 'verify' || view === 'batch' ? view : 'landing'
+}
+
+function initialSharePayload(): VerificationSharePayload | null {
+  const parsed = parseVerificationShareLink(window.location.href)
+  return parsed.ok ? parsed.payload : null
 }
 
 function App() {
   const [currentView, setCurrentView] = useState<AppView>(initialView)
+  const [sharePayload] = useState<VerificationSharePayload | null>(initialSharePayload)
   const [isScrolled, setIsScrolled] = useState(false)
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
   const verification = useVerification()
+
+  useEffect(() => {
+    if (!sharePayload) return
+    setCurrentView('verify')
+    void verification.loadSharedVerification(sharePayload)
+  }, [sharePayload, verification.loadSharedVerification])
 
   const liveStatus = useLiveRegion()
   const liveAlert = useLiveRegion()
@@ -102,6 +116,7 @@ function App() {
   }, [])
 
   function openView(view: AppView) {
+    if (view !== currentView) evidence.cancelProving()
     setCurrentView(view)
     const nextHash = view === 'landing' ? window.location.pathname : `${window.location.pathname}#${view}`
     window.history.replaceState(null, '', nextHash)
@@ -142,7 +157,7 @@ function App() {
           <button className="brand" type="button" onClick={() => openView('landing')} title="Home">
             Harpocrates
           </button>
-          <div className="navlinks" aria-label="Primary">
+          <div className="navlinks" role="group" aria-label="Primary">
             <button
               className={currentView === 'studio' ? 'active' : ''}
               aria-current={currentView === 'studio' ? 'page' : undefined}

@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "category": "dependency-failure",
+  "description": "Simulated external dependency failure vectors that must be handled gracefully at the privacy boundary",
+  "cases": [
+    {
+      "id": "dep-001-tsa-timeout",
+      "description": "TSA (RFC 3161) request timeout must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965804Z",
+        "rfc3161": {
+          "tsaUrl": "https://tsa.example.com",
+          "timeoutMs": 5000
+        }
+      },
+      "expect": {
+        "reject_code": "tsa_timeout",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-002-tsa-unreachable",
+      "description": "TSA unreachable must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965808Z",
+        "rfc3161": {
+          "tsaUrl": "https://unreachable-tsa.example.com",
+          "timeoutMs": 5000
+        }
+      },
+      "expect": {
+        "reject_code": "tsa_unreachable",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-003-rpc-timeout",
+      "description": "Stellar RPC request timeout must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965811Z",
+        "stellarRpc": {
+          "url": "https://rpc.example.com",
+          "timeoutMs": 10000
+        }
+      },
+      "expect": {
+        "reject_code": "rpc_timeout",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-004-rpc-rate-limited",
+      "description": "RPC rate limit response must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965814Z",
+        "stellarRpc": {
+          "url": "https://rpc.example.com",
+          "rateLimited": true,
+          "retryAfterMs": 60000
+        }
+      },
+      "expect": {
+        "reject_code": "rpc_rate_limited",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-005-indexer-unavailable",
+      "description": "Indexer service unavailable must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965818Z",
+        "indexer": {
+          "url": "https://indexer.example.com",
+          "status": "unavailable"
+        }
+      },
+      "expect": {
+        "reject_code": "indexer_unavailable",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-006-verifier-service-down",
+      "description": "Verifier service down must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965821Z",
+        "verifier": {
+          "url": "https://verifier.example.com",
+          "status": "down"
+        }
+      },
+      "expect": {
+        "reject_code": "verifier_unavailable",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-007-database-connection-failed",
+      "description": "Database connection failure must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965823Z",
+        "database": {
+          "status": "connection_failed"
+        }
+      },
+      "expect": {
+        "reject_code": "database_unavailable",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-008-cache-miss-storm",
+      "description": "Cache miss storm must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965826Z",
+        "cache": {
+          "status": "miss_storm",
+          "missRate": 0.99
+        }
+      },
+      "expect": {
+        "reject_code": "cache_degraded",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-009-external-oracle-failure",
+      "description": "External oracle failure must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "source",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965829Z",
+        "oracle": {
+          "url": "https://oracle.example.com",
+          "status": "failure",
+          "errorCode": "ORACLE_UNAVAILABLE"
+        }
+      },
+      "expect": {
+        "reject_code": "oracle_failure",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "dep-010-network-partition",
+      "description": "Network partition must be handled gracefully",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965832Z",
+        "network": {
+          "partition": true,
+          "affectedServices": [
+            "rpc",
+            "indexer",
+            "tsa"
+          ]
+        }
+      },
+      "expect": {
+        "reject_code": "network_partition",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    }
+  ]
+}

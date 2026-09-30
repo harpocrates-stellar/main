@@ -200,4 +200,129 @@ describe('pollTransactionStatus', () => {
     expect(result.status).toBe('pending')
     expect(getTransaction).toHaveBeenCalledTimes(4)
   })
+
+  it('returns pending when timeoutMs is 0 (exceeded before first attempt)', async () => {
+    const getTransaction = vi.fn().mockResolvedValue({
+      status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+      txHash: 'poll-timeout-before',
+    })
+
+    const server = { getTransaction } as unknown as rpc.Server
+
+    // Use timeoutMs: 0 - should timeout immediately before any attempt
+    const result = await pollTransactionStatus('poll-timeout-before', undefined, {
+      maxAttempts: 10,
+      intervalMs: 100,
+      timeoutMs: 0,
+      server,
+    })
+    expect(result.status).toBe('pending')
+    // Should not call getTransaction since timeout is 0
+    expect(getTransaction).toHaveBeenCalledTimes(0)
+  })
+
+  it('returns pending when timeoutMs is negative (exceeded before first attempt)', async () => {
+    const getTransaction = vi.fn().mockResolvedValue({
+      status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+      txHash: 'poll-timeout-negative',
+    })
+
+    const server = { getTransaction } as unknown as rpc.Server
+
+    // Use negative timeout - should timeout immediately before any attempt
+    const result = await pollTransactionStatus('poll-timeout-negative', undefined, {
+      maxAttempts: 10,
+      intervalMs: 100,
+      timeoutMs: -1,
+      server,
+    })
+    expect(result.status).toBe('pending')
+    expect(getTransaction).toHaveBeenCalledTimes(0)
+  })
+
+  it('returns pending when timeoutMs is exceeded during polling', async () => {
+    const getTransaction = vi.fn().mockResolvedValue({
+      status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+      txHash: 'poll-timeout-during',
+    })
+
+    const server = { getTransaction } as unknown as rpc.Server
+
+    // Timeout after 50ms, interval 100ms - should timeout after first attempt
+    const result = await pollTransactionStatus('poll-timeout-during', undefined, {
+      maxAttempts: 10,
+      intervalMs: 100,
+      timeoutMs: 50,
+      server,
+    })
+    expect(result.status).toBe('pending')
+    // Should only call once before timeout
+    expect(getTransaction).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses default timeoutMs (30000ms) when not specified', async () => {
+    const getTransaction = vi.fn().mockResolvedValue({
+      status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+      txHash: 'poll-default-timeout',
+    })
+
+    const server = { getTransaction } as unknown as rpc.Server
+
+    const result = await pollTransactionStatus('poll-default-timeout', undefined, {
+      maxAttempts: 10,
+      intervalMs: 100,
+      server,
+    })
+    // With defaults, should exhaust maxAttempts (10 * 100ms = 1000ms) which is less than default 30000ms
+    expect(result.status).toBe('pending')
+    expect(getTransaction).toHaveBeenCalledTimes(10)
+  })
+
+  it('timeoutMs takes precedence over maxAttempts * intervalMs', async () => {
+    const getTransaction = vi.fn().mockResolvedValue({
+      status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+      txHash: 'poll-timeout-precedence',
+    })
+
+    const server = { getTransaction } as unknown as rpc.Server
+
+    // maxAttempts * intervalMs = 10 * 1000 = 10000ms, but timeoutMs = 100ms
+    const result = await pollTransactionStatus('poll-timeout-precedence', undefined, {
+      maxAttempts: 10,
+      intervalMs: 1000,
+      timeoutMs: 100,
+      server,
+    })
+    expect(result.status).toBe('pending')
+    // Should timeout before exhausting maxAttempts
+    expect(getTransaction).toHaveBeenCalledTimes(1)
+  })
+
+  it('respects remaining time for final sleep', async () => {
+    const getTransaction = vi.fn().mockResolvedValue({
+      status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+      txHash: 'poll-sleep-adjust',
+    })
+
+    const server = { getTransaction } as unknown as rpc.Server
+
+    const start = Date.now()
+    // timeoutMs = 150ms, intervalMs = 100ms
+    // First attempt at 0ms, sleep min(100, 150) = 100ms
+    // Second attempt at ~100ms, sleep min(100, 50) = 50ms
+    // Third attempt at ~150ms, timeout exceeded
+    const result = await pollTransactionStatus('poll-sleep-adjust', undefined, {
+      maxAttempts: 10,
+      intervalMs: 100,
+      timeoutMs: 150,
+      server,
+    })
+    const elapsed = Date.now() - start
+    expect(result.status).toBe('pending')
+    // Should take approximately 150ms (not 200ms from 2 full intervals)
+    expect(elapsed).toBeLessThan(200)
+    expect(elapsed).toBeGreaterThanOrEqual(140)
+    // Should only make 2 attempts (first at 0ms, second at ~100ms)
+    expect(getTransaction).toHaveBeenCalledTimes(2)
+  })
 })
