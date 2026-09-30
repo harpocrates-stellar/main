@@ -6,13 +6,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from load_test import (
     LoadConfig,
     LoadResult,
     LoadTestRunner,
+    LoadWorker,
     SyntheticCorpus,
     Tier,
+    _report_base_url,
 )
 
 
@@ -156,6 +159,71 @@ class TestSyntheticCorpus(unittest.TestCase):
         self.assertTrue(Path(tmp_dir).exists())
         self.corpus.cleanup()
         self.assertFalse(Path(tmp_dir).exists())
+
+
+class TestUploadVerificationOperation(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.video_path = Path(self.temp_dir.name) / "synthetic.mp4"
+        self.video_path.write_bytes(b"synthetic input")
+        self.metadata = {
+            "protocol": "harpocrates",
+            "version": 1,
+            "tier": "silent",
+            "sourceHash": "11" * 32,
+            "proofId": "22" * 32,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "synthetic": True,
+        }
+        self.corpus = Mock()
+        self.corpus.create_synthetic_video.return_value = self.video_path
+        self.corpus.create_synthetic_metadata.return_value = self.metadata
+        self.worker = LoadWorker(LoadConfig(), self.corpus)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_upload_and_extraction_verify_matching_synthetic_metadata(self) -> None:
+        uploaded = Mock(status_code=200, headers={"Content-Type": "video/mp4"}, content=b"embedded")
+        extracted = Mock(status_code=200)
+        extracted.json.return_value = {"metadata": self.metadata}
+        self.worker.session.post = Mock(side_effect=[uploaded, extracted])
+
+        _latency, success, error = self.worker.upload_verify_operation()
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(self.worker.session.post.call_count, 2)
+        self.assertTrue(self.worker.session.post.call_args_list[0].args[0].endswith("/api/stego/embed"))
+        self.assertTrue(self.worker.session.post.call_args_list[1].args[0].endswith("/api/stego/extract"))
+
+    def test_extraction_mismatch_is_a_failure(self) -> None:
+        uploaded = Mock(status_code=200, headers={"Content-Type": "video/mp4"}, content=b"embedded")
+        extracted = Mock(status_code=200)
+        extracted.json.return_value = {"metadata": {**self.metadata, "proofId": "33" * 32}}
+        self.worker.session.post = Mock(side_effect=[uploaded, extracted])
+
+        _latency, success, error = self.worker.upload_verify_operation()
+
+        self.assertFalse(success)
+        self.assertEqual(error, "verification metadata mismatch")
+
+    def test_http_error_does_not_echo_response_body(self) -> None:
+        response = Mock(status_code=413, text="private payload must not appear")
+        self.worker.session.post = Mock(return_value=response)
+
+        _latency, success, error = self.worker.upload_verify_operation()
+
+        self.assertFalse(success)
+        self.assertEqual(error, "HTTP 413")
+        self.assertNotIn("private payload", error)
+
+
+class TestLoadReportPrivacy(unittest.TestCase):
+    def test_base_url_report_removes_credentials_path_and_query(self) -> None:
+        safe_url = _report_base_url("https://user:secret@example.test/private?token=secret")
+        self.assertEqual(safe_url, "https://example.test")
+        self.assertNotIn("secret", safe_url)
 
 
 class TestLoadTestRunner(unittest.TestCase):

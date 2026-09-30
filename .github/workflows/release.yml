@@ -76,7 +76,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Attest backend image provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}
           subject-digest: ${{ steps.push-backend.outputs.digest }}
@@ -133,7 +133,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Attest frontend image provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}
           subject-digest: ${{ steps.push-frontend.outputs.digest }}

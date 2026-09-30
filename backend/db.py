@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import logging
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
@@ -11,10 +13,53 @@ from typing import Any, Iterator
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from tracing import job_trace_context, span
+
+logger = logging.getLogger(__name__)
 
 # Max page size for GET /api/proofs cursor pagination.
 PROOF_EVENTS_MAX_LIMIT = 100
 PROOF_EVENTS_DEFAULT_LIMIT = 25
+RETENTION_BATCH_MAX_SIZE = 100
+
+# Libpq / Postgres connection-class SQLSTATEs that are typically transient on
+# Neon (cold start, compute wake, brief network blips, pooler pressure).
+_TRANSIENT_SQLSTATES = frozenset(
+    {
+        "08000",  # connection_exception
+        "08001",  # sqlclient_unable_to_establish_sqlconnection
+        "08003",  # connection_does_not_exist
+        "08004",  # sqlserver_rejected_establishment_of_sqlconnection
+        "08006",  # connection_failure
+        "08007",  # transaction_resolution_unknown
+        "57P01",  # admin_shutdown
+        "57P02",  # crash_shutdown
+        "57P03",  # cannot_connect_now (Neon compute starting)
+        "53300",  # too_many_connections
+        "53400",  # configuration_limit_exceeded
+    }
+)
+
+_TRANSIENT_MESSAGE_FRAGMENTS = (
+    "timeout expired",
+    "timed out",
+    "connection timed out",
+    "connection refused",
+    "connection reset",
+    "server closed the connection",
+    "could not connect",
+    "ssl connection has been closed",
+    "the database system is starting up",
+    "the database system is in recovery mode",
+    "remaining connection slots",
+    "temporary failure",
+    "broken pipe",
+    "connection terminated",
+    "terminating connection due to administrator command",
+    "compute is not active",
+    "couldn't connect to compute",
+    "error connecting to compute node",
+)
 
 
 def encode_proof_events_cursor(event_id: int) -> str:
@@ -51,14 +96,155 @@ def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = float(raw)
+    if value <= 0.0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = int(raw)
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def db_connect_timeout_seconds() -> float:
+    """Per-attempt libpq connect timeout (seconds)."""
+    return _positive_float_env("DB_CONNECT_TIMEOUT_SECONDS", 5.0)
+
+
+def db_connect_deadline_seconds() -> float:
+    """Overall wall-clock budget for connect + retries (seconds)."""
+    return _positive_float_env("DB_CONNECT_DEADLINE_SECONDS", 15.0)
+
+
+def db_connect_max_attempts() -> int:
+    """Maximum connect attempts within the deadline."""
+    return _positive_int_env("DB_CONNECT_MAX_ATTEMPTS", 4)
+
+
+def db_connect_retry_base_seconds() -> float:
+    """Base backoff before the first retry (doubles each attempt)."""
+    return _positive_float_env("DB_CONNECT_RETRY_BASE_SECONDS", 0.05)
+
+
+def is_transient_neon_connect_error(exc: BaseException) -> bool:
+    """Return True when *exc* looks like a transient Neon/Postgres connect failure.
+
+    Classification is intentionally conservative: auth failures, syntax errors,
+    and other permanent faults are not retried. Never inspect or return the
+    connection string — only error class / SQLSTATE / sanitized message text.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, OSError)):
+        # OSError covers many socket-level connect failures; exclude permission
+        # errors which are not transient.
+        if isinstance(exc, PermissionError):
+            return False
+        return True
+
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate in _TRANSIENT_SQLSTATES:
+        return True
+
+    if isinstance(exc, psycopg.OperationalError):
+        message = str(exc).lower()
+        if any(fragment in message for fragment in _TRANSIENT_MESSAGE_FRAGMENTS):
+            return True
+        # OperationalError without a permanent marker is treated as transient
+        # for the connect path only (Neon wake / pooler flaps).
+        permanent_markers = (
+            "password authentication failed",
+            "authentication failed",
+            "no password supplied",
+            "certificate verify failed",
+            "could not translate host name",
+        )
+        if any(marker in message for marker in permanent_markers):
+            return False
+        return True
+
+    return False
+
+
+def _connect_with_retry(url: str) -> psycopg.Connection:
+    """Open a psycopg connection, retrying transient Neon failures until deadline.
+
+    Privacy: never logs ``DATABASE_URL`` or credentials — only attempt counts,
+    SQLSTATE, and exception class names.
+    """
+    deadline_at = time.monotonic() + db_connect_deadline_seconds()
+    per_attempt_timeout = db_connect_timeout_seconds()
+    max_attempts = db_connect_max_attempts()
+    retry_base = db_connect_retry_base_seconds()
+    last_exc: BaseException | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            break
+
+        connect_timeout = max(1, int(min(per_attempt_timeout, remaining)))
+        try:
+            return psycopg.connect(
+                url,
+                row_factory=dict_row,
+                connect_timeout=connect_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — classify then re-raise
+            last_exc = exc
+            transient = is_transient_neon_connect_error(exc)
+            sqlstate = getattr(exc, "sqlstate", None)
+            logger.warning(
+                "neon_connect_attempt_failed attempt=%s/%s transient=%s sqlstate=%s error_type=%s",
+                attempt,
+                max_attempts,
+                transient,
+                sqlstate,
+                type(exc).__name__,
+            )
+            if not transient:
+                raise
+
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0 or attempt >= max_attempts:
+                break
+
+            sleep_for = min(retry_base * (2 ** (attempt - 1)), max(0.0, remaining / 2.0))
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    message = "database connection deadline exceeded"
+    if last_exc is None:
+        raise RuntimeError(message)
+    raise RuntimeError(message) from last_exc
+
+
 @contextmanager
 def get_connection() -> Iterator[psycopg.Connection]:
-    url = database_url()
-    if not url:
-        raise RuntimeError("DATABASE_URL is not configured")
+    """Yield a Postgres connection with Neon-aware transient connect retries.
 
-    with psycopg.connect(url, row_factory=dict_row) as connection:
-        yield connection
+    Callers keep the existing interface. Connect attempts honour
+    ``DB_CONNECT_TIMEOUT_SECONDS`` per try and ``DB_CONNECT_DEADLINE_SECONDS``
+    overall so readiness / request paths stay bounded.
+    """
+    with span("db.connection", attributes={"db.system.name": "postgresql"}):
+        url = database_url()
+        if not url:
+            raise RuntimeError("DATABASE_URL is not configured")
+
+        connection = _connect_with_retry(url)
+        try:
+            yield connection
+        finally:
+            connection.close()
 
 
 def init_db() -> None:
@@ -66,10 +252,38 @@ def init_db() -> None:
 
     This replaces the earlier inline ``CREATE TABLE IF NOT EXISTS`` approach
     with an ordered, auditable migration ledger.  Safe to call repeatedly.
+
+    Before any pending migration is applied, the recorded checksum of every
+    already-applied migration is replayed against its in-code definition; a
+    mismatch raises ``migration.MigrationChecksumError`` so a drifted ledger
+    cannot silently start serving traffic.  Set
+    ``MIGRATION_CHECKSUM_ENFORCEMENT=warn`` only as a temporary break-glass
+    rollback while the ledger is reconciled.
     """
     from migration import run_migrations  # late import to avoid cycles
 
     run_migrations()
+
+
+def verify_migration_checksums() -> list[dict[str, object]]:
+    """Return applied migrations whose recorded checksum no longer matches.
+
+    Each dict has keys ``migration_id``, ``name``, ``issue``, ``expected`` and
+    ``recorded``.  An empty list means every applied migration is intact.
+    Read-only; intended for startup diagnostics and operational tooling.
+    """
+    from migration import verify_migration_checksums as _verify
+
+    return [
+        {
+            "migration_id": issue.migration_id,
+            "name": issue.name,
+            "issue": issue.issue,
+            "expected": issue.expected,
+            "recorded": issue.recorded,
+        }
+        for issue in _verify()
+    ]
 
 
 def detect_drift() -> list[dict[str, str]]:
@@ -245,9 +459,11 @@ def insert_proof_event(
                     contract_id,
                     retention_class,
                     expires_at,
-                    metadata
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at;
                 """,
                 (
@@ -392,6 +608,36 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
 
 
+def find_proof_owner(proof_id: str) -> str | None:
+    """Return the ``source_address`` that first registered ``proof_id``.
+
+    The earliest register event with a recorded address is authoritative, so a
+    later event cannot re-assign ownership. Returns ``None`` when the proof is
+    unknown, was registered without an address, or no database is configured
+    (the same stub behaviour as :func:`upsert_register_event`). Database errors
+    propagate so callers can fail closed instead of guessing.
+    """
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select source_address
+                from proof_events
+                where proof_id = %s
+                  and event_type = 'register'
+                  and source_address is not null
+                order by id asc
+                limit 1;
+                """,
+                (proof_id,),
+            )
+            row = cursor.fetchone()
+    return row["source_address"] if row else None
+
+
 def make_idempotency_key(video_hash: str, proof_id: str, tx_hash: str | None) -> str:
     """Derive the idempotency key for a register event.
 
@@ -480,7 +726,7 @@ def upsert_register_event(
                     claimed_capture_time,
                     idempotency_key
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (idempotency_key)
                 where idempotency_key is not null
                 do nothing
@@ -688,20 +934,67 @@ def list_proof_history_events(
             )
             return [dict(row) for row in cursor.fetchall()]
 
-def update_tx_status(tx_hash: str, status: str) -> None:
+def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
+    """Return pending registration rows that still need on-chain reconciliation."""
     if not database_url():
-        return
+        return []
+    page_size = max(1, min(int(limit), 50))
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                update proof_events
-                set tx_status = %s
-                where tx_hash = %s;
+                select id, proof_id, tx_hash, tx_status, contract_id, created_at
+                from proof_events
+                where tx_hash is not null
+                  and tx_status = 'pending'
+                order by id asc
+                limit %s;
                 """,
-                (status, tx_hash)
+                (page_size,),
             )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def update_tx_status(tx_hash: str, status: str, *, force: bool = False) -> bool:
+    """Persist a reconciled tx status.
+
+    By default only transitions rows that are still ``pending`` so terminal
+    confirmations are idempotent and concurrent workers do not clobber each
+    other. Pass ``force=True`` to overwrite a terminal status (repair path).
+
+    Returns True when at least one row was updated.
+    """
+    if not database_url():
+        return False
+    if not isinstance(tx_hash, str) or not tx_hash.strip():
+        return False
+    if status not in {"pending", "confirmed", "failed", "missing"}:
+        raise ValueError("tx status must be pending, confirmed, failed, or missing")
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            if force:
+                cursor.execute(
+                    """
+                    update proof_events
+                    set tx_status = %s
+                    where tx_hash = %s;
+                    """,
+                    (status, tx_hash),
+                )
+            else:
+                cursor.execute(
+                    """
+                    update proof_events
+                    set tx_status = %s
+                    where tx_hash = %s
+                      and (tx_status is null or tx_status = 'pending');
+                    """,
+                    (status, tx_hash),
+                )
+            updated = cursor.rowcount > 0
         connection.commit()
+    return updated
 
 
 def set_legal_hold(proof_id: str, hold: bool) -> None:
@@ -721,7 +1014,7 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
-def purge_expired_events() -> list[dict[str, Any]]:
+def purge_expired_events(batch_size: int = RETENTION_BATCH_MAX_SIZE) -> list[dict[str, Any]]:
     """Delete proof events past their expiration that are not on legal hold.
 
     Returns a list of deletion receipts (proof_id, deleted_at, etc.) for
@@ -729,38 +1022,35 @@ def purge_expired_events() -> list[dict[str, Any]]:
     """
     if not database_url():
         return []
-    now = datetime.now(timezone.utc)
-    receipts: list[dict[str, Any]] = []
+    batch_size = max(1, min(batch_size, RETENTION_BATCH_MAX_SIZE))
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, proof_id, video_hash, metadata_hash,
-                       retention_class, tier
-                from proof_events
-                where expires_at is not null
-                  and expires_at <= %s
-                  and legal_hold = false;
+                with expired as (
+                    select id, proof_id, video_hash, metadata_hash
+                    from proof_events
+                    where expires_at is not null
+                      and expires_at <= now()
+                      and legal_hold = false
+                    order by id
+                    limit %s
+                    for update skip locked
+                ), deleted as (
+                    delete from proof_events
+                    using expired
+                    where proof_events.id = expired.id
+                    returning proof_events.id, proof_events.proof_id,
+                              proof_events.video_hash, proof_events.metadata_hash
+                )
+                insert into deletion_receipts (event_id, proof_id, video_hash, metadata_hash)
+                select id, proof_id, video_hash, metadata_hash
+                from deleted
+                returning id, event_id, proof_id, video_hash, metadata_hash, deleted_at;
                 """,
-                (now,),
+                (batch_size,),
             )
-            expired = [dict(row) for row in cursor.fetchall()]
-            for event in expired:
-                cursor.execute(
-                    """
-                    insert into deletion_receipts (proof_id, video_hash, metadata_hash)
-                    values (%s, %s, %s)
-                    returning id, created_at;
-                    """,
-                    (event["proof_id"], event.get("video_hash"), event.get("metadata_hash")),
-                )
-                receipt = cursor.fetchone()
-                if receipt:
-                    receipts.append(dict(receipt))
-                cursor.execute(
-                    "delete from proof_events where id = %s;",
-                    (event["id"],),
-                )
+            receipts = [dict(row) for row in cursor.fetchall()]
         connection.commit()
     return receipts
 
@@ -778,6 +1068,7 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "id": job_id,
         "type": job_type,
         "payload": payload,
+        "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -797,3 +1088,51 @@ def cancel_job(job_id: int) -> bool:
         job["status"] = "cancelled"
         return True
     return False
+
+
+def lease_job(
+    worker_id: str,
+    job_types: list[str],
+    lease_duration: int = 300,
+) -> dict[str, Any] | None:
+    """Lease the next pending in-memory job matching ``job_types``."""
+    del lease_duration  # in-memory queue has no TTL enforcement yet
+    for job in _JOBS.values():
+        if job.get("status") == "pending" and job.get("type") in job_types:
+            job["status"] = "running"
+            job["worker_id"] = worker_id
+            return dict(job)
+    return None
+
+
+def heartbeat_job(job_id: int, progress: float = 0.0, lease_duration: int = 300) -> None:
+    """Record a heartbeat against an in-memory job lease."""
+    del lease_duration
+    job = _JOBS.get(job_id)
+    if job and job.get("status") == "running":
+        job["progress"] = progress
+        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def complete_job(job_id: int, result: Any = None) -> None:
+    """Mark an in-memory job completed."""
+    job = _JOBS.get(job_id)
+    if not job:
+        return
+    job["status"] = "completed"
+    job["result"] = result
+    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
+    """Mark an in-memory job failed (fatal) or pending for retry."""
+    job = _JOBS.get(job_id)
+    if not job:
+        return
+    job["error"] = error
+    job["failed_at"] = datetime.now(timezone.utc).isoformat()
+    if is_fatal:
+        job["status"] = "failed"
+    else:
+        job["status"] = "pending"
+        job.pop("worker_id", None)

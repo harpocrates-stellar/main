@@ -21,6 +21,72 @@ cargo test
 stellar contract build
 ```
 
+## Contract Wasm Size Budget
+
+Issue #346 adds a fail-closed size budget for the deployed registry artifact
+`harpocrates_registry.wasm` so supply-chain accidents (an unintended
+dependency, a disabled optimization, a truncated artifact) fail CI before
+they can be deployed.
+
+- Constants live in `contracts/harpocrates-registry/src/wasm_budget.rs`:
+  `MAX_WASM_SIZE_BYTES = 128_000` (just under Soroban's 128 KiB upload cap),
+  `MIN_WASM_SIZE_BYTES = 10_000`,
+  `WASM_SIZE_REGRESSION_BAND_PCT = 15`, plus a typed `WasmBudgetError`
+  contract (`ArtifactTooLarge`, `ArtifactTooSmall`, `MissingArtifact`).
+- The budget manifest is `devx/wasm_size_budget.json`; the fail-closed gate
+  is `devx/wasm_size_budget.py` and runs in the Contracts CI workflow after
+  `stellar contract build`.
+- The gate fails closed: a missing artifact, malformed manifest, size
+  outside the `[min, max]` band, or drift beyond `regression_band_pct` from
+  the recorded baseline all fail. Diagnostics carry sizes and digests only —
+  never artifact bytes, proofs, witnesses, media, or keys.
+
+```bash
+# check the built artifact against the budget
+python3 devx/wasm_size_budget.py --check
+
+# deliberately migrate the baseline after a reviewed size change
+python3 devx/wasm_size_budget.py --record
+
+cd contracts/contracts/harpocrates-registry
+make wasm-budget
+```
+
+The module is host-side only (`#[cfg(not(target_arch = "wasm32"))]`), so the
+deployed artifact stays byte-identical to the pre-budget build, and no
+exported contract function, storage key, or event schema changes. The
+recorded baseline also pins the artifact's SHA-256 digest as an audit trail
+for the deployed build. Rollback is reverting the gate step, the manifest,
+and the budget module; no on-chain repair is required.
+
+## Identity-Tier Property Tests
+
+Issue #345 adds focused property tests for identity-tier invariants in
+`contracts/harpocrates-registry/src/test_identity_tier_properties.rs`.
+
+The harness uses a deterministic LCG over reproducible seeds to generate
+registration sequences across Silent Witness (tier 1), Consistent Source
+(tier 2), and Public Seal (tier 3). After every step it checks:
+
+- tier-shaped privacy fields (no source/issuer on tier 1; nullifier only on tier 1)
+- global uniqueness of `proof_id` and `video_hash` across tiers
+- nullifier uniqueness for Silent Witness registrations
+- pause-domain isolation (pausing one tier never blocks the others)
+- lookup consistency (`get_proof` / `get_by_video`)
+- rejected duplicates leave prior storage unchanged
+
+Failure messages report only seeds, tier tags, slot indices, and error codes —
+never proof bytes, public inputs, witnesses, or media.
+
+Run focused:
+
+```
+cargo test -p harpocrates-registry identity_tier -- --nocapture
+```
+
+This change is test-only. It does not alter exported contract entry points,
+storage keys, or on-chain migration behavior.
+
 ## Registry State-Machine Fuzzing
 
 Issue #93 adds deterministic state-machine fuzzing for the registry contract in
@@ -89,6 +155,10 @@ the on-disk layout is already V1-compatible. Future V2+ migrations must land
 in the sequential branch inside `upgrade_storage`, preserve existing proof /
 video / nullifier records, and must never log media, secrets, witnesses, or
 private keys.
+
+A V1 wasm presented with a stored version greater than V1 leaves that version
+and the rest of storage untouched; it does not attempt a downgrade. Operators
+must use a wasm that supports the stored schema version.
 
 Rollback is redeploying a prior wasm: additive `SchemaVersion` keys are
 ignored by older readers, and no proof rewrite is required for the V1 stamp.
@@ -182,6 +252,10 @@ get_proof
 get_by_video
 has_nullifier
 get_issuer
+rotate_issuer
+finalize_issuer_rotation
+get_issuer_rotation
+is_issuer_verifiable
 set_revocation_root
 get_revocation_root
 check_non_revocation
@@ -272,6 +346,9 @@ verify_proof(public_inputs, proof)
 
 See `VERIFIER_INTEGRATION.md` for the UltraHonk verifier deployment plan.
 
+The verifier's verdict is enforced: `verify_external_proof` returning `false`
+fails the registration with `InvalidProof` (`#7`).
+
 Current Testnet verifier:
 
 ```text
@@ -287,6 +364,8 @@ The registry emits typed Soroban events with `#[contractevent]`:
 ["proof", "revoke", proof_id]     => status
 ["issuer", "add", issuer]         => metadata_hash
 ["issuer", "revoke", issuer]      => {}
+["issuer", "rotate", previous_issuer] => replacement_issuer, rotated_at, grace_expires_at, grace_secs
+["issuer", "grace", issuer]       => replacement_issuer, grace_expires_at
 ["verif", "set", verifier]        => {}
 ["credroot", "add", root]         => metadata_hash, issued_at
 ["credroot", "revoke", root]      => {}
@@ -388,6 +467,33 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## Contract Error ABI (#344)
+
+`contracts/ERROR_ABI.md` publishes the stable error ABI (`hpx-err/1`) for
+`RegistryError`: every discriminant, its variant name, its failure class
+(`malformed`, `oversized`, `expired`, `revoked`, `unsupported`, `dependency`,
+plus `auth`, `conflict`, `resource`, `state`), and whether the same call may be
+retried once an external condition clears.
+
+Codes `1..=80` are frozen and append-only: a new failure takes the next unused
+number, and an existing code is never renumbered or reused. The ABI describes
+revert values only. It adds no storage keys, changes no entrypoint signature,
+and requires no migration.
+
+Failure responses stay privacy-safe: a revert is reported as a code, never as a
+dump of the offending input. Proof bytes, public inputs, witnesses, nullifiers,
+media, credentials, signatures, and private keys are never part of an error and
+never logged, and a rejected call still emits no lifecycle event.
+
+`contracts/harpocrates-registry/src/test_error_abi.rs` reads the document at
+compile time and fails if a variant is renamed, renumbered, dropped, duplicated,
+or assigned a class outside the documented set:
+
+```bash
+cd contracts
+cargo test -p harpocrates-registry error_abi -- --nocapture
+```
 
 ## Scripts
 

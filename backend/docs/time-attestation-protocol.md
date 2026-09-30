@@ -125,6 +125,16 @@ For RFC 3161 verification:
 - Expired certificates invalidate the timestamp
 - Self-signed or untrusted certificates result in "unverified" status
 
+**Implementation:** `backend/rfc3161_chain.py` validates leaf-first X.509 chains offline
+(signature linkage, validity at genTime, trust-root termination, optional revoked-serial
+set). Optional `certificateChain` on `rfc3161Anchors` feeds this path via
+`verify_rfc3161_anchors()`. CI fixtures live under `devx/fixtures/rfc3161/` and are
+exercised by `devx/validate_rfc3161_chains.py`.
+
+Failure codes are stable and privacy-safe (`malformed_certificate`, `expired_certificate`,
+`revoked_certificate`, `untrusted_root`, `oversized_chain`, `dependency_failure`, …) and
+never embed PEM/DER, media, witnesses, or private keys.
+
 **Note:** Unverified RFC 3161 timestamps are valid protocol states but provide lower assurance.
 
 ## API Endpoints

@@ -8,6 +8,12 @@ publish = false
 crate-type = ["lib", "cdylib"]
 doctest = false
 
+[features]
+# Exposes the Wasm size-budget constants to host-side tooling (#346).
+# This feature never changes contract storage or entrypoints and must not be
+# enabled for production artifacts.
+wasm-size-budget = []
+
 [dependencies]
 soroban-sdk = { workspace = true }
 
