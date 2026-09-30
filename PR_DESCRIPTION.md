@@ -1,47 +1,63 @@
-# ci(zk): verify Noir circuit builds and generated artifacts
+# fix(frontend): cap proof-worker memory
 
 ## Summary
 
-Adds deterministic CI enforcement that Noir circuits build cleanly and that
-committed artifacts match the circuit sources pinned in `zk/toolchain.lock.json`.
+Caps browser proof-worker memory at the existing Harpocrates ZK boundaries:
+`zk/bench/bench.lock.json` remains the source for witness/proof/public-input
+ceilings, and `zk/browser.artifacts.manifest.json` remains the source for
+published browser ACIR byte ceilings. Oversized work now fails with a stable
+`MEMORY_LIMIT_EXCEEDED` worker code and `proof_worker_memory_exceeded` message.
 
-Closes #8
+Closes #<!-- issue number -->
 
 ## Changes
 
-### `zk/toolchain.lock.json`
-- Added artifact declarations for the `silent_witness_aggregator` and
-  `silent_witness_aggregator_helper` circuits (ACIR, VK, VK fields).
+- Added `frontend/src/proofWorkerMemory.ts` to enforce artifact, witness, proof,
+  public-input, and aggregate runtime byte budgets without logging private
+  material.
+- Wired the guard through `frontend/src/noirClient.ts` for Silent Witness and
+  aggregation proof paths before expensive prover boundaries.
+- Added the worker error mapping in `proofWorker.ts` /
+  `proofWorker.types.ts`.
+- Updated `zk/bench/browser_runner.mjs` so the browser-equivalent benchmark
+  runner applies the same memory budget and reports RSS in the existing schema.
+- Added focused frontend and benchmark tests for positive, boundary, negative,
+  regression, and privacy-safe failure behavior.
+- Documented malformed, oversized, unsupported, dependency-failure, expired,
+  and revoked outcomes where applicable.
 
-### `zk/noir/scripts/reproducible-build.sh`
-- Extended the `CIRCUITS` array to include `silent_witness_aggregator` and
-  `silent_witness_aggregator_helper`.
-- Generalized the `write_vk` block to also generate verification keys for
-  the aggregator circuit (`silent_witness_aggregator`).
+## Trust Boundary / Privacy
 
-### `.github/workflows/zk-ci.yml`
-- Added new `circuit-build` job that:
-  - Installs the pinned `nargo` and `bb` toolchain versions from the lock file.
-  - Verifies installed versions match the lock.
-  - Runs `reproducible-build.sh --verify` to build all circuits from clean
-    targets and compare normalized digests against the committed manifest.
-  - Falls back to `--single` when no manifest is committed yet (inert until
-    first publication).
+- Secrets still cross the main-thread/worker boundary only as transferred
+  `ArrayBuffer`s and are zeroed in the worker.
+- Failure responses carry only stable machine codes and fixed messages. They
+  never include media, credential/nullifier secrets, witness values, proof hex,
+  public-input hex, or private keys.
+- Browser ACIR is public but still bounded before JSON parsing when the fetch
+  response exposes content length or a stream.
 
-### `docs/zk-reproducible-builds.md`
-- Added **Artifact update workflow** section documenting the full workflow
-  from editing circuits to publishing browser artifacts and committing.
-- Added **CI enforcement** subsection explaining the new `circuit-build` job.
-- Added **Adding a new circuit** subsection.
+## Compatibility / Migration
+
+- No Noir circuit source, public-input frame, verifier-input codec, contract
+  ABI, deployment artifact, or stored-evidence format changes.
+- Existing compatible callers continue to use `ProofWorkerClient.generate()`.
+  The only new observable behavior is a stable terminal error code when a job
+  exceeds pinned memory budgets.
+- No data, contract, or evidence migration is required.
+
+## Rollback
+
+Revert the proof-worker memory module and worker error mapping. Existing stored
+evidence and on-chain state require no repair. If a full browser-worker rollback
+is needed, the evidence flow can return to direct `generateSilentWitnessProof`
+calls as documented in `docs/proof-worker.md`.
 
 ## Test Plan
 
-1. **CI path from a clean checkout**: The `circuit-build` job installs nargo/bb,
-   builds all declared circuits, and runs the manifest check. A stale artifact
-   causes `EXIT_DRIFT` (code 1) and the job fails.
-2. **Existing checks**: `artifact-tooling` (unit tests, lock self-consistency)
-   and `conformance-vectors` remain unchanged and pass.
-3. **Local verification** (requires pinned toolchain):
-   ```bash
-   zk/noir/scripts/reproducible-build.sh --verify
-   ```
+```bash
+cd frontend
+npx vitest run src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
+
+cd ..
+python -m pytest zk/bench -q
+```
