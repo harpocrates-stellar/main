@@ -15,7 +15,7 @@ zk/bench/run.sh run --target ci --synthetic
 # Hardware/runtime metadata only
 zk/bench/run.sh metadata
 
-# Compare against baselines (inert until zk/bench/baselines.lock.json exists)
+# Compare against published thresholds in zk/bench/baselines.lock.json
 zk/bench/run.sh compare --report zk/bench/results/<report>.json
 
 # Browser/Node path (requires compiled ACIR + frontend deps)

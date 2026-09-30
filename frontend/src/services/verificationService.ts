@@ -7,7 +7,7 @@
 
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
-import { parseApiError } from './apiError'
+import { ApiClientError, parseActionableApiError } from './apiError'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
@@ -27,7 +27,7 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
     signal,
   })
   if (!response.ok) {
-    throw new Error(await parseApiError(response, 'Extraction service is unavailable.'))
+    throw new ApiClientError(await parseActionableApiError(response, 'Extraction service is unavailable.'))
   }
   const data = await response.json()
   return {
@@ -39,7 +39,7 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
 export async function fetchProofEventsByVideo(videoHash: string, signal?: AbortSignal): Promise<ProofEvent[]> {
   const response = await fetch(`${API_BASE}/api/proofs/by-video/${videoHash}`, { signal })
   if (!response.ok) {
-    throw new Error(await parseApiError(response, 'Database lookup failed.'))
+    throw new ApiClientError(await parseActionableApiError(response, 'Database lookup failed.'))
   }
   const data = await response.json()
   return (data.events ?? []) as ProofEvent[]
