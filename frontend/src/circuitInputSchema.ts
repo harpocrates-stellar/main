@@ -19,6 +19,7 @@ export type CircuitInputErrorCode =
   | 'artifact_mismatch'
   | 'invalid_proof_output'
   | 'circuit_load_failed'
+  | 'proof_worker_memory_exceeded'
   | 'proof_generation_failed'
 
 /** Error messages are fixed codes and never include witness or proof material. */

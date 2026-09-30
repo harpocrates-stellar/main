@@ -102,22 +102,22 @@ fn test_helper_consistent_output() {
     );
 
     // Assert all credential roots match.
-    assert(result[0].0 == cr, "root 0 mismatch");
-    assert(result[1].0 == cr, "root 1 mismatch");
-    assert(result[2].0 == cr, "root 2 mismatch");
-    assert(result[3].0 == cr, "root 3 mismatch");
-    assert(result[4].0 == cr, "root 4 mismatch");
-    assert(result[5].0 == cr, "root 5 mismatch");
-    assert(result[6].0 == cr, "root 6 mismatch");
-    assert(result[7].0 == cr, "root 7 mismatch");
+    assert(result[0].0 == cr, "malformed");
+    assert(result[1].0 == cr, "malformed");
+    assert(result[2].0 == cr, "malformed");
+    assert(result[3].0 == cr, "malformed");
+    assert(result[4].0 == cr, "malformed");
+    assert(result[5].0 == cr, "malformed");
+    assert(result[6].0 == cr, "malformed");
+    assert(result[7].0 == cr, "malformed");
 
     // Assert nullifiers match per-element.
-    assert(result[0].1 == nf_0, "nullifier 0 mismatch");
-    assert(result[1].1 == std::hash::pedersen_hash([cs, ns, z, z]), "nullifier 1 mismatch");
-    assert(result[2].1 == std::hash::pedersen_hash([cs, ns, z + 10, z + 10]), "nullifier 2 mismatch");
-    assert(result[3].1 == std::hash::pedersen_hash([cs, ns, z + 20, z + 20]), "nullifier 3 mismatch");
-    assert(result[4].1 == std::hash::pedersen_hash([cs, ns, z + 30, z + 30]), "nullifier 4 mismatch");
-    assert(result[5].1 == std::hash::pedersen_hash([cs, ns, z + 40, z + 40]), "nullifier 5 mismatch");
-    assert(result[6].1 == std::hash::pedersen_hash([cs, ns, z + 50, z + 50]), "nullifier 6 mismatch");
-    assert(result[7].1 == std::hash::pedersen_hash([cs, ns, z + 60, z + 60]), "nullifier 7 mismatch");
+    assert(result[0].1 == nf_0, "malformed");
+    assert(result[1].1 == std::hash::pedersen_hash([cs, ns, z, z]), "malformed");
+    assert(result[2].1 == std::hash::pedersen_hash([cs, ns, z + 10, z + 10]), "malformed");
+    assert(result[3].1 == std::hash::pedersen_hash([cs, ns, z + 20, z + 20]), "malformed");
+    assert(result[4].1 == std::hash::pedersen_hash([cs, ns, z + 30, z + 30]), "malformed");
+    assert(result[5].1 == std::hash::pedersen_hash([cs, ns, z + 40, z + 40]), "malformed");
+    assert(result[6].1 == std::hash::pedersen_hash([cs, ns, z + 50, z + 50]), "malformed");
+    assert(result[7].1 == std::hash::pedersen_hash([cs, ns, z + 60, z + 60]), "malformed");
 }

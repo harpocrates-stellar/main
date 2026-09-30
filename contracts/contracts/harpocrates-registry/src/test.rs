@@ -13,8 +13,10 @@ struct MockNoirVerifier;
 #[contractimpl]
 impl MockNoirVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
+        // Legal frame lengths: revocation (128), v1 silent (160), v2 scoped
+        // (224), and the circuit-versioned v2 envelope (256, #368).
         let len = public_inputs.len();
-        if !(matches!(len, 128 | 160 | 224)) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -26,7 +28,7 @@ struct MockNoirVerifierV2;
 #[contractimpl]
 impl MockNoirVerifierV2 {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224 | 256) || proof.is_empty() {
             panic!("invalid proof");
         }
     }

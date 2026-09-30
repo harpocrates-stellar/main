@@ -68,11 +68,11 @@ fn main(
 ) {
     // Derive credential_root from the private secret.
     let derived_root = pedersen_hash([credential_secret]);
-    assert(derived_root == credential_root, "credential root mismatch");
+    assert(derived_root == credential_root, "malformed");
 
     // Derive nullifier from secrets.
     let derived_nullifier = pedersen_hash([credential_secret, nullifier_secret]);
-    assert(derived_nullifier == nullifier, "nullifier mismatch");
+    assert(derived_nullifier == nullifier, "malformed");
 
     // ------------------------------------------------------------------
     // Merkle root computation (bounded depth = MAX_REVOCATION_WITNESS_DEPTH,
@@ -89,19 +89,19 @@ fn main(
     let node_4567 = pedersen_hash([node_45, node_67]);
 
     let computed_root = pedersen_hash([node_0123, node_4567]);
-    assert(computed_root == revocation_root, "revocation root mismatch");
+    assert(computed_root == revocation_root, "malformed");
 
     // ------------------------------------------------------------------
     // Non‑membership: credential_root is NOT any leaf
     // ------------------------------------------------------------------
-    assert(credential_root != leaf_0, "credential is in revocation set (leaf 0)");
-    assert(credential_root != leaf_1, "credential is in revocation set (leaf 1)");
-    assert(credential_root != leaf_2, "credential is in revocation set (leaf 2)");
-    assert(credential_root != leaf_3, "credential is in revocation set (leaf 3)");
-    assert(credential_root != leaf_4, "credential is in revocation set (leaf 4)");
-    assert(credential_root != leaf_5, "credential is in revocation set (leaf 5)");
-    assert(credential_root != leaf_6, "credential is in revocation set (leaf 6)");
-    assert(credential_root != leaf_7, "credential is in revocation set (leaf 7)");
+    assert(credential_root != leaf_0, "revoked");
+    assert(credential_root != leaf_1, "revoked");
+    assert(credential_root != leaf_2, "revoked");
+    assert(credential_root != leaf_3, "revoked");
+    assert(credential_root != leaf_4, "revoked");
+    assert(credential_root != leaf_5, "revoked");
+    assert(credential_root != leaf_6, "revoked");
+    assert(credential_root != leaf_7, "revoked");
 
     // Domain binding: `domain_separator` is a structured public input that
     // the contract verifies before calling the UltraHonk verifier.  Because
@@ -253,7 +253,7 @@ fn test_empty_revocation_tree() {
 // ================================================================
 
 /// Wrong credential_secret: derived root doesn't match public `credential_root`.
-#[test(should_fail_with = "credential root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_credential_secret() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -277,7 +277,7 @@ fn test_wrong_credential_secret() {
 }
 
 /// Wrong nullifier_secret: nullifier derivation fails.
-#[test(should_fail_with = "nullifier mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_wrong_nullifier_secret() {
     let cs: Field = 12345;
     let root = pedersen_hash([cs]);
@@ -366,7 +366,7 @@ fn test_credential_at_leaf_seven() {
 }
 
 /// Tampered revocation_root: leaves match the tree but public root is wrong.
-#[test(should_fail_with = "revocation root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_tampered_revocation_root() {
     let cs: Field = 12345;
     let ns: Field = 67890;
@@ -388,7 +388,7 @@ fn test_tampered_revocation_root() {
 }
 
 /// Tampered leaves: a leaf is changed so the computed root won't match.
-#[test(should_fail_with = "revocation root mismatch")]
+#[test(should_fail_with = "malformed")]
 fn test_tampered_leaves() {
     let cs: Field = 12345;
     let ns: Field = 67890;

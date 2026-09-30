@@ -12,7 +12,7 @@
  * When ACIR artifacts are missing, exits 3 with a structured stderr signal
  * (same convention as the Python harness).
  */
-import { readFile, access } from 'node:fs/promises'
+import { readFile, access, stat } from 'node:fs/promises'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -22,10 +22,12 @@ import process from 'node:process'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HELPER = join(ROOT, 'zk/noir/silent_witness_helper/target/silent_witness_helper.json')
 const MAIN = join(ROOT, 'zk/noir/silent_witness/target/silent_witness.json')
+const BENCH_LOCK = join(ROOT, 'zk/bench/bench.lock.json')
 
 const PUBLIC_INPUTS_LEN = 160
 const MIN_PROOF_BYTES = 64
 const MAX_PROOF_BYTES = 65536
+const textEncoder = new TextEncoder()
 
 function signal(event, fields = {}) {
   console.error(JSON.stringify({ event, ...fields }))
@@ -63,6 +65,84 @@ function summarize(samples) {
   }
 }
 
+async function loadBenchLimits() {
+  const raw = JSON.parse(await readFile(BENCH_LOCK, 'utf8'))
+  if (raw.format !== 'harpocrates.zk-bench-lock' || raw.version !== 1) {
+    const err = new Error('unsupported bench lock')
+    err.code = 'unsupported_bench_lock'
+    throw err
+  }
+  return raw.limits
+}
+
+function reject(code) {
+  const err = new Error(code)
+  err.code = code
+  throw err
+}
+
+async function readJsonBounded(path, maxBytes) {
+  const info = await stat(path)
+  if (info.size > maxBytes) reject('memory_limit_exceeded')
+  const text = await readFile(path, 'utf8')
+  const rawBytes = Buffer.byteLength(text, 'utf8')
+  if (rawBytes > maxBytes) reject('memory_limit_exceeded')
+  return { value: JSON.parse(text), rawBytes }
+}
+
+function boundedByteLength(value, limit, seen = new WeakSet()) {
+  if (value == null) return 0
+  if (typeof value === 'string') return textEncoder.encode(value).byteLength
+  if (typeof value === 'number') return Number.isFinite(value) ? 8 : null
+  if (typeof value === 'bigint') return 32
+  if (typeof value === 'boolean') return 1
+  if (value instanceof ArrayBuffer) return value.byteLength
+  if (ArrayBuffer.isView(value)) return value.byteLength
+  if (typeof value !== 'object') return null
+  if (seen.has(value)) return 0
+  seen.add(value)
+
+  let total = 0
+  const add = (next) => {
+    if (next === null) return false
+    total += next
+    return total <= limit
+  }
+  if (value instanceof Map) {
+    for (const [key, item] of value.entries()) {
+      if (!add(boundedByteLength(key, limit - total, seen))) return null
+      if (!add(boundedByteLength(item, limit - total, seen))) return null
+    }
+    return total
+  }
+  if (value instanceof Set || Array.isArray(value)) {
+    for (const item of value.values()) {
+      if (!add(boundedByteLength(item, limit - total, seen))) return null
+    }
+    return total
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (!add(textEncoder.encode(key).byteLength)) return null
+    if (!add(boundedByteLength(item, limit - total, seen))) return null
+  }
+  return total
+}
+
+function assertMemoryBudget({ artifactBytes = 0, witnessBytes = 0, proofBytes = 0, publicInputBytes = 0 }, limits) {
+  if (artifactBytes > limits.max_witness_bytes) reject('memory_limit_exceeded')
+  if (witnessBytes == null || witnessBytes > limits.max_witness_bytes) reject('memory_limit_exceeded')
+  if (proofBytes > limits.max_proof_bytes) reject('memory_limit_exceeded')
+  if (publicInputBytes > limits.max_public_input_bytes) reject('memory_limit_exceeded')
+  const runtimeCap =
+    limits.max_witness_bytes +
+    limits.max_proof_bytes +
+    limits.max_public_input_bytes +
+    artifactBytes
+  if (artifactBytes + witnessBytes + proofBytes + publicInputBytes > runtimeCap) {
+    reject('memory_limit_exceeded')
+  }
+}
+
 async function exists(path) {
   try {
     await access(path)
@@ -78,7 +158,7 @@ async function withTimeout(promise, ms) {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), ms)
+        timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'dependency-failure' })), ms)
       }),
     ])
   } finally {
@@ -86,7 +166,15 @@ async function withTimeout(promise, ms) {
   }
 }
 
-async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit, cold }) {
+async function measureOnce({
+  Noir,
+  UltraHonkBackend,
+  helperCircuit,
+  mainCircuit,
+  artifactBytes,
+  limits,
+  cold,
+}) {
   const videoHash = '1111111111111111111111111111111122222222222222222222222222222222'
   // Synthetic fixture only — never real media or production secrets.
   const baseInputs = {
@@ -105,6 +193,8 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
     nullifier,
   }
   const { witness } = await new Noir(mainCircuit).execute(mainInputs)
+  const witnessBytes = boundedByteLength(witness, limits.max_witness_bytes + 1)
+  assertMemoryBudget({ artifactBytes, witnessBytes }, limits)
   const backend = new UltraHonkBackend(mainCircuit.bytecode)
   try {
     const proofData = await backend.generateProof(witness, { keccak: true })
@@ -112,15 +202,21 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
     const proofBytes = proofData.proof.length
     if (proofBytes < MIN_PROOF_BYTES || proofBytes > MAX_PROOF_BYTES) {
       const err = new Error('proof size out of bounds')
-      err.code = proofBytes > MAX_PROOF_BYTES ? 'proof_oversized' : 'proof_undersized'
+      err.code = proofBytes > MAX_PROOF_BYTES ? 'oversized' : 'malformed'
       throw err
     }
+    assertMemoryBudget({
+      artifactBytes,
+      witnessBytes,
+      proofBytes,
+      publicInputBytes: PUBLIC_INPUTS_LEN,
+    }, limits)
     const v0 = performance.now()
     const verified = await backend.verifyProof(proofData, { keccak: true })
     const verifyMs = performance.now() - v0
     if (!verified) {
       const err = new Error('verification failed')
-      err.code = 'verify_failed'
+      err.code = 'malformed'
       throw err
     }
     return {
@@ -128,6 +224,8 @@ async function measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit,
       verify_ms: verifyMs,
       proof_bytes: proofBytes,
       public_input_bytes: PUBLIC_INPUTS_LEN,
+      witness_bytes: witnessBytes,
+      peak_rss_bytes: process.memoryUsage().rss,
       cold,
     }
   } finally {
@@ -143,9 +241,10 @@ async function main() {
   }
 
   if (!(await exists(MAIN)) || !(await exists(HELPER))) {
-    signal('bench.fatal', { code: 'missing_artifacts', detail: 'compile circuits first' })
+    signal('bench.fatal', { code: 'dependency-failure', detail: 'compile circuits first' })
     process.exit(3)
   }
+  const limits = await loadBenchLimits()
 
   // Dynamic import so the Python unit CI path does not require node_modules.
   let Noir
@@ -160,18 +259,31 @@ async function main() {
     ;({ UltraHonkBackend } = await import(join(frontendModules, '@aztec/bb.js/dest/node/index.js')))
   }
 
-  const helperCircuit = JSON.parse(await readFile(HELPER, 'utf8'))
-  const mainCircuit = JSON.parse(await readFile(MAIN, 'utf8'))
+  const helperArtifact = await readJsonBounded(HELPER, limits.max_witness_bytes)
+  const mainArtifact = await readJsonBounded(MAIN, limits.max_witness_bytes)
+  const helperCircuit = helperArtifact.value
+  const mainCircuit = mainArtifact.value
+  const artifactBytes = helperArtifact.rawBytes + mainArtifact.rawBytes
+  assertMemoryBudget({ artifactBytes }, limits)
 
   signal('bench.start', { target: 'browser', fixture_id: 'silent_witness.synthetic.v1' })
 
   const proveSamples = []
   const verifySamples = []
   let sizes = null
+  let memory = null
 
   const runSample = async (cold) => {
     const sample = await withTimeout(
-      measureOnce({ Noir, UltraHonkBackend, helperCircuit, mainCircuit, cold }),
+      measureOnce({
+        Noir,
+        UltraHonkBackend,
+        helperCircuit,
+        mainCircuit,
+        artifactBytes,
+        limits,
+        cold,
+      }),
       args.timeoutMs,
     )
     proveSamples.push(sample.prove_ms)
@@ -179,7 +291,9 @@ async function main() {
     sizes = {
       proof_bytes: sample.proof_bytes,
       public_input_bytes: sample.public_input_bytes,
+      witness_bytes: sample.witness_bytes,
     }
+    memory = { peak_rss_bytes: sample.peak_rss_bytes }
     signal('bench.sample', {
       target: 'browser',
       mode: cold ? 'cold' : 'warm',
@@ -220,12 +334,14 @@ async function main() {
         percentiles: summarize(proveSamples),
         samples_ms: proveSamples,
         sizes,
+        memory,
       },
       {
         phase: 'verify',
         percentiles: summarize(verifySamples),
         samples_ms: verifySamples,
         sizes,
+        memory,
       },
     ],
     outcome: 'ok',

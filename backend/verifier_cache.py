@@ -62,6 +62,7 @@ class VerifierCache:
         
         self._lock = threading.Lock()
         self._cache: Dict[str, tuple[bool, float]] = {}
+        self._proof_keys: Dict[str, set[str]] = {}
 
     def _get_cache_key(
         self,
@@ -100,6 +101,7 @@ class VerifierCache:
         verifier_version: str,
         proof_hex: str,
         public_inputs_hex: str,
+        proof_id: str | None = None,
     ) -> Optional[bool]:
         """Fetch verifier result from cache, evaluating TTL. Emits metrics."""
         key = self._get_cache_key(
@@ -115,6 +117,8 @@ class VerifierCache:
                     collector.record_cache_hit()
                     # Refresh LRU by re-inserting
                     self._cache.pop(key)
+                    if proof_id:
+                        self._proof_keys.get(proof_id, set()).discard(key)
                     self._cache[key] = entry
                     return result
                 else:
@@ -133,6 +137,7 @@ class VerifierCache:
         proof_hex: str,
         public_inputs_hex: str,
         is_valid: bool,
+        proof_id: str | None = None,
     ) -> None:
         """Store verifier result in cache with appropriate TTL. Bounded by max_size."""
         key = self._get_cache_key(
@@ -145,11 +150,15 @@ class VerifierCache:
         with self._lock:
             if key in self._cache:
                 self._cache.pop(key)
+                if proof_id:
+                    self._proof_keys.get(proof_id, set()).discard(key)
             elif len(self._cache) >= self.max_size:
                 self._cache.pop(next(iter(self._cache)))
                 collector.record_cache_eviction()
 
             self._cache[key] = (is_valid, expires_at)
+            if proof_id:
+                self._proof_keys.setdefault(proof_id, set()).add(key)
 
     def invalidate(
         self,
@@ -159,6 +168,7 @@ class VerifierCache:
         verifier_version: str,
         proof_hex: str,
         public_inputs_hex: str,
+        proof_id: str | None = None,
     ) -> None:
         """Remove specific result from cache."""
         key = self._get_cache_key(
@@ -167,8 +177,21 @@ class VerifierCache:
         with self._lock:
             if key in self._cache:
                 self._cache.pop(key)
+            if proof_id:
+                keys = self._proof_keys.get(proof_id)
+                if keys:
+                    keys.discard(key)
+                    if not keys:
+                        self._proof_keys.pop(proof_id, None)
+
+    def invalidate_proof(self, proof_id: str) -> None:
+        """Evict every cached verification result belonging to a proof ID."""
+        with self._lock:
+            for key in self._proof_keys.pop(proof_id, set()):
+                self._cache.pop(key, None)
 
     def clear(self) -> None:
         """Clear all entries."""
         with self._lock:
             self._cache.clear()
+            self._proof_keys.clear()

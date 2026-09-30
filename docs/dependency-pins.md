@@ -77,3 +77,66 @@ from `.github/workflows/release-gate.yml` (and the `cli/**` trigger, if
 desired) to restore the previous gate. Nothing else in the repository depends
 on it — it publishes no artifacts, writes no files, and holds no state — so
 reverting the pull request restores the prior behaviour exactly.
+
+## Automated dependency updates (Dependabot policy)
+
+Automated dependency updates are managed via `.github/dependabot.yml` and
+validated by `devx/dependabot_config.py`.
+
+```bash
+python3 devx/dependabot_config.py --check .github/dependabot.yml
+python3 -m unittest devx/test_dependabot_config.py -v
+```
+
+### Policy and grouping rules
+
+1. **Covered surfaces**:
+   - `npm`: `/frontend` and `/cli`
+   - `pip`: `/backend`
+   - `cargo`: `/contracts`
+   - `github-actions`: `/` (workflow actions)
+
+2. **Low-risk patch updates**:
+   - Patch-level updates are grouped into a single weekly pull request per
+     ecosystem (`update-types: ["patch"]`). This minimizes notification
+     churn while maintaining security patches across low-risk packages.
+
+3. **Isolated review for critical & cryptographic surfaces**:
+   - **Stellar / Soroban**: `@stellar/*`, `stellar-*`, and `soroban-*` are
+     excluded from generic patch groupings and tracked in dedicated groups
+     or standalone PRs for focused blockchain review.
+   - **Noir & proof system**: In the frontend, `@noir-lang/*`, `@aztec/*`, and
+     `barretenberg*` are isolated from generic patch updates to allow
+     deliberate cryptographic verification against `zk/toolchain.lock.json`.
+
+4. **Conservative schedule and limits**:
+   - Updates run weekly on Mondays (`04:00 UTC`).
+   - `open-pull-requests-limit: 5` is enforced per ecosystem to prevent pull
+     request flooding.
+
+### Maintainer controls
+
+#### Pausing updates
+- **Entire ecosystem / repository**:
+  Set `open-pull-requests-limit: 0` in `.github/dependabot.yml` for the
+  relevant ecosystem entry, or comment out the update block.
+- **On an active pull request**:
+  Comment `@dependabot pause` on an open PR to halt Dependabot activity
+  temporarily, or close the PR with `@dependabot close`.
+
+#### Ignoring updates or specific versions
+- **In `.github/dependabot.yml`**:
+  Add an `ignore` block under the relevant ecosystem entry:
+  ```yaml
+  ignore:
+    - dependency-name: "package-name"
+      update-types: ["version-update:semver-major"]
+  ```
+- **Via pull request comments**:
+  - `@dependabot ignore this dependency`: Ignores all future updates for the
+    package.
+  - `@dependabot ignore this major version`: Ignores major updates but permits
+    minor and patch updates.
+  - `@dependabot ignore this minor version`: Ignores minor updates but permits
+    patch updates.
+

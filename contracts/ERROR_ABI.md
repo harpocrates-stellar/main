@@ -43,9 +43,9 @@ scope are `malformed`, `oversized`, `expired`, `revoked`, `unsupported`, and
 ## Stable Codes
 
 `Retryable` means the *same* call may succeed later with no code or input change,
-once the external condition (unpause, timelock delay, activation ledger, cooldown)
-has resolved. Every other code requires a different input, a different actor, or
-new evidence before the call can succeed.
+once the external condition (unpause, timelock delay, activation ledger, cooldown,
+issuer rotation grace window) has resolved. Every other code requires a different
+input, a different actor, or new evidence before the call can succeed.
 
 | Code | Variant | Class | Retryable | Meaning |
 |------|---------|-------|-----------|---------|
@@ -131,6 +131,11 @@ new evidence before the call can succeed.
 | 80 | `LineageChildrenSaturated` | resource | no | The parent reached `MAX_LINEAGE_CHILDREN_PER_PARENT`. |
 | 81 | `UnsupportedCircuitVersion` | unsupported | no | The proof's circuit version is outside the active verifier's declared window. |
 | 82 | `InvalidCircuitVersionRange` | malformed | no | The requested circuit-version window is empty or outside the wasm build's range. |
+| 83 | `InvalidIssuerRotationGrace` | malformed | no | The requested rotation grace window is above `MAX_ISSUER_ROTATION_GRACE_SECS` or overflows ledger time. |
+| 84 | `InvalidIssuerRotation` | malformed | no | A rotation named the same issuer key twice. |
+| 85 | `IssuerRotationNotFound` | state | no | No issuer rotation grace record exists for the requested key. |
+| 86 | `IssuerRotationGraceStillActive` | state | yes | The issuer rotation grace window has not lapsed; retry once it has. |
+| 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
 
 ## Privacy Rules
 
@@ -147,7 +152,7 @@ new evidence before the call can succeed.
 
 ## Compatibility And Migration
 
-- **Additive only.** Codes `1..=82` are frozen at this ABI version. A future change
+- **Additive only.** Codes `1..=86` are frozen at this ABI version. A future change
   that needs a new failure appends the next unused discriminant and adds a row here;
   it must not insert, reorder, or reuse a code.
 - **No storage impact.** The ABI describes revert values. It does not add storage

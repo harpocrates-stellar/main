@@ -33,7 +33,7 @@ struct MockVerifierUpgrade;
 #[contractimpl]
 impl MockVerifierUpgrade {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224 | 256) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -65,7 +65,7 @@ fn upgrade_compat_init_stamps_v1() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
 
     let present = env.as_contract(&contract_id, || {
@@ -86,11 +86,11 @@ fn upgrade_compat_idempotent_noop_at_v1() {
 
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
     assert_eq!(
         after, before,
-        "idempotent V1 upgrade must not emit SchemaUpgraded"
+        "idempotent V2 upgrade must not emit SchemaUpgraded"
     );
 }
 

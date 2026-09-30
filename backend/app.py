@@ -41,6 +41,7 @@ from errors import (
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
     error_response,
 )
@@ -111,10 +112,16 @@ from trace_fields import (
     format_traceparent,
     merge_trace_into_event,
 )
+from tracing import (
+    begin_request_span,
+    configure_tracing,
+    finish_request_span,
+)
 from readiness import ReadinessManager
+from verifier_cache import VerifierCache
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
-from quarantine import QuarantineError, isolate_upload
+from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
@@ -210,7 +217,20 @@ def _make_key_func(config):
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
+    configure_tracing(
+        enabled=config.tracing_enabled,
+        service_name=config.tracing_service_name,
+        endpoint=config.tracing_endpoint,
+        sample_ratio=config.tracing_sample_ratio,
+        export_timeout_seconds=config.tracing_export_timeout_seconds,
+        service_version=config.release_id,
+    )
     app = Flask(__name__)
+    app.extensions["verifier_cache"] = VerifierCache(
+        max_size=config.verifier_cache_max_size,
+        positive_ttl_seconds=config.verifier_cache_positive_ttl_seconds,
+        negative_ttl_seconds=config.verifier_cache_negative_ttl_seconds,
+    )
     CORS(app, **cors_kwargs(config.cors_origins))
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     # Propagate the request id through every response (header + JSON body).
@@ -255,6 +275,28 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+
+    @app.before_request
+    def initialize_trace_context():
+        g.trace_fields = build_trace_fields(
+            request.headers,
+            request_id=g.request_id,
+            method=request.method,
+            route=request.url_rule.rule if request.url_rule else request.path,
+            path=request.path,
+        )
+        g.request_id = g.trace_fields["request_id"]
+        g.otel_request_span = begin_request_span(
+            request.headers,
+            method=request.method,
+            route=request.url_rule.rule if request.url_rule else g.trace_fields["endpoint_pattern"],
+            request_id=g.request_id,
+        )
+        span_context = g.otel_request_span.span.get_span_context()
+        if span_context.is_valid:
+            g.trace_fields["trace_id"] = f"{span_context.trace_id:032x}"
+            g.trace_fields["span_id"] = f"{span_context.span_id:016x}"
+            g.trace_fields["trace_flags"] = f"{int(span_context.trace_flags):02x}"
 
     @app.before_request
     def enforce_cors_origins():
@@ -302,64 +344,6 @@ def create_app() -> Flask:
             message="request origin is not allowed",
             status=403,
         )
-        # Privacy-safe trace fields for log correlation (no secrets/media/PII).
-        g.trace_fields = build_trace_fields(
-            request.headers,
-            request_id=g.request_id,
-            method=request.method,
-            route=request.url_rule.rule if request.url_rule else request.path,
-            path=request.path,
-        )
-        # Keep request_id aligned with normalized opaque ID from trace builder.
-        g.request_id = g.trace_fields["request_id"]
-
-    @app.before_request
-    def enforce_upload_content_length():
-        """Reject declared-oversized uploads before the body is buffered.
-
-        ``MAX_CONTENT_LENGTH`` only takes effect once Werkzeug starts reading
-        the body, and the streaming wrapper deliberately defers that read until
-        ``save()`` so large uploads never land in memory.  That leaves a window
-        where a client can declare an over-budget ``Content-Length`` and make
-        the server spool up to the video limit to disk before the mid-stream
-        bound fires.  This hook closes the window using the request headers
-        alone: no multipart parsing, no temp-file buffering, no streaming.
-
-        Requests that arrive with ``Transfer-Encoding: chunked`` (no declared
-        length) are left to the bounded streaming ``save()``, which still
-        aborts mid-stream, and non-upload routes are untouched.
-        """
-        if request.method not in {"POST", "PUT", "PATCH"}:
-            return None
-        if not request.path.startswith("/api/stego/"):
-            return None
-        if request.mimetype != "multipart/form-data":
-            return None
-        declared = request.content_length
-        if declared is None:
-            return None
-        if declared <= declared_upload_limit_bytes(config):
-            return None
-        metrics_collector.record_rejection(
-            "upload_content_length_exceeded",
-            request.url_rule.rule if request.url_rule else request.path,
-        )
-        log_structured(
-            LOGGER,
-            logging.WARNING,
-            {
-                "event": "upload_content_length_rejected",
-                "request_id": request_id(),
-                "method": request.method,
-                "path": request.path,
-            },
-        )
-        return error_response(
-            code=PAYLOAD_TOO_LARGE,
-            message="upload exceeds size limit",
-            status=413,
-        )
-
     @app.after_request
     def process_response(response: Response):
         # X-Request-ID and the body-level request_id are applied by the
@@ -411,7 +395,20 @@ def create_app() -> Flask:
                 trace,
             ),
         )
+        finish_request_span(
+            getattr(g, "otel_request_span", None),
+            status_code=response.status_code,
+        )
         return response
+
+    @app.teardown_request
+    def finish_unhandled_request_span(error: BaseException | None):
+        if getattr(g, "otel_request_span", None) is not None:
+            finish_request_span(
+                g.otel_request_span,
+                status_code=500 if error is not None else 200,
+                error=error,
+            )
 
     def require_register_auth(fn):
         """Decorator that enforces ownership-scoped auth on proof registration.
@@ -727,7 +724,11 @@ def create_app() -> Flask:
                 embedded_hash = workspace.sha256("embedded.mp4")
                 metadata_hash = canonical_metadata_hash(metadata)
         except QuarantineError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return error_response(
+                code=UNSUPPORTED_MEDIA_TYPE,
+                message=str(exc),
+                status=400,
+            )
 
         db_event = insert_proof_event(
             event_type="embed",
@@ -831,6 +832,16 @@ def create_app() -> Flask:
             max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
         )
 
+        # Sniff assembled file before handing it to ffmpeg.
+        try:
+            sniff_media_type_path(combined_path)
+        except QuarantineError as exc:
+            return error_response(
+                code=UNSUPPORTED_MEDIA_TYPE,
+                message=str(exc),
+                status=400,
+            )
+
         with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
             output_path = Path(tmp_dir) / "embedded.mp4"
             embed_metadata(combined_path, output_path, metadata)
@@ -910,7 +921,11 @@ def create_app() -> Flask:
                 video_hash = workspace.sha256("source.video")
                 metadata_hash = canonical_metadata_hash(metadata) if metadata else None
         except QuarantineError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return error_response(
+                code=UNSUPPORTED_MEDIA_TYPE,
+                message=str(exc),
+                status=400,
+            )
 
         retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
         if retention_class not in config.retention_classes:
@@ -1195,6 +1210,10 @@ def create_app() -> Flask:
             }), 409
 
         if db_event and db_event.get("id") and created:
+            # A newly registered proof can change the on-chain verification
+            # result. Evict all cached results for this proof before clients
+            # perform the next verification lookup.
+            app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
                 enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
@@ -1459,7 +1478,8 @@ def create_app() -> Flask:
         job = get_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        return jsonify({"ok": True, "job": job})
+        public_job = {key: value for key, value in job.items() if key != "_trace_context"}
+        return jsonify({"ok": True, "job": public_job})
 
     @app.get("/api/jobs/<int:job_id>/download")
     def download_job_result(job_id: int):
@@ -1954,11 +1974,40 @@ def is_field_decimal(value: object) -> bool:
 
 
 def validate_video_upload(video) -> None:
+    """Validate an uploaded video *before* it is saved to disk or handed to ffmpeg.
+
+    Checks (in order):
+    1. Filename is present.
+    2. Declared ``Content-Type`` is in the ``video/*`` family or the generic
+       ``application/octet-stream`` wildcard.
+    3. **Media-type sniff** — reads the first 32 bytes of the upload stream and
+       verifies that a recognised video magic signature is present and consistent
+       with both the filename extension and the declared content type.  The stream
+       is rewound to offset 0 after the read so subsequent ``save()`` calls are
+       unaffected.
+
+    Raises :class:`QuarantineError` (a ``ValueError`` subclass) on any failure so
+    the existing ``except ValueError`` / ``except QuarantineError`` call sites keep
+    working unchanged.
+    """
     if not video.filename:
         raise ValueError("video filename is required")
+
     content_type = (video.content_type or "").lower()
     if content_type and not content_type.startswith("video/") and content_type != "application/octet-stream":
-        raise ValueError("video upload must use a video content type")
+        raise QuarantineError("video upload must use a video/* or application/octet-stream content type")
+
+    # Stream-level magic-byte sniff: detects mismatches between declared type
+    # and actual file contents before the file is persisted anywhere.
+    stream = getattr(video, "stream", None)
+    if stream is None:
+        # Fallback for duck-typed objects (e.g. test stubs) that expose .read()
+        stream = video
+    sniff_media_type_stream(
+        stream,
+        filename=video.filename,
+        content_type=video.content_type,
+    )
 
 
 

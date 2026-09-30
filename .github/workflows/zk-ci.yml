@@ -197,6 +197,15 @@ jobs:
           ( cd zk/noir/redacted_ancestry && nargo test )
           ( cd zk/noir/redacted_ancestry_helper && nargo test )
 
+      - name: Test the silent witness circuits
+        # #368 added the public `circuit_version` input that the circuit asserts
+        # against CURRENT_CIRCUIT_VERSION in-circuit. Without this step nothing in
+        # CI ever ran that assertion, so a proof built from a stale circuit could
+        # claim a version the statement does not commit to.
+        run: |
+          ( cd zk/noir/silent_witness && nargo test )
+          ( cd zk/noir/silent_witness_helper && nargo test )
+
   conformance-vectors:
     name: Cross-layer conformance vectors
     runs-on: ubuntu-latest
@@ -220,9 +229,11 @@ jobs:
       - name: Vectors are byte-identical to their generator
         # A hand-edited corpus would silently weaken every layer's assertions.
         run: |
-          cp zk/vectors/verifier_conformance_v1.json /tmp/committed.json
+          cp zk/vectors/verifier_conformance_v1.json /tmp/committed-v1.json
+          cp zk/vectors/verifier_conformance_v2.json /tmp/committed-v2.json
           python zk/vectors/generate_vectors.py
-          diff -u /tmp/committed.json zk/vectors/verifier_conformance_v1.json
+          diff -u /tmp/committed-v1.json zk/vectors/verifier_conformance_v1.json
+          diff -u /tmp/committed-v2.json zk/vectors/verifier_conformance_v2.json
 
       - name: Python conformance runner
         working-directory: backend

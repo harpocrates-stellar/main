@@ -142,6 +142,11 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::LineageChildrenSaturated => "LineageChildrenSaturated",
         RegistryError::UnsupportedCircuitVersion => "UnsupportedCircuitVersion",
         RegistryError::InvalidCircuitVersionRange => "InvalidCircuitVersionRange",
+        RegistryError::InvalidIssuerRotationGrace => "InvalidIssuerRotationGrace",
+        RegistryError::InvalidIssuerRotation => "InvalidIssuerRotation",
+        RegistryError::IssuerRotationNotFound => "IssuerRotationNotFound",
+        RegistryError::IssuerRotationGraceStillActive => "IssuerRotationGraceStillActive",
+        RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
     }
 }
 
@@ -231,6 +236,11 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::LineageChildrenSaturated,
     RegistryError::UnsupportedCircuitVersion,
     RegistryError::InvalidCircuitVersionRange,
+    RegistryError::InvalidIssuerRotationGrace,
+    RegistryError::InvalidIssuerRotation,
+    RegistryError::IssuerRotationNotFound,
+    RegistryError::IssuerRotationGraceStillActive,
+    RegistryError::CircuitVersionMismatch,
 ];
 
 #[cfg(test)]
@@ -367,7 +377,7 @@ fn retryable_codes_require_external_condition_only() {
             retryable.push(row.code);
         }
     }
-    let expected: &[u32] = &[21, 32, 41, 66];
+    let expected: &[u32] = &[21, 32, 41, 66, 86];
     assert_eq!(
         retryable.as_slice(),
         expected,

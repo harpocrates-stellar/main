@@ -88,7 +88,7 @@
     {
       "component": "circuit",
       "path": "zk/noir/silent_witness/src/main.nr",
-      "sha256": "9877a0775231019dbc2a86b57c521cadec5fcd20223c6bd5a300db7b301487b3"
+      "sha256": "b20f67986beb83904eb8a2a30f5d94c335c8f31b9bd5fb7d37243b8ff90f1f8a"
     },
     {
       "component": "verifier",
@@ -98,7 +98,7 @@
     {
       "component": "registry",
       "path": "contracts/contracts/harpocrates-registry/src/lib.rs",
-      "sha256": "fc66b5a25968fae8fa979b27b72f00480c044b25fe8bd071599b87086dfe4718"
+      "sha256": "8838973544987a863f4a268759322bb2bab03a2fdf79c111568d3c65f794e255"
     },
     {
       "component": "registry",

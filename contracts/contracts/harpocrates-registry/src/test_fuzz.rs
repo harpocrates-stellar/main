@@ -183,14 +183,31 @@ fn positive_frame(schema: &str) -> Vec<u8> {
     let credential_root = vec![0x01u8; 32];
     let nullifier = vec![0x02u8; 32];
     let revocation_root = vec![0x03u8; 32];
+    let verifier_scope = vec![0x04u8; 32];
+    let mut epoch = vec![0u8; 24];
+    epoch.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 5]);
 
-    let mut frame = Vec::with_capacity(PUBLIC_INPUTS_LEN);
+    let mut frame = Vec::with_capacity(verifier_inputs::SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN);
     if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
         frame.extend_from_slice(&hi);
         frame.extend_from_slice(&lo);
         frame.extend_from_slice(&credential_root);
         frame.extend_from_slice(&nullifier);
         frame.extend_from_slice(&verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE);
+    } else if schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2 {
+        // Full valid 256-byte v2 envelope: the scoped frame plus the committed
+        // circuit-version trailer, so mutations explore the acceptance region
+        // as well as the rejection region.
+        frame.extend_from_slice(&hi);
+        frame.extend_from_slice(&lo);
+        frame.extend_from_slice(&credential_root);
+        frame.extend_from_slice(&nullifier);
+        frame.extend_from_slice(&verifier_scope);
+        frame.extend_from_slice(&epoch);
+        frame.extend_from_slice(&verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE);
+        let mut version = [0u8; 32];
+        version[31] = verifier_inputs::EXPECTED_CIRCUIT_VERSION as u8;
+        frame.extend_from_slice(&version);
     } else {
         frame.extend_from_slice(&revocation_root);
         frame.extend_from_slice(&nullifier);
@@ -204,7 +221,9 @@ fn positive_frame(schema: &str) -> Vec<u8> {
 /// on-chain `classify_public_inputs` applies.
 #[cfg(test)]
 fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
-    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
+    if schema == verifier_inputs::SCHEMA_SILENT_WITNESS
+        || schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2
+    {
         &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE
     } else {
         &REVOCATION_DOMAIN_SEPARATOR
@@ -212,8 +231,9 @@ fn expected_domain_for(schema: &str) -> &'static [u8; 32] {
 }
 
 #[cfg(test)]
-const SCHEMAS: [&str; 2] = [
+const SCHEMAS: [&str; 3] = [
     verifier_inputs::SCHEMA_SILENT_WITNESS,
+    verifier_inputs::SCHEMA_SILENT_WITNESS_V2,
     verifier_inputs::SCHEMA_REVOCATION_WITNESS,
 ];
 
@@ -221,6 +241,8 @@ const SCHEMAS: [&str; 2] = [
 fn schema_id_of(schema: &str) -> u32 {
     if schema == verifier_inputs::SCHEMA_SILENT_WITNESS {
         SCHEMA_ID_SILENT_WITNESS
+    } else if schema == verifier_inputs::SCHEMA_SILENT_WITNESS_V2 {
+        SCHEMA_ID_SILENT_WITNESS_V2
     } else {
         SCHEMA_ID_REVOCATION_WITNESS
     }
@@ -228,7 +250,7 @@ fn schema_id_of(schema: &str) -> u32 {
 
 #[cfg(test)]
 fn declared(code: u32) -> bool {
-    code <= 9
+    code <= 10
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +307,7 @@ fn proof_length_sweep_is_bounded_and_declared() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &base,
                 proof_len,
-                &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
+                expected_domain_for(verifier_inputs::SCHEMA_SILENT_WITNESS),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),
@@ -482,7 +504,7 @@ fn a_seed_replays_the_same_mutants_and_verdicts() {
                 verifier_inputs::SCHEMA_SILENT_WITNESS,
                 &mutant,
                 64,
-                &verifier_inputs::SILENT_WITNESS_DOMAIN_TAG_BE,
+                expected_domain_for(verifier_inputs::SCHEMA_SILENT_WITNESS),
             ) {
                 Ok(()) => verifier_inputs::ACCEPTED_CODE,
                 Err(code) => code.as_code(),

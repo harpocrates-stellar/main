@@ -159,10 +159,14 @@ that cannot answer it.
 | Circuit | Implied version |
 | --- | --- |
 | `silent_witness` v1 frame (160 bytes) | 1 |
-| `silent_witness` v2 scoped frame (224 bytes) | 2 |
+| `silent_witness` v2 envelope (256 bytes, #368) | 2, committed in the frame trailer |
 | `revocation_witness` frame (128 bytes) | 1 |
 | `silent_witness_aggregator` | 1 |
 | `selective_disclosure` (carried in the frame) | 1 |
+
+The superseded bare 224-byte `silent_witness` v2 frame is not in this table: it
+commits no version, so `register_anonymous_verified` rejects it by length with
+`CircuitVersionMismatch` (87) instead of inferring version 2 from it (#368).
 
 The wasm build's framable window is
 `MIN_SUPPORTED_CIRCUIT_VERSION..=MAX_SUPPORTED_CIRCUIT_VERSION` (currently

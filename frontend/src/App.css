@@ -948,6 +948,45 @@ body::-webkit-scrollbar-thumb:hover,
   font-size: 12px;
 }
 
+.hash-progress {
+  margin: 6px 0 2px;
+}
+
+.hash-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.hash-progress progress {
+  width: 100%;
+  height: 6px;
+  margin-top: 6px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  appearance: none;
+}
+
+.hash-progress progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hash-progress progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: #fff;
+}
+
+.hash-progress progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: #fff;
+}
+
 .verify-actions {
   display: flex;
   flex-wrap: wrap;

@@ -150,7 +150,7 @@ impl MockDeploymentVerifier {
     /// live circuit; it panics on obviously malformed inputs so the
     /// contract's pre-verifier validation is still exercised.
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if !matches!(public_inputs.len(), 128 | 160 | 224) || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160 | 224 | 256) || proof.is_empty() {
             panic!("mock verifier: invalid inputs");
         }
     }

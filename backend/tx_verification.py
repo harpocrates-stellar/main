@@ -24,6 +24,7 @@ from fetch_external import (
     ResponseTooLargeError,
     safe_urlopen,
 )
+from tracing import traced
 
 LOGGER = logging.getLogger("harpocrates.tx_verification")
 if not LOGGER.handlers:
@@ -45,6 +46,10 @@ _DEFAULT_READ_TIMEOUT: float = 10.0
 _DEFAULT_MAX_RESPONSE_BYTES: int = 65_536  # 64 KiB; Horizon tx response is < 10 KiB
 
 
+@traced(
+    "stellar.horizon.verify_transaction",
+    attributes={"rpc.system": "stellar", "peer.service": "stellar-horizon"},
+)
 def verify_transaction_status(
     tx_hash: str,
     *,

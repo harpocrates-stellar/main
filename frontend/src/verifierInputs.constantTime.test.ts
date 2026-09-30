@@ -1,6 +1,6 @@
 /**
- * Constant-time comparison coverage for the browser verifier-input codec
- * (`hpx-vi/1`).
+ * Constant-time comparison coverage for the browser verifier-input codecs
+ * (`hpx-vi/1` and `hpx-vi/2`).
  *
  * Domain bindings and zero sentinels must be compared without an early exit so
  * that rejecting a tampered value does not reveal how many leading bytes
@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  EXPECTED_CIRCUIT_VERSION,
   FIELD_LEN,
   REVOCATION_DOMAIN_SEPARATOR_HEX,
   SILENT_WITNESS_DOMAIN_TAG_HEX,
@@ -19,6 +20,7 @@ import {
   decodeHex,
   parseRevocationWitnessInputs,
   parseSilentWitnessInputs,
+  parseSilentWitnessV2Inputs,
 } from './verifierInputs'
 
 const SILENT_DOMAIN = decodeHex(SILENT_WITNESS_DOMAIN_TAG_HEX)
@@ -53,6 +55,18 @@ const silentFrame = (domain: Uint8Array = SILENT_DOMAIN) =>
 const revocationFrame = (domain: Uint8Array = REVOCATION_DOMAIN) =>
   join(field(5), field(9), domain, field(7))
 
+function circuitVersion(value: number): Uint8Array {
+  const out = new Uint8Array(FIELD_LEN)
+  out[FIELD_LEN - 4] = (value >>> 24) & 0xff
+  out[FIELD_LEN - 3] = (value >>> 16) & 0xff
+  out[FIELD_LEN - 2] = (value >>> 8) & 0xff
+  out[FIELD_LEN - 1] = value & 0xff
+  return out
+}
+
+const scopedFrame = (domain: Uint8Array = SILENT_DOMAIN, version = EXPECTED_CIRCUIT_VERSION) =>
+  join(half(), half(), field(7), field(9), field(4), field(5), domain, circuitVersion(version))
+
 function rejection(run: () => unknown): VerifierInputError {
   try {
     run()
@@ -85,7 +99,26 @@ describe('constantTimeEquals', () => {
 describe('domain binding checks', () => {
   it('accepts the canonical frames', () => {
     expect(() => parseSilentWitnessInputs(silentFrame())).not.toThrow()
+    expect(() => parseSilentWitnessV2Inputs(scopedFrame())).not.toThrow()
     expect(() => parseRevocationWitnessInputs(revocationFrame())).not.toThrow()
+  })
+
+  it.each(Array.from({ length: FIELD_LEN }, (_, index) => index))(
+    'rejects a scoped v2 domain_tag flip at byte %i',
+    (index) => {
+      const error = rejection(() => parseSilentWitnessV2Inputs(scopedFrame(flip(SILENT_DOMAIN, index))))
+      expect(error.code).toBe('domain_mismatch')
+      expect(error.field).toBe('domain_tag')
+    },
+  )
+
+  it('rejects a scoped v2 frame that declares another circuit version', () => {
+    for (const declared of [0, 1, 3, 0xffffffff]) {
+      const error = rejection(() => parseSilentWitnessV2Inputs(scopedFrame(SILENT_DOMAIN, declared)))
+      expect(error.code).toBe('version_mismatch')
+      expect(error.field).toBe('circuit_version')
+      expect(error.message).toBe('version_mismatch:circuit_version')
+    }
   })
 
   it.each(Array.from({ length: FIELD_LEN }, (_, index) => index))(
@@ -123,5 +156,34 @@ describe('domain binding checks', () => {
     const error = rejection(() => parseSilentWitnessInputs(silentFrame(tampered)))
     expect(error.message).toBe('domain_mismatch:domain_tag')
     expect(error.message).not.toContain(SILENT_WITNESS_DOMAIN_TAG_HEX)
+  })
+
+  it('never puts compared bytes in a scoped v2 rejection message', () => {
+    const tampered = flip(SILENT_DOMAIN, 0)
+    const domain = rejection(() => parseSilentWitnessV2Inputs(scopedFrame(tampered)))
+    expect(domain.message).toBe('domain_mismatch:domain_tag')
+    expect(domain.message).not.toContain(SILENT_WITNESS_DOMAIN_TAG_HEX)
+
+    // A foreign version is named, never echoed: neither the accepted constant
+    // nor the declared bytes appear in the signal.
+    const declared = 99
+    const version = rejection(() => parseSilentWitnessV2Inputs(scopedFrame(SILENT_DOMAIN, declared)))
+    expect(version.message).toBe('version_mismatch:circuit_version')
+    const rendered = JSON.stringify(version.signal())
+    expect(rendered).not.toContain(declared.toString(16).padStart(8, '0'))
+    expect(rendered).not.toContain(EXPECTED_CIRCUIT_VERSION.toString(16).padStart(8, '0'))
+  })
+
+  it('keeps stable codes for zero and padding rejections on the scoped frame', () => {
+    const version = circuitVersion(EXPECTED_CIRCUIT_VERSION)
+    const zeroNullifier = join(
+      half(), half(), field(7), new Uint8Array(FIELD_LEN), field(4), field(5), SILENT_DOMAIN, version,
+    )
+    expect(rejection(() => parseSilentWitnessV2Inputs(zeroNullifier)).code).toBe('zero_field')
+
+    const badPadding = half()
+    badPadding[15] = 0x01
+    const padded = join(badPadding, half(), field(7), field(9), field(4), field(5), SILENT_DOMAIN, version)
+    expect(rejection(() => parseSilentWitnessV2Inputs(padded)).code).toBe('padding')
   })
 })

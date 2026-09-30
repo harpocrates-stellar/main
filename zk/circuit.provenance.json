@@ -132,7 +132,7 @@
     "zk/noir/selective_disclosure/Nargo.toml": "6324accf0888beab477301d1b3a3e4770c4b2195470567fa12c7ae7e081f7e62",
     "zk/noir/selective_disclosure/src/main.nr": "713a9d5e7cd5d55bf8cd68aa921df82f82ee2534bb3c6d6166df30d138b89359",
     "zk/noir/silent_witness/Nargo.toml": "2899e2be55bdd93c068a18e1c34e4d5cdea9df1649f416c16691adf06a35d389",
-    "zk/noir/silent_witness/src/main.nr": "a48f6df5bf976c21522fc934f2a76968b95d8b76a17b74a334afd91aa31fb95e",
+    "zk/noir/silent_witness/src/main.nr": "b20f67986beb83904eb8a2a30f5d94c335c8f31b9bd5fb7d37243b8ff90f1f8a",
     "zk/noir/silent_witness_aggregator/Nargo.toml": "33815e2c05d79c098c87e05b6e68c9868acd8d4ce26075149d96ce144c7ad172",
     "zk/noir/silent_witness_aggregator/src/main.nr": "a7e2842bb404e887e0bfbebfe63f15de4583d415611a343d5bcf81c3d5da23cb",
     "zk/noir/silent_witness_aggregator_helper/Nargo.toml": "4268add6999963af6a8e342fcfa21f3050bc82c4279e977876368a268cc7a425",

@@ -1,4 +1,5 @@
-"""Constant-time comparison coverage for the verifier-input codec (``hpx-vi/1``).
+"""Constant-time comparison coverage for the verifier-input codecs (``hpx-vi/1``
+and ``hpx-vi/2``).
 
 Protocol bindings (domain tag, revocation separator, zero sentinels) must be
 compared without an early exit so that rejecting a tampered value does not leak
@@ -17,6 +18,7 @@ import pytest
 
 import verifier_inputs as vi
 from verifier_inputs import (
+    EXPECTED_CIRCUIT_VERSION,
     FIELD_LEN,
     REVOCATION_DOMAIN_SEPARATOR,
     SILENT_WITNESS_DOMAIN_TAG,
@@ -25,16 +27,24 @@ from verifier_inputs import (
     constant_time_equals,
     parse_revocation_witness_inputs,
     parse_silent_witness_inputs,
+    parse_silent_witness_v2_inputs,
 )
 
 HALF = (b"\x00" * 16) + (b"\x11" * 16)
 ROOT = (b"\x00" * 31) + b"\x07"
 NULLIFIER = (b"\x00" * 31) + b"\x09"
 REVOCATION_ROOT = (b"\x00" * 31) + b"\x05"
+SCOPE = (b"\x00" * 31) + b"\x04"
+EPOCH = (b"\x00" * 31) + b"\x05"
+CIRCUIT_VERSION = (b"\x00" * 28) + EXPECTED_CIRCUIT_VERSION.to_bytes(4, "big")
 
 
 def silent_frame(domain: bytes = SILENT_WITNESS_DOMAIN_TAG) -> bytes:
     return HALF + HALF + ROOT + NULLIFIER + domain
+
+
+def scoped_frame(domain: bytes = SILENT_WITNESS_DOMAIN_TAG) -> bytes:
+    return HALF + HALF + ROOT + NULLIFIER + SCOPE + EPOCH + domain + CIRCUIT_VERSION
 
 
 def revocation_frame(domain: bytes = REVOCATION_DOMAIN_SEPARATOR) -> bytes:
@@ -70,6 +80,7 @@ def test_constant_time_equals_rejects_a_flip_at_every_position(index):
 
 def test_baseline_frames_are_accepted():
     parse_silent_witness_inputs(silent_frame())
+    parse_silent_witness_v2_inputs(scoped_frame())
     parse_revocation_witness_inputs(revocation_frame())
 
 
@@ -78,6 +89,15 @@ def test_silent_witness_domain_tag_flip_is_rejected_at_every_byte(index):
     tampered = flip(SILENT_WITNESS_DOMAIN_TAG, index)
     with pytest.raises(VerifierInputError) as caught:
         parse_silent_witness_inputs(silent_frame(tampered))
+    assert caught.value.code is RejectCode.DOMAIN_MISMATCH
+    assert caught.value.field == "domain_tag"
+
+
+@pytest.mark.parametrize("index", range(FIELD_LEN))
+def test_scoped_v2_domain_tag_flip_is_rejected_at_every_byte(index):
+    tampered = flip(SILENT_WITNESS_DOMAIN_TAG, index)
+    with pytest.raises(VerifierInputError) as caught:
+        parse_silent_witness_v2_inputs(scoped_frame(tampered))
     assert caught.value.code is RejectCode.DOMAIN_MISMATCH
     assert caught.value.field == "domain_tag"
 
@@ -97,6 +117,7 @@ def test_revocation_separator_flip_is_rejected_at_every_byte(index):
 def test_domain_comparisons_use_the_constant_time_primitive():
     with patch.object(vi.hmac, "compare_digest", wraps=vi.hmac.compare_digest) as spy:
         parse_silent_witness_inputs(silent_frame())
+        parse_silent_witness_v2_inputs(scoped_frame())
         parse_revocation_witness_inputs(revocation_frame())
     compared = [call.args for call in spy.call_args_list]
     assert (SILENT_WITNESS_DOMAIN_TAG, SILENT_WITNESS_DOMAIN_TAG) in compared
@@ -125,3 +146,23 @@ def test_rejection_message_never_contains_field_material():
     assert tampered.hex() not in rendered
     assert SILENT_WITNESS_DOMAIN_TAG.hex() not in rendered
     assert str(caught.value) == "domain_mismatch:domain_tag"
+
+
+def test_scoped_v2_rejections_never_carry_field_material():
+    tampered = flip(SILENT_WITNESS_DOMAIN_TAG, 0)
+    with pytest.raises(VerifierInputError) as caught:
+        parse_silent_witness_v2_inputs(scoped_frame(tampered))
+    rendered = f"{caught.value} {caught.value.signal()}"
+    assert tampered.hex() not in rendered
+    assert SILENT_WITNESS_DOMAIN_TAG.hex() not in rendered
+    assert str(caught.value) == "domain_mismatch:domain_tag"
+
+    # A foreign version is reported by name only: neither the accepted constant
+    # nor the declared bytes are echoed back.
+    declared = (b"\x00" * 28) + (99).to_bytes(4, "big")
+    with pytest.raises(VerifierInputError) as version:
+        parse_silent_witness_v2_inputs(scoped_frame()[: 7 * FIELD_LEN] + declared)
+    rendered = f"{version.value} {version.value.signal()}"
+    assert str(version.value) == "version_mismatch:circuit_version"
+    assert declared.hex() not in rendered
+    assert CIRCUIT_VERSION.hex() not in rendered

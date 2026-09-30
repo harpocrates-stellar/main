@@ -16,7 +16,7 @@ import type { SilentWitnessInput } from './circuitInputSchema'
 
 const expected = {
   video_hash_hi: '1', video_hash_lo: '2', credential_root: '3', nullifier: '4',
-  verifier_scope: '7', epoch: '2', domain_tag: '5',
+  verifier_scope: '7', epoch: '2', domain_tag: '5', circuit_version: '2',
 }
 
 function syntheticArtifact(names: string[], publicStart: number, returns: number): CompiledCircuit {
@@ -94,6 +94,18 @@ describe('silent witness input schema v1', () => {
     )
   })
 
+  it('rejects a scoped frame that commits a circuit version other than the artifact version', () => {
+    const scoped = PUBLIC_FRAMES.scoped_v2.map((field) => expected[field as keyof typeof expected])
+    expect(scoped[7]).toBe('2')
+    for (const drift of ['1', '3', '0']) {
+      const downgraded = [...scoped]
+      downgraded[7] = drift
+      expect(() => assertProofOutput(64, downgraded, expected, 'scoped_v2')).toThrowError(
+        new CircuitInputError('invalid_proof_output'),
+      )
+    }
+  })
+
   it('rejects truncated or oversized proof output without echoing private values', () => {
     const unscoped = PUBLIC_FRAMES.unscoped_v1.map((field) => expected[field as keyof typeof expected])
     for (const bytes of [63, 65537]) {
@@ -118,7 +130,7 @@ describe('silent witness input schema v1', () => {
     )
   })
 
-  it('recognizes the five-field and seven-field ABI shapes without relabelling browser v1', async () => {
+  it('recognizes the five-field and eight-field ABI shapes without relabelling browser v1', async () => {
     for (const frame of ['unscoped_v1', 'scoped_v2'] as const) {
       const abi = schema.artifact_abis[frame]
       await expect(assertArtifactPair(

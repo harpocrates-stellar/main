@@ -110,7 +110,7 @@ class RejectedError(BenchError):
 
 class CancelledError(BenchError):
     def __init__(self, message: str = "bench cancelled") -> None:
-        super().__init__(message, code="cancelled")
+        super().__init__(message, code="dependency-failure")
 
 
 # ── Signals ─────────────────────────────────────────────────────────────────
@@ -413,18 +413,18 @@ def validate_sizes(
 ) -> None:
     if proof_bytes is not None:
         if proof_bytes < limits.min_proof_bytes:
-            raise RejectedError("proof undersized", code="proof_undersized")
+            raise RejectedError("proof undersized", code="malformed")
         if proof_bytes > limits.max_proof_bytes:
-            raise RejectedError("proof oversized", code="proof_oversized")
+            raise RejectedError("proof oversized", code="oversized")
         if proof_bytes > MAX_PROOF_BYTES:
-            raise RejectedError("proof exceeds codec max", code="proof_oversized")
+            raise RejectedError("proof exceeds codec max", code="oversized")
     if public_input_bytes is not None:
         if public_input_bytes != limits.min_public_input_bytes:
-            raise RejectedError("public inputs length invalid", code="public_inputs_len")
+            raise RejectedError("public inputs length invalid", code="malformed")
         if public_input_bytes > limits.max_public_input_bytes:
-            raise RejectedError("public inputs oversized", code="public_inputs_oversized")
+            raise RejectedError("public inputs oversized", code="oversized")
     if witness_bytes is not None and witness_bytes > limits.max_witness_bytes:
-        raise RejectedError("witness oversized", code="witness_oversized")
+        raise RejectedError("witness oversized", code="oversized")
 
 
 # ── Drivers ─────────────────────────────────────────────────────────────────
@@ -479,7 +479,7 @@ def soroban_adjacent_op(*, op_name: str, max_cpu: int, max_mem: int, seed: int) 
     cpu = max(1, int(max_cpu * (0.35 + ((seed % 50) / 100.0))))
     mem = max(1, int(max_mem * (0.30 + ((seed % 40) / 100.0))))
     if cpu > max_cpu or mem > max_mem:
-        raise RejectedError("soroban budget exceeded", code="soroban_budget")
+        raise RejectedError("soroban budget exceeded", code="dependency-failure")
     # Encode cpu/mem into elapsed_ms/peak_rss fields for a unified report schema.
     return OpMeasurement(
         elapsed_ms=float(cpu) / 1000.0,
@@ -514,7 +514,7 @@ def native_op_or_synthetic(
         acir = REPO_ROOT / "zk" / "noir" / "silent_witness" / "target" / "silent_witness.json"
         if not acir.is_file():
             if not allow_synthetic:
-                raise BenchError("native artifacts missing; build circuits first", code="missing_artifacts")
+                raise BenchError("native artifacts missing; build circuits first", code="dependency-failure")
             signal_event("bench.fallback", detail="synthetic_missing_artifacts")
             return synthetic_op(phase=phase, seed=seed, limits=limits, cancelled=cancelled), "synthetic"
         # Artifact size observation only (no proof material loaded into reports).
@@ -548,7 +548,7 @@ def native_op_or_synthetic(
     if allow_synthetic:
         signal_event("bench.fallback", detail="synthetic_no_toolchain")
         return synthetic_op(phase=phase, seed=seed, limits=limits, cancelled=cancelled), "synthetic"
-    raise BenchError("nargo/bb not available and synthetic disabled", code="toolchain_missing")
+    raise BenchError("nargo/bb not available and synthetic disabled", code="dependency-failure")
 
 
 # ── Run orchestration ───────────────────────────────────────────────────────
@@ -566,7 +566,7 @@ class RunContext:
             raise CancelledError()
         elapsed_ms = (time.monotonic() - self.started_at) * 1000.0
         if elapsed_ms > self.lock.limits.max_wall_clock_ms:
-            raise BenchError("bench exceeded max wall clock", code="wall_clock")
+            raise BenchError("bench exceeded max wall clock", code="dependency-failure")
 
 
 def _run_one_sample(
@@ -613,11 +613,11 @@ def _run_one_sample(
             verified=measurement.verified,
         )
     except CancelledError:
-        return SampleResult(state=BenchState.CANCELLED, reject_code="cancelled")
+        return SampleResult(state=BenchState.CANCELLED, reject_code="dependency-failure")
     except RejectedError as exc:
         return SampleResult(state=BenchState.REJECTED, reject_code=exc.code)
     except FuturesTimeout:
-        return SampleResult(state=BenchState.TIMED_OUT, reject_code="timeout")
+        return SampleResult(state=BenchState.TIMED_OUT, reject_code="dependency-failure")
     except BenchError as exc:
         return SampleResult(state=BenchState.FATAL, reject_code=exc.code)
     except Exception:
@@ -630,7 +630,7 @@ def _with_timeout(fn: Callable[[], SampleResult], timeout_ms: int) -> SampleResu
         try:
             return fut.result(timeout=timeout_ms / 1000.0)
         except FuturesTimeout:
-            return SampleResult(state=BenchState.TIMED_OUT, reject_code="timeout")
+            return SampleResult(state=BenchState.TIMED_OUT, reject_code="dependency-failure")
 
 
 def run_target(
@@ -641,9 +641,9 @@ def run_target(
     force_synthetic: bool = False,
 ) -> dict[str, Any]:
     if target not in TARGETS:
-        raise BenchError(f"unknown target: {target}", code="usage")
+        raise BenchError(f"unknown target: {target}", code="unsupported")
     if target not in lock.targets:
-        raise BenchError(f"target not configured: {target}", code="usage")
+        raise BenchError(f"target not configured: {target}", code="unsupported")
 
     cfg = lock.targets[target]
     ctx = RunContext(lock=lock, target=target)
@@ -816,7 +816,7 @@ def _force_synthetic_sample(ctx: RunContext, *, mode: str, index: int, phase: st
             verified=measurement.verified,
         )
     except CancelledError:
-        return SampleResult(state=BenchState.CANCELLED, reject_code="cancelled")
+        return SampleResult(state=BenchState.CANCELLED, reject_code="dependency-failure")
     except RejectedError as exc:
         return SampleResult(state=BenchState.REJECTED, reject_code=exc.code)
 
@@ -850,7 +850,7 @@ def write_report(report: dict[str, Any], path: Path, *, limits: Limits) -> None:
     text = json.dumps(report, sort_keys=True, indent=2) + "\n"
     data = text.encode("utf-8")
     if len(data) > limits.max_report_bytes:
-        raise BenchError("report exceeds max_report_bytes", code="report_oversize")
+        raise BenchError("report exceeds max_report_bytes", code="oversized")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(data)
@@ -864,7 +864,7 @@ def load_report(path: Path, *, limits: Limits | None = None) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise BenchError(f"report not found: {_rel(path)}") from exc
     if limits is not None and len(data) > limits.max_report_bytes:
-        raise RejectedError("report oversized", code="report_oversize")
+        raise RejectedError("report oversized", code="oversized")
     try:
         report = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -961,7 +961,7 @@ def ensure_concurrency_allowed(active: int, limits: Limits, target_max: int) -> 
     """Reject when concurrent bench work would exceed configured capacity."""
     cap = min(limits.max_concurrency, target_max)
     if active >= cap:
-        raise RejectedError("bench concurrency capacity exceeded", code="capacity")
+        raise RejectedError("bench concurrency capacity exceeded", code="dependency-failure")
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -1068,7 +1068,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(summary, sort_keys=True, indent=2))
             return EXIT_OK
 
-        raise BenchError(f"unknown command: {args.cmd}", code="usage")
+        raise BenchError(f"unknown command: {args.cmd}", code="unsupported")
     except BenchError as exc:
         signal_event("bench.fatal", reason=str(exc), code=getattr(exc, "code", "fatal"))
         return EXIT_USAGE if getattr(exc, "code", "") == "usage" else EXIT_FATAL

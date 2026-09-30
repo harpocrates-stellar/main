@@ -1,11 +1,17 @@
 import { UltraHonkBackend } from '@aztec/bb.js'
 import { Noir } from '@noir-lang/noir_js'
 import type { CompiledCircuit } from '@noir-lang/types'
-import { encodeFieldToBytes32Hex, encodePublicInputs } from './verifierInputs'
+import { encodeFieldToBytes32Hex, encodePublicInputs, EXPECTED_CIRCUIT_VERSION } from './verifierInputs'
 import { assertArtifactPair, assertProofOutput, CircuitInputError, prepareSilentWitnessInputs, PUBLIC_FRAMES } from './circuitInputSchema'
 import type { SilentWitnessInput } from './circuitInputSchema'
+import {
+  assertProofWorkerMemoryBudget,
+  byteLengthOfProofWorkerValue,
+  readBoundedCircuitArtifact,
+} from './proofWorkerMemory'
 
 const MAX_AGGREGATION_SIZE = 8
+const AGGREGATED_PUBLIC_INPUT_BYTES = 32 + (MAX_AGGREGATION_SIZE * 128)
 
 type SilentWitnessProof = {
   credentialRoot: string
@@ -13,7 +19,7 @@ type SilentWitnessProof = {
   /** 32-byte hex domain tag, present only when the circuit exposes one. */
   domainTag?: string
   proof: string
-  /** Hex-encoded public frame: four published-browser, five unscoped, or seven scoped fields. */
+  /** Hex-encoded public frame: four published-browser, five unscoped, or eight scoped fields. */
   publicInputs: string
   proofBytes: number
   publicInputBytes: number
@@ -39,10 +45,15 @@ type GenerateAggregatedProofInput = {
   nullifierSecret: string
 }
 
-let helperCircuitPromise: Promise<CompiledCircuit> | null = null
-let mainCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorCircuitPromise: Promise<CompiledCircuit> | null = null
-let aggregatorHelperCircuitPromise: Promise<CompiledCircuit> | null = null
+type LoadedCircuit = {
+  circuit: CompiledCircuit
+  rawBytes: number
+}
+
+let helperCircuitPromise: Promise<LoadedCircuit> | null = null
+let mainCircuitPromise: Promise<LoadedCircuit> | null = null
+let aggregatorCircuitPromise: Promise<LoadedCircuit> | null = null
+let aggregatorHelperCircuitPromise: Promise<LoadedCircuit> | null = null
 
 /**
  * Generate a Silent Witness Noir/UltraHonk proof.
@@ -55,7 +66,9 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
   const prepared = prepareSilentWitnessInputs(input)
   try {
     const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
-    const frame = await assertArtifactPair(helperCircuit, mainCircuit)
+    const artifactBytes = helperCircuit.rawBytes + mainCircuit.rawBytes
+    assertProofWorkerMemoryBudget({ artifactBytes })
+    const frame = await assertArtifactPair(helperCircuit.circuit, mainCircuit.circuit)
     if (frame !== 'scoped_v2' && (prepared.verifier_scope !== '0' || prepared.epoch !== '0')) {
       throw new CircuitInputError('unsupported_input_schema')
     }
@@ -66,20 +79,23 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
       video_hash_hi: prepared.video_hash_hi,
       video_hash_lo: prepared.video_hash_lo,
     }
-    const helperResult = await new Noir(helperCircuit).execute(helperInputs)
+    const helperResult = await new Noir(helperCircuit.circuit).execute(helperInputs)
     const returned = helperResult.returnValue
     if (!Array.isArray(returned) || returned.length !== (frame === 'browser_v1' ? 2 : 3)) {
       throw new CircuitInputError('invalid_proof_output')
     }
     const [credentialRoot, nullifier, domainTag] = returned as string[]
-    const { witness } = await new Noir(mainCircuit).execute({
+    const { witness } = await new Noir(mainCircuit.circuit).execute({
       ...helperInputs,
       credential_root: credentialRoot,
       nullifier,
       ...(domainTag === undefined ? {} : { domain_tag: domainTag }),
+      ...(circuitVersion === null ? {} : { circuit_version: circuitVersion }),
     })
+    const witnessBytes = byteLengthOfProofWorkerValue(witness)
+    assertProofWorkerMemoryBudget({ artifactBytes, witnessBytes })
 
-    const backend = new UltraHonkBackend(mainCircuit.bytecode)
+    const backend = new UltraHonkBackend(mainCircuit.circuit.bytecode)
     try {
       const proofData = await backend.generateProof(witness, { keccak: true })
       assertProofOutput(proofData.proof.length, proofData.publicInputs, {
@@ -90,8 +106,15 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
         verifier_scope: prepared.verifier_scope,
         epoch: prepared.epoch,
         ...(domainTag === undefined ? {} : { domain_tag: domainTag }),
+        ...(circuitVersion === null ? {} : { circuit_version: circuitVersion }),
       }, frame)
       const publicInputHex = encodePublicInputs(proofData.publicInputs, PUBLIC_FRAMES[frame])
+      assertProofWorkerMemoryBudget({
+        artifactBytes,
+        witnessBytes,
+        proofBytes: proofData.proof.length,
+        publicInputBytes: publicInputHex.length / 2,
+      })
       return {
         credentialRoot: encodeFieldToBytes32Hex(credentialRoot, 'credential_root'),
         nullifier: encodeFieldToBytes32Hex(nullifier, 'nullifier'),
@@ -130,6 +153,8 @@ export async function generateAggregatedProof({
       loadAggregatorHelperCircuit(),
       loadAggregatorCircuit(),
     ])
+    const artifactBytes = helperCircuit.rawBytes + aggCircuit.rawBytes
+    assertProofWorkerMemoryBudget({ artifactBytes })
 
     // Build helper circuit inputs
     const helperInputs: Record<string, string> = {
@@ -148,7 +173,7 @@ export async function generateAggregatedProof({
     }
 
     // Run helper circuit to derive batch public inputs
-    const helperResult = await new Noir(helperCircuit).execute(helperInputs)
+    const helperResult = await new Noir(helperCircuit.circuit).execute(helperInputs)
     const batchResults = helperResult.returnValue as [string, string][]
 
     // Build aggregator circuit inputs
@@ -168,13 +193,22 @@ export async function generateAggregatedProof({
     }
 
     // Generate the aggregated UltraHonk proof
-    const { witness } = await new Noir(aggCircuit).execute(aggInputs)
+    const { witness } = await new Noir(aggCircuit.circuit).execute(aggInputs)
+    const witnessBytes = byteLengthOfProofWorkerValue(witness)
+    assertProofWorkerMemoryBudget({ artifactBytes, witnessBytes })
 
-    const backend = new UltraHonkBackend(aggCircuit.bytecode)
+    const backend = new UltraHonkBackend(aggCircuit.circuit.bytecode)
     try {
       const proofData = await backend.generateProof(witness, { keccak: true })
       const proofHex = bytesToHex(proofData.proof)
       const publicInputHex = encodePublicInputs(proofData.publicInputs)
+      assertProofWorkerMemoryBudget({
+        artifactBytes,
+        witnessBytes,
+        proofBytes: proofData.proof.length,
+        publicInputBytes: publicInputHex.length / 2,
+        publicInputLimitBytes: AGGREGATED_PUBLIC_INPUT_BYTES,
+      })
 
       // Generate deterministic batch ID from the video hashes
       const batchId = await sha256(videoHashes.join(':'))
@@ -225,8 +259,10 @@ async function loadCircuit(path: string) {
   try {
     const response = await fetch(path, { cache: 'no-store' })
     if (!response.ok) throw new CircuitInputError('circuit_load_failed')
-    return (await response.json()) as CompiledCircuit
-  } catch {
+    const { value, rawBytes } = await readBoundedCircuitArtifact<CompiledCircuit>(response, path)
+    return { circuit: value, rawBytes }
+  } catch (error) {
+    if (error instanceof CircuitInputError) throw error
     throw new CircuitInputError('circuit_load_failed')
   }
 }

@@ -97,25 +97,38 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           </div>
         ) : null}
 
+        {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
           className="dropzone"
+          role="button"
+          tabIndex={isVerifying ? -1 : 0}
+          aria-label={isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video. Press Enter or Space to open file picker'}
           aria-busy={isVerifying}
+          aria-disabled={isVerifying}
           // ensure dropzone is a large touch target on mobile
           style={{ minHeight: 140 }}
+          onKeyDown={(e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) {
+              e.preventDefault()
+              inputRef.current?.click()
+            }
+          }}
         >
           {isVerifying ? (
             <Loader2 size={20} className="spin" aria-hidden="true" />
           ) : (
             <Upload size={20} aria-hidden="true" />
           )}
-          <span>{isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video'}</span>
-          <span className="muted" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
+          <span aria-hidden="true">{isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video'}</span>
+          <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             MP4, WebM, or MOV · up to 100 MB
           </span>
           <input
             ref={inputRef}
             type="file"
             accept="video/*"
+            tabIndex={-1}
+            aria-hidden="true"
             disabled={isVerifying}
             onChange={(event) => {
               const f = event.target.files?.[0] ?? null
