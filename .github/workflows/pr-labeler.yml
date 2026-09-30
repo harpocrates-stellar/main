@@ -37,7 +37,7 @@ jobs:
       - name: Check out base repository
         # Checkout the base ref (main), NOT the fork head, so we never execute
         # untrusted code from a contributor's fork in this privileged context.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
