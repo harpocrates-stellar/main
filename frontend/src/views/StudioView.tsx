@@ -30,6 +30,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setSelectedTier,
     selectedTierMeta,
     stage,
+    hashProgress,
     file,
     proof,
     processedVideoUrl,
@@ -90,6 +91,23 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
           />
         </label>
+
+        {stage === 'hashing' && hashProgress ? (
+          <div className="hash-progress">
+            <div className="hash-progress-row">
+              <Loader2 size={14} className="spin" aria-hidden="true" />
+              <span>
+                Hashing {hashProgress.percentage}% ({hashProgress.processedBytes.toLocaleString()} /{' '}
+                {hashProgress.totalBytes.toLocaleString()} bytes)
+              </span>
+            </div>
+            <progress
+              value={hashProgress.processedBytes}
+              max={Math.max(hashProgress.totalBytes, 1)}
+              aria-label="File hashing progress"
+            />
+          </div>
+        ) : null}
 
         <div className="tier-tabs" role="group" aria-label="Identity tier">
           {TIERS.map((tier) => {

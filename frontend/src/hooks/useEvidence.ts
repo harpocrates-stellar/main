@@ -2,6 +2,9 @@
  * useEvidence — manages the full evidence creation flow:
  * hashing → embedding → (optional) Noir proving → Stellar registration.
  *
+ * Source-file hashing runs chunk-by-chunk inside a dedicated Web Worker with
+ * byte-level progress, keeping the UI responsive for large videos.
+ *
  * Silent Witness proving runs in a cancellable Web Worker so the UI stays
  * responsive and in-flight proofs can be aborted without leaking witness
  * material (see docs/proof-worker.md).
@@ -11,10 +14,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, Fingerprint, KeyRound } from 'lucide-react'
 import type { IdentityTier, ProofPackage, Stage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
+import type { HashProgress } from '../utils'
 import {
   ProofWorkerClient,
   ProofWorkerError,
 } from '../workers/proofWorkerClient'
+import { hashFileInWorker } from '../workers/fileHashWorkerClient'
 
 export const TIERS = [
   {
@@ -48,6 +53,8 @@ export type UseEvidenceReturn = {
   setSelectedTier: (tier: IdentityTier) => void
   selectedTierMeta: (typeof TIERS)[number]
   stage: Stage
+  /** Byte-level progress of the current source-file hashing run (null when idle). */
+  hashProgress: HashProgress | null
   file: File | null
   proof: ProofPackage | null
   processedVideoUrl: string
@@ -74,6 +81,7 @@ type PendingRegistration = {
 export function useEvidence(): UseEvidenceReturn {
   const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
   const [stage, setStage] = useState<Stage>('idle')
+  const [hashProgress, setHashProgress] = useState<HashProgress | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [proof, setProof] = useState<ProofPackage | null>(null)
   const [processedVideoUrl, setProcessedVideoUrl] = useState('')
@@ -90,9 +98,13 @@ export function useEvidence(): UseEvidenceReturn {
   const proofClientRef = useRef<ProofWorkerClient | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
   const proveAbortRef = useRef<AbortController | null>(null)
+  const evidenceFlowAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     return () => {
+      // Cancel any in-flight evidence flow (hashing → embedding) on unmount.
+      evidenceFlowAbortRef.current?.abort()
+      evidenceFlowAbortRef.current = null
       proveAbortRef.current?.abort()
       proveAbortRef.current = null
       activeRequestIdRef.current = null
@@ -124,20 +136,45 @@ export function useEvidence(): UseEvidenceReturn {
   async function handleEvidence(nextFile: File | null) {
     if (!nextFile) return
 
+    evidenceFlowAbortRef.current?.abort()
+    const controller = new AbortController()
+    evidenceFlowAbortRef.current = controller
+    const isCurrentFlow = () =>
+      evidenceFlowAbortRef.current === controller && !controller.signal.aborted
+
     setFile(nextFile)
+    setHashProgress({
+      processedBytes: 0,
+      totalBytes: nextFile.size,
+      percentage: nextFile.size === 0 ? 100 : 0,
+    })
     setStage('hashing')
-    setMessage('Hashing video locally in the browser.')
+    setMessage('Hashing video locally in the browser: 0%.')
 
     try {
+      const sourceHash = await hashFileInWorker(
+        nextFile,
+        (progress) => {
+          if (!isCurrentFlow()) return
+          setHashProgress(progress)
+          setMessage(
+            `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
+          )
+        },
+        controller.signal,
+      )
+      if (!isCurrentFlow()) return
+
       const { sha256 } = await import('../utils')
-      const sourceHash = await sha256(await nextFile.arrayBuffer())
       const proofId = await sha256(`${sourceHash}:${crypto.randomUUID()}`)
       const timestamp = new Date().toISOString()
+      if (!isCurrentFlow()) return
 
       setStage('embedding')
       setMessage('Embedding portable Harpocrates metadata into the video.')
 
       const { embedVideo } = await import('../services/evidenceService')
+      if (!isCurrentFlow()) return
       const { embeddedBlob, embeddedHash, metadataHash } = await embedVideo(
         nextFile,
         selectedTier,
@@ -145,6 +182,7 @@ export function useEvidence(): UseEvidenceReturn {
         proofId,
         timestamp,
       )
+      if (!isCurrentFlow()) return
 
       if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
       setProcessedVideoUrl(URL.createObjectURL(embeddedBlob))
@@ -160,8 +198,13 @@ export function useEvidence(): UseEvidenceReturn {
       setStage('ready')
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
+      if (!isCurrentFlow()) return
       setStage('error')
       setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
+    } finally {
+      if (evidenceFlowAbortRef.current === controller) {
+        evidenceFlowAbortRef.current = null
+      }
     }
   }
 
@@ -346,6 +389,7 @@ export function useEvidence(): UseEvidenceReturn {
     setSelectedTier,
     selectedTierMeta,
     stage,
+    hashProgress,
     file,
     proof,
     processedVideoUrl,
