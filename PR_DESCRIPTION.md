@@ -10,7 +10,8 @@ published browser ACIR byte ceilings. Oversized work now fails with a stable
 
 Closes #<!-- issue number -->
 
-## Changes
+- the registry admin controls policy, verifier configuration, credential roots, proof lifecycle, and the issuer allowlist; and
+- an active issuer attests to Tier 3 evidence under institutional authority.
 
 - Added `frontend/src/proofWorkerMemory.ts` to enforce artifact, witness, proof,
   public-input, and aggregate runtime byte budgets without logging private
@@ -52,7 +53,7 @@ evidence and on-chain state require no repair. If a full browser-worker rollback
 is needed, the evidence flow can return to direct `generateSilentWitnessProof`
 calls as documented in `docs/proof-worker.md`.
 
-## Test Plan
+### Public queries
 
 ```bash
 cd frontend

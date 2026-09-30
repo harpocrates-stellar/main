@@ -234,6 +234,9 @@ upgrade_storage
 propose_admin
 cancel_admin_transfer
 accept_admin
+get_schema_version
+is_admin
+is_issuer
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -325,6 +328,43 @@ unchanged. `DataKey::PendingAdmin` is appended as a new, independent persistent
 storage key, so upgrading an initialized contract preserves its current admin
 and all existing registry data. An upgraded contract starts with no pending
 admin proposal.
+
+## Admin and issuer role separation (storage V2)
+
+Registry administration and Tier 3 issuance are disjoint roles. The admin can
+manage protocol state, credential roots, verifiers, proofs, and the issuer
+allowlist, but an active admin address cannot be granted issuer authority.
+An active issuer cannot be proposed or accepted as admin. Both rejected paths
+return the stable, privacy-safe `RoleConflict` contract error (`#53`); no media,
+metadata, witness, proof, or key material is included.
+
+`is_admin(address)` and `is_issuer(address)` expose the effective role without
+requiring authorization. They are read-only and accept arbitrary public
+addresses. `get_schema_version()` returns the storage schema version.
+
+### V1-to-V2 migration
+
+Fresh deployments initialize directly at storage V2. For an existing contract,
+the current admin calls `upgrade_storage` once:
+
+```text
+upgrade_storage(admin)
+```
+
+The migration is idempotent and narrow. It does not rewrite proof records,
+video/nullifier indexes, verifier state, credential roots, schemas, or issuer
+metadata. If the current admin has an active issuer record, only that record's
+`active` flag is changed to `false`; proof records and all other issuer records
+remain intact. Existing `DataKey::Admin`, `DataKey::Issuer`, and evidence layouts
+are unchanged. A successful migration emits the existing `IssuerRevoked` event
+(for the conflicting authority only) and `SchemaUpgraded { 1, 2 }`; no sensitive
+payload is emitted.
+
+Call `upgrade_storage` before enabling the V2 artifact in production. If code
+is rolled back to a prior Wasm artifact, stored evidence remains readable, but
+that older artifact does not enforce disjoint roles and can grant the admin an
+issuer record again. Re-upgrade and revoke that issuer record before resuming
+issuer operations.
 
 ## Emergency Pause
 
