@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import * as evidenceHook from './hooks/useEvidence'
 
 vi.mock('./components/EvilEye', () => ({
   default: () => <div data-testid="evil-eye" />,
@@ -104,6 +105,28 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: /batch workspace/i }))
 
     expect(screen.getByRole('heading', { level: 2, name: /evidence batch verification workspace/i })).toBeInTheDocument()
+  })
+
+  it('cancels proof work only when the active route changes', async () => {
+    const user = userEvent.setup()
+    const useEvidence = evidenceHook.useEvidence
+    const cancelProving = vi.fn()
+    vi.spyOn(evidenceHook, 'useEvidence').mockImplementation(() => ({
+      ...useEvidence(),
+      cancelProving,
+    }))
+
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: /^evidence$/i }))
+    expect(cancelProving).toHaveBeenCalledTimes(1)
+    cancelProving.mockClear()
+
+    await user.click(screen.getByRole('button', { name: /^evidence$/i }))
+    expect(cancelProving).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: /^verify$/i }))
+    expect(cancelProving).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('heading', { name: /verify artifact/i })).toBeInTheDocument()
   })
 
   it('offline mode verifies locally with zero network calls', async () => {

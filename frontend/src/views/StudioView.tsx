@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
@@ -6,11 +6,13 @@ import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
+import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
 import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
+import { RedactionPreview } from '../components/RedactionPreview'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
@@ -29,7 +31,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setSelectedTier,
     selectedTierMeta,
     stage,
-    proofStage,
+    hashProgress,
     file,
     proof,
     processedVideoUrl,
@@ -40,8 +42,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     message,
     registration,
     networkMismatch,
+    isCancellable,
     handleEvidence,
     registerProof,
+    cancelEvidence,
     cancelProving,
   } = evidence
 
@@ -49,6 +53,12 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
   const { statusLabel, isBusy } = useA11yStage(stage)
   const isProving = stage === 'proving'
+  const revocationProofId =
+    events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
+
+  const studioInputRef = useRef<HTMLInputElement | null>(null)
+
+  const studioInputRef = useRef<HTMLInputElement | null>(null)
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -79,15 +89,48 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
-        <label className="dropzone">
+        {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
+        <label
+          className="dropzone"
+          role="button"
+          tabIndex={0}
+          aria-label={file ? `Evidence file: ${file.name}. Press Enter or Space to choose a different file` : 'Drop or choose a video file. Press Enter or Space to open file picker'}
+          aria-disabled={isBusy}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              if (!isBusy) studioInputRef.current?.click()
+            }
+          }}
+        >
           <Upload size={20} aria-hidden="true" />
-          <span>{file ? file.name : 'Drop or choose a video file'}</span>
+          <span aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</span>
           <input
+            ref={studioInputRef}
             type="file"
             accept="video/*"
+            tabIndex={-1}
+            aria-hidden="true"
             onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
           />
         </label>
+
+        {stage === 'hashing' && hashProgress ? (
+          <div className="hash-progress">
+            <div className="hash-progress-row">
+              <Loader2 size={14} className="spin" aria-hidden="true" />
+              <span>
+                Hashing {hashProgress.percentage}% ({hashProgress.processedBytes.toLocaleString()} /{' '}
+                {hashProgress.totalBytes.toLocaleString()} bytes)
+              </span>
+            </div>
+            <progress
+              value={hashProgress.processedBytes}
+              max={Math.max(hashProgress.totalBytes, 1)}
+              aria-label="File hashing progress"
+            />
+          </div>
+        ) : null}
 
         <div className="tier-tabs" role="group" aria-label="Identity tier">
           {TIERS.map((tier) => {
@@ -130,34 +173,17 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
-        {stage === 'proving' ? (
-          <div
-            className="proof-phases"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            aria-label="Proof generation phases"
-          >
-            <span className="proof-phases-title">
-              {proofStage ? proofStageLabel(proofStage) : 'Preparing proof…'}
-            </span>
-            <ol className="proof-phases-list">
-              {PROOF_STAGE_SEQUENCE.map((phase) => {
-                const status = proofStageStatus(phase, proofStage)
-                return (
-                  <li
-                    key={phase}
-                    className={`proof-phase proof-phase--${status}`}
-                    aria-current={status === 'active' ? 'step' : undefined}
-                  >
-                    <span className="proof-phase-marker" aria-hidden="true">
-                      {status === 'complete' ? '✓' : ''}
-                    </span>
-                    <span>{proofStageLabel(phase)}</span>
-                  </li>
-                )
-              })}
-            </ol>
+        {isCancellable ? (
+          <div className="verify-actions" role="group" aria-label="Evidence studio actions">
+            <button
+              type="button"
+              className="hero-secondary verify-action-btn"
+              onClick={cancelEvidence}
+              aria-label={stage === 'proving' ? 'Cancel proof generation' : 'Cancel upload'}
+            >
+              <XCircle size={14} aria-hidden="true" />
+              {stage === 'proving' ? 'Cancel proof' : 'Cancel upload'}
+            </button>
           </div>
         ) : null}
 
@@ -199,6 +225,15 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <dd>{registration?.status ?? 'Not submitted'}</dd>
           </div>
         </dl>
+
+        <RedactionPreview
+          proof={proof}
+          secrets={{
+            credentialSeed: credentialSeed || undefined,
+            nullifierSeed: nullifierSeed || undefined,
+            mediaObjectUrl: processedVideoUrl || undefined,
+          }}
+        />
 
         {processedVideoUrl ? (
           <a
@@ -270,7 +305,13 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         <div className="rail-block">
           <h3>Chain Registry</h3>
-          <ChainProofPanel chainProof={chainProof} />
+          <ChainProofPanel
+            chainProof={chainProof}
+            proofId={revocationProofId}
+            sourceAddress={wallet || undefined}
+          />
+          <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
+          <VerifierSetStatusPanel />
           {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
         </div>
 

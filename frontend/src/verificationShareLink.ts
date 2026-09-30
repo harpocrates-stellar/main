@@ -117,7 +117,7 @@ export function createVerificationSharePayload(
     payload.transactionRef = tx
   }
 
-  if (input.tier !== undefined && input.tier !== null && input.tier !== '') {
+  if (input.tier !== undefined && input.tier !== null) {
     if (!isTier(input.tier)) return fail('INVALID_FIELD')
     payload.tier = input.tier
   }
@@ -174,10 +174,14 @@ export function createVerificationShareLink(
   const created = createVerificationSharePayload(input)
   if (!created.ok) return created
 
-  let encoded: string
-  try {
-    encoded = encodeVerificationSharePayload(created.payload)
-  } catch {
+  const encoded = (() => {
+    try {
+      return encodeVerificationSharePayload(created.payload)
+    } catch {
+      return null
+    }
+  })()
+  if (!encoded) {
     return fail('OVERSIZED_PAYLOAD')
   }
 
@@ -228,13 +232,13 @@ export function parseVerificationShareLink(urlOrHash: string): ShareLinkParseRes
   }
 
   const query = qIndex >= 0 ? hash.slice(qIndex + 1) : ''
-  let encoded: string | null = null
-  try {
-    const params = new URLSearchParams(query)
-    encoded = params.get('p')
-  } catch {
-    return fail('MALFORMED_URL')
-  }
+  const encoded = (() => {
+    try {
+      return new URLSearchParams(query).get('p')
+    } catch {
+      return null
+    }
+  })()
 
   if (!encoded) return fail('MISSING_PAYLOAD')
   return decodeVerificationSharePayload(encoded)

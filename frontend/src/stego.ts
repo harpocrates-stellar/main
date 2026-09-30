@@ -1,4 +1,4 @@
-import pako from 'pako'
+import * as pako from 'pako'
 
 const MAGIC = new TextEncoder().encode('HRPSTG1')
 const MAX_PAYLOAD_BYTES = 64 * 1024
@@ -13,7 +13,9 @@ export class MalformedEvidenceError extends Error {
 }
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const view = new Uint8Array(data)
+  const buffer = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
   return new Uint8Array(hashBuffer)
 }
 
@@ -174,7 +176,10 @@ export async function extractMetadata(file: File): Promise<unknown> {
           }
         } else {
           if ('requestVideoFrameCallback' in video) {
-            ;(video as any).requestVideoFrameCallback(processFrame)
+            const frameVideo = video as HTMLVideoElement & {
+              requestVideoFrameCallback?: (callback: FrameRequestCallback) => void
+            }
+            frameVideo.requestVideoFrameCallback?.(processFrame)
           } else {
             requestAnimationFrame(processFrame)
           }
@@ -185,7 +190,10 @@ export async function extractMetadata(file: File): Promise<unknown> {
         .play()
         .then(() => {
           if ('requestVideoFrameCallback' in video) {
-            ;(video as any).requestVideoFrameCallback(processFrame)
+            const frameVideo = video as HTMLVideoElement & {
+              requestVideoFrameCallback?: (callback: FrameRequestCallback) => void
+            }
+            frameVideo.requestVideoFrameCallback?.(processFrame)
           } else {
             requestAnimationFrame(processFrame)
           }

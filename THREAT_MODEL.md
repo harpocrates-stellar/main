@@ -112,6 +112,7 @@ Each assumption is a potential attack surface if violated.
 | D7 | Circuit artifacts in `frontend/public/noir/` match the circuit used to generate `RegistryWasmHash`-era verifier keys. | Browser-generated proofs fail on-chain verification or (worse) a stale verifier accepts proofs from a replaced circuit. |
 | D8 | Stellar Testnet ledger timestamps are monotonically increasing and not manipulable by a single validator. | Proof TTL enforcement can be bypassed. |
 | D9 | ffmpeg/ffprobe binaries on the backend host are from a trusted, unmodified distribution. | Malicious ffmpeg could exfiltrate video frames or corrupt steganographic output. |
+| D10 | Deployment containers execute as dedicated unprivileged non-root users (`harpocrates` UID 10001 for backend, `nginx` UID 101 for frontend) with `no-new-privileges:true`. | Vulnerability in runtime dependencies (e.g. ffmpeg or nginx parser) could lead to container breakout or host root compromise. |
 
 
 ---
@@ -264,6 +265,8 @@ and `metadata_hash` for content they did not actually review.
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
+| The frontend resolves the issuer's current registry standing independently of the record's own `status`, so a seal whose issuer was revoked afterwards is surfaced as `Issuer revoked` instead of looking endorsed | `frontend/src/provenance/issuerTrust.ts`, `frontend/src/hooks/useIssuerTrust.ts` |
+| An issuer read that does not complete is surfaced as `Issuer lookup unavailable` with no trust decision, never as a trusted or unknown issuer | `frontend/src/hooks/useIssuerTrust.ts` |
 
 **Control (#357):** The `revocation_witness` Merkle tree is protocol-bounded at
 `MAX_REVOCATION_WITNESS_DEPTH = 3` (`MAX_REVOCATION_LEAVES = 8`). The Noir
@@ -272,9 +275,28 @@ verifier codec) rejects oversized depth before proving so hostile trees cannot
 inflate witness size or proving cost at this boundary. Depth changes require a
 new circuit version.
 
+**Control (#323):** Issuer rotation is explicit and bounded. `rotate_issuer`
+retires the previous issuer key immediately — it can no longer sign new seals,
+directly or through a delegation — and opens a grace window defaulting to
+`DEFAULT_ISSUER_ROTATION_GRACE_SECS` (90 days) and capped at
+`MAX_ISSUER_ROTATION_GRACE_SECS` (365 days); a longer or overflowing request, and
+a rotation that names the same key twice, fail closed. During the window
+`is_issuer_verifiable(previous)` stays true so pre-rotation seals keep a
+defensible endorsement, and at `grace_expires_at` it fails closed, so a retired
+key can never hold standing indefinitely. `revoke_issuer`, the timelocked
+`RevokeIssuer` action, and `add_issuer` all clear the rotation record, so
+compromise response and re-onboarding are never shadowed by a grace window.
+Typed `IssuerRotated` / `IssuerRotationGraceExpired` events carry addresses,
+ledger time, and the window bound only — no key material, metadata preimages,
+witnesses, media, or reasons. The window is stored under the additive
+`DataKey::IssuerRotation` key, so pre-#323 deployments read as "no rotation".
+
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually
 call `revoke_proof` for each fraudulent record — there is no bulk revocation.
+The issuer trust badge makes this state visible to a verifier, but it does not
+change the on-chain record: the seal is still `STATUS_REGISTERED` and any
+caller that reads `status` alone will still see it as registered.
 The `metadata_hash` stored in the issuer's `IssuerRecord` is not verified by
 the contract to match the `metadata_hash` in the proof registration; an issuer
 can register a proof with a `metadata_hash` that differs from their declared
@@ -469,6 +491,9 @@ limitation).
 | `credential_root` extracted from public inputs must be in the active allowlist | `lib.rs` → `require_active_credential_root` |
 | Nullifier from public inputs is stored and replay-checked | `lib.rs` → `DuplicateNullifier` |
 | Circuit enforces `derived_root == credential_root` and `derived_nullifier == nullifier` | `silent_witness/src/main.nr` |
+| Circuit asserts its committed `circuit_version` equals `CURRENT_CIRCUIT_VERSION`, so a proof cannot claim a circuit other than the one that produced it | `silent_witness/src/main.nr` → `test_circuit_version_downgrade` |
+| `silent_witness/v2` (`hpx-vi/2`) re-checks that committed version at every verifier boundary, before the identity fields, and rejects a mismatch with a stable code | `verifier_inputs.rs` → `parse_silent_witness_v2`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts` |
+| Registration rejects an envelope declaring a version other than `EXPECTED_CIRCUIT_VERSION` | `lib.rs` → `parse_scoped_silent_witness_public_inputs` (`CircuitVersionMismatch`, 87) |
 | Circuit tests cover tampered public inputs, swapped fields, wrong video hash, and nullifier from different video | `silent_witness/src/main.nr` → test corpus |
 | `credential_root` metadata is stored per-root so admin can audit which roots are active | `lib.rs` → `CredentialRootRecord` |
 
@@ -488,7 +513,33 @@ limitation).
 
 3. Circuit artifact versioning: the compiled `silent_witness.json` in
    `frontend/public/noir/` must match the verifier contract's proving key. There
-   is no on-chain mechanism to detect or enforce this alignment.
+   is no on-chain mechanism to detect or enforce this alignment. The build side is
+   now pinned and drift-checked (`zk/browser.artifacts.manifest.json`,
+   `check-coverage`), but no check yet compares a circuit's verification-key digest
+   to the key the deployed verifier contract was built with.
+   #343 adds an on-chain *declared window* (`set_verifier_circuit_versions`)
+   that rejects a proof whose circuit version the active verifier was not
+   configured to check, before the verifier is invoked. The mapping from a
+   declared version number to a specific proving key remains an off-chain,
+   operator-verified artifact, so this narrows the gap but does not eliminate it.
+   #368 closes the *in-band* half of the same gap: the scoped circuit now asserts
+   a public `circuit_version` against `CURRENT_CIRCUIT_VERSION`, and `hpx-vi/2`
+   carries that field as the frame's trailing element, so the version a proof
+   claims is part of the statement it proves instead of being inferred from the
+   frame's byte length. A frame that names any other version — including a dirty
+   encoding of the version field — is rejected with `version_mismatch` (codec) or
+   `CircuitVersionMismatch` (87, on-chain), and the strict `silent_witness/v2`
+   parser refuses a truncated 224-byte frame with `length` rather than
+   reinterpreting it. The last hole of this class is now closed as well:
+   `register_anonymous_verified` used to admit the bare 224-byte scoped frame,
+   whose version stayed *inferred* from that length and so let a proof from the
+   pre-#368 (nine-parameter) circuit register. That length is now rejected with
+   `CircuitVersionMismatch` (87) before the verifier is reached, so no scoped
+   proof can skip the version commitment by omitting the trailer; provers must
+   migrate (see `MIGRATION_GUIDE.md`). What
+   remains is the digest binding described below: version *n* is not yet
+   cryptographically tied to a specific verification key.
+   See [Open Risk OR-5](#or-5-circuit-artifact-version-alignment).
 
 **Severity:** Critical (OR-1 stub path). Low (verified path via `register_anonymous_verified`).
 
@@ -549,6 +600,7 @@ network-reachable host.
 | Payload size capped at 1 MB | `app.py` → `_enforce_json_size` |
 | `safe_filename` prevents path traversal via `fileName` | `app.py` → `safe_filename` |
 | Parameterized SQL prevents injection | `db.py` → `insert_proof_event` |
+| Applied migration checksums replayed against in-code definitions at startup (fail-closed) | `migration.py` → `run_migrations`, `verify_migration_checksums` |
 
 **Residual risk:** The endpoint has no authentication, HMAC, or bearer token.
 Any caller that can reach the Flask API can write arbitrary rows. The
@@ -597,7 +649,11 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Nullifier set on first use, `DuplicateNullifier` on replay | T2 | `lib.rs` → `DataKey::Nullifier` |
 | Credential root allowlist with active/revoked status | T1, T8 | `lib.rs` → `add_credential_root`, `revoke_credential_root` |
 | Issuer allowlist with active/revoked status | T3 | `lib.rs` → `add_issuer`, `revoke_issuer` |
+| Bounded issuer rotation grace window (`rotate_issuer`, `is_issuer_verifiable`, expired at `grace_expires_at`, settled by `finalize_issuer_rotation`) | T3 | `lib.rs` → `rotate_issuer` |
 | External verifier contract hook (`verify_external_proof`) | T8 | `lib.rs` → `verify_external_proof` |
+| Per-call circuit-version gate before the verifier is invoked (`require_supported_circuit_version`) | T8 | `lib.rs` → `require_supported_circuit_version` |
+| Admin-only, wasm-bounded verifier circuit-version window (`set_verifier_circuit_versions`) | T8 | `lib.rs` → `set_verifier_circuit_versions` |
+| Delegated registrations bounded by the delegation's own expiry | T2, T9 | `lib.rs` → `bounded_delegated_expiry` |
 | Public input parsing with exact-length enforcement (128 bytes) | T8 | `lib.rs` → `parse_silent_witness_public_inputs` |
 | `video_hash` cross-check between public inputs and call argument | T8 | `lib.rs` → `register_anonymous_verified` |
 | Proof TTL / expiration (`set_proof_ttl`, `get_proof_status`) | T2 | `lib.rs` → `compute_expires_at`, `get_proof_status` |
@@ -616,6 +672,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `secure_filename` (Werkzeug) for `fileName` | T6 | `app.py` → `safe_filename` |
 | BN254 field bounds check on `credentialSecret` / `nullifierSecret` | T6 | `app.py` → `is_field_decimal` |
 | Parameterized SQL (psycopg) for all DB writes | T6, T10 | `db.py` → `insert_proof_event` |
+| Applied migration checksum verification at startup (fail-closed, id/digest-only reporting) | T10 | `migration.py` → `run_migrations`, `verify_migration_checksums` |
 | Sensitive key redaction in structured logs | T5 | `logging_utils.py` → `SENSITIVE_KEYS` |
 | Noir worker disabled in production (`NOIR_WORKER_ENABLED=false`) | T4, T5 | `config.py` → `noir_worker_enabled` |
 | Metrics endpoint token-gated | T6 | `app.py` → `metrics` |
@@ -625,6 +682,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
 | Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
 | AST-based API Schema generation prevents DB injections and application state side-effects during build/CI | T6, T10 | `devx/generate_api_schema.py` |
+| Domain-separated proof-cache keys: SHA-256 over versioned `harpocrates:verifier-cache:v1` tag + length-prefixed fields; hex canonicalization prevents case-variant cache fragmentation | T2, T8 | `verifier_cache.py` → `CACHE_KEY_DOMAIN_TAG`, `_get_cache_key` |
 
 
 ### 7.3 React Frontend
@@ -640,8 +698,9 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Offline local verification — zero network calls, no storage/log writes, and never a confirmed trust decision; envelope extraction reuses the existing single stego loader (no second protocol truth) and secret-shaped envelopes are rejected up-front | T4, T5 | `offlineVerification.ts`, `useVerification.ts` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
+| Non-root container execution (`nginx` UID 101) with unprivileged PID path (`/tmp/nginx.pid`) and `no-new-privileges:true` | T4 | `frontend/Dockerfile`, `docker-compose.yml` |
 
-### 7.4 Noir ZK Circuit (`silent_witness`)
+### 7.4 Noir ZK Circuits
 
 | Mitigation | Threats addressed | Code reference |
 |------------|------------------|----------------|
@@ -649,6 +708,11 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `assert(derived_nullifier == nullifier)` — binds nullifier to secrets + video hash | T2, T8 | `silent_witness/src/main.nr` |
 | Nullifier commits to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)` | T2, T5 | `silent_witness/src/main.nr` |
 | Test corpus: tampered public inputs, wrong video hash, swapped fields, cross-video nullifier | T2, T8 | `silent_witness/src/main.nr` → test functions |
+| `assert(circuit_version == CURRENT_CIRCUIT_VERSION)` — the proof carries the version of the circuit that produced it, checked in-circuit | T8, OR-5 | `silent_witness/src/main.nr` → `test_circuit_version_downgrade` |
+| The `hpx-vi/2` codec re-checks that committed version in all three verifier layers, before canonicity and identity, and a conformance corpus pins the three to one answer | T8, OR-5 | `verifier_inputs.rs` → `parse_silent_witness_v2`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts`, `zk/vectors/verifier_conformance_v2.json` |
+| Pinned toolchain + hermetic build + normalized digest manifest for every circuit, with a double-build check | T4, T8, OR-5 | `zk/toolchain.lock.json`, `zk/noir/scripts/reproducible-build.sh` |
+| `check-coverage` fails when a circuit in the tree is not declared in the lock, so no circuit can reach a public boundary unpinned | T4, T8, OR-5 | `zk/tools/artifact_manifest.py` → `check_coverage` |
+| Published browser ACIR is digest-pinned and, when a build target is present, required to match it | T4, T8, OR-5 | `zk/browser.artifacts.manifest.json` → `verify-browser` |
 
 
 ---
@@ -725,15 +789,52 @@ using a watermarking technique that is more robust to re-encoding.
 **Severity:** Medium  
 **Component:** Frontend / Soroban verifier contract  
 **Description:** The compiled circuit artifacts in `frontend/public/noir/`
-(`silent_witness.json`, `silent_witness_helper.json`) must match the proving
-key embedded in the `SilentWitnessUltraHonkVerifier` contract. There is no
-on-chain or build-time check that enforces this alignment. A circuit upgrade
-that replaces the verifier contract without updating the frontend artifacts (or
-vice versa) will silently break all Tier 1 registrations.  
+(`silent_witness.json`, `silent_witness_helper.json`, `selective_disclosure.json`)
+must match the proving key embedded in the `SilentWitnessUltraHonkVerifier`
+contract. There is no on-chain or build-time check that enforces this alignment.
+A circuit upgrade that replaces the verifier contract without updating the
+frontend artifacts (or vice versa) will silently break all Tier 1 registrations.  
 **Remediation:** Add a build-time check (CI step) that computes a hash of
 `silent_witness.json` and compares it to a value stored alongside the verifier
 contract's WASM hash. Document the circuit upgrade procedure in
 `contracts/VERIFIER_INTEGRATION.md`.
+
+**Partial progress (this repository):** the published-artifact side is now
+covered — `zk/browser.artifacts.manifest.json` pins the digests of every
+`published_acir` bundle and `zk/tools/artifact_manifest.py verify-browser` fails
+on drift, and `check-coverage` fails if a circuit is not declared in
+`zk/toolchain.lock.json` at all (the condition that let
+`selective_disclosure` reach the browser and the registry verifier while sitting
+outside the reproducible-build pipeline). What remains open is the *other* half:
+nothing compares a circuit's verification-key digest to the key the deployed
+verifier contract was built with, so the alignment check is still name-based
+rather than digest-based. See `docs/zk-reproducible-builds.md`.
+
+**Further progress (#368):** the *wire* half of the alignment problem is now
+closed for the scoped circuit. `silent_witness/v2` commits the producing
+circuit's version as a public input the circuit itself asserts, so a proof can no
+longer be re-labelled to a different circuit by editing a byte length, and every
+verifier layer checks the same declared constant (`EXPECTED_CIRCUIT_VERSION`)
+against it rather than each inferring its own. `test_circuit_version_downgrade`
+and the `sw2-neg-02x` / `sw2-neg-07x` corpus cases fail if the Noir global, the
+three codecs, and the corpus drift apart. The digest half above — version *n* to
+verification-key binding — is still open and remains this risk's core.
+
+**What #368 found about that control:** the published browser pair is not a build
+of the tracked scoped sources. `frontend/public/noir/silent_witness.json` is the
+four-field `browser_v1` circuit (six ABI parameters, helper returns two fields) and
+`zk/noir/silent_witness/src/main.nr` is the scoped circuit (nine on `main`, ten
+with `circuit_version`), so `compare_published_to_targets` reports drift for both
+stems the moment a build target exists — `465e556f5904e7bc` against
+`b296e2d6a753b579` for `silent_witness`, `a141350e3c2f83fb` against `3c3dc8a7055ce312`
+for the helper. CI never sees it because `zk/noir/**/target/` is gitignored, which
+means the "required to match it" column above is inert in practice, and
+`assertArtifactPair` keeps the browser pinned to `browser_v1` by bytecode digest
+instead. Publishing a scoped browser pair means moving the main artifact, the
+helper artifact, the `artifact_abis.scoped_v2` entry and
+`zk/toolchain.lock.json`'s `published_acir` declarations together; a scoped main
+beside the four-field helper resolves to no frame at all, so a partial publish
+fails the browser closed.
 
 ---
 
@@ -933,6 +1034,32 @@ upload and proof endpoints.
 | Migration | Additive; `RATELIMIT_ENABLED=false` disables the layer without changing routes |
 | Rollback | Remove `@limiter.limit` decorators; endpoints behave as before |
 
+## 9.3 C2PA Authenticity Assertion Export
+
+**Artifact:** `cli/src/c2pa.ts` (`harpocrates c2pa`), schema version 1,
+exporter `harpocrates-cli/c2pa` v1.0.0.
+
+`harpocrates c2pa` derives C2PA authenticity assertions from the canonical
+proof manifest and (optionally) a verification receipt. It produces an
+**unsigned** C2PA JSON manifest definition; downstream tooling signs it with
+its own C2PA signer and key material.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Local output byte stream; the caller's C2PA signer and the target media platform become the consumers |
+| Single truth | All values come from the canonical manifest/receipt schemas; `manifestHash` = SHA-256 of the canonical serialized manifest, so the export cannot drift into a second metadata truth |
+| Privacy | Only public manifest/registry fields are emitted; media bytes, witness values, credential secrets, proof bytes, transaction blobs, and signing keys are never emitted, and the exporter never signs |
+| Verification honesty | `harpocrates.verification.v1` records the receipt outcome verbatim (`valid`/`expired`/`revoked`/`not_found`/`pending`/`failed`/...); a `valid` status is never fabricated |
+| Determinism | Same manifest + receipt ⇒ identical output bytes (CI-verified against `devx/fixtures/c2pa/expected-export.json`) |
+| Input guards | Manifest/receipt capped at 1 MiB input, 256 KiB output; unknown manifest fields and unsupported versions rejected with fixed, privacy-safe errors (exit 8) |
+| Migration | Additive; schema version `1` carried in the export, no on-chain or metadata schema change |
+| Rollback | Deploy the prior CLI build; existing receipt shape and exit-code mapping unchanged |
+
+For upstream threat coverage, the export output sits at TB-2 (browser/user →
+Stellar RPC) and TB-1 (local tooling boundary): it publishes hashes and
+registry identity that are public after registration, and it never accesses
+A1/A2 (credential/nullifier secrets) or A8/A9 keypairs.
+
 ## 10. Review and Update Cadence
 
 | Trigger | Action |
@@ -943,6 +1070,7 @@ upload and proof endpoints.
 | New backend endpoint or authentication change | Re-review T1, T6, T10. |
 | Admin key rotation | Update D3; verify two-step transfer completed cleanly. |
 | Any new npm or Python dependency with network access | Assess supply-chain risk (T4). |
+| Any change to the CLI C2PA exporter (`cli/src/c2pa.ts`, `harpocrates c2pa`) | Re-review Section 9.3; regenerate the committed fixture. |
 | Scheduled review | Every six months from the date of last update, regardless of changes. |
 
 When updating this document, increment the version number, update the date, and
@@ -953,3 +1081,7 @@ add a one-line change summary below:
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
 | 1.2 | 2026-09-24 | Add OR-11: Unbounded external evidence fetch — resolved in #287. Connect timeout, response-size cap, and privacy-safe logging enforced via fetch_external.safe_urlopen. |
+| 1.3 | 2026-09-27 | Evidence Studio redaction preview documents the public boundary; seeds, witness values and media never render in preview or telemetry signals. |
+
+## CI proof artifact retention
+Retained CI artifacts are a public-boundary risk. Only allowlisted proof outputs are retained, via `devx/retain_proof_artifacts.py`, which rejects media, keys, seeds, witness values and prover inputs, and never prints file names or contents. See `docs/proof-artifact-retention.md`.

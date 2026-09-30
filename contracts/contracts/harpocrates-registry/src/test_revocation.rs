@@ -72,7 +72,7 @@ struct MockRevocationVerifier;
 impl MockRevocationVerifier {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
         let len = public_inputs.len();
-        if (len != 128 && len != 192) || proof.is_empty() {
+        if !(matches!(len, 128 | 160 | 224 | 256)) || proof.is_empty() {
             panic!("invalid revocation proof");
         }
     }
@@ -261,7 +261,7 @@ fn test_check_non_revocation_succeeds() {
     client.check_non_revocation(&pi, &proof);
 
     // Nullifier should be consumed (this proves the proof was accepted).
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 /// Rejects when no revocation root has been published.
@@ -469,7 +469,7 @@ fn test_check_non_revocation_rejects_reused_nullifier() {
 
     // First submission — succeeds
     client.check_non_revocation(&pi, &proof);
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 
     // Second submission with same nullifier — must panic
     client.check_non_revocation(&pi, &proof);

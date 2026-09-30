@@ -45,6 +45,14 @@ const corpus = readJson('../../zk/vectors/verifier_conformance_v1.json') as {
   }[]
 }
 
+const corpusV2 = readJson('../../zk/vectors/verifier_conformance_v2.json') as {
+  cases: {
+    schema: string
+    public_inputs_hex: string
+    expect: { accept: boolean }
+  }[]
+}
+
 const regressions = readJson('../../zk/vectors/fuzz_regressions_v1.json') as {
   format: string
   version: number
@@ -72,9 +80,10 @@ const DECLARED_CODES = new Set<string>([
   'proof_undersize',
   'proof_oversize',
   'unknown_schema',
+  'version_mismatch',
 ])
 
-const SCHEMAS = ['silent_witness/v1', 'revocation_witness/v1'] as const
+const SCHEMAS = ['silent_witness/v1', 'silent_witness/v2', 'revocation_witness/v1'] as const
 
 const MUTATORS = [
   'truncate_tail',
@@ -204,6 +213,12 @@ for (const entry of corpus.cases) {
     positiveFrames.set(entry.schema, decodeHex(entry.public_inputs_hex))
   }
 }
+// The v2 codec is exercised through its own envelope corpus (#368).
+for (const entry of corpusV2.cases) {
+  if (entry.expect.accept && !positiveFrames.has(entry.schema)) {
+    positiveFrames.set(entry.schema, decodeHex(entry.public_inputs_hex))
+  }
+}
 
 const BASE_PROOF_HEX = 'ab'.repeat(64)
 
@@ -325,8 +340,7 @@ describe('structured proof-hex decoding fuzz', () => {
     [MAX_PROOF_BYTES + 1, 'proof_oversize'],
   ] as const)('proof length %i yields %s', (length, expected) => {
     const schema = SCHEMAS[0]
-    const frameHex = toHex(positiveFrames.get(schema)!)
-    expect(classify(schema, frameHex, 'ab'.repeat(length))).toBe(expected)
+    expect(classify(schema, toHex(positiveFrames.get(schema)!), 'ab'.repeat(length))).toBe(expected)
   })
 
   it.each([
@@ -337,13 +351,10 @@ describe('structured proof-hex decoding fuzz', () => {
     [`0x${'ab'.repeat(64)}`, 'malformed_hex'],
   ] as const)('malformed proof hex %j rejects before bounds', (proofHex, expected) => {
     const schema = SCHEMAS[0]
-    const frameHex = toHex(positiveFrames.get(schema)!)
-    expect(classify(schema, frameHex, proofHex)).toBe(expected)
+    expect(classify(schema, toHex(positiveFrames.get(schema)!), proofHex)).toBe(expected)
   })
 
   it.each(SEEDS)('seed=%i proof rejection signals never echo mutant bytes', (seed) => {
-    const schema = SCHEMAS[0]
-    const frameHex = toHex(positiveFrames.get(schema)!)
     const rng = new Lcg(seed)
 
     for (let index = 0; index < 64; index += 1) {
