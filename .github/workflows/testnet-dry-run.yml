@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '18'
           cache: 'npm'
@@ -73,7 +73,7 @@ jobs:
           flake8 devx/testnet_dry_run.py devx/test_testnet_dry_run.py --max-line-length=100
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '18'
       
@@ -117,7 +117,7 @@ jobs:
           }' | python devx/testnet_dry_run.py || true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '18'
       
