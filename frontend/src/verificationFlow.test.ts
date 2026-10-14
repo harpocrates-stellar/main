@@ -58,12 +58,13 @@ function mockApi(events: unknown[] = [EVENT]) {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ events }))
 }
 
-async function runVerification() {
+async function runVerification(signal?: AbortSignal) {
   return verifyArtifact({
     apiBase: API_BASE,
     contractId: CONTRACT_ID,
     file: FILE,
     videoHash: VIDEO_HASH,
+    signal,
   })
 }
 
@@ -86,7 +87,7 @@ describe('verification flow integration', () => {
     expect(result.events).toEqual([EVENT])
     expect(result.chainProof).toEqual(ACTIVE_CHAIN_PROOF)
     expect(extractMetadata).toHaveBeenCalledWith(FILE)
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`)
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`, { signal: undefined })
     expect(getProofByVideoHash).toHaveBeenCalledWith(CONTRACT_ID, VIDEO_HASH, undefined)
   })
 
@@ -110,6 +111,17 @@ describe('verification flow integration', () => {
 
     expect(result.outcome).toBe('database-only')
     expect(result.message).toMatch(/database record only.*no valid embedded.*treat.*unconfirmed/i)
+  })
+
+  it('forwards an optional abort signal to the database lookup', async () => {
+    const fetch = mockApi([])
+    const signal = new AbortController().signal
+    extractMetadata.mockResolvedValue(null)
+    getProofByVideoHash.mockResolvedValue(null)
+
+    await runVerification(signal)
+
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`, { signal })
   })
 
   it('warns users not to trust a revoked chain record', async () => {
