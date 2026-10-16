@@ -22,17 +22,15 @@ import { logStructured, redactSensitive } from './logging.js'
 
 // ── CLI argument parsing ──────────────────────────────────────────────────
 
-type Command = 'verify' | 'manifest' | 'hash' | 'verify-receipt' | 'c2pa' | 'help'
-
 function parseArgs(argv: string[]): {
-  command: Command
+  command: string
   flags: Record<string, string>
 } {
   if (argv.length < 1) {
     return { command: 'help', flags: {} }
   }
 
-  const command = argv[0] as Command
+  const command = argv[0]
   const flags: Record<string, string> = {}
 
   for (let i = 1; i < argv.length; i++) {
@@ -118,8 +116,13 @@ async function main(): Promise<void> {
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
     case 'help':
-    default:
       return printHelp()
+    default: {
+      const name = command.startsWith('-') ? command.split('=', 1)[0] : command
+      process.stderr.write(`harpocrates: unknown command ${JSON.stringify(name)}\n`)
+      process.exitCode = 2
+      return printHelp(process.stderr)
+    }
   }
 }
 
@@ -402,7 +405,7 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
   }
 }
 
-function printHelp(): void {
+function printHelp(output: NodeJS.WritableStream = process.stdout): void {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
 
@@ -476,8 +479,7 @@ Exit codes:
   7   failed
   8   error
 `
-  printText(help.trim())
-  process.exit(0)
+  output.write(help.trim() + '\n')
 }
 
 main().catch((err) => {
