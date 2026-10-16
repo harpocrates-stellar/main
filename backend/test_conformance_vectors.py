@@ -1,11 +1,12 @@
-"""Cross-layer verifier conformance runner (Python side, codec ``hpx-vi/1``).
+"""Cross-layer verifier conformance runner (Python side, codecs ``hpx-vi/1``
+and ``hpx-vi/2``).
 
-Drives the shared corpus in ``zk/vectors/verifier_conformance_v1.json`` through
-``backend.verifier_inputs``. The Rust runner
-(``contracts/contracts/harpocrates-registry/src/test_conformance.rs``) and the
-TypeScript runner (``frontend/src/verifierInputs.conformance.test.ts``) drive
-the same file, so a divergence in any layer fails exactly one of the three
-suites and names the offending case id.
+Drives the shared corpora in ``zk/vectors/verifier_conformance_v1.json`` and
+``zk/vectors/verifier_conformance_v2.json`` through ``backend.verifier_inputs``.
+The Rust runner (``contracts/contracts/harpocrates-registry/src/test_conformance.rs``)
+and the TypeScript runner (``frontend/src/verifierInputs.conformance.test.ts``)
+drive the same files, so a divergence in any layer fails exactly one of the
+three suites and names the offending case id.
 
 See docs/zk-conformance-vectors.md.
 """
@@ -20,10 +21,17 @@ import pytest
 from verifier_inputs import (
     BN254_SCALAR_FIELD_MODULUS,
     CODEC_ID,
+    CODEC_ID_V2,
+    EXPECTED_CIRCUIT_VERSION,
+    MAX_DERIVATIVE_ANCESTRY_DEPTH,
+    DERIVATIVE_ANCESTRY_DOMAIN_TAG,
     MAX_PROOF_BYTES,
     MIN_PROOF_BYTES,
     PUBLIC_INPUTS_LEN,
     REVOCATION_DOMAIN_SEPARATOR,
+    SCHEMA_SILENT_WITNESS_V2,
+    SILENT_WITNESS_DOMAIN_TAG,
+    SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN,
     RejectCode,
     VerifierInputError,
     classify,
@@ -34,9 +42,32 @@ from verifier_inputs import (
 CORPUS_PATH = (
     Path(__file__).resolve().parents[1] / "zk" / "vectors" / "verifier_conformance_v1.json"
 )
+CORPUS_V2_PATH = (
+    Path(__file__).resolve().parents[1] / "zk" / "vectors" / "verifier_conformance_v2.json"
+)
+DERIVATIVE_ANCESTRY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "zk"
+    / "vectors"
+    / "derivative_ancestry_conformance_v1.json"
+)
+MALFORMED_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "zk"
+    / "vectors"
+    / "malformed_public_inputs_v1.json"
+)
 
 CORPUS = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
 CASES = CORPUS["cases"]
+CORPUS_V2 = json.loads(CORPUS_V2_PATH.read_text(encoding="utf-8"))
+CASES_V2 = CORPUS_V2["cases"]
+DERIVATIVE_ANCESTRY_CORPUS = json.loads(
+    DERIVATIVE_ANCESTRY_PATH.read_text(encoding="utf-8")
+)
+DERIVATIVE_ANCESTRY_CASES = DERIVATIVE_ANCESTRY_CORPUS["cases"]
+MALFORMED_CORPUS = json.loads(MALFORMED_PATH.read_text(encoding="utf-8"))
+MALFORMED_CASES = MALFORMED_CORPUS["cases"]
 
 
 def case_id(case: dict) -> str:
@@ -85,13 +116,21 @@ def test_every_reject_code_is_declared():
 
 
 def test_every_declared_reject_code_is_reachable_or_layer_specific():
-    """Codes with no case must be justified: only ``unknown_schema`` is
-    exercised outside the corpus (schema dispatch is not a wire input)."""
+    """Codes with no structural case must be justified.
+
+    ``malformed_hex`` is exercised by the companion corpus
+    ``malformed_public_inputs_v1.json`` (hex decoding is string-layer only).
+    ``unknown_schema`` remains outside both corpora (schema dispatch is not a
+    wire input).
+    """
     exercised = {
         case["expect"]["reject_code"] for case in CASES if case["expect"]["reject_code"]
     }
-    unexercised = set(CORPUS["reject_codes"]) - exercised
-    assert unexercised <= {"malformed_hex"}
+    malformed_exercised = {
+        case["expect"]["reject_code"] for case in MALFORMED_CASES
+    }
+    unexercised = set(CORPUS["reject_codes"]) - exercised - malformed_exercised
+    assert unexercised <= set()
 
 
 # ── The corpus itself ───────────────────────────────────────────────────────
@@ -115,25 +154,220 @@ def test_conformance_case_is_deterministic(case: dict):
     assert first == second
 
 
+# ── v2 (circuit-versioned envelope, #368) ───────────────────────────────────
+
+
+def test_v2_corpus_is_versioned_and_matches_this_codec():
+    assert CORPUS_V2["format"] == "harpocrates.verifier-conformance"
+    assert CORPUS_V2["version"] == 2
+    assert CORPUS_V2["codec"] == CODEC_ID_V2
+    assert "version_mismatch" in CORPUS_V2["reject_codes"]
+
+
+def test_v2_corpus_constants_match_implementation_constants():
+    constants = CORPUS_V2["constants"]
+    assert constants["silent_witness_v2_public_inputs_len"] == SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN
+    assert constants["expected_circuit_version"] == EXPECTED_CIRCUIT_VERSION
+    assert bytes.fromhex(constants["silent_witness_domain_tag_hex"]) == SILENT_WITNESS_DOMAIN_TAG
+
+
+def test_v2_corpus_has_positive_and_negative_and_version_mismatch_cases():
+    assert len(CASES_V2) >= 10
+    assert any(case["expect"]["accept"] for case in CASES_V2)
+    assert any(not case["expect"]["accept"] for case in CASES_V2)
+    assert any(
+        case["expect"]["reject_code"] == "version_mismatch" for case in CASES_V2
+    )
+    for case in CASES_V2:
+        assert case["schema"] == SCHEMA_SILENT_WITNESS_V2
+
+
+def test_v2_case_ids_are_unique():
+    identifiers = [case["id"] for case in CASES_V2]
+    assert len(identifiers) == len(set(identifiers))
+
+
+def test_v2_reject_codes_are_reachable_or_layer_specific():
+    """``malformed_hex`` is still the string-layer only code, covered by the
+    companion malformed corpus; every other declared v2 code must have a case."""
+    exercised = {
+        case["expect"]["reject_code"] for case in CASES_V2 if case["expect"]["reject_code"]
+    }
+    unexercised = set(CORPUS_V2["reject_codes"]) - exercised - {"malformed_hex"}
+    assert unexercised <= set()
+
+
+@pytest.mark.parametrize("case", CASES_V2, ids=case_id)
+def test_v2_conformance_case(case: dict):
+    expected = case["expect"]["reject_code"] if not case["expect"]["accept"] else None
+    actual = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    assert actual == expected, (
+        f"{case['id']}: expected {expected!r}, got {actual!r} — "
+        f"{case['description']}"
+    )
+
+
+@pytest.mark.parametrize("case", CASES_V2, ids=case_id)
+def test_v2_conformance_case_is_deterministic(case: dict):
+    first = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    second = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    assert first == second
+
+
+# ── Redacted derivative ancestry (issue: prove redacted derivative ancestry) ─
+
+
+def test_derivative_ancestry_corpus_is_versioned_and_matches_this_codec():
+    assert DERIVATIVE_ANCESTRY_CORPUS["format"] == "harpocrates.derivative-ancestry"
+    assert DERIVATIVE_ANCESTRY_CORPUS["version"] == 1
+    assert DERIVATIVE_ANCESTRY_CORPUS["codec"] == CODEC_ID_V2
+    assert "ancestry_depth_exceeded" in DERIVATIVE_ANCESTRY_CORPUS["reject_codes"]
+    assert "ancestry_redaction_mismatch" in DERIVATIVE_ANCESTRY_CORPUS["reject_codes"]
+    assert "ancestry_revoked" in DERIVATIVE_ANCESTRY_CORPUS["reject_codes"]
+    assert "ancestry_expired" in DERIVATIVE_ANCESTRY_CORPUS["reject_codes"]
+    assert "ancestry_unsupported" in DERIVATIVE_ANCESTRY_CORPUS["reject_codes"]
+
+
+def test_derivative_ancestry_corpus_constants_match_implementation_constants():
+    constants = DERIVATIVE_ANCESTRY_CORPUS["constants"]
+    assert constants["max_derivative_ancestry_depth"] == MAX_DERIVATIVE_ANCESTRY_DEPTH
+    assert (
+        bytes.fromhex(constants["derivative_ancestry_domain_tag_hex"])
+        == DERIVATIVE_ANCESTRY_DOMAIN_TAG
+    )
+
+
+def test_derivative_ancestry_corpus_has_positive_negative_and_boundary_cases():
+    assert len(DERIVATIVE_ANCESTRY_CASES) >= 12
+    assert any(case["expect"]["accept"] for case in DERIVATIVE_ANCESTRY_CASES)
+    assert any(not case["expect"]["accept"] for case in DERIVATIVE_ANCESTRY_CASES)
+    depths = [case["ancestry_depth"] for case in DERIVATIVE_ANCESTRY_CASES]
+    assert MAX_DERIVATIVE_ANCESTRY_DEPTH in depths
+    assert MAX_DERIVATIVE_ANCESTRY_DEPTH + 1 in depths
+    for case in DERIVATIVE_ANCESTRY_CASES:
+        assert case["schema"] == SCHEMA_SILENT_WITNESS_V2
+
+
+def test_derivative_ancestry_case_ids_are_unique():
+    identifiers = [case["id"] for case in DERIVATIVE_ANCESTRY_CASES]
+    assert len(identifiers) == len(set(identifiers))
+
+
+def test_derivative_ancestry_reject_codes_are_reachable_or_layer_specific():
+    exercised = {
+        case["expect"]["reject_code"]
+        for case in DERIVATIVE_ANCESTRY_CASES
+        if case["expect"]["reject_code"]
+    }
+    unexercised = set(DERIVATIVE_ANCESTRY_CORPUS["reject_codes"]) - exercised - {
+        "malformed_hex"
+    }
+    assert unexercised <= set()
+
+
+@pytest.mark.parametrize("case", DERIVATIVE_ANCESTRY_CASES, ids=case_id)
+def test_derivative_ancestry_conformance_case(case: dict):
+    expected = case["expect"]["reject_code"] if not case["expect"]["accept"] else None
+    actual = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    assert actual == expected, (
+        f"{case['id']}: expected {expected!r}, got {actual!r} — "
+        f"{case['description']}"
+    )
+
+
+@pytest.mark.parametrize("case", DERIVATIVE_ANCESTRY_CASES, ids=case_id)
+def test_derivative_ancestry_conformance_case_is_deterministic(case: dict):
+    first = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    second = classify(case["schema"], case["public_inputs_hex"], case["proof_hex"])
+    assert first == second
+
+
+@pytest.mark.parametrize("case", DERIVATIVE_ANCESTRY_CASES, ids=case_id)
+def test_derivative_ancestry_rejection_signal_is_privacy_safe(case: dict):
+    """Rejections must never echo witness values, media, or private keys."""
+    if case["expect"]["accept"]:
+        pytest.skip("accepting case has no rejection signal")
+    with pytest.raises(VerifierInputError) as excinfo:
+        parse_public_inputs(
+            case["schema"], decode_hex(case["public_inputs_hex"])
+        )
+    signal = excinfo.value.signal()
+    rendered = json.dumps(signal)
+    assert case["public_inputs_hex"] not in rendered
+    assert set(signal) <= {"codec", "reject_code", "field"}
+
+
 # ── Boundary behaviour not expressible as a corpus case ─────────────────────
 
 
 def test_unknown_schema_is_rejected():
     valid = next(case for case in CASES if case["expect"]["accept"])
     assert (
-        classify("silent_witness/v2", valid["public_inputs_hex"], valid["proof_hex"])
+        classify("silent_witness/v9", valid["public_inputs_hex"], valid["proof_hex"])
         == "unknown_schema"
     )
 
 
-@pytest.mark.parametrize(
-    "value",
-    ["0", "0x00", "zz" * 64, "00 11", "00\n11"],
-)
-def test_malformed_hex_is_rejected(value: str):
+def test_derivative_ancestry_depth_above_max_is_rejected():
+    """Boundary: depth == max is accepted, depth == max + 1 is rejected."""
+    at_max = next(
+        case
+        for case in DERIVATIVE_ANCESTRY_CASES
+        if case["ancestry_depth"] == MAX_DERIVATIVE_ANCESTRY_DEPTH
+        and case["expect"]["accept"]
+    )
+    assert (
+        classify(at_max["schema"], at_max["public_inputs_hex"], at_max["proof_hex"])
+        is None
+    )
+
+
+def malformed_case_id(case: dict) -> str:
+    return case["id"]
+
+
+def test_malformed_corpus_is_versioned_and_matches_this_codec():
+    assert MALFORMED_CORPUS["format"] == "harpocrates.malformed-public-inputs"
+    assert MALFORMED_CORPUS["version"] == 1
+    assert MALFORMED_CORPUS["codec"] == CODEC_ID
+    assert MALFORMED_CORPUS["reject_codes"] == ["malformed_hex"]
+
+
+def test_malformed_case_ids_are_unique():
+    identifiers = [case["id"] for case in MALFORMED_CASES]
+    assert len(identifiers) == len(set(identifiers))
+    assert len(MALFORMED_CASES) >= 10
+
+
+@pytest.mark.parametrize("case", MALFORMED_CASES, ids=malformed_case_id)
+def test_malformed_public_input_hex_is_rejected(case: dict):
+    """Shared malformed public-input hex vectors (issue #353)."""
     with pytest.raises(VerifierInputError) as excinfo:
-        decode_hex(value, field="public_inputs")
-    assert excinfo.value.code is RejectCode.MALFORMED_HEX
+        decode_hex(case["value"], field=case.get("field", "public_inputs"))
+    assert excinfo.value.code.value == case["expect"]["reject_code"]
+    assert excinfo.value.field == case.get("field", "public_inputs")
+    # Privacy: rejection signal must never echo the malformed presentation.
+    signal = excinfo.value.signal()
+    rendered = json.dumps(signal)
+    assert case["value"] not in rendered
+    assert set(signal) <= {"codec", "reject_code", "field"}
+
+
+@pytest.mark.parametrize("case", MALFORMED_CASES, ids=malformed_case_id)
+def test_malformed_public_input_hex_is_deterministic(case: dict):
+    first = second = None
+    for _ in range(2):
+        try:
+            decode_hex(case["value"], field=case.get("field", "public_inputs"))
+        except VerifierInputError as exc:
+            outcome = (exc.code.value, exc.field)
+        else:
+            outcome = ("accepted", None)
+        if first is None:
+            first = outcome
+        else:
+            second = outcome
+    assert first == second
 
 
 def test_error_signal_never_carries_input_material():

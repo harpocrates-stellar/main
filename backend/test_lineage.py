@@ -18,7 +18,7 @@ class LineageManifestTests(unittest.TestCase):
             "toolVersion": "1.2.3",
             "outputDigest": "d" * 64,
             "network": "testnet",
-            "actorAddress": "GABC123",
+            "actorAddress": "G@ABC123",
         }
         first = canonical_lineage_manifest(manifest)
         second = canonical_lineage_manifest(manifest)
@@ -75,6 +75,6 @@ class LineageManifestTests(unittest.TestCase):
         validate_lineage_graph(
             parent_proof_ids=["a" * 64, "b" * 64],
             depth=1,
-            actor_address="GABC123",
+            actor_address="G@ABC123",
             output_digest="c" * 64,
         )

@@ -1,7 +1,7 @@
 # Harpocrates Protocol Threat Model
 
-**Version:** 1.0  
-**Date:** 2026-07-24  
+**Version:** 1.4  
+**Date:** 2026-09-24  
 **Status:** Active  
 **Review cadence:** Every major protocol change or at minimum every six months.  
 **Maintainer:** See `CODEOWNERS`.
@@ -27,6 +27,7 @@
    - [T9 Admin Key Compromise](#t9-admin-key-compromise)
    - [T10 NeonDB Persistence Integrity](#t10-neondb-persistence-integrity)
    - [T11 Local Credential Vault Compromise](#t11-local-credential-vault-compromise)
+   - [T12 Redacted Derivative Ancestry](#t12-redacted-derivative-ancestry)
 7. [Mitigations by Component](#7-mitigations-by-component)
 8. [Open Risks and Follow-up Issues](#8-open-risks-and-follow-up-issues)
 9. [Non-Goals](#9-non-goals)
@@ -79,6 +80,7 @@ of every open risk listed in Section 8.
 | A10 | Noir circuit artifacts (`silent_witness.json`) | Low — public | High — circuit upgrade path | Medium |
 | A11 | Credential root set (allowlist) | Low | High — gates all Tier 1 proofs | High |
 | A12 | Backend `DATABASE_URL` / `METRICS_TOKEN` | Critical | High | Medium |
+| A13 | Derivative ancestry witness (`derivative_secret`, ancestor commitments) | Critical — must never leave the browser | High — binds derivative to ancestor | Medium |
 
 ---
 
@@ -88,8 +90,8 @@ of every open risk listed in Section 8.
 |-------|-------------|-------------|
 | **Silent Witness** | Untrusted input, ZK-verified identity | Anonymous user who proves credential membership without revealing identity. Secrets stay in the browser. |
 | **Consistent Source** | Partially trusted | Any Stellar wallet holder. Identity is pseudonymous; Freighter signs the XDR. |
-| **Public Seal Issuer** | Admin-delegated trust | Institutional address explicitly allow-listed by the registry admin. |
-| **Registry Admin** | Highest trusted | Holds the Soroban admin key. Controls issuer list, credential roots, verifier contract, proof revocation, and TTL. |
+| **Public Seal Issuer** | Admin-delegated trust | Institutional address explicitly allow-listed by the registry admin. Storage V2 forbids the active admin address from holding this role. |
+| **Registry Admin** | Highest trusted | Holds the Soroban admin key. Controls issuer list, credential roots, verifier contract, proof revocation, and TTL; storage V2 forbids the same active address from holding Tier 3 issuer authority. |
 | **Backend operator** | Infrastructure trust | Controls Flask config, `DATABASE_URL`, CORS origins, and `METRICS_TOKEN`. |
 | **Verifier / Relying party** | Untrusted consumer | Reads on-chain proof records or calls the Verification Portal. Must not be trusted to supply correct hashes without independent recomputation. |
 | **Attacker** | Zero trust | Any actor attempting to forge proofs, replay registrations, spoof metadata, or extract secrets. |
@@ -105,13 +107,15 @@ Each assumption is a potential attack surface if violated.
 |----|------------|-----------------|
 | D1 | The Soroban contract WASM deployed matches `RegistryWasmHash` in README. | Backdoored contract accepts forged proofs. |
 | D2 | The `SilentWitnessUltraHonkVerifier` contract address is correct and unmodified. | `register_anonymous_verified` calls the wrong verifier; ZK proofs are not actually checked. |
-| D3 | The admin key (`GDVRSXIO4SK2...`) is held by a single trusted operator. | Any admin key leak allows unrestricted contract control. |
+| D3 | The admin key (`GDVRSXIO4SK2...`) is held by a single trusted operator, and an upgraded registry reports storage V2 after `upgrade_storage`. | Any admin key leak allows protocol control; a pre-migration registry may temporarily permit admin/issuer role overlap. |
 | D4 | The Flask backend runs behind TLS in any non-localhost deployment. | Credential secrets sent to `/api/noir/silent-witness` (dev-only path) or metadata hashes in transit can be intercepted. |
 | D5 | `CORS_ORIGINS` is set to the exact frontend origin; wildcard is never used without `ALLOW_WILDCARD_CORS=true`. | CORS bypass from arbitrary origins. |
 | D6 | `DATABASE_URL` points to a private NeonDB instance not reachable from the public internet without authentication. | Any caller can read the full proof-event log. |
 | D7 | Circuit artifacts in `frontend/public/noir/` match the circuit used to generate `RegistryWasmHash`-era verifier keys. | Browser-generated proofs fail on-chain verification or (worse) a stale verifier accepts proofs from a replaced circuit. |
 | D8 | Stellar Testnet ledger timestamps are monotonically increasing and not manipulable by a single validator. | Proof TTL enforcement can be bypassed. |
 | D9 | ffmpeg/ffprobe binaries on the backend host are from a trusted, unmodified distribution. | Malicious ffmpeg could exfiltrate video frames or corrupt steganographic output. |
+| D10 | Deployment containers execute as dedicated unprivileged non-root users (`harpocrates` UID 10001 for backend, `nginx` UID 101 for frontend) with `no-new-privileges:true`. | Vulnerability in runtime dependencies (e.g. ffmpeg or nginx parser) could lead to container breakout or host root compromise. |
+| D11 | The `derivative_ancestry` circuit and its browser artifacts are pinned by digest in `zk/browser.artifacts.manifest.json` and declared in `zk/toolchain.lock.json`, and the deployed verifier was configured with the matching circuit version window. | A stale or mismatched ancestry circuit either fails closed (proof rejected) or, worse, admits an ancestry claim the deployed verifier was not built to check. |
 
 
 ---
@@ -124,6 +128,7 @@ Each assumption is a potential attack surface if violated.
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  React frontend                                          │   │
 │  │  • credential_secret / nullifier_secret (A1, A2)        │   │
+│  │  • derivative_secret / ancestor commitments (A13)       │   │
 │  │  • seedVault (in-memory only, never serialised)         │   │
 │  │  • Noir prover (bb.js + noir_js, runs in WASM)          │   │
 │  │  • Freighter extension (XDR signing)                    │   │
@@ -158,6 +163,31 @@ Stellar private key. All on-chain operations are validated by the Soroban VM.
 **TB-3 Backend → NeonDB:** The backend writes proof events using parameterized
 queries via `psycopg`. `DATABASE_URL` is read from the environment and never
 logged. The NeonDB row schema does not store ZK secrets.
+
+**TB-4 Offline local verification (client → nothing):** When the Verification
+Portal runs "Offline local check", the browser performs the hash, stego
+extraction, structural validation, and file→metadata binding with zero network
+calls and no storage or log writes. This boundary produces **no trust
+decision**: a verifier must still consult the registry (TB-2) and event feed
+(TB-3) to confirm revocation, expiry, or nullifier replay, so offline success
+is reported only as a local check with chain/registry status "not checked".
+Envelopes carrying secret-shaped keys are rejected before any field is read,
+and output copy never carries file names, hashes, or secret material.
+
+**TB-5 Browser → Backend (derivative ancestry, redacted):** When a Silent
+Witness proves that a video is a derivative of an ancestor registration, the
+browser sends only the *redacted* ancestry statement — the derived
+`ancestor_commitment` (a Pedersen commitment to the ancestor's
+`(video_hash_hi, video_hash_lo, credential_root)`), the derived
+`derivative_commitment`, and the public `circuit_version`. The
+`derivative_secret`, the ancestor's `credential_secret`, the ancestor's
+`nullifier_secret`, and any raw ancestor `video_hash` preimage are **never**
+sent to the backend, written to NeonDB, embedded in stego metadata, or logged.
+The backend treats the ancestry statement as opaque bytes and forwards it to
+the verifier; it does not re-derive or re-interpret the commitment. A
+malformed, oversized, or version-mismatched ancestry frame is rejected at the
+codec boundary before any field is read, and the failure response carries only
+a stable code plus `request_id`.
 
 ---
 
@@ -222,6 +252,8 @@ the same identity.
 | Nullifier stored on first use; second use panics with `DuplicateNullifier` | `lib.rs` → `register_anonymous`, `register_anonymous_verified` |
 | Nullifier is bound to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)` in circuit | `silent_witness/src/main.nr` → `derived_nullifier` |
 | Proof TTL: admin can set a global `ProofTtl`; expired proofs return `ProofVerificationStatus::Expired` | `lib.rs` → `set_proof_ttl`, `get_proof_status` |
+| Receipt digest commitment stores one immutable digest per proof; a second, different digest panics `ReceiptAlreadyCommitted` | `lib.rs` → `commit_receipt_digest` |
+| Receipt attestation signs `sha256(domain ‖ contract address ‖ proof_id ‖ receipt_digest)` — a signature cannot be replayed for another deployment, proof, or digest | `lib.rs` → `receipt_attestation_digest` |
 
 **Residual risk:** Nullifier binding is only enforced for Tier 1
 (`register_anonymous_verified`). Tier 2 (`register_source`) and Tier 3
@@ -250,14 +282,44 @@ and `metadata_hash` for content they did not actually review.
 | Mitigation | Location |
 |------------|----------|
 | Issuer must be in the active allowlist (`add_issuer`) before any seal registration | `lib.rs` → `get_issuer_record` |
+| Storage V2 rejects admin/issuer role overlap at grant, transfer, and registration boundaries; V1-to-V2 migration revokes only a conflicting active issuer record | `lib.rs` → `require_issuer_role_available`, `upgrade_storage` |
 | Admin can revoke a compromised issuer at any time (`revoke_issuer`) | `lib.rs` → `revoke_issuer` |
+| `RoleConflict` (`#53`) prevents one address from simultaneously controlling protocol administration and Tier 3 issuance after storage V2 | `lib.rs` → `require_issuer_role_available` |
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |
+| The frontend resolves the issuer's current registry standing independently of the record's own `status`, so a seal whose issuer was revoked afterwards is surfaced as `Issuer revoked` instead of looking endorsed | `frontend/src/provenance/issuerTrust.ts`, `frontend/src/hooks/useIssuerTrust.ts` |
+| An issuer read that does not complete is surfaced as `Issuer lookup unavailable` with no trust decision, never as a trusted or unknown issuer | `frontend/src/hooks/useIssuerTrust.ts` |
+
+**Control (#357):** The `revocation_witness` Merkle tree is protocol-bounded at
+`MAX_REVOCATION_WITNESS_DEPTH = 3` (`MAX_REVOCATION_LEAVES = 8`). The Noir
+circuit is fixed at this depth; host tooling (`zk/tools/revocation_depth.py`,
+verifier codec) rejects oversized depth before proving so hostile trees cannot
+inflate witness size or proving cost at this boundary. Depth changes require a
+new circuit version.
+
+**Control (#323):** Issuer rotation is explicit and bounded. `rotate_issuer`
+retires the previous issuer key immediately — it can no longer sign new seals,
+directly or through a delegation — and opens a grace window defaulting to
+`DEFAULT_ISSUER_ROTATION_GRACE_SECS` (90 days) and capped at
+`MAX_ISSUER_ROTATION_GRACE_SECS` (365 days); a longer or overflowing request, and
+a rotation that names the same key twice, fail closed. During the window
+`is_issuer_verifiable(previous)` stays true so pre-rotation seals keep a
+defensible endorsement, and at `grace_expires_at` it fails closed, so a retired
+key can never hold standing indefinitely. `revoke_issuer`, the timelocked
+`RevokeIssuer` action, and `add_issuer` all clear the rotation record, so
+compromise response and re-onboarding are never shadowed by a grace window.
+Typed `IssuerRotated` / `IssuerRotationGraceExpired` events carry addresses,
+ledger time, and the window bound only — no key material, metadata preimages,
+witnesses, media, or reasons. The window is stored under the additive
+`DataKey::IssuerRotation` key, so pre-#323 deployments read as "no rotation".
 
 **Residual risk:** Revocation is reactive, not proactive. Records registered
 before revocation remain `STATUS_REGISTERED` on-chain. The admin must manually
 call `revoke_proof` for each fraudulent record — there is no bulk revocation.
+The issuer trust badge makes this state visible to a verifier, but it does not
+change the on-chain record: the seal is still `STATUS_REGISTERED` and any
+caller that reads `status` alone will still see it as registered.
 The `metadata_hash` stored in the issuer's `IssuerRecord` is not verified by
 the contract to match the `metadata_hash` in the proof registration; an issuer
 can register a proof with a `metadata_hash` that differs from their declared
@@ -324,6 +386,7 @@ network traffic analysis.
 | No `source` address stored for Tier 1 registrations | `lib.rs` → `register_anonymous_verified` (source: None) |
 | Sensitive keys (`credentialSecret`, `nullifierSecret`, `proof`, `publicInputs`, `authorization`) are redacted from backend logs | `logging_utils.py` → `SENSITIVE_KEYS` |
 | `/api/noir/silent-witness` disabled in production (`NOIR_WORKER_ENABLED=false`) | `config.py` → `noir_worker_enabled` |
+| Signed verification receipts are anchored as `sha256(canonical_json(receipt))` only — the receipt JSON, its signature, and its contents are never stored on-chain | `lib.rs` → `commit_receipt_digest` |
 
 **Residual risk:** The `credential_root` value is stored on-chain and in NeonDB.
 If the same `credential_root` appears in multiple registrations across different
@@ -373,11 +436,16 @@ the NeonDB event log, or inject malicious data into the proof record.
 | `limit` parameter on `GET /api/proofs` is clamped to [1, 100] | `db.py` → `list_proof_events` |
 | Metrics endpoint is token-gated (`METRICS_TOKEN`) | `app.py` → `metrics` route |
 | Request IDs (`X-Request-ID`) enable per-request tracing | `app.py` → `start_request_context` |
+| Per-client rate limits on embed/extract/register/noir and upload-session create/chunk/commit, keyed on the real client IP | `app.py` → `@limiter.limit`, `config.py` |
+| `Retry-After` + `X-RateLimit-*` hints and a JSON `RATE_LIMITED` envelope carrying `request_id` | `app.py` → `rate_limit_exceeded` |
 
-**Residual risk:** There is no rate limiting on any endpoint. A single IP can
-send an unlimited number of embed requests within the connection limit of the
-host. Video processing (ffmpeg frame pipeline) is CPU and memory intensive;
-even a few concurrent large-video requests can saturate the backend.
+**Residual risk:** Per-client rate limits are enforced per endpoint, but the
+default in-process store (`memory://`) is not shared across workers, so counters
+must be backed by a shared store in multi-worker or multi-replica deployments.
+`TRUSTED_PROXIES` must be configured behind a reverse proxy, otherwise every
+request keys on the proxy address. Video processing (ffmpeg frame pipeline) is
+still CPU and memory intensive; a few concurrent large-video requests can
+saturate a single worker.
 `POST /api/proofs/register` has no authentication at all — any caller can insert
 arbitrary (but format-validated) rows into `proof_events`. This means NeonDB
 cannot be used as a trusted audit log for on-chain activity.
@@ -447,6 +515,9 @@ limitation).
 | `credential_root` extracted from public inputs must be in the active allowlist | `lib.rs` → `require_active_credential_root` |
 | Nullifier from public inputs is stored and replay-checked | `lib.rs` → `DuplicateNullifier` |
 | Circuit enforces `derived_root == credential_root` and `derived_nullifier == nullifier` | `silent_witness/src/main.nr` |
+| Circuit asserts its committed `circuit_version` equals `CURRENT_CIRCUIT_VERSION`, so a proof cannot claim a circuit other than the one that produced it | `silent_witness/src/main.nr` → `test_circuit_version_downgrade` |
+| `silent_witness/v2` (`hpx-vi/2`) re-checks that committed version at every verifier boundary, before the identity fields, and rejects a mismatch with a stable code | `verifier_inputs.rs` → `parse_silent_witness_v2`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts` |
+| Registration rejects an envelope declaring a version other than `EXPECTED_CIRCUIT_VERSION` | `lib.rs` → `parse_scoped_silent_witness_public_inputs` (`CircuitVersionMismatch`, 87) |
 | Circuit tests cover tampered public inputs, swapped fields, wrong video hash, and nullifier from different video | `silent_witness/src/main.nr` → test corpus |
 | `credential_root` metadata is stored per-root so admin can audit which roots are active | `lib.rs` → `CredentialRootRecord` |
 
@@ -466,7 +537,33 @@ limitation).
 
 3. Circuit artifact versioning: the compiled `silent_witness.json` in
    `frontend/public/noir/` must match the verifier contract's proving key. There
-   is no on-chain mechanism to detect or enforce this alignment.
+   is no on-chain mechanism to detect or enforce this alignment. The build side is
+   now pinned and drift-checked (`zk/browser.artifacts.manifest.json`,
+   `check-coverage`), but no check yet compares a circuit's verification-key digest
+   to the key the deployed verifier contract was built with.
+   #343 adds an on-chain *declared window* (`set_verifier_circuit_versions`)
+   that rejects a proof whose circuit version the active verifier was not
+   configured to check, before the verifier is invoked. The mapping from a
+   declared version number to a specific proving key remains an off-chain,
+   operator-verified artifact, so this narrows the gap but does not eliminate it.
+   #368 closes the *in-band* half of the same gap: the scoped circuit now asserts
+   a public `circuit_version` against `CURRENT_CIRCUIT_VERSION`, and `hpx-vi/2`
+   carries that field as the frame's trailing element, so the version a proof
+   claims is part of the statement it proves instead of being inferred from the
+   frame's byte length. A frame that names any other version — including a dirty
+   encoding of the version field — is rejected with `version_mismatch` (codec) or
+   `CircuitVersionMismatch` (87, on-chain), and the strict `silent_witness/v2`
+   parser refuses a truncated 224-byte frame with `length` rather than
+   reinterpreting it. The last hole of this class is now closed as well:
+   `register_anonymous_verified` used to admit the bare 224-byte scoped frame,
+   whose version stayed *inferred* from that length and so let a proof from the
+   pre-#368 (nine-parameter) circuit register. That length is now rejected with
+   `CircuitVersionMismatch` (87) before the verifier is reached, so no scoped
+   proof can skip the version commitment by omitting the trailer; provers must
+   migrate (see `MIGRATION_GUIDE.md`). What
+   remains is the digest binding described below: version *n* is not yet
+   cryptographically tied to a specific verification key.
+   See [Open Risk OR-5](#or-5-circuit-artifact-version-alignment).
 
 **Severity:** Critical (OR-1 stub path). Low (verified path via `register_anonymous_verified`).
 
@@ -494,7 +591,12 @@ legitimate proofs, or transfer admin to themselves.
 | `require_admin` validates both that the stored admin matches and that the caller has signed | `lib.rs` → `require_admin` |
 
 **Residual risk:** The admin is a single Stellar keypair with no multisig or
-threshold signing. Any single-point compromise gives an attacker complete control.
+threshold signing. Any single-point compromise gives an attacker protocol
+control. Storage V2 limits role confusion by preventing the same active address
+from also acting as an issuer, but it does not make a compromised admin
+incapable of revoking issuers, credential roots, or evidence. An artifact
+rollback to a pre-V2 Wasm can re-enable admin/issuer overlap until the V2
+migration is run again.
 There is no time-lock or cooldown on admin operations — a compromised admin can
 immediately revoke all credential roots, replacing them with attacker-controlled
 roots, and set a malicious verifier contract.
@@ -527,6 +629,7 @@ network-reachable host.
 | Payload size capped at 1 MB | `app.py` → `_enforce_json_size` |
 | `safe_filename` prevents path traversal via `fileName` | `app.py` → `safe_filename` |
 | Parameterized SQL prevents injection | `db.py` → `insert_proof_event` |
+| Applied migration checksums replayed against in-code definitions at startup (fail-closed) | `migration.py` → `run_migrations`, `verify_migration_checksums` |
 
 **Residual risk:** The endpoint has no authentication, HMAC, or bearer token.
 Any caller that can reach the Flask API can write arbitrary rows. The
@@ -563,6 +666,81 @@ must be reconciled against on-chain data for any security-sensitive decision.
 
 ---
 
+### T12 Redacted Derivative Ancestry
+
+**Description:** An attacker attempts to (a) forge a derivative-ancestry claim
+that links an unrelated video to a legitimate ancestor registration, (b) use the
+ancestry proof to *de-anonymise* the ancestor's Silent Witness identity by
+recovering the ancestor's `credential_secret`, `nullifier_secret`, or raw
+`video_hash`, (c) replay a previously seen ancestry proof against a different
+derivative, or (d) exhaust the prover/verifier with an oversized or malformed
+ancestry witness.
+
+**Attack vector:** Crafted `derivative_ancestry` proof + public inputs submitted
+to `register_anonymous_verified` (or the equivalent scoped registration path);
+crafted ancestry frame submitted to the browser codec, the backend
+`verifier_inputs` parser, or the on-chain scoped parser; oversized Merkle path
+or commitment preimage.
+
+**Affected assets:** A1, A2, A5, A10, A11, A13.
+
+**Existing mitigations:**
+
+| Mitigation | Location |
+|------------|----------|
+| Circuit asserts `derived_ancestor_commitment == ancestor_commitment` — the prover must know the ancestor preimage `(video_hash_hi, video_hash_lo, credential_root)` | `derivative_ancestry/src/main.nr` |
+| Circuit asserts `derived_derivative_commitment == derivative_commitment` — binds the derivative's own `video_hash` and `credential_root` to the statement | `derivative_ancestry/src/main.nr` |
+| Ancestor commitment is a Pedersen hash; the preimage (raw ancestor `video_hash`, `credential_root`) is never a public input | `derivative_ancestry/src/main.nr` |
+| `derivative_secret` is reduced modulo the BN254 field order before use, preventing trivially large-value probing | `frontend/src/seedVault.ts` → `fieldSecret` |
+| Circuit asserts its committed `circuit_version` equals `CURRENT_CIRCUIT_VERSION`, so an ancestry proof cannot claim a circuit other than the one that produced it | `derivative_ancestry/src/main.nr` |
+| The `hpx-vi/2` codec re-checks the committed version at every verifier boundary (Rust, Python, TypeScript) before canonicity and identity, and rejects a mismatch with a stable code | `verifier_inputs.rs` → `parse_silent_witness_v2`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts` |
+| Registration rejects an ancestry envelope declaring a version other than `EXPECTED_CIRCUIT_VERSION` with `CircuitVersionMismatch` (87) | `lib.rs` → `parse_scoped_silent_witness_public_inputs` |
+| Ancestry frame length is exact; a truncated or over-long frame is rejected with `length` (codec) rather than reinterpreted | `verifier_inputs.rs` → `parse_silent_witness_v2` |
+| Ancestry frame size is capped at the codec boundary before any field is read, so an oversized witness cannot inflate proving or verification cost | `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts` |
+| Ancestor `credential_root` extracted from the ancestry statement must be in the active allowlist | `lib.rs` → `require_active_credential_root` |
+| Ancestry proof is bound to the derivative's `video_hash` (cross-checked between public inputs and the call argument), so a proof cannot be replayed against a different derivative | `lib.rs` → `register_anonymous_verified` |
+| Nullifier from public inputs is stored and replay-checked; an ancestry proof that reuses a nullifier panics `DuplicateNullifier` | `lib.rs` → `DataKey::Nullifier` |
+| Ancestry proof is subject to the same proof TTL as any other Tier 1 registration | `lib.rs` → `compute_expires_at`, `get_proof_status` |
+| Ancestry statement is redacted: only commitments and `circuit_version` cross TB-5; secrets and raw ancestor preimages stay in the browser | `frontend/src/noirClient.ts`, `backend/verifier_inputs.py` |
+| Sensitive keys (`derivativeSecret`, `ancestorCommitmentPreimage`, `credentialSecret`, `nullifierSecret`, `proof`, `publicInputs`, `authorization`) are redacted from backend logs | `logging_utils.py` → `SENSITIVE_KEYS` |
+| Ancestry circuit artifact is digest-pinned in the browser manifest and declared in the toolchain lock; `check-coverage` fails if the circuit is undeclared | `zk/browser.artifacts.manifest.json`, `zk/toolchain.lock.json`, `zk/tools/artifact_manifest.py` → `check_coverage` |
+| Conformance corpus pins the Rust, Python, and TypeScript ancestry codecs to one answer for positive, negative, and boundary frames | `zk/vectors/verifier_conformance_v2.json` |
+
+**Failure responses (stable, privacy-safe):**
+
+| Condition | Response |
+|-----------|----------|
+| Malformed ancestry frame (bad magic, bad tag, non-canonical field) | `malformed` (codec) / `CircuitVersionMismatch` (87, on-chain) |
+| Oversized ancestry frame or Merkle path | `oversized` (codec); rejected before any field is read |
+| Truncated or over-long frame | `length` (codec) |
+| Version mismatch | `version_mismatch` (codec) / `CircuitVersionMismatch` (87, on-chain) |
+| Ancestor `credential_root` not active | `UnknownCredentialRoot` (on-chain) |
+| Ancestry proof replayed against a different derivative | `video_hash` cross-check fails; registration rejected |
+| Ancestry proof replayed with the same nullifier | `DuplicateNullifier` (on-chain) |
+| Ancestry proof expired | `ProofVerificationStatus::Expired` |
+| Ancestry proof revoked | `ProofVerificationStatus::Revoked` |
+| Unsupported circuit version | `CircuitVersionMismatch` (87, on-chain) |
+| Dependency failure (prover, verifier contract, RPC) | Stable `ancestry_unavailable` code with `request_id`; no trust decision, no secret material, no raw exception text |
+
+**Residual risk:** The ancestor's `credential_root` is a public input of the
+ancestry statement (it must be, so the registry can check the allowlist). If
+the same `credential_root` appears in multiple ancestry statements, an observer
+can link those derivatives to the same ancestor credential — the same
+pseudonymity trade-off already documented in T5. The ancestry circuit proves
+*knowledge* of an ancestor preimage, not that the ancestor registration still
+exists on-chain or is unrevoked; a verifier must still consult the registry
+(TB-2) and event feed (TB-3) to confirm the ancestor's current status. The
+ancestor's raw `video_hash` is never revealed, so a verifier cannot
+independently recompute the ancestor commitment from the ancestor's public
+record — it must trust the circuit's binding. This is intentional (redaction),
+but it means the ancestry claim is only as strong as the circuit's commitment
+scheme and the deployed verifier's alignment with the pinned artifact (see
+OR-5).
+
+**Severity:** Medium.
+
+---
+
 ## 7. Mitigations by Component
 
 ### 7.1 Soroban Contract (`harpocrates-registry`)
@@ -575,12 +753,20 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Nullifier set on first use, `DuplicateNullifier` on replay | T2 | `lib.rs` → `DataKey::Nullifier` |
 | Credential root allowlist with active/revoked status | T1, T8 | `lib.rs` → `add_credential_root`, `revoke_credential_root` |
 | Issuer allowlist with active/revoked status | T3 | `lib.rs` → `add_issuer`, `revoke_issuer` |
+| Bounded issuer rotation grace window (`rotate_issuer`, `is_issuer_verifiable`, expired at `grace_expires_at`, settled by `finalize_issuer_rotation`) | T3 | `lib.rs` → `rotate_issuer` |
 | External verifier contract hook (`verify_external_proof`) | T8 | `lib.rs` → `verify_external_proof` |
+| Per-call circuit-version gate before the verifier is invoked (`require_supported_circuit_version`) | T8 | `lib.rs` → `require_supported_circuit_version` |
+| Admin-only, wasm-bounded verifier circuit-version window (`set_verifier_circuit_versions`) | T8 | `lib.rs` → `set_verifier_circuit_versions` |
+| Delegated registrations bounded by the delegation's own expiry | T2, T9 | `lib.rs` → `bounded_delegated_expiry` |
 | Public input parsing with exact-length enforcement (128 bytes) | T8 | `lib.rs` → `parse_silent_witness_public_inputs` |
 | `video_hash` cross-check between public inputs and call argument | T8 | `lib.rs` → `register_anonymous_verified` |
 | Proof TTL / expiration (`set_proof_ttl`, `get_proof_status`) | T2 | `lib.rs` → `compute_expires_at`, `get_proof_status` |
 | Admin proof revocation (`revoke_proof`) | T3 | `lib.rs` → `revoke_proof` |
 | Typed contract events for all lifecycle operations | T3, T9 | `lib.rs` → event structs |
+| Receipt attestation over `sha256(domain ‖ contract address ‖ proof_id ‖ receipt_digest)` verified with host P-256; only the digest is stored | T2, T5 | `lib.rs` → `receipt_attestation_digest`, `commit_receipt_digest` |
+| Admin-managed receipt-signer allowlist (`MAX_RECEIPT_SIGNERS = 8`, add/revoke records, saturation bound) | T9 | `lib.rs` → `add_receipt_signer`, `revoke_receipt_signer` |
+| Redacted derivative-ancestry statement: only `ancestor_commitment`, `derivative_commitment`, and `circuit_version` are public inputs; ancestor preimage and `derivative_secret` stay in the browser | T12 | `derivative_ancestry/src/main.nr`, `lib.rs` → `register_anonymous_verified` |
+| Ancestry frame codec rejects malformed, oversized, truncated, and version-mismatched frames before any field is read, with stable codes | T12 | `verifier_inputs.rs` → `parse_silent_witness_v2`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts` |
 
 ### 7.2 Flask Backend
 
@@ -594,6 +780,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `secure_filename` (Werkzeug) for `fileName` | T6 | `app.py` → `safe_filename` |
 | BN254 field bounds check on `credentialSecret` / `nullifierSecret` | T6 | `app.py` → `is_field_decimal` |
 | Parameterized SQL (psycopg) for all DB writes | T6, T10 | `db.py` → `insert_proof_event` |
+| Applied migration checksum verification at startup (fail-closed, id/digest-only reporting) | T10 | `migration.py` → `run_migrations`, `verify_migration_checksums` |
 | Sensitive key redaction in structured logs | T5 | `logging_utils.py` → `SENSITIVE_KEYS` |
 | Noir worker disabled in production (`NOIR_WORKER_ENABLED=false`) | T4, T5 | `config.py` → `noir_worker_enabled` |
 | Metrics endpoint token-gated | T6 | `app.py` → `metrics` |
@@ -603,6 +790,8 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Quarantine directory and signature scanning (magic bytes) | T6 | `quarantine.py` → `isolate_upload`, `SignatureScanner` |
 | Sandboxed ffmpeg execution (resource profiles, timeouts, and sanitized errors) | T6 | `stego.py` → `_start_decode`, `_start_encode`, `_kill_after_timeout` |
 | AST-based API Schema generation prevents DB injections and application state side-effects during build/CI | T6, T10 | `devx/generate_api_schema.py` |
+| Domain-separated proof-cache keys: SHA-256 over versioned `harpocrates:verifier-cache:v1` tag + length-prefixed fields; hex canonicalization prevents case-variant cache fragmentation | T2, T8 | `verifier_cache.py` → `CACHE_KEY_DOMAIN_TAG`, `_get_cache_key` |
+| Ancestry statement is treated as opaque bytes; the backend never re-derives or re-interprets the commitment, and dependency failures return a stable `ancestry_unavailable` code with `request_id` only | T12 | `backend/verifier_inputs.py`, `app.py` |
 
 
 ### 7.3 React Frontend
@@ -614,11 +803,16 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | BN254 field modulus reduction on credential/nullifier secrets | T4 | `seedVault.ts` → `fieldSecret` |
 | Browser-side Noir proving — secrets never sent to server in production | T4, T5 | `noirClient.ts` → `generateSilentWitnessProof` |
 | **Worker-isolated proving** — Noir proving runs in a dedicated Web Worker which is explicitly terminated upon success, failure, timeout, or cancellation. This guarantees the browser reclaims the memory hardware-isolate and drops all secrets reliably, rather than depending on GC. | T4, T5 | `proveWorker.ts`, `noirClient.ts` |
+| **Bounded non-worker fallback** — when the Web Worker is unavailable, proving falls back to the main thread only under explicit limits (60s timeout, 256-byte secret cap, single concurrent request). Fallback errors are classified into stable codes and never surface raw exception text, so secrets/witness data cannot leak. | T4, T5, T11 | `proofWorkerClient.ts`, `noirClient.ts` |
 | Network passphrase guard (blocks wrong Stellar network) | T1 | `networkGuard.ts` → `checkNetworkMatch` |
+| Offline local verification — zero network calls, no storage/log writes, and never a confirmed trust decision; envelope extraction reuses the existing single stego loader (no second protocol truth) and secret-shaped envelopes are rejected up-front | T4, T5 | `offlineVerification.ts`, `useVerification.ts` |
 | Hex normalization and validation on all hash inputs | T1, T8 | `stellarEncoding.ts` → `asHex32`, `asHexBytes` |
 | `CONTRACT_NETWORK_PASSPHRASE` exported constant used by guard | T1 | `harpocratesRegistry.ts` |
+| Non-root container execution (`nginx` UID 101) with unprivileged PID path (`/tmp/nginx.pid`) and `no-new-privileges:true` | T4 | `frontend/Dockerfile`, `docker-compose.yml` |
+| Redacted derivative-ancestry proving: `derivative_secret` and ancestor preimage are held only in React state, reduced modulo the BN254 field order, and never serialised, logged, or sent to the backend | T12, T4, T5 | `seedVault.ts` → `fieldSecret`, `noirClient.ts` |
+| Ancestry codec rejects malformed, oversized, truncated, and version-mismatched frames before any field is read, and surfaces only stable codes | T12 | `frontend/src/verifierInputs.ts` |
 
-### 7.4 Noir ZK Circuit (`silent_witness`)
+### 7.4 Noir ZK Circuits
 
 | Mitigation | Threats addressed | Code reference |
 |------------|------------------|----------------|
@@ -626,6 +820,13 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | `assert(derived_nullifier == nullifier)` — binds nullifier to secrets + video hash | T2, T8 | `silent_witness/src/main.nr` |
 | Nullifier commits to `(credential_secret, nullifier_secret, video_hash_hi, video_hash_lo)` | T2, T5 | `silent_witness/src/main.nr` |
 | Test corpus: tampered public inputs, wrong video hash, swapped fields, cross-video nullifier | T2, T8 | `silent_witness/src/main.nr` → test functions |
+| `assert(circuit_version == CURRENT_CIRCUIT_VERSION)` — the proof carries the version of the circuit that produced it, checked in-circuit | T8, OR-5 | `silent_witness/src/main.nr` → `test_circuit_version_downgrade` |
+| The `hpx-vi/2` codec re-checks that committed version in all three verifier layers, before canonicity and identity, and a conformance corpus pins the three to one answer | T8, OR-5 | `verifier_inputs.rs` → `parse_silent_witness_v2`, `backend/verifier_inputs.py`, `frontend/src/verifierInputs.ts`, `zk/vectors/verifier_conformance_v2.json` |
+| Pinned toolchain + hermetic build + normalized digest manifest for every circuit, with a double-build check | T4, T8, OR-5 | `zk/toolchain.lock.json`, `zk/noir/scripts/reproducible-build.sh` |
+| `check-coverage` fails when a circuit in the tree is not declared in the lock, so no circuit can reach a public boundary unpinned | T4, T8, OR-5 | `zk/tools/artifact_manifest.py` → `check_coverage` |
+| Published browser ACIR is digest-pinned and, when a build target is present, required to match it | T4, T8, OR-5 | `zk/browser.artifacts.manifest.json` → `verify-browser` |
+| `derivative_ancestry` circuit asserts `derived_ancestor_commitment == ancestor_commitment` and `derived_derivative_commitment == derivative_commitment`, binding the redacted ancestry statement to the prover's knowledge without revealing the ancestor preimage | T12 | `derivative_ancestry/src/main.nr` |
+| `derivative_ancestry` circuit asserts its committed `circuit_version == CURRENT_CIRCUIT_VERSION`, so an ancestry proof cannot be re-labelled to a different circuit | T12, OR-5 | `derivative_ancestry/src/main.nr` |
 
 
 ---
@@ -655,17 +856,18 @@ confirms a zero-length or trivially-constructed proof is rejected.
 
 ---
 
-### OR-2 No Rate Limiting on Backend API
+### OR-2 Backend API Rate Limiting
 
-**Severity:** High  
+**Severity:** Low (residual)  
 **Component:** Flask backend  
-**Description:** All endpoints (`/api/stego/embed`, `/api/stego/extract`,
-`/api/proofs/register`) are unauthenticated and rate-unlimited. A single IP can
-submit thousands of requests and exhaust CPU (ffmpeg), memory, or the NeonDB
-connection pool.  
-**Remediation:** Add a reverse-proxy rate limit (nginx `limit_req`) or a
-Flask middleware (e.g., `flask-limiter`) keyed on IP address. Consider requiring
-a signed request token for embed operations.
+**Description:** Per-client rate limits now guard the upload and proof endpoints
+via `flask-limiter`, keyed on the real client IP. The remaining risk is
+deployment shape: the default `memory://` store is per-process, so limits must
+be backed by a shared store (`RATELIMIT_STORAGE_URI`) when running more than one
+worker or replica.  
+**Remediation:** Configure `RATELIMIT_STORAGE_URI` (e.g. Redis) and
+`TRUSTED_PROXIES` for multi-worker deployments; consider a signed request token
+for embed operations.
 
 ---
 
@@ -701,15 +903,52 @@ using a watermarking technique that is more robust to re-encoding.
 **Severity:** Medium  
 **Component:** Frontend / Soroban verifier contract  
 **Description:** The compiled circuit artifacts in `frontend/public/noir/`
-(`silent_witness.json`, `silent_witness_helper.json`) must match the proving
-key embedded in the `SilentWitnessUltraHonkVerifier` contract. There is no
-on-chain or build-time check that enforces this alignment. A circuit upgrade
-that replaces the verifier contract without updating the frontend artifacts (or
-vice versa) will silently break all Tier 1 registrations.  
+(`silent_witness.json`, `silent_witness_helper.json`, `selective_disclosure.json`)
+must match the proving key embedded in the `SilentWitnessUltraHonkVerifier`
+contract. There is no on-chain or build-time check that enforces this alignment.
+A circuit upgrade that replaces the verifier contract without updating the
+frontend artifacts (or vice versa) will silently break all Tier 1 registrations.  
 **Remediation:** Add a build-time check (CI step) that computes a hash of
 `silent_witness.json` and compares it to a value stored alongside the verifier
 contract's WASM hash. Document the circuit upgrade procedure in
 `contracts/VERIFIER_INTEGRATION.md`.
+
+**Partial progress (this repository):** the published-artifact side is now
+covered — `zk/browser.artifacts.manifest.json` pins the digests of every
+`published_acir` bundle and `zk/tools/artifact_manifest.py verify-browser` fails
+on drift, and `check-coverage` fails if a circuit is not declared in
+`zk/toolchain.lock.json` at all (the condition that let
+`selective_disclosure` reach the browser and the registry verifier while sitting
+outside the reproducible-build pipeline). What remains open is the *other* half:
+nothing compares a circuit's verification-key digest to the key the deployed
+verifier contract was built with, so the alignment check is still name-based
+rather than digest-based. See `docs/zk-reproducible-builds.md`.
+
+**Further progress (#368):** the *wire* half of the alignment problem is now
+closed for the scoped circuit. `silent_witness/v2` commits the producing
+circuit's version as a public input the circuit itself asserts, so a proof can no
+longer be re-labelled to a different circuit by editing a byte length, and every
+verifier layer checks the same declared constant (`EXPECTED_CIRCUIT_VERSION`)
+against it rather than each inferring its own. `test_circuit_version_downgrade`
+and the `sw2-neg-02x` / `sw2-neg-07x` corpus cases fail if the Noir global, the
+three codecs, and the corpus drift apart. The digest half above — version *n* to
+verification-key binding — is still open and remains this risk's core.
+
+**What #368 found about that control:** the published browser pair is not a build
+of the tracked scoped sources. `frontend/public/noir/silent_witness.json` is the
+four-field `browser_v1` circuit (six ABI parameters, helper returns two fields) and
+`zk/noir/silent_witness/src/main.nr` is the scoped circuit (nine on `main`, ten
+with `circuit_version`), so `compare_published_to_targets` reports drift for both
+stems the moment a build target exists — `465e556f5904e7bc` against
+`b296e2d6a753b579` for `silent_witness`, `a141350e3c2f83fb` against `3c3dc8a7055ce312`
+for the helper. CI never sees it because `zk/noir/**/target/` is gitignored, which
+means the "required to match it" column above is inert in practice, and
+`assertArtifactPair` keeps the browser pinned to `browser_v1` by bytecode digest
+instead. Publishing a scoped browser pair means moving the main artifact, the
+helper artifact, the `artifact_abis.scoped_v2` entry and
+`zk/toolchain.lock.json`'s `published_acir` declarations together; a scoped main
+beside the four-field helper resolves to no frame at all, so a partial publish
+fails the browser closed.
 
 ---
 
@@ -769,7 +1008,50 @@ privileged contract event is emitted.
 
 ---
 
-### OR-10 Threshold Seal Policy Governance
+### OR-11 Unbounded External Evidence Fetch
+
+**Severity:** Medium — **Resolved** in #287  
+**Component:** Flask backend (`tx_verification.py`, `webhook.py`)  
+**Description:** The backend makes outbound HTTP calls to two external systems:
+
+1. **Stellar Horizon** — `tx_verification_loop` polls
+   `/transactions/{tx_hash}` on `horizon-testnet.stellar.org` to resolve
+   pending transaction statuses.
+2. **Webhook subscribers** — `dispatch_webhook` `POST`s evidence events to
+   operator-configured subscriber URLs.
+
+Prior to this fix both calls used `urllib.request.urlopen(req, timeout=10)`.
+A single `timeout=` value covers only the *read* phase in Python's
+implementation; the TCP+TLS connect phase was unlimited. Additionally, the full
+response body was buffered without a size cap, allowing a malicious or
+misbehaving remote host to stall the worker indefinitely or exhaust heap memory
+with an arbitrarily large response.
+
+Privacy implication: pre-fix log lines included the raw transaction hash and
+the subscriber URL in WARNING-level messages, which could leak correlation data
+into log aggregation systems.
+
+**Mitigations implemented** (`backend/fetch_external.py` + callers):
+
+| Property | Mechanism | Default |
+|----------|-----------|---------|
+| Connect timeout | `socket_timeout = max(connect, read)` passed to `urlopen` | 5 s |
+| Read timeout | Same `socket_timeout` covers each `recv` call | 10 s |
+| Response-size cap | Chunked read with hard limit; raises `ResponseTooLargeError` | 64 KiB |
+| Privacy-safe logging | URLs and tx-hashes logged at DEBUG only; WARNING messages log `host` only | — |
+| Config-driven | Three new `AppConfig` fields (`EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS`, `EXTERNAL_FETCH_READ_TIMEOUT_SECONDS`, `EXTERNAL_FETCH_MAX_RESPONSE_BYTES`) override defaults via env vars | — |
+
+**Compatibility:** Existing callers pass no new arguments; all three parameters
+default to the values that were previously hard-coded. No API or protocol
+surface change.
+
+**Rollback:** Remove `fetch_external.py`, revert `tx_verification.py` and
+`webhook.py` to direct `urlopen` calls, and remove the three new config fields.
+No database migration required.
+
+---
+
+### OR-12 Threshold Seal Policy Governance
 
 **Severity:** Medium  
 **Component:** Soroban contract  
@@ -791,6 +1073,30 @@ finalization. Risks include:
 - `MAX_SIGNERS = 16` bounds storage consumption per policy.
 - `DEFAULT_APPROVAL_TTL_SECS = 86_400` (1 day) provides a safe default.
 - Backward compatibility: existing single-issuer `register_seal` is preserved.
+
+---
+
+### OR-13 Derivative Ancestry Commitment Binding to Deployed Verifier
+
+**Severity:** Medium  
+**Component:** Frontend / Soroban verifier contract  
+**Description:** The redacted derivative-ancestry statement binds the prover to
+an ancestor commitment, but nothing on-chain or at build time cryptographically
+ties the `derivative_ancestry` circuit's verification key to the key the
+deployed verifier contract was built with. This is the same class of gap as
+OR-5, now extended to the ancestry circuit: a circuit upgrade that replaces the
+verifier contract without updating the pinned browser artifacts (or vice versa)
+will silently break ancestry proofs, and a stale verifier could in principle
+accept an ancestry proof from a circuit it was not built to check. The
+`hpx-vi/2` codec closes the *wire* half (the version a proof claims is part of
+the statement it proves), but the *digest* half — version *n* to verification
+key — remains open.  
+**Code reference:** `zk/browser.artifacts.manifest.json`,
+`zk/toolchain.lock.json`, `contracts/VERIFIER_INTEGRATION.md`  
+**Remediation:** Extend the OR-5 remediation to the ancestry circuit: add a
+build-time check that compares the ancestry circuit's verification-key digest
+to the key the deployed verifier was built with, and document the ancestry
+circuit upgrade procedure alongside the existing scoped-circuit procedure.
 
 ---
 
@@ -820,8 +1126,103 @@ The following are explicitly outside the scope of this threat model:
 - **Dependency vulnerability management** — routine CVE scanning and patching
   of npm and Python dependencies is a continuous operations concern, not
   addressed here.
+- **Validating Silent Witness proof bytes offline** — offline local verification
+  checks hash, envelope structure, and file binding only. Proof-byte validation
+  requires the UltraHonk verifier (contract or WASM with the matching circuit
+  artifact) and is intentionally not performed in offline mode; it is also not
+  embedded into the canonical metadata, so no second protocol truth is created.
+- **Revealing ancestor preimages** — the redacted derivative-ancestry statement
+  never reveals the ancestor's raw `video_hash`, `credential_secret`, or
+  `nullifier_secret`. A verifier that needs the ancestor's raw hash must obtain
+  it out-of-band; the protocol does not provide it.
 
 ---
+
+
+---
+
+## 9.1 Privacy-Safe Backend Trace Fields
+
+**Artifact:** `backend/trace_fields.py` (`harpocrates-trace-v1`)
+
+Backend request logs and `/health`/`/ready` responses may carry opaque
+correlation identifiers (`request_id`, `trace_id`, `span_id`,
+`correlation_id`) plus a sanitized `endpoint_pattern`.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Public HTTP edge and structured logs only |
+| Allowed | Opaque IDs, W3C `traceparent` (v00), sanitized routes, versioned ID tags |
+| Forbidden | Media bytes, proofs, witness values, private keys, secrets, raw IPs, raw User-Agent |
+| Malformed / oversized headers | Ignored; generated opaque IDs substituted |
+| Cross-origin propagation | `http_security.CORS_ALLOW_HEADERS` accepts the trace headers; `CORS_EXPOSE_HEADERS` lets browser clients read the echoed IDs |
+| Migration | Additive; existing `request_id` header/log field retained |
+| Rollback | Stop emitting extended fields; callers keep `request_id` |
+
+## 9.2 Per-Client Upload Rate Limits
+
+**Artifact:** `backend/app.py`, `backend/config.py` (flask-limiter)
+
+Per-client rate limits are enforced at the Flask request boundary for the
+upload and proof endpoints.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Public HTTP edge; key is the real client IP, never raw forwarded headers |
+| Default windows | embed/extract/register 30/min, silent-witness 20/min, upload-session 60/min, chunk 240/min |
+| Failure response | Stable JSON `RATE_LIMITED` envelope with `request_id`; `Retry-After` + `X-RateLimit-*` headers |
+| Privacy | Counters and logs never include media bytes, witness values, secrets, or raw forwarded headers |
+| Malformed input | Oversized/unknown paths still counted per client; spoofed `X-Forwarded-For` ignored unless the peer is a trusted proxy |
+| Migration | Additive; `RATELIMIT_ENABLED=false` disables the layer without changing routes |
+| Rollback | Remove `@limiter.limit` decorators; endpoints behave as before |
+
+## 9.3 C2PA Authenticity Assertion Export
+
+**Artifact:** `cli/src/c2pa.ts` (`harpocrates c2pa`), schema version 1,
+exporter `harpocrates-cli/c2pa` v1.0.0.
+
+`harpocrates c2pa` derives C2PA authenticity assertions from the canonical
+proof manifest and (optionally) a verification receipt. It produces an
+**unsigned** C2PA JSON manifest definition; downstream tooling signs it with
+its own C2PA signer and key material.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Local output byte stream; the caller's C2PA signer and the target media platform become the consumers |
+| Single truth | All values come from the canonical manifest/receipt schemas; `manifestHash` = SHA-256 of the canonical serialized manifest, so the export cannot drift into a second metadata truth |
+| Privacy | Only public manifest/registry fields are emitted; media bytes, witness values, credential secrets, proof bytes, transaction blobs, and signing keys are never emitted, and the exporter never signs |
+| Verification honesty | `harpocrates.verification.v1` records the receipt outcome verbatim (`valid`/`expired`/`revoked`/`not_found`/`pending`/`failed`/...); a `valid` status is never fabricated |
+| Determinism | Same manifest + receipt ⇒ identical output bytes (CI-verified against `devx/fixtures/c2pa/expected-export.json`) |
+| Input guards | Manifest/receipt capped at 1 MiB input, 256 KiB output; unknown manifest fields and unsupported versions rejected with fixed, privacy-safe errors (exit 8) |
+| Migration | Additive; schema version `1` carried in the export, no on-chain or metadata schema change |
+| Rollback | Deploy the prior CLI build; existing receipt shape and exit-code mapping unchanged |
+
+For upstream threat coverage, the export output sits at TB-2 (browser/user →
+Stellar RPC) and TB-1 (local tooling boundary): it publishes hashes and
+registry identity that are public after registration, and it never accesses
+A1/A2 (credential/nullifier secrets) or A8/A9 keypairs.
+
+## 9.4 Redacted Derivative Ancestry
+
+**Artifact:** `zk/noir/derivative_ancestry/src/main.nr`, `hpx-vi/2` codec
+(`verifier_inputs.rs`, `backend/verifier_inputs.py`,
+`frontend/src/verifierInputs.ts`), `zk/vectors/verifier_conformance_v2.json`.
+
+| Property | Guarantee |
+|----------|-----------|
+| Trust boundary | Browser prover (TB-5) → backend/verifier; only commitments and `circuit_version` cross the boundary |
+| Public inputs | `ancestor_commitment`, `derivative_commitment`, `circuit_version` — no raw ancestor `video_hash`, no `credential_secret`, no `nullifier_secret`, no `derivative_secret` |
+| Forbidden | Ancestor preimages, `derivative_secret`, `credential_secret`, `nullifier_secret`, media bytes, witness values, private keys |
+| Malformed / oversized / truncated / version-mismatched frame | Rejected at the codec boundary before any field is read, with stable codes (`malformed`, `oversized`, `length`, `version_mismatch`) |
+| Dependency failure (prover, verifier contract, RPC) | Stable `ancestry_unavailable` code with `request_id`; no trust decision, no secret material, no raw exception text |
+| Replay | Bound to the derivative's `video_hash`; nullifier replay panics `DuplicateNullifier`; proof TTL applies |
+| Migration | Additive; existing Tier 1 registrations and the scoped `silent_witness/v2` frame are unchanged. Ancestry is an opt-in statement carried alongside the existing frame; callers that do not send it are unaffected. |
+| Rollback | Stop emitting the ancestry statement; the existing `silent_witness/v2` registration path behaves as before. No database migration required. |
+
+For upstream threat coverage, the ancestry statement sits at TB-5 (browser →
+backend) and TB-2 (browser → Stellar): it publishes commitments that are
+unlinkable to the ancestor's raw hash without the ancestor preimage, and it
+never accesses A1/A2 (credential/nullifier secrets) or A8/A9 keypairs.
 
 ## 10. Review and Update Cadence
 
@@ -833,6 +1234,8 @@ The following are explicitly outside the scope of this threat model:
 | New backend endpoint or authentication change | Re-review T1, T6, T10. |
 | Admin key rotation | Update D3; verify two-step transfer completed cleanly. |
 | Any new npm or Python dependency with network access | Assess supply-chain risk (T4). |
+| Any change to the CLI C2PA exporter (`cli/src/c2pa.ts`, `harpocrates c2pa`) | Re-review Section 9.3; regenerate the committed fixture. |
+| Any change to the `derivative_ancestry` circuit or the `hpx-vi/2` codec | Re-review T12, OR-13; regenerate the conformance corpus and re-verify the pinned browser artifacts. |
 | Scheduled review | Every six months from the date of last update, regardless of changes. |
 
 When updating this document, increment the version number, update the date, and
@@ -842,3 +1245,9 @@ add a one-line change summary below:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial threat model. Covers all four components. Nine open risks identified. |
 | 1.1 | 2026-07-26 | Add OR-10: Threshold seal policy governance (m-of-n Public Seal). |
+| 1.2 | 2026-09-24 | Add OR-11: Unbounded external evidence fetch — resolved in #287. Connect timeout, response-size cap, and privacy-safe logging enforced via fetch_external.safe_urlopen. |
+| 1.3 | 2026-09-27 | Evidence Studio redaction preview documents the public boundary; seeds, witness values and media never render in preview or telemetry signals. |
+| 1.4 | 2026-09-28 | Add T12: Redacted derivative ancestry. New `derivative_ancestry` circuit, `hpx-vi/2` codec, TB-5 boundary, A13 asset, D11 assumption, OR-13 open risk, and Section 9.4. Ancestor preimages and `derivative_secret` never cross the public boundary. |
+
+## CI proof artifact retention
+Retained CI artifacts are a public-boundary risk. Only allowlisted proof outputs are retained, via `devx/retain_proof_artifacts.py`, which rejects media, keys, seeds, witness values and prover inputs, and never prints file names or contents. See `docs/proof-artifact-retention.md`.
