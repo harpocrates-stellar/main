@@ -56,15 +56,32 @@ def load_profiles(path: Path) -> dict[str, Any]:
 
 
 def select_profiles(
-    fixture: dict[str, Any], group: str | None
+    fixture: dict[str, Any], group: str | None, profile_id: str | None = None
 ) -> list[dict[str, Any]]:
     profiles = fixture["profiles"]
+    if profile_id is not None:
+        selected = [p for p in profiles if p["id"] == profile_id]
+        if not selected:
+            valid_ids = ", ".join(p["id"] for p in profiles)
+            raise MatrixError(f"unknown profile ID {profile_id!r}; valid IDs: {valid_ids}")
+        profiles = selected
     if group in (None, "", "all"):
         return list(profiles)
     selected = [p for p in profiles if p.get("group") == group]
     if not selected:
         raise MatrixError(f"no profiles found for group={group!r}")
     return selected
+
+
+def describe_profile(profile: dict[str, Any]) -> str:
+    """Describe a profile without exposing its environment values."""
+    if profile.get("description"):
+        return str(profile["description"])
+    if not profile.get("expect_boot", True):
+        reason = profile.get("expect_boot_error_substring")
+        return f"Expected boot rejection: {reason}" if reason else "Expected boot rejection"
+    checks = profile.get("checks") or []
+    return "Checks: " + ", ".join(checks) if checks else "Boot succeeds; no checks configured"
 
 
 def _normalize_key(key: object) -> str:
@@ -371,9 +388,10 @@ def run_profile(profile: dict[str, Any]) -> dict[str, Any]:
 def run_matrix(
     fixture_path: Path,
     group: str | None = None,
+    profile_id: str | None = None,
 ) -> dict[str, Any]:
     fixture = load_profiles(fixture_path)
-    profiles = select_profiles(fixture, group)
+    profiles = select_profiles(fixture, group, profile_id)
     results = [run_profile(p) for p in profiles]
     failed = [r for r in results if not r.get("ok")]
     return {
@@ -408,9 +426,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit machine-readable JSON summary",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List selected profile IDs, groups and descriptions without executing checks",
+    )
+    parser.add_argument("--profile", metavar="ID", help="Select a single profile by ID within --group")
     args = parser.parse_args(argv)
+    group = None if args.group == "all" else args.group
 
-    summary = run_matrix(args.fixture, None if args.group == "all" else args.group)
+    try:
+        if args.list:
+            profiles = select_profiles(load_profiles(args.fixture), group, args.profile)
+            listing = [
+                {"id": p["id"], "group": p.get("group"), "description": describe_profile(p)}
+                for p in profiles
+            ]
+            if args.json:
+                print(json.dumps(listing, indent=2, sort_keys=True))
+            else:
+                for item in listing:
+                    print(f"{item['id']} ({item['group']}): {item['description']}")
+            return 0
+        summary = run_matrix(args.fixture, group, args.profile)
+    except MatrixError as exc:
+        parser.error(str(exc))
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
