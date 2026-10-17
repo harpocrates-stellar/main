@@ -1,10 +1,25 @@
 import os
-import pytest
 import time
 from datetime import datetime, timedelta, timezone
-from db import init_db, insert_proof_event, set_legal_hold, purge_expired_events, get_connection
-from config import load_config
-from retention import init_retention_worker, stop_retention_worker, _worker
+from unittest.mock import patch
+
+import pytest
+
+from config import RETENTION_BATCH_SIZE_MAX, load_config
+from db import (
+    RETENTION_BATCH_MAX_SIZE,
+    get_connection,
+    init_db,
+    insert_proof_event,
+    purge_expired_events,
+    set_legal_hold,
+)
+from retention import (
+    RETENTION_BATCH_SIZE,
+    RetentionWorker,
+    init_retention_worker,
+    stop_retention_worker,
+)
 
 @pytest.fixture(autouse=True)
 def setup_db(monkeypatch):
@@ -76,10 +91,6 @@ def test_retention_worker(monkeypatch):
             count = cursor.fetchone()["c"]
     assert count == 1
 
-from unittest.mock import MagicMock, patch
-from retention import RetentionWorker, RETENTION_BATCH_SIZE
-
-
 def test_retention_worker_default_batch_size():
     worker = RetentionWorker()
     assert worker.batch_size == RETENTION_BATCH_SIZE
@@ -139,3 +150,43 @@ def test_init_retention_worker_configured_batch_size(monkeypatch):
         assert _worker is not None
         assert _worker.batch_size == 500
     stop_retention_worker()
+
+
+def test_config_retention_batch_size_rejects_non_integer(monkeypatch):
+    monkeypatch.setenv("HARPOCRATES_RETENTION_BATCH_SIZE", "abc")
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        load_config()
+
+
+def test_retention_batch_limits_match_db():
+    assert RETENTION_BATCH_SIZE_MAX == RETENTION_BATCH_MAX_SIZE
+
+
+def test_retention_worker_rejects_non_positive_batch_size():
+    with pytest.raises(ValueError, match="batch_size"):
+        RetentionWorker(batch_size=0)
+
+
+@pytest.mark.integration
+def test_retention_worker_purges_across_pages():
+    # 260 expired events with a 250-row batch must drain in two pages. With the
+    # old SQL-layer cap of 100 the worker stopped after 100 rows and left 160.
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into proof_events (event_type, expires_at)
+                select 'test', now() - interval '1 day'
+                from generate_series(1, 260)
+                """
+            )
+        conn.commit()
+
+    RetentionWorker(interval_seconds=60, batch_size=250)._purge()
+
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("select count(*) as c from proof_events")
+            assert cursor.fetchone()["c"] == 0
+            cursor.execute("select count(*) as c from deletion_receipts")
+            assert cursor.fetchone()["c"] == 260

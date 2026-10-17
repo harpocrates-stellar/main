@@ -234,17 +234,19 @@ def _sample_ratio_env(name: str, default: float) -> float:
     return parsed
 
 
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = 100) -> int:
+# Retention worker batch bounds. The upper bound must match
+# db.RETENTION_BATCH_MAX_SIZE, which clamps the value again at the SQL layer.
+RETENTION_BATCH_SIZE_DEFAULT = 100
+RETENTION_BATCH_SIZE_MAX = 5000
+
+
+def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
     """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
     try:
-        parsed = _int_env(name, default)
-    except RuntimeError:
-        return 1
-    if parsed < 1:
-        return 1
-    if parsed > 5000:
-        return 5000
-    return parsed
+        parsed = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    return max(1, min(parsed, RETENTION_BATCH_SIZE_MAX))

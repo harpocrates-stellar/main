@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 # Max page size for GET /api/proofs cursor pagination.
 PROOF_EVENTS_MAX_LIMIT = 100
 PROOF_EVENTS_DEFAULT_LIMIT = 25
-RETENTION_BATCH_MAX_SIZE = 100
+# Default retention page size, used when a caller does not pass one.
+RETENTION_BATCH_DEFAULT_SIZE = 100
+# Upper bound for a retention page; must match config.RETENTION_BATCH_SIZE_MAX.
+RETENTION_BATCH_MAX_SIZE = 5000
 
 # Libpq / Postgres connection-class SQLSTATEs that are typically transient on
 # Neon (cold start, compute wake, brief network blips, pooler pressure).
@@ -1014,7 +1017,7 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
-def purge_expired_events(batch_size: int = RETENTION_BATCH_MAX_SIZE) -> list[dict[str, Any]]:
+def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list[dict[str, Any]]:
     """Delete proof events past their expiration that are not on legal hold.
 
     Returns a list of deletion receipts (proof_id, deleted_at, etc.) for

@@ -11,6 +11,8 @@ RETENTION_BATCH_SIZE = 100
 
 class RetentionWorker:
     def __init__(self, interval_seconds: int = 3600, batch_size: int = RETENTION_BATCH_SIZE):
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
         self.interval_seconds = interval_seconds
         self.batch_size = batch_size
         self._stop_event = threading.Event()
