@@ -10,8 +10,9 @@ LOGGER = logging.getLogger("harpocrates.retention")
 RETENTION_BATCH_SIZE = 100
 
 class RetentionWorker:
-    def __init__(self, interval_seconds: int = 3600):
+    def __init__(self, interval_seconds: int = 3600, batch_size: int = RETENTION_BATCH_SIZE):
         self.interval_seconds = interval_seconds
+        self.batch_size = batch_size
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -20,7 +21,7 @@ class RetentionWorker:
             return
         self._thread = threading.Thread(target=self._run, daemon=True, name="RetentionWorker")
         self._thread.start()
-        log_structured(LOGGER, logging.INFO, {"event": "retention_worker_started", "interval_seconds": self.interval_seconds})
+        log_structured(LOGGER, logging.INFO, {"event": "retention_worker_started", "interval_seconds": self.interval_seconds, "batch_size": self.batch_size})
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -44,7 +45,7 @@ class RetentionWorker:
 
     def _purge(self) -> None:
         while True:
-            receipts = purge_expired_events(batch_size=RETENTION_BATCH_SIZE)
+            receipts = purge_expired_events(batch_size=self.batch_size)
             num_deleted = len(receipts)
             if num_deleted > 0:
                 log_structured(
@@ -54,7 +55,7 @@ class RetentionWorker:
                 )
                 for _ in receipts:
                     metrics_collector.record_deleted_event()
-            if num_deleted < RETENTION_BATCH_SIZE:
+            if num_deleted < self.batch_size:
                 break
 
 _worker: RetentionWorker | None = None
@@ -63,7 +64,10 @@ def init_retention_worker() -> None:
     global _worker
     config = load_config()
     if config.retention_worker_enabled:
-        _worker = RetentionWorker(interval_seconds=config.retention_interval_seconds)
+        _worker = RetentionWorker(
+            interval_seconds=config.retention_interval_seconds,
+            batch_size=config.retention_batch_size,
+        )
         _worker.start()
 
 def stop_retention_worker() -> None:

@@ -43,6 +43,7 @@ class AppConfig:
     register_api_key_previous_expires: datetime | None
     retention_worker_enabled: bool
     retention_interval_seconds: int
+    retention_batch_size: int
     retention_classes: dict[str, int]
     max_concurrent_requests: int
     max_queue_size: int
@@ -115,6 +116,7 @@ def load_config() -> AppConfig:
         register_api_key_previous_expires=register_api_key_previous_expires,
         retention_worker_enabled=_bool_env("RETENTION_WORKER_ENABLED", False),
         retention_interval_seconds=_int_env("RETENTION_INTERVAL_SECONDS", 3600),
+        retention_batch_size=_retention_batch_size_env(),
         retention_classes={"default": 30, "short": 7, "long": 365},
         max_concurrent_requests=_int_env("MAX_CONCURRENT_REQUESTS", 50),
         max_queue_size=_int_env("MAX_QUEUE_SIZE", 100),
@@ -229,4 +231,20 @@ def _sample_ratio_env(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be between 0 and 1") from exc
     if not 0.0 <= parsed <= 1.0:
         raise RuntimeError(f"{name} must be between 0 and 1")
+    return parsed
+
+
+def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = 100) -> int:
+    """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        parsed = _int_env(name, default)
+    except RuntimeError:
+        return 1
+    if parsed < 1:
+        return 1
+    if parsed > 5000:
+        return 5000
     return parsed

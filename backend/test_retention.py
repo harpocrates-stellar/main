@@ -75,3 +75,67 @@ def test_retention_worker(monkeypatch):
             cursor.execute("select count(*) as c from deletion_receipts")
             count = cursor.fetchone()["c"]
     assert count == 1
+
+from unittest.mock import MagicMock, patch
+from retention import RetentionWorker, RETENTION_BATCH_SIZE
+
+
+def test_retention_worker_default_batch_size():
+    worker = RetentionWorker()
+    assert worker.batch_size == RETENTION_BATCH_SIZE
+    assert worker.batch_size == 100
+
+
+def test_retention_worker_custom_batch_size():
+    custom_batch = 250
+    worker = RetentionWorker(interval_seconds=60, batch_size=custom_batch)
+    assert worker.batch_size == custom_batch
+
+    # Mock purge_expired_events: first call returns 250 receipts,
+    # second call returns fewer (50), verifying worker loops then breaks.
+    batch_1 = [{"proof_id": f"p1_{i}"} for i in range(custom_batch)]
+    batch_2 = [{"proof_id": f"p2_{i}"} for i in range(50)]
+
+    with patch("retention.purge_expired_events", side_effect=[batch_1, batch_2]) as mock_purge, \
+         patch("retention.metrics_collector") as mock_metrics:
+        worker._purge()
+
+        assert mock_purge.call_count == 2
+        mock_purge.assert_called_with(batch_size=custom_batch)
+        assert mock_metrics.record_deleted_event.call_count == custom_batch + 50
+
+
+def test_config_retention_batch_size_default(monkeypatch):
+    monkeypatch.delenv("HARPOCRATES_RETENTION_BATCH_SIZE", raising=False)
+    config = load_config()
+    assert config.retention_batch_size == 100
+
+
+@pytest.mark.parametrize(
+    "env_val, expected",
+    [
+        ("250", 250),
+        ("1", 1),
+        ("5000", 5000),
+        ("10000", 5000),
+        ("0", 1),
+        ("-10", 1),
+        ("   ", 100),
+    ],
+)
+def test_config_retention_batch_size_clamping(monkeypatch, env_val, expected):
+    monkeypatch.setenv("HARPOCRATES_RETENTION_BATCH_SIZE", env_val)
+    config = load_config()
+    assert config.retention_batch_size == expected
+
+
+def test_init_retention_worker_configured_batch_size(monkeypatch):
+    monkeypatch.setenv("RETENTION_WORKER_ENABLED", "true")
+    monkeypatch.setenv("HARPOCRATES_RETENTION_BATCH_SIZE", "500")
+
+    with patch.object(RetentionWorker, "start"):
+        init_retention_worker()
+        from retention import _worker
+        assert _worker is not None
+        assert _worker.batch_size == 500
+    stop_retention_worker()
