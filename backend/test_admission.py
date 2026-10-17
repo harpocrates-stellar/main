@@ -124,3 +124,57 @@ def test_admission_controller_decorator():
         if code != 200:
             assert "error" in data
             assert data["reason"] in ["identity_limit", "queue_full"]
+
+
+def test_spoofed_forwarded_for_from_untrusted_peer_is_ignored():
+    from admission import parse_trusted_proxies
+
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/",
+        headers={"X-Forwarded-For": "203.0.113.9"},
+        environ_base={"REMOTE_ADDR": "198.51.100.7"},
+    ):
+        assert _get_client_identity() == "198.51.100.7"
+        # The peer is not a trusted proxy, so its header is not believed.
+        assert _get_client_identity(parse_trusted_proxies(["10.0.0.0/8"])) == "198.51.100.7"
+
+
+def test_trusted_proxy_forwarded_for_is_honoured():
+    from admission import parse_trusted_proxies
+
+    app = Flask(__name__)
+    proxies = parse_trusted_proxies(["10.0.0.0/8"])
+    with app.test_request_context(
+        "/",
+        headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.9, 10.0.0.2"},
+        environ_base={"REMOTE_ADDR": "10.0.0.1"},
+    ):
+        # Right-most untrusted hop wins; a client-injected left entry does not.
+        assert _get_client_identity(proxies) == "203.0.113.9"
+
+
+def test_require_capacity_identity_ignores_spoofed_header():
+    app = Flask(__name__)
+    controller = AdmissionController(
+        max_concurrent=10, max_queue=0, max_per_identity=1, timeout_seconds=0.1
+    )
+    seen = []
+    original = controller.acquire
+
+    def recording_acquire(identity):
+        seen.append(identity)
+        return original(identity)
+
+    controller.acquire = recording_acquire
+
+    @app.route("/work")
+    @require_capacity(controller)
+    def work():
+        return jsonify({"ok": True})
+
+    client = app.test_client()
+    for i in range(3):
+        client.get("/work", headers={"X-Forwarded-For": f"203.0.113.{i}"})
+    assert len(seen) == 3
+    assert len(set(seen)) == 1

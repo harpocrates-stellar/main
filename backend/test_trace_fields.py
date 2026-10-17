@@ -214,10 +214,11 @@ class TraceFieldsFlaskIntegrationTests(unittest.TestCase):
                 "id": 7,
                 "type": "embed",
                 "status": "pending",
+                "access_token": "tok-7",
                 "_trace_context": {"traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01"},
             },
         ):
-            response = self.client.get("/api/jobs/7")
+            response = self.client.get("/api/jobs/7", headers={"X-Job-Token": "tok-7"})
 
         self.assertEqual(response.status_code, 200)
         job = response.get_json()["job"]

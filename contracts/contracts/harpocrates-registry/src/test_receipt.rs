@@ -382,7 +382,7 @@ fn receipt_commit_retry_is_idempotent_without_second_event() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #70)")]
+#[should_panic(expected = "Error(Contract, #96)")]
 fn receipt_commit_different_digest_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);
@@ -408,7 +408,7 @@ fn receipt_commit_different_digest_rejected() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "Error(Contract, #68)")]
+#[should_panic(expected = "Error(Contract, #94)")]
 fn receipt_commit_unknown_proof_rejected() {
     let f = fixture();
     f.client.add_receipt_signer(&f.admin, &pk1(&f.env));
@@ -422,7 +422,7 @@ fn receipt_commit_unknown_proof_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #69)")]
+#[should_panic(expected = "Error(Contract, #95)")]
 fn receipt_commit_revoked_proof_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);
@@ -438,7 +438,7 @@ fn receipt_commit_revoked_proof_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #69)")]
+#[should_panic(expected = "Error(Contract, #95)")]
 fn receipt_commit_expired_proof_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);
@@ -454,7 +454,7 @@ fn receipt_commit_expired_proof_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #71)")]
+#[should_panic(expected = "Error(Contract, #97)")]
 fn receipt_commit_zero_digest_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);
@@ -469,7 +469,7 @@ fn receipt_commit_zero_digest_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #72)")]
+#[should_panic(expected = "Error(Contract, #98)")]
 fn receipt_commit_unknown_signer_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);
@@ -484,7 +484,7 @@ fn receipt_commit_unknown_signer_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #73)")]
+#[should_panic(expected = "Error(Contract, #99)")]
 fn receipt_commit_revoked_signer_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);
@@ -727,14 +727,14 @@ fn receipt_signer_revoke_requires_admin() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #72)")]
+#[should_panic(expected = "Error(Contract, #98)")]
 fn receipt_signer_revoke_unknown_rejected() {
     let f = fixture();
     f.client.revoke_receipt_signer(&f.admin, &pk1(&f.env));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #74)")]
+#[should_panic(expected = "Error(Contract, #100)")]
 fn receipt_signer_saturation_rejects_ninth() {
     let f = fixture();
     for i in 0..MAX_RECEIPT_SIGNERS {
@@ -799,7 +799,7 @@ fn receipt_commitment_survives_proof_revocation() {
 /// slot is reported first (`ReceiptAlreadyCommitted`), while retries of the
 /// stored digest keep succeeding.
 #[test]
-#[should_panic(expected = "Error(Contract, #70)")]
+#[should_panic(expected = "Error(Contract, #96)")]
 fn receipt_commit_new_digest_after_revocation_rejected() {
     let f = fixture();
     let source = register_tier2(&f, PROOF1, 0x01);

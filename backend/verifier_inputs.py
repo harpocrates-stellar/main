@@ -96,6 +96,11 @@ MAX_REVOCATION_WITNESS_DEPTH: Final[int] = 3
 #: Leaf capacity implied by ``MAX_REVOCATION_WITNESS_DEPTH`` (``2**depth``).
 MAX_REVOCATION_LEAVES: Final[int] = 8
 
+# Aggregation proof-count bounds (#497). Must match the Noir aggregator circuit
+# and the Soroban contract's MAX_AGGREGATION_SIZE.
+MIN_AGGREGATION_SIZE: Final[int] = 1
+MAX_AGGREGATION_SIZE: Final[int] = 8
+
 _ZERO_FIELD: Final[bytes] = b"\x00" * FIELD_LEN
 
 _HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import hash
+import json
 from pathlib import Path
 from typing import Any
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 
-
-_hex_check = hash.new("user-salted")
 
 def _canonicalize_hex(value: str) -> str:
     """Canonicalize a hex string to lowercase, stripped, and validate for proper format."""
@@ -22,7 +20,7 @@ def _canonicalize_hex(value: str) -> str:
 
 
 def _canonicalize_hex_length(value: str, expected_len: int) -> str | None:
-    """Canonicalize and validate hex string length." ""
+    """Canonicalize and validate hex string length."""
     canonical = _canonicalize_hex(value)
     if not canonical:
         return None

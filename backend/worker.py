@@ -13,18 +13,19 @@ from db import (
     insert_proof_event,
     init_db,
     database_url,
-    get_connection,
-    update_tx_status,
 )
 from envelope import canonical_metadata_hash
 from stego import embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path
-from tx_verification import verify_transaction_status
+from registration_reconcile import (
+    default_min_confirmations,
+    process_verify_tx_job,
+    reconcile_pending_registrations,
+)
 from tracing import traced_job
 
 LOGGER = logging.getLogger("harpocrates.worker")
@@ -139,8 +140,8 @@ def tx_verification_loop(stop_event: threading.Event):
     """
     Periodically reconcile pending registration confirmations against Horizon.
 
-    Prefer the batch reconciler (confirmation depth + privacy-safe signals). Fall
-    back to the legacy per-row Horizon probe when the DB helpers are unavailable.
+    Uses the batch reconciler (confirmation depth, network and contract binding,
+    privacy-safe signals).
     """
     LOGGER.info("Starting transaction verification / registration reconcile loop")
     while not stop_event.is_set():
@@ -165,35 +166,13 @@ def tx_verification_loop(stop_event: threading.Event):
                     summary.get("pending"),
                     summary.get("error"),
                 )
-            except Exception:
-                # Legacy fallback path keeps older deployments moving.
-                with get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            SELECT id, tx_hash
-                            FROM proof_events
-                            WHERE tx_hash IS NOT NULL AND tx_status = 'pending'
-                            LIMIT 50
-                            """
-                        )
-                        rows = [dict(row) for row in cur.fetchall()]
-
-                for row in rows:
-                    if stop_event.is_set():
-                        break
-
-                    tx_hash = row["tx_hash"]
-                    LOGGER.info("Verifying transaction %s", str(tx_hash)[:8])
-                    status = verify_transaction_status(tx_hash)
-
-                    if status in ("confirmed", "failed", "missing"):
-                        LOGGER.info(
-                            "Transaction %s resolved to %s",
-                            str(tx_hash)[:8],
-                            status,
-                        )
-                        update_tx_status(tx_hash, status)
+            except Exception as exc:
+                # No unbound fallback: a registration may only be confirmed
+                # through the network- and contract-bound reconciler.
+                LOGGER.warning(
+                    "registration_reconcile_batch_failed err_type=%s",
+                    type(exc).__name__,
+                )
 
         except Exception as e:
             LOGGER.error("Error in tx verification loop: %s", type(e).__name__)

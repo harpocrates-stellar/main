@@ -82,6 +82,32 @@ payloads must stay privacy-safe and must not echo attacker-controlled input.
 """
 
 # ---------------------------------------------------------------------------
+# CLI-friendly error codes
+# ---------------------------------------------------------------------------
+# Lowercase, shell-friendly identifiers emitted as ``error.cli_code`` next to
+# the legacy ``code``. They match the CLI dry-run ``error_type`` values.
+
+MALFORMED_INPUT = "malformed_input"
+"""The input could not be parsed or failed validation."""
+
+OVERSIZED_INPUT = "oversized_input"
+"""The input exceeded a configured size bound."""
+
+UNSUPPORTED_INPUT = "unsupported_input"
+"""The input is well-formed but not supported (e.g. unknown tier or version)."""
+
+
+def classify_cli_error(message: str) -> str:
+    """Map a privacy-safe validation message to a CLI error code."""
+    lowered = (message or "").lower()
+    if "too large" in lowered or "exceeds" in lowered or "oversized" in lowered:
+        return OVERSIZED_INPUT
+    if "unsupported" in lowered or "not supported" in lowered:
+        return UNSUPPORTED_INPUT
+    return MALFORMED_INPUT
+
+
+# ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
@@ -92,6 +118,7 @@ def error_response(
     message: str,
     status: int,
     field: str | None = None,
+    cli_code: str | None = None,
 ) -> tuple[Response, int]:
     """Return a Flask response tuple for a standardized error envelope.
 
@@ -116,6 +143,8 @@ def error_response(
     }
     if field:
         error["field"] = field
+    if cli_code:
+        error["cli_code"] = cli_code
     return (
         jsonify(
             {

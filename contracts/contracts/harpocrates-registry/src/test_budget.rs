@@ -329,6 +329,7 @@ fn budget_register_anonymous_baseline() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.init(&admin);
+    client.set_verifier(&admin, &env.register(MockBudgetVerifier, ()));
     client.add_credential_root(&admin, &b32(&env, 0xDD), &b32(&env, 0xEE));
 
     let (cpu, mem, _) = measure(&env, || {

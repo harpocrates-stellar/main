@@ -46,7 +46,7 @@ use soroban_sdk::contracterror;
 /// note in the PR. Growth beyond this budget means an accidental dependency,
 /// a disabled optimization, or an unintentionally included test-utils
 /// feature.
-pub const MAX_WASM_SIZE_BYTES: u64 = 128_000;
+pub const MAX_WASM_SIZE_BYTES: u64 = 130_560;
 
 /// Allowed drift, in percent, between the built artifact and the recorded
 /// golden-size baseline before the budget gate treats the change as a

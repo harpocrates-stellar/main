@@ -238,7 +238,7 @@ fn exact_min_equals_max_window_is_accepted() {
         1,
     );
     client.verify_selective_disclosure(&inputs, &Bytes::from_array(&env, &[1, 2, 3, 4]));
-    assert!(client.has_nullifier(&b32(&env, 0xBB)));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &b32(&env, 0xBB)));
 }
 
 #[test]

@@ -18,9 +18,12 @@ import os
 from typing import Any
 
 from db import list_pending_registration_txs, update_tx_status
+from strkey import validate_contract_id
 from tx_verification import (
     TERMINAL_STATUSES,
+    RegistrationBinding,
     TxVerificationResult,
+    configured_registry_contract_id,
     normalize_tx_hash,
     verify_transaction,
 )
@@ -93,6 +96,33 @@ def _result_payload(
     return payload
 
 
+def registration_binding(
+    *,
+    proof_id: str | None,
+    video_hash: str | None,
+    contract_id: str | None,
+) -> tuple[RegistrationBinding | None, str | None]:
+    """Build the on-chain binding a confirming transaction must satisfy.
+
+    The operator-pinned ``HARPOCRATES_REGISTRY_CONTRACT_ID`` wins; a row that
+    names a different contract can never be confirmed. Without a pinned id the
+    contract recorded on the registration row is used.
+    """
+    try:
+        recorded = validate_contract_id(contract_id) if contract_id else None
+    except ValueError:
+        return None, "invalid_contract_id"
+    pinned = configured_registry_contract_id()
+    if pinned is not None and recorded is not None and recorded != pinned:
+        return None, "wrong_contract"
+    expected = pinned or recorded
+    if expected is None:
+        return None, "registry_contract_unbound"
+    if not proof_id and not video_hash:
+        return None, "registration_unbound"
+    return RegistrationBinding(contract_id=expected, proof_id=proof_id, video_hash=video_hash), None
+
+
 def reconcile_registration(
     tx_hash: object,
     *,
@@ -101,6 +131,8 @@ def reconcile_registration(
     event_id: int | None = None,
     min_confirmations: int | None = None,
     force: bool = False,
+    video_hash: str | None = None,
+    contract_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Reconcile a single registration transaction hash against Horizon.
@@ -108,6 +140,9 @@ def reconcile_registration(
     - Malformed hashes → status ``failed`` / reason ``malformed_tx_hash``
     - Horizon dependency failures → status ``error`` (no durable write)
     - Terminal rows are left unchanged unless ``force`` is true
+    - A transaction only confirms the registration it actually performed: it
+      must be on the configured network and invoke the registry contract with
+      this row's proof id or video hash (stable ``failed`` reasons otherwise)
     """
     min_conf = (
         default_min_confirmations()
@@ -153,11 +188,26 @@ def reconcile_registration(
             event_id=event_id,
         )
 
-    verification = verify_transaction(normalized, min_confirmations=min_conf)
+    binding, unbound_reason = registration_binding(
+        proof_id=proof_id,
+        video_hash=video_hash,
+        contract_id=contract_id,
+    )
+    if binding is None:
+        verification = TxVerificationResult(status="failed", reason=unbound_reason)
+    else:
+        verification = verify_transaction(
+            normalized,
+            min_confirmations=min_conf,
+            binding=binding,
+        )
     updated = False
 
     if verification.status in TERMINAL_STATUSES:
-        updated = bool(update_tx_status(normalized, verification.status, force=force))
+        update_kwargs: dict[str, Any] = {"force": force}
+        if event_id is not None:
+            update_kwargs["event_id"] = event_id
+        updated = bool(update_tx_status(normalized, verification.status, **update_kwargs))
         LOGGER.info(
             "registration_reconcile_terminal tx=%s status=%s reason=%s updated=%s",
             _short_hash(normalized),
@@ -227,6 +277,8 @@ def reconcile_pending_registrations(
             event_id=row.get("id"),
             min_confirmations=min_conf,
             force=False,
+            video_hash=row.get("video_hash"),
+            contract_id=row.get("contract_id"),
         )
         results.append(item)
         status = item.get("status") or "error"
@@ -251,12 +303,14 @@ def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("verify_tx payload must be an object")
     tx_hash = payload.get("tx_hash") or payload.get("txHash")
     proof_id = payload.get("proof_id") or payload.get("proofId")
+    contract_id = payload.get("contract_id") or payload.get("contractId")
     min_confirmations = payload.get("min_confirmations") or payload.get("minConfirmations")
     result = reconcile_registration(
         tx_hash,
         previous_status="pending",
         proof_id=proof_id if isinstance(proof_id, str) else None,
         min_confirmations=int(min_confirmations) if min_confirmations is not None else None,
+        contract_id=contract_id if isinstance(contract_id, str) else None,
     )
     if result.get("status") == "error":
         # Surface dependency failures so the worker can retry non-fatally.

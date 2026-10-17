@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import secrets
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -608,6 +609,44 @@ def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
 
 
+def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
+    """Return every proof event recorded for ``proof_id`` (newest first)."""
+    if not database_url():
+        return []
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time,
+                    created_at
+                from proof_events
+                where proof_id = %s
+                order by id desc;
+                """,
+                (proof_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def find_proof_owner(proof_id: str) -> str | None:
     """Return the ``source_address`` that first registered ``proof_id``.
 
@@ -943,7 +982,7 @@ def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, proof_id, tx_hash, tx_status, contract_id, created_at
+                select id, proof_id, video_hash, tx_hash, tx_status, contract_id, created_at
                 from proof_events
                 where tx_hash is not null
                   and tx_status = 'pending'
@@ -955,12 +994,41 @@ def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
 
 
-def update_tx_status(tx_hash: str, status: str, *, force: bool = False) -> bool:
+def list_registrations_by_tx_hash(tx_hash: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Return registration rows that reference ``tx_hash`` (oldest first)."""
+    if not database_url():
+        return []
+    page_size = max(1, min(int(limit), 50))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select id, proof_id, video_hash, tx_hash, tx_status, contract_id, created_at
+                from proof_events
+                where tx_hash = %s
+                order by id asc
+                limit %s;
+                """,
+                (tx_hash, page_size),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def update_tx_status(
+    tx_hash: str,
+    status: str,
+    *,
+    force: bool = False,
+    event_id: int | None = None,
+) -> bool:
     """Persist a reconciled tx status.
 
     By default only transitions rows that are still ``pending`` so terminal
     confirmations are idempotent and concurrent workers do not clobber each
     other. Pass ``force=True`` to overwrite a terminal status (repair path).
+
+    ``event_id`` restricts the write to one proof event, so a verdict about
+    one registration never rewrites another row that reuses the same hash.
 
     Returns True when at least one row was updated.
     """
@@ -973,24 +1041,18 @@ def update_tx_status(tx_hash: str, status: str, *, force: bool = False) -> bool:
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            if force:
+            pending_only = "" if force else " and (tx_status is null or tx_status = 'pending')"
+            if event_id is None:
                 cursor.execute(
-                    """
-                    update proof_events
-                    set tx_status = %s
-                    where tx_hash = %s;
-                    """,
+                    "update proof_events set tx_status = %s where tx_hash = %s" + pending_only + ";",
                     (status, tx_hash),
                 )
             else:
                 cursor.execute(
-                    """
-                    update proof_events
-                    set tx_status = %s
-                    where tx_hash = %s
-                      and (tx_status is null or tx_status = 'pending');
-                    """,
-                    (status, tx_hash),
+                    "update proof_events set tx_status = %s where tx_hash = %s and id = %s"
+                    + pending_only
+                    + ";",
+                    (status, tx_hash, int(event_id)),
                 )
             updated = cursor.rowcount > 0
         connection.commit()
@@ -1067,6 +1129,9 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     _JOBS[job_id] = {
         "id": job_id,
         "type": job_type,
+        # Capability token handed only to the submitter. Job ids are
+        # sequential, so every job endpoint requires this token as well.
+        "access_token": secrets.token_urlsafe(32),
         "payload": payload,
         "_trace_context": job_trace_context(),
         "status": "pending",
@@ -1074,6 +1139,12 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     return job_id
+
+
+def get_job_access_token(job_id: int) -> str | None:
+    """Return the capability token for ``job_id`` (submitter use only)."""
+    job = _JOBS.get(job_id)
+    return job.get("access_token") if job else None
 
 
 def get_job(job_id: int) -> dict[str, Any] | None:

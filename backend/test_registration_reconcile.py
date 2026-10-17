@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from unittest import mock
 
 import pytest
@@ -12,10 +13,20 @@ from registration_reconcile import (
     reconcile_pending_registrations,
     reconcile_registration,
 )
-from tx_verification import TxVerificationResult, normalize_tx_hash, verify_transaction
+from strkey import make_strkey
+from tx_verification import (
+    RegistrationBinding,
+    TxVerificationResult,
+    horizon_urls,
+    normalize_tx_hash,
+    verify_transaction,
+)
 
 
 VALID_TX = "a" * 64
+PROOF_ID = "11" * 32
+REGISTRY_RAW = bytes(range(32))
+REGISTRY_ID = make_strkey(2 << 3, REGISTRY_RAW)
 
 
 def test_normalize_tx_hash_accepts_hex_and_0x_prefix():
@@ -92,7 +103,13 @@ def test_verify_transaction_dependency_error(mock_fetch, _urls):
     ),
 )
 def test_reconcile_registration_updates_terminal(mock_verify, mock_update):
-    result = reconcile_registration(VALID_TX, previous_status="pending", min_confirmations=1)
+    result = reconcile_registration(
+        VALID_TX,
+        previous_status="pending",
+        min_confirmations=1,
+        proof_id=PROOF_ID,
+        contract_id=REGISTRY_ID,
+    )
     assert result["status"] == "confirmed"
     assert result["updated"] is True
     mock_update.assert_called_once_with(VALID_TX, "confirmed", force=False)
@@ -159,3 +176,136 @@ def test_process_verify_tx_job_success(mock_reconcile):
 def test_process_verify_tx_job_raises_on_dependency_failure(mock_reconcile):
     with pytest.raises(RuntimeError):
         process_verify_tx_job({"txHash": VALID_TX})
+
+
+
+# ---------------------------------------------------------------------------
+# Network, contract and proof binding
+# ---------------------------------------------------------------------------
+
+SCV_ADDRESS_CONTRACT = bytes([0, 0, 0, 18, 0, 0, 0, 1])
+SCV_BYTES_32 = bytes([0, 0, 0, 13, 0, 0, 0, 32])
+
+
+def _scval_address(raw: bytes) -> str:
+    return base64.b64encode(SCV_ADDRESS_CONTRACT + raw).decode()
+
+
+def _scval_bytes32(raw: bytes) -> str:
+    return base64.b64encode(SCV_BYTES_32 + raw).decode()
+
+
+def _horizon(operations: list[dict] | None):
+    """Fake Horizon keyed by URL path."""
+
+    def fetch(url: str, *, timeout: float):
+        if "/operations" in url:
+            return 200, {"_embedded": {"records": operations or []}}
+        if "/transactions/" in url:
+            return 200, {"successful": True, "ledger": 100}
+        return 200, {"history_latest_ledger": 105}
+
+    return fetch
+
+
+def _invoke(contract_raw: bytes, *args: bytes) -> dict:
+    return {
+        "type": "invoke_host_function",
+        "function": "HostFunctionTypeHostFunctionTypeInvokeContract",
+        "parameters": [{"type": "Address", "value": _scval_address(contract_raw)}]
+        + [{"type": "Bytes", "value": _scval_bytes32(a)} for a in args],
+    }
+
+
+BINDING = RegistrationBinding(contract_id=REGISTRY_ID, proof_id=PROOF_ID)
+
+
+@pytest.fixture
+def testnet(monkeypatch):
+    monkeypatch.setenv("HARPOCRATES_RELEASE_NETWORK", "testnet")
+    monkeypatch.delenv("HORIZON_URLS", raising=False)
+    monkeypatch.delenv("HARPOCRATES_REGISTRY_CONTRACT_ID", raising=False)
+
+
+def test_horizon_urls_never_cross_networks(testnet, monkeypatch):
+    assert horizon_urls() == ["https://horizon-testnet.stellar.org"]
+
+    monkeypatch.setenv(
+        "HORIZON_URLS", "https://horizon-testnet.stellar.org,https://horizon.stellar.org"
+    )
+    assert horizon_urls() == ["https://horizon-testnet.stellar.org"]
+
+    monkeypatch.setenv("HARPOCRATES_RELEASE_NETWORK", "mainnet")
+    monkeypatch.delenv("HORIZON_URLS", raising=False)
+    assert horizon_urls() == ["https://horizon.stellar.org"]
+
+
+def test_mainnet_hash_is_not_accepted_on_testnet(testnet):
+    seen: list[str] = []
+
+    def fetch(url: str, *, timeout: float):
+        seen.append(url)
+        # Only mainnet knows this transaction.
+        if url.startswith("https://horizon.stellar.org"):
+            return 200, {"successful": True, "ledger": 100}
+        return 404, None
+
+    with mock.patch("tx_verification._fetch_json", side_effect=fetch):
+        result = verify_transaction(VALID_TX, binding=BINDING)
+    assert result.status == "missing"
+    assert seen and all(url.startswith("https://horizon-testnet.stellar.org") for url in seen)
+
+
+def test_unrelated_successful_transaction_is_rejected(testnet):
+    payment = {"type": "payment", "amount": "1"}
+    with mock.patch("tx_verification._fetch_json", side_effect=_horizon([payment])):
+        result = verify_transaction(VALID_TX, binding=BINDING)
+    assert result.status == "failed"
+    assert result.reason == "wrong_contract"
+
+
+def test_wrong_contract_is_rejected(testnet):
+    other = _invoke(bytes([0xEE]) * 32, bytes.fromhex(PROOF_ID))
+    with mock.patch("tx_verification._fetch_json", side_effect=_horizon([other])):
+        result = verify_transaction(VALID_TX, binding=BINDING)
+    assert result.status == "failed"
+    assert result.reason == "wrong_contract"
+
+
+def test_registry_call_for_another_proof_is_rejected(testnet):
+    op = _invoke(REGISTRY_RAW, bytes([0x22]) * 32)
+    with mock.patch("tx_verification._fetch_json", side_effect=_horizon([op])):
+        result = verify_transaction(VALID_TX, binding=BINDING)
+    assert result.status == "failed"
+    assert result.reason == "proof_not_bound"
+
+
+def test_matching_registration_confirms(testnet):
+    op = _invoke(REGISTRY_RAW, bytes([0x33]) * 32, bytes.fromhex(PROOF_ID))
+    with mock.patch("tx_verification._fetch_json", side_effect=_horizon([op])):
+        result = verify_transaction(VALID_TX, binding=BINDING)
+    assert result.status == "confirmed"
+    assert result.confirmations == 6
+
+
+@mock.patch("registration_reconcile.update_tx_status", return_value=True)
+@mock.patch("registration_reconcile.verify_transaction")
+def test_reconcile_rejects_row_for_another_contract(mock_verify, mock_update, monkeypatch):
+    pinned = make_strkey(2 << 3, bytes([1]) * 32)
+    monkeypatch.setenv("HARPOCRATES_REGISTRY_CONTRACT_ID", pinned)
+    result = reconcile_registration(
+        VALID_TX, proof_id=PROOF_ID, contract_id=REGISTRY_ID, event_id=7
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "wrong_contract"
+    mock_verify.assert_not_called()
+    mock_update.assert_called_once_with(VALID_TX, "failed", force=False, event_id=7)
+
+
+@mock.patch("registration_reconcile.update_tx_status", return_value=True)
+@mock.patch("registration_reconcile.verify_transaction")
+def test_reconcile_without_binding_never_confirms(mock_verify, mock_update, testnet):
+    result = reconcile_registration(VALID_TX, proof_id=PROOF_ID)
+    assert result["status"] == "failed"
+    assert result["reason"] == "registry_contract_unbound"
+    mock_verify.assert_not_called()

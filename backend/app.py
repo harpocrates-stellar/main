@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import hmac
 import ipaddress
 import json
 import logging
@@ -43,17 +44,22 @@ from errors import (
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
     classify_cli_error,
     error_response,
+    ok_response,
+    register_request_id_propagation,
 )
 from db import (
     check_db,
     database_url,
     decode_proof_events_cursor,
+    find_proof_events_by_proof_id,
     find_proof_events_by_video,
     find_proof_owner,
+    list_registrations_by_tx_hash,
     find_lineage_by_output_digest,
     find_lineage_by_actor,
     init_db,
@@ -107,15 +113,6 @@ from c2pa import (
     parse_c2pa_manifest,
 )
 from logging_utils import log_structured, redact_sensitive
-from errors import (
-    INTERNAL_ERROR,
-    NOT_FOUND,
-    PAYLOAD_TOO_LARGE,
-    VALIDATION_ERROR,
-    error_response,
-    ok_response,
-    register_request_id_propagation,
-)
 from trace_fields import (
     build_trace_fields,
     format_traceparent,
@@ -143,8 +140,26 @@ from werkzeug.datastructures import ImmutableMultiDict
 # Bounded aggregation constants
 # ---------------------------------------------------------------------------
 # These MUST match the values in the Noir circuit and the Soroban contract.
-MAX_AGGREGATION_SIZE = 8
+from verifier_inputs import MAX_AGGREGATION_SIZE  # noqa: E402
+
 AGGREGATION_ELEMENT_COST = 128  # bytes per aggregated public-input element
+
+# Lifecycle actions accepted on the history endpoint; mirrors the registry's
+# ProofLifecycleAction enum.
+PROOF_HISTORY_ACTIONS = frozenset(
+    {"registered", "verified", "revoked", "expired", "corrected", "ttl_updated"}
+)
+
+_PUBLIC_JOB_FIELDS = (
+    "id",
+    "type",
+    "status",
+    "progress",
+    "created_at",
+    "heartbeat_at",
+    "completed_at",
+    "failed_at",
+)
 
 LOGGER = logging.getLogger("harpocrates.requests")
 if not LOGGER.handlers:
@@ -277,6 +292,7 @@ def create_app() -> Flask:
         max_queue=config.max_queue_size,
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
+        trusted_proxies=config.trusted_proxies,
     )
 
     @app.before_request
@@ -419,6 +435,125 @@ def create_app() -> Flask:
                 error=error,
             )
 
+    def _register_credentials_configured() -> bool:
+        return config.register_api_key is not None or bool(config.register_scoped_keys)
+
+    def _authenticate_register_principal(reject):
+        """Resolve the bearer token to a principal: ``(principal, None)`` or
+        ``(None, rejection_response)``. Callers handle the dev-mode case."""
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None, reject(
+                register_auth.REASON_MISSING,
+                "Authorization header with Bearer token is required",
+            )
+
+        token = auth_header[len("Bearer "):].strip()
+        now = datetime.now(tz=timezone.utc)
+        legacy_key = config.register_api_key
+        scoped_keys = config.register_scoped_keys
+
+        # Every configured credential is compared on every call; do not
+        # reveal whether a key is primary, previous, scoped, or expired.
+        principal = register_auth.authenticate(
+            token,
+            legacy_key=legacy_key,
+            scoped_keys=scoped_keys,
+        )
+        previous_key = config.register_api_key_previous
+        previous_principal = (
+            register_auth.authenticate(token, legacy_key=previous_key, scoped_keys=())
+            if previous_key
+            else None
+        )
+        # REGISTER_API_KEY_EXPIRES applies to the primary and scoped keys;
+        # REGISTER_API_KEY_PREVIOUS has its own optional expiry.
+        expires = config.register_api_key_expires
+        primary_expired = expires is not None and now >= expires
+        previous_expires = config.register_api_key_previous_expires
+        if primary_expired:
+            principal = None
+        if principal is None and previous_principal is not None and (
+            previous_expires is None or now < previous_expires
+        ):
+            principal = previous_principal
+        if principal is None:
+            if primary_expired:
+                return None, reject(register_auth.REASON_EXPIRED, "API key has expired")
+            return None, reject(register_auth.REASON_INVALID, "Invalid API key")
+        return principal, None
+
+    def _auth_reject(reason: str, message: str):
+        # Reason codes only; never the token, its digest, or an address.
+        log_structured(
+            LOGGER,
+            logging.WARNING,
+            {"event": "register_auth_rejected", "reason": reason, "request_id": request_id()},
+        )
+        return jsonify({"error": message}), 401
+
+    def _scope_forbidden(field: str, message: str):
+        log_structured(
+            LOGGER,
+            logging.WARNING,
+            {
+                "event": "register_auth_rejected",
+                "reason": register_auth.REASON_SCOPE,
+                "request_id": request_id(),
+            },
+        )
+        return error_response(code=FORBIDDEN, message=message, status=403, field=field)
+
+    def require_owner_auth(resolve_owner, *, field: str, message: str):
+        """Require a registration credential whose scope covers the owner.
+
+        ``resolve_owner(payload)`` returns the address that owns the object the
+        request writes to (or ``None`` when unknown). The legacy unscoped key
+        may write anything; an owner-scoped key only its own objects. With no
+        credential configured the endpoint stays open (dev mode).
+        """
+
+        def decorator(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                if not _register_credentials_configured():
+                    return fn(*args, **kwargs)
+                principal, rejection = _authenticate_register_principal(_auth_reject)
+                if rejection is not None:
+                    return rejection
+                if principal.is_scoped:
+                    if (request.content_length or 0) > config.max_json_bytes:
+                        return jsonify({"error": "JSON payload exceeds size limit"}), 413
+                    payload = request.get_json(silent=True)
+                    owner = resolve_owner(payload) if isinstance(payload, dict) else None
+                    if not register_auth.scope_allows(principal, owner):
+                        return _scope_forbidden(field, message)
+                g.register_principal = principal
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+    def _operator_principal_required():
+        """Return a rejection unless the caller holds the unscoped operator key."""
+        if not _register_credentials_configured():
+            return error_response(
+                code=FORBIDDEN,
+                message="operator credential is required for this operation",
+                status=403,
+            )
+        principal, rejection = _authenticate_register_principal(_auth_reject)
+        if rejection is not None:
+            return rejection
+        if principal.is_scoped:
+            return error_response(
+                code=FORBIDDEN,
+                message="operator credential is required for this operation",
+                status=403,
+            )
+        return None
+
     def require_register_auth(fn):
         """Decorator that enforces ownership-scoped auth on proof registration.
 
@@ -452,50 +587,13 @@ def create_app() -> Flask:
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            legacy_key = config.register_api_key
-            scoped_keys = config.register_scoped_keys
-            if legacy_key is None and not scoped_keys:
+            if not _register_credentials_configured():
                 # No credential configured – allow the request (dev mode).
                 return fn(*args, **kwargs)
 
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                return reject(
-                    register_auth.REASON_MISSING,
-                    "Authorization header with Bearer token is required",
-                )
-
-            token = auth_header[len("Bearer "):].strip()
-            now = datetime.now(tz=timezone.utc)
-
-            # Every configured credential is compared on every call; do not
-            # reveal whether a key is primary, previous, scoped, or expired.
-            principal = register_auth.authenticate(
-                token,
-                legacy_key=legacy_key,
-                scoped_keys=scoped_keys,
-            )
-            previous_key = config.register_api_key_previous
-            previous_principal = (
-                register_auth.authenticate(token, legacy_key=previous_key, scoped_keys=())
-                if previous_key
-                else None
-            )
-            # REGISTER_API_KEY_EXPIRES applies to the primary and scoped keys;
-            # REGISTER_API_KEY_PREVIOUS has its own optional expiry.
-            expires = config.register_api_key_expires
-            primary_expired = expires is not None and now >= expires
-            previous_expires = config.register_api_key_previous_expires
-            if primary_expired:
-                principal = None
-            if principal is None and previous_principal is not None and (
-                previous_expires is None or now < previous_expires
-            ):
-                principal = previous_principal
-            if principal is None:
-                if primary_expired:
-                    return reject(register_auth.REASON_EXPIRED, "API key has expired")
-                return reject(register_auth.REASON_INVALID, "Invalid API key")
+            principal, rejection = _authenticate_register_principal(reject)
+            if rejection is not None:
+                return rejection
 
             if principal.is_scoped:
                 # Bound the body we parse before the handler's own size check.
@@ -894,7 +992,6 @@ def create_app() -> Flask:
                 json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
 
-        import shutil
         shutil.rmtree(session_dir, ignore_errors=True)
 
         return response
@@ -1024,7 +1121,17 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "events": find_lineage_by_actor(actor_address, parsed_limit)})
 
+    def _lineage_actor(payload: dict) -> str | None:
+        actor = payload.get("actorAddress")
+        return actor.strip().upper() if isinstance(actor, str) and actor.strip() else None
+
     @app.post("/api/proofs/lineage")
+    @limiter.limit(config.ratelimit_register)
+    @require_owner_auth(
+        _lineage_actor,
+        field="actorAddress",
+        message="credential is not authorized for this actorAddress",
+    )
     def register_lineage_event():
         if _enforce_json_size() > config.max_json_bytes:
             return jsonify({"error": "JSON payload exceeds size limit"}), 413
@@ -1323,6 +1430,7 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
 
     @app.post("/api/proofs/reconcile")
+    @limiter.limit(config.ratelimit_register)
     def reconcile_registration_confirmations():
         """Reconcile pending registration tx hashes against on-chain Horizon state.
 
@@ -1352,6 +1460,12 @@ def create_app() -> Flask:
 
         force = bool(payload.get("force", False))
         min_confirmations = payload.get("minConfirmations")
+        # The repair path (force) and a caller-chosen confirmation depth can
+        # downgrade or prematurely settle registrations: operator only.
+        if force or min_confirmations is not None:
+            rejection = _operator_principal_required()
+            if rejection is not None:
+                return rejection
         if min_confirmations is None:
             min_confirmations = default_min_confirmations()
         else:
@@ -1373,14 +1487,39 @@ def create_app() -> Flask:
         tx_hash = payload.get("txHash")
         if tx_hash is not None:
             try:
-                result = reconcile_registration(
-                    tx_hash,
-                    previous_status=None if force else "pending",
-                    min_confirmations=min_confirmations,
-                    force=force,
+                normalized_hash = normalize_tx_hash(tx_hash)
+            except ValueError:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="txHash must be a 32-byte hex string",
+                    status=400,
                 )
+            rows = list_registrations_by_tx_hash(normalized_hash)
+            if not rows:
+                return error_response(
+                    code=NOT_FOUND,
+                    message="no registration references this txHash",
+                    status=404,
+                )
+            try:
+                results = [
+                    reconcile_registration(
+                        normalized_hash,
+                        previous_status=None if force else (row.get("tx_status") or "pending"),
+                        proof_id=row.get("proof_id"),
+                        event_id=row.get("id"),
+                        video_hash=row.get("video_hash"),
+                        contract_id=row.get("contract_id"),
+                        min_confirmations=min_confirmations,
+                        force=force,
+                    )
+                    for row in rows
+                ]
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
+            result = results[0]
+            if any(item.get("status") == "error" for item in results):
+                result = next(item for item in results if item.get("status") == "error")
 
             if result.get("error") == "malformed_tx_hash":
                 return error_response(
@@ -1394,7 +1533,7 @@ def create_app() -> Flask:
                     "error": "horizon_dependency_failure",
                     "result": result,
                 }), 503
-            return jsonify({"ok": True, "result": result})
+            return jsonify({"ok": True, "result": result, "results": results})
 
         try:
             limit = clamp_reconcile_limit(payload.get("limit", 50))
@@ -1563,8 +1702,22 @@ def create_app() -> Flask:
             {"ok": True, "events": list_proof_history_events(proof_id, parsed_limit, parsed_offset)}
         )
 
+    def _history_proof_owner(payload: dict) -> str | None:
+        proof_id = payload.get("proofId")
+        if not is_hex_32(proof_id):
+            return None
+        return find_proof_owner(proof_id.lower())
+
     @app.post("/api/proofs/history")
+    @limiter.limit(config.ratelimit_register)
+    @require_owner_auth(
+        _history_proof_owner,
+        field="proofId",
+        message="credential is not authorized for this proof",
+    )
     def register_proof_history_event():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify({"error": "JSON body is required"}), 400
@@ -1578,10 +1731,31 @@ def create_app() -> Flask:
 
         if not is_hex_32(proof_id):
             return jsonify({"error": "proofId must be a 32-byte hex string"}), 400
-        if not isinstance(action, str) or not action:
-            return jsonify({"error": "action is required"}), 400
-        if reason_code is None or not isinstance(reason_code, int):
-            return jsonify({"error": "reasonCode is required"}), 400
+        if not isinstance(action, str) or action.strip().lower() not in PROOF_HISTORY_ACTIONS:
+            return jsonify({"error": "action must be one of " + ", ".join(sorted(PROOF_HISTORY_ACTIONS))}), 400
+        action = action.strip().lower()
+        if isinstance(reason_code, bool) or not isinstance(reason_code, int) or not 0 <= reason_code <= 255:
+            return jsonify({"error": "reasonCode must be an integer in 0..255"}), 400
+        if actor is not None:
+            if not isinstance(actor, str):
+                return jsonify({"error": "actor must be a Stellar address"}), 400
+            try:
+                actor = (
+                    validate_contract_id(actor)
+                    if actor.strip().upper().startswith("C")
+                    else validate_source_address(actor)
+                )
+            except ValueError:
+                return jsonify({"error": "actor must be a Stellar address"}), 400
+        try:
+            contract_id = validate_contract_id(contract_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if tx_hash is not None:
+            try:
+                tx_hash = normalize_tx_hash(tx_hash)
+            except ValueError:
+                return jsonify({"error": "txHash must be a 32-byte hex string"}), 400
 
         db_event = insert_proof_history_event(
             proof_id=proof_id,
@@ -1661,19 +1835,39 @@ def create_app() -> Flask:
                 status=500,
             )
 
-        return jsonify({"job_id": job_id, "status": "pending"}), 202
+        return jsonify({"ok": True, "proof": proof})
+
+    def _authorized_job(job_id: int) -> dict | None:
+        """Return the job only for a caller holding its capability token.
+
+        Unknown ids and wrong or missing tokens are indistinguishable (404), so
+        sequential ids cannot be enumerated.
+        """
+        job = get_job(job_id)
+        supplied = request.headers.get("X-Job-Token") or request.args.get("token") or ""
+        expected = job.get("access_token") if job else None
+        if not job or not isinstance(expected, str) or not expected:
+            return None
+        if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+            return None
+        return job
+
+    def _public_job_view(job: dict) -> dict:
+        """Allowlisted job fields: never payload secrets, metadata, or tokens."""
+        view = {key: job[key] for key in _PUBLIC_JOB_FIELDS if key in job}
+        view["result_available"] = job.get("result") is not None
+        return view
 
     @app.get("/api/jobs/<int:job_id>")
     def get_job_status(job_id: int):
-        job = get_job(job_id)
+        job = _authorized_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        public_job = {key: value for key, value in job.items() if key != "_trace_context"}
-        return jsonify({"ok": True, "job": public_job})
+        return jsonify({"ok": True, "job": _public_job_view(job)})
 
     @app.get("/api/jobs/<int:job_id>/download")
     def download_job_result(job_id: int):
-        job = get_job(job_id)
+        job = _authorized_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
         if job["type"] != "embed" or job["status"] != "completed":
@@ -1698,7 +1892,7 @@ def create_app() -> Flask:
 
     @app.post("/api/jobs/<int:job_id>/cancel")
     def cancel_job_endpoint(job_id: int):
-        if cancel_job(job_id):
+        if _authorized_job(job_id) and cancel_job(job_id):
             return jsonify({"ok": True, "message": "Job cancelled"})
         return jsonify({"error": "Job cannot be cancelled or not found"}), 400
 

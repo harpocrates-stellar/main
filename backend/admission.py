@@ -1,6 +1,7 @@
+import ipaddress
 import threading
 from functools import wraps
-from typing import Dict, Tuple
+from typing import Dict, Iterable, Tuple
 
 from flask import request, jsonify
 
@@ -16,7 +17,9 @@ class AdmissionController:
         max_queue: int,
         max_per_identity: int,
         timeout_seconds: float,
+        trusted_proxies: Iterable[str] = (),
     ):
+        self.trusted_proxies = parse_trusted_proxies(trusted_proxies)
         self.max_concurrent = max_concurrent
         self.max_queue = max_queue
         self.max_per_identity = max_per_identity
@@ -81,16 +84,48 @@ class AdmissionController:
         self._semaphore.release()
 
 
-def _get_client_identity() -> str:
-    """Extract a stable identity string for the client."""
-    # Note: In a real production deployment behind a load balancer, 
-    # this should securely parse X-Forwarded-For or use a more robust token.
-    # We take the first IP in X-Forwarded-For to avoid spoofing if possible,
-    # but for this scope we just safely read it.
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.remote_addr or "unknown"
+def parse_trusted_proxies(entries: Iterable[str]) -> tuple:
+    """Parse ``TRUSTED_PROXIES`` entries into networks, skipping bad ones."""
+    networks = []
+    for entry in entries or ():
+        try:
+            networks.append(ipaddress.ip_network(str(entry).strip(), strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def _is_trusted(addr: str, trusted: tuple) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in trusted)
+
+
+def _get_client_identity(trusted_proxies: tuple = ()) -> str:
+    """Return the client identity used for per-identity admission limits.
+
+    ``X-Forwarded-For`` is only honoured when the direct peer is a configured
+    trusted proxy; the identity is then the right-most address that is not a
+    trusted proxy (the same rule as the rate limiter). Otherwise the direct
+    peer address is used, so a client cannot mint identities by sending a
+    random header per request.
+    """
+    peer = request.remote_addr or "unknown"
+    if not trusted_proxies or not _is_trusted(peer, trusted_proxies):
+        return peer
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    for hop in reversed(hops):
+        try:
+            ip = ipaddress.ip_address(hop)
+        except ValueError:
+            # A malformed hop cannot be attributed; stop at the trusted peer.
+            return peer
+        if not any(ip in net for net in trusted_proxies):
+            return str(ip)
+    return peer
 
 
 def require_capacity(controller: AdmissionController):
@@ -101,7 +136,7 @@ def require_capacity(controller: AdmissionController):
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
-            identity = _get_client_identity()
+            identity = _get_client_identity(controller.trusted_proxies)
             acquired, reason = controller.acquire(identity)
             
             if not acquired:
