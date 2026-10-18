@@ -39,7 +39,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
-          components: clippy, rustfmt
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Cache Rust dependencies
         uses: actions/cache@v6
@@ -62,6 +65,12 @@ jobs:
         run: |
           set -o pipefail
           cargo test --workspace 2>&1 | tee contracts-test.log
+
+      - name: Measure contract test coverage
+        run: cargo llvm-cov --workspace --json --output-path coverage.json
+
+      - name: Check contract coverage thresholds
+        run: python3 ../devx/coverage/check_coverage.py --workspace contracts --report coverage.json
 
       - name: Build registry Wasm for size budget
         run: stellar contract build
