@@ -2,8 +2,9 @@ import time
 import os
 import logging
 import threading
-import traceback
 from pathlib import Path
+
+from logging_utils import log_structured
 
 from db import (
     lease_job,
@@ -203,7 +204,7 @@ def tx_verification_loop(stop_event: threading.Event):
 
 def run_worker():
     init_db()
-    LOGGER.info(f"Starting worker {WORKER_ID}")
+    log_structured(LOGGER, logging.INFO, {"event": "worker_started", "worker_id": WORKER_ID})
     
     stop_verification_event = threading.Event()
     verification_thread = threading.Thread(target=tx_verification_loop, args=(stop_verification_event,))
@@ -223,7 +224,11 @@ def run_worker():
                 
             job_id = job["id"]
             job_type = job["type"]
-            LOGGER.info(f"Leased job {job_id} of type {job_type}")
+            log_structured(
+                LOGGER,
+                logging.INFO,
+                {"event": "job_leased", "job_id": job_id, "job_type": job_type},
+            )
             
             stop_event = threading.Event()
             hb_thread = threading.Thread(target=heartbeat_loop, args=(job_id, stop_event))
@@ -242,21 +247,37 @@ def run_worker():
                     raise ValueError(f"Unknown job type {job_type}")
                 
                 complete_job(job_id, result)
-                LOGGER.info(f"Completed job {job_id}")
+                log_structured(
+                    LOGGER,
+                    logging.INFO,
+                    {"event": "job_completed", "job_id": job_id, "job_type": job_type},
+                )
             except Exception as e:
-                LOGGER.error(f"Failed job {job_id}: {e}")
-                LOGGER.error(traceback.format_exc())
+                error_type = type(e).__name__
+                log_structured(
+                    LOGGER,
+                    logging.ERROR,
+                    {
+                        "event": "job_failed",
+                        "job_id": job_id,
+                        "job_type": job_type,
+                        "error_type": error_type,
+                    },
+                )
+                LOGGER.debug("Job %s failed with exception: %s", job_id, e, exc_info=True)
                 # Dependency / Horizon failures on verify_tx are retryable.
                 is_fatal = isinstance(e, ValueError) and job_type != "verify_tx"
                 if job_type == "verify_tx":
                     is_fatal = isinstance(e, ValueError)
-                fail_job(job_id, str(e), is_fatal=is_fatal)
+                fail_job(job_id, error_type, is_fatal=is_fatal)
             finally:
                 stop_event.set()
                 hb_thread.join()
                 
         except Exception as e:
-            LOGGER.error(f"Worker loop error: {e}")
+            error_type = type(e).__name__
+            log_structured(LOGGER, logging.ERROR, {"event": "worker_loop_error", "error_type": error_type})
+            LOGGER.debug("Worker loop error: %s", e, exc_info=True)
             time.sleep(5)
 
 if __name__ == "__main__":
