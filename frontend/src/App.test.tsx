@@ -240,5 +240,24 @@ describe('App', () => {
     const studio = screen.getByRole('region', { name: /evidence studio workspace/i })
     expect(studio).not.toHaveAttribute('aria-busy')
   })
+
+  it('updates document.title on navigation across each view', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(document.title).toBe('Harpocrates')
+
+    await user.click(screen.getByRole('button', { name: /^evidence$/i }))
+    expect(document.title).toBe('Evidence Studio - Harpocrates')
+
+    await user.click(screen.getByRole('button', { name: /^verify$/i }))
+    expect(document.title).toBe('Verify evidence - Harpocrates')
+
+    await user.click(screen.getByRole('button', { name: /batch workspace/i }))
+    expect(document.title).toBe('Batch Workspace - Harpocrates')
+
+    await user.click(screen.getByRole('button', { name: /home/i }))
+    expect(document.title).toBe('Harpocrates')
+  })
 })
 
