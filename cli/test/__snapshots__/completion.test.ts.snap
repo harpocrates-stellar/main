@@ -1,0 +1,201 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`shell completion scripts > matches snapshot for bash completion script 1`] = `
+"#!/usr/bin/env bash
+# Bash completion script for harpocrates
+
+_harpocrates_completions() {
+  local cur prev words cword
+  _init_completion || return
+
+  local commands="verify manifest hash verify-receipt c2pa completion help"
+  local opts=""
+
+  # Find the sub-command if one was entered earlier in the line
+  local subcmd=""
+  local i
+  for (( i=1; i < cword; i++ )); do
+    local w="\${words[i]}"
+    case "\${commands}" in
+      *" \${w} "*|"\${w} "*|*" \${w}"|"\${w}")
+        subcmd="\${w}"
+        break
+        ;;
+    esac
+  done
+
+  if [[ -z "\${subcmd}" ]]; then
+    if [[ "\${cur}" == -* ]]; then
+      opts="--help"
+      COMPREPLY=( $(compgen -W "\${opts}" -- "\${cur}") )
+      return 0
+    else
+      COMPREPLY=( $(compgen -W "\${commands}" -- "\${cur}") )
+      return 0
+    fi
+  fi
+
+  case "\${subcmd}" in
+    verify)
+      opts="--contract-id --manifest -m --tx-hash --network --rpc-url --source-address --output -o --offline"
+      ;;
+    manifest)
+      opts="--input -i --tx-hash --contract-id --video-hash --network --output -o --format"
+      ;;
+    hash)
+      opts="--file -f"
+      ;;
+    verify-receipt)
+      opts="--receipt -r --keys -k --network --proof-id --output -o"
+      ;;
+    c2pa)
+      opts="--manifest -m --receipt -r --output -o --title"
+      ;;
+    completion)
+      opts="bash zsh fish"
+      ;;
+    help)
+      opts=""
+      ;;
+    *)
+      opts=""
+      ;;
+  esac
+
+  COMPREPLY=( $(compgen -W "\${opts}" -- "\${cur}") )
+  return 0
+}
+
+complete -F _harpocrates_completions harpocrates
+"
+`;
+
+exports[`shell completion scripts > matches snapshot for fish completion script 1`] = `
+"# Fish completion script for harpocrates
+# Disable file completion by default
+complete -c harpocrates -f
+
+# Commands
+complete -c harpocrates -n "__fish_use_subcommand" -a "verify" -d 'Verify a proof against the Stellar network.'
+complete -c harpocrates -n "__fish_use_subcommand" -a "manifest" -d 'Create a proof manifest from metadata.'
+complete -c harpocrates -n "__fish_use_subcommand" -a "hash" -d 'Compute the SHA-256 hash of a file.'
+complete -c harpocrates -n "__fish_use_subcommand" -a "verify-receipt" -d 'Verify an offline signed receipt.'
+complete -c harpocrates -n "__fish_use_subcommand" -a "c2pa" -d 'Export C2PA authenticity assertions from a proof manifest.'
+complete -c harpocrates -n "__fish_use_subcommand" -a "completion" -d 'Generate shell completion script (bash, zsh, fish).'
+complete -c harpocrates -n "__fish_use_subcommand" -a "help" -d 'Show this help message.'
+
+# Command-specific flags
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -l contract-id -r -d 'Contract ID on Stellar (required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -s m -l manifest -r -d 'Path to a proof manifest JSON file (use "-" for stdin).'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -l tx-hash -r -d 'Transaction hash to verify on-chain.'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -l network -r -d 'Network passphrase (default: testnet).'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -l rpc-url -r -d 'Stellar RPC URL (default: testnet).'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -l source-address -r -d 'Source address for simulation.'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -s o -l output -r -d 'Output format: "text" (default) or "json".'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify" -l offline -d 'Skip on-chain lookup; validate locally only.'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -s i -l input -r -d 'Path to metadata JSON file (use "-" for stdin; required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -l tx-hash -r -d 'Transaction hash from the registration (required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -l contract-id -r -d 'Contract ID on Stellar (required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -l video-hash -r -d '32-byte hex video hash (required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -l network -r -d 'Network passphrase (default: testnet).'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -s o -l output -r -d 'File path to write the manifest to.'
+complete -c harpocrates -n "__fish_seen_subcommand_from manifest" -l format -r -d 'Output format when printing to stdout: "json" (default) or "text".'
+complete -c harpocrates -n "__fish_seen_subcommand_from hash" -s f -l file -r -d 'Path to the file to hash (use "-" for stdin; required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify-receipt" -s r -l receipt -r -d 'Path to signed receipt JSON or QR payload (use "-" for stdin).'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify-receipt" -s k -l keys -r -d 'Path to JSON file mapping key IDs to JWKs.'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify-receipt" -l network -r -d 'Optional expected network passphrase.'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify-receipt" -l proof-id -r -d 'Optional expected proof ID.'
+complete -c harpocrates -n "__fish_seen_subcommand_from verify-receipt" -s o -l output -r -d 'Output format: "text" (default) or "json".'
+complete -c harpocrates -n "__fish_seen_subcommand_from c2pa" -s m -l manifest -r -d 'Path to a proof manifest JSON file (use "-" for stdin; required).'
+complete -c harpocrates -n "__fish_seen_subcommand_from c2pa" -s r -l receipt -r -d 'Optional verification receipt JSON; adds a verification assertion.'
+complete -c harpocrates -n "__fish_seen_subcommand_from c2pa" -s o -l output -r -d 'File path to write the exported assertions to.'
+complete -c harpocrates -n "__fish_seen_subcommand_from c2pa" -l title -r -d 'Optional human-readable title carried by the exported claim.'
+
+# completion shell arguments
+complete -c harpocrates -n "__fish_seen_subcommand_from completion" -a "bash zsh fish" -d 'Shell type'
+"
+`;
+
+exports[`shell completion scripts > matches snapshot for zsh completion script 1`] = `
+"#compdef harpocrates
+
+_harpocrates() {
+  local curcontext="$curcontext" state line
+  typeset -A opt_args
+
+  _arguments -C \\
+    '1: :->command' \\
+    '*:: :->args'
+
+  case $state in
+    (command)
+      local -a commands
+      commands=(
+    'verify:Verify a proof against the Stellar network.'
+    'manifest:Create a proof manifest from metadata.'
+    'hash:Compute the SHA-256 hash of a file.'
+    'verify-receipt:Verify an offline signed receipt.'
+    'c2pa:Export C2PA authenticity assertions from a proof manifest.'
+    'completion:Generate shell completion script (bash, zsh, fish).'
+    'help:Show this help message.'
+      )
+      _describe -t commands 'harpocrates command' commands
+      ;;
+    (args)
+      case $line[1] in
+    (verify)
+      _arguments -s -S \\
+        '--contract-id=[Contract ID on Stellar (required).]:value:' \\
+        '(-m --manifest)'{-m,--manifest}'=[Path to a proof manifest JSON file (use "-" for stdin).]:value:' \\
+        '--tx-hash=[Transaction hash to verify on-chain.]:value:' \\
+        '--network=[Network passphrase (default\\: testnet).]:value:' \\
+        '--rpc-url=[Stellar RPC URL (default\\: testnet).]:value:' \\
+        '--source-address=[Source address for simulation.]:value:' \\
+        '(-o --output)'{-o,--output}'=[Output format\\: "text" (default) or "json".]:value:' \\
+        '--offline[Skip on-chain lookup; validate locally only.]'
+      ;;
+    (manifest)
+      _arguments -s -S \\
+        '(-i --input)'{-i,--input}'=[Path to metadata JSON file (use "-" for stdin; required).]:value:' \\
+        '--tx-hash=[Transaction hash from the registration (required).]:value:' \\
+        '--contract-id=[Contract ID on Stellar (required).]:value:' \\
+        '--video-hash=[32-byte hex video hash (required).]:value:' \\
+        '--network=[Network passphrase (default\\: testnet).]:value:' \\
+        '(-o --output)'{-o,--output}'=[File path to write the manifest to.]:value:' \\
+        '--format=[Output format when printing to stdout\\: "json" (default) or "text".]:value:'
+      ;;
+    (hash)
+      _arguments -s -S \\
+        '(-f --file)'{-f,--file}'=[Path to the file to hash (use "-" for stdin; required).]:value:'
+      ;;
+    (verify-receipt)
+      _arguments -s -S \\
+        '(-r --receipt)'{-r,--receipt}'=[Path to signed receipt JSON or QR payload (use "-" for stdin).]:value:' \\
+        '(-k --keys)'{-k,--keys}'=[Path to JSON file mapping key IDs to JWKs.]:value:' \\
+        '--network=[Optional expected network passphrase.]:value:' \\
+        '--proof-id=[Optional expected proof ID.]:value:' \\
+        '(-o --output)'{-o,--output}'=[Output format\\: "text" (default) or "json".]:value:'
+      ;;
+    (c2pa)
+      _arguments -s -S \\
+        '(-m --manifest)'{-m,--manifest}'=[Path to a proof manifest JSON file (use "-" for stdin; required).]:value:' \\
+        '(-r --receipt)'{-r,--receipt}'=[Optional verification receipt JSON; adds a verification assertion.]:value:' \\
+        '(-o --output)'{-o,--output}'=[File path to write the exported assertions to.]:value:' \\
+        '--title=[Optional human-readable title carried by the exported claim.]:value:'
+      ;;
+    (completion)
+      local -a shells=(bash zsh fish)
+      _values 'shell' $shells
+      ;;
+    (help)
+      _arguments -s -S \\
+
+      ;;
+      esac
+      ;;
+  esac
+}
+
+_harpocrates "$@"
+"
+`;

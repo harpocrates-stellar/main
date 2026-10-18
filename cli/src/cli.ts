@@ -20,6 +20,8 @@ import {
 } from './c2pa.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
+import { renderHelp } from './commands.js'
+import { isSupportedShell, generateCompletion } from './completion.js'
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
 
@@ -90,6 +92,8 @@ async function main(): Promise<void> {
       return await handleVerifyReceipt(flags, debugLog)
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
+    case 'completion':
+      return handleCompletion(parsed.positionals ?? [])
     case 'help':
     default:
       return printHelp()
@@ -375,81 +379,17 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
   }
 }
 
+function handleCompletion(positionals: string[]): void {
+  const shell = positionals[0]
+  if (!shell || !isSupportedShell(shell)) {
+    exit(2, `unknown shell: '${shell || ''}'. Supported shells: bash, zsh, fish`)
+  }
+  printText(generateCompletion(shell).trimEnd())
+  process.exit(0)
+}
+
 function printHelp(): void {
-  const help = `
-Harpocrates CLI – headless verification and proof utilities
-
-Usage:
-  harpocrates <command> [options]
-
-Commands:
-  verify         Verify a proof against the Stellar network.
-  manifest       Create a proof manifest from metadata.
-  hash           Compute the SHA-256 hash of a file.
-  verify-receipt Verify an offline signed receipt.
-  c2pa           Export C2PA authenticity assertions from a proof manifest.
-  help           Show this help message.
-
-C2PA export options:
-  --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).
-  --receipt        Optional verification receipt JSON; adds a verification assertion.
-  --output, -o     File path to write the exported assertions to.
-  --title          Optional human-readable title carried by the exported claim.
-  Prerequisite: install deps and build first (cd cli && npm ci && npm run build).
-  The output is deterministic, unsigned C2PA JSON. It never contains media,
-  witnesses, secrets, proof bytes, or private keys; sign it with your own
-  C2PA tooling and key material.
-
-Verify Receipt options:
-  --receipt, -r     Path to signed receipt JSON or QR payload (use "-" for stdin).
-  --keys, -k        Path to JSON file mapping key IDs to JWKs.
-  --network         Optional expected network passphrase.
-  --proof-id        Optional expected proof ID.
-  --output, -o      Output format: "text" (default) or "json".
-
-Verify options:
-  --contract-id     Contract ID on Stellar (required).
-  --manifest        Path to a proof manifest JSON file (use "-" for stdin).
-  --tx-hash         Transaction hash to verify on-chain.
-  --network         Network passphrase (default: testnet).
-  --rpc-url         Stellar RPC URL (default: testnet).
-  --source-address  Source address for simulation.
-  --output, -o      Output format: "text" (default) or "json".
-  --offline         Skip on-chain lookup; validate locally only.
-
-Manifest options:
-  --input, -i       Path to metadata JSON file (use "-" for stdin; required).
-  --tx-hash         Transaction hash from the registration (required).
-  --contract-id     Contract ID on Stellar (required).
-  --video-hash      32-byte hex video hash (required).
-  --network         Network passphrase (default: testnet).
-  --output, -o      File path to write the manifest to.
-  --format          Output format when printing to stdout: "json" (default) or "text".
-
-Hash options:
-  --file, -f        Path to the file to hash (use "-" for stdin; required).
-
-Environment variables:
-  HARPOCRATES_SOURCE_ADDRESS   Source address for Stellar simulation.
-  HARPOCRATES_DEBUG            Equivalent to --debug.
-
-Debugging:
-  --debug                      Emit redacted structured diagnostics to stderr.
-                               Sensitive fields (secrets, witnesses, tokens,
-                               credentials) are never logged.
-
-Exit codes:
-  0   valid
-  1   expired
-  2   revoked
-  3   not_found / missing
-  4   network_mismatch
-  5   contract_mismatch
-  6   pending
-  7   failed
-  8   error
-`
-  printText(help.trim())
+  printText(renderHelp())
   process.exit(0)
 }
 

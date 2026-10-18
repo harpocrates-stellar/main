@@ -26,6 +26,25 @@ verification receipt) for signing by your own C2PA tooling and key material:
 node dist/cli.js c2pa --manifest proof.json [--receipt receipt.json] --output export.json
 ```
 
+## Shell completion
+
+To generate shell completion scripts for `bash`, `zsh`, or `fish`:
+
+```sh
+# Bash (temporary or append to ~/.bashrc):
+node dist/cli.js completion bash > /etc/bash_completion.d/harpocrates
+# or in ~/.bashrc:
+source <(node dist/cli.js completion bash)
+
+# Zsh:
+node dist/cli.js completion zsh > "${fpath[1]}/_harpocrates"
+# (ensure compinit is run in your ~/.zshrc)
+
+# Fish:
+node dist/cli.js completion fish > ~/.config/fish/completions/harpocrates.fish
+```
+
+
 The export is an **unsigned** C2PA JSON manifest definition carrying standard
 `c2pa.actions.v2` and `c2pa.hash.data` assertions plus namespaced
 `harpocrates.registry.v1` (canonical manifest fields bound by
