@@ -1,5 +1,6 @@
 import type { ChainProofRecord, IdentityTier } from '../stellarTypes'
 import type { ProofManifest } from '../proofManifest'
+import { EXPECTED_CIRCUIT_VERSION } from '../verifierInputs'
 import { networkFromPassphrase, transactionExplorerUrl, contractExplorerUrl } from './explorerLinks'
 
 export const NOIR_CIRCUIT_VERSION = '1' as const
@@ -19,6 +20,7 @@ export type ProvenanceRecord = {
     name: 'silent_witness'
     version: string
   }
+  circuitVersion?: number | string
   verifier: {
     contractId: string
     method: string
@@ -55,6 +57,7 @@ type BuildProvenanceInput = {
   rpcUrl: string
   transactionHash: string | null
   method: string
+  circuitVersion?: number | string | null
   fetchedAt?: Date
 }
 
@@ -70,12 +73,17 @@ export function buildProvenanceRecord(input: BuildProvenanceInput): ProvenanceRe
 
   const mismatches = detectMismatches(input.manifest, input.chainProof)
   const staleness = computeStaleness(input.chainProof, fetchedAt)
+  const circuitVersion =
+    input.circuitVersion !== undefined
+      ? (input.circuitVersion ?? undefined)
+      : (input.manifest.selectiveDisclosure?.circuitVersion ?? EXPECTED_CIRCUIT_VERSION)
 
   return {
     circuit: {
       name: 'silent_witness',
       version: NOIR_CIRCUIT_VERSION,
     },
+    ...(circuitVersion !== undefined ? { circuitVersion } : {}),
     verifier: {
       contractId: input.manifest.contractId,
       method: input.method,

@@ -102,6 +102,12 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
             {provenance.circuit.name} v{provenance.circuit.version}
           </dd>
         </div>
+        {provenance.circuitVersion !== undefined && provenance.circuitVersion !== null ? (
+          <div>
+            <dt>Circuit version</dt>
+            <dd>{provenance.circuitVersion}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>Verifier</dt>
           <dd>

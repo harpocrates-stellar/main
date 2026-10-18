@@ -128,4 +128,58 @@ describe('buildProvenanceRecord', () => {
 
     expect(record.staleness).toEqual({ stale: false })
   })
+
+  it('includes default EXPECTED_CIRCUIT_VERSION when circuit version is not explicitly specified', () => {
+    const record = buildRecord(MATCHING_CHAIN_PROOF)
+    expect(record.circuitVersion).toBe(2)
+  })
+
+  it('includes explicitly provided circuit version', () => {
+    const record = buildProvenanceRecord({
+      manifest: BASE_MANIFEST,
+      chainProof: MATCHING_CHAIN_PROOF,
+      rpcUrl: 'https://rpc.example.test',
+      transactionHash: 'f'.repeat(64),
+      method: 'register_source',
+      circuitVersion: 3,
+      fetchedAt: FETCHED_AT,
+    })
+
+    expect(record.circuitVersion).toBe(3)
+  })
+
+  it('infers circuit version from manifest selective disclosure when available', () => {
+    const record = buildProvenanceRecord({
+      manifest: {
+        ...BASE_MANIFEST,
+        selectiveDisclosure: {
+          schemaHash: '0x123',
+          publicInputs: '0x456',
+          predicateCommitment: '0x789',
+          circuitVersion: 1,
+        },
+      },
+      chainProof: MATCHING_CHAIN_PROOF,
+      rpcUrl: 'https://rpc.example.test',
+      transactionHash: 'f'.repeat(64),
+      method: 'register_source',
+      fetchedAt: FETCHED_AT,
+    })
+
+    expect(record.circuitVersion).toBe(1)
+  })
+
+  it('omits circuitVersion when unknown (null)', () => {
+    const recordNull = buildProvenanceRecord({
+      manifest: BASE_MANIFEST,
+      chainProof: MATCHING_CHAIN_PROOF,
+      rpcUrl: 'https://rpc.example.test',
+      transactionHash: 'f'.repeat(64),
+      method: 'register_source',
+      circuitVersion: null,
+      fetchedAt: FETCHED_AT,
+    })
+
+    expect(recordNull.circuitVersion).toBeUndefined()
+  })
 })
