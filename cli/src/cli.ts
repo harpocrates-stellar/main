@@ -19,7 +19,14 @@ import {
   type C2paExport,
 } from './c2pa.js'
 import { logStructured, redactSensitive } from './logging.js'
+import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
+
+function getCliVersion(): string {
+  const require = createRequire(import.meta.url)
+  const pkg = require('../package.json') as { version?: string }
+  return pkg.version ?? '0.0.0'
+}
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
 
@@ -69,6 +76,11 @@ function exit(code: number, message?: string): never {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
+  if (args[0] === '--version' || args[0] === 'version') {
+    printText(getCliVersion())
+    process.exit(0)
+  }
+
   let parsed: ParsedArgs
   try {
     parsed = parseCliArgs(args)
@@ -381,6 +393,7 @@ Harpocrates CLI – headless verification and proof utilities
 
 Usage:
   harpocrates <command> [options]
+  harpocrates --version
 
 Commands:
   verify         Verify a proof against the Stellar network.
@@ -388,7 +401,11 @@ Commands:
   hash           Compute the SHA-256 hash of a file.
   verify-receipt Verify an offline signed receipt.
   c2pa           Export C2PA authenticity assertions from a proof manifest.
+  version        Print the CLI version.
   help           Show this help message.
+
+Options:
+  --version      Print the CLI version.
 
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).

@@ -8,6 +8,11 @@ json`. It never needs a wallet or signing key; a funded public source address
 is needed for read-only Soroban simulation.
 
 ```sh
+node dist/cli.js --version
+# or: node dist/cli.js version
+```
+
+```sh
 node dist/cli.js verify --manifest proof.json \
   --contract-id C... --network 'Test SDF Network ; September 2015' \
   --source-address G... --output json
