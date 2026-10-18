@@ -21,7 +21,7 @@ from retention import (
     stop_retention_worker,
 )
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def setup_db(monkeypatch):
     db_url = os.environ.get("TEST_DATABASE_URL") or "postgresql://postgres:password@localhost:5432/postgres"
     monkeypatch.setenv("DATABASE_URL", db_url)
@@ -40,7 +40,7 @@ def setup_db(monkeypatch):
     stop_retention_worker()
 
 @pytest.mark.integration
-def test_purge_expired_events():
+def test_purge_expired_events(setup_db):
     # Insert an event that is expired
     expired_time = datetime.now(timezone.utc) - timedelta(days=1)
     ev1 = insert_proof_event(event_type="test", video_hash="1"*64, proof_id="a"*64, expires_at=expired_time)
@@ -76,7 +76,7 @@ def test_purge_expired_events():
     assert in_receipts == ["a"*64]
 
 @pytest.mark.integration
-def test_retention_worker(monkeypatch):
+def test_retention_worker(monkeypatch, setup_db):
     monkeypatch.setenv("RETENTION_INTERVAL_SECONDS", "1")
     
     expired_time = datetime.now(timezone.utc) - timedelta(days=1)
@@ -168,7 +168,7 @@ def test_retention_worker_rejects_non_positive_batch_size():
 
 
 @pytest.mark.integration
-def test_retention_worker_purges_across_pages():
+def test_retention_worker_purges_across_pages(setup_db):
     # 260 expired events with a 250-row batch must drain in two pages. With the
     # old SQL-layer cap of 100 the worker stopped after 100 rows and left 160.
     with get_connection() as conn:
