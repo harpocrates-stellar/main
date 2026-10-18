@@ -422,5 +422,5 @@ with `write-browser`.
 - The coverage gate is name-based: it proves every package under `zk/noir/` is
   declared, not that a declared circuit is the one the verifier contract expects.
   Closing that last mile — comparing the circuit's VK digest to the deployed
-  verifier contract — is [OR-5](../../THREAT_MODEL.md#or-5-circuit-artifact-version-alignment)
+  verifier contract — is [OR-5](../THREAT_MODEL.md#or-5-circuit-artifact-version-alignment)
   and is still open.
