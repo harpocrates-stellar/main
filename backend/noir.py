@@ -20,6 +20,12 @@ from verifier_inputs import (
     check_aggregation_batch_size,
 )
 
+from verifier_inputs import (
+    MAX_AGGREGATION_SIZE,
+    MIN_AGGREGATION_SIZE,
+    check_aggregation_batch_size,
+)
+
 
 @traced("proof.noir.generate", attributes={"proof.system": "noir"})
 def generate_silent_witness(

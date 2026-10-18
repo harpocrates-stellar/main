@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -52,6 +52,9 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
 
   // File drag state
   const [isDragging, setIsDragging] = useState(false)
+
+  // Ref for programmatic keyboard-triggered file picker
+  const batchInputRef = useRef<HTMLInputElement | null>(null)
 
   const handleFilesAdded = (files: FileList | File[]) => {
     const fileArray = Array.from(files)
@@ -289,8 +292,19 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
 
       {/* Dropzone & Actions Bar */}
       <section className="batch-actions-panel">
+        {/* Keyboard: Tab focuses label, Enter/Space opens file picker. Drag-and-drop also supported. */}
         <label
           className={`batch-dropzone ${isDragging ? 'dragging' : ''} ${items.length > 0 ? 'compact' : ''}`}
+          role="button"
+          tabIndex={isRunning ? -1 : 0}
+          aria-label="Drop evidence files or standalone JSON receipts. Press Enter or Space to open file picker"
+          aria-disabled={isRunning}
+          onKeyDown={(e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && !isRunning) {
+              e.preventDefault()
+              batchInputRef.current?.click()
+            }
+          }}
           onDragOver={(e) => {
             e.preventDefault()
             setIsDragging(true)
@@ -303,14 +317,17 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
           }}
         >
           <Upload size={24} aria-hidden="true" />
-          <div>
+          <div aria-hidden="true">
             <strong>Drop evidence files or standalone JSON receipts</strong>
             <span>Supports MP4, MOV, WEBM, and .json proof manifests</span>
           </div>
           <input
+            ref={batchInputRef}
             type="file"
             multiple
             accept="video/*,.json,application/json"
+            tabIndex={-1}
+            aria-hidden="true"
             onChange={(e) => {
               if (e.target.files) handleFilesAdded(e.target.files)
             }}

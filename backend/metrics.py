@@ -20,11 +20,13 @@ class MetricsCollector:
         self._latency_histogram: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self._upload_histogram: Dict[Tuple[str, str], Dict[str, float]] = {}
         self._rejections_total: Dict[Tuple[str, str], int] = {}
+        self._dependency_status: Dict[Tuple[str, str, str], int] = {}
         
         # Verifier cache metrics
         self._cache_hits = 0
         self._cache_misses = 0
         self._cache_evictions = 0
+        self._deleted_events = 0
 
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
@@ -33,9 +35,11 @@ class MetricsCollector:
             self._latency_histogram.clear()
             self._upload_histogram.clear()
             self._rejections_total.clear()
+            self._dependency_status.clear()
             self._cache_hits = 0
             self._cache_misses = 0
             self._cache_evictions = 0
+            self._deleted_events = 0
 
     def record_request(
         self,
@@ -113,6 +117,22 @@ class MetricsCollector:
         with self._lock:
             self._cache_evictions += 1
 
+    def record_deleted_event(self) -> None:
+        """Record a proof event removed by the retention worker."""
+        with self._lock:
+            self._deleted_events += 1
+
+    def record_dependency_status(self, name: str, status: str, critical: bool) -> None:
+        """Record the latest bounded readiness state for one dependency."""
+        clean_name = (name or "unknown").strip() or "unknown"
+        clean_status = (status or "unknown").strip() or "unknown"
+        critical_label = "true" if critical else "false"
+        with self._lock:
+            for key in tuple(self._dependency_status):
+                if key[0] == clean_name:
+                    del self._dependency_status[key]
+            self._dependency_status[(clean_name, clean_status, critical_label)] = 1
+
     def generate_prometheus_metrics(self) -> str:
         """Format metrics into Prometheus text format (version 0.0.4)."""
         lines: List[str] = []
@@ -173,7 +193,20 @@ class MetricsCollector:
                         f'reason="{_escape_label(reason)}"}} {count}'
                     )
 
-            # 5. Verifier cache metrics
+            lines.append("")
+            lines.append("# HELP harpocrates_dependency_up Whether the latest dependency probe succeeded.")
+            lines.append("# TYPE harpocrates_dependency_up gauge")
+            lines.append("# HELP harpocrates_dependency_status Latest bounded dependency probe status.")
+            lines.append("# TYPE harpocrates_dependency_status gauge")
+            for (name, status, critical), value in sorted(self._dependency_status.items()):
+                labels = f'dependency="{_escape_label(name)}",critical="{critical}"'
+                up = 0 if status in {"disconnected", "missing", "error", "initializing", "not_configured"} else 1
+                lines.append(f"harpocrates_dependency_up{{{labels}}} {up}")
+                lines.append(
+                    f'harpocrates_dependency_status{{{labels},status="{_escape_label(status)}"}} {value}'
+                )
+
+            # 6. Verifier cache metrics
             lines.append("")
             lines.append("# HELP harpocrates_verifier_cache_hits_total Total count of verifier cache hits.")
             lines.append("# TYPE harpocrates_verifier_cache_hits_total counter")
@@ -188,6 +221,11 @@ class MetricsCollector:
             lines.append("# HELP harpocrates_verifier_cache_evictions_total Total count of verifier cache evictions.")
             lines.append("# TYPE harpocrates_verifier_cache_evictions_total counter")
             lines.append(f"harpocrates_verifier_cache_evictions_total {self._cache_evictions}")
+
+            lines.append("")
+            lines.append("# HELP harpocrates_retention_deleted_events_total Total proof events removed by retention.")
+            lines.append("# TYPE harpocrates_retention_deleted_events_total counter")
+            lines.append(f"harpocrates_retention_deleted_events_total {self._deleted_events}")
 
         lines.append("")
         return "\n".join(lines)

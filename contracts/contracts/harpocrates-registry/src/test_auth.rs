@@ -401,3 +401,85 @@ fn auth_register_seal_unknown_issuer_rejected() {
         &bytes32(&env, 0x28),
     );
 }
+
+// ---------------------------------------------------------------------------
+// add_receipt_signer / revoke_receipt_signer (#337)
+// ---------------------------------------------------------------------------
+
+fn receipt_signer_key(env: &Env) -> BytesN<65> {
+    BytesN::from_array(env, &[0xEE; 65])
+}
+
+#[test]
+fn auth_add_receipt_signer_admin_succeeds() {
+    let (env, contract_id, admin, _, _, _) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let key = receipt_signer_key(&env);
+    client.add_receipt_signer(&admin, &key);
+    assert!(client.get_receipt_signer(&key).unwrap().active);
+}
+
+/// add_receipt_signer: every non-admin actor is rejected with Unauthorized (#3).
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn auth_add_receipt_signer_pending_admin_rejected() {
+    let (env, contract_id, _, pending_admin, _, _) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    client.add_receipt_signer(&pending_admin, &receipt_signer_key(&env));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn auth_add_receipt_signer_issuer_rejected() {
+    let (env, contract_id, _, _, issuer, _) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    client.add_receipt_signer(&issuer, &receipt_signer_key(&env));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn auth_add_receipt_signer_source_rejected() {
+    let (env, contract_id, _, _, _, source) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    client.add_receipt_signer(&source, &receipt_signer_key(&env));
+}
+
+#[test]
+fn auth_revoke_receipt_signer_admin_succeeds() {
+    let (env, contract_id, admin, _, _, _) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let key = receipt_signer_key(&env);
+    client.add_receipt_signer(&admin, &key);
+    assert!(!client.revoke_receipt_signer(&admin, &key).active);
+}
+
+/// revoke_receipt_signer: every non-admin actor is rejected with Unauthorized (#3).
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn auth_revoke_receipt_signer_pending_admin_rejected() {
+    let (env, contract_id, admin, pending_admin, _, _) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let key = receipt_signer_key(&env);
+    client.add_receipt_signer(&admin, &key);
+    client.revoke_receipt_signer(&pending_admin, &key);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn auth_revoke_receipt_signer_issuer_rejected() {
+    let (env, contract_id, admin, _, issuer, _) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let key = receipt_signer_key(&env);
+    client.add_receipt_signer(&admin, &key);
+    client.revoke_receipt_signer(&issuer, &key);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn auth_revoke_receipt_signer_source_rejected() {
+    let (env, contract_id, admin, _, _, source) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let key = receipt_signer_key(&env);
+    client.add_receipt_signer(&admin, &key);
+    client.revoke_receipt_signer(&source, &key);
+}

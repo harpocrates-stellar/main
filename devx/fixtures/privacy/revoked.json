@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "category": "revoked",
+  "description": "Revoked nullifier, credential, or attestation vectors that must be rejected at the privacy boundary",
+  "cases": [
+    {
+      "id": "rev-001-nullifier-revoked",
+      "description": "Revoked nullifier must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964697Z",
+        "nullifier": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "revocationStatus": "revoked"
+      },
+      "expect": {
+        "reject_code": "nullifier_revoked",
+        "must_not_log": [
+          "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+        ],
+        "must_not_store": [
+          "nullifier"
+        ]
+      }
+    },
+    {
+      "id": "rev-002-credential-revoked",
+      "description": "Revoked credential must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "source",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964703Z",
+        "credential": {
+          "type": "VerifiableCredential",
+          "issuer": "did:example:issuer",
+          "id": "cred-123",
+          "revocationStatus": "revoked",
+          "revocationReason": "compromised"
+        }
+      },
+      "expect": {
+        "reject_code": "credential_revoked",
+        "must_not_log": [],
+        "must_not_store": [
+          "credential"
+        ]
+      }
+    },
+    {
+      "id": "rev-003-attestation-revoked",
+      "description": "Revoked attestation must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "seal",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964710Z",
+        "attestation": {
+          "type": "TimeAttestation",
+          "id": "att-456",
+          "revoked": true,
+          "revocationDate": "2026-07-27T06:37:59.964705Z"
+        }
+      },
+      "expect": {
+        "reject_code": "attestation_revoked",
+        "must_not_log": [],
+        "must_not_store": [
+          "attestation"
+        ]
+      }
+    },
+    {
+      "id": "rev-004-issuer-key-revoked",
+      "description": "Proof signed by revoked issuer key must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964715Z",
+        "issuer": {
+          "did": "did:example:issuer",
+          "keyId": "key-789",
+          "revoked": true,
+          "revokedAt": "2026-06-27T06:37:59.964712Z"
+        }
+      },
+      "expect": {
+        "reject_code": "issuer_key_revoked",
+        "must_not_log": [],
+        "must_not_store": [
+          "issuer"
+        ]
+      }
+    },
+    {
+      "id": "rev-005-merkle-root-revoked",
+      "description": "Proof against revoked merkle root must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964718Z",
+        "merkleRoot": "abababababababababababababababababababababababababababababababab",
+        "merkleRootStatus": "revoked"
+      },
+      "expect": {
+        "reject_code": "merkle_root_revoked",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "rev-006-contract-revoked",
+      "description": "Proof for revoked contract must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.964721Z",
+        "contractId": "CAAAAAAAAABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+        "contractStatus": "revoked"
+      },
+      "expect": {
+        "reject_code": "contract_revoked",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    }
+  ]
+}

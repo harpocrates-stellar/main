@@ -1,3 +1,5 @@
+import { sha256 as incrementalSha256 } from '@noble/hashes/sha2.js'
+
 /** Convert an ArrayBuffer to a lowercase hex string. */
 export function hex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)]
@@ -9,6 +11,60 @@ export function hex(buffer: ArrayBuffer): string {
 export async function sha256(input: ArrayBuffer | string): Promise<string> {
   const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input
   return hex(await crypto.subtle.digest('SHA-256', bytes))
+}
+
+export type HashProgress = {
+  processedBytes: number
+  totalBytes: number
+  percentage: number
+}
+
+export const DEFAULT_HASH_CHUNK_SIZE = 4 * 1024 * 1024
+
+export async function sha256Blob(
+  blob: Blob,
+  onProgress?: (progress: HashProgress) => void,
+  signal?: AbortSignal,
+  chunkSize = DEFAULT_HASH_CHUNK_SIZE,
+): Promise<string> {
+  if (chunkSize <= 0) {
+    throw new Error('Hash chunk size must be greater than zero.')
+  }
+
+  const totalBytes = blob.size
+  let processedBytes = 0
+  const hash = incrementalSha256.create()
+
+  const reportProgress = () => {
+    onProgress?.({
+      processedBytes,
+      totalBytes,
+      percentage:
+        totalBytes === 0 ? 100 : Math.floor((processedBytes / totalBytes) * 100),
+    })
+  }
+
+  signal?.throwIfAborted()
+  reportProgress()
+
+  while (processedBytes < totalBytes) {
+    signal?.throwIfAborted()
+
+    const end = Math.min(processedBytes + chunkSize, totalBytes)
+    const bytes = new Uint8Array(await blob.slice(processedBytes, end).arrayBuffer())
+
+    signal?.throwIfAborted()
+    hash.update(bytes)
+
+    processedBytes = end
+    reportProgress()
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+
+  return Array.from(hash.digest(), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('')
 }
 
 const BN254_FIELD_MODULUS =
@@ -28,4 +84,34 @@ export async function fieldSecret(label: string, seed: string): Promise<string> 
 export function shortHash(value: string): string {
   if (!value) return 'Not generated'
   return `${value.slice(0, 12)}...${value.slice(-10)}`
+}
+
+/**
+ * Stable, privacy-safe error for a user-initiated cancellation of an
+ * in-flight evidence operation (upload, embed, or proof generation).
+ * Never carries media, witnesses, secrets, or keys.
+ */
+export class FlowCancelledError extends Error {
+  constructor(message = 'Operation cancelled.') {
+    super(message)
+    this.name = 'FlowCancelledError'
+  }
+}
+
+/**
+ * True when `error` represents an aborted/cancelled in-flight operation.
+ * Accepts both the fetch AbortError and the stable FlowCancelledError.
+ */
+export function isCancellationError(error: unknown): boolean {
+  if (error instanceof FlowCancelledError) return true
+  return (
+    error instanceof DOMException && error.name === 'AbortError' ||
+    (error instanceof Error &&
+      (error.name === 'AbortError' || error.name === 'FlowCancelledError' || /aborted|cancelled/i.test(error.message)))
+  )
+}
+
+/** Throw a stable AbortError when the caller has requested cancellation. */
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 }

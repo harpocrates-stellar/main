@@ -1,0 +1,19 @@
+# Synthetic prover inputs for `nargo execute` (TESTING ONLY).
+# The public statement values are produced by `redacted_ancestry_helper`; replace
+# the zero placeholders below with its outputs before executing a real witness.
+parent_hash_hi = "11111"
+parent_hash_lo = "22222"
+parent_blinding = "33333"
+mask_commitment = "44444"
+redaction_seed = "55555"
+credential_secret = "12345"
+nullifier_secret = "67890"
+
+parent_commitment = "0"
+derivative_digest = "0"
+parameters_digest = "0"
+operation_type = "0x726564616374"
+ancestry_root = "0"
+nullifier = "0"
+depth = "1"
+domain_tag = "0"

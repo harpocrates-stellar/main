@@ -1,0 +1,7 @@
+version: 3
+detectors:
+  - type: all
+exclude:
+  paths:
+    - backend/test_.*\.py$
+    - devx/test_.*\.py$

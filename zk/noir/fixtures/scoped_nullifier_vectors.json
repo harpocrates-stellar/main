@@ -221,6 +221,51 @@
     }
   ],
 
+  "boundary_cases": [
+    {
+      "name": "adjacent_nullifier_secrets",
+      "description": "Adjacent synthetic secrets must derive distinct nullifiers.",
+      "credential_secret": 12345,
+      "nullifier_secret_a": 67890,
+      "nullifier_secret_b": 67891,
+      "verifier_scope": 0,
+      "epoch": 0,
+      "expected": "distinct"
+    },
+    {
+      "name": "nullifier_secret_field_edges",
+      "description": "The maximum field secret and zero must remain distinct across the field boundary.",
+      "credential_secret": 12345,
+      "nullifier_secret_max": "2188824287183927522224640574525727508854836440034343698204186575808495616",
+      "nullifier_secret_wrapped": 0,
+      "verifier_scope": 0,
+      "epoch": 0,
+      "expected": "distinct"
+    },
+    {
+      "name": "scope_epoch_adjacent_boundaries",
+      "description": "Changing only the adjacent scope or epoch must change the nullifier.",
+      "credential_secret": 12345,
+      "nullifier_secret": 67890,
+      "base_verifier_scope": 0,
+      "base_epoch": 0,
+      "adjacent_verifier_scope": 1,
+      "adjacent_epoch": 1,
+      "expected": "distinct"
+    },
+    {
+      "name": "video_hash_high_limb_edges",
+      "description": "Zero and one high video-hash limbs must not collide.",
+      "credential_secret": 12345,
+      "nullifier_secret": 67890,
+      "video_hash_hi_a": 0,
+      "video_hash_hi_b": 1,
+      "verifier_scope": 0,
+      "epoch": 0,
+      "expected": "distinct"
+    }
+  ],
+
   "v1_v2_compatibility": {
     "description": "v1 (128-byte) and v2 (192-byte) proofs use different derivation formulas and produce different nullifiers for the same credential and video.",
     "v1_layout": "4 x BN254 field elements (128 bytes)",

@@ -24,9 +24,21 @@
 # =============================================================================
 set -euo pipefail
 
+fail() {
+  local code="$1"
+  local detail="$2"
+  # Disable trap so we don't recurse
+  trap - ERR
+  cat <<ERR
+{"protocol": "harpocrates", "version": 1, "type": "error", "reasonCode": "$code", "detail": "$detail"}
+ERR
+  exit 0
+}
+
+trap 'fail "dependency-failure" "Aggregator script failed unexpectedly"' ERR
+
 if [[ "$#" -lt 4 ]]; then
-  echo "usage: $0 <video-hash-hex-0> [<video-hash-hex-1> ... <video-hash-hex-7>] <credential-secret-field> <nullifier-secret-field> [output-dir]" >&2
-  exit 2
+  fail "malformed" "usage: $0 <video-hash-hex-0> [<video-hash-hex-1> ... <video-hash-hex-7>] <credential-secret-field> <nullifier-secret-field> [output-dir]"
 fi
 
 # Parse arguments – last two positional args are secrets, optional last is output-dir
@@ -48,13 +60,11 @@ elif [[ "$SECOND_LAST" =~ ^[0-9]+$ ]]; then
   BATCH_COUNT=$((TOTAL_ARGS - 3))
   OUTPUT_DIR="$LAST_ARG"
 else
-  echo "error: invalid arguments. Provide field decimal secrets." >&2
-  exit 2
+  fail "malformed" "invalid arguments. Provide field decimal secrets."
 fi
 
 if [[ "$BATCH_COUNT" -lt 1 || "$BATCH_COUNT" -gt 8 ]]; then
-  echo "error: batch size must be between 1 and 8 (got $BATCH_COUNT)" >&2
-  exit 2
+  fail "oversized" "batch size must be between 1 and 8 (got $BATCH_COUNT)"
 fi
 
 echo "==> Batch size: $BATCH_COUNT"
@@ -89,8 +99,7 @@ EOF
 for (( i=0; i<BATCH_COUNT; i++ )); do
   VIDEO_HASH="${SCRIPT_ARGS[$i]}"
   if [[ ! "$VIDEO_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
-    echo "error: video hash $i must be a 32-byte hex string" >&2
-    exit 2
+    fail "malformed" "video hash $i must be a 32-byte hex string"
   fi
   HI_HEX="${VIDEO_HASH:0:32}"
   LO_HEX="${VIDEO_HASH:32:32}"
@@ -120,7 +129,9 @@ done
 
 echo "==> Running aggregator helper circuit..."
 pushd "$HELPER_DIR" >/dev/null
-HELPER_OUTPUT="$(nargo execute generated_helper)"
+if ! HELPER_OUTPUT="$(nargo execute generated_helper 2>&1)"; then
+  fail "dependency-failure" "Aggregator helper circuit execution failed"
+fi
 popd >/dev/null
 
 echo "==> Parsing helper output..."

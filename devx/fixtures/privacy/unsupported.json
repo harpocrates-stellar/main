@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "category": "unsupported",
+  "description": "Unsupported protocol version, tier, or feature vectors that must be rejected at the privacy boundary",
+  "cases": [
+    {
+      "id": "uns-001-unsupported-protocol-version",
+      "description": "Unsupported protocol version must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 99,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965356Z"
+      },
+      "expect": {
+        "reject_code": "unsupported_version",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-002-deprecated-tier",
+      "description": "Deprecated tier must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "legacy",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965361Z"
+      },
+      "expect": {
+        "reject_code": "deprecated_tier",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-003-unsupported-proof-type",
+      "description": "Unsupported proof type must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965364Z",
+        "proofType": "unsupported-zk-snark"
+      },
+      "expect": {
+        "reject_code": "unsupported_proof_type",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-004-unsupported-aggregation",
+      "description": "Unsupported aggregation method must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965367Z",
+        "aggregation": "unsupported-method"
+      },
+      "expect": {
+        "reject_code": "unsupported_aggregation",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-005-unsupported-selector",
+      "description": "Unsupported selective disclosure selector must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "source",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965370Z",
+        "selector": {
+          "type": "unsupported-selector-type",
+          "fields": [
+            "field1",
+            "field2"
+          ]
+        }
+      },
+      "expect": {
+        "reject_code": "unsupported_selector",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-006-unsupported-curve",
+      "description": "Unsupported elliptic curve must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965372Z",
+        "curve": "unsupported-curve"
+      },
+      "expect": {
+        "reject_code": "unsupported_curve",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-007-unsupported-hash-algorithm",
+      "description": "Unsupported hash algorithm must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965375Z",
+        "hashAlgorithm": "MD5"
+      },
+      "expect": {
+        "reject_code": "unsupported_hash_algorithm",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-008-unsupported-signature-scheme",
+      "description": "Unsupported signature scheme must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 2,
+        "tier": "seal",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965378Z",
+        "signatureScheme": "RSA-PKCS1-v1_5"
+      },
+      "expect": {
+        "reject_code": "unsupported_signature_scheme",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    },
+    {
+      "id": "uns-009-unsupported-network",
+      "description": "Unsupported network must be rejected",
+      "input": {
+        "protocol": "harpocrates",
+        "version": 1,
+        "tier": "silent",
+        "sourceHash": "abababababababababababababababababababababababababababababababab",
+        "proofId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "timestamp": "2026-09-25T06:37:59.965381Z",
+        "network": "Unsupported Network"
+      },
+      "expect": {
+        "reject_code": "unsupported_network",
+        "must_not_log": [],
+        "must_not_store": []
+      }
+    }
+  ]
+}

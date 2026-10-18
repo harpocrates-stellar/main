@@ -372,10 +372,10 @@ If issues discovered:
 
 ### Phase 2 (Optional)
 
-1. **RFC 3161 Full Verification**:
-   - Implement complete TSA certificate chain validation
-   - Add trust store configuration
-   - Support CRL/OCSP revocation checking
+1. **RFC 3161 Full Verification** (partially landed — see `backend/rfc3161_chain.py`):
+   - Offline TSA certificate chain validation against a configured trust store
+   - Validity-at-genTime and revoked-serial checks (CRL/OCSP stand-in)
+   - Remaining: live CRL/OCSP fetch and full TimeStampToken ASN.1 imprint binding
 
 2. **Additional Anchor Types**:
    - Bitcoin blockchain anchors

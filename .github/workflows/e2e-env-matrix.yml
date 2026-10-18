@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -72,7 +72,7 @@ jobs:
 
       - name: Upload matrix report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-env-matrix-py${{ matrix.python-version }}-${{ matrix.profile-group }}-${{ github.run_id }}
           path: e2e-env-matrix-*.json

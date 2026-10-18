@@ -1,29 +1,59 @@
 {
-  "_description": "Shared conformance vectors for the revocation_witness Noir circuit and the HarpocratesRegistry Soroban contract (#98). Both the Noir tests (nargo test) and the Rust contract tests use these same fixtures to prevent drift.",
+  "_description": "Shared conformance vectors for the revocation_witness Noir circuit and the HarpocratesRegistry Soroban contract (#98, #357). Both the Noir tests (nargo test) and the Rust contract tests use these same fixtures to prevent drift. Merkle depth is protocol-bounded at MAX_REVOCATION_WITNESS_DEPTH = 3.",
   "_version": "1.0.0",
   "_domain_separator": "HARPOCRATES_REVOCATION_V1",
   "_domain_separator_bytes": "484152504f4352415445535f5245564f434154494f4e5f56310000000000000000",
-
   "witness": {
     "credential_secret": 12345,
     "nullifier_secret": 67890,
-    "credential_root": "computed by helper circuit — pedersen_hash([12345])",
-    "nullifier": "computed by helper circuit — pedersen_hash([12345, 67890])"
+    "credential_root": "computed by helper circuit \u2014 pedersen_hash([12345])",
+    "nullifier": "computed by helper circuit \u2014 pedersen_hash([12345, 67890])"
   },
-
   "revocation_tree": {
     "depth": 3,
     "leaf_count": 8,
     "hash": "pedersen",
     "leaves": [
-      { "index": 0, "value": 0, "description": "sentinel — always zero" },
-      { "index": 1, "value": "pedersen_hash([33333])", "description": "revoked credential #1" },
-      { "index": 2, "value": "pedersen_hash([44444])", "description": "revoked credential #2" },
-      { "index": 3, "value": "pedersen_hash([55555])", "description": "revoked credential #3" },
-      { "index": 4, "value": "pedersen_hash([66666])", "description": "revoked credential #4" },
-      { "index": 5, "value": "pedersen_hash([77777])", "description": "revoked credential #5" },
-      { "index": 6, "value": "pedersen_hash([88888])", "description": "revoked credential #6" },
-      { "index": 7, "value": "pedersen_hash([99999])", "description": "revoked credential #7" }
+      {
+        "index": 0,
+        "value": 0,
+        "description": "sentinel \u2014 always zero"
+      },
+      {
+        "index": 1,
+        "value": "pedersen_hash([33333])",
+        "description": "revoked credential #1"
+      },
+      {
+        "index": 2,
+        "value": "pedersen_hash([44444])",
+        "description": "revoked credential #2"
+      },
+      {
+        "index": 3,
+        "value": "pedersen_hash([55555])",
+        "description": "revoked credential #3"
+      },
+      {
+        "index": 4,
+        "value": "pedersen_hash([66666])",
+        "description": "revoked credential #4"
+      },
+      {
+        "index": 5,
+        "value": "pedersen_hash([77777])",
+        "description": "revoked credential #5"
+      },
+      {
+        "index": 6,
+        "value": "pedersen_hash([88888])",
+        "description": "revoked credential #6"
+      },
+      {
+        "index": 7,
+        "value": "pedersen_hash([99999])",
+        "description": "revoked credential #7"
+      }
     ],
     "internal_nodes": {
       "node_01": "pedersen_hash([leaf_0, leaf_1])",
@@ -33,13 +63,14 @@
       "node_0123": "pedersen_hash([node_01, node_23])",
       "node_4567": "pedersen_hash([node_45, node_67])"
     },
-    "root": "pedersen_hash([node_0123, node_4567])"
+    "root": "pedersen_hash([node_0123, node_4567])",
+    "max_depth": 3,
+    "max_leaves": 8
   },
-
   "positive_cases": [
     {
       "name": "valid_non_revocation_witness",
-      "description": "Credential 12345 is NOT in the revocation tree — proof should succeed",
+      "description": "Credential 12345 is NOT in the revocation tree \u2014 proof should succeed",
       "credential_secret": 12345,
       "nullifier_secret": 67890,
       "expected": "pass"
@@ -60,7 +91,7 @@
     },
     {
       "name": "empty_revocation_tree",
-      "description": "Tree with all zero leaves — any credential passes",
+      "description": "Tree with all zero leaves \u2014 any credential passes",
       "credential_secret": 12345,
       "nullifier_secret": 67890,
       "all_leaves_zero": true,
@@ -68,14 +99,22 @@
     },
     {
       "name": "full_tree_non_member",
-      "description": "Tree has 8 unique revoked leaves — a non-member still passes",
+      "description": "Tree has 8 unique revoked leaves \u2014 a non-member still passes",
       "credential_secret": 12345,
       "nullifier_secret": 67890,
-      "leaves": [11111, 22222, 33333, 44444, 55555, 66666, 77777, 88888],
+      "leaves": [
+        11111,
+        22222,
+        33333,
+        44444,
+        55555,
+        66666,
+        77777,
+        88888
+      ],
       "expected": "pass"
     }
   ],
-
   "negative_cases": [
     {
       "name": "wrong_credential_secret",
@@ -115,9 +154,20 @@
       "name": "tampered_leaves",
       "description": "A leaf is altered so the computed tree root changes",
       "expected_error": "revocation root mismatch"
+    },
+    {
+      "name": "oversized_revocation_depth",
+      "description": "Host tooling must reject Merkle depth > MAX_REVOCATION_WITNESS_DEPTH (3) before proving; the circuit has no slot for deeper trees.",
+      "depth": 4,
+      "expected_error": "depth_oversize"
+    },
+    {
+      "name": "undersized_revocation_depth",
+      "description": "Depth below 1 is malformed at the host boundary.",
+      "depth": 0,
+      "expected_error": "depth_undersize"
     }
   ],
-
   "contract_boundary_cases": [
     {
       "name": "check_non_revocation_succeeds",
@@ -146,7 +196,7 @@
     },
     {
       "name": "rejects_reused_nullifier",
-      "description": "Same nullifier submitted twice — replay attack prevented",
+      "description": "Same nullifier submitted twice \u2014 replay attack prevented",
       "expected_error": "Error(Contract, #6)"
     },
     {
@@ -164,5 +214,7 @@
       "description": "Public inputs not 128 bytes",
       "expected_error": "Error(Contract, #10)"
     }
-  ]
+  ],
+  "_max_revocation_witness_depth": 3,
+  "_max_revocation_leaves": 8
 }

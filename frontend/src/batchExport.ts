@@ -1,5 +1,6 @@
 import type { BatchItemResult } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
+import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
   fileName: string
@@ -120,6 +121,8 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
         metadataHash: item.metadataHash,
         sourceHash: item.sourceHash ?? item.videoHash,
         timestamp: new Date().toISOString(),
+        verifierScope: '0',
+        epoch: 0,
       })
     }
   }

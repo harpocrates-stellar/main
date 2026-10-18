@@ -16,3 +16,8 @@ epoch = "0"
 # A mismatch here will cause the in-circuit assert "domain tag mismatch" to fire.
 domain_tag = "0"
 
+# Circuit version committed to the proof envelope (#368). Must equal
+# CURRENT_CIRCUIT_VERSION in src/main.nr; a downgrade fails the in-circuit
+# assert "circuit version mismatch".
+circuit_version = "2"
+

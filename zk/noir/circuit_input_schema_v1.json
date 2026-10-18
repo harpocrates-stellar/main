@@ -1,0 +1,61 @@
+{
+  "format": "harpocrates.circuit-input-schema",
+  "version": 1,
+  "id": "silent_witness/input-v1",
+  "noir_version": "1.0.0-beta.9",
+  "input_fields": [
+    "credential_secret",
+    "nullifier_secret",
+    "video_hash_hi",
+    "video_hash_lo",
+    "verifier_scope",
+    "epoch"
+  ],
+  "public_frames": {
+    "browser_v1": [
+      "video_hash_hi",
+      "video_hash_lo",
+      "credential_root",
+      "nullifier"
+    ],
+    "unscoped_v1": [
+      "video_hash_hi",
+      "video_hash_lo",
+      "credential_root",
+      "nullifier",
+      "domain_tag"
+    ],
+    "scoped_v2": [
+      "video_hash_hi",
+      "video_hash_lo",
+      "credential_root",
+      "nullifier",
+      "verifier_scope",
+      "epoch",
+      "domain_tag",
+      "circuit_version"
+    ]
+  },
+  "artifact_abis": {
+    "browser_v1": {
+      "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo"],
+      "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier"],
+      "helper_return_fields": 2,
+      "helper_bytecode_sha256": "250314ee5f65cc3be8d2a94cab1efbd215ec8531cbba7acd70ed77e17e96fe74",
+      "main_bytecode_sha256": "87b20c8098032b22b145f9c714ce206da15e7c636db428f80bc7a38e96372f1f"
+    },
+    "unscoped_v1": {
+      "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo"],
+      "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier", "domain_tag"],
+      "helper_return_fields": 3
+    },
+    "scoped_v2": {
+      "helper_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "verifier_scope", "epoch"],
+      "main_parameters": ["credential_secret", "nullifier_secret", "video_hash_hi", "video_hash_lo", "credential_root", "nullifier", "verifier_scope", "epoch", "domain_tag", "circuit_version"],
+      "helper_return_fields": 3,
+      "circuit_version": 2
+    }
+  },
+  "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "proof_bytes": { "min": 64, "max": 65536 }
+}

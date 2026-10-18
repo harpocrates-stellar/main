@@ -3,16 +3,13 @@ import { EvidenceStateMachine, type EvidenceState, type EvidenceEvent } from '..
 import { CheckpointStorage } from '../checkpointStorage'
 
 export function useEvidenceState() {
-  const machineRef = useRef<EvidenceStateMachine | null>(null)
-  if (!machineRef.current) {
-    machineRef.current = new EvidenceStateMachine()
-  }
-
-  const [state, setState] = useState<EvidenceState>(machineRef.current.getState())
-  const [hasCheckpoint, setHasCheckpoint] = useState(CheckpointStorage.hasCheckpoint())
+  const [machine] = useState(() => new EvidenceStateMachine())
+  const machineRef = useRef(machine)
+  const [state, setState] = useState<EvidenceState>(machine.getState())
+  const [hasCheckpoint, setHasCheckpoint] = useState(() => CheckpointStorage.hasCheckpoint())
 
   useEffect(() => {
-    const unsubscribe = machineRef.current!.subscribe((nextState) => {
+    const unsubscribe = machineRef.current.subscribe((nextState) => {
       setState(nextState)
     })
     return unsubscribe

@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { parseApiError } from './services/apiError'
+import { ApiClientError, parseActionableApiError } from './services/apiError'
 
 export type VerificationEvent = {
   id: number
@@ -89,7 +89,7 @@ async function extractMetadata(_apiBase: string, file: File): Promise<unknown> {
 async function fetchProofEventsByVideo(apiBase: string, videoHash: string) {
   const response = await fetch(`${apiBase}/api/proofs/by-video/${videoHash}`)
   if (!response.ok) {
-    throw new Error(await parseApiError(response, 'Database lookup failed.'))
+    throw new ApiClientError(await parseActionableApiError(response, 'Database lookup failed.'))
   }
 
   const data = (await response.json()) as { events?: VerificationEvent[] }

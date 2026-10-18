@@ -1,0 +1,77 @@
+{
+  "format": "harpocrates.circuit-input-conformance",
+  "version": 1,
+  "schema": "silent_witness/input-v1",
+  "description": "Synthetic values only; no real media or credentials.",
+  "cases": [
+    {
+      "id": "default-unscoped",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890"
+      },
+      "accept": true
+    },
+    {
+      "id": "explicit-scoped",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890",
+        "inputSchemaVersion": 1,
+        "verifierScope": "7",
+        "epoch": 2
+      },
+      "accept": true
+    },
+    {
+      "id": "unsupported-version",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890",
+        "inputSchemaVersion": 2
+      },
+      "reject_code": "unsupported_input_schema"
+    },
+    {
+      "id": "bad-hash",
+      "input": {
+        "videoHash": "11",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890"
+      },
+      "reject_code": "invalid_input"
+    },
+    {
+      "id": "noncanonical-secret",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+        "nullifierSecret": "67890"
+      },
+      "reject_code": "invalid_input"
+    },
+    {
+      "id": "invalid-scope",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890",
+        "verifierScope": "-1"
+      },
+      "reject_code": "invalid_input"
+    },
+    {
+      "id": "invalid-epoch",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890",
+        "epoch": -1
+      },
+      "reject_code": "invalid_input"
+    }
+  ]
+}

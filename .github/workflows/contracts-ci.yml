@@ -63,6 +63,13 @@ jobs:
           set -o pipefail
           cargo test --workspace 2>&1 | tee contracts-test.log
 
+      - name: Build registry Wasm for size budget
+        run: stellar contract build
+
+      - name: Enforce contract Wasm size budget (#346)
+        working-directory: .
+        run: python3 devx/wasm_size_budget.py --check
+
       - name: Upload test failure log
         if: failure()
         uses: actions/upload-artifact@v7

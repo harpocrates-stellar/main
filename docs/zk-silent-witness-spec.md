@@ -29,19 +29,40 @@ Circuit signature (`zk/noir/silent_witness/src/main.nr`):
 | `nullifier` | public | `Field` |
 | `verifier_scope` | public | `Field` |
 | `epoch` | public | `Field` |
+| `domain_tag` | public | `Field` |
+| `circuit_version` | public | `Field` |
 
-On-chain wire order (`docs/zk-conformance-vectors.md`, `silent_witness/v1`
-frame, 128 bytes / 4 fields):
+On-chain wire order (`docs/zk-conformance-vectors.md`). Two silent-witness
+frames are in play. `silent_witness/v1` (`hpx-vi/1`, 160 bytes / 5 fields):
+
 [ 0.. 32) video_hash_hi
 [ 32.. 64) video_hash_lo
 [ 64.. 96) credential_root
 [ 96..128) nullifier
+[128..160) domain_tag
 
-Note: the on-chain conformance frame (`hpx-vi/1`) currently only encodes 4 of
-the 6 public circuit inputs. `verifier_scope` and `epoch` are not part of the
-128-byte frame the Soroban registry classifies. Whether/how they reach the
-contract layer independently of this frame needs to be confirmed as part of
-resolving §6.
+`silent_witness/v2` (`hpx-vi/2`, 256 bytes / 8 fields) is the frame this circuit
+signature produces, with the circuit version committed as its trailing field:
+
+[  0.. 32) video_hash_hi
+[ 32.. 64) video_hash_lo
+[ 64.. 96) credential_root
+[ 96..128) nullifier
+[128..160) verifier_scope
+[160..192) epoch
+[192..224) domain_tag
+[224..256) circuit_version
+
+Note: the registry used to *parse* the 224-byte scoped frame on the registration
+path, but no codec described it, and its circuit version was *inferred from the
+byte length*. `silent_witness/v2` closes that gap: every public circuit input is
+encoded, and the proof names the circuit that produced it. The registration path
+no longer accepts that bare frame either — it is rejected with
+`RegistryError::CircuitVersionMismatch` (87) — so a 256-byte envelope is the only
+scoped frame a verifier will act on. The published four-field browser frame
+(`browser_v1` in `zk/noir/circuit_input_schema_v1.json`) is unchanged — it is a
+separate, older artifact, and the versioned envelope never replaces a frame
+already recorded on chain.
 
 ## 3. Statement (as currently enforced)
 
@@ -87,6 +108,11 @@ prover's `credential_secret` or `nullifier_secret` unless it generated them.
 - Swapping `credential_root` and `nullifier` in the public-input frame is
   rejected (`test_swapped_credential_root_and_nullifier`), as is swapping the
   two video-hash halves (`test_swapped_video_hash_halves`).
+- A frame cannot claim a circuit other than the one that produced it: the
+  circuit asserts its own `circuit_version` in-circuit (`test_circuit_version_downgrade`)
+  and every verifier layer re-checks the committed trailer, so an attacker cannot
+  relabel a proof from an older, weaker circuit by editing a length or a field
+  (#368).
 
 **Not guaranteed by the circuit today (see §6):**
 - Nothing prevents a single valid proof from being accepted under any
@@ -151,6 +177,18 @@ system component depends on scope- or epoch-scoped nullifier uniqueness.
 
 ## 7. Versioning
 
+The proof envelope commits the circuit version directly (#368): `main.nr`
+declares `CURRENT_CIRCUIT_VERSION` and asserts the public `circuit_version`
+input against it, and `silent_witness/v2` (`hpx-vi/2`) carries that field as the
+trailing element of the frame. The registry requires the committed value to
+equal `EXPECTED_CIRCUIT_VERSION`, so a proof names the circuit that produced it
+instead of leaving the verifier to infer it from the frame's byte length. Bumping
+the circuit means moving `CURRENT_CIRCUIT_VERSION`, `EXPECTED_CIRCUIT_VERSION`
+(Rust / Python / TypeScript), the corpus constant, and
+`MIN/MAX_SUPPORTED_CIRCUIT_VERSION` in lockstep; `test_circuit_version_downgrade`
+in `main.nr` and the `sw2-neg-02x` / `sw2-neg-07x` corpus cases are the gates that
+fail when they drift apart.
+
 The evidence digest is bound to `DIGEST_ALGORITHM_SHA256 = 0`. Introducing a
 new evidence hash algorithm requires a new algorithm ID constant and, per the
 migration pattern established in `docs/zk-conformance-vectors.md` for the
@@ -165,8 +203,15 @@ that old and new derivations remain distinguishable.
 
 ## 8. Reference Vectors
 
-Cross-layer conformance corpus: [`zk/vectors/verifier_conformance_v1.json`](../zk/vectors/verifier_conformance_v1.json),
-described in [`docs/zk-conformance-vectors.md`](./zk-conformance-vectors.md).
-Note this corpus currently only covers the 4-field `silent_witness/v1` frame
-(§2) — it does not exercise `verifier_scope`/`epoch`, consistent with those
-fields not being part of the enforced statement today.
+Cross-layer conformance corpus: [`zk/vectors/verifier_conformance_v1.json`](../zk/vectors/verifier_conformance_v1.json)
+and [`zk/vectors/verifier_conformance_v2.json`](../zk/vectors/verifier_conformance_v2.json)
+(circuit-versioned `silent_witness/v2` frames, #368), described in
+[`docs/zk-conformance-vectors.md`](./zk-conformance-vectors.md).
+Note the corpus covers the `silent_witness/v1` frame (video hash halves,
+credential root, nullifier, domain tag) and the `silent_witness/v2` frame,
+which additionally carries `verifier_scope`, `epoch` and the committed
+`circuit_version`. The v2 corpus is the versioned, self-describing frame: a
+frame that names no circuit cannot be classified as `silent_witness/v2`, so the
+bare 224-byte scoped frame is rejected there with `length`, and the registration
+path rejects the same frame with `CircuitVersionMismatch` (87). It is no longer a
+layout any boundary accepts.

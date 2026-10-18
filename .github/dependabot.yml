@@ -1,18 +1,114 @@
+# Dependabot configuration for Harpocrates
+# Specification: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Validated by: devx/dependabot_config.py
+
 version: 2
 updates:
+  # Frontend dependencies (npm)
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    groups:
+      patch-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@stellar/*"
+          - "stellar-*"
+          - "@noir-lang/*"
+          - "@aztec/*"
+          - "barretenberg*"
+        update-types:
+          - "patch"
+      stellar-dependencies:
+        patterns:
+          - "@stellar/*"
+          - "stellar-*"
+      proof-system-dependencies:
+        patterns:
+          - "@noir-lang/*"
+          - "@aztec/*"
+          - "barretenberg*"
+
+  # CLI dependencies (npm)
+  - package-ecosystem: "npm"
+    directory: "/cli"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    groups:
+      patch-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@stellar/*"
+          - "stellar-*"
+        update-types:
+          - "patch"
+      stellar-dependencies:
+        patterns:
+          - "@stellar/*"
+          - "stellar-*"
+
+  # Backend dependencies (pip)
   - package-ecosystem: "pip"
     directory: "/backend"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    groups:
+      patch-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+
+  # Smart contracts dependencies (Cargo / Soroban)
   - package-ecosystem: "cargo"
     directory: "/contracts"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    groups:
+      patch-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "soroban-*"
+          - "stellar-*"
+        update-types:
+          - "patch"
+      stellar-soroban-dependencies:
+        patterns:
+          - "soroban-*"
+          - "stellar-*"
+
+  # CI/CD Workflow dependencies (GitHub Actions)
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    groups:
+      patch-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"

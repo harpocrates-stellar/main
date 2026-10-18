@@ -179,9 +179,9 @@ fn test_batch_register_succeeds() {
     }
 
     // Nullifiers should be consumed.
-    assert!(client.has_nullifier(&nullifier_0));
-    assert!(client.has_nullifier(&nullifier_1));
-    assert!(client.has_nullifier(&nullifier_2));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_0));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_1));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier_2));
 
     // Video hashes should be registered.
     for vh in [vh_0, vh_1, vh_2] {
@@ -548,3 +548,11 @@ fn test_batch_register_max_size() {
         assert!(by_video.is_some(), "element {} video hash should be registered", i);
     }
 }
+
+#[cfg(test)]
+#[test]
+fn test_aggregation_bound_constants() {
+    assert_eq!(MAX_AGGREGATION_SIZE, 8);
+    assert_eq!(MIN_AGGREGATION_SIZE, 1);
+}
+

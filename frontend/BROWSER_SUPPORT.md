@@ -105,3 +105,7 @@ npm run build
 targets, required capability list, and Vite build configuration cannot drift
 independently. It is safe to run in CI because it performs no network or browser
 automation and uses no credentials.
+
+Worker proving coverage for this matrix lives in
+`src/workers/multiBrowserWorkerSupport.test.ts` and is described in
+[`docs/proof-worker.md`](../docs/proof-worker.md#multi-browser-worker-support).

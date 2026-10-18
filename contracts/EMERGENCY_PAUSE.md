@@ -38,7 +38,11 @@ alias that expands to all three:
 Never gated by any pause: `get_proof`, `get_proof_status`, `get_by_video`,
 `has_nullifier`, `get_issuer`, `get_credential_root`, `get_verifier`,
 `is_paused`, `get_pause_state`, and the admin-remediation entry points
-listed above.
+listed above. Receipt-digest entry points are also deliberately ungated —
+`add_receipt_signer`, `revoke_receipt_signer`, `commit_receipt_digest`, and
+the receipt getters keep working while a registration pause is active, so
+auditors can anchor and inspect receipts for already-registered proofs
+during an incident (see `RECEIPT_COMMITMENT.md`).
 
 ## Roles And Authorization Matrix
 
@@ -171,8 +175,10 @@ No new deployment step is required. To use the feature after upgrading:
 ## Limitations
 
 - Pause is scoped to the four registration entry points only. It does not
-  gate issuer/credential-root management or `revoke_proof`, by design (those
-  are the tools used to contain and clean up during an incident).
+  gate issuer/credential-root management, `revoke_proof`, or the receipt
+  digest entry points (`add_receipt_signer`, `revoke_receipt_signer`,
+  `commit_receipt_digest`), by design (those are the tools used to contain,
+  clean up, and audit during an incident).
 - There is a single guardian slot, not a list — rotate it with
   `set_guardian` rather than trying to run multiple guardians.
 - Pause state is public (`is_paused`, `get_pause_state` take no auth), so it
