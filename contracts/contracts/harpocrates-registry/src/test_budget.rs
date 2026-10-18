@@ -329,6 +329,7 @@ fn budget_register_anonymous_baseline() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.init(&admin);
+    client.set_verifier(&admin, &env.register(MockBudgetVerifier, ()));
     client.add_credential_root(&admin, &b32(&env, 0xDD), &b32(&env, 0xEE));
 
     let (cpu, mem, _) = measure(&env, || {
@@ -680,3 +681,44 @@ fn budget_receipt_commit_baseline() {
         "commit_receipt_digest",
     );
 }
+
+const MAX_CPU_LIST_DELEGATIONS: u64 = 10_000_000;
+const MAX_MEM_LIST_DELEGATIONS: u64 = 3_500_000;
+
+/// Baseline for `list_delegations` with a full page (32 entries, max per grantor).
+#[test]
+fn budget_list_delegations_full_page_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let grantor = Address::generate(&env);
+
+    client.init(&admin);
+
+    for _ in 0..MAX_DELEGATIONS_PER_GRANTOR {
+        let delegate = Address::generate(&env);
+        client.grant_delegation(
+            &grantor,
+            &delegate,
+            &DELEGATION_SCOPE_ALL,
+            &86_400,
+        );
+    }
+
+    let (cpu, mem, page) = measure(&env, || {
+        client.list_delegations(&grantor, &0, &MAX_DELEGATIONS_PER_GRANTOR)
+    });
+
+    assert_eq!(page.entries.len(), MAX_DELEGATIONS_PER_GRANTOR);
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_LIST_DELEGATIONS,
+        MAX_MEM_LIST_DELEGATIONS,
+        "list_delegations full page",
+    );
+}
+

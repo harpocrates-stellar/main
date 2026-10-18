@@ -147,6 +147,19 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::IssuerRotationNotFound => "IssuerRotationNotFound",
         RegistryError::IssuerRotationGraceStillActive => "IssuerRotationGraceStillActive",
         RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
+        RegistryError::InvalidCursor => "InvalidCursor",
+        RegistryError::ListLimitExceeded => "ListLimitExceeded",
+        RegistryError::ExpiredCredentialRoot => "ExpiredCredentialRoot",
+        RegistryError::LineageFanOutSaturated => "LineageFanOutSaturated",
+        RegistryError::LineageDepthMismatch => "LineageDepthMismatch",
+        RegistryError::RoleConflict => "RoleConflict",
+        RegistryError::ReceiptProofNotFound => "ReceiptProofNotFound",
+        RegistryError::ReceiptProofUnavailable => "ReceiptProofUnavailable",
+        RegistryError::ReceiptAlreadyCommitted => "ReceiptAlreadyCommitted",
+        RegistryError::InvalidReceiptDigest => "InvalidReceiptDigest",
+        RegistryError::ReceiptSignerUnknown => "ReceiptSignerUnknown",
+        RegistryError::ReceiptSignerRevoked => "ReceiptSignerRevoked",
+        RegistryError::ReceiptSignersSaturated => "ReceiptSignersSaturated",
     }
 }
 
@@ -241,6 +254,19 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::IssuerRotationNotFound,
     RegistryError::IssuerRotationGraceStillActive,
     RegistryError::CircuitVersionMismatch,
+    RegistryError::InvalidCursor,
+    RegistryError::ListLimitExceeded,
+    RegistryError::ExpiredCredentialRoot,
+    RegistryError::LineageFanOutSaturated,
+    RegistryError::LineageDepthMismatch,
+    RegistryError::RoleConflict,
+    RegistryError::ReceiptProofNotFound,
+    RegistryError::ReceiptProofUnavailable,
+    RegistryError::ReceiptAlreadyCommitted,
+    RegistryError::InvalidReceiptDigest,
+    RegistryError::ReceiptSignerUnknown,
+    RegistryError::ReceiptSignerRevoked,
+    RegistryError::ReceiptSignersSaturated,
 ];
 
 #[cfg(test)]

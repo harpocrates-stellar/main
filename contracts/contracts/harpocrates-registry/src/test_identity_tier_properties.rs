@@ -291,12 +291,13 @@ fn init_fixture() -> (Env, Address, Address, Address, Address, BytesN<32>) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(HarpocratesRegistry, ());
-    let _verifier_id = env.register(MockTierVerifier, ());
+    let verifier_id = env.register(MockTierVerifier, ());
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let source = Address::generate(&env);
     let issuer = Address::generate(&env);
     client.init(&admin);
+    client.set_verifier(&admin, &verifier_id);
     client.add_issuer(&admin, &issuer, &b32(&env, 0xAA));
     let cred = b32(&env, CRED_ROOT_BYTE);
     client.add_credential_root(&admin, &cred, &b32(&env, 0xFF));
@@ -322,7 +323,10 @@ fn check_lookups(client: &HarpocratesRegistryClient<'_>, model: &Model, env: &En
         );
         if let Some(n) = p.nullifier {
             assert!(
-                client.has_nullifier(&client.get_verifier().unwrap(), &b32(env, slot_byte(0xD4, n))),
+                client.has_nullifier(
+                    &client.get_verifier().unwrap(),
+                    &b32(env, slot_byte(0xD4, n))
+                ),
                 "{label}: missing nullifier slot={n}"
             );
         }

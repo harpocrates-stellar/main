@@ -389,26 +389,28 @@ fn expiry_all_tiers_store_expires_at() {
 
 #[test]
 fn test_explicit_credential_root_expiry() {
-    use crate::{HarpocratesRegistry, HarpocratesRegistryClient, RegistryError};
+    use crate::{HarpocratesRegistry, HarpocratesRegistryClient};
     use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
 
     let env = Env::default();
+    env.mock_all_auths();
+    soroban_sdk::testutils::Ledger::set_timestamp(&env.ledger(), 1_000);
     let admin = Address::generate(&env);
-    let contract_id = env.register_contract(None, HarpocratesRegistry);
+    let contract_id = env.register(HarpocratesRegistry, ());
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
 
-    client.init_registry(&admin, &admin, &86400, &86400);
+    client.init(&admin);
 
     let credential_root = BytesN::from_array(&env, &[1; 32]);
     let metadata_hash = BytesN::from_array(&env, &[2; 32]);
 
     client.add_credential_root(&admin, &credential_root, &metadata_hash);
 
-    let record = client.get_credential_root(&credential_root);
+    let record = client.get_credential_root(&credential_root).unwrap();
     assert_eq!(record.expires_at, 0);
 
     client.expire_credential_root(&admin, &credential_root);
 
-    let expired_record = client.get_credential_root(&credential_root);
+    let expired_record = client.get_credential_root(&credential_root).unwrap();
     assert!(expired_record.expires_at > 0);
 }

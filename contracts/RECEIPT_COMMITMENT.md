@@ -81,13 +81,13 @@ The one-commitment slot is not consumed by a failed attempt.
 | Code | Name | Meaning |
 |------|------|---------|
 | `#3`  | `Unauthorized` | Non-admin signer management, or a non-subject commit caller |
-| `#68` | `ReceiptProofNotFound` | No such `proof_id` |
-| `#69` | `ReceiptProofUnavailable` | Proof expired or revoked |
-| `#70` | `ReceiptAlreadyCommitted` | A different digest is already committed for this proof |
-| `#71` | `InvalidReceiptDigest` | All-zero digest |
-| `#72` | `ReceiptSignerUnknown` | Public key not on the allowlist |
-| `#73` | `ReceiptSignerRevoked` | Allowlist key was revoked |
-| `#74` | `ReceiptSignersSaturated` | 8 active keys already |
+| `#94` | `ReceiptProofNotFound` | No such `proof_id` |
+| `#95` | `ReceiptProofUnavailable` | Proof expired or revoked |
+| `#96` | `ReceiptAlreadyCommitted` | A different digest is already committed for this proof |
+| `#97` | `InvalidReceiptDigest` | All-zero digest |
+| `#98` | `ReceiptSignerUnknown` | Public key not on the allowlist |
+| `#99` | `ReceiptSignerRevoked` | Allowlist key was revoked |
+| `#100` | `ReceiptSignersSaturated` | 8 active keys already |
 
 ## Events
 

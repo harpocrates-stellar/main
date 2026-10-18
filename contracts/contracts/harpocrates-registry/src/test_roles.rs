@@ -57,7 +57,7 @@ fn separate_issuer_can_register_a_tier_three_seal() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #93)")]
 fn admin_cannot_be_granted_issuer_role() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -82,7 +82,7 @@ fn rejected_role_assignment_has_a_bounded_budget() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #93)")]
 fn active_issuer_cannot_be_proposed_as_admin() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -267,7 +267,7 @@ fn v2_migration_preserves_non_conflicting_issuer_authority() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #93)")]
 fn legacy_admin_issuer_record_cannot_seal_before_migration_runs() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);

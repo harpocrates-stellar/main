@@ -136,6 +136,19 @@ input, a different actor, or new evidence before the call can succeed.
 | 85 | `IssuerRotationNotFound` | state | no | No issuer rotation grace record exists for the requested key. |
 | 86 | `IssuerRotationGraceStillActive` | state | yes | The issuer rotation grace window has not lapsed; retry once it has. |
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
+| 88 | `InvalidCursor` | malformed | no | The `list_verifiers` cursor is out of range or malformed. |
+| 89 | `ListLimitExceeded` | oversized | no | The `list_verifiers` limit is above `MAX_VERIFIER_LIST_LIMIT`. |
+| 90 | `ExpiredCredentialRoot` | expired | no | The credential root has passed its configured expiry. |
+| 91 | `LineageFanOutSaturated` | resource | no | A lineage parent already has `MAX_LINEAGE_FANOUT` derivatives. |
+| 92 | `LineageDepthMismatch` | malformed | no | The claimed lineage depth differs from the depth derived from the parents. |
+| 93 | `RoleConflict` | auth | no | The address already holds a conflicting admin or issuer role. |
+| 94 | `ReceiptProofNotFound` | state | no | The receipt commit named a proof that does not exist. |
+| 95 | `ReceiptProofUnavailable` | revoked | no | The receipt commit targeted an expired or revoked proof. |
+| 96 | `ReceiptAlreadyCommitted` | conflict | no | A different receipt digest is already committed for the proof. |
+| 97 | `InvalidReceiptDigest` | malformed | no | The receipt digest is all zeros. |
+| 98 | `ReceiptSignerUnknown` | unsupported | no | The receipt-signing key is not on the allowlist. |
+| 99 | `ReceiptSignerRevoked` | revoked | no | The receipt-signing key was revoked. |
+| 100 | `ReceiptSignersSaturated` | resource | no | `MAX_RECEIPT_SIGNERS` active receipt-signing keys already exist. |
 
 ## Privacy Rules
 
