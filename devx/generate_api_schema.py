@@ -21,7 +21,12 @@ def extract_routes_from_ast(app_path: Path):
                                 routes.append((path, method.upper(), node.name))
     return routes
 
-def generate_schema(app_path: Path, schemas_dir: Path):
+class SchemaError(Exception):
+    def __init__(self, errors: list[str]):
+        super().__init__(f"Malformed schema files: {', '.join(errors)}")
+        self.errors = errors
+
+def generate_schema(app_path: Path, schemas_dir: Path, lenient: bool = False):
     if not app_path.exists():
         raise FileNotFoundError("app.py not found")
         
@@ -49,20 +54,34 @@ def generate_schema(app_path: Path, schemas_dir: Path):
     }
     
     # Load canonical schemas safely
+    errors = []
     if schemas_dir.is_dir():
         for p in sorted(schemas_dir.glob("*.json")):
-            # Check for oversized/malformed schemas
-            if p.stat().st_size > 1024 * 1024:
-                continue # ignore oversized
             try:
+                # Check for oversized/malformed schemas
+                if p.stat().st_size > 1024 * 1024:
+                    if lenient:
+                        continue
+                    errors.append(f"{p.name}: file size exceeds 1 MiB limit")
+                    continue
                 with p.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                    if isinstance(data, dict):
-                        schema_hash = data.get("schemaHash")
-                        if schema_hash:
-                            schema["components"]["schemas"][schema_hash] = data
-            except Exception:
-                pass
+                    if not isinstance(data, dict):
+                        if not lenient:
+                            errors.append(f"{p.name}: root must be a JSON object")
+                        continue
+                    schema_hash = data.get("schemaHash")
+                    if not schema_hash:
+                        if not lenient:
+                            errors.append(f"{p.name}: missing schemaHash")
+                        continue
+                    schema["components"]["schemas"][schema_hash] = data
+            except (OSError, json.JSONDecodeError) as e:
+                if not lenient:
+                    errors.append(f"{p.name}: {e}")
+
+    if errors and not lenient:
+        raise SchemaError(errors)
                 
     return schema
 
@@ -71,6 +90,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--app-path", type=Path)
     parser.add_argument("--schemas-dir", type=Path)
+    parser.add_argument("--lenient", action="store_true", help="Ignore malformed or oversized schema files")
     args = parser.parse_args()
     
     root = Path(__file__).resolve().parent.parent
@@ -78,7 +98,7 @@ def main():
     schemas_dir = args.schemas_dir or (root / "backend" / "schemas")
     
     try:
-        schema = generate_schema(app_path, schemas_dir)
+        schema = generate_schema(app_path, schemas_dir, lenient=args.lenient)
         out_json = json.dumps(schema, indent=2)
     except FileNotFoundError as e:
         print(f"dependency failure: {e}", file=sys.stderr)
@@ -86,6 +106,11 @@ def main():
     except SyntaxError as e:
         print(f"malformed input: app.py is not valid Python: {e}", file=sys.stderr)
         sys.exit(3)
+    except SchemaError as e:
+        print("malformed schema files detected:", file=sys.stderr)
+        for err in e.errors:
+            print(f"  {err}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         print(f"schema generation failed: {e}", file=sys.stderr)
         sys.exit(4)
@@ -97,3 +122,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
