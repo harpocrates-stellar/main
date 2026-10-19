@@ -1,0 +1,46 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+        exclude: (tsconfig.*\.json|contracts/.*/test_snapshots/.*)
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(backend|devx|zk)/.*\.py$
+
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v10.11.0
+    hooks:
+      - id: eslint
+        files: \.(ts|tsx)$
+        additional_dependencies:
+          - eslint@10.11.0
+          - "@eslint/js@10.0.1"
+          - typescript-eslint@8.65.0
+          - globals@17.8.0
+          - eslint-plugin-react-hooks@7.1.1
+          - eslint-plugin-react-refresh@0.5.3
+          - typescript@6.0.3
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --manifest-path contracts/Cargo.toml --check
+        language: system
+        types: [rust]
+        files: ^contracts/
+        pass_filenames: false
+
+      - id: secret-scanner
+        name: Harpocrates Secret Scanner
+        entry: python devx/secret_scanner.py
+        language: system
+        pass_filenames: false

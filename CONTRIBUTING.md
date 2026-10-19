@@ -146,8 +146,31 @@ Every Pull Request must satisfy the following checklist before being merged:
 ✅ Test Evidence: Include terminal execution logs or test output showing that all impacted workspace tests pass.
 ```
 
+## 5. Local Pre-commit Hooks
+
+To catch formatting, lint, and secret issues before they reach CI, install and enable [pre-commit](https://pre-commit.com/):
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Once installed, git commit hooks run automatically on staged files. To run all checks across the entire repository manually:
+
+```bash
+pre-commit run --all-files
+```
+
+The hooks configured in `.pre-commit-config.yaml` include:
+- **JSON & YAML validity**: Verifies syntax for configuration files (`check-json`, `check-yaml`).
+- **Ruff**: Enforces Python formatting and linting across `backend/`, `devx/`, and `zk/`.
+- **ESLint**: Lints staged TypeScript and JavaScript files for `frontend/` and `cli/`.
+- **Cargo fmt**: Checks formatting on Soroban smart contracts under `contracts/`.
+- **Secret Scanner**: Invokes the repository's `devx/secret_scanner.py` to ensure sensitive values, test credentials, and real media boundaries are maintained.
+
 ## Code of Conduct
 
 This project and everyone participating in it is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold these standards. 
 
 Please report unacceptable behavior to `conduct@<your-organization-domain>.com`.
+
