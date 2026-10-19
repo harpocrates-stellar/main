@@ -17,6 +17,17 @@ class AppConfig:
     expose_metadata_header: bool
     noir_worker_enabled: bool
     security_headers_enabled: bool
+    ratelimit_enabled: bool
+    ratelimit_embed: str
+    ratelimit_extract: str
+    ratelimit_silent_witness: str
+    ratelimit_register: str
+    trusted_proxies: list[str]
+    register_api_key: str | None
+    register_api_key_expires: datetime | None
+    retention_classes: dict[str, int]
+    retention_worker_enabled: bool
+    retention_interval_seconds: int
     release_id: str
     release_network: str
     metrics_enabled: bool
@@ -50,6 +61,17 @@ def load_config() -> AppConfig:
         expose_metadata_header=_bool_env("EXPOSE_METADATA_HEADER", False),
         noir_worker_enabled=_bool_env("NOIR_WORKER_ENABLED", app_env != "production"),
         security_headers_enabled=_bool_env("SECURITY_HEADERS_ENABLED", True),
+        ratelimit_enabled=_bool_env("RATELIMIT_ENABLED", True),
+        ratelimit_embed=_str_env("RATELIMIT_EMBED") or "30 per minute",
+        ratelimit_extract=_str_env("RATELIMIT_EXTRACT") or "30 per minute",
+        ratelimit_silent_witness=_str_env("RATELIMIT_SILENT_WITNESS") or "20 per minute",
+        ratelimit_register=_str_env("RATELIMIT_REGISTER") or "120 per minute",
+        trusted_proxies=_csv("TRUSTED_PROXIES", ""),
+        register_api_key=_str_env("REGISTER_API_KEY"),
+        register_api_key_expires=_datetime_env("REGISTER_API_KEY_EXPIRES"),
+        retention_classes=_parse_retention_classes(os.getenv("RETENTION_CLASSES")),
+        retention_worker_enabled=_bool_env("RETENTION_WORKER_ENABLED", False),
+        retention_interval_seconds=_int_env("RETENTION_INTERVAL_SECONDS", 3600),
         release_id=_release_id(os.getenv("HARPOCRATES_RELEASE_ID", "harpocrates-1.0.0")),
         release_network=_release_network(os.getenv("HARPOCRATES_RELEASE_NETWORK", "testnet")),
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
@@ -114,5 +136,44 @@ def _float_env(name: str, default: float) -> float:
     if parsed <= 0.0:
         raise RuntimeError(f"{name} must be positive")
     return parsed
+
+
+def _datetime_env(name: str) -> datetime | None:
+    value = _str_env(name)
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise RuntimeError(f"{name} must be an ISO-8601 timestamp") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _parse_retention_classes(value: str | None) -> dict[str, int]:
+    """Parse ``RETENTION_CLASSES`` into a ``{class: lifetime_days}`` mapping."""
+    defaults = {"default": 30, "short": 7, "long": 365, "forever": -1}
+    if value is None or not value.strip():
+        return defaults
+
+    classes: dict[str, int] = {}
+    for pair in value.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        name, separator, days = pair.partition(":")
+        name = name.strip()
+        if not separator or not name:
+            raise RuntimeError("RETENTION_CLASSES must be 'name:days[,name:days...]'")
+        try:
+            classes[name] = int(days.strip())
+        except ValueError:
+            raise RuntimeError(
+                f"RETENTION_CLASSES days must be integers, got {pair!r}"
+            ) from None
+
+    classes.setdefault("default", defaults["default"])
+    return classes
 
 

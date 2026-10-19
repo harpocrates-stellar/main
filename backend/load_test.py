@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -82,8 +83,9 @@ class LoadResult:
         if not self.latencies_ms:
             return 0.0
         sorted_lats = sorted(self.latencies_ms)
-        idx = max(0, min(len(sorted_lats) - 1, int(len(sorted_lats) * p / 100)))
-        return sorted_lats[idx]
+        # Nearest-rank percentile: the smallest value whose rank covers p%.
+        rank = max(1, math.ceil(len(sorted_lats) * p / 100))
+        return sorted_lats[min(rank, len(sorted_lats)) - 1]
 
     def summary(self) -> dict[str, Any]:
         return {

@@ -5,7 +5,7 @@ import hashlib
 import datetime
 from typing import Any, Tuple, Optional
 
-from db import get_connection, Jsonb
+from db import database_url, get_connection, Jsonb
 
 # Table: idempotency_records
 # Columns:
@@ -113,6 +113,12 @@ def idempotent(request_type: str):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            # Idempotency is a distributed guarantee backed by Postgres. When no
+            # database is configured (local runs and unit tests) the request is
+            # still served, just without replay protection.
+            if not database_url():
+                return func(*args, **kwargs)
+
             digest = _canonical_digest()
             record = get_idempotency_record(digest, request_type)
             if record:

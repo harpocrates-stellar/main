@@ -168,7 +168,7 @@ class RedactionPatterns:
             ("stellar_muxed", r"M[A-Z2-7]{68}", "wallet_id"),
             ("stellar_tx_hash", r"[0-9a-fA-F]{64}", "wallet_sig"),
             ("stellar_signature_ed25519", r"[A-Za-z0-9+/]{86,}={0,2}", "wallet_sig"),
-            ("private_key_pem", r"-----BEGIN (RSA|EC|OPENSSH|DSA|PGP|PRIVATE KEY)-----", "secret"),
+            ("private_key_pem", r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----", "secret"),
             ("jwt_token", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "secret"),
             ("xdr_b64_long", r"AAAA[A-Za-z0-9+/]{200,}={0,2}", "wallet_sig"),
             ("ip_address", r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b", "pii"),
@@ -274,9 +274,16 @@ class RedactionEngine:
             return False, None
         for name, pattern in self._patterns.value_patterns.items():
             try:
-                if pattern.search(value):
-                    cat = self._patterns.value_category_map.get(name, "unknown")
-                    return True, cat
+                if not pattern.search(value):
+                    continue
+                # A single repeated character (e.g. a long safe label) is not
+                # plausible base64; require padding or some alphabet diversity.
+                if name in {"base64_long", "stellar_signature_ed25519", "xdr_b64_long"}:
+                    unpadded = value.rstrip("=")
+                    if "=" not in value and len(set(unpadded)) < 2:
+                        continue
+                cat = self._patterns.value_category_map.get(name, "unknown")
+                return True, cat
             except Exception:
                 continue
         if len(value) >= 3:
@@ -560,27 +567,43 @@ class RedactionEngine:
         except Exception:
             return "[REDACTED:unserializable]"
 
+    # Values that are public commitments, not secrets. They are safe to keep in
+    # sanitized output even though they resemble hex-encoded sensitive data.
+    _SAFE_VALUE_KEYS = {
+        "sourcehash", "videohash", "metadatahash", "proofid", "protocol",
+        "version", "tier", "stage", "timestamp", "correlationid", "requestid",
+        "traceid", "spanid", "eventid", "logid", "sessionid",
+    }
+
     def _scan_leaks(self, data: Any, marker_prefix: str = "[REDACTED:") -> List[str]:
-        found = []
-        try:
-            data_str = json.dumps(data, sort_keys=True, default=str)
-        except Exception:
-            data_str = str(data)
-        for cat in DURABLE_LEAK_CATEGORIES:
-            marker = marker_prefix + cat + "]"
-            pass
-        for cat, hints in SENSITIVE_FIELD_CATEGORIES.items():
-            if cat not in DURABLE_LEAK_CATEGORIES:
-                continue
-            for hint in hints:
-                pat = _safe_compile(r"(^|[_\W])" + re.escape(hint) + r"([_\W]|$)", re.IGNORECASE)
-                try:
-                    if pat.search(data_str):
-                        if cat not in found:
-                            found.append(cat)
-                            break
-                except Exception:
-                    continue
+        """Scan sanitized *values* for sensitive material that survived.
+
+        Field names and redaction markers are not evidence of a leak; only a
+        sensitive value that remains in the output is. Public commitments such
+        as hashes are explicitly allowed.
+        """
+        found: List[str] = []
+
+        def inspect(value: Any, key: Optional[str]) -> None:
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    inspect(child_value, str(child_key))
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    inspect(item, key)
+                return
+            if not isinstance(value, str):
+                return
+            if value.startswith(marker_prefix):
+                return
+            if key is not None and stable_encode_key(key) in self._SAFE_VALUE_KEYS:
+                return
+            is_sensitive, category = self._is_sensitive_value(value)
+            if is_sensitive and category in DURABLE_LEAK_CATEGORIES and category not in found:
+                found.append(category)
+
+        inspect(data, None)
         return found
 
     def sanitize(self, value: Any, context: Optional[str] = None) -> RedactionOutcome:

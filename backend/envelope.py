@@ -1,4 +1,5 @@
 import hashlib
+import re
 import json
 import struct
 import zlib
@@ -20,14 +21,11 @@ def _canonical_json(metadata: dict[str, Any]) -> bytes:
     return json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
+_HEX_32 = re.compile(r"\A[0-9a-fA-F]{64}\Z")
+
+
 def _is_hex_32(value: Any) -> bool:
-    if not isinstance(value, str) or len(value) != 64:
-        return False
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return True
+    return isinstance(value, str) and _HEX_32.fullmatch(value) is not None
 
 
 def _validate_timestamp(value: Any) -> None:
@@ -88,7 +86,11 @@ def pack_envelope(metadata: dict[str, Any], version: int = 2) -> bytes:
     else:
         raise ValueError(f"unsupported metadata version {version}")
 
-    body = zlib.compress(_canonical_json(metadata), level=9)
+    raw = _canonical_json(metadata)
+    if len(raw) > MAX_PAYLOAD_BYTES:
+        raise ValueError("metadata payload exceeds the 64 KiB steganography limit")
+
+    body = zlib.compress(raw, level=9)
     if len(body) > MAX_PAYLOAD_BYTES:
         raise ValueError("metadata payload exceeds the 64 KiB steganography limit")
 

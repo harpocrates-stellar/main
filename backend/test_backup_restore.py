@@ -153,9 +153,10 @@ class TestEncryption(unittest.TestCase):
         import subprocess
 
         # Generate ephemeral GPG key
-        subprocess.run(
+        keygen = subprocess.run(
             [
-                "gpg", "--batch", "--gen-key",
+                "gpg", "--batch", "--yes",
+                "--pinentry-mode", "loopback",
                 "--passphrase", "",
                 "--quick-gen-key",
                 "test-backup@harpocrates.test",
@@ -163,6 +164,7 @@ class TestEncryption(unittest.TestCase):
             capture_output=True,
             timeout=30,
         )
+        self.assertEqual(keygen.returncode, 0, keygen.stderr.decode(errors="replace"))
 
         try:
             encrypted_path = self.temp_dir + "/encrypted.gpg"

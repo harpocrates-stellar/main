@@ -38,12 +38,15 @@ os.environ.setdefault("TRUSTED_PROXIES", "")
 
 
 def _make_fresh_app():
-    """Return a new Flask app + test client with a clean rate-limit store."""
-    # Re-import create_app after env vars are set so each call gets a fresh
-    # Limiter instance backed by a new in-memory store.
-    import importlib
+    """Return a new Flask app + test client with a clean rate-limit store.
+
+    ``create_app`` builds a new Limiter (and therefore a new in-memory
+    storage backend) on every call, so reloading the shared ``app`` module
+    is unnecessary and would leak this module's tight limits into other
+    test modules that reuse ``app_module.app``.
+    """
     import app as app_module
-    importlib.reload(app_module)
+
     flask_app = app_module.create_app()
     flask_app.config["TESTING"] = True
     return flask_app, flask_app.test_client()

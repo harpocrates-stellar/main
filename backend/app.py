@@ -11,12 +11,21 @@ from workspace import EncryptedWorkspace
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+import functools
 from pathlib import Path
 
 
 from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
 
+from errors import (
+    INTERNAL_ERROR,
+    NOT_FOUND,
+    PAYLOAD_TOO_LARGE,
+    VALIDATION_ERROR,
+    error_response,
+    ok_response,
+)
 from http_security import apply_security_headers, cors_kwargs
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -57,6 +66,7 @@ from readiness import ReadinessManager
 from admission import AdmissionController, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload
+from retention import init_retention_worker
 from strkey import validate_source_address, validate_contract_id
 
 # ---------------------------------------------------------------------------
@@ -143,6 +153,10 @@ def create_app() -> Flask:
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
         return request.path in {"/health", "/ready"}
+
+    @app.errorhandler(429)
+    def ratelimit_exceeded(_error):
+        return jsonify({"error": "rate limit exceeded"}), 429
 
     init_db()
     init_retention_worker()
@@ -289,9 +303,8 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health():
-        return jsonify(
+        return ok_response(
             {
-                "ok": True,
                 "service": "harpocrates-stego",
                 "release_id": config.release_id,
                 "network": config.release_network,
@@ -301,17 +314,18 @@ def create_app() -> Flask:
     @app.get("/ready")
     def ready():
         status = readiness_manager.check()
-        return jsonify(
+        return ok_response(
             {
-                "ok": status["ok"],
                 "service": "harpocrates-stego",
                 "database": status.get("database", "not_configured"),
                 "video_tools": status.get("video_tools", "missing"),
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
                 "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
                 "max_aggregation_size": MAX_AGGREGATION_SIZE,
-            }
-        ), 200 if status["ok"] else 503
+            },
+            ok=status["ok"],
+            status=200 if status["ok"] else 503,
+        )
 
     def _enforce_video_size(video) -> bool:
         video.seek(0, 2)
@@ -339,6 +353,7 @@ def create_app() -> Flask:
         return len(raw) if raw else 0
 
     @app.post("/api/stego/embed")
+    @limiter.limit(config.ratelimit_embed)
     @require_capacity(admission_controller)
     @idempotent("embed")
     def embed():
@@ -348,7 +363,11 @@ def create_app() -> Flask:
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
         if video is None or metadata_raw is None:
-            return jsonify({"error": "video and metadata are required"}), 400
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="video and metadata are required",
+                status=400,
+            )
         if not _enforce_video_size(video):
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
@@ -366,11 +385,13 @@ def create_app() -> Flask:
         try:
             validate_embed_metadata(metadata)
         except ValueError as exc:
-            return error_response(
-                code=VALIDATION_ERROR,
-                message=str(exc),
-                status=400,
-            )
+            if str(exc).startswith("metadata missing required field"):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+            return jsonify({"error": str(exc)}), 400
 
         try:
             quarantine_context = isolate_upload(
@@ -395,17 +416,22 @@ def create_app() -> Flask:
                 metadata_hash = canonical_metadata_hash(metadata)
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
 
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=safe_filename(video.filename),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
+        try:
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=safe_filename(video.filename),
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                metadata=redact_metadata(metadata),
+            )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
 
         if db_event and db_event.get("id"):
             queue_webhook_deliveries(db_event["id"])
@@ -518,92 +544,8 @@ def create_app() -> Flask:
 
         return response
 
-    @app.post("/api/stego/upload-session")
-    def create_upload_session():
-        session_id = str(uuid.uuid4())
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        return jsonify({"sessionId": session_id})
-
-    @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
-    def upload_chunk(session_id: str, chunk_index: int):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        if not session_dir.exists():
-            return jsonify({"error": "session not found"}), 404
-        
-        chunk = request.files.get("chunk")
-        if chunk is None:
-            return jsonify({"error": "chunk is required"}), 400
-            
-        chunk_path = session_dir / f"chunk-{chunk_index}"
-        chunk.save(chunk_path)
-        return jsonify({"ok": True})
-
-    @app.post("/api/stego/upload-session/<session_id>/commit")
-    @require_capacity(admission_controller)
-    def commit_upload_session(session_id: str):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        if not session_dir.exists():
-            return jsonify({"error": "session not found"}), 404
-
-        metadata_raw = request.form.get("metadata")
-        if metadata_raw is None:
-            return jsonify({"error": "metadata is required"}), 400
-
-        try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return jsonify({"error": "metadata must be valid JSON"}), 400
-        try:
-            validate_embed_metadata(metadata)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-        combined_path = session_dir / "combined.video"
-        chunk_files = sorted([f for f in session_dir.iterdir() if f.name.startswith("chunk-")], 
-                             key=lambda f: int(f.name.split("-")[1]))
-        
-        with open(combined_path, "wb") as combined_file:
-            for chunk_file in chunk_files:
-                with open(chunk_file, "rb") as cf:
-                    combined_file.write(cf.read())
-
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            embed_metadata(combined_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            source_hash = sha256_file(combined_path)
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
-
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=safe_filename(metadata.get("fileName", "unknown.mp4")),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
-
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-
-        import shutil
-        shutil.rmtree(session_dir, ignore_errors=True)
-
-        return response
-
     @app.post("/api/stego/extract")
+    @limiter.limit(config.ratelimit_extract)
     @require_capacity(admission_controller)
     @idempotent("extract")
     def extract():
@@ -636,6 +578,8 @@ def create_app() -> Flask:
                 metadata_hash = canonical_metadata_hash(metadata) if metadata else None
         except QuarantineError as exc:
             return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
 
         retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
         if retention_class not in config.retention_classes:
@@ -645,17 +589,20 @@ def create_app() -> Flask:
         if retention_days >= 0:
             expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
 
-        db_event = insert_proof_event(
-            event_type="extract",
-            file_name=safe_filename(video.filename),
-            video_hash=video_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId") if metadata else None,
-            tier=metadata.get("tier") if metadata else None,
-            retention_class=retention_class,
-            expires_at=expires_at,
-            metadata=redact_metadata(metadata),
-        )
+        try:
+            db_event = insert_proof_event(
+                event_type="extract",
+                file_name=safe_filename(video.filename),
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId") if metadata else None,
+                tier=metadata.get("tier") if metadata else None,
+                retention_class=retention_class,
+                expires_at=expires_at,
+                metadata=redact_metadata(metadata),
+            )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
 
         if db_event and db_event.get("id"):
             queue_webhook_deliveries(db_event["id"])
@@ -676,11 +623,7 @@ def create_app() -> Flask:
         try:
             parsed_limit = int(limit)
         except ValueError:
-            return error_response(
-                code=VALIDATION_ERROR,
-                message="limit must be an integer",
-                status=400,
-            )
+            return jsonify({"error": "limit must be an integer"}), 400
 
         cursor_id = None
         if cursor_token is not None and cursor_token != "":
@@ -690,7 +633,7 @@ def create_app() -> Flask:
                 return jsonify({"error": "invalid cursor"}), 400
 
         events, next_cursor = list_proof_events(parsed_limit, cursor_id=cursor_id)
-        return jsonify({"ok": True, "events": events, "nextCursor": next_cursor})
+        return ok_response({"events": events, "nextCursor": next_cursor})
 
     @app.get("/api/proofs/lineage")
     def lineage_events():
@@ -699,7 +642,7 @@ def create_app() -> Flask:
             parsed_limit = int(limit)
         except ValueError:
             return jsonify({"error": "limit must be an integer"}), 400
-        return jsonify({"ok": True, "events": list_lineage_events(parsed_limit)})
+        return ok_response({"events": list_lineage_events(parsed_limit)})
 
     @app.get("/api/proofs/by-video/<video_hash>")
     def proof_by_video(video_hash: str):
@@ -773,6 +716,8 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "manifestDigest": manifest_digest, "db_event": db_event})
 
     @app.post("/api/proofs/register")
+    @require_register_auth
+    @limiter.limit(config.ratelimit_register)
     @idempotent("register")
     def register_proof_event():
         if _enforce_json_size() > config.max_json_bytes:
@@ -799,11 +744,7 @@ def create_app() -> Flask:
             ("proofId", proof_id),
         ):
             if not is_hex_32(value):
-                return error_response(
-                    code=VALIDATION_ERROR,
-                    message=f"{name} must be a 32-byte hex string",
-                    status=400,
-                )
+                return jsonify({"error": f"{name} must be a 32-byte hex string"}), 400
 
         tier = payload.get("tier")
         if tier not in ALLOWED_TIERS:
@@ -816,8 +757,6 @@ def create_app() -> Flask:
         try:
             normalized_tx_hash = normalize_tx_hash(tx_hash)
             normalized_tx_status = normalize_tx_status(tx_status)
-            if normalized_tx_hash:
-                normalized_tx_status = "pending"
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -843,7 +782,6 @@ def create_app() -> Flask:
                     return jsonify({"error": "Invalid time attestation", "details": errors}), 400
                 time_attestation_data = encode_time_attestation(time_att)
                 if time_att.claimed_time:
-                    from datetime import datetime, timezone
                     claimed_capture_time = datetime.fromtimestamp(
                         time_att.claimed_time.unix_ms / 1000, tz=timezone.utc
                     ).isoformat()
@@ -890,7 +828,7 @@ def create_app() -> Flask:
                 enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
 
         status = 201 if created else 200
-        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+        return ok_response({"db_event": db_event, "created": created}, status=status)
 
     @app.post("/api/time-attestation/create")
     def create_time_attestation_endpoint():
@@ -1076,6 +1014,7 @@ def create_app() -> Flask:
         return ok_response({"db_event": db_event})
 
     @app.post("/api/noir/silent-witness")
+    @limiter.limit(config.ratelimit_silent_witness)
     @require_capacity(admission_controller)
     @idempotent("silent-witness")
     def silent_witness_proof():
@@ -1188,6 +1127,7 @@ def create_app() -> Flask:
         app.webhook_worker = webhook_worker
 
     @app.post("/api/noir/silent-witness/aggregate")
+    @limiter.limit(config.ratelimit_silent_witness)
     def silent_witness_aggregate():
         """Generate a bounded aggregated proof for multiple video hashes.
 
@@ -1348,8 +1288,14 @@ def normalize_tx_hash(value: object) -> str | None:
         raise ValueError("txHash must be a 32-byte hex string")
 
     normalized = value.strip().lower()
-    if not is_hex_32(normalized):
-        raise ValueError("txHash must be a 32-byte hex string")
+    # Accept a full 32-byte Stellar transaction hash or a short hex hash, but
+    # reject truncated/overlong values that cannot be a whole byte string.
+    if (
+        not (8 <= len(normalized) <= 64)
+        or len(normalized) % 2 != 0
+        or any(char not in "0123456789abcdef" for char in normalized)
+    ):
+        raise ValueError("txHash must be a valid hex string")
     return normalized
 
 

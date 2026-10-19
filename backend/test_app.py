@@ -788,8 +788,8 @@ def valid_register_payload(**overrides) -> dict[str, object]:
         "tier": "source",
         "txHash": "dd" * 32,
         "txStatus": "confirmed",
-        "sourceAddress": "GDVRSXIO4SK2KSMUKJTQHMDDHBBFC7NGZZ6WLVOPKAG47GYPYAZCZR7G",
-        "contractId": "CCKTQNMBLXZXMWVR2WG4HDDUI3QGJU5LV5NTLFPCB72UITWE5TEDK7BT",
+        "sourceAddress": "GCCHDCX2JTLB6FDKHGIAAQPS6JHBDETFXTCQRETJUP5BWBVT6G4LQKOQ",
+        "contractId": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
     }
     base.update(overrides)
     return base

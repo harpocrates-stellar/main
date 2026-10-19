@@ -454,7 +454,9 @@ def upsert_register_event(
             "expires_at": expires_at,
             "legal_hold": False,
         }
-        return stub, True
+        # Report the no-database dev mode as a non-creating, idempotent no-op
+        # so callers do not believe a durable proof record was written.
+        return stub, False
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
