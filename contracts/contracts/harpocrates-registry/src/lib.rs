@@ -444,6 +444,7 @@ pub enum ProposalAction {
     SetProofTtl = 3,
     RevokeCredentialRoot = 4,
     ExpireCredentialRoot = 5,
+    UpgradeWasm = 6,
 }
 
 pub const DEFAULT_SCOPE_EPOCH: u64 = 0;
@@ -1444,6 +1445,12 @@ pub struct SchemaUpgraded {
     pub current: u32,
 }
 
+#[contractevent(topics = ["contract", "upgrade"])]
+pub struct ContractUpgraded {
+    pub old_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN<32>,
+}
+
 // ---------------------------------------------------------------------------
 // Paginated verifier-set inspection
 // ---------------------------------------------------------------------------
@@ -1553,6 +1560,8 @@ pub enum DataKey {
     VerifierCircuitVersions,
     /// Storage schema version.
     SchemaVersion,
+    /// Hash of the current active contract Wasm bytecode.
+    WasmHash,
     /// Scope epoch for verifier-scope binding.
     ScopeEpoch(BytesN<32>),
     /// Sequential counter for timelock proposal IDs (#86).
@@ -2450,7 +2459,7 @@ impl HarpocratesRegistry {
         payload: BytesN<32>,
     ) -> u32 {
         require_admin(&env, &admin);
-        if action == 0 || action > 4 {
+        if action == 0 || action > 6 || action == 5 {
             panic_with_error!(&env, RegistryError::InvalidProposalAction);
         }
         let pending_count: u32 = count_pending_proposals(&env);
@@ -2544,6 +2553,9 @@ impl HarpocratesRegistry {
         if proposal.cancelled {
             panic_with_error!(&env, RegistryError::ProposalCancelled);
         }
+        if proposal.action == ProposalAction::UpgradeWasm as u32 {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -2563,6 +2575,10 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
+    }
+
+    pub fn get_current_wasm_hash(env: Env) -> Option<BytesN<32>> {
+        env.storage().persistent().get(&DataKey::WasmHash)
     }
 
     pub fn get_timelock_proposal_count(env: Env) -> u32 {
@@ -6278,6 +6294,24 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
             CredentialRootExpired {
                 credential_root: proposal.payload.clone(),
                 expired_at: record.expires_at,
+            }
+            .publish(env);
+        }
+        6 => {
+            let old_wasm_hash = env
+                .storage()
+                .persistent()
+                .get(&DataKey::WasmHash)
+                .unwrap_or_else(|| BytesN::from_array(env, &[0u8; 32]));
+            let new_wasm_hash = proposal.payload.clone();
+            env.deployer()
+                .update_current_contract_wasm(new_wasm_hash.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::WasmHash, &new_wasm_hash);
+            ContractUpgraded {
+                old_wasm_hash,
+                new_wasm_hash,
             }
             .publish(env);
         }
