@@ -1025,6 +1025,25 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "events": find_lineage_by_actor(actor_address, parsed_limit)})
 
+    @app.get("/api/lineage/<output_digest>")
+    def lineage_by_output_digest(output_digest: str):
+        if not is_hex_32(output_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="output_digest must be a 32-byte hex string",
+                status=400,
+            )
+
+        record = find_lineage_by_output_digest(output_digest)
+        if not record:
+            return error_response(
+                code=NOT_FOUND,
+                message="lineage record not found",
+                status=404,
+            )
+
+        return ok_response({"record": record})
+
     @app.post("/api/proofs/lineage")
     def register_lineage_event():
         if _enforce_json_size() > config.max_json_bytes:

@@ -260,6 +260,11 @@ def _error_probes(client) -> list[tuple[str, object, str]]:
             "flat",
         ),
         (
+            "lineage_by_output_digest_malformed",
+            client.get("/api/lineage/not-a-hash"),
+            "envelope",
+        ),
+        (
             "proof_history_invalid_id",
             client.get("/api/proofs/history/not-a-hash"),
             "flat",
@@ -575,6 +580,23 @@ class ErrorEnvelopeConformanceTest(unittest.TestCase):
             self.client.get("/api/proofs", query_string={"cursor": "@@@"}), status=400
         )
 
+    def test_lineage_by_output_digest_malformed_is_validation_envelope(self) -> None:
+        body = self._assert_envelope(
+            self.client.get("/api/lineage/not-a-hash"),
+            code=VALIDATION_ERROR,
+        )
+        self.assertEqual(
+            body["error"]["message"],
+            "output_digest must be a 32-byte hex string",
+        )
+
+    def test_lineage_by_output_digest_missing_is_not_found_envelope(self) -> None:
+        body = self._assert_envelope(
+            self.client.get(f"/api/lineage/{'ff' * 32}"),
+            code=NOT_FOUND,
+        )
+        self.assertTrue(body["error"]["message"])
+
     def test_every_error_probe_matches_a_documented_shape(self) -> None:
         for name, response, expected_shape in _error_probes(self.client):
             with self.subTest(probe=name):
@@ -671,6 +693,7 @@ class SuccessEnvelopeConformanceTest(unittest.TestCase):
             ("get", "/api/schemas"),
             ("get", "/api/proofs"),
             ("get", "/api/proofs/lineage"),
+            ("get", f"/api/lineage/{'ff' * 32}"),
         ):
             with self.subTest(path=path):
                 response = getattr(self.client, method)(path)
