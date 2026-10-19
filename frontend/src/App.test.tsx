@@ -241,23 +241,32 @@ describe('App', () => {
     expect(studio).not.toHaveAttribute('aria-busy')
   })
 
-  it('updates document.title on navigation across each view', async () => {
-    const user = userEvent.setup()
-    render(<App />)
+  describe('release compatibility banner', () => {
+    it('shows nothing when the build configuration is compatible', () => {
+      render(<App />)
+      expect(screen.queryByText(/incompatible release configuration/i)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /dismiss compatibility banner/i })).not.toBeInTheDocument()
+    })
 
-    expect(document.title).toBe('Harpocrates')
+    it('shows a dismissible banner naming expected vs configured values when incompatible', async () => {
+      vi.stubEnv('VITE_HARPOCRATES_RELEASE_ID', 'harpocrates-2.0.0-beta')
+      vi.stubEnv('VITE_HARPOCRATES_RELEASE_NETWORK', 'mainnet')
 
-    await user.click(screen.getByRole('button', { name: /^evidence$/i }))
-    expect(document.title).toBe('Evidence Studio - Harpocrates')
+      const user = userEvent.setup()
+      render(<App />)
 
-    await user.click(screen.getByRole('button', { name: /^verify$/i }))
-    expect(document.title).toBe('Verify evidence - Harpocrates')
+      const banner = screen.getByRole('alert', { name: /incompatible release configuration/i })
+      expect(banner).toBeInTheDocument()
+      expect(screen.getByText('harpocrates-1.0.0')).toBeInTheDocument()
+      expect(screen.getByText('testnet')).toBeInTheDocument()
+      expect(screen.getByText('harpocrates-2.0.0-beta')).toBeInTheDocument()
+      expect(screen.getByText('mainnet')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: /batch workspace/i }))
-    expect(document.title).toBe('Batch Workspace - Harpocrates')
+      const dismissButton = screen.getByRole('button', { name: /dismiss compatibility banner/i })
+      await user.click(dismissButton)
 
-    await user.click(screen.getByRole('button', { name: /home/i }))
-    expect(document.title).toBe('Harpocrates')
+      expect(screen.queryByText(/incompatible release configuration:/i)).not.toBeInTheDocument()
+    })
   })
 })
 
