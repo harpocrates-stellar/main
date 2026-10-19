@@ -63,6 +63,15 @@ PC request timeout (`--timeout`) is a dependency
 failure and thus also exits 8. Do not treat a nonzero exit or an offline receipt as
 verified evidence. `--tx-hash`, when supplied, must match the manifest.
 
+Harpocrates CLI environment variables:
+
+- `HARPOCRATES_RPC_URL` -- default for `--rpc-url` in `verify` and `manifest`.
+- `HARPOCRATES_CONTRACT_ID` -- default for `--contract-id` in `verify` and `manifest`.
+- `HARPOCRATES_SOURCE_ADDRESS` -- default for `--source-address` in `verify`.
+
+Explicit flags always take precedence over environment values. Contract-id
+validation still applies to environment values.
+
 The CLI accepts at most 1 MiB of manifest/metadata JSON. It rejects unknown
 manifest fields and unsupported versions, and writes fixed, privacy-safe
 error messages rather than raw RPC or file errors. Do not pass private
