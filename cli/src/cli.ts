@@ -247,26 +247,42 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
 
 async function handleHash(flags: Record<string, string>): Promise<void> {
   const filePath = flags.file || flags.f
+  const outputFormat = flags.output || flags.o || 'text'
 
   if (!filePath) {
     exit(2, '--file is required for hashing')
   }
 
+  if (outputFormat !== 'text' && outputFormat !== 'json') {
+    exit(2, 'invalid --output value: expected "text" or "json"')
+  }
+
   try {
     let hash: string
+    let bytes: number
     if (filePath === '-') {
       const digest = createHash('sha256')
-      for await (const chunk of process.stdin) digest.update(chunk)
+      bytes = 0
+      for await (const chunk of process.stdin) {
+        bytes += Buffer.byteLength(chunk)
+        digest.update(chunk)
+      }
       hash = digest.digest('hex')
     } else {
       hash = await fileHash(filePath)
+      const { stat } = await import('node:fs/promises')
+      bytes = (await stat(filePath)).size
     }
 
-    printJson({
-      algorithm: 'sha256',
-      input: filePath === '-' ? 'stdin' : 'file',
-      hash,
-    })
+    if (outputFormat === 'json') {
+      printJson({
+        algorithm: 'sha256',
+        digest: hash,
+        bytes,
+      })
+    } else {
+      printText(hash)
+    }
   } catch {
     exit(8, 'hashing failed')
   }
@@ -428,6 +444,7 @@ Manifest options:
 
 Hash options:
   --file, -f        Path to the file to hash (use "-" for stdin; required).
+  --output, -o      Output format: "text" (default) or "json".
 
 Environment variables:
   HARPOCRATES_SOURCE_ADDRESS   Source address for Stellar simulation.
