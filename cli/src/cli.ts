@@ -91,8 +91,9 @@ async function main(): Promise<void> {
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
     case 'help':
-    default:
       return printHelp()
+    default:
+      return printUnknownCommand(command)
   }
 }
 
@@ -451,6 +452,12 @@ Exit codes:
 `
   printText(help.trim())
   process.exit(0)
+}
+
+function printUnknownCommand(name: string): never {
+  process.stderr.write(`harpocrates: unknown command "${name}"\n`)
+  process.stderr.write(helpText() + '\n')
+  process.exit(2)
 }
 
 main().catch((err) => {
