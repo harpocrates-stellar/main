@@ -1,14 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { Wallet } from 'lucide-react'
 import EvilEye from './components/EvilEye'
-import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
+import { LazyFallback } from './components/LazyFallback'
 import { LandingView } from './views/LandingView'
-import { StudioView } from './views/StudioView'
 import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
 import { useEvidence } from './hooks/useEvidence'
 import { useVerification } from './hooks/useVerification'
-import { useLiveRegion, useA11yStage, useSkipLink } from './hooks/useA11y'
+import { useLiveRegion, useAc11Stage, useSkipLink } from './hooks/useAc11'
 import type { IdentityTier } from './types'
 import type { View } from './types'
 import { createProofManifest } from './proofManifest'
@@ -20,6 +19,11 @@ import './App.css'
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
+
+const StudioView = lazy(() => import('./views/StudioView').then(({ StudioView }) => ({ default: StudioView })))
+const BatchVerificationWorkspace = lazy(() =>
+  import('./components/BatchVerificationWorkspace').then(({ default: BatchVerificationWorkspace }) => ({ default: BatchVerificationWorkspace })),
+)
 
 type AppView = View | 'batch'
 
@@ -57,7 +61,7 @@ function App() {
 
   const liveStatus = useLiveRegion()
   const liveAlert = useLiveRegion()
-  const { statusLabel } = useA11yStage(evidence.stage)
+  const { statusLabel } = useAc11Stage(evidence.stage)
   const { mainRef, handleSkip } = useSkipLink()
 
   const prevStageRef = useRef(evidence.stage)
@@ -214,12 +218,14 @@ function App() {
         ) : null}
 
         {currentView === 'studio' ? (
-          <StudioView
-            wallet={wallet}
-            evidence={evidence}
-            verification={verification}
-            provenanceRecord={provenanceRecord}
-          />
+          <Suspense fallback={<LazyFallback label="Studio" />}>
+            <StudioView
+              wallet={wallet}
+              evidence={evidence}
+              verification={verification}
+              provenanceRecord={provenanceRecord}
+            />
+          </Suspense>
         ) : null}
 
         {currentView === 'verify' ? (
@@ -228,7 +234,9 @@ function App() {
 
         {currentView === 'batch' ? (
           <section className="workspace app-page verify-page" id="batch">
-            <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            <Suspense fallback={<LazyFallback label="Batch workspace" />}>
+              <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            </Suspense>
           </section>
         ) : null}
       </main>
