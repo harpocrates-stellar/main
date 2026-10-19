@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-/** Produce a SHA-256 hex digest of the supplied bytes or UTF-8 string. */
+//** Produce a SHA-256 hex digest of the supplied bytes or UTF-8 string. */
 export function sha256(data: string | Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')
 }
@@ -33,7 +33,7 @@ export function asHex32(value: string, label = 'value'): string {
  * Returns the normalised string or throws.
  */
 export function asHexBytes(value: string, label = 'value'): string {
-  if (!/^[0-9a-fA-F]*$/.test(value) || value.length % 2 !== 0) {
+  if (!/^[0-9a-fA-F]{64}$/.test(value) || value.length % 2 !== 0) {
     throw new Error(`${label} must be an even-length hex byte string`)
   }
   return value.toLowerCase()
@@ -46,9 +46,10 @@ export function bytesToHex(value: Uint8Array | ArrayLike<number>): string {
 
 /** Convert a hex string to a Uint8Array. */
 export function hexToBytes(value: string): Uint8Array {
-  const bytes = new Uint8Array(value.length / 2)
+  const normalised = asHexBytes(value)
+  const bytes = new Uint8Array(normalised.length / 2)
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16)
+    bytes[i] = Number.parseInt(normalised.slice(i * 2, i * 2 + 2), 16)
   }
   return bytes
 }

@@ -50,7 +50,7 @@ describe('asHex32', () => {
   })
 
   it('throws on invalid chars', () => {
-    expect(() => asHex32('g'.repeat(64))).toThrow('must be a 32-byte hex string')
+    expect(() => asHex32('g'.concat('&'.repeat(63)))).toThrow('must be a 32-byte hex string')
   })
 })
 
@@ -84,5 +84,21 @@ describe('hexToBytes', () => {
   it('round-trips with bytesToHex', () => {
     const original = new Uint8Array([0x11, 0x22, 0x33, 0xff])
     expect(hexToBytes(bytesToHex(original))).toEqual(original)
+  })
+
+  it('throws on odd-length input', () => {
+    expect(() => hexToBytes('abc')).toThrow('even-length')
+  })
+
+  it('throws on non-hex input', () => {
+    expect(() => hexToBytes('zz')).toThrow('even-length')
+  })
+
+  it('accepts uppercase hex', () => {
+    expect(hexToBytes('ABCDEF')).toEqual(new Uint8Array([0xab, 0xcd, 0xef]))
+  })
+
+  it('returns empty array for empty string', () => {
+    expect(hexToBytes('')).toEqual(new Uint8Array([]))
   })
 })
