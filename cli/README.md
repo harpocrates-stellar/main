@@ -9,9 +9,15 @@ is needed for read-only Soroban simulation.
 
 ```sh
 node dist/cli.js verify --manifest proof.json \
-  --contract-id C... --network 'Test SDF Network ; September 2015' \
+  --contract-id C... --network testnet \
   --source-address G... --output json
 ```
+
+The `--network` flag accepts the friendly aliases `testnet`, `mainnet`
+(alias `public`), and `futurenet`, which resolve to the corresponding
+Stellar SDK passphrases. Aliases are case-insensitive. Full passphrases
+(for example `'Test SDF Network ; September 2015'`) and custom network
+passphrases are still accepted unchanged.
 
 To verify a signed verification receipt offline without hitting the RPC:
 
@@ -28,10 +34,10 @@ node dist/cli.js c2pa --manifest proof.json [--receipt receipt.json] --output ex
 
 The export is an **unsigned** C2PA JSON manifest definition carrying standard
 `c2pa.actions.v2` and `c2pa.hash.data` assertions plus namespaced
-`harpocrates.registry.v1` (canonical manifest fields bound by
-`manifestHash`), `harpocrates.verification.v1` (the receipt outcome verbatim,
+`hrpocrates.registry.v1` (canonical manifest fields bound by
+`manifestHash`), `hrpocrates.verification.v1` (the receipt outcome verbatim,
 only when `--receipt` is supplied, never a fabricated `valid`), and
-`harpocrates.export.v1` (`unsigned: true`). It contains only public manifest
+`hrpocrates.export.v1` (`unsigned: true`). It contains only public manifest
 and registry fields; it never carries media bytes, witness values, secrets,
 proof bytes, or signing keys, and the exporter never signs. Out-of-band you
 sign the result with your own C2PA signer. Missing `--manifest` exits 2;
@@ -51,6 +57,15 @@ online check exits 0; expired 1, revoked 2, missing 3, network mismatch 4,
 contract mismatch 5, pending 6, failed transaction 7, and malformed input or
 dependency failure 8. Do not treat a nonzero exit or an offline receipt as
 verified evidence. `--tx-hash`, when supplied, must match the manifest.
+
+Harpocrates CLI environment variables:
+
+- `HARPOCRATES_RPC_URL` -- default for `--rpc-url` in `verify` and `manifest`.
+- `HARPOCRATES_CONTRACT_ID` -- default for `--contract-id` in `verify` and `manifest`.
+- `HARPOCRATES_SOURCE_ADDRESS` -- default for `--source-address` in `verify`.
+
+Explicit flags always take precedence over environment values. Contract-id
+validation still applies to environment values.
 
 The CLI accepts at most 1 MiB of manifest/metadata JSON. It rejects unknown
 manifest fields and unsupported versions, and writes fixed, privacy-safe

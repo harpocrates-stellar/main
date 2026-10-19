@@ -4,10 +4,10 @@ import { createReadStream } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import process from 'node:process'
-import { StrKey } from '@stellar/stellar-sdk'
+import { StrKey, Networks } from '@stellar/stellar-sdk'
 import { createProofManifest, parseManifest, serializeManifest } from './manifest.js'
 import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMetadata } from './metadata.js'
-import { lookupByVideoHash, verifyTransaction } from './stellar-lookup.js'
+import { lookupByVideoHash, verifyTransaction, getLineage, getProofStatus } from './stellar-lookup.js'
 import { createReceipt, formatReceipt, type VerificationReceipt } from './receipt.js'
 import { classifyVerification } from './normalize.js'
 import { verifyVerificationReceipt, decodeReceiptFromQr, type SignedVerificationReceipt } from './signed-receipt.js'
@@ -18,6 +18,7 @@ import {
   serializeC2paExport,
   type C2paExport,
 } from './c2pa.js'
+import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
 
@@ -65,6 +66,20 @@ function exit(code: number, message?: string): never {
   process.exit(code)
 }
 
+// ── Network resolution ────────────────────────────────────────────────────
+
+const NETWORK_ALIASES: Record<string, string> = {
+  testnet: Networks.TESTNET,
+  mainnet: Networks.PUBLIC,
+  public: Networks.PUBLIC,
+  futurenet: Networks.FUTURENET,
+}
+
+export function resolveNetwork(value: string): string {
+  const key = value.trim().toLowerCase()
+  return NETWORK_ALIASES[key] ?? value
+}
+
 // ── Main dispatcher ───────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -90,9 +105,12 @@ async function main(): Promise<void> {
       return await handleVerifyReceipt(flags, debugLog)
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
+    case 'verify-lineage':
+      return await handleVerifyLineage(flags, debugLog)
     case 'help':
-    default:
       return printHelp()
+    default:
+      return printUnknownCommand(command)
   }
 }
 
@@ -104,7 +122,7 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
   const outputFormat = flags.output || flags.o || 'text'
   const offline = flags.offline === 'true'
-  const network = flags.network || 'Test SDF Network ; September 2015'
+  const network = resolveNetwork(flags.network || 'Test SDF Network ; September 2015')
 
   if (!contractId || !StrKey.isValidContract(contractId)) {
     exit(8, 'a valid --contract-id is required for verification')
@@ -217,7 +235,7 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
   const manifest = createProofManifest({
     proofId: metadata.proofId,
     tier: metadata.tier,
-    network: flags.network || 'Test SDF Network ; September 2015',
+    network: resolveNetwork(flags.network || 'Test SDF Network ; September 2015'),
     contractId: flags['contract-id'] || flags.contractId,
     transactionRef: flags['tx-hash'] || flags.txHash,
     videoHash: flags['video-hash'] || flags.videoHash || '',
@@ -275,7 +293,7 @@ async function handleHash(flags: Record<string, string>): Promise<void> {
 async function handleVerifyReceipt(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
   const receiptPath = flags.receipt || flags.r
   const keysPath = flags.keys || flags.k
-  const network = flags.network
+  const network = flags.network ? resolveNetwork(flags.network) : undefined
   const proofId = flags['proof-id'] || flags.proofId
 
   if (!receiptPath) exit(2, '--receipt is required')
@@ -375,6 +393,72 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
   }
 }
 
+async function handleVerifyLineage(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const outputDigest = flags['output-digest'] || flags.outputDigest
+  const contractId = flags['contract-id'] || flags.contractId
+  const rpcUrl = flags['rpc-url'] || flags.rpcUrl
+  const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
+  const network = resolveNetwork(flags.network || 'Test SDF Network ; September 2015')
+  const outputFormat = flags.output || flags.o || 'text'
+
+  if (!outputDigest) {
+    exit(2, '--output-digest is required for lineage verification')
+  }
+
+  if (!contractId || !StrKey.isValidContract(contractId)) {
+    exit(8, 'a valid --contract-id is required for verification')
+  }
+
+  if (!sourceAddress) {
+    exit(8, 'a source address is required for simulation. Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS')
+  }
+
+  debugLog({
+    action: 'verify-lineage',
+    outputDigest,
+    contractId,
+    network,
+  })
+
+  const fetcher = {
+    getLineage: (digest: string) =>
+      getLineage(contractId, digest, {
+        rpcUrl,
+        networkPassphrase: network,
+        sourceAddress,
+      }),
+    getProofStatus: (proofId: string) =>
+      getProofStatus(contractId, proofId, {
+        rpcUrl,
+        networkPassphrase: network,
+        sourceAddress,
+      }),
+  }
+
+  const result = await verifyLineageTree(outputDigest, fetcher)
+
+  if (outputFormat === 'json') {
+    printJson(result)
+  } else {
+    printText(formatLineageTree(result.root))
+    if (!result.success && result.failureReason) {
+      printText(`\nVerification failed: ${result.failureReason}`)
+    }
+  }
+
+  if (!result.success) {
+    if (result.revokedCount > 0) exit(2, 'an ancestor is revoked')
+    if (result.expiredCount > 0) exit(1, 'an ancestor is expired')
+    if (result.missingCount > 0) exit(3, 'an ancestor is missing')
+    exit(8, result.failureReason ?? 'lineage verification failed')
+  }
+
+  exit(0)
+}
+
 function printHelp(): void {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -384,11 +468,20 @@ Usage:
 
 Commands:
   verify         Verify a proof against the Stellar network.
+  verify-lineage Verify a derivative's full lineage back to registered originals.
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
   verify-receipt Verify an offline signed receipt.
   c2pa           Export C2PA authenticity assertions from a proof manifest.
   help           Show this help message.
+
+Lineage verification options:
+  --output-digest  32-byte hex digest of the derivative (required).
+  --contract-id    Contract ID on Stellar (required).
+  --rpc-url        Stellar RPC URL (default: testnet).
+  --source-address Source address for simulation.
+  --network        Network alias (testnet|mainnet|public|futurenet) or full passphrase (default: testnet).
+  --output, -o     Output format: "text" (default) or "json".
 
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).
@@ -403,7 +496,7 @@ C2PA export options:
 Verify Receipt options:
   --receipt, -r     Path to signed receipt JSON or QR payload (use "-" for stdin).
   --keys, -k        Path to JSON file mapping key IDs to JWKs.
-  --network         Optional expected network passphrase.
+  --network         Optional expected network alias (testnet|mainnet|public|futurenet) or passphrase.
   --proof-id        Optional expected proof ID.
   --output, -o      Output format: "text" (default) or "json".
 
@@ -411,7 +504,7 @@ Verify options:
   --contract-id     Contract ID on Stellar (required).
   --manifest        Path to a proof manifest JSON file (use "-" for stdin).
   --tx-hash         Transaction hash to verify on-chain.
-  --network         Network passphrase (default: testnet).
+  --network         Network alias (testnet|mainnet|public|futurenet) or full passphrase (default: testnet).
   --rpc-url         Stellar RPC URL (default: testnet).
   --source-address  Source address for simulation.
   --output, -o      Output format: "text" (default) or "json".
@@ -422,7 +515,7 @@ Manifest options:
   --tx-hash         Transaction hash from the registration (required).
   --contract-id     Contract ID on Stellar (required).
   --video-hash      32-byte hex video hash (required).
-  --network         Network passphrase (default: testnet).
+  --network         Network alias (testnet|mainnet|public|futurenet) or full passphrase (default: testnet).
   --output, -o      File path to write the manifest to.
   --format          Output format when printing to stdout: "json" (default) or "text".
 
@@ -435,8 +528,8 @@ Environment variables:
 
 Debugging:
   --debug                      Emit redacted structured diagnostics to stderr.
-                               Sensitive fields (secrets, witnesses, tokens,
-                               credentials) are never logged.
+                                Sensitive fields (secrets, witnesses, tokens,
+                                credentials) are never logged.
 
 Exit codes:
   0   valid
@@ -450,11 +543,20 @@ Exit codes:
   8   error
 `
   printText(help.trim())
+
   process.exit(0)
 }
 
-main().catch((err) => {
-  void err
-  process.stderr.write('harpocrates: unexpected error\n')
-  process.exit(8)
-})
+function printUnknownCommand(name: string): never {
+  process.stderr.write(`harpocrates: unknown command "${name}"\n`)
+  process.stderr.write(helpText() + '\n')
+  process.exit(2)
+}
+
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    void err
+    process.stderr.write('harpocrates: unexpected error\n')
+    process.exit(8)
+  })
+}

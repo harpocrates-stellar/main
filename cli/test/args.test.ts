@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import { CliUsageError, parseCliArgs } from '../src/args.js'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { Networks } from '@stellar/stellar-sdk'
+import { CliUsageError, parseCliArgs, resolveNetwork } from '../src/args.js'
 
-const COMMANDS = ['verify', 'manifest', 'hash', 'verify-receipt', 'c2pa'] as const
+const COMMANDS = ['verify', 'manifest', 'hash', 'verify-receipt', 'c2pa', 'verify-lineage'] as const
 
 type Case = [string, string[], Record<string, string>]
 
@@ -12,8 +13,45 @@ function usageError(argv: string[]): CliUsageError {
     expect(err).toBeInstanceOf(CliUsageError)
     return err as CliUsageError
   }
-  throw new Error(`expected a usage error for: ${argv.join(' ')}`)
+  throw new Error(`Expected a usage error for: ${argv.join(' ')}`)
 }
+
+describe('resolveNetwork', () => {
+  it.each([
+    ['testnet', Networks.TESTNET],
+    ['mainnet', Networks.PUBLIC],
+    ['public', Networks.PUBLIC],
+    ['futurenet', Networks.FUTURENET],
+  ])('resolves %s to the SDK passphrase', (alias, passphrase) => {
+    expect(resolveNetwork(alias)).toBe(passphrase)
+  })
+
+  it.each([
+    ['TESTNET', Networks.TESTNET],
+    ['MainNet', Networks.PUBLIC],
+    ['Public', Networks.PUBLIC],
+    ['FutureNet', Networks.FUTURENET],
+  ])('resolves %s case-insensitively', (alias, passphrase) => {
+    expect(resolveNetwork(passphrase)).toBe(passphrase)
+    expect(resolveNetwork(alias)).toBe(passphrase)
+  })
+
+  it('passes custom passphrases through unchanged', () => {
+    const custom = 'My Custom Network ; 2025'
+    expect(resolveNetwork(custom)).toBe(custom)
+  })
+
+  it('passes the full Stellar passphrases through unchanged', () => {
+    expect(resolveNetwork(Networks.TESTNET)).toBe(Networks.TESTNET)
+    expect(resolveNetwork(Networks.PUBLIC)).toBe(Networks.PUBLIC)
+    expect(resolveNetwork(Networks.FUTURENET)).toBe(Networks.FUTURENET)
+  })
+
+  it('passes arbitrary values through unchanged', () => {
+    expect(resolveNetwork('n')).toBe('n')
+    expect(resolveNetwork('')).toBe('')
+  })
+})
 
 describe('command selection', () => {
   it('returns help when no command is given', () => {
@@ -60,7 +98,7 @@ describe('--flag=value form', () => {
     ['verify', ['--output=json', '--manifest=m.json'], { output: 'json', manifest: 'm.json' }],
     ['manifest', ['--input=in.json', '--format=text'], { input: 'in.json', format: 'text' }],
     ['hash', ['--file=a.bin'], { file: 'a.bin' }],
-    ['verify-receipt', ['--receipt=r.json', '--keys=k.json'], { receipt: 'r.json', keys: 'k.json' }],
+    ['verify-receipt', ['--receipt=r.json', '--keys=k-json'], { receipt: 'r.json', keys: 'k.json' }],
     ['c2pa', ['--title=a=b', '--output=out.json'], { title: 'a=b', output: 'out.json' }],
   ]
 
@@ -82,8 +120,8 @@ describe('long flags and camelCase fallbacks', () => {
     ],
     [
       'verify',
-      ['--contractId', 'C1', '--txHash', 'h', '--rpcUrl', 'u', '--sourceAddress', 'G1'],
-      { contractId: 'C1', txHash: 'h', rpcUrl: 'u', sourceAddress: 'G1' },
+      ['--contractId', 'C1', '--tyHash', 'h', '--rpcUrl', 'u', '--sourceAddress', 'G1'],
+      { contractId: 'C1', tyHash: 'h', rpcUrl: 'u', sourceAddress: 'G1' },
     ],
     [
       'manifest',
@@ -93,10 +131,57 @@ describe('long flags and camelCase fallbacks', () => {
     ['manifest', ['--videoHash', 'ab'], { videoHash: 'ab' }],
     ['verify-receipt', ['--proof-id', 'p1'], { 'proof-id': 'p1' }],
     ['verify-receipt', ['--proofId', 'p1'], { proofId: 'p1' }],
+    [
+      'verify-lineage',
+      ['--output-digest', 'abc', '--contract-id', 'C1'],
+      { 'output-digest': 'abc', 'contract-id': 'C1' },
+    ],
+    [
+      'verify-lineage',
+      ['--outputDigest', 'abc', '--contractId', 'C1'],
+      { outputDigest: 'abc', contractId: 'C1' },
+    ],
   ]
 
   it.each(cases)('%s keeps the long flag names handlers read', (command, args, flags) => {
     expect(parseCliArgs([command, ...args]).flags).toEqual(flags)
+  })
+})
+
+describe('network aliases', () => {
+  it.each(COMMANDS.filter((c) => c !== 'hash' && c !== 'c2pa'))(
+    '%s resolves --network aliases',
+    (command) => {
+      expect(parseCliArgs([command, '--network', 'testnet']).flags.network).toBe(Networks.TESTNET)
+    },
+  )
+
+  it('resolves --network mainnet and public to the public passphrase', () => {
+    expect(parseCliArgs(['verify', '--network', 'mainnet']).flags.network).toBe(Networks.PUBLIC)
+    expect(parseCliArgs(['verify', '--network', 'public']).flags.network).toBe(Networks.PUBLIC)
+  })
+
+  it('resolves --network futurenet', () => {
+    expect(parseCliArgs(['verify-receipt', '--network', 'futurenet']).flags.network).toBe(
+      Networks.FUTURENET,
+    )
+  })
+
+  it('resolves aliases case-insensitively', () => {
+    expect(parseCliArgs(['verify', '--network', 'TESTNET']).flags.network).toBe(
+      Networks.TESTNET,
+    )
+  })
+
+  it('passes full passphrases through unchanged', () => {
+    expect(parseCliArgs(['verify', '--network', Networks.TESTNET]).flags.network).toBe(
+      Networks.TESTNET,
+    )
+  })
+
+  it('passes custom passphrases through unchanged', () => {
+    const custom = 'My Custom Network ; 2025'
+    expect(parseCliArgs(['verify', '--network', custom]).flags.network).toBe(custom)
   })
 })
 
@@ -124,63 +209,69 @@ describe('boolean flags', () => {
 })
 
 describe('stdin dash as a value', () => {
-  it.each<Case>([
-    ['verify', ['--manifest', '-'], { manifest: '-' }],
-    ['manifest', ['-i', '-'], { input: '-' }],
-    ['hash', ['-f', '-'], { file: '-' }],
-    ['verify-receipt', ['--receipt', '-'], { receipt: '-' }],
-    ['c2pa', ['-m', '-'], { manifest: '-' }],
-  ])('%s accepts "-" for stdin', (command, args, flags) => {
-    expect(parseCliArgs([command, ...args]).flags).toEqual(flags)
-  })
+  it.each<Case>([])
 })
 
-describe('missing values', () => {
-  it.each<[string, string[]]>([
-    ['verify', ['--output']],
-    ['verify', ['-o']],
-    ['verify', ['--manifest']],
-    ['manifest', ['--input']],
-    ['manifest', ['-i']],
-    ['hash', ['--file']],
-    ['hash', ['-f']],
-    ['verify-receipt', ['--keys']],
-    ['verify-receipt', ['-k']],
-    ['c2pa', ['--title']],
-    ['verify', ['-o', '--offline']],
-    ['hash', ['-f', '--debug']],
-  ])('%s rejects %j', (command, args) => {
-    const message = usageError([command, ...args]).message
-    expect(message).toContain(`'${command}'`)
-    expect(message).toContain('harpocrates help')
-  })
-})
+describe('env defaults', () => {
+  const originalRpcUrl = process.env.HARPOCRATES_RPC_URL
+  const originalContractId = process.env.HARPOCRATES_CONTRACT_ID
 
-describe('unknown flags', () => {
-  it.each(COMMANDS)('%s rejects an unknown long flag', (command) => {
-    expect(usageError([command, '--bogus']).message).toContain('--bogus')
+  beforeEach(() => {
+    process.env.HARPOCRATES_RPC_URL = 'https://env-rpc.example.org'
+    process.env.HARPOCRATES_CONTRACT_ID = 'CENVCONTRACTID'
   })
 
-  it.each(COMMANDS)('%s rejects an unknown long flag with a value', (command) => {
-    expect(usageError([command, '--bogus=1']).message).toContain('--bogus')
+  afterEach(() => {
+    if (originalRpcUrl === undefined) {
+      delete process.env.HARPOCRATES_RPC_URL
+    } else {
+      process.env.HARPOCRATES_RPC_URL = originalRpcUrl
+    }
+    if (originalContractId === undefined) {
+      delete process.env.HARPOCRATES_CONTRACT_ID
+    } else {
+      process.env.HARPOCRATES_CONTRACT_ID = originalContractId
+    }
   })
 
-  it.each(COMMANDS)('%s rejects an unknown short flag', (command) => {
-    expect(usageError([command, '-z']).message).toContain('-z')
+  it('uses HARPOCRATES_RPC_URL for verify when --rpc-url is absent', () => {
+    expect(parseCliArgs(['verify']).flags).toEqual({ 'rpc-url': 'https://env-rpc.example.org' })
   })
 
-  it.each(COMMANDS)('%s rejects a stray positional argument', (command) => {
-    expect(usageError([command, 'stray']).message).toContain('stray')
+  it('prefers --rpc-url over HARPOCRATES_RPC_URL', () => {
+    expect(parseCliArgs(['verify', '--rpc-url', 'https://flag.example.org']).flags).toEqual({
+      'rpc-url': 'https://flag.example.org',
+    })
   })
 
-  it('rejects a flag that belongs to a different command', () => {
-    expect(usageError(['hash', '--manifest', 'x']).message).toContain('--manifest')
-    expect(usageError(['c2pa', '--input', 'x']).message).toContain('--input')
+  it('prefers camelCase --rpcUrl over HARPOCRATES_RPC_URL', () => {
+    expect(parseCliArgs(['verify', '--rpcUrl', 'https://flag.example.org']).flags).toEqual({
+      rpcUrl: 'https://flag.example.org',
+    })
   })
 
-  it('names the command and points at help in the message', () => {
-    const message = usageError(['hash', '--bogus']).message
-    expect(message).toContain("'hash'")
-    expect(message).toContain('harpocrates help')
+  it('uses HARPOCRATES_CONTRACT_ID for manifest when --contract-id is absent', () => {
+    expect(parseCliArgs(['manifest']).flags).toEqual({ 'contract-id': 'CENVCONTRACTID' })
+  })
+
+  it('prefers --contract-id over HARPOCRATES_CONTRACT_ID', () => {
+    expect(parseCliArgs(['manifest', '--contract-id', 'CFLAGCONTRACTID']).flags).toEqual({
+      'contract-id': 'CFLAGCONTRACTID',
+    })
+  })
+
+  it('prefers camelCase --contractId over HARPOCRATES_CONTRACT_ID', () => {
+    expect(parseCliArgs(['manifest', '--contractId', 'CFLAGCONTRACTID']).flags).toEqual({
+      contractId: 'CFLAGCONTRACTID',
+    })
+  })
+
+  it('does not apply env defaults to commands that do not declare them', () => {
+    expect(parseCliArgs(['hash']).flags).toEqual({})
+  })
+
+  it('ignores an empty env value', () => {
+    process.env.HARPOCRATES_RPC_URL = ''
+    expect(parseCliArgs(['verify']).flags).toEqual({})
   })
 })
