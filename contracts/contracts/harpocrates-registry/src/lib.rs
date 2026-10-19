@@ -106,6 +106,17 @@ const _: () = assert!(
 );
 
 // ---------------------------------------------------------------------------
+// Tier 2 Source Batch Commitments
+// ---------------------------------------------------------------------------
+pub const MAX_SOURCE_BATCH_COUNT: u32 = 1_048_576;
+pub const MIN_SOURCE_BATCH_COUNT: u32 = 1;
+pub const MAX_SOURCE_BATCH_PROOF_LEN: u32 = 32;
+
+pub const SOURCE_BATCH_LEAF_DOMAIN: u8 = 0x00;
+pub const SOURCE_BATCH_NODE_DOMAIN: u8 = 0x01;
+
+
+// ---------------------------------------------------------------------------
 // On-chain metadata envelope versioning (#317)
 // ---------------------------------------------------------------------------
 //
@@ -534,6 +545,20 @@ pub struct ProofRecord {
     pub batch_size: u32,
 }
 
+/// Tier 2 source batch root record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchRecord {
+    pub root: BytesN<32>,
+    pub source: Address,
+    pub count: u32,
+    pub metadata_hash: BytesN<32>,
+    pub created_at: u64,
+}
+
+pub type SourceBatchRecord = BatchRecord;
+
+
 /// Versioned on-chain metadata envelope binding (#317).
 ///
 /// Stores only `(version, metadata_hash)` commitments — never raw envelope
@@ -682,6 +707,18 @@ pub struct BatchProofRegistered {
     pub tier: u32,
     pub status: u32,
 }
+
+#[contractevent(topics = ["batch", "root"])]
+pub struct SourceBatchRootRegistered {
+    #[topic]
+    pub root: BytesN<32>,
+    #[topic]
+    pub source: Address,
+    pub count: u32,
+    pub metadata_hash: BytesN<32>,
+    pub registered_at: u64,
+}
+
 
 #[contractevent(topics = ["proof", "revoke"])]
 pub struct ProofRevoked {
@@ -1460,6 +1497,8 @@ pub enum DataKey {
     ReporterCooldown(BytesN<32>),
     /// Scoped nullifier separated by verifier address context (#325).
     VerifierNullifier(Address, BytesN<32>),
+    /// Tier 2 source batch root record keyed by root.
+    SourceBatch(BytesN<32>),
 }
 
 #[contracterror]
@@ -1614,6 +1653,8 @@ pub enum RegistryError {
     /// than [`verifier_inputs::EXPECTED_CIRCUIT_VERSION`], or was the superseded
     /// bare 224-byte frame that commits no circuit version at all (#368).
     CircuitVersionMismatch = 87,
+    /// A Merkle inclusion proof is invalid, oversized, or fails root equality.
+    InvalidInclusionProof = 88,
 }
 
 #[contract]
@@ -2883,6 +2924,117 @@ impl HarpocratesRegistry {
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
         record
+    }
+
+    /// Register a Tier 2 source batch root.
+    ///
+    /// Allows high-volume Tier 2 sources to anchor many items in a single transaction
+    /// by committing the root of a binary Merkle tree.
+    pub fn register_source_batch_root(
+        env: Env,
+        source: Address,
+        root: BytesN<32>,
+        count: u32,
+        metadata_hash: BytesN<32>,
+    ) -> BatchRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER2_REGISTRATION);
+        source.require_auth();
+
+        if count < MIN_SOURCE_BATCH_COUNT || count > MAX_SOURCE_BATCH_COUNT {
+            panic_with_error!(&env, RegistryError::BatchSizeExceeded);
+        }
+
+        if env.storage().persistent().has(&DataKey::SourceBatch(root.clone())) {
+            panic_with_error!(&env, RegistryError::DuplicateProof);
+        }
+
+        let created_at = env.ledger().timestamp();
+        let record = BatchRecord {
+            root: root.clone(),
+            source: source.clone(),
+            count,
+            metadata_hash: metadata_hash.clone(),
+            created_at,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SourceBatch(root.clone()), &record);
+
+        SourceBatchRootRegistered {
+            root,
+            source,
+            count,
+            metadata_hash,
+            registered_at: created_at,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Verify cryptographic inclusion of a leaf in a source batch root.
+    ///
+    /// Evaluates a binary Merkle inclusion proof using SHA-256 with domain-separated
+    /// leaf (`0x00`) and node (`0x01`) hashing to prevent second-preimage attacks
+    /// by construction.
+    pub fn verify_source_batch_inclusion(
+        env: Env,
+        root: BytesN<32>,
+        leaf: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+        index: u32,
+    ) -> bool {
+        let proof_len = proof.len();
+        if proof_len > MAX_SOURCE_BATCH_PROOF_LEN {
+            panic_with_error!(&env, RegistryError::InvalidInclusionProof);
+        }
+
+        if proof_len < 32 {
+            let max_capacity = 1u64 << proof_len;
+            if (index as u64) >= max_capacity {
+                panic_with_error!(&env, RegistryError::InvalidInclusionProof);
+            }
+        }
+
+        // Domain-separated leaf hashing: SHA-256(0x00 || leaf)
+        let mut leaf_preimage = Bytes::new(&env);
+        leaf_preimage.push_back(SOURCE_BATCH_LEAF_DOMAIN);
+        leaf_preimage.extend_from_slice(&leaf.to_array());
+        let mut current: BytesN<32> = env.crypto().sha256(&leaf_preimage).into();
+
+        // Walk up the Merkle path
+        for i in 0..proof_len {
+            let sibling = proof.get(i).unwrap();
+            let bit = (index >> i) & 1;
+
+            let mut node_preimage = Bytes::new(&env);
+            node_preimage.push_back(SOURCE_BATCH_NODE_DOMAIN);
+            if bit == 0 {
+                // current is left, sibling is right
+                node_preimage.extend_from_slice(&current.to_array());
+                node_preimage.extend_from_slice(&sibling.to_array());
+            } else {
+                // sibling is left, current is right
+                node_preimage.extend_from_slice(&sibling.to_array());
+                node_preimage.extend_from_slice(&current.to_array());
+            }
+
+            current = env.crypto().sha256(&node_preimage).into();
+        }
+
+        if current != root {
+            panic_with_error!(&env, RegistryError::InvalidInclusionProof);
+        }
+
+        true
+    }
+
+    /// Read-only query for a stored source batch record.
+    pub fn get_source_batch(env: Env, root: BytesN<32>) -> Option<BatchRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SourceBatch(root))
     }
 
     pub fn register_seal(
@@ -6201,3 +6353,6 @@ mod test_list_verifiers;
 mod test_upgrade_compat;
 #[cfg(test)]
 mod test_verifier_versions;
+#[cfg(test)]
+mod test_source_batch;
+

@@ -180,6 +180,13 @@ const MAX_MEM_GET_PROOF_STATUS: u64 = 400_000;
 const MAX_CPU_REGISTER_SEAL_WORST_CASE: u64 = 2_000_000;
 const MAX_MEM_REGISTER_SEAL_WORST_CASE: u64 = 1_500_000;
 
+const MAX_CPU_REGISTER_SOURCE_BATCH: u64 = 1_200_000;
+const MAX_MEM_REGISTER_SOURCE_BATCH: u64 = 1_000_000;
+
+const MAX_CPU_VERIFY_SOURCE_BATCH_MAX_PROOF: u64 = 1_500_000;
+const MAX_MEM_VERIFY_SOURCE_BATCH_MAX_PROOF: u64 = 1_000_000;
+
+
 // ---------------------------------------------------------------------------
 // Budget baseline tests (measurement)
 // ---------------------------------------------------------------------------
@@ -680,3 +687,87 @@ fn budget_receipt_commit_baseline() {
         "commit_receipt_digest",
     );
 }
+
+#[test]
+fn budget_register_source_batch_root_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+    client.init(&admin);
+
+    let (cpu, mem, _) = measure(&env, || {
+        client.register_source_batch_root(
+            &source,
+            &b32(&env, 0x88),
+            &10_000,
+            &b32(&env, 0x99),
+        )
+    });
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_REGISTER_SOURCE_BATCH,
+        MAX_MEM_REGISTER_SOURCE_BATCH,
+        "register_source_batch_root",
+    );
+}
+
+#[test]
+fn budget_verify_source_batch_inclusion_max_proof_len() {
+    let env = Env::default();
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Build a synthetic tree path of length 32 (MAX_SOURCE_BATCH_PROOF_LEN)
+    let leaf_bytes = [0x42u8; 32];
+    let leaf = BytesN::from_array(&env, &leaf_bytes);
+    let index: u32 = 0x55555555;
+
+    let mut proof_bytes = std::vec::Vec::new();
+    let mut proof = soroban_sdk::Vec::new(&env);
+    for i in 0..32u8 {
+        let sibling = [i + 1; 32];
+        proof_bytes.push(sibling);
+        proof.push_back(BytesN::from_array(&env, &sibling));
+    }
+
+    // Compute expected root using reference SHA-256
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update([SOURCE_BATCH_LEAF_DOMAIN]);
+    hasher.update(&leaf_bytes);
+    let mut cur: [u8; 32] = hasher.finalize().into();
+
+    for d in 0..32 {
+        let sibling = &proof_bytes[d];
+        let mut hasher = Sha256::new();
+        hasher.update([SOURCE_BATCH_NODE_DOMAIN]);
+        if (index >> d) & 1 == 0 {
+            hasher.update(&cur);
+            hasher.update(sibling);
+        } else {
+            hasher.update(sibling);
+            hasher.update(&cur);
+        }
+        cur = hasher.finalize().into();
+    }
+    let root = BytesN::from_array(&env, &cur);
+
+    let (cpu, mem, verified) = measure(&env, || {
+        client.verify_source_batch_inclusion(&root, &leaf, &proof, &index)
+    });
+
+    assert!(verified, "Max proof length verification must succeed");
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_VERIFY_SOURCE_BATCH_MAX_PROOF,
+        MAX_MEM_VERIFY_SOURCE_BATCH_MAX_PROOF,
+        "verify_source_batch_inclusion_at_max_proof_len",
+    );
+}
+
