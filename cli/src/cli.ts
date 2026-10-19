@@ -7,7 +7,7 @@ import process from 'node:process'
 import { StrKey } from '@stellar/stellar-sdk'
 import { createProofManifest, parseManifest, serializeManifest } from './manifest.js'
 import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMetadata } from './metadata.js'
-import { lookupByVideoHash, verifyTransaction, getLineage, getProofStatus, LookupTimeoutError } from './stellar-lookup.js'
+import { lookupByVideoHash, verifyTransaction, getLineage, getProofStatus, LookupTimeoutError, ProofStatus } from './stellar-lookup.js'
 import { createReceipt, formatReceipt, type VerificationReceipt } from './receipt.js'
 import { classifyVerification } from './normalize.js'
 import { verifyVerificationReceipt, decodeReceiptFromQr, type SignedVerificationReceipt } from './signed-receipt.js'
@@ -550,7 +550,7 @@ Exit codes:
 
 function printUnknownCommand(name: string): never {
   process.stderr.write(`harpocrates: unknown command "${name}"\n`)
-  process.stderr.write(helpText() + '\n')
+  process.stderr.write('Run "harpocrates help" for usage.\n')
   process.exit(2)
 }
 
