@@ -166,6 +166,7 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     if (value !== undefined) flags[key] = String(value)
   }
 
+feat/issue-654-feat-cli-accept-named-networks-for-network
   // Resolve friendly network aliases (testnet/mainnet/futurenet) to the
   // Stellar SDK passphrases once, so every handler reading flags.network
   // -- including verify-receipt -- sees the resolved value. Full custom
@@ -174,6 +175,8 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     flags.network = resolveNetwork(flags.network)
   }
 
+
+ main
   applyEnvDefaults(command as Exclude<Command, 'help'>, flags)
 
   return { command: command as Command, flags }

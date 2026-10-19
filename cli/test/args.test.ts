@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+ feat/issue-654-feat-cli-accept-named-networks-for-network
 import { Networks } from '@stellar/stellar-sdk'
 import { CliUsageError, parseCliArgs, resolveNetwork } from '../src/args.js'
+
+import { CliUsageError, parseCliArgs } from '../src/args.js'
+ main
 
 const COMMANDS = ['verify', 'manifest', 'hash', 'verify-receipt', 'c2pa', 'verify-lineage'] as const
 
@@ -13,7 +17,11 @@ function usageError(argv: string[]): CliUsageError {
     expect(err).toBeInstanceOf(CliUsageError)
     return err as CliUsageError
   }
+ feat/issue-654-feat-cli-accept-named-networks-for-network
   throw new Error(`Expected a usage error for: ${argv.join(' ')}`)
+
+  throw new Error(`spected a usage error for: ${argv.join(' ')}`)
+ main
 }
 
 describe('resolveNetwork', () => {
@@ -121,7 +129,11 @@ describe('long flags and camelCase fallbacks', () => {
     [
       'verify',
       ['--contractId', 'C1', '--tyHash', 'h', '--rpcUrl', 'u', '--sourceAddress', 'G1'],
+feat/issue-654-feat-cli-accept-named-networks-for-network
       { contractId: 'C1', tyHash: 'h', rpcUrl: 'u', sourceAddress: 'G1' },
+
+      { contractId: 'C1', txHash: 'h', rpcUrl: 'u', sourceAddress: 'G1' },
+main
     ],
     [
       'manifest',

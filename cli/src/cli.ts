@@ -401,7 +401,11 @@ async function handleVerifyLineage(
   const contractId = flags['contract-id'] || flags.contractId
   const rpcUrl = flags['rpc-url'] || flags.rpcUrl
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
+ feat/issue-654-feat-cli-accept-named-networks-for-network
   const network = resolveNetwork(flags.network || 'Test SDF Network ; September 2015')
+
+  const network = flags.network || 'Test SDF Network ; September 2015'
+main
   const outputFormat = flags.output || flags.o || 'text'
 
   if (!outputDigest) {
@@ -480,7 +484,11 @@ Lineage verification options:
   --contract-id    Contract ID on Stellar (required).
   --rpc-url        Stellar RPC URL (default: testnet).
   --source-address Source address for simulation.
+feat/issue-654-feat-cli-accept-named-networks-for-network
   --network        Network alias (testnet|mainnet|public|futurenet) or full passphrase (default: testnet).
+
+  --network        Network passphrase (default: testnet).
+ main
   --output, -o     Output format: "text" (default) or "json".
 
 C2PA export options:
@@ -553,6 +561,7 @@ function printUnknownCommand(name: string): never {
   process.exit(2)
 }
 
+ feat/issue-654-feat-cli-accept-named-networks-for-network
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
     void err
@@ -560,3 +569,10 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
     process.exit(8)
   })
 }
+
+main().catch((err) => {
+  void err
+  process.stderr.write('harpocrates: unexpected error\n')
+  process.exit(8)
+})
+ main

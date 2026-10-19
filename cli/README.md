@@ -9,7 +9,11 @@ is needed for read-only Soroban simulation.
 
 ```sh
 node dist/cli.js verify --manifest proof.json \
+ feat/issue-654-feat-cli-accept-named-networks-for-network
   --contract-id C... --network testnet \
+
+  --contract-id C... --network 'Test DF Network ; September 2015' \
+ main
   --source-address G... --output json
 ```
 
