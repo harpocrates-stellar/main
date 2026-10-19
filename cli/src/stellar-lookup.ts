@@ -27,6 +27,28 @@ export type StellarLookupOptions = {
 const DEFAULT_RPC_URL = 'https://soroban-testnet.stellar.org'
 
 /**
+ * Resolve the RPC URL from an explicit option, the HARPOCRATES_RPC_URL env
+ * variable, or the built-in testnet default, in that order of precedence.
+ */
+export function resolveRpcUrl(explicit?: string): string {
+  if (explicit !== undefined && explicit !== '') return explicit
+  const fromEnv = process.env.HARPOCRATES_RPC_URL
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  return DEFAULT_RPC_URL
+ }
+
+/**
+ * Resolve the contract ID from an explicit option or the
+ * HARPOCRATES_CONTRACT_ID env variable. Returns undefined when neither is set.
+ */
+export function resolveContractId(explicit?: string): string | undefined {
+  if (explicit !== undefined && explicit !== '') return explicit
+  const fromEnv = process.env.HARPOCRATES_CONTRACT_ID
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  return undefined
+}
+
+/**
  * Look up a proof record on-chain by its video hash.
  *
  * Uses a read-only simulation so no wallet or signing is required, but a
@@ -37,7 +59,7 @@ export async function lookupByVideoHash(
   videoHash: string,
   options: StellarLookupOptions = {},
 ): Promise<ChainProofRecord | null> {
-  const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
   const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
   const source = options.sourceAddress
 
@@ -97,7 +119,7 @@ export async function verifyTransaction(
   expectedContractId?: string,
   options: StellarLookupOptions = {},
 ): Promise<TransactionVerification> {
-  const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
   const server = new rpc.Server(rpcUrl)
   const response = await server.getTransaction(txHash)
 
