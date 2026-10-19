@@ -42,6 +42,7 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     offline: toggle,
     debug: toggle,
+    timeout: text,
   },
   manifest: {
     ...ON_CHAIN,
@@ -109,6 +110,14 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
   const flags: Record<string, string> = {}
   for (const [key, value] of Object.entries(values)) {
     if (value !== undefined) flags[key] = String(value)
+  }
+  if (flags.timeout !== undefined) {
+    const timeout = Number(flags.timeout)
+    if (!Number.isInteger(timeout) || timeout <= 0) {
+      throw new CliUsageError(
+        `invalid value ${flags.timeout} for '--timeout'; expected a positive integer of milliseconds; ${hint}`,
+      )
+    }
   }
   return { command: command as Command, flags }
 }

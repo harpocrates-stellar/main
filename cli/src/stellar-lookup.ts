@@ -22,9 +22,43 @@ export type StellarLookupOptions = {
   networkPassphrase?: string
   /** Source account for simulation. If omitted the simulation will likely fail. */
   sourceAddress?: string
+  /** Timeout in milliseconds for each RTC call (defaults to 15000). */
+  timeoutMs?: number
+}
+
+/**
+ * Error thrown when an RPC call does not complete within the configured timeout.
+ */
+export class LookupTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LookupTimeoutError'
+  }
 }
 
 const DEFAULT_RPC_URL = 'https://soroban-testnet.stellar.org'
+const DEFAULT_TIMEOUT_MS = 15000
+
+/**
+ * Race a promise against a timer, rejecting with a typed LookupTimeoutError.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new LookupTimeoutError(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
 
 /**
  * Look up a proof record on-chain by its video hash.
@@ -40,6 +74,7 @@ export async function lookupByVideoHash(
   const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
   const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
   const source = options.sourceAddress
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   if (!source) {
     throw new Error(
@@ -49,7 +84,7 @@ export async function lookupByVideoHash(
   }
 
   const server = new rpc.Server(rpcUrl)
-  const account = await server.getAccount(source)
+  const account = await withTimeout(server.getAccount(source), timeoutMs, 'getAccount')
   const contract = new Contract(contractId)
 
   // Encode the 32-byte video hash as scBytes32 expected by Soroban.
@@ -63,7 +98,7 @@ export async function lookupByVideoHash(
     .setTimeout(30)
     .build()
 
-  const simulation = await server.simulateTransaction(transaction)
+  const simulation = await withTimeout(server.simulateTransaction(transaction), timeoutMs, 'simulateTransaction')
 
   if (rpc.Api.isSimulationError(simulation)) {
     throw new Error(simulation.error)
@@ -98,8 +133,9 @@ export async function verifyTransaction(
   options: StellarLookupOptions = {},
 ): Promise<TransactionVerification> {
   const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const server = new rpc.Server(rpcUrl)
-  const response = await server.getTransaction(txHash)
+  const response = await withTimeout(server.getTransaction(txHash), timeoutMs, 'getTransaction')
 
   switch (response.status) {
     case rpc.Api.GetTransactionStatus.NOT_FOUND:
