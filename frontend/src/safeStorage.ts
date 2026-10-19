@@ -42,6 +42,33 @@ function browserStorage(name: StorageName): Storage {
 
 function createSafeStorage(name: StorageName) {
   return {
+    /** Read a namespaced value, returning null when storage is unavailable. */
+    getItem(key: string): string | null {
+      try {
+        return browserStorage(name).getItem(key)
+      } catch {
+        return null
+      }
+    },
+
+    /** Persist a namespaced value, ignoring storage quota/permission errors. */
+    setItem(key: string, value: string): void {
+      try {
+        browserStorage(name).setItem(key, value)
+      } catch {
+        // Storage is best-effort; callers keep working in memory.
+      }
+    },
+
+    /** Remove a namespaced value, ignoring unavailable storage. */
+    removeItem(key: string): void {
+      try {
+        browserStorage(name).removeItem(key)
+      } catch {
+        // Storage is best-effort; callers keep working in memory.
+      }
+    },
+
     setUiPreferences(value: PersistedUiPreferences) {
       const safe = sanitizePreferences(value)
       browserStorage(name).setItem(STORAGE_KEY, JSON.stringify(safe))

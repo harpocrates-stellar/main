@@ -1,4 +1,4 @@
-import pako from 'pako'
+import { inflate } from 'pako'
 
 const MAGIC = new TextEncoder().encode('HRPSTG1')
 const MAX_PAYLOAD_BYTES = 64 * 1024
@@ -13,7 +13,7 @@ export class MalformedEvidenceError extends Error {
 }
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data as BufferSource)
   return new Uint8Array(hashBuffer)
 }
 
@@ -60,7 +60,7 @@ async function unpackPayload(data: Uint8Array): Promise<unknown | null> {
   if (!bytesEqual(checksum, actualChecksum)) return null
 
   try {
-    const decompressed = pako.inflate(body)
+    const decompressed = inflate(body)
     const jsonStr = new TextDecoder('utf-8').decode(decompressed)
     const value = JSON.parse(jsonStr)
     return typeof value === 'object' && value !== null ? value : null
@@ -105,9 +105,28 @@ function getBorderPositions(width: number, height: number): [number, number][] {
   return positions
 }
 
+type FrameCallbackVideo = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: () => void) => number
+}
+
+function scheduleVideoFrame(video: HTMLVideoElement, callback: () => void): void {
+  const frameVideo = video as FrameCallbackVideo
+  if (typeof frameVideo.requestVideoFrameCallback === 'function') {
+    frameVideo.requestVideoFrameCallback(callback)
+  } else {
+    requestAnimationFrame(callback)
+  }
+}
+
 export async function extractMetadata(file: File): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
+    // A browser that cannot decode this media type will never fire
+    // `loadedmetadata`, so fail closed instead of waiting forever.
+    if (!video.canPlayType(file.type)) {
+      reject(new MalformedEvidenceError())
+      return
+    }
     video.src = URL.createObjectURL(file)
     video.muted = true
     video.playsInline = true
@@ -173,22 +192,14 @@ export async function extractMetadata(file: File): Promise<unknown> {
             reject(new MalformedEvidenceError())
           }
         } else {
-          if ('requestVideoFrameCallback' in video) {
-            ;(video as any).requestVideoFrameCallback(processFrame)
-          } else {
-            requestAnimationFrame(processFrame)
-          }
+          scheduleVideoFrame(video, processFrame)
         }
       }
 
       video
         .play()
         .then(() => {
-          if ('requestVideoFrameCallback' in video) {
-            ;(video as any).requestVideoFrameCallback(processFrame)
-          } else {
-            requestAnimationFrame(processFrame)
-          }
+          scheduleVideoFrame(video, processFrame)
         })
         .catch(() => {
           URL.revokeObjectURL(video.src)

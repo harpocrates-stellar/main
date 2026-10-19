@@ -161,7 +161,7 @@ export function validateCsp(policy: string): string[] {
 
   // unsafe-eval (wasm-unsafe-eval is allowed; raw unsafe-eval is not).
   if (values('script-src').includes("'unsafe-eval'")) {
-    violations.push("script-src contains 'unsafe-eval'; use 'wasm-unsafe-eval' instead")
+    violations.push("script-src contains 'unsafe-eval'; raw JavaScript eval is not allowed")
   }
 
   // frame-ancestors must be present.

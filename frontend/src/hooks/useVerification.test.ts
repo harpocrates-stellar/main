@@ -309,7 +309,7 @@ describe('useVerification – cancellation and race handling', () => {
     const vm = await getVerifMock()
     // Make extract hang until we cancel
     let resolveExtract: (v: unknown) => void
-    vm.extractMetadata.mockReturnValue(new Promise(res => { resolveExtract = res as any }))
+    vm.extractMetadata.mockReturnValue(new Promise<unknown>((resolve) => { resolveExtract = resolve }))
     vm.fetchProofEventsByVideo.mockResolvedValue([])
     vm.getOnChainProof.mockResolvedValue(null)
 
@@ -335,8 +335,8 @@ describe('useVerification – cancellation and race handling', () => {
     const vm = await getVerifMock()
     let firstExtractResolve: (v: unknown) => void
     let firstDbResolve: (v: unknown) => void
-    vm.extractMetadata.mockImplementationOnce(() => new Promise(res => { firstExtractResolve = res as any }))
-    vm.fetchProofEventsByVideo.mockImplementationOnce(() => new Promise(res => { firstDbResolve = res as any }))
+    vm.extractMetadata.mockImplementationOnce(() => new Promise<unknown>((resolve) => { firstExtractResolve = resolve }))
+    vm.fetchProofEventsByVideo.mockImplementationOnce(() => new Promise<unknown>((resolve) => { firstDbResolve = resolve }))
     vm.getOnChainProof.mockResolvedValueOnce(null)
     // Second call: fast, will set different outcome
     const fastMeta = { hasHarpocratesMetadata: false }
@@ -371,7 +371,7 @@ describe('useVerification – cancellation and race handling', () => {
     vm.getOnChainProof.mockResolvedValueOnce(null)
     // retry will call again
     vm.extractMetadata.mockResolvedValueOnce({ hasHarpocratesMetadata: true })
-    vm.fetchProofEventsByVideo.mockResolvedValueOnce([{ id: 9, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' } as any])
+    vm.fetchProofEventsByVideo.mockResolvedValueOnce([{ id: 9, event_type: 'registered', file_name: null, video_hash: null, proof_id: null, tier: null, created_at: '' }])
     const { result } = renderHook(() => useVerification())
     await act(async () => { await result.current.verifyEvidence(makeVideoFile()) })
     expect(result.current.events).toHaveLength(0)

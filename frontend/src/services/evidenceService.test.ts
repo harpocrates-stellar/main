@@ -75,10 +75,6 @@ describe('embedVideo', () => {
   })
 
   it('surfaces the API error message on non-OK responses with a JSON body', async () => {
-    const blob = makeMockBlob('embedded-video-bytes')
-    const { hex } = await import('../utils')
-    const realHash = hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))
-
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValueOnce({

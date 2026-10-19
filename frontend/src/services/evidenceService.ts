@@ -77,7 +77,7 @@ export async function persistRegistration(
   result: RegisterProofResult,
   sourceAddress: string,
 ): Promise<void> {
-  const payload: any = {
+  const payload: Record<string, unknown> = {
     fileName: proof.fileName,
     videoHash: proof.videoHash,
     metadataHash: proof.metadataHash,

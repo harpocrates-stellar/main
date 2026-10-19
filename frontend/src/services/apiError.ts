@@ -12,7 +12,10 @@
 const MAX_ERROR_LENGTH = 500
 
 function stripHtml(input: string): string {
-  return input.replace(/<[^>]*>/g, '')
+  return input
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]*>/g, '')
+    .trim()
 }
 
 function truncate(input: string): string {

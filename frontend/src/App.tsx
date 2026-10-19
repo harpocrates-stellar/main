@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Wallet } from 'lucide-react'
 import EvilEye from './components/EvilEye'
 import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
@@ -41,9 +41,9 @@ function App() {
   const evidence = useEvidence()
   const verification = useVerification()
 
-  const liveStatus = useLiveRegion()
-  const liveAlert = useLiveRegion()
-  const { statusLabel, isBusy } = useA11yStage(evidence.stage)
+  const { message: liveStatusMessage, announce: announceStatus } = useLiveRegion()
+  const { message: liveAlertMessage, announce: announceAlert } = useLiveRegion()
+  const { statusLabel } = useA11yStage(evidence.stage)
   const { mainRef, handleSkip } = useSkipLink()
 
   const prevStageRef = useRef(evidence.stage)
@@ -52,11 +52,11 @@ function App() {
     prevStageRef.current = evidence.stage
 
     if (evidence.stage === 'error') {
-      liveAlert.announce(evidence.message)
+      announceAlert(evidence.message)
     } else if (evidence.stage !== 'idle') {
-      liveStatus.announce(statusLabel)
+      announceStatus(statusLabel)
     }
-  }, [evidence.stage, evidence.message, statusLabel])
+  }, [evidence.stage, evidence.message, statusLabel, announceAlert, announceStatus])
 
   const viewHeadingId = currentView === 'studio'
     ? 'studio-heading'
@@ -115,10 +115,10 @@ function App() {
       </a>
 
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-        {liveStatus.message}
+        {liveStatusMessage}
       </div>
       <div role="alert" aria-live="assertive" aria-atomic="true" className="sr-only">
-        {liveAlert.message}
+        {liveAlertMessage}
       </div>
 
       <main className="app-shell" ref={mainRef} id="main-content" tabIndex={-1}>
