@@ -400,12 +400,15 @@ async function handleVerifyLineage(
   const outputDigest = flags['output-digest'] || flags.outputDigest
   const contractId = flags['contract-id'] || flags.contractId
   const rpcUrl = flags['rpc-url'] || flags.rpcUrl
-  const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
- feat/issue-654-feat-cli-accept-named-networks-for-network
-  const network = resolveNetwork(flags.network || 'Test SDF Network ; September 2015')
+  const sourceAddress =
+    flags['source-address'] ||
+    flags.sourceAddress ||
+    process.env.HARPOCRATES_SOURCE_ADDRESS
 
-  const network = flags.network || 'Test SDF Network ; September 2015'
-main
+  const network = resolveNetwork(
+    flags.network || 'Test SDF Network ; September 2015',
+  )
+
   const outputFormat = flags.output || flags.o || 'text'
 
   if (!outputDigest) {
@@ -413,6 +416,8 @@ main
   }
 
   if (!contractId || !StrKey.isValidContract(contractId)) {
+
+
     exit(8, 'a valid --contract-id is required for verification')
   }
 
@@ -561,7 +566,6 @@ function printUnknownCommand(name: string): never {
   process.exit(2)
 }
 
- feat/issue-654-feat-cli-accept-named-networks-for-network
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
     void err
