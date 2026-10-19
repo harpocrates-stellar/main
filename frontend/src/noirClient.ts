@@ -296,15 +296,54 @@ async function loadAggregatorHelperCircuit() {
 }
 
 async function loadCircuit(path: string) {
-  try {
-    const response = await fetch(path, { cache: 'no-store' })
-    if (!response.ok) throw new CircuitInputError('circuit_load_failed')
-    const { value, rawBytes } = await readBoundedCircuitArtifact<CompiledCircuit>(response, path)
-    return { circuit: value, rawBytes }
-  } catch (error) {
-    if (error instanceof CircuitInputError) throw error
-    throw new CircuitInputError('circuit_load_failed')
+  // Load the artifact manifest (once per page load)
+  const manifest = await (async () => {
+    const resp = await fetch('/zk/browser.artifacts.manifest.json', { cache: 'no-store' })
+    if (!resp.ok) throw new CircuitInputError('manifest_load_failed')
+    return resp.json() as Promise<any>
+  })()
+
+  // Find the manifest entry for this artifact path
+  const entry = manifest.artifacts?.find((a: any) => a.path.replace('frontend/', '/') === path)
+  const expectedSha = entry?.normalized_sha256 ?? entry?.raw_sha256
+
+  // Helper to compute SHA-256 of a Uint8Array
+  async function computeSha256(buf: Uint8Array): Promise<string> {
+    const hash = await crypto.subtle.digest('SHA-256', buf)
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
   }
+
+  // Attempt to serve from Cache Storage if available
+  if (typeof caches !== 'undefined') {
+    const cache = await caches.open('artifact-cache')
+    const cachedResp = await cache.match(path)
+    if (cachedResp) {
+      const cachedArray = new Uint8Array(await cachedResp.arrayBuffer())
+      const cachedHash = await computeSha256(cachedArray)
+      if (expectedSha && cachedHash !== expectedSha) {
+        // Invalidate mismatched cache entry
+        await cache.delete(path)
+      } else {
+        // Return cached artifact
+        const json = JSON.parse(new TextDecoder().decode(cachedArray)) as CompiledCircuit
+        return { circuit: json, rawBytes: cachedArray.byteLength }
+      }
+    }
+  }
+
+  // Fallback: fetch from network
+  const response = await fetch(path, { cache: 'no-store' })
+  if (!response.ok) throw new CircuitInputError('circuit_load_failed')
+  const { value, rawBytes } = await readBoundedCircuitArtifact<CompiledCircuit>(response, path)
+
+  // Store the fetched artifact in Cache Storage for future loads
+  if (typeof caches !== 'undefined') {
+    const cache = await caches.open('artifact-cache')
+    const respClone = response.clone()
+    await cache.put(path, respClone)
+  }
+
+  return { circuit: value, rawBytes }
 }
 
 function bytesToHex(bytes: Uint8Array) {
