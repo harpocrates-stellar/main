@@ -139,7 +139,8 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
         SchemaVersion::V2 as u32
     );
     assert_eq!(
-        after, before + 1,
+        after,
+        before + 1,
         "legacy stamp must emit SchemaUpgraded due to V2 migration"
     );
 }
@@ -220,4 +221,115 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
         client.get_storage_schema_version(),
         SchemaVersion::V2 as u32
     );
+}
+
+#[test]
+fn upgrade_compat_backfill_credential_roots_bounded_and_idempotent() {
+    let (env, contract_id, admin) = init_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Queue 30 legacy roots (exceeds MAX_ROOTS_BACKFILL_BATCH = 25)
+    let mut roots_to_stage = soroban_sdk::Vec::new(&env);
+    for i in 1..=30u8 {
+        let root = b32(&env, i);
+        roots_to_stage.push_back(root.clone());
+        // Store legacy V2 record directly in persistent storage
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(
+                &DataKey::CredentialRootV2(root.clone()),
+                &CredentialRootRecord {
+                    metadata_hash: b32(&env, 0xAA),
+                    status: STATUS_REGISTERED,
+                    issued_at: 1000,
+                    expires_at: 0,
+                },
+            );
+        });
+    }
+
+    client.stage_credential_roots_for_backfill(&admin, &roots_to_stage);
+
+    // Initial count is 0 before backfill
+    assert_eq!(client.get_credential_root_count(), 0);
+
+    // Call 1: bounded at MAX_ROOTS_BACKFILL_BATCH (25)
+    client.upgrade_storage(&admin);
+    assert_eq!(client.get_credential_root_count(), 25);
+    let page1 = client.list_credential_roots(&0, &50);
+    assert_eq!(page1.roots.len(), 25);
+
+    // Call 2: backfills remaining 5 roots (total 30)
+    client.upgrade_storage(&admin);
+    assert_eq!(client.get_credential_root_count(), 30);
+    let page2 = client.list_credential_roots(&0, &50);
+    assert_eq!(page2.roots.len(), 30);
+
+    // Call 3: idempotent no-op (still 30 roots, no duplicates)
+    client.upgrade_storage(&admin);
+    assert_eq!(client.get_credential_root_count(), 30);
+    let page3 = client.list_credential_roots(&0, &50);
+    assert_eq!(page3.roots.len(), 30);
+}
+
+#[test]
+fn upgrade_compat_backfill_preserves_root_statuses() {
+    let (env, contract_id, admin) = init_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let root_reg = b32(&env, 0x01);
+    let root_rev = b32(&env, 0x02);
+    let root_exp = b32(&env, 0x03);
+
+    env.as_contract(&contract_id, || {
+        // Registered V2 root
+        env.storage().persistent().set(
+            &DataKey::CredentialRootV2(root_reg.clone()),
+            &CredentialRootRecord {
+                metadata_hash: b32(&env, 0x10),
+                status: STATUS_REGISTERED,
+                issued_at: 100,
+                expires_at: 0,
+            },
+        );
+        // Revoked V2 root
+        env.storage().persistent().set(
+            &DataKey::CredentialRootV2(root_rev.clone()),
+            &CredentialRootRecord {
+                metadata_hash: b32(&env, 0x20),
+                status: STATUS_REVOKED,
+                issued_at: 100,
+                expires_at: 0,
+            },
+        );
+        // Expired V2 root
+        env.storage().persistent().set(
+            &DataKey::CredentialRootV2(root_exp.clone()),
+            &CredentialRootRecord {
+                metadata_hash: b32(&env, 0x30),
+                status: STATUS_EXPIRED,
+                issued_at: 100,
+                expires_at: 200,
+            },
+        );
+    });
+
+    let mut staged = soroban_sdk::Vec::new(&env);
+    staged.push_back(root_reg.clone());
+    staged.push_back(root_rev.clone());
+    staged.push_back(root_exp.clone());
+    client.stage_credential_roots_for_backfill(&admin, &staged);
+
+    client.upgrade_storage(&admin);
+
+    let page = client.list_credential_roots(&0, &10);
+    assert_eq!(page.roots.len(), 3);
+
+    assert_eq!(page.roots.get(0).unwrap().root_hash, root_reg);
+    assert_eq!(page.roots.get(0).unwrap().status, STATUS_REGISTERED);
+
+    assert_eq!(page.roots.get(1).unwrap().root_hash, root_rev);
+    assert_eq!(page.roots.get(1).unwrap().status, STATUS_REVOKED);
+
+    assert_eq!(page.roots.get(2).unwrap().root_hash, root_exp);
+    assert_eq!(page.roots.get(2).unwrap().status, STATUS_EXPIRED);
 }

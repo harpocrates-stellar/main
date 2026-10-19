@@ -479,6 +479,29 @@ pub struct TimelockProposalPage {
     pub next_cursor: Option<u32>,
 }
 
+/// Maximum number of credential roots a single `list_credential_roots` page may return (#731).
+pub const MAX_CREDENTIAL_ROOTS_PAGE: u32 = 25;
+/// Maximum number of credential roots backfilled in a single `upgrade_storage` call (#731).
+pub const MAX_ROOTS_BACKFILL_BATCH: u32 = 25;
+
+/// An entry in a `CredentialRootPage` (#731).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialRootEntry {
+    pub root_hash: BytesN<32>,
+    pub status: u32,
+}
+
+/// Paginated result from `list_credential_roots` (#731).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialRootPage {
+    pub roots: SorobanVec<CredentialRootEntry>,
+    /// Cursor for the next page (`Some(next_cursor)`), or `None` if end reached.
+    pub next_cursor: Option<u32>,
+}
+
+
 /// A narrowly scoped, expiring authority to act for `grantor`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1529,6 +1552,18 @@ pub enum DataKey {
     Nullifier(BytesN<32>),
     CredentialRoot(BytesN<32>),
     CredentialRootV2(BytesN<32>),
+    /// Sequential counter for credential root index (#731).
+    CredentialRootSeq,
+    /// Credential root index entry by sequential ID (1-based) (#731).
+    CredentialRootIndex(u32),
+    /// Tracking index presence by root hash for idempotency (#731).
+    CredentialRootIndexed(BytesN<32>),
+    /// Staged credential roots for backfill during upgrade_storage (#731).
+    CredentialRootsBackfillQueue,
+    /// Cursor for backfill during upgrade_storage (#731).
+    CredentialRootsBackfillCursor,
+    /// Alias for backfill queue compatibility (#731).
+    CredentialRootsBackfill,
     Issuer(Address),
     /// Rotation grace record for an issuer key that has rotated out (#323).
     IssuerRotation(Address),
@@ -1826,6 +1861,9 @@ impl HarpocratesRegistry {
             }
             .publish(&env);
         }
+
+        // Backfill legacy credential roots into the index (bounded per call) (#731).
+        backfill_credential_roots_step(&env);
     }
 
     /// Return the active storage schema version. Legacy deployments that have
@@ -2156,6 +2194,7 @@ impl HarpocratesRegistry {
                 expires_at: 0,
             },
         );
+        index_credential_root(&env, &credential_root);
         CredentialRootAdded {
             credential_root,
             metadata_hash,
@@ -2194,6 +2233,98 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::CredentialRoot(credential_root))
+    }
+
+    /// Return the total number of indexed credential roots (#731).
+    pub fn get_credential_root_count(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CredentialRootSeq)
+            .unwrap_or(0u32)
+    }
+
+    /// Enumerate credential roots and their current statuses across sequential IDs (#731).
+    ///
+    /// - `cursor`: ID offset to start scanning from (1-based sequential IDs).
+    ///   If `cursor == 0`, scanning begins at ID 1.
+    /// - `limit`: maximum number of roots to return; capped at `MAX_CREDENTIAL_ROOTS_PAGE`.
+    ///   If 0 or exceeding the cap, `limit` is clamped to `MAX_CREDENTIAL_ROOTS_PAGE`.
+    /// - Non-existent/deleted entries are skipped.
+    /// - Read-only query; no auth required.
+    pub fn list_credential_roots(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> CredentialRootPage {
+        let effective_limit = if limit == 0 || limit > MAX_CREDENTIAL_ROOTS_PAGE {
+            MAX_CREDENTIAL_ROOTS_PAGE
+        } else {
+            limit
+        };
+
+        let total_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CredentialRootSeq)
+            .unwrap_or(0u32);
+
+        let mut roots = SorobanVec::new(&env);
+        let mut next_cursor: Option<u32> = None;
+
+        let mut id = if cursor == 0 { 1u32 } else { cursor };
+
+        while id <= total_seq {
+            if let Some(root) = env
+                .storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::CredentialRootIndex(id))
+            {
+                if let Some(record) = get_credential_root_record_opt(&env, &root) {
+                    let status = if record.status == STATUS_EXPIRED
+                        || (record.expires_at > 0 && env.ledger().timestamp() >= record.expires_at)
+                    {
+                        STATUS_EXPIRED
+                    } else {
+                        record.status
+                    };
+                    roots.push_back(CredentialRootEntry {
+                        root_hash: root,
+                        status,
+                    });
+                    if roots.len() == effective_limit {
+                        if id < total_seq {
+                            next_cursor = Some(id + 1);
+                        }
+                        break;
+                    }
+                }
+            }
+            id = id.saturating_add(1);
+        }
+
+        CredentialRootPage {
+            roots,
+            next_cursor,
+        }
+    }
+
+    /// Stage or queue legacy credential roots for bounded backfill during `upgrade_storage` (#731).
+    pub fn stage_credential_roots_for_backfill(
+        env: Env,
+        admin: Address,
+        roots: SorobanVec<BytesN<32>>,
+    ) {
+        require_admin(&env, &admin);
+        let backfill_key = DataKey::CredentialRootsBackfillQueue;
+        let mut queue: SorobanVec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&backfill_key)
+            .unwrap_or_else(|| SorobanVec::new(&env));
+        for r in roots.iter() {
+            queue.push_back(r);
+        }
+        env.storage().persistent().set(&backfill_key, &queue);
     }
 
     pub fn revoke_issuer(env: Env, admin: Address, issuer: Address) {
@@ -5157,21 +5288,68 @@ fn get_issuer_record(env: &Env, issuer: &Address) -> IssuerRecord {
         .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownIssuer))
 }
 
-fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> CredentialRootRecord {
+fn get_credential_root_record_opt(
+    env: &Env,
+    credential_root: &BytesN<32>,
+) -> Option<CredentialRootRecord> {
     let key_v2 = DataKey::CredentialRootV2(credential_root.clone());
     if let Some(record) = env.storage().persistent().get(&key_v2) {
-        return record;
+        return Some(record);
     }
     let key_v1 = DataKey::CredentialRoot(credential_root.clone());
     if let Some(v1) = env.storage().persistent().get::<_, CredentialRootRecordV1>(&key_v1) {
-        return CredentialRootRecord {
+        return Some(CredentialRootRecord {
             metadata_hash: v1.metadata_hash,
             status: if v1.active { STATUS_REGISTERED } else { STATUS_REVOKED },
             issued_at: v1.issued_at,
             expires_at: 0,
-        };
+        });
     }
-    panic_with_error!(env, RegistryError::UnknownCredentialRoot)
+    None
+}
+
+fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> CredentialRootRecord {
+    get_credential_root_record_opt(env, credential_root)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownCredentialRoot))
+}
+
+fn index_credential_root(env: &Env, root: &BytesN<32>) -> bool {
+    let indexed_key = DataKey::CredentialRootIndexed(root.clone());
+    if env.storage().persistent().has(&indexed_key) {
+        return false;
+    }
+    let seq_key = DataKey::CredentialRootSeq;
+    let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+    let next_seq = seq.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CredentialRootIndex(next_seq), root);
+    env.storage().persistent().set(&seq_key, &next_seq);
+    env.storage().persistent().set(&indexed_key, &next_seq);
+    true
+}
+
+fn backfill_credential_roots_step(env: &Env) {
+    let backfill_key = DataKey::CredentialRootsBackfillQueue;
+    let queue_opt: Option<SorobanVec<BytesN<32>>> = env
+        .storage()
+        .persistent()
+        .get(&backfill_key)
+        .or_else(|| env.storage().persistent().get(&DataKey::CredentialRootsBackfill));
+
+    if let Some(queue) = queue_opt {
+        let cursor_key = DataKey::CredentialRootsBackfillCursor;
+        let mut cursor: u32 = env.storage().persistent().get(&cursor_key).unwrap_or(0);
+        let total = queue.len();
+        let mut processed = 0u32;
+        while cursor < total && processed < MAX_ROOTS_BACKFILL_BATCH {
+            let root = queue.get(cursor).unwrap();
+            index_credential_root(env, &root);
+            cursor += 1;
+            processed += 1;
+        }
+        env.storage().persistent().set(&cursor_key, &cursor);
+    }
 }
 
 fn get_active_verifier(env: &Env) -> Address {
@@ -6477,3 +6655,6 @@ mod test_upgrade_compat;
 mod test_verifier_versions;
 #[cfg(test)]
 mod test_ttl;
+#[cfg(test)]
+mod test_list_credential_roots;
+

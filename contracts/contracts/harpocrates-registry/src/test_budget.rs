@@ -41,6 +41,7 @@
 //! | `revoke_proof`               | Admin action; mutates existing record.     |
 //! | `get_proof_status`           | Read-only query; must be sub-linear.       |
 //! | `list_lineage_children`      | Read-only query; full page read bounds.    |
+//! | `list_credential_roots`      | Read-only query; paginates credential roots.|
 //!
 //! ## Variance policy
 //!
@@ -781,3 +782,41 @@ fn budget_list_lineage_children_full_page_baseline() {
     );
 }
 
+const MAX_CPU_LIST_CREDENTIAL_ROOTS_PAGE: u64 = 4_000_000;
+const MAX_MEM_LIST_CREDENTIAL_ROOTS_PAGE: u64 = 1_500_000;
+
+/// Baseline for `list_credential_roots` at `MAX_CREDENTIAL_ROOTS_PAGE` (25 entries).
+#[test]
+fn budget_list_credential_roots_full_page_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    for i in 1..=MAX_CREDENTIAL_ROOTS_PAGE {
+        client.add_credential_root(&admin, &b32(&env, i as u8), &b32(&env, 0xEE));
+    }
+
+    assert_eq!(
+        client.get_credential_root_count(),
+        MAX_CREDENTIAL_ROOTS_PAGE
+    );
+
+    let (cpu, mem, page) = measure(&env, || {
+        client.list_credential_roots(&0, &MAX_CREDENTIAL_ROOTS_PAGE)
+    });
+
+    assert_eq!(page.roots.len(), MAX_CREDENTIAL_ROOTS_PAGE);
+    assert_eq!(page.next_cursor, None);
+
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_LIST_CREDENTIAL_ROOTS_PAGE,
+        MAX_MEM_LIST_CREDENTIAL_ROOTS_PAGE,
+        "list_credential_roots full page",
+    );
+}
