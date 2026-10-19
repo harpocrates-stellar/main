@@ -1,16 +1,15 @@
-/**
- * useEvidence — manages the full evidence creation flow:
- * hashing → embedding → (optional) Noir proving → Stellar registration.
+/*
+ * useEvidence — manages the full evidence creation flow: hashing → embedding → (optional) Noir proving → Stellar registration.
  *
  * Source-file hashing runs chunk-by-chunk inside a dedicated Web Worker with
  * byte-level progress, keeping the UI responsive for large videos.
  *
- * Silent Witness proving runs in a cancellable Web Worker so the UI stays
- * responsive and in-flight proofs can be aborted without leaking witness
- * material (see docs/proof-worker.md).
+ * Silent Witness proving runs in a cancellable Web Worker so the UI hays responsive
+ * and in-flight proofs can be aborted without leaking witness material (see
+ * docs/proof-worker.md).
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, Fingerprint, KeyRound } from 'lucide-react'
 import type { IdentityTier, ProofPackage, SilentWitnessProof, Stage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
@@ -43,8 +42,7 @@ export const TIERS = [
     icon: Building2,
     description:
       'Verified issuer account signs the evidence as an official source. The connected wallet must be registered by the admin first.',
-  },
-]
+  },]
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 
@@ -98,19 +96,19 @@ export function useEvidence(): UseEvidenceReturn {
   const [hashProgress, setHashProgress] = useState<HashProgress | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [proof, setProof] = useState<ProofPackage | null>(null)
-  const [processedVideoUrl, setProcessedVideoUrl] = useState('')
-  const [credentialSeed, setCredentialSeed] = useState('')
-  const [nullifierSeed, setNullifierSeed] = useState('')
-  const [message, setMessage] = useState('Upload evidence to begin.')
+  const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
+  const [credentialSeed, setCredentialSeed] = useState<string>('')
+  const [nullifierSeed, setNullifierSeed] = useState<string>('')
+  const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
-  const registrationInFlightRef = useRef(false)
+  const registrationInFlightedRef = useRef(false)
   const completedRegistrationRef = useRef<string | null>(null)
   const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
 
-  // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber
-  // a newer flow or a reset caused by cancellation.
+  // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber a
+  // newer flow or a reset caused by cancellation.
   const seqRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
   const proofClientRef = useRef<ProofWorkerClient | null>(null)
@@ -124,15 +122,13 @@ export function useEvidence(): UseEvidenceReturn {
   }, [stage])
 
   useEffect(() => {
-    const abortController = abortRef.current
-    const provingAbortController = proveAbortRef.current
     return () => {
       // Cancel any in-flight evidence flow (hashing → embedding) on unmount.
       evidenceFlowAbortRef.current?.abort()
       evidenceFlowAbortRef.current = null
       proveAbortRef.current?.abort()
       proveAbortRef.current = null
-      activeRequestIdRef.current = null
+      proofRequestIdRef.current = null
       proofClientRef.current?.destroy()
       proofClientRef.current = null
     }
@@ -226,14 +222,14 @@ export function useEvidence(): UseEvidenceReturn {
         sourceHash,
         proofId,
         timestamp,
-        signal,
+        controller.signal,
       )
       if (!isCurrentFlow()) return
 
       if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
       setProcessedVideoUrl(URL.createObjectURL(embeddedBlob))
       setProof({
-        fileName: `harpocrates-${nextFile.name.replace(/\.[^.]+$/, '')}.mp4`,
+        fileName: `harpocrates-${nextFile.name.replace(/[^.]+$/, '')}.mp4`,
         sourceHash,
         videoHash: embeddedHash,
         metadataHash,
@@ -268,7 +264,7 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     try {
-      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('../stellar')
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSTHRASE } = await import('../stellar')
       const { checkNetworkMatch } = await import('../networkGuard')
       const walletPassphrase = await getWalletNetwork()
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
@@ -294,11 +290,11 @@ export function useEvidence(): UseEvidenceReturn {
         setMessage('A completed registration still needs to be saved. Please retry it first.')
         return
       }
-      if (registrationInFlightRef.current) {
+      if (registrationInFlightedRef.current) {
         setMessage('Registration is already in progress. Please wait for its result.')
         return
       }
-      registrationInFlightRef.current = true
+      registrationInFlightedRef.current = true
       setMessage('Saving the completed Stellar registration.')
       try {
         const { persistRegistration } = await import('../services/evidenceService')
@@ -312,146 +308,89 @@ export function useEvidence(): UseEvidenceReturn {
         setStage('error')
         setMessage(error instanceof Error ? error.message : 'Could not save the Stellar registration.')
       } finally {
-        registrationInFlightRef.current = false
+        registrationInFlightedRef.current = false
       }
       return
     }
-    if (registrationInFlightRef.current) {
+    if (registrationInFlightedRef.current) {
       setMessage('Registration is already in progress. Please wait for its result.')
       return
     }
-    registrationInFlightRef.current = true
+    registrationInFlightedRef.current = true
 
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
     try {
       const proofForRegistration =
         selectedTier === 'silent' && !proof.silentWitness
-          ? await attachSilentWitnessProof(proof, seq, abortRef.current?.signal)
+          ? await attachSilentWitnessProof(proof, seqRef.current, abortRef.current?.signal)
           : proof
-      if (seq !== seqRef.current) return
+      if (seqRef.current !== seqRef.current) return
 
       const { registerProofOnStellar } = await import('../stellar')
       const result = await registerProofOnStellar({
         contractId: CONTRACT_ID,
         publicKey: wallet,
-        tier: selectedTier,
-        videoHash: proofForRegistration.videoHash,
-        metadataHash: proofForRegistration.metadataHash,
-        proofId: proofForRegistration.proofId,
-        silentWitness: proofForRegistration.silentWitness
-          ? {
-              publicInputs: proofForRegistration.silentWitness.publicInputs,
-              proof: proofForRegistration.silentWitness.proof,
-            }
-          : undefined,
+ 
       })
-
-      // Preserve the confirmed chain result before persistence. A retry after
-      // a database failure must save this result, never submit the proof again.
-      pendingPersistenceRef.current = {
-        key: registrationKey,
-        proof: proofForRegistration,
-        result,
-        wallet,
-      }
-      setRegistration(result)
-
-      const { persistRegistration } = await import('../services/evidenceService')
-      await persistRegistration(proofForRegistration, result, wallet)
-
-      pendingPersistenceRef.current = null
-      setStage('registered')
-      completedRegistrationRef.current = registrationKey
-      setMessage(`Registration submitted with Stellar status: ${result.status}.`)
     } catch (error) {
-      if (seq !== seqRef.current) return
-      if (isCancellationError(error) || abortRef.current?.signal.aborted) {
-        setStage('cancelled')
-        setMessage(CANCELLED_MESSAGES.proving)
-        return
-      }
-      if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        setStage('ready')
-        setMessage('Proof generation cancelled. Witness buffers were discarded; you can register again when ready.')
-        return
-      }
       setStage('error')
-      const safeMessage =
-        error instanceof ProofWorkerError
-          ? error.message
-          : error instanceof Error
-            ? error.message
-            : 'Stellar registration failed.'
-      setMessage(safeMessage)
+      setMessage(error instanceof Error ? error.message : 'Registration failed.')
     } finally {
-      registrationInFlightRef.current = false
-    }
-  }
-
-  async function attachSilentWitnessProof(
-    nextProof: ProofPackage,
-    seq: number,
-    signal?: AbortSignal,
-  ): Promise<ProofPackage> {
-    if (!credentialSeed.trim() || !nullifierSeed.trim()) {
-      throw new Error('Silent Witness requires your credential and nullifier seeds.')
-    }
-
-    setStage('proving')
-    setProofStage(null)
-    setMessage('Generating Noir UltraHonk proof in this browser.')
-
-    const { fieldSecret } = await import('../utils')
-    throwIfAborted(signal)
-    const [credentialSecret, nullifierSecret] = await Promise.all([
-      fieldSecret('credential', credentialSeed.trim()),
-      fieldSecret('nullifier', nullifierSeed.trim()),
-    ])
-    throwIfAborted(signal)
-
-    const silentWitness = await runProver(nextProof, credentialSecret, nullifierSecret)
-    if (seq !== seqRef.current) return nextProof
-    throwIfAborted(signal)
-
-    const nextWithProof: ProofPackage = { ...nextProof, silentWitness }
-    setProof(nextWithProof)
-    return nextWithProof
-  }
-
-  async function runProver(
-    nextProof: ProofPackage,
-    credentialSecret: string,
-    nullifierSecret: string,
-  ): Promise<SilentWitnessProof> {
-    const client = getProofClient()
-    const { requestId, result } = client.generate({
-      videoHash: nextProof.videoHash,
-      credentialSecret,
-      nullifierSecret,
-    })
-    proofRequestIdRef.current = requestId
-    try {
-      const silentWitness = await result
-      proofRequestIdRef.current = null
-      return silentWitness
-    } catch (error) {
-      proofRequestIdRef.current = null
-      if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new FlowCancelledError('Proof generation cancelled.')
-      }
-      throw error
+      registrationInFlightedRef.current = false
     }
   }
 
   function cancelEvidence() {
-    if (!isCancellable) return
-
-    const sourceStage = stageRef.current
-    proveAbortRef.current?.abort()
+    const currentStage = stageRef.current
+    if (currentStage === 'proving') {
+      cancelProving()
+    }
     resetFlow()
+    setHashProgress(null)
     setStage('cancelled')
-    setMessage(CANCELLED_MESSAGES[sourceStage])
+    setMessage(CANCELLED_MESSAGES[currentStage] ?? 'Request cancelled.')
+  }
+
+  async function attachSilentWitnessProof(
+    baseProof: ProofPackage,
+    seq: number,
+    signal?: AbortSignal,
+  ): Promise<ProofPackage> {
+    const client = getProofClient()
+    const requestId = crypto.randomUUID()
+    proofRequestIdRef.current = requestId
+    const controller = new AbortController()
+    proveAbortRef.current = controller
+    if (signal) {
+      if (signal.aborted) controller.abort()
+      signal.addEventListener('abort', () => controller.abort())
+    }
+    setStage('proving')
+    setMessage('Generating Silent Witness ZK proof locally.')
+    try {
+      const silentWitness: SilentWitnessProof = await client.prove(
+        {
+          proofId: baseProof.proofId,
+          sourceHash: baseProof.sourceHash,
+          videoHash: baseProof.videoHash,
+          metadataHash: baseProof.metadataHash,
+          credentialSeed,
+          nullifierSeed,
+        },
+        requestId,
+        controller.signal,
+      )
+      if (seqRef.current !== seq) throw new ProofWorkerError('Stale proof result ignored.')
+      return { ...baseProof, silentWitness }
+    } finally {
+      if (proofRequestIdRef.current === requestId) {
+        proofRequestIdRef.current = null
+      }
+      if (proveAbortRef.current === controller) {
+        proveAbortRef.current = null
+      }
+    }
   }
 
   return {
