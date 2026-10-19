@@ -62,6 +62,9 @@ PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 NOT_FOUND = "NOT_FOUND"
 """The requested resource or capability is unavailable (404)."""
 
+GONE = "GONE"
+"""The requested resource has been purged and is no longer available (410)."""
+
 INTERNAL_ERROR = "INTERNAL_ERROR"
 """An unexpected server-side failure occurred (500)."""
 

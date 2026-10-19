@@ -38,6 +38,7 @@ from errors import (
     DEPENDENCY_UNAVAILABLE,
     FORBIDDEN,
     FORBIDDEN_ORIGIN,
+    GONE,
     INTERNAL_ERROR,
     MALFORMED_INPUT,
     NOT_FOUND,
@@ -1677,12 +1678,22 @@ def create_app() -> Flask:
         job = get_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
+        if job.get("purged"):
+            return error_response(
+                code=GONE,
+                message="Job output has been purged",
+                status=410,
+            )
         if job["type"] != "embed" or job["status"] != "completed":
             return jsonify({"error": "No output available for download"}), 400
             
         output_path = get_job_output_path(job_id)
         if not output_path.exists():
-            return jsonify({"error": "Output file missing"}), 404
+            return error_response(
+                code=GONE,
+                message="Job output has been purged",
+                status=410,
+            )
             
         result = job.get("result", {})
         response = send_file(output_path, mimetype="video/mp4", as_attachment=True, download_name="harpocrates-evidence.mp4")
