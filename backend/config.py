@@ -11,6 +11,24 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
+    def redacted_summary(self) -> dict[str, any]:
+        """Return a dict representation of the config where secret fields are redacted.
+        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
+        presence (True if set, False otherwise). Non‑secret fields retain their original
+        values.
+        """
+        from dataclasses import asdict
+        secret_fields = {
+            "metrics_token",
+            "tracing_endpoint",
+            "register_api_key",
+            "register_api_key_previous",
+        }
+        raw = asdict(self)
+        for field in secret_fields:
+            if field in raw:
+                raw[field] = raw[field] is not None
+        return raw
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -27,6 +45,7 @@ class AppConfig:
     ratelimit_register: str
     ratelimit_upload_session: str
     ratelimit_upload_chunk: str
+    ratelimit_verify: str
     release_id: str
     release_network: str
     metrics_enabled: bool
@@ -100,6 +119,7 @@ def load_config() -> AppConfig:
         ratelimit_register=_str_env("RATELIMIT_REGISTER") or "30 per minute",
         ratelimit_upload_session=_str_env("RATELIMIT_UPLOAD_SESSION") or "60 per minute",
         ratelimit_upload_chunk=_str_env("RATELIMIT_UPLOAD_CHUNK") or "240 per minute",
+        ratelimit_verify=_str_env("RATELIMIT_VERIFY") or "30 per minute",
         release_id=_release_id(os.getenv("HARPOCRATES_RELEASE_ID", "harpocrates-1.0.0")),
         release_network=_release_network(os.getenv("HARPOCRATES_RELEASE_NETWORK", "testnet")),
         metrics_enabled=_bool_env("METRICS_ENABLED", True),

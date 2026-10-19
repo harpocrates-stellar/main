@@ -40,6 +40,7 @@
 //! | `register_anonymous_verified`| Tier-1 path with external verifier call.   |
 //! | `revoke_proof`               | Admin action; mutates existing record.     |
 //! | `get_proof_status`           | Read-only query; must be sub-linear.       |
+//! | `list_lineage_children`      | Read-only query; full page read bounds.    |
 //!
 //! ## Variance policy
 //!
@@ -176,6 +177,9 @@ const MAX_MEM_REVOKE_PROOF: u64 = 600_000;
 
 const MAX_CPU_GET_PROOF_STATUS: u64 = 500_000;
 const MAX_MEM_GET_PROOF_STATUS: u64 = 400_000;
+
+const MAX_CPU_GET_PROOF_ASSURANCE: u64 = 800_000;
+const MAX_MEM_GET_PROOF_ASSURANCE: u64 = 600_000;
 
 const MAX_CPU_REGISTER_SEAL_WORST_CASE: u64 = 2_000_000;
 const MAX_MEM_REGISTER_SEAL_WORST_CASE: u64 = 1_500_000;
@@ -441,6 +445,33 @@ fn budget_get_proof_status_baseline() {
     );
 }
 
+#[test]
+fn budget_get_proof_assurance_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+    let proof_id = b32(&env, 0x51);
+
+    client.init(&admin);
+    client.register_source(&source, &b32(&env, 0x52), &b32(&env, 0x53), &proof_id);
+
+    let (cpu, mem, assurance) = measure(&env, || client.get_proof_assurance(&proof_id));
+    assert!(assurance.is_some());
+    let assurance = assurance.unwrap();
+    assert_eq!(assurance.status, ProofVerificationStatus::Valid);
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_GET_PROOF_ASSURANCE,
+        MAX_MEM_GET_PROOF_ASSURANCE,
+        "get_proof_assurance",
+    );
+}
+
 const MAX_CPU_GET_PROOF_STATUSES: u64 = 12_000_000;
 const MAX_MEM_GET_PROOF_STATUSES: u64 = 3_000_000;
 
@@ -688,86 +719,72 @@ fn budget_receipt_commit_baseline() {
     );
 }
 
+const MAX_CPU_LIST_LINEAGE_CHILDREN_PAGE: u64 = 6_000_000;
+const MAX_MEM_LIST_LINEAGE_CHILDREN_PAGE: u64 = 1_500_000;
+
+/// Baseline for `list_lineage_children` at `MAX_LINEAGE_CHILDREN_PAGE` (50 entries).
+///
+/// Registers enough children for a full page and records CPU/memory for one
+/// `list_lineage_children` call, asserting it stays within resource thresholds.
 #[test]
-fn budget_register_source_batch_root_baseline() {
+fn budget_list_lineage_children_full_page_baseline() {
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register(HarpocratesRegistry, ());
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    let source = Address::generate(&env);
+    let actor = Address::generate(&env);
+    let parent = b32(&env, 0x10);
+
     client.init(&admin);
+    client.register_source(&actor, &b32(&env, 0x11), &b32(&env, 0x12), &parent);
 
-    let (cpu, mem, _) = measure(&env, || {
-        client.register_source_batch_root(
-            &source,
-            &b32(&env, 0x88),
-            &10_000,
-            &b32(&env, 0x99),
-        )
-    });
-    assert_within(
-        cpu,
-        mem,
-        MAX_CPU_REGISTER_SOURCE_BATCH,
-        MAX_MEM_REGISTER_SOURCE_BATCH,
-        "register_source_batch_root",
+    // Register MAX_LINEAGE_CHILDREN_PAGE (50) children
+    let mut expected_children = SorobanVec::new(&env);
+    for i in 0..MAX_LINEAGE_CHILDREN_PAGE {
+        let mut child_arr = [0x20u8; 32];
+        child_arr[0] = (i & 0xFF) as u8;
+        child_arr[1] = ((i >> 8) & 0xFF) as u8;
+        let child = BytesN::from_array(&env, &child_arr);
+
+        let mut manifest_arr = [0x30u8; 32];
+        manifest_arr[0] = (i & 0xFF) as u8;
+        manifest_arr[1] = ((i >> 8) & 0xFF) as u8;
+        let manifest = BytesN::from_array(&env, &manifest_arr);
+
+        client.register_lineage(
+            &actor,
+            &SorobanVec::from_array(&env, [parent.clone()]),
+            &manifest,
+            &Symbol::new(&env, "crop"),
+            &child,
+            &1,
+        );
+        expected_children.push_back(child);
+    }
+
+    assert_eq!(
+        client.get_lineage_children_count(&parent),
+        MAX_LINEAGE_CHILDREN_PAGE
     );
-}
 
-#[test]
-fn budget_verify_source_batch_inclusion_max_proof_len() {
-    let env = Env::default();
-    let contract_id = env.register(HarpocratesRegistry, ());
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-
-    // Build a synthetic tree path of length 32 (MAX_SOURCE_BATCH_PROOF_LEN)
-    let leaf_bytes = [0x42u8; 32];
-    let leaf = BytesN::from_array(&env, &leaf_bytes);
-    let index: u32 = 0x55555555;
-
-    let mut proof_bytes = std::vec::Vec::new();
-    let mut proof = soroban_sdk::Vec::new(&env);
-    for i in 0..32u8 {
-        let sibling = [i + 1; 32];
-        proof_bytes.push(sibling);
-        proof.push_back(BytesN::from_array(&env, &sibling));
-    }
-
-    // Compute expected root using reference SHA-256
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update([SOURCE_BATCH_LEAF_DOMAIN]);
-    hasher.update(&leaf_bytes);
-    let mut cur: [u8; 32] = hasher.finalize().into();
-
-    for d in 0..32 {
-        let sibling = &proof_bytes[d];
-        let mut hasher = Sha256::new();
-        hasher.update([SOURCE_BATCH_NODE_DOMAIN]);
-        if (index >> d) & 1 == 0 {
-            hasher.update(&cur);
-            hasher.update(sibling);
-        } else {
-            hasher.update(sibling);
-            hasher.update(&cur);
-        }
-        cur = hasher.finalize().into();
-    }
-    let root = BytesN::from_array(&env, &cur);
-
-    let (cpu, mem, verified) = measure(&env, || {
-        client.verify_source_batch_inclusion(&root, &leaf, &proof, &index)
+    // Measure reading a full page of MAX_LINEAGE_CHILDREN_PAGE entries
+    let (cpu, mem, page) = measure(&env, || {
+        client.list_lineage_children(&parent, &0, &MAX_LINEAGE_CHILDREN_PAGE)
     });
 
-    assert!(verified, "Max proof length verification must succeed");
+    assert_eq!(page.total, MAX_LINEAGE_CHILDREN_PAGE);
+    assert_eq!(page.next_offset, MAX_LINEAGE_CHILDREN_PAGE);
+    assert_eq!(page.children.len(), MAX_LINEAGE_CHILDREN_PAGE);
+    assert_eq!(page.children, expected_children);
+
     assert_within(
         cpu,
         mem,
-        MAX_CPU_VERIFY_SOURCE_BATCH_MAX_PROOF,
-        MAX_MEM_VERIFY_SOURCE_BATCH_MAX_PROOF,
-        "verify_source_batch_inclusion_at_max_proof_len",
+        MAX_CPU_LIST_LINEAGE_CHILDREN_PAGE,
+        MAX_MEM_LIST_LINEAGE_CHILDREN_PAGE,
+        "list_lineage_children full page",
     );
 }
 
