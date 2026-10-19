@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -69,8 +70,7 @@ function validatePayloadSize(payload: string): void {
  * @returns Hex string of the hash
  */
 function computeHash(data: string): string {
-  const crypto = require('crypto');
-  return crypto.createHash('sha256').update(data).digest('hex');
+  return createHash('sha256').update(data).digest('hex');
 }
 
 /**
@@ -78,7 +78,7 @@ function computeHash(data: string): string {
  * @param deps - List of dependencies
  * @returns True if dependencies are satisfied
  */
-function checkDependencies(deps: string[]): boolean {
+function checkDependencies(_deps: string[]): boolean {
   // In real implementation, this would check contract states
   return true;
 }
@@ -129,9 +129,6 @@ export function runDryRun(input: DryRunInput): DryRunResult {
     } else if (error.message.includes('Unsupported version')) {
       errorType = 'unsupported_version';
       message = 'Version not supported';
-    } else if (error.message.includes('Dependency check failed')) {
-      errorType = 'dependency_failure';
-      message = 'Dependency check failed';
     }
     
     return {
@@ -189,8 +186,10 @@ export function setupDryRunCommand(program: Command): void {
       } catch (error: any) {
         if (error instanceof SyntaxError) {
           console.error('Error: Invalid JSON input');
-        } else {
+        } else if (error.message) {
           console.error(`Error: ${error.message}`);
+        } else {
+          console.error('Error: An unknown error occurred');
         }
         process.exit(1);
       }
