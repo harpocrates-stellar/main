@@ -1521,6 +1521,14 @@ pub struct VerifierPage {
     pub total_populated: u32,
 }
 
+#[contractevent(topics = ["ttl", "maintain"])]
+pub struct TTLMaintained {
+    pub count: u32,
+}
+
+#[contractevent(topics = ["ttl", "instance"])]
+pub struct InstanceTTLMaintained;
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -4465,7 +4473,6 @@ impl HarpocratesRegistry {
             total_populated,
         }
     }
-}
 
     // -----------------------------------------------------------------------
     // Dispute / correction state machine (#dispute)
@@ -4539,10 +4546,12 @@ impl HarpocratesRegistry {
         }
 
         // 4. Reporter cooldown (keyed by the privacy-safe reporter_hash).
+        // Uses temporary storage so entries do not consume persistent rent unnecessarily
+        // and are automatically reclaimed after the cooldown window.
         let cooldown_key = DataKey::ReporterCooldown(reporter_hash.clone());
         let last_open: u64 = env
             .storage()
-            .persistent()
+            .temporary()
             .get(&cooldown_key)
             .unwrap_or(0u64);
         let now = env.ledger().timestamp();
@@ -4550,8 +4559,14 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::ReporterOnCooldown);
         }
 
-        // 5. Persist cooldown timestamp.
-        env.storage().persistent().set(&cooldown_key, &now);
+        // 5. Store cooldown timestamp in temporary storage with TTL matching the cooldown window.
+        env.storage().temporary().set(&cooldown_key, &now);
+        const REPORTER_COOLDOWN_LEDGERS: u32 = (REPORTER_COOLDOWN_SECS / 5) as u32;
+        env.storage().temporary().extend_ttl(
+            &cooldown_key,
+            REPORTER_COOLDOWN_LEDGERS,
+            REPORTER_COOLDOWN_LEDGERS,
+        );
 
         // 6. Compute deadlines.
         let respond_deadline = now.saturating_add(RESPOND_DEADLINE_SECS);
@@ -4572,18 +4587,33 @@ impl HarpocratesRegistry {
             resolved_at: 0,
             superseded_by: None,
         };
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // 8. Increment open-dispute counters (per proof and per reporter).
+        let proof_dispute_count_key = DataKey::ProofOpenDisputeCount(proof_id.clone());
         env.storage().persistent().set(
-            &DataKey::ProofOpenDisputeCount(proof_id.clone()),
+            &proof_dispute_count_key,
             &(open_count + 1),
+        );
+        env.storage().persistent().extend_ttl(
+            &proof_dispute_count_key,
+            BUMP_THRESHOLD_LEDGERS,
+            BUMP_TARGET_LEDGERS,
         );
         env.storage()
             .persistent()
             .set(&reporter_count_key, &(reporter_open_count + 1));
+        env.storage().persistent().extend_ttl(
+            &reporter_count_key,
+            BUMP_THRESHOLD_LEDGERS,
+            BUMP_TARGET_LEDGERS,
+        );
 
         // 9. Emit event.
         DisputeOpened {
@@ -4659,9 +4689,22 @@ impl HarpocratesRegistry {
         record.response_commitment = Some(response_commitment.clone());
         record.resolve_deadline = now.saturating_add(RESOLVE_DEADLINE_SECS);
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+
+        let proof_dispute_count_key = DataKey::ProofOpenDisputeCount(record.proof_id.clone());
+        if env.storage().persistent().has(&proof_dispute_count_key) {
+            env.storage().persistent().extend_ttl(
+                &proof_dispute_count_key,
+                BUMP_THRESHOLD_LEDGERS,
+                BUMP_TARGET_LEDGERS,
+            );
+        }
 
         DisputeResponded {
             dispute_id,
@@ -4703,9 +4746,13 @@ impl HarpocratesRegistry {
         record.status = DisputeStatus::Resolved;
         record.resolved_at = now;
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
@@ -4742,9 +4789,13 @@ impl HarpocratesRegistry {
         record.status = DisputeStatus::Dismissed;
         record.resolved_at = now;
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
@@ -4813,9 +4864,13 @@ impl HarpocratesRegistry {
         record.superseded_by = Some(superseding_proof_id.clone());
         record.resolved_at = now;
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // Record the reverse supersession direction for cycle detection.
         record_supersession_direction(&env, &record.proof_id, &superseding_proof_id);
@@ -4837,16 +4892,33 @@ impl HarpocratesRegistry {
 
     /// Retrieve a dispute record by its dispute_id.
     pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<DisputeRecord> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Dispute(dispute_id))
+        let key = DataKey::Dispute(dispute_id);
+        let record: Option<DisputeRecord> = env.storage().persistent().get(&key);
+        if let Some(ref rec) = record {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+            let count_key = DataKey::ProofOpenDisputeCount(rec.proof_id.clone());
+            if env.storage().persistent().has(&count_key) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&count_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+            }
+        }
+        record
     }
 
     /// Return the number of currently Open disputes for a given proof.
     pub fn get_open_dispute_count(env: Env, proof_id: BytesN<32>) -> u32 {
+        let key = DataKey::ProofOpenDisputeCount(proof_id);
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        }
         env.storage()
             .persistent()
-            .get(&DataKey::ProofOpenDisputeCount(proof_id))
+            .get(&key)
             .unwrap_or(0u32)
     }
 
@@ -4858,6 +4930,37 @@ impl HarpocratesRegistry {
             .get(&DataKey::ReporterOpenDisputeCount(reporter))
             .unwrap_or(0u32)
     }
+
+    // -----------------------------------------------------------------------
+    // TTL Maintenance (#44)
+    // -----------------------------------------------------------------------
+
+    /// Extend the TTL of the contract's instance storage.
+    /// This should be called periodically to prevent the instance from being archived.
+    pub fn extend_instance_ttl(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        InstanceTTLMaintained.publish(&env);
+    }
+
+    /// Extend the TTL of a batch of persistent storage keys.
+    /// Reverts if the batch is empty or exceeds 50 keys to prevent resource limits.
+    pub fn extend_persistent_ttls(env: Env, keys: SorobanVec<DataKey>) {
+        let count = keys.len();
+        if count == 0 || count > 50 {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+
+        for key in keys.into_iter() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        }
+
+        TTLMaintained { count }.publish(&env);
+    }
+}
 
 fn require_admin(env: &Env, candidate: &Address) {
     let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
@@ -6069,6 +6172,9 @@ fn decrement_open_dispute_count(env: &Env, proof_id: &BytesN<32>) {
         env.storage().persistent().remove(&key);
     } else {
         env.storage().persistent().set(&key, &new_count);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
     }
 }
 
@@ -6082,6 +6188,9 @@ fn decrement_reporter_open_dispute_count(env: &Env, reporter: &Address) {
         env.storage().persistent().remove(&key);
     } else {
         env.storage().persistent().set(&key, &new_count);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
     }
 }
 
