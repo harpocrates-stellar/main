@@ -6,15 +6,41 @@ export function sha256(data: string | Uint8Array): string {
 }
 
 /**
+ * Serialise a JSON-serialisable value with recursive dictionary-key
+ * sorting and no extra whitespace. This matches Python's
+ * `json.dumps(v, sort_keys=True, separators=(',', ':'))`.
+ */
+function canonicalize(value: unknown): string {
+  if (value === null) {
+    return 'null'
+  }
+
+  if (Array.isArray(value)) {
+    return '[' + value.map((item) => canonicalize(item)).join(',') + ']'
+  }
+
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const keys = Object.keys(obj).sort()
+    const entries = keys.map((key) => JSON.stringify(key) + ':' + canonicalize(obj[key]))
+    return '{' + entries.join(',') + '}'
+  }
+
+  // Primitives (string, number, boolean) and anything JSON.stringify
+  // handles directly (including undefined -> undefined, but callers pass
+  // JSON-serialisable values).
+  return JSON.stringify(value)
+}
+
+/**
  * Produce a canonical SHA-256 hex digest of a JSON-serialisable value.
  *
- * The value is serialised with dictionary-key sorting and no extra
- * whitespace – the same encoding convention used by the Harpocrates
- * backend and contract layers.
+ * The value is serialised with recursive dictionary-key sorting and
+ * no extra whitespace – the same encoding convention used by the
+ * Harpocrates backend and contract layers.
  */
 export function canonicalHash(value: unknown): string {
-  const canonical = JSON.stringify(value, Object.keys(value as object).sort())
-  return sha256(canonical)
+  return sha256(canonicalize(value))
 }
 
 /**
