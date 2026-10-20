@@ -1,7 +1,21 @@
 import concurrent.futures
+import os
 import threading
 import time
 from typing import Callable, NamedTuple, Dict, List
+
+from evidence_storage import check_master_key
+
+
+def is_evidence_storage_enabled() -> bool:
+    raw = os.getenv("EVIDENCE_STORAGE_ENABLED", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def check_evidence_storage() -> bool:
+    """Readiness probe for evidence storage master key configuration."""
+    return check_master_key()
+
 
 class ProbeResult(NamedTuple):
     ok: bool
@@ -18,12 +32,21 @@ class ReadinessManager:
     Manages bounded dependency health checks.
     Runs probes in parallel with a strict timeout and caches results.
     """
-    def __init__(self, timeout_seconds: float = 1.0, cache_ttl_seconds: float = 5.0):
+    def __init__(
+        self,
+        timeout_seconds: float = 1.0,
+        cache_ttl_seconds: float = 5.0,
+        evidence_storage_enabled: bool | None = None,
+    ):
         self.timeout_seconds = timeout_seconds
         self.cache_ttl_seconds = cache_ttl_seconds
         self.deps: List[Dependency] = []
         self.cache: Dict[str, ProbeResult] = {}
         self._lock = threading.Lock()
+        if evidence_storage_enabled is None:
+            evidence_storage_enabled = is_evidence_storage_enabled()
+        if evidence_storage_enabled:
+            self.add_dependency("evidence_storage", check_evidence_storage, critical=True)
 
     def add_dependency(self, name: str, check_fn: Callable[[], bool], critical: bool = True):
         self.deps.append(Dependency(name, check_fn, critical))
@@ -37,7 +60,7 @@ class ReadinessManager:
             # Special case for existing schemas
             if dep.name == "video_tools":
                 status = "available" if ok else "missing"
-            elif dep.name == "database":
+            elif dep.name in {"database", "evidence_storage"}:
                 status = "connected" if ok else "not_configured"
             
             return ProbeResult(ok, status, time.time())
