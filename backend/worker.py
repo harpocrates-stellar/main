@@ -23,7 +23,7 @@ from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
-from storage import get_job_input_path, get_job_output_path
+from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
 from tracing import traced_job
 
@@ -254,6 +254,14 @@ def run_worker(
 
     while not stop_event.is_set():
         try:
+            now_time = time.time()
+            if now_time - last_sweep_time >= 300:
+                last_sweep_time = now_time
+                try:
+                    sweep_job_files()
+                except Exception as e:
+                    LOGGER.error("Job file sweep failed: %s", type(e).__name__)
+
             job = lease_job(
                 WORKER_ID,
                 ["embed", "extract", "silent_witness", "verify_tx"],
