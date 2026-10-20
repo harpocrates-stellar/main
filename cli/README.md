@@ -13,6 +13,16 @@ node dist/cli.js verify --manifest proof.json \
   --source-address G... --output json
 ```
 
+To check the on-chain lifecycle status of a proof directly by its 32-byte proof ID:
+
+```sh
+node dist/cli.js status --proof-id <64-hex> \
+  --contract-id C... --network 'Test SDF Network ; September 2015' \
+  --rpc-url https://soroban-testnet.stellar.org --output json
+```
+
+`status` simulates `get_proof_status(proof_id)` against the registry and maps the result to a stable status string (`registered`, `revoked`, `expired`, or `unknown`) and exit code (`0` for `registered`, `1` for `expired`, `2` for `revoked`, `3` for `unknown`). Malformed or missing `--proof-id` values exit `2` immediately without making an RPC call.
+
 To verify a signed verification receipt offline without hitting the RPC:
 
 ```sh
@@ -28,10 +38,10 @@ node dist/cli.js c2pa --manifest proof.json [--receipt receipt.json] --output ex
 
 The export is an **unsigned** C2PA JSON manifest definition carrying standard
 `c2pa.actions.v2` and `c2pa.hash.data` assertions plus namespaced
-`harpocrates.registry.v1` (canonical manifest fields bound by
-`manifestHash`), `harpocrates.verification.v1` (the receipt outcome verbatim,
+`hrpocrates.registry.v1` (canonical manifest fields bound by
+`manifestHash`), `hrpocrates.verification.v1` (the receipt outcome verbatim,
 only when `--receipt` is supplied, never a fabricated `valid`), and
-`harpocrates.export.v1` (`unsigned: true`). It contains only public manifest
+`hrpocrates.export.v1` (`unsigned: true`). It contains only public manifest
 and registry fields; it never carries media bytes, witness values, secrets,
 proof bytes, or signing keys, and the exporter never signs. Out-of-band you
 sign the result with your own C2PA signer. Missing `--manifest` exits 2;
@@ -42,7 +52,7 @@ deterministic, so the same manifest and receipt always produce the same bytes
 For reproducible, network-free manifest and status fixtures, run from `cli/`:
 
 ```sh
-npm test -- --run test/manifest.test.ts test/normalize.test.ts
+npm test -- --run test/manifest.test.ts test/normalize.test.ts test/status.test.ts
 ```
 
 An offline verification exits 6 with `pending`: it checks syntax and
@@ -51,6 +61,15 @@ online check exits 0; expired 1, revoked 2, missing 3, network mismatch 4,
 contract mismatch 5, pending 6, failed transaction 7, and malformed input or
 dependency failure 8. Do not treat a nonzero exit or an offline receipt as
 verified evidence. `--tx-hash`, when supplied, must match the manifest.
+
+Harpocrates CLI environment variables:
+
+- `HARPOCRATES_RPC_URL` -- default for `--rpc-url` in `verify`, `status`, and `manifest`.
+- `HARPOCRATES_CONTRACT_ID` -- default for `--contract-id` in `verify`, `status`, and `manifest`.
+- `HARPOCRATES_SOURCE_ADDRESS` -- default for `--source-address` in `verify` and `status`.
+
+Explicit flags always take precedence over environment values. Contract-id
+validation still applies to environment values.
 
 The CLI accepts at most 1 MiB of manifest/metadata JSON. It rejects unknown
 manifest fields and unsupported versions, and writes fixed, privacy-safe

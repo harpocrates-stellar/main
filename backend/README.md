@@ -3,6 +3,12 @@
 Flask service for video proof packaging, steganographic metadata extraction,
 and local developer proof tooling.
 
+## Webhooks
+
+Outbound webhook request fields, headers, HMAC-SHA-256 signature verification,
+replay guidance, and retry/backoff behaviour are documented in
+[Webhook delivery and signature verification](docs/webhooks.md).
+
 ## Steganography
 
 `POST /api/stego/embed` accepts a video and JSON metadata, then returns an
@@ -90,6 +96,36 @@ to restore the previous startup behaviour, or set
 `MIGRATION_CHECKSUM_ENFORCEMENT=warn` for a temporary boot while the ledger is
 reconciled. Never edit an applied migration's SQL to silence a mismatch; add a
 new numbered migration instead.
+
+## Database Maintenance CLI
+
+`manage.py` is the single entry point for database maintenance. Run it from
+`backend/` with `DATABASE_URL` set:
+
+```bash
+python manage.py migrate                    # apply pending migrations
+python manage.py migrate --check            # verify checksums, list pending; applies nothing
+python manage.py drift                      # compare live schema with the expected schema
+python manage.py retention --dry-run        # count expired, non-held proof events
+python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
+python manage.py retention --run --batch-size 500
+python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py --json drift               # machine-readable JSON output
+```
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success; no problems found |
+| `1` | Schema drift detected or migration checksum mismatch |
+| `2` | Invalid command-line usage |
+| `3` | `DATABASE_URL` is not configured |
+| `4` | Unexpected error (e.g. database unreachable); only the error type is printed |
+
+Output never includes connection strings or secrets: every line is scrubbed of
+the `DATABASE_URL` value, URL credentials, and `password=`/`token=`-style
+values, and unexpected exceptions are reported by type name only.
 
 ## Privacy-Safe Service Metrics
 
