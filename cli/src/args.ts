@@ -1,7 +1,15 @@
 import { parseArgs } from 'node:util'
 import { Networks } from '@stellar/stellar-sdk'
 
-export type Command = 'verify' | 'manifest' | 'hash' | 'verify-receipt' | 'c2pa' | 'verify-lineage' | 'help'
+export type Command =
+  | 'verify'
+  | 'status'
+  | 'manifest'
+  | 'hash'
+  | 'verify-receipt'
+  | 'c2pa'
+  | 'verify-lineage'
+  | 'help'
 
 export interface ParsedArgs {
   command: Command
@@ -61,6 +69,19 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     offline: toggle,
     debug: toggle,
   },
+  status: {
+    'contract-id': text,
+    contractId: text,
+    'proof-id': text,
+    proofId: text,
+    'rpc-url': text,
+    rpcUrl: text,
+    'source-address': text,
+    sourceAddress: text,
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
   manifest: {
     ...ON_CHAIN,
     input: alias('i'),
@@ -108,7 +129,7 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
 
 // Environment variable defaults for flags that are otherwise required on every call.
 // Explicit flags always take precedence over these values.
-const ENV_DEFAULTS: Record<Exclude<Command, 'help'>, { keys: string[]; env: string }> = {
+const ENV_DEFAULTS: Partial<Record<Exclude<Command, 'help'>, { keys: string[]; env: string }>> = {
   verify: {
     keys: ['rpc-url', 'rpcUrl'],
     env: 'HARPOCRATES_RPC_URL',
