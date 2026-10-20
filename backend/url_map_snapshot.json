@@ -1,0 +1,99 @@
+{
+  "/api/c2pa/export": [
+    "POST"
+  ],
+  "/api/c2pa/import": [
+    "POST"
+  ],
+  "/api/capture-attestation/verify": [
+    "POST"
+  ],
+  "/api/jobs/<int:job_id>": [
+    "GET"
+  ],
+  "/api/jobs/<int:job_id>/cancel": [
+    "POST"
+  ],
+  "/api/jobs/<int:job_id>/download": [
+    "GET"
+  ],
+  "/api/lineage/<output_digest>": [
+    "GET"
+  ],
+  "/api/lineage/by-actor/<actor_address>": [
+    "GET"
+  ],
+  "/api/noir/silent-witness": [
+    "POST"
+  ],
+  "/api/noir/silent-witness/aggregate": [
+    "POST"
+  ],
+  "/api/proofs": [
+    "GET"
+  ],
+  "/api/proofs/by-video/<video_hash>": [
+    "GET"
+  ],
+  "/api/proofs/history": [
+    "POST"
+  ],
+  "/api/proofs/history/<proof_id>": [
+    "GET"
+  ],
+  "/api/proofs/lineage": [
+    "GET",
+    "POST"
+  ],
+  "/api/proofs/reconcile": [
+    "POST"
+  ],
+  "/api/proofs/register": [
+    "POST"
+  ],
+  "/api/proofs/verify-batch": [
+    "POST"
+  ],
+  "/api/schemas": [
+    "GET"
+  ],
+  "/api/schemas/<schema_hash>": [
+    "GET"
+  ],
+  "/api/stego/embed": [
+    "POST"
+  ],
+  "/api/stego/extract": [
+    "POST"
+  ],
+  "/api/stego/upload-session": [
+    "POST"
+  ],
+  "/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>": [
+    "PUT"
+  ],
+  "/api/stego/upload-session/<session_id>/commit": [
+    "POST"
+  ],
+  "/api/time-attestation/anchor": [
+    "POST"
+  ],
+  "/api/time-attestation/create": [
+    "POST"
+  ],
+  "/api/time-attestation/validate": [
+    "POST"
+  ],
+  "/api/verify/selective-disclosure": [
+    "POST"
+  ],
+  "/health": [
+    "GET"
+  ],
+  "/metrics": [
+    "GET"
+  ],
+  "/ready": [
+    "GET"
+  ]
+}
