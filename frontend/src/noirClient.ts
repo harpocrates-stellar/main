@@ -101,8 +101,16 @@ function bytesToHex(bytes: Uint8Array): string {
  * The published browser helper computes (credential_root, nullifier). Newer
  * helper artifacts may also return a domain_tag that binds the proof to the
  * protocol and network. The browser never fabricates a missing domain tag.
+ *
+ * @param threadCount – number of WASM threads to use. When `crossOriginIsolated`
+ *   is true the caller may pass `navigator.hardwareConcurrency`; otherwise pass 1
+ *   (single-threaded fallback). Defaults to 1.
  */
-export async function generateSilentWitnessProof(input: SilentWitnessInput): Promise<SilentWitnessProof> {
+export async function generateSilentWitnessProof(
+  input: SilentWitnessInput,
+  options?: { threadCount?: number },
+): Promise<SilentWitnessProof> {
+  const threadCount = options?.threadCount ?? 1
   const prepared = prepareSilentWitnessInputs(input)
   try {
     const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
@@ -135,7 +143,7 @@ export async function generateSilentWitnessProof(input: SilentWitnessInput): Pro
     const witnessBytes = byteLengthOfProofWorkerValue(witness)
     assertProofWorkerMemoryBudget({ artifactBytes, witnessBytes })
 
-    const backend = new UltraHonkBackend(mainCircuit.circuit.bytecode)
+    const backend = new UltraHonkBackend(mainCircuit.circuit.bytecode, { threads: threadCount })
     try {
       const proofData = await backend.generateProof(witness, { keccak: true })
       assertProofOutput(proofData.proof.length, proofData.publicInputs, {
