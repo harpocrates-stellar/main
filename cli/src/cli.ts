@@ -651,6 +651,7 @@ Exit codes:
   7   failed
   8   error
       (RPC timeouts during verification also exit with 8)
+  For a full table of every exit code and which commands emit them, see the Exit codes section in cli/README.md.
 `
   return help.trim()
 }

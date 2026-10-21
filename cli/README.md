@@ -64,14 +64,23 @@ For reproducible, network-free manifest and status fixtures, run from `cli/`:
 npm test -- --run test/manifest.test.ts test/normalize.test.ts test/status.test.ts
 ```
 
-An offline verification exits 6 with `pending`: it checks syntax and
-deployment binding but **cannot** establish on-chain validity. A successful
-online check exits 0; expired 1, revoked 2, missing 3, network mismatch 4,
-contract mismatch 5, pending 6, failed transaction 7, and malformed input or
-dependency failure 8. An R
-PC request timeout (`--timeout`) is a dependency
-failure and thus also exits 8. Do not treat a nonzero exit or an offline receipt as
-verified evidence. `--tx-hash`, when supplied, must match the manifest.
+### Exit codes
+
+Script authors and CI integrations can rely on the following exit codes to determine the outcome of a command.
+
+| Code | Meaning | Emitted by |
+| :--- | :--- | :--- |
+| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
+| `1` | `expired` | `verify`, `status`, `verify-lineage` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
+| `4` | `network_mismatch` | `verify` |
+| `5` | `contract_mismatch` | `verify` |
+| `6` | `pending` (offline verification) | `verify` |
+| `7` | `failed` transaction | `verify` |
+| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+
+An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
 
 Harpocrates CLI environment variables:
 
