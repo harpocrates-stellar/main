@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util'
 export type Command =
   | 'verify'
   | 'status'
+  | 'doctor'
   | 'manifest'
   | 'hash'
   | 'verify-receipt'
@@ -64,6 +65,15 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  doctor: {
+    'contract-id': text,
+    contractId: text,
+    'rpc-url': text,
+    rpcUrl: text,
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
   manifest: {
     ...ON_CHAIN,
     input: alias('i'),
@@ -119,6 +129,10 @@ const ENV_DEFAULTS: Partial<Record<Exclude<Command, 'help'>, { keys: string[]; e
   manifest: {
     keys: ['contract-id', 'contractId'],
     env: 'HARPOCRATES_CONTRACT_ID',
+  },
+  doctor: {
+    keys: ['rpc-url', 'rpcUrl'],
+    env: 'HARPOCRATES_RPC_URL',
   },
 }
 

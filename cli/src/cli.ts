@@ -18,8 +18,10 @@ import {
   verifyTransaction,
   getLineage,
   getProofStatus,
+  checkContractExists,
   type ProofLifecycleStatus,
 } from './stellar-lookup.js'
+import { rpc, Networks } from '@stellar/stellar-sdk'
 import { createReceipt, formatReceipt, type VerificationReceipt } from './receipt.js'
 import { classifyVerification } from './normalize.js'
 import { verifyVerificationReceipt, decodeReceiptFromQr, type SignedVerificationReceipt } from './signed-receipt.js'
@@ -96,6 +98,8 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleVerify(flags, debugLog)
     case 'status':
       return await handleStatus(flags, debugLog)
+    case 'doctor':
+      return await handleDoctor(flags, debugLog)
     case 'manifest':
       return await handleManifest(flags, debugLog)
     case 'hash':
@@ -544,6 +548,232 @@ export async function handleStatus(
   exit(STATUS_EXIT_CODES[status] ?? 8)
 }
 
+export type DoctorCheckStatus = 'pass' | 'warn' | 'fail'
+
+export interface DoctorCheckResult {
+  name: string
+  status: DoctorCheckStatus
+  message: string
+}
+
+export interface DoctorReport {
+  ok: boolean
+  checks: DoctorCheckResult[]
+}
+
+const DEFAULT_DOCTOR_TIMEOUT_MS = 10_000
+
+export async function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMsg: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(timeoutMsg))
+    }, ms)
+    promise
+      .then((val) => {
+        clearTimeout(timer)
+        resolve(val)
+      })
+      .catch((err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+  })
+}
+
+export async function runDiagnostics(options: {
+  rpcUrl?: string
+  network?: string
+  contractId?: string
+  timeoutMs?: number
+}): Promise<DoctorReport> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_DOCTOR_TIMEOUT_MS
+  const checks: DoctorCheckResult[] = []
+
+  // Check 1: Node version
+  const nodeVersion = process.version
+  const major = parseInt(nodeVersion.replace(/^v/, '').split('.')[0], 10)
+  if (major >= 22) {
+    checks.push({
+      name: 'node_version',
+      status: 'pass',
+      message: `Node.js ${nodeVersion} supported`,
+    })
+  } else if (major >= 18) {
+    checks.push({
+      name: 'node_version',
+      status: 'warn',
+      message: `Node.js ${nodeVersion} meets minimum requirement (>= 18), but >= 22 is recommended`,
+    })
+  } else {
+    checks.push({
+      name: 'node_version',
+      status: 'fail',
+      message: `Node.js ${nodeVersion} is unsupported; >= 18 is required`,
+    })
+  }
+
+  // Check 2: RPC reachability (getHealth)
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
+  const server = new rpc.Server(rpcUrl)
+  let rpcHealthy = false
+
+  try {
+    const health = await withTimeout(server.getHealth(), timeoutMs, `RPC request timed out after ${timeoutMs}ms`)
+    if (health && typeof health === 'object' && health.status === 'healthy') {
+      rpcHealthy = true
+      checks.push({
+        name: 'rpc_reachability',
+        status: 'pass',
+        message: `RPC endpoint is reachable and healthy (${rpcUrl})`,
+      })
+    } else {
+      checks.push({
+        name: 'rpc_reachability',
+        status: 'fail',
+        message: `RPC endpoint returned non-healthy status: ${JSON.stringify(health?.status ?? health)}`,
+      })
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    checks.push({
+      name: 'rpc_reachability',
+      status: 'fail',
+      message: `RPC endpoint is unreachable (${rpcUrl}): ${msg}`,
+    })
+  }
+
+  // Check 3: Network passphrase match (getNetwork)
+  const expectedPassphrase = options.network || process.env.HARPOCRATES_NETWORK || Networks.TESTNET
+  if (!rpcHealthy) {
+    checks.push({
+      name: 'network_passphrase',
+      status: 'fail',
+      message: 'Skipped: RPC endpoint unreachable',
+    })
+  } else {
+    try {
+      const netInfo = await withTimeout(server.getNetwork(), timeoutMs, `RPC request timed out after ${timeoutMs}ms`)
+      const actualPassphrase = netInfo?.passphrase
+      if (actualPassphrase === expectedPassphrase) {
+        checks.push({
+          name: 'network_passphrase',
+          status: 'pass',
+          message: `Network passphrase matches (${expectedPassphrase})`,
+        })
+      } else {
+        checks.push({
+          name: 'network_passphrase',
+          status: 'fail',
+          message: `Network passphrase mismatch: expected "${expectedPassphrase}", got "${actualPassphrase ?? 'unknown'}"`,
+        })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      checks.push({
+        name: 'network_passphrase',
+        status: 'fail',
+        message: `Failed to query network passphrase: ${msg}`,
+      })
+    }
+  }
+
+  // Check 4: Contract existence (if --contract-id given)
+  const contractId = resolveContractId(options.contractId)
+  if (contractId) {
+    if (!StrKey.isValidContract(contractId)) {
+      checks.push({
+        name: 'contract_existence',
+        status: 'fail',
+        message: `Contract ID ${contractId} is invalid`,
+      })
+    } else if (!rpcHealthy) {
+      checks.push({
+        name: 'contract_existence',
+        status: 'fail',
+        message: `Skipped: RPC endpoint unreachable for contract ${contractId}`,
+      })
+    } else {
+      try {
+        const exists = await withTimeout(
+          checkContractExists(contractId, { rpcUrl }),
+          timeoutMs,
+          `RPC request timed out after ${timeoutMs}ms`,
+        )
+        if (exists) {
+          checks.push({
+            name: 'contract_existence',
+            status: 'pass',
+            message: `Contract exists on-chain (${contractId})`,
+          })
+        } else {
+          checks.push({
+            name: 'contract_existence',
+            status: 'fail',
+            message: `Contract not found on-chain (${contractId})`,
+          })
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        checks.push({
+          name: 'contract_existence',
+          status: 'fail',
+          message: `Failed to verify contract existence (${contractId}): ${msg}`,
+        })
+      }
+    }
+  }
+
+  const ok = checks.every((c) => c.status !== 'fail')
+  return { ok, checks }
+}
+
+export function formatDoctorReport(report: DoctorReport): string {
+  const lines = report.checks.map((c) => `[${c.status.toUpperCase()}] ${c.name}: ${c.message}`)
+  return lines.join('\n')
+}
+
+export async function handleDoctor(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const contractId = flags['contract-id'] || flags.contractId
+  const rpcUrl = flags['rpc-url'] || flags.rpcUrl
+  const network = flags.network
+  const outputFormat = flags.output || flags.o || 'text'
+
+  if (outputFormat !== 'text' && outputFormat !== 'json') {
+    exit(2, 'invalid --output: expected "text" or "json"')
+  }
+
+  debugLog({
+    event: 'doctor.start',
+    contractId,
+    rpcUrl,
+    network,
+  })
+
+  const report = await runDiagnostics({
+    contractId,
+    rpcUrl,
+    network,
+  })
+
+  debugLog({
+    event: 'doctor.complete',
+    report,
+  })
+
+  if (outputFormat === 'json') {
+    printJson(report)
+  } else {
+    printText(formatDoctorReport(report))
+  }
+
+  if (!report.ok) {
+    exit(1)
+  }
+}
+
 export function helpText(): string {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -554,6 +784,7 @@ Usage:
 Commands:
   verify         Verify a proof against the Stellar network.
   status         Report the on-chain lifecycle status of a proof by proof ID.
+  doctor         Run environment diagnostics (Node, RPC, network, contract).
   verify-lineage Verify a derivative's full lineage back to registered originals.
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
@@ -567,6 +798,12 @@ Status options:
   --rpc-url         Stellar RPC URL (default: testnet).
   --source-address  Source address for simulation.
   --network         Network passphrase (default: testnet).
+  --output, -o      Output format: "text" (default) or "json".
+
+Doctor options:
+  --contract-id     Optional contract ID on Stellar to check existence.
+  --rpc-url         Stellar RPC URL (default: testnet).
+  --network         Expected network passphrase (default: testnet).
   --output, -o      Output format: "text" (default) or "json".
 
 Lineage verification options:

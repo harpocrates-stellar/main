@@ -37,6 +37,7 @@ export {
   lookupProofStatus,
   normalizeProofStatus,
   verifyTransaction,
+  checkContractExists,
 } from './stellar-lookup.js'
 export type {
   ChainProofRecord,

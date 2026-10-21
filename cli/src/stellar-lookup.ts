@@ -562,3 +562,20 @@ export async function getProofStatus(
   return status
 }
 
+/**
+ * Check whether a contract exists on-chain at the configured RPC server.
+ * Uses `getLedgerEntries` with the contract's instance footprint.
+ */
+export async function checkContractExists(
+  contractId: string,
+  options: StellarLookupOptions = {},
+): Promise<boolean> {
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
+  const server = new rpc.Server(rpcUrl)
+  const contract = new Contract(contractId)
+  const footprint = contract.getFootprint()
+  const response = await server.getLedgerEntries(footprint)
+  return Array.isArray(response.entries) && response.entries.length > 0
+}
+
+
