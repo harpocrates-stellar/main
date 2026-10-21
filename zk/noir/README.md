@@ -79,6 +79,8 @@ Key properties:
   are revoked.
 - **Domain binding**: `HARPOCRATES_REVOCATION_V1` prevents cross-version replay.
 
+Spec: [`docs/zk-revocation-witness-spec.md`](../../docs/zk-revocation-witness-spec.md).
+
 ### `revocation_witness_helper`
 
 Helper circuit that derives `credential_root` / `nullifier` and Merkle root
@@ -92,6 +94,10 @@ Attribute-selective circuit behind `frontend/src/selectiveDisclosure.ts`
 types restricted to eq / set-membership / range, and bound to
 `CURRENT_CIRCUIT_VERSION` so a proof from another circuit version cannot be
 replayed against the registry.
+
+Statement, public/private inputs, predicate encoding, schema-binding limits,
+and a reproducible age/country example:
+[Selective Disclosure specification](../../docs/zk-selective-disclosure-spec.md).
 
 ## Constant-time comparisons
 
@@ -118,9 +124,24 @@ bbup
 
 ## Reproducible builds
 
-Toolchain versions, the hermetic environment, artifact normalization rules, and
-resource limits are pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json).
-The double-build reproducibility check is:
+## Reproducible builds and circuit tooling
+
+Circuit artifact building, proof generation, and verification key management are driven by `zk/tools/build_circuits.py`. Toolchain versions, the hermetic environment, artifact normalization rules, and resource limits are pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json).
+
+```bash
+# Unified driver commands:
+python zk/tools/build_circuits.py build               # double build + compare, write manifest
+python zk/tools/build_circuits.py build --verify      # build once, compare to committed manifest
+python zk/tools/build_circuits.py build --single      # build once, write manifest
+python zk/tools/build_circuits.py build --check-coverage  # every circuit pinned? (no toolchain needed)
+python zk/tools/build_circuits.py build <circuit>     # compile a specific circuit and write VK
+python zk/tools/build_circuits.py build <circuit> --prove  # build, execute witness, prove, and verify
+python zk/tools/build_circuits.py generate <circuit> [args...] # generate proof with dynamic secrets
+python zk/tools/build_circuits.py export <circuit>    # export proof, public inputs, and VK as hex JSON
+python zk/tools/build_circuits.py prepare-soroban <circuit> # prepare VK for Soroban contract verifier
+```
+
+The scripts in `zk/noir/scripts/` (`reproducible-build.sh`, `build-silent-witness.sh`, `generate-silent-witness*.sh`, `export-silent-witness-artifacts.ps1`, `prepare-soroban-verifier-artifacts.ps1`, etc.) are thin wrappers around `zk/tools/build_circuits.py`.
 
 ```bash
 zk/noir/scripts/reproducible-build.sh          # build twice, compare, write manifest
@@ -163,12 +184,7 @@ See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 For the full local build with the checked-in prover file:
 
 ```bash
-cd zk/noir/silent_witness
-nargo check
-nargo execute witness
-bb prove --scheme ultra_honk --oracle_hash keccak --bytecode_path ./target/silent_witness.json --witness_path ./target/witness.gz --output_path ./target --output_format bytes_and_fields
-bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path ./target/silent_witness.json --output_path ./target --output_format bytes_and_fields
-bb verify --scheme ultra_honk --oracle_hash keccak --vk_path ./target/vk --proof_path ./target/proof --public_inputs_path ./target/public_inputs
+python zk/tools/build_circuits.py build silent_witness --prove
 ```
 
 Current local proof status:
@@ -187,6 +203,13 @@ From PowerShell on Windows:
 
 Generate proof artifacts for a specific video hash:
 
+```powershell
+python zk/tools/build_circuits.py generate silent_witness `
+  --video-hash YOUR_32_BYTE_HEX `
+  --credential-secret YOUR_FIELD_DECIMAL `
+  --nullifier-secret YOUR_FIELD_DECIMAL
+```
+or via the PowerShell wrapper:
 ```powershell
 .\zk\noir\scripts\generate-silent-witness-wsl.ps1 `
   -VideoHash YOUR_32_BYTE_HEX `
@@ -214,6 +237,11 @@ node scripts/test-noir-client-prover.mjs
 
 Export proof artifacts as hex for Soroban tooling:
 
+```powershell
+python zk/tools/build_circuits.py prepare-soroban silent_witness
+python zk/tools/build_circuits.py export silent_witness
+```
+or via wrappers:
 ```powershell
 .\zk\noir\scripts\prepare-soroban-verifier-artifacts.ps1
 .\zk\noir\scripts\export-silent-witness-artifacts.ps1

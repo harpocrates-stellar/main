@@ -7,7 +7,12 @@ import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
 import { useEvidence } from './hooks/useEvidence'
 import { useVerification } from './hooks/useVerification'
+fix/issue-636-perf-frontend-lazy-load-the-studio-and-batch
 import { useLiveRegion, useAc11Stage, useSkipLink } from './hooks/useAc11'
+
+import { useOpenDisputeCount } from './hooks/useOpenDisputeCount'
+import { useLiveRegion, useA11yStage, useSkipLink } from './hooks/useA11y'
+main
 import type { IdentityTier } from './types'
 import type { View } from './types'
 import { createProofManifest } from './proofManifest'
@@ -27,6 +32,13 @@ const BatchVerificationWorkspace = lazy(() =>
 )
 
 type AppView = View | 'batch'
+
+const VIEW_TITLES: Record<AppView, string> = {
+  landing: 'Harpocrates',
+  studio: 'Evidence Studio - Harpocrates',
+  verify: 'Verify evidence - Harpocrates',
+  batch: 'Batch Workspace - Harpocrates',
+}
 
 function methodForTier(tier: IdentityTier) {
   if (tier === 'silent') return 'register_anonymous_verified'
@@ -51,6 +63,10 @@ function App() {
   const [isScrolled, setIsScrolled] = useState(false)
   const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
   const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
+
+  useEffect(() => {
+    document.title = VIEW_TITLES[currentView]
+  }, [currentView])
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
@@ -93,6 +109,12 @@ function App() {
     return () => clearTimeout(timer)
   }, [viewHeadingId])
 
+  const openDisputeCount = useOpenDisputeCount({
+    proofId: evidence.proof?.proofId ?? null,
+    sourceAddress: wallet || undefined,
+    contractId: CONTRACT_ID,
+  })
+
   const provenanceRecord = useMemo(() => {
     if (!evidence.proof) return null
 
@@ -112,8 +134,9 @@ function App() {
       rpcUrl: RPC_URL,
       transactionHash: evidence.registration?.hash ?? null,
       method: methodForTier(evidence.proof.tier),
+      openDisputeCount,
     })
-  }, [evidence.proof, evidence.registration?.hash, verification.chainProof])
+  }, [evidence.proof, evidence.registration?.hash, verification.chainProof, openDisputeCount])
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)
