@@ -14,6 +14,11 @@ contracts/harpocrates-registry
 - Tier 2 Consistent Source: Stellar account signed source.
 - Tier 3 Public Seal: approved institutional issuer.
 
+For `add_schema` and `verify_selective_disclosure`, see the
+[Selective Disclosure specification](../docs/zk-selective-disclosure-spec.md)
+for the circuit statement, 352-byte public-input layout, schema/version checks,
+binding limits, and a reproducible age/country example.
+
 ## Build
 
 ```powershell

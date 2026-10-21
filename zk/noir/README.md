@@ -93,6 +93,10 @@ types restricted to eq / set-membership / range, and bound to
 `CURRENT_CIRCUIT_VERSION` so a proof from another circuit version cannot be
 replayed against the registry.
 
+Statement, public/private inputs, predicate encoding, schema-binding limits,
+and a reproducible age/country example:
+[Selective Disclosure specification](../../docs/zk-selective-disclosure-spec.md).
+
 ## Constant-time comparisons
 
 Field equality in these circuits compiles to fixed arithmetic constraints, so
