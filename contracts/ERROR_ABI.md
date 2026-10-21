@@ -101,7 +101,7 @@ input, a different actor, or new evidence before the call can succeed.
 | 50 | `UnknownSchema` | unsupported | no | The schema id is not registered. |
 | 51 | `InactiveSchema` | unsupported | no | The schema was deprecated and cannot be used. |
 | 52 | `SchemaVersionMismatch` | unsupported | no | The schema version is not the expected one. |
-| 53 | `StaleEpoch` | expired | no | The scoped-nullifier proof was generated for a stale scope epoch. |
+| 53 | `StaleEpoch` | expired | no | The scoped-nullifier proof was generated for a stale scope epoch, or `set_scope_epoch` attempted a non-increasing epoch. |
 | 54 | `BatchSizeExceeded` | oversized | no | The batch is empty or above the element cap. |
 | 55 | `BatchCredentialRootMismatch` | malformed | no | Batch elements do not share one credential root. |
 | 56 | `BatchCountMismatch` | malformed | no | The batch size does not match the supplied video-hash list. |
@@ -136,6 +136,7 @@ input, a different actor, or new evidence before the call can succeed.
 | 85 | `IssuerRotationNotFound` | state | no | No issuer rotation grace record exists for the requested key. |
 | 86 | `IssuerRotationGraceStillActive` | state | yes | The issuer rotation grace window has not lapsed; retry once it has. |
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
+| 88 | `ReporterDisputesSaturated` | resource | no | The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`. |
 
 ## Privacy Rules
 

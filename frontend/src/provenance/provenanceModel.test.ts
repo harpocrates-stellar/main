@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChainProofRecord, IdentityTier } from '../stellarTypes'
-import { buildProvenanceRecord, NOIR_CIRCUIT_VERSION } from './provenanceModel'
+import { buildProvenanceRecord, disputeNotice, NOIR_CIRCUIT_VERSION } from './provenanceModel'
 
 const BASE_MANIFEST = {
   protocol: 'harpocrates' as const,
@@ -128,58 +128,49 @@ describe('buildProvenanceRecord', () => {
 
     expect(record.staleness).toEqual({ stale: false })
   })
+})
 
-  it('includes default EXPECTED_CIRCUIT_VERSION when circuit version is not explicitly specified', () => {
-    const record = buildRecord(MATCHING_CHAIN_PROOF)
-    expect(record.circuitVersion).toBe(2)
-  })
-
-  it('includes explicitly provided circuit version', () => {
-    const record = buildProvenanceRecord({
+describe('provenance disputes', () => {
+  function withDisputes(openDisputeCount: number | null | undefined) {
+    return buildProvenanceRecord({
       manifest: BASE_MANIFEST,
       chainProof: MATCHING_CHAIN_PROOF,
       rpcUrl: 'https://rpc.example.test',
       transactionHash: 'f'.repeat(64),
       method: 'register_source',
-      circuitVersion: 3,
+      openDisputeCount,
       fetchedAt: FETCHED_AT,
     })
+  }
 
-    expect(record.circuitVersion).toBe(3)
+  it('keeps the count unknown when it was not looked up', () => {
+    expect(buildRecord(MATCHING_CHAIN_PROOF).disputes).toEqual({ openCount: null })
+    expect(withDisputes(undefined).disputes).toEqual({ openCount: null })
+    expect(withDisputes(null).disputes).toEqual({ openCount: null })
   })
 
-  it('infers circuit version from manifest selective disclosure when available', () => {
-    const record = buildProvenanceRecord({
-      manifest: {
-        ...BASE_MANIFEST,
-        selectiveDisclosure: {
-          schemaHash: '0x123',
-          publicInputs: '0x456',
-          predicateCommitment: '0x789',
-          circuitVersion: 1,
-        },
-      },
-      chainProof: MATCHING_CHAIN_PROOF,
-      rpcUrl: 'https://rpc.example.test',
-      transactionHash: 'f'.repeat(64),
-      method: 'register_source',
-      fetchedAt: FETCHED_AT,
-    })
-
-    expect(record.circuitVersion).toBe(1)
+  it('carries a zero and a positive count through unchanged', () => {
+    expect(withDisputes(0).disputes).toEqual({ openCount: 0 })
+    expect(withDisputes(3).disputes).toEqual({ openCount: 3 })
   })
 
-  it('omits circuitVersion when unknown (null)', () => {
-    const recordNull = buildProvenanceRecord({
-      manifest: BASE_MANIFEST,
-      chainProof: MATCHING_CHAIN_PROOF,
-      rpcUrl: 'https://rpc.example.test',
-      transactionHash: 'f'.repeat(64),
-      method: 'register_source',
-      circuitVersion: null,
-      fetchedAt: FETCHED_AT,
-    })
+  it('treats negative, fractional or non-finite counts as unknown', () => {
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(withDisputes(bad).disputes).toEqual({ openCount: null })
+    }
+  })
 
-    expect(recordNull.circuitVersion).toBeUndefined()
+  it('includes the disputes field in the exported provenance JSON', () => {
+    const parsed = JSON.parse(JSON.stringify(withDisputes(2)))
+    expect(parsed.disputes).toEqual({ openCount: 2 })
+  })
+
+  it('produces a notice only when the count is greater than zero', () => {
+    expect(disputeNotice(withDisputes(null))).toBeNull()
+    expect(disputeNotice(withDisputes(0))).toBeNull()
+    expect(disputeNotice(withDisputes(1))).toBe(
+      'This proof has 1 open dispute recorded on chain. A dispute does not by itself invalidate the proof.',
+    )
+    expect(disputeNotice(withDisputes(4))).toContain('4 open disputes')
   })
 })
