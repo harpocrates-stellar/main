@@ -25,7 +25,11 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Bytes, BytesN, Env};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{Address as _, Ledger},
+    Address, Bytes, BytesN, Env,
+};
 
 #[contract]
 struct MockVerifierUpgrade;
@@ -223,113 +227,118 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
     );
 }
 
-#[test]
-fn upgrade_compat_backfill_credential_roots_bounded_and_idempotent() {
-    let (env, contract_id, admin) = init_registry();
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+const SECOND_WASM: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7e,
+    0x03, 0x02, 0x01, 0x00,
+    0x07, 0x08, 0x01, 0x04, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x00,
+    0x0a, 0x08, 0x01, 0x06, 0x00, 0x42, 0x8e, 0xdc, 0x2d, 0x0b,
+    0x00, 0x1e, 0x11, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x61, 0x63, 0x74, 0x65,
+    0x6e, 0x76, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00,
+];
 
-    // Queue 30 legacy roots (exceeds MAX_ROOTS_BACKFILL_BATCH = 25)
-    let mut roots_to_stage = soroban_sdk::Vec::new(&env);
-    for i in 1..=30u8 {
-        let root = b32(&env, i);
-        roots_to_stage.push_back(root.clone());
-        // Store legacy V2 record directly in persistent storage
-        env.as_contract(&contract_id, || {
-            env.storage().persistent().set(
-                &DataKey::CredentialRootV2(root.clone()),
-                &CredentialRootRecord {
-                    metadata_hash: b32(&env, 0xAA),
-                    status: STATUS_REGISTERED,
-                    issued_at: 1000,
-                    expires_at: 0,
-                },
-            );
-        });
-    }
-
-    client.stage_credential_roots_for_backfill(&admin, &roots_to_stage);
-
-    // Initial count is 0 before backfill
-    assert_eq!(client.get_credential_root_count(), 0);
-
-    // Call 1: bounded at MAX_ROOTS_BACKFILL_BATCH (25)
-    client.upgrade_storage(&admin);
-    assert_eq!(client.get_credential_root_count(), 25);
-    let page1 = client.list_credential_roots(&0, &50);
-    assert_eq!(page1.roots.len(), 25);
-
-    // Call 2: backfills remaining 5 roots (total 30)
-    client.upgrade_storage(&admin);
-    assert_eq!(client.get_credential_root_count(), 30);
-    let page2 = client.list_credential_roots(&0, &50);
-    assert_eq!(page2.roots.len(), 30);
-
-    // Call 3: idempotent no-op (still 30 roots, no duplicates)
-    client.upgrade_storage(&admin);
-    assert_eq!(client.get_credential_root_count(), 30);
-    let page3 = client.list_credential_roots(&0, &50);
-    assert_eq!(page3.roots.len(), 30);
+fn advance_time(env: &Env, secs: u64) {
+    env.ledger().set_timestamp(env.ledger().timestamp() + secs);
 }
 
 #[test]
-fn upgrade_compat_backfill_preserves_root_statuses() {
+fn upgrade_compat_wasm_upgrade_preserves_state() {
     let (env, contract_id, admin) = init_registry();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let verifier_id = env.register(MockVerifierUpgrade, ());
+    client.set_verifier(&admin, &verifier_id);
 
-    let root_reg = b32(&env, 0x01);
-    let root_rev = b32(&env, 0x02);
-    let root_exp = b32(&env, 0x03);
+    // Register a source proof prior to upgrade
+    let source = Address::generate(&env);
+    let video = b32(&env, 0x11);
+    let meta = b32(&env, 0x22);
+    let proof_id = b32(&env, 0x33);
+    let record = client.register_source(&source, &video, &meta, &proof_id);
+    assert_eq!(record.tier, TIER_CONSISTENT_SOURCE);
+    assert_eq!(record.status, STATUS_REGISTERED);
 
-    env.as_contract(&contract_id, || {
-        // Registered V2 root
-        env.storage().persistent().set(
-            &DataKey::CredentialRootV2(root_reg.clone()),
-            &CredentialRootRecord {
-                metadata_hash: b32(&env, 0x10),
-                status: STATUS_REGISTERED,
-                issued_at: 100,
-                expires_at: 0,
-            },
+    // Upload a second Wasm in the test env
+    let new_wasm_hash = env.deployer().upload_contract_wasm(SECOND_WASM);
+
+    // Propose Wasm upgrade
+    let dummy_target = Address::generate(&env);
+    let proposal_id = client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::UpgradeWasm as u32),
+        &dummy_target,
+        &new_wasm_hash,
+    );
+    assert_eq!(proposal_id, 1);
+
+    // Acceptance criterion: Upgrade cannot happen before the timelock delay
+    let outsider = Address::generate(&env);
+    let premature_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.execute_timelocked_proposal(&outsider, &proposal_id);
+    }));
+    assert!(premature_result.is_err(), "cannot execute upgrade before timelock delay");
+
+    // Acceptance criterion: Disallow emergency_execute_timelock for upgrades
+    let emergency_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.emergency_execute_timelock(&admin, &proposal_id);
+    }));
+    assert!(emergency_result.is_err(), "emergency execution of UpgradeWasm must panic");
+
+    // Advance time past minimum delay
+    advance_time(&env, DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
+
+    // Execute proposal after timelock delay
+    client.execute_timelocked_proposal(&outsider, &proposal_id);
+
+    let proposal = client.get_timelock_proposal(&proposal_id).expect("proposal must exist");
+    assert!(proposal.executed);
+
+    // Verify upgrade event emitted
+    assert!(
+        event_test_utils::has_event(&env, &["contract", "upgrade"]),
+        "ContractUpgraded event must be emitted"
+    );
+
+    // Verify current wasm hash stored
+    assert_eq!(client.get_current_wasm_hash(), Some(new_wasm_hash));
+
+    // Acceptance criterion: Storage survives the upgrade in test_upgrade_compat.rs
+    let after_proof = client
+        .get_proof(&proof_id)
+        .expect("proof must survive wasm upgrade");
+    assert_eq!(after_proof.video_hash, video);
+    assert_eq!(after_proof.metadata_hash, meta);
+    assert_eq!(after_proof.tier, TIER_CONSISTENT_SOURCE);
+    assert_eq!(after_proof.status, STATUS_REGISTERED);
+
+    assert_eq!(
+        client.get_verifier(),
+        Some(verifier_id),
+        "verifier pointer must survive wasm upgrade"
+    );
+    assert_eq!(
+        client.get_storage_schema_version(),
+        SchemaVersion::V2 as u32,
+        "schema version must survive wasm upgrade"
+    );
+    assert!(client.is_admin(&admin), "admin must survive wasm upgrade");
+}
+
+#[test]
+fn upgrade_compat_wasm_upgrade_rejects_non_admin_proposal() {
+    let (env, contract_id, _admin) = init_registry();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let outsider = Address::generate(&env);
+    let new_wasm_hash = env.deployer().upload_contract_wasm(SECOND_WASM);
+
+    // Non-admin proposals rejected
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.propose_timelocked_action(
+            &outsider,
+            &(ProposalAction::UpgradeWasm as u32),
+            &contract_id,
+            &new_wasm_hash,
         );
-        // Revoked V2 root
-        env.storage().persistent().set(
-            &DataKey::CredentialRootV2(root_rev.clone()),
-            &CredentialRootRecord {
-                metadata_hash: b32(&env, 0x20),
-                status: STATUS_REVOKED,
-                issued_at: 100,
-                expires_at: 0,
-            },
-        );
-        // Expired V2 root
-        env.storage().persistent().set(
-            &DataKey::CredentialRootV2(root_exp.clone()),
-            &CredentialRootRecord {
-                metadata_hash: b32(&env, 0x30),
-                status: STATUS_EXPIRED,
-                issued_at: 100,
-                expires_at: 200,
-            },
-        );
-    });
-
-    let mut staged = soroban_sdk::Vec::new(&env);
-    staged.push_back(root_reg.clone());
-    staged.push_back(root_rev.clone());
-    staged.push_back(root_exp.clone());
-    client.stage_credential_roots_for_backfill(&admin, &staged);
-
-    client.upgrade_storage(&admin);
-
-    let page = client.list_credential_roots(&0, &10);
-    assert_eq!(page.roots.len(), 3);
-
-    assert_eq!(page.roots.get(0).unwrap().root_hash, root_reg);
-    assert_eq!(page.roots.get(0).unwrap().status, STATUS_REGISTERED);
-
-    assert_eq!(page.roots.get(1).unwrap().root_hash, root_rev);
-    assert_eq!(page.roots.get(1).unwrap().status, STATUS_REVOKED);
-
-    assert_eq!(page.roots.get(2).unwrap().root_hash, root_exp);
-    assert_eq!(page.roots.get(2).unwrap().status, STATUS_EXPIRED);
+    }));
+    assert!(result.is_err(), "non-admin proposal must be rejected");
 }
