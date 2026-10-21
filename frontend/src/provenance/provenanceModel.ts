@@ -14,6 +14,15 @@ export type ProvenanceStaleness =
   | { stale: false }
   | { stale: true; reason: 'no-chain-record' | 'fetch-error' | 'fetched-long-ago' }
 
+/**
+ * Open disputes against the proof, as reported by the registry's
+ * `get_open_dispute_count`. `openCount` is `null` when the count is unknown
+ * (not looked up yet, or the read failed); the UI then shows nothing.
+ */
+export type ProvenanceDisputes = {
+  openCount: number | null
+}
+
 export type ProvenanceRecord = {
   circuit: {
     name: 'silent_witness'
@@ -44,6 +53,7 @@ export type ProvenanceRecord = {
   }
   mismatches: ProvenanceMismatch[]
   staleness: ProvenanceStaleness
+  disputes: ProvenanceDisputes
   fetchedAt: string
 }
 
@@ -55,6 +65,8 @@ type BuildProvenanceInput = {
   rpcUrl: string
   transactionHash: string | null
   method: string
+  /** Result of `get_open_dispute_count`; `null`/omitted when unknown. */
+  openDisputeCount?: number | null
   fetchedAt?: Date
 }
 
@@ -103,6 +115,7 @@ export function buildProvenanceRecord(input: BuildProvenanceInput): ProvenanceRe
     },
     mismatches,
     staleness,
+    disputes: { openCount: normalizeDisputeCount(input.openDisputeCount) },
     fetchedAt: fetchedAt.toISOString(),
   }
 }
@@ -162,4 +175,20 @@ function computeStaleness(
   }
 
   return { stale: false }
+}
+
+function normalizeDisputeCount(value: number | null | undefined): number | null {
+  if (typeof value !== 'number') return null
+  return Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+/**
+ * Text for the "Under dispute" notice, or `null` when no notice should be
+ * shown (no open disputes, or the count is unknown).
+ */
+export function disputeNotice(provenance: Pick<ProvenanceRecord, 'disputes'>): string | null {
+  const count = provenance.disputes.openCount
+  if (count === null || count <= 0) return null
+  const noun = count === 1 ? 'dispute' : 'disputes'
+  return `This proof has ${count} open ${noun} recorded on chain. A dispute does not by itself invalidate the proof.`
 }

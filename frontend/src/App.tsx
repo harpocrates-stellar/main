@@ -8,6 +8,7 @@ import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
 import { useEvidence } from './hooks/useEvidence'
 import { useVerification } from './hooks/useVerification'
+import { useOpenDisputeCount } from './hooks/useOpenDisputeCount'
 import { useLiveRegion, useA11yStage, useSkipLink } from './hooks/useA11y'
 import type { IdentityTier } from './types'
 import type { View } from './types'
@@ -23,6 +24,13 @@ const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 
 type AppView = View | 'batch'
+
+const VIEW_TITLES: Record<AppView, string> = {
+  landing: 'Harpocrates',
+  studio: 'Evidence Studio - Harpocrates',
+  verify: 'Verify evidence - Harpocrates',
+  batch: 'Batch Workspace - Harpocrates',
+}
 
 function methodForTier(tier: IdentityTier) {
   if (tier === 'silent') return 'register_anonymous_verified'
@@ -47,6 +55,10 @@ function App() {
   const [isScrolled, setIsScrolled] = useState(false)
   const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
   const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
+
+  useEffect(() => {
+    document.title = VIEW_TITLES[currentView]
+  }, [currentView])
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
@@ -89,6 +101,12 @@ function App() {
     return () => clearTimeout(timer)
   }, [viewHeadingId])
 
+  const openDisputeCount = useOpenDisputeCount({
+    proofId: evidence.proof?.proofId ?? null,
+    sourceAddress: wallet || undefined,
+    contractId: CONTRACT_ID,
+  })
+
   const provenanceRecord = useMemo(() => {
     if (!evidence.proof) return null
 
@@ -108,8 +126,9 @@ function App() {
       rpcUrl: RPC_URL,
       transactionHash: evidence.registration?.hash ?? null,
       method: methodForTier(evidence.proof.tier),
+      openDisputeCount,
     })
-  }, [evidence.proof, evidence.registration?.hash, verification.chainProof])
+  }, [evidence.proof, evidence.registration?.hash, verification.chainProof, openDisputeCount])
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)

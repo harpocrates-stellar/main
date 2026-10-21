@@ -1,0 +1,27 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-654-feat-cli-accept-named-networks-for-network",
+    "fix/issue-629-fix-frontend-surface-failures-from",
+    "fix/issue-636-perf-frontend-lazy-load-the-studio-and-batch",
+    "fix/issue-650-fix-cli-exit-with-a-usage-error-for-unknown",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-654-feat-cli-accept-named-networks-for-network": "main",
+    "fix/issue-629-fix-frontend-surface-failures-from": "main",
+    "fix/issue-636-perf-frontend-lazy-load-the-studio-and-batch": "main",
+    "fix/issue-650-fix-cli-exit-with-a-usage-error-for-unknown": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-654-feat-cli-accept-named-networks-for-network",
+    "fix/issue-629-fix-frontend-surface-failures-from",
+    "fix/issue-636-perf-frontend-lazy-load-the-studio-and-batch",
+    "fix/issue-650-fix-cli-exit-with-a-usage-error-for-unknown",
+    "origin"
+  ]
+}
