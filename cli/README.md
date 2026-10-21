@@ -14,9 +14,19 @@ node dist/cli.js --version
 
 ```sh
 node dist/cli.js verify --manifest proof.json \
-  --contract-id C... --network 'Test DF Network ; September 2015' \
+  --contract-id C... --network 'Test SDF Network ; September 2015' \
   --source-address G... --output json
 ```
+
+To check the on-chain lifecycle status of a proof directly by its 32-byte proof ID:
+
+```sh
+node dist/cli.js status --proof-id <64-hex> \
+  --contract-id C... --network 'Test SDF Network ; September 2015' \
+  --rpc-url https://soroban-testnet.stellar.org --output json
+```
+
+`status` simulates `get_proof_status(proof_id)` against the registry and maps the result to a stable status string (`registered`, `revoked`, `expired`, or `unknown`) and exit code (`0` for `registered`, `1` for `expired`, `2` for `revoked`, `3` for `unknown`). Malformed or missing `--proof-id` values exit `2` immediately without making an RPC call.
 
 To verify a signed verification receipt offline without hitting the RPC:
 
@@ -47,21 +57,32 @@ deterministic, so the same manifest and receipt always produce the same bytes
 For reproducible, network-free manifest and status fixtures, run from `cli/`:
 
 ```sh
-npm test -- --run test/manifest.test.ts test/normalize.test.ts
+npm test -- --run test/manifest.test.ts test/normalize.test.ts test/status.test.ts
 ```
 
-An offline verification exits 6 with `pending`: it checks syntax and
-deployment binding but **cannot** establish on-chain validity. A successful
-online check exits 0; expired 1, revoked 2, missing 3, network mismatch 4,
-contract mismatch 5, pending 6, failed transaction 7, and malformed input or
-dependency failure 8. Do not treat a nonzero exit or an offline receipt as
-verified evidence. `--tx-hash`, when supplied, must match the manifest.
+### Exit codes
+
+Script authors and CI integrations can rely on the following exit codes to determine the outcome of a command.
+
+| Code | Meaning | Emitted by |
+| :--- | :--- | :--- |
+| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
+| `1` | `expired` | `verify`, `status`, `verify-lineage` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
+| `4` | `network_mismatch` | `verify` |
+| `5` | `contract_mismatch` | `verify` |
+| `6` | `pending` (offline verification) | `verify` |
+| `7` | `failed` transaction | `verify` |
+| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+
+An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest.
 
 Harpocrates CLI environment variables:
 
-- `HARPOCRATES_RPC_URL` -- default for `--rpc-url` in `verify` and `manifest`.
-- `HARPOCRATES_CONTRACT_ID` -- default for `--contract-id` in `verify` and `manifest`.
-- `HARPOCRATES_SOURCE_ADDRESS` -- default for `--source-address` in `verify`.
+- `HARPOCRATES_RPC_URL` -- default for `--rpc-url` in `verify`, `status`, and `manifest`.
+- `HARPOCRATES_CONTRACT_ID` -- default for `--contract-id` in `verify`, `status`, and `manifest`.
+- `HARPOCRATES_SOURCE_ADDRESS` -- default for `--source-address` in `verify` and `status`.
 
 Explicit flags always take precedence over environment values. Contract-id
 validation still applies to environment values.
