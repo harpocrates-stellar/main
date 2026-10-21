@@ -121,10 +121,12 @@ Dispute state uses persistent storage for dispute records and open dispute count
 and temporary storage for reporter cooldowns:
 
 ```text
-Dispute(dispute_id)              -> DisputeRecord   (persistent)
-ProofOpenDisputeCount(proof_id)  -> u32             (persistent)
-ReporterOpenDisputeCount(reporter) -> u32           (persistent)
-ReporterCooldown(reporter_hash)  -> u64             (temporary)
+Dispute(dispute_id)              -> DisputeRecord
+ProofOpenDisputeCount(proof_id)  -> u32
+ReporterOpenDisputeCount(reporter) -> u32
+ReporterCooldown(reporter_hash)  -> u64
+ProofDisputeSeq(proof_id)        -> u32
+ProofDispute(proof_id, seq)      -> BytesN<32>
 Lineage(output_digest)           -> LineageRecord   (restored lineage key)
 ```
 
