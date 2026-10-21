@@ -85,8 +85,24 @@ export function canonicalMetadataHash(metadata: HarpocratesMetadata): string {
  * to avoid buffering large files in memory.  This matches the behaviour
  * of the backend's ``sha256_file`` (1 MiB chunks).
  */
-export async function fileHash(filePath: string): Promise<string> {
+export interface FileHashOptions {
+  onProgress?: (progress: { bytesRead: number; totalBytes: number; percent: number }) => void
+}
+
+export async function fileHash(filePath: string, options?: FileHashOptions): Promise<string> {
   const hash = createHash('sha256')
-  await pipeline(createReadStream(filePath, { highWaterMark: 1024 * 1024 }), hash)
+  const stream = createReadStream(filePath, { highWaterMark: 1024 * 1024 })
+  if (options?.onProgress) {
+    const { stat } = await import('node:fs/promises')
+    const fileStats = await stat(filePath)
+    const totalBytes = fileStats.size
+    let bytesRead = 0
+    stream.on('data', (chunk: Buffer | Uint8Array) => {
+      bytesRead += chunk.length
+      const percent = totalBytes > 0 ? Math.min(100, Math.floor((bytesRead / totalBytes) * 100)) : 100
+      options.onProgress!({ bytesRead, totalBytes, percent })
+    })
+  }
+  await pipeline(stream, hash)
   return hash.digest('hex')
 }

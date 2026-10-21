@@ -29,7 +29,7 @@ export {
   ALLOWED_TIERS,
   REQUIRED_EMBED_METADATA,
 } from './metadata.js'
-export type { HarpocratesMetadata, IdentityTier } from './metadata.js'
+export type { HarpocratesMetadata, IdentityTier, FileHashOptions } from './metadata.js'
 export { createProofManifest, serializeManifest, parseManifest } from './manifest.js'
 export type { ProofManifest, ManifestInput } from './manifest.js'
 export {

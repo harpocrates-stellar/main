@@ -264,6 +264,7 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
 
 async function handleHash(flags: Record<string, string>): Promise<void> {
   const filePath = flags.file || flags.f
+  const showProgress = flags.progress === 'true'
 
   if (!filePath) {
     exit(2, '--file is required for hashing')
@@ -276,7 +277,21 @@ async function handleHash(flags: Record<string, string>): Promise<void> {
       for await (const chunk of process.stdin) digest.update(chunk)
       hash = digest.digest('hex')
     } else {
-      hash = await fileHash(filePath)
+      let lastProgressTime = 0
+      hash = await fileHash(
+        filePath,
+        showProgress
+          ? {
+              onProgress: ({ percent }) => {
+                const now = Date.now()
+                if (now - lastProgressTime >= 500 || percent === 100) {
+                  lastProgressTime = now
+                  process.stderr.write(`hashing: ${percent}%\n`)
+                }
+              },
+            }
+          : undefined,
+      )
     }
 
     printJson({
@@ -615,6 +630,7 @@ Manifest options:
 
 Hash options:
   --file, -f        Path to the file to hash (use "-" for stdin; required).
+  --progress        Show hashing progress on stderr (files only).
 
 Environment variables:
   HARPOCRATES_SOURCE_ADDRESS   Source address for Stellar simulation.
