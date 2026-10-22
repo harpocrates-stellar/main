@@ -20,12 +20,12 @@ describe('command selection', () => {
     expect(parseCliArgs([])).toEqual({ command: 'help', flags: {} })
   })
 
-  it('returns help for an unknown command', () => {
-    expect(parseCliArgs(['nope', '--bogus'])).toEqual({ command: 'help', flags: {} })
+  it('preserves an unknown command for the dispatcher without parsing its flags', () => {
+    expect(parseCliArgs(['nope', '--bogus'])).toEqual({ command: 'nope', flags: {} })
   })
 
-  it.each(['constructor', 'toString', '__proto__'])('treats "%s" as an unknown command', (name) => {
-    expect(parseCliArgs([name]).command).toBe('help')
+  it.each(['constructor', 'toString', '__proto__'])('preserves unknown command %s for the dispatcher', (name) => {
+    expect(parseCliArgs([name]).command).toBe(name)
   })
 
   it.each(COMMANDS)('recognises the %s command', (command) => {
