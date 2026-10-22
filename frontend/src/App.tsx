@@ -1,27 +1,44 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Wallet } from 'lucide-react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
+import { Wallet, X } from 'lucide-react'
 import EvilEye from './components/EvilEye'
-import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
+import { LazyFallback } from './components/LazyFallback'
 import { LandingView } from './views/LandingView'
-import { StudioView } from './views/StudioView'
 import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
 import { useEvidence } from './hooks/useEvidence'
 import { useVerification } from './hooks/useVerification'
+fix/issue-636-perf-frontend-lazy-load-the-studio-and-batch
+import { useLiveRegion, useAc11Stage, useSkipLink } from './hooks/useAc11'
+
+import { useOpenDisputeCount } from './hooks/useOpenDisputeCount'
 import { useLiveRegion, useA11yStage, useSkipLink } from './hooks/useA11y'
+main
 import type { IdentityTier } from './types'
 import type { View } from './types'
 import { createProofManifest } from './proofManifest'
 import { CONTRACT_NETWORK_PASSPHRASE } from './stellar'
 import { buildProvenanceRecord } from './provenance/provenanceModel'
 import { parseVerificationShareLink, type VerificationSharePayload } from './verificationShareLink'
+import { checkReleaseCompatibility, type ReleaseCompatibilityResult } from './releaseCompatibility'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 
+const StudioView = lazy(() => import('./views/StudioView').then(({ StudioView }) => ({ default: StudioView })))
+const BatchVerificationWorkspace = lazy(() =>
+  import('./components/BatchVerificationWorkspace').then(({ default: BatchVerificationWorkspace }) => ({ default: BatchVerificationWorkspace })),
+)
+
 type AppView = View | 'batch'
+
+const VIEW_TITLES: Record<AppView, string> = {
+  landing: 'Harpocrates',
+  studio: 'Evidence Studio - Harpocrates',
+  verify: 'Verify evidence - Harpocrates',
+  batch: 'Batch Workspace - Harpocrates',
+}
 
 function methodForTier(tier: IdentityTier) {
   if (tier === 'silent') return 'register_anonymous_verified'
@@ -44,6 +61,12 @@ function App() {
   const [currentView, setCurrentView] = useState<AppView>(initialView)
   const [sharePayload] = useState<VerificationSharePayload | null>(initialSharePayload)
   const [isScrolled, setIsScrolled] = useState(false)
+  const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
+  const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
+
+  useEffect(() => {
+    document.title = VIEW_TITLES[currentView]
+  }, [currentView])
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
@@ -57,7 +80,7 @@ function App() {
 
   const liveStatus = useLiveRegion()
   const liveAlert = useLiveRegion()
-  const { statusLabel } = useA11yStage(evidence.stage)
+  const { statusLabel } = useAc11Stage(evidence.stage)
   const { mainRef, handleSkip } = useSkipLink()
 
   const prevStageRef = useRef(evidence.stage)
@@ -86,6 +109,12 @@ function App() {
     return () => clearTimeout(timer)
   }, [viewHeadingId])
 
+  const openDisputeCount = useOpenDisputeCount({
+    proofId: evidence.proof?.proofId ?? null,
+    sourceAddress: wallet || undefined,
+    contractId: CONTRACT_ID,
+  })
+
   const provenanceRecord = useMemo(() => {
     if (!evidence.proof) return null
 
@@ -105,8 +134,9 @@ function App() {
       rpcUrl: RPC_URL,
       transactionHash: evidence.registration?.hash ?? null,
       method: methodForTier(evidence.proof.tier),
+      openDisputeCount,
     })
-  }, [evidence.proof, evidence.registration?.hash, verification.chainProof])
+  }, [evidence.proof, evidence.registration?.hash, verification.chainProof, openDisputeCount])
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)
@@ -209,17 +239,47 @@ function App() {
           </div>
         ) : null}
 
+        {!releaseCompatibility.compatible && !releaseCompatibilityDismissed ? (
+          <div
+            id="release-compatibility-banner"
+            className="network-mismatch-banner network-mismatch-banner--global release-compatibility-banner"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            aria-label="Incompatible release configuration"
+          >
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <div className="release-compatibility-banner__content">
+              <strong>Incompatible Release Configuration:</strong> Expected release{' '}
+              <code>{releaseCompatibility.expectedReleaseId}</code> on network{' '}
+              <code>{releaseCompatibility.expectedNetwork}</code>, but configured with release{' '}
+              <code>{releaseCompatibility.configuredReleaseId}</code> on network{' '}
+              <code>{releaseCompatibility.configuredNetwork}</code>.
+            </div>
+            <button
+              type="button"
+              className="release-compatibility-banner__dismiss"
+              onClick={() => setReleaseCompatibilityDismissed(true)}
+              aria-label="Dismiss compatibility banner"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
+
         {currentView === 'landing' ? (
           <LandingView onOpenStudio={() => openView('studio')} onOpenVerify={() => openView('verify')} />
         ) : null}
 
         {currentView === 'studio' ? (
-          <StudioView
-            wallet={wallet}
-            evidence={evidence}
-            verification={verification}
-            provenanceRecord={provenanceRecord}
-          />
+          <Suspense fallback={<LazyFallback label="Studio" />}>
+            <StudioView
+              wallet={wallet}
+              evidence={evidence}
+              verification={verification}
+              provenanceRecord={provenanceRecord}
+            />
+          </Suspense>
         ) : null}
 
         {currentView === 'verify' ? (
@@ -228,7 +288,9 @@ function App() {
 
         {currentView === 'batch' ? (
           <section className="workspace app-page verify-page" id="batch">
-            <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            <Suspense fallback={<LazyFallback label="Batch workspace" />}>
+              <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            </Suspense>
           </section>
         ) : null}
       </main>

@@ -1,96 +1,161 @@
-// Layout worker for the LineageGraph. Computes node depths and x / y
-// coordinates from the node graph so the main thread does not block.
+import type { LineageNode, LinageEdge, LayoutNode, LayoutEdge, LayoutResult } from "../components/LineageGraph";
 
-export interface LineageWorkerNode {
-  id: string;
-  label: string;
-  parentId?: string | null;
-  children?: string[];
+export interface LayoutInput {
+  nodes: LineageNode[];
+  edges: LineageEdge[];
 }
 
-export interface LineageLayoutRequest {
-  type: 'layout';
-  nodes: LineageWorkerNode[];
-  rowHeight?: number;
-  columnWidth?: number;
+export interface LayoutOptions {
+  nodeWidth?: number;
+  nodeHeight?: number;
+  hGap?: number;
+  vGap?: number;
 }
 
-export interface LayoutNode {
-  id: string;
-  label: string;
-  parentId: string | null;
-  children: string[];
-  depth: number;
-  x: number;
-  y: number;
-  index: number;
-}
+const DEFAULT_OPTIONS: Required<LayoutOptions> = {
+  nodeWidth: 160,
+  nodeHeight: 40,
+  hGap: 40,
+  vGap: 20,
+};
 
-export interface LineageLayoutResponse {
-  type: 'layout-result';
-  nodes: LayoutNode[];
-  width: number;
-  height: number;
-}
-
+/**
+ * Pure layout function. Computes a simple layered layout for a
+ * directed graph using a topological-level assignment.
+ */
 export function computeLayout(
-  req: LineageLayoutRequest,
-): LineageLayoutResponse {
-  const rowHeight = req.rowHeight ?? 32;
-  const columnWidth = req.columnWidth ?? 24;
-  const byId = new Map<string, LineageWorkerNode>();
-  for (const n of req.nodes) byId.set(n.id, n);
+  input: LayoutInput,
+  options: LayoutOptions = {},
+): LayoutResult {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const { nodes, edges } = input;
 
-  const roots = req.nodes.filter(
-    (n) => !n.parentId || !byId.has(n.parentId),
-  );
-
-  const out: LayoutNode[] = [];
-  const visited = new Set<string>();
-  let maxDepth = 0;
-
-  const walk = (node: LineageWorkerNode, depth: number, parentId: string | null) => {
-    if (visited.has(node.id)) return;
-    visited.add(node.id);
-    const children = (node.children ?? []).filter((id) => byId.has(id));
-    const index = out.length;
-    out.push({
-      id: node.id,
-      label: node.label,
-      parentId,
-      children,
-      depth,
-      x: (depth - 1) * columnWidth,
-      y: index * rowHeight,
-      index,
-    });
-    maxDepth = Math.max(maxDepth, depth);
-    for (const childId of children) {
-      const child = byId.get(childId);
-      if (child) walk(child, depth + 1, node.id);
-    }
-  };
-
-  for (const root of roots) walk(root, 1, null);
-  for (const n of req.nodes) {
-    if (!visited.has(n.id)) walk(n, 1, null);
+  if (nodes.length === 0) {
+    return { nodes: [], edges: [], width: 0, height: 0 };
   }
 
-  return {
-    type: 'layout-result',
-    nodes: out,
-    width: maxDepth * columnWidth,
-    height: out.length * rowHeight,
-  };
+  const indexById = new Map<string, number>();
+  nodes.forEach((n, i) => indexById.set(n.id, i));
+
+  // Build adjacency list and in-degree counts.
+  const adjacency: number[][] = nodes.map(() => []);
+  const inDegree = new Array(nodes.length).fill(0);
+  for (const edge of edges) {
+    const from = indexById.get(edge.from);
+    const to = indexById.get(edge.to);
+    if (from === undefined || to === undefined) continue;
+    adjacency[from].push(to);
+    inDegree[to] += 1;
+  }
+
+  // Kahn's algorithm to assign layers. Nodes in cycles fall back to layer 0.
+  const layer = new Array<number>(nodes.length).fill(0);
+  const queue: number[] = [];
+  const remaining = inDegree.slice();
+  for (let i = 0; i < nodes.length; i++) {
+    if (remaining[i] === 0) queue.push(i);
+  }
+  const visited = new Array(nodes.length).fill(false);
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    visited[current] = true;
+    for (const next of adjacency[current]) {
+      layer[next] = Math.max(layer[next], layer[current] + 1);
+      remaining[next] -= 1;
+      if (remaining[next] === 0) queue.push(next);
+    }
+  }
+
+  // Nodes in cycles were never visited; put them on layer 0.
+  for (let i = 0; i < nodes.length; i++) {
+    if (!visited[i]) layer[i] = 0;
+  }
+
+  // Group nodes by layer and assign x/y coordinates.
+  const layers = new Map<number, number[]>();
+  for (let i = 0; i < nodes.length; i++) {
+    const l = layer[i];
+    if (!layers.has(l)) layers.set(l, []);
+    layers.get(l)!.push(i);
+  }
+
+  const layoutNodes: LayoutNode[] = new Array(nodes.length);
+  const layerKeys = Array.from(layers.keys()).sort((a, b) => a - b);
+  let maxX = 0;
+  let maxY = 0;
+  for (const l of layerKeys) {
+    const idxs = layers.get(l)!;
+    const y = l * (opts.nodeHeight + opts.vGap);
+    for (let j = 0; j < idxs.length; j++) {
+      const idx = idxs[j];
+      const x = j * (opts.nodeWidth + opts.hGap);
+      layoutNodes[idx] = {
+        id: nodes[idx].id,
+        x,
+        y,
+        width: opts.nodeWidth,
+        height: opts.nodeHeight,
+        layer: l,
+      };
+      maxX = Math.max(maxX, x + opts.nodeWidth);
+      maxY = Math.max(maxY, y + opts.nodeHeight);
+    }
+  }
+
+  const layoutEdges: LayoutEdge[] = [];
+  for (const edge of edges) {
+    const from = indexById.get(edge.from);
+    const to = indexById.get(edge.to);
+    if (from === undefined || to === undefined) continue;
+    const fromNode = layoutNodes[from];
+    const toNode = layoutNodes[to];
+    layoutEdges.push({
+      id: edge.id ?? `${edge.from}->${edge.to}`,
+      from: edge.from,
+      to: edge.to,
+      x1: fromNode.x + fromNode.width,
+      y1: fromNode.y + fromNode.height / 2,
+      x2: toNode.x,
+      y2: toNode.y + toNode.height / 2,
+    });
+  }
+
+  return { nodes: layoutNodes, edges: layoutEdges, width: maxX, height: maxY };
 }
 
-// Worker entrypoint. Only wire up when running in a Worker context.
-if (typeof self !== 'undefined' && typeof (self as unknown as Worker).postMessage === 'function') {
-  const workerScope = self as unknown as DedicatedWorkerGlobalScope;
-  workerScope.addEventListener('message', (event: MessageEvent<LineageLayoutRequest>) => {
+export interface LayoutRequestMessage {
+  type: "layout";
+  payload: LayoutInput;
+  options?: LayoutOptions;
+}
+
+export interface LayoutResponseMessage {
+  type: "layout-result";
+  result: LayoutResult;
+}
+
+export interface LayoutErrorMessage {
+  type: "layout-error";
+  message: string;
+}
+
+const isWorkerContext = (): boolean =>
+  typeof self !== "undefined" &&
+  typeof (self as unknown as { postMessage?: unknown }).postMessage === "function" &&
+  typeof (self as unknown as { addEventListener?: unknown }).addEventListener === "function";
+
+if (isWorkerContext()) {
+  self.addEventListener("message", (event: MessageEvent<LayoutRequestMessage>) => {
     const data = event.data;
-    if (!data || data.type !== 'layout') return;
-    const response = computeLayout(data);
-    workerScope.postMessage(response);
+    if (!data || data.type !== "layout") return;
+    try {
+      const result = computeLayout(data.payload, data.options);
+      const response: LayoutResponseMessage = { type: "layout-result", result };
+      self.postMessage(response);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const response: LayoutErrorMessage = { type: "layout-error", message };
+      self.postMessage(response);
+    }
   });
 }
