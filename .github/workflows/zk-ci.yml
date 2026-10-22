@@ -69,6 +69,8 @@ jobs:
           mkdir -p zk/bench/results
           zk/bench/run.sh run --target ci --synthetic --out zk/bench/results/ci-gate.json
           zk/bench/run.sh compare --report zk/bench/results/ci-gate.json
+          zk/bench/run.sh run --target revocation_ci --synthetic --out zk/bench/results/revocation-ci-gate.json
+          zk/bench/run.sh compare --report zk/bench/results/revocation-ci-gate.json
 
       - name: Check the toolchain lock parses and is self-consistent
         run: |
@@ -209,6 +211,11 @@ jobs:
         run: |
           ( cd zk/noir/silent_witness && nargo test )
           ( cd zk/noir/silent_witness_helper && nargo test )
+
+      - name: Test the revocation witness circuits
+        run: |
+          ( cd zk/noir/revocation_witness && nargo test )
+          ( cd zk/noir/revocation_witness_helper && nargo test )
 
   conformance-vectors:
     name: Cross-layer conformance vectors

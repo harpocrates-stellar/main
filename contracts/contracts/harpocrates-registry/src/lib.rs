@@ -30,9 +30,9 @@ pub const SCHEMA_ID_SILENT_WITNESS_V2: u32 = 3;
 /// Maximum Merkle depth for the `revocation_witness` circuit (#357).
 /// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
 /// Raising this value requires a new circuit version — do not change it silently.
-pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 3;
-/// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 8).
-pub const MAX_REVOCATION_LEAVES: u32 = 8;
+pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 16;
+/// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 65536).
+pub const MAX_REVOCATION_LEAVES: u32 = 65536;
 
 const TIER_SILENT_WITNESS: u32 = 1;
 const TIER_CONSISTENT_SOURCE: u32 = 2;

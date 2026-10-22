@@ -82,9 +82,9 @@ export const SCHEMA_SILENT_WITNESS_V2 = 'silent_witness/v2'
  * Must match the Noir globals and the Soroban registry constants.
  * Host tooling must reject depth > this value before proving.
  */
-export const MAX_REVOCATION_WITNESS_DEPTH = 3
+export const MAX_REVOCATION_WITNESS_DEPTH = 16
 /** Leaf capacity implied by {@link MAX_REVOCATION_WITNESS_DEPTH} (`2^depth`). */
-export const MAX_REVOCATION_LEAVES = 8
+export const MAX_REVOCATION_LEAVES = 65536
 
 /**
  * Protocol aggregation proof count bounds for silent witness batch aggregation (#497).

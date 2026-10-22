@@ -266,19 +266,19 @@ The verifier contract address is stored on-chain and used to verify proofs. A pr
 
 ## Revocation witness depth bound (#357)
 
-The `revocation_witness` circuit is fixed at **depth 3** (8 Pedersen leaves).
+The `revocation_witness` circuit depth bound is parameterised up to **depth 16** (65,536 Pedersen leaves).
 
 | Constant | Value | Layers |
 | --- | --- | --- |
-| `MAX_REVOCATION_WITNESS_DEPTH` | 3 | Noir, registry, frontend/backend codec, `zk/tools/revocation_depth.py` |
-| `MAX_REVOCATION_LEAVES` | 8 | same |
+| `MAX_REVOCATION_WITNESS_DEPTH` | 16 | Noir, registry, frontend/backend codec, `zk/tools/revocation_depth.py` |
+| `MAX_REVOCATION_LEAVES` | 65536 | same |
 
 **Compatibility:** Public-input layout (`revocation_witness/v1`, 128 bytes) is
-unchanged. Existing depth-3 proofs remain valid.
+unchanged. Existing depth-3 proofs and fixtures remain valid alongside depth-16 witnesses.
 
 **Migration / rollback:** No storage migration. Raising the depth requires a
 new circuit version and coordinated artifact republish; rolling back means
-keeping the depth-3 verifier key. Host tooling must keep rejecting `depth > 3`
+reverting the depth bound and verifier key. Host tooling must keep rejecting `depth > 16`
 so oversized trees never reach the prover.
 
 ## Verifier circuit-version validation (#343)

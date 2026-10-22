@@ -79,6 +79,9 @@ OUTCOMES = frozenset({"ok", "timeout", "cancelled", "rejected", "fatal"})
 
 # Mirror verifier-input codec size bounds (hpx-vi/1).
 PUBLIC_INPUTS_LEN = 160
+REVOCATION_PUBLIC_INPUTS_LEN = 128
+MAX_REVOCATION_WITNESS_DEPTH = 16
+MAX_REVOCATION_LEAVES = 1 << MAX_REVOCATION_WITNESS_DEPTH
 MIN_PROOF_BYTES = 64
 MAX_PROOF_BYTES = 65536
 
@@ -151,6 +154,11 @@ class TargetConfig:
     timeout_ms: int
     max_concurrency: int
     allow_synthetic: bool = False
+    circuit: str | None = None
+    fixture_id: str | None = None
+    depth: int | None = None
+    leaf_count: int | None = None
+    public_input_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +214,12 @@ def load_lock(path: Path = DEFAULT_LOCK) -> Lock:
             raise BenchError(
                 f"target {name} requests {cold + warm} samples, above cap {limits.max_samples}"
             )
+        depth = int(cfg["depth"]) if cfg.get("depth") is not None else None
+        leaf_count = int(cfg["leaf_count"]) if cfg.get("leaf_count") is not None else None
+        if depth is not None and (depth < 1 or depth > MAX_REVOCATION_WITNESS_DEPTH):
+            raise BenchError(f"target {name} depth {depth} out of protocol bounds", code="depth_oversize")
+        if leaf_count is not None and (leaf_count < 2 or leaf_count > MAX_REVOCATION_LEAVES):
+            raise BenchError(f"target {name} leaf_count {leaf_count} out of protocol bounds", code="depth_oversize")
         targets[name] = TargetConfig(
             name=name,
             cold_samples=cold,
@@ -214,6 +228,13 @@ def load_lock(path: Path = DEFAULT_LOCK) -> Lock:
             timeout_ms=int(cfg["timeout_ms"]),
             max_concurrency=int(cfg["max_concurrency"]),
             allow_synthetic=bool(cfg.get("allow_synthetic", False)),
+            circuit=str(cfg["circuit"]) if cfg.get("circuit") else None,
+            fixture_id=str(cfg["fixture_id"]) if cfg.get("fixture_id") else None,
+            depth=depth,
+            leaf_count=leaf_count,
+            public_input_bytes=int(cfg["public_input_bytes"])
+            if cfg.get("public_input_bytes") is not None
+            else None,
         )
 
     privacy = raw.get("privacy", {})
@@ -414,6 +435,7 @@ def validate_sizes(
     public_input_bytes: int | None,
     witness_bytes: int | None,
     limits: Limits,
+    expected_public_input_bytes: int | None = None,
 ) -> None:
     if proof_bytes is not None:
         if proof_bytes < limits.min_proof_bytes:
@@ -423,7 +445,12 @@ def validate_sizes(
         if proof_bytes > MAX_PROOF_BYTES:
             raise RejectedError("proof exceeds codec max", code="oversized")
     if public_input_bytes is not None:
-        if public_input_bytes != limits.min_public_input_bytes:
+        expected_pi = (
+            expected_public_input_bytes
+            if expected_public_input_bytes is not None
+            else limits.min_public_input_bytes
+        )
+        if public_input_bytes != expected_pi:
             raise RejectedError("public inputs length invalid", code="malformed")
         if public_input_bytes > limits.max_public_input_bytes:
             raise RejectedError("public inputs oversized", code="oversized")
@@ -440,6 +467,8 @@ def synthetic_op(
     seed: int,
     limits: Limits,
     cancelled: threading.Event | None = None,
+    public_input_bytes: int = PUBLIC_INPUTS_LEN,
+    depth: int | None = None,
 ) -> OpMeasurement:
     """Deterministic synthetic prove/verify measurement for CI without nargo/bb.
 
@@ -447,25 +476,30 @@ def synthetic_op(
     """
     if cancelled is not None and cancelled.is_set():
         raise CancelledError()
+    if depth is not None and (depth < 1 or depth > MAX_REVOCATION_WITNESS_DEPTH):
+        raise RejectedError("revocation depth out of bounds", code="depth_oversize")
     # Deterministic pseudo-latency from seed (stable across hosts).
-    base = 12.0 if phase == "prove" else 4.0
+    depth_overhead = float(depth or 0) * 0.25 if phase == "prove" else float(depth or 0) * 0.05
+    base = (12.0 if phase == "prove" else 4.0) + depth_overhead
     jitter = ((seed * 2654435761) % 1000) / 100.0
     time.sleep(min(0.02, (base + jitter) / 1000.0))
     if cancelled is not None and cancelled.is_set():
         raise CancelledError()
     proof_bytes = 1024 + (seed % 256)
+    witness_bytes = 4096 if depth is None else 4096 + (depth * 128)
     validate_sizes(
         proof_bytes=proof_bytes,
-        public_input_bytes=PUBLIC_INPUTS_LEN,
-        witness_bytes=4096,
+        public_input_bytes=public_input_bytes,
+        witness_bytes=witness_bytes,
         limits=limits,
+        expected_public_input_bytes=public_input_bytes,
     )
     return OpMeasurement(
         elapsed_ms=base + jitter,
         peak_rss_bytes=current_peak_rss_bytes(),
         proof_bytes=proof_bytes,
-        public_input_bytes=PUBLIC_INPUTS_LEN,
-        witness_bytes=4096,
+        public_input_bytes=public_input_bytes,
+        witness_bytes=witness_bytes,
         acir_bytes=8192,
         vk_bytes=2048,
         verified=True if phase == "verify" else None,
@@ -507,6 +541,9 @@ def native_op_or_synthetic(
     limits: Limits,
     allow_synthetic: bool,
     cancelled: threading.Event | None = None,
+    circuit_name: str = "silent_witness",
+    public_input_bytes: int = PUBLIC_INPUTS_LEN,
+    depth: int | None = None,
 ) -> tuple[OpMeasurement, str]:
     """Prefer real bb/nargo when present; otherwise synthetic if allowed."""
     if try_native_bb_available():
@@ -515,15 +552,25 @@ def native_op_or_synthetic(
         # artifacts are missing, and signal that the toolchain was detected.
         signal_event("bench.toolchain", detail="nargo_bb_present")
         # Attempt is bounded: if circuits are not built, fall through.
-        acir = REPO_ROOT / "zk" / "noir" / "silent_witness" / "target" / "silent_witness.json"
+        acir = REPO_ROOT / "zk" / "noir" / circuit_name / "target" / f"{circuit_name}.json"
         if not acir.is_file():
             if not allow_synthetic:
                 raise BenchError("native artifacts missing; build circuits first", code="dependency-failure")
             signal_event("bench.fallback", detail="synthetic_missing_artifacts")
-            return synthetic_op(phase=phase, seed=seed, limits=limits, cancelled=cancelled), "synthetic"
+            return (
+                synthetic_op(
+                    phase=phase,
+                    seed=seed,
+                    limits=limits,
+                    cancelled=cancelled,
+                    public_input_bytes=public_input_bytes,
+                    depth=depth,
+                ),
+                "synthetic",
+            )
         # Artifact size observation only (no proof material loaded into reports).
         acir_bytes = acir.stat().st_size
-        vk = REPO_ROOT / "zk" / "noir" / "silent_witness" / "target" / "vk"
+        vk = REPO_ROOT / "zk" / "noir" / circuit_name / "target" / "vk"
         vk_bytes = vk.stat().st_size if vk.is_file() else None
         # Wall-clock measurement of a no-op-safe size check path; full prove is
         # delegated to generate-silent-witness.sh outside unit CI.
@@ -537,7 +584,7 @@ def native_op_or_synthetic(
             elapsed_ms=elapsed,
             peak_rss_bytes=current_peak_rss_bytes(),
             proof_bytes=1024,
-            public_input_bytes=PUBLIC_INPUTS_LEN,
+            public_input_bytes=public_input_bytes,
             acir_bytes=acir_bytes,
             vk_bytes=vk_bytes,
             verified=True if phase == "verify" else None,
@@ -547,11 +594,22 @@ def native_op_or_synthetic(
             public_input_bytes=measurement.public_input_bytes,
             witness_bytes=None,
             limits=limits,
+            expected_public_input_bytes=public_input_bytes,
         )
         return measurement, "native_observe"
     if allow_synthetic:
         signal_event("bench.fallback", detail="synthetic_no_toolchain")
-        return synthetic_op(phase=phase, seed=seed, limits=limits, cancelled=cancelled), "synthetic"
+        return (
+            synthetic_op(
+                phase=phase,
+                seed=seed,
+                limits=limits,
+                cancelled=cancelled,
+                public_input_bytes=public_input_bytes,
+                depth=depth,
+            ),
+            "synthetic",
+        )
     raise BenchError("nargo/bb not available and synthetic disabled", code="dependency-failure")
 
 
@@ -596,13 +654,18 @@ def _run_one_sample(
             )
             driver = "soroban_adjacent"
         else:
-            allow = cfg.allow_synthetic or ctx.target == "ci"
+            allow = cfg.allow_synthetic or ctx.target in {"ci", "revocation_ci"}
+            circuit_name = cfg.circuit or ctx.lock.circuit
+            pi_bytes = cfg.public_input_bytes or PUBLIC_INPUTS_LEN
             measurement, driver = native_op_or_synthetic(
                 phase=phase,
                 seed=index + (0 if mode == "cold" else 100),
                 limits=ctx.lock.limits,
                 allow_synthetic=allow,
                 cancelled=ctx.cancelled,
+                circuit_name=circuit_name,
+                public_input_bytes=pi_bytes,
+                depth=cfg.depth,
             )
         _ = driver
         return SampleResult(
@@ -775,18 +838,22 @@ def run_target(
             if overall_outcome != "ok":
                 break
 
-        report = {
+        report: dict[str, Any] = {
             "format": REPORT_FORMAT,
             "version": REPORT_VERSION,
             "target": target,
-            "fixture_id": lock.fixture_id,
-            "circuit": lock.circuit,
+            "fixture_id": cfg.fixture_id or lock.fixture_id,
+            "circuit": cfg.circuit or lock.circuit,
             "toolchain": load_toolchain(),
             "runtime": collect_runtime_metadata(),
             "phases": phase_reports,
             "outcome": overall_outcome,
             "generated_at_unix": int(time.time()),
         }
+        if cfg.depth is not None:
+            report["depth"] = cfg.depth
+        if cfg.leaf_count is not None:
+            report["leaf_count"] = cfg.leaf_count
         assert_privacy_safe(
             report,
             forbidden_keys=lock.forbidden_report_keys,
@@ -801,12 +868,16 @@ def run_target(
 
 
 def _force_synthetic_sample(ctx: RunContext, *, mode: str, index: int, phase: str) -> SampleResult:
+    cfg = ctx.lock.targets[ctx.target]
+    pi_bytes = cfg.public_input_bytes or PUBLIC_INPUTS_LEN
     try:
         measurement = synthetic_op(
             phase=phase,
             seed=index + (0 if mode == "cold" else 100),
             limits=ctx.lock.limits,
             cancelled=ctx.cancelled,
+            public_input_bytes=pi_bytes,
+            depth=cfg.depth,
         )
         return SampleResult(
             state=BenchState.OK,

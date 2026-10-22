@@ -11,7 +11,7 @@
 //!
 //! 1. The admin publishes a Merkle root of revoked credential_roots via
 //!    `set_revocation_root`.  The tree is depth-bounded at
-//!    [`MAX_REVOCATION_WITNESS_DEPTH`] (= 3, so [`MAX_REVOCATION_LEAVES`] = 8)
+//!    [`MAX_REVOCATION_WITNESS_DEPTH`] (= 16, so [`MAX_REVOCATION_LEAVES`] = 65536)
 //!    and uses Pedersen hashes (#357).
 //!
 //! 2. A user who wants to prove their credential is still valid constructs a
@@ -581,8 +581,8 @@ fn test_check_non_revocation_emits_event() {
 #[cfg(test)]
 #[test]
 fn revocation_depth_bound_constants() {
-    assert_eq!(MAX_REVOCATION_WITNESS_DEPTH, 3);
-    assert_eq!(MAX_REVOCATION_LEAVES, 8);
+    assert_eq!(MAX_REVOCATION_WITNESS_DEPTH, 16);
+    assert_eq!(MAX_REVOCATION_LEAVES, 65536);
     assert_eq!(MAX_REVOCATION_LEAVES, 1u32 << MAX_REVOCATION_WITNESS_DEPTH);
 }
 

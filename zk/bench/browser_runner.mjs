@@ -28,9 +28,13 @@ import process from 'node:process'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HELPER = join(ROOT, 'zk/noir/silent_witness_helper/target/silent_witness_helper.json')
 const MAIN = join(ROOT, 'zk/noir/silent_witness/target/silent_witness.json')
+const REVOCATION_HELPER = join(ROOT, 'zk/noir/revocation_witness_helper/target/revocation_witness_helper.json')
+const REVOCATION_MAIN = join(ROOT, 'zk/noir/revocation_witness/target/revocation_witness.json')
 const BENCH_LOCK = join(ROOT, 'zk/bench/bench.lock.json')
 
 const PUBLIC_INPUTS_LEN = 160
+const REVOCATION_PUBLIC_INPUTS_LEN = 128
+const MAX_REVOCATION_WITNESS_DEPTH = 16
 const MIN_PROOF_BYTES = 64
 const MAX_PROOF_BYTES = 65536
 const textEncoder = new TextEncoder()
@@ -271,12 +275,36 @@ async function main() {
     process.exit(3)
   }
 
+  if (!SUPPORTED_CIRCUITS.includes(args.circuit)) {
+    signal('bench.fatal', {
+      code: 'unsupported_circuit',
+      detail: `--circuit must be one of: ${SUPPORTED_CIRCUITS.join(', ')}`,
+    })
+    process.exit(3)
+  }
+
+  if (args.circuit === 'revocation_witness') {
+    if (!Number.isInteger(args.depth) || args.depth < 1) {
+      signal('bench.fatal', { code: 'depth_undersize', detail: '--depth must be >= 1' })
+      process.exit(3)
+    }
+    if (args.depth > MAX_REVOCATION_WITNESS_DEPTH) {
+      signal('bench.fatal', { code: 'depth_oversize', detail: `--depth exceeds MAX_REVOCATION_WITNESS_DEPTH=${MAX_REVOCATION_WITNESS_DEPTH}` })
+      process.exit(3)
+    }
+  }
+
   if (args.mode === 'main' && args.timeoutMs < 1) {
     signal('bench.fatal', { code: 'invalid_timeout', detail: '--timeout-ms must be positive' })
     process.exit(3)
   }
 
-  if (!(await exists(MAIN)) || !(await exists(HELPER))) {
+  const mainPath = args.circuit === 'revocation_witness' ? REVOCATION_MAIN : MAIN
+  const helperPath = args.circuit === 'revocation_witness' ? REVOCATION_HELPER : HELPER
+  const targetName = args.circuit === 'revocation_witness' ? 'revocation_browser' : 'browser'
+  const fixtureId = args.circuit === 'revocation_witness' ? 'revocation_witness.depth16.v1' : 'silent_witness.synthetic.v1'
+
+  if (!(await exists(mainPath)) || !(await exists(helperPath))) {
     signal('bench.fatal', { code: 'dependency-failure', detail: 'compile circuits first' })
     process.exit(3)
   }
@@ -295,16 +323,16 @@ async function main() {
     ;({ UltraHonkBackend } = await import(join(frontendModules, '@aztec/bb.js/dest/node/index.js')))
   }
 
-  const helperArtifact = await readJsonBounded(HELPER, limits.max_witness_bytes)
-  const mainArtifact = await readJsonBounded(MAIN, limits.max_witness_bytes)
+  const helperArtifact = await readJsonBounded(helperPath, limits.max_witness_bytes)
+  const mainArtifact = await readJsonBounded(mainPath, limits.max_witness_bytes)
   const helperCircuit = helperArtifact.value
   const mainCircuit = mainArtifact.value
   const artifactBytes = helperArtifact.rawBytes + mainArtifact.rawBytes
   assertMemoryBudget({ artifactBytes }, limits)
 
   signal('bench.start', {
-    target: 'browser',
-    fixture_id: 'silent_witness.synthetic.v1',
+    target: targetName,
+    fixture_id: fixtureId,
     mode: args.mode,
     threads: args.threads,
   })
@@ -331,12 +359,12 @@ async function main() {
     verifySamples.push(sample.verify_ms)
     sizes = {
       proof_bytes: sample.proof_bytes,
-      public_input_bytes: sample.public_input_bytes,
+      public_input_bytes: args.circuit === 'revocation_witness' ? REVOCATION_PUBLIC_INPUTS_LEN : sample.public_input_bytes,
       witness_bytes: sample.witness_bytes,
     }
     memory = { peak_rss_bytes: sample.peak_rss_bytes }
     signal('bench.sample', {
-      target: 'browser',
+      target: targetName,
       mode: args.mode,
       threads: args.threads,
       state: 'ok',
@@ -360,9 +388,10 @@ async function main() {
   const report = {
     format: 'harpocrates.zk-bench',
     version: 1,
-    target: 'browser',
-    fixture_id: 'silent_witness.synthetic.v1',
-    circuit: 'silent_witness',
+    target: targetName,
+    fixture_id: fixtureId,
+    circuit: args.circuit,
+    ...(args.circuit === 'revocation_witness' ? { depth: args.depth, leaf_count: 1 << args.depth } : {}),
     // The prover runtime this run stands in for: 'worker' or 'main' (fallback).
     mode: args.mode,
     runtime: {
@@ -393,7 +422,7 @@ async function main() {
     generated_at_unix: Math.floor(Date.now() / 1000),
   }
 
-  signal('bench.done', { target: 'browser', outcome: 'ok' })
+  signal('bench.done', { target: targetName, outcome: 'ok' })
   console.log(JSON.stringify(report))
 }
 

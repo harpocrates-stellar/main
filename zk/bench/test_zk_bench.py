@@ -35,9 +35,23 @@ def lock() -> zb.Lock:
 
 def test_repo_lock_loads_all_targets(lock: zb.Lock):
     assert lock.fixture_id == "silent_witness.synthetic.v1"
-    assert set(lock.targets) == {"native", "browser", "ci", "soroban_adjacent"}
+    assert set(lock.targets) == {
+        "native",
+        "browser",
+        "ci",
+        "soroban_adjacent",
+        "revocation_native",
+        "revocation_browser",
+        "revocation_ci",
+    }
     assert lock.limits.max_samples > 0
     assert lock.limits.max_proof_bytes == 65536
+    for target in ("revocation_native", "revocation_browser", "revocation_ci"):
+        cfg = lock.targets[target]
+        assert cfg.circuit == "revocation_witness"
+        assert cfg.depth == 16
+        assert cfg.leaf_count == 65536
+        assert cfg.public_input_bytes == 128
 
 
 def test_browser_target_matches_non_worker_fallback_limits(lock: zb.Lock):
@@ -272,7 +286,7 @@ def test_oversized_witness_fails_deterministically(lock: zb.Lock):
             witness_bytes=lock.limits.max_witness_bytes + 1,
             limits=lock.limits,
         )
-    assert exc.value.code == "witness_oversized"
+    assert exc.value.code == "oversized"
 
 
 def test_concurrency_capacity_rejected(lock: zb.Lock):
@@ -465,7 +479,15 @@ def test_published_baselines_load_and_pass_synthetic(lock: zb.Lock):
     assert baselines is not None, "zk/bench/baselines.lock.json must be published"
     assert baselines["format"] == zb.BASELINES_FORMAT
     assert baselines["version"] == 1
-    required = {"ci", "native", "browser", "soroban_adjacent"}
+    required = {
+        "ci",
+        "native",
+        "browser",
+        "soroban_adjacent",
+        "revocation_ci",
+        "revocation_native",
+        "revocation_browser",
+    }
     assert required <= set(baselines.get("targets", {}).keys())
     for target in sorted(required):
         report = zb.run_target(lock, target, force_synthetic=True)
@@ -479,15 +501,57 @@ def test_published_baselines_load_and_pass_synthetic(lock: zb.Lock):
         )
 
 
+def test_revocation_browser_proving_baseline_recorded(lock: zb.Lock):
+    """baselines.lock.json must record browser proving time for revocation_witness at depth 16."""
+    baselines = zb.load_baselines(zb.DEFAULT_BASELINES)
+    assert baselines is not None
+    rev_meta = baselines.get("revocation_witness", {})
+    assert rev_meta.get("circuit") == "revocation_witness"
+    assert rev_meta.get("max_depth") == 16
+    assert rev_meta.get("max_leaves") == 65536
+    assert rev_meta.get("public_input_bytes") == 128
+    browser_prove = rev_meta.get("browser_prove_ms", {})
+    assert 0 < browser_prove.get("p50", 0) <= browser_prove.get("p95", 0) <= browser_prove.get("p99", 0)
+    assert browser_prove["p99"] <= lock.targets["revocation_browser"].timeout_ms
+
+    rev_browser_target = baselines["targets"]["revocation_browser"]
+    assert rev_browser_target["depth"] == 16
+    assert rev_browser_target["leaf_count"] == 65536
+    assert rev_browser_target["recorded_prove_ms"]["p50"] == browser_prove["p50"]
+    assert rev_browser_target["recorded_prove_ms"]["p95"] == browser_prove["p95"]
+    assert rev_browser_target["prove"]["max_sizes"]["public_input_bytes"] == 128
+
+
+def test_revocation_synthetic_rejects_over_depth(lock: zb.Lock):
+    with pytest.raises(zb.RejectedError) as exc:
+        zb.synthetic_op(
+            phase="prove",
+            seed=1,
+            limits=lock.limits,
+            public_input_bytes=128,
+            depth=zb.MAX_REVOCATION_WITNESS_DEPTH + 1,
+        )
+    assert exc.value.code == "depth_oversize"
+
+
 def test_published_baselines_ci_cli_compare(lock: zb.Lock, tmp_path: Path):
     """CLI compare against the committed baselines must exit 0 for a synthetic CI report."""
-    report = zb.run_target(lock, "ci", force_synthetic=True)
-    report_path = tmp_path / "ci.json"
-    zb.write_report(report, report_path, limits=lock.limits)
-    code = zb.main(
-        ["--lock", str(LOCK_PATH), "compare", "--report", str(report_path), "--baselines", str(zb.DEFAULT_BASELINES)]
-    )
-    assert code == zb.EXIT_OK
+    for target in ("ci", "revocation_ci"):
+        report = zb.run_target(lock, target, force_synthetic=True)
+        report_path = tmp_path / f"{target}.json"
+        zb.write_report(report, report_path, limits=lock.limits)
+        code = zb.main(
+            [
+                "--lock",
+                str(LOCK_PATH),
+                "compare",
+                "--report",
+                str(report_path),
+                "--baselines",
+                str(zb.DEFAULT_BASELINES),
+            ]
+        )
+        assert code == zb.EXIT_OK
 
 
 def test_published_baselines_detect_size_regression(lock: zb.Lock):
