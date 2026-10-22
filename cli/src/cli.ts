@@ -708,7 +708,8 @@ function printHelp(): void {
 }
 
 function printUnknownCommand(name: string): never {
-  process.stderr.write(`harpocrates: unknown command "${name}"\n`)
+  const safeName = name.startsWith('-') ? name.split('=', 1)[0] : name
+  process.stderr.write(`harpocrates: unknown command "${safeName}"\n`)
   process.stderr.write('Run "harpocrates help" for usage.\n')
   process.exit(2)
 }
