@@ -36,6 +36,7 @@ import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
 import { handleRegister } from './register.js'
+import { handleLineage } from './lineage.js'
 
 function getCliVersion(): string {
   const require = createRequire(import.meta.url)
@@ -115,6 +116,8 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
+    case 'lineage':
+      return await handleLineage(flags, debugLog)
     case 'register':
       return await handleRegister(flags, debugLog)
     case 'help':
@@ -596,6 +599,7 @@ Commands:
   verify         Verify a proof against the Stellar network.
   status         Report the on-chain lifecycle status of a proof by proof ID.
   verify-lineage Verify a derivative's full lineage back to registered originals.
+  lineage        Show the parents, transformation kind and depth of a derivative.
   register       Register a source or seal proof using a local signing key.
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
@@ -634,6 +638,15 @@ Lineage verification options:
   --source-address Source address for simulation.
   --network        Network passphrase (default: testnet).
   --output, -o     Output format: "text" (default) or "json".
+
+Lineage options:
+  --output-digest   32-byte hex digest of the derivative (required).
+  --contract-id     Contract ID on Stellar (required).
+  --rpc-url         Stellar RPC URL (default: testnet).
+  --source-address  Source address for simulation.
+  --network         Network passphrase (default: testnet).
+  --output, -o      Output format: "text" (default) or "json".
+  Exits 3 when no lineage record exists for the digest.
 
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).

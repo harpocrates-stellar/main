@@ -69,8 +69,8 @@ export {
   c2paExportDigest,
 } from './c2pa.js'
 export type { C2paExport, C2paExportOptions, C2paAssertion } from './c2pa.js'
-export { getLineage, getProofStatus } from './stellar-lookup.js'
-export type { LineageRecord, ProofStatus } from './stellar-lookup.js'
+export { getLineage, getProofStatus, lookupLineage, MalformedLineageError } from './stellar-lookup.js'
+export type { LineageRecord, LineageLookupResult, ProofStatus } from './stellar-lookup.js'
 export {
   verifyLineageTree,
   formatLineageTree,

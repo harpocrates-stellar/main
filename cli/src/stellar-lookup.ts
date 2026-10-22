@@ -515,6 +515,101 @@ export async function getLineage(
 }
 
 /**
+ * Public view of an on-chain lineage record returned by `lookupLineage`.
+ *
+ * Carries only the parent proof IDs, the transformation kind and the depth.
+ * Manifest digests, parent commitments and the actor are deliberately left
+ * out so the CLI never surfaces derivative metadata.
+ */
+export type LineageLookupResult = {
+  outputDigest: string
+  parentProofIds: string[]
+  transformationKind: string
+  depth: number
+}
+
+/**
+ * Error thrown when the registry returns a lineage value that does not match
+ * the contract's `LineageRecord` shape.
+ */
+export class MalformedLineageError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MalformedLineageError'
+  }
+}
+
+function asDigestBytes(value: unknown): Uint8Array | null {
+  return value instanceof Uint8Array && value.length === 32 ? value : null
+}
+
+/**
+ * Look up the lineage record for a derivative by its 32-byte output digest.
+ *
+ * Simulates `get_lineage(output_digest)` read-only. Returns `null` when the
+ * registry has no lineage record for the digest, and throws
+ * `MalformedLineageError` when the returned value is not a valid record.
+ * The digest is validated before any RPC client is created.
+ */
+export async function lookupLineage(
+  contractId: string,
+  outputDigest: string,
+  options: StellarLookupOptions = {},
+): Promise<LineageLookupResult | null> {
+  const digest = asHex32(outputDigest, 'outputDigest')
+  const sourceAddress =
+    options.sourceAddress ||
+    process.env.HARPOCRATES_SOURCE_ADDRESS ||
+    DEFAULT_SIMULATION_SOURCE
+
+  const native = await simulateRead(
+    contractId,
+    'get_lineage',
+    [nativeToScVal(hexToBytes(digest))],
+    { ...options, sourceAddress },
+  )
+
+  if (native === null || native === undefined) return null
+
+  if (typeof native !== 'object' || Array.isArray(native)) {
+    throw new MalformedLineageError('lineage record is not a struct')
+  }
+
+  const record = native as Record<string, unknown>
+
+  if (!Array.isArray(record.parent_proof_ids) || record.parent_proof_ids.length === 0) {
+    throw new MalformedLineageError('lineage record has no parent proof ids')
+  }
+  const parentProofIds = record.parent_proof_ids.map((id: unknown) => {
+    const bytes = asDigestBytes(id)
+    if (!bytes) throw new MalformedLineageError('lineage parent proof id is not 32 bytes')
+    return bytesToHex(bytes)
+  })
+
+  if (typeof record.operation_type !== 'string' || record.operation_type === '') {
+    throw new MalformedLineageError('lineage record has no transformation kind')
+  }
+
+  const rawDepth = record.depth
+  const depth = typeof rawDepth === 'number' || typeof rawDepth === 'bigint' ? Number(rawDepth) : NaN
+  if (!Number.isSafeInteger(depth) || depth < 0) {
+    throw new MalformedLineageError('lineage record has an invalid depth')
+  }
+
+  const storedDigest = asDigestBytes(record.output_digest)
+  if (!storedDigest || bytesToHex(storedDigest) !== digest) {
+    throw new MalformedLineageError('lineage record does not match the requested output digest')
+  }
+
+  return {
+    outputDigest: digest,
+    parentProofIds,
+    transformationKind: record.operation_type,
+    depth,
+  }
+}
+
+/**
  * Resolve the current proof status from the registry.
  * Returns 'missing' when the proof is not found on-chain.
  */
