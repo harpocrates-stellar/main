@@ -230,6 +230,14 @@ jobs:
       - name: Install test runner
         run: pip install pytest
 
+      - name: Install pinned Nargo for scoped vector generation
+        run: |
+          NARGO_VERSION="$(python -c "import json; print(json.load(open('zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup --version "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
       - name: Vectors are byte-identical to their generator
         # A hand-edited corpus would silently weaken every layer's assertions.
         run: |
@@ -239,6 +247,9 @@ jobs:
       - name: Python conformance runner
         working-directory: backend
         run: python -m pytest test_conformance_vectors.py -q
+
+      - name: Scoped nullifier generation and determinism
+        run: python -m pytest zk/vectors/test_scoped_nullifier_vectors.py -q
 
       - name: Python fuzz harness
         working-directory: backend

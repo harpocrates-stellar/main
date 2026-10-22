@@ -75,6 +75,14 @@ jobs:
           .venv/bin/python -m pip install --requirement requirements-dev.txt
           .venv/bin/python -m pip install pytest pytest-cov
 
+      - name: Install pinned Nargo for vector conformance tests
+        run: |
+          NARGO_VERSION="$(python -c "import json; print(json.load(open('../zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup --version "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
       - name: Run backend tests
         run: |
           set -o pipefail

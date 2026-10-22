@@ -1,31 +1,39 @@
 {
-  "_description": "Shared conformance vectors for the scoped nullifier v1 Noir circuit and the HarpocratesRegistry Soroban contract. Both the Noir tests (nargo test) and the Rust contract tests use these same fixtures to prevent drift.",
-  "_version": "2.0.0",
+  "_description": "Generated synthetic scoped-nullifier vectors evaluated with the shared Noir derivation. The scenario descriptions also document contract policies; they do not constitute real proofs.",
+  "_version": "3.0.0",
   "_domain_separator": "HARPOCRATES_SCOPED_NULLIFIER_V1",
   "_domain_separator_bytes": "00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631",
-  "_public_input_layout_v2": "6 x BN254 field elements (192 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier, verifier_scope, epoch]",
-  "_public_input_layout_v1": "4 x BN254 field elements (128 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier]",
-
+  "_public_input_layout_v2": "8 x BN254 field elements (256 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier, verifier_scope, epoch, domain_tag, circuit_version]",
+  "_public_input_layout_v1": "5 x BN254 field elements (160 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier, domain_tag]",
   "witness": {
     "credential_secret": 12345,
     "nullifier_secret": 67890,
     "video_hash_hi": "22685491128062564230891640495451214097",
     "video_hash_lo": "45370982256125128461783280990902428194",
-    "credential_root": "computed by helper circuit — pedersen_hash([credential_secret])",
-    "nullifier": "computed by helper circuit — pedersen_hash([credential_secret, nullifier_secret, video_hash_hi, video_hash_lo, scope_hash])"
+    "verifier_scope": 0,
+    "epoch": 0,
+    "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+    "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
   },
-
   "scope_derivation": {
     "description": "Scope field elements are derived from canonical scope strings using SHA-256 mod BN254 field modulus.",
     "canonical_format": "v:{verifierAddress}:p:{purpose}",
     "global_scope": "0 (field element representing the unscoped/global context)",
     "example_scope_strings": [
-      { "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:default", "description": "Default purpose for a verifier" },
-      { "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:attestation", "description": "Attestation purpose" },
-      { "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:membership", "description": "Membership verification purpose" }
+      {
+        "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:default",
+        "description": "Default purpose for a verifier"
+      },
+      {
+        "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:attestation",
+        "description": "Attestation purpose"
+      },
+      {
+        "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:membership",
+        "description": "Membership verification purpose"
+      }
     ]
   },
-
   "positive_cases": [
     {
       "name": "global_scope_epoch_0",
@@ -34,7 +42,22 @@
       "nullifier_secret": 67890,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "pass"
+      "expected": "pass",
+      "derived": [
+        {
+          "label": "value",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        }
+      ]
     },
     {
       "name": "explicit_scope_epoch_1",
@@ -43,7 +66,22 @@
       "nullifier_secret": 67890,
       "verifier_scope": 1111,
       "epoch": 1,
-      "expected": "pass"
+      "expected": "pass",
+      "derived": [
+        {
+          "label": "value",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "1111",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "14968385911034577050076216238864240768566951263850938149070196934104889767735"
+        }
+      ]
     },
     {
       "name": "zero_credential_secret",
@@ -52,16 +90,46 @@
       "nullifier_secret": 67890,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "pass"
+      "expected": "pass",
+      "derived": [
+        {
+          "label": "value",
+          "inputs": {
+            "credential_secret": "0",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "20793534830995666052889629834383221590246524226953098604058514977776739732941",
+          "nullifier": "2712986919850248039480545222029568959242790081136608652356342642542040801771"
+        }
+      ]
     },
     {
       "name": "max_field_credential_secret",
-      "description": "Maximum BN254 field value (prime - 1) as credential secret. Edge case.",
+      "description": "Legacy large-field credential secret, retained from the original fixture. Despite the historical case name, this seed is not BN254 prime - 1.",
       "credential_secret": "2188824287183927522224640574525727508854836440034343698204186575808495616",
       "nullifier_secret": 67890,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "pass"
+      "expected": "pass",
+      "derived": [
+        {
+          "label": "value",
+          "inputs": {
+            "credential_secret": "2188824287183927522224640574525727508854836440034343698204186575808495616",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "15805965780236724501423379863142811325518044732812256104112139473167753687954",
+          "nullifier": "17691490022493081562946617853476943949860680661557201689855918932828256242418"
+        }
+      ]
     },
     {
       "name": "zero_video_hash",
@@ -72,7 +140,22 @@
       "video_hash_lo": 0,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "pass"
+      "expected": "pass",
+      "derived": [
+        {
+          "label": "value",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "0",
+            "video_hash_lo": "0",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "16357647984039801901507134560201008249136997751608844643978391727567198529927"
+        }
+      ]
     },
     {
       "name": "cross_scope_different_nullifiers",
@@ -82,7 +165,35 @@
       "verifier_scope_a": 0,
       "verifier_scope_b": 1111,
       "epoch": 0,
-      "expected": "pass — both scopes produce distinct nullifiers"
+      "expected": "pass \u2014 both scopes produce distinct nullifiers",
+      "derived": [
+        {
+          "label": "scope_a",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "scope_b",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "1111",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "17533265966209526542778091578757954523129087691184694950174213704128728324912"
+        }
+      ]
     },
     {
       "name": "epoch_rotation_valid",
@@ -92,52 +203,191 @@
       "verifier_scope": 42,
       "epoch_old": 0,
       "epoch_new": 1,
-      "expected": "pass — epoch 1 proof accepted after rotation"
+      "expected": "pass \u2014 epoch 1 proof accepted after rotation",
+      "derived": [
+        {
+          "label": "old",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12405199163888150473278634385639760598323384553333892481674015908261991999979"
+        },
+        {
+          "label": "new",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12131010509354848567066567364805405025364140779318892417791340525729690369548"
+        }
+      ]
     }
   ],
-
   "negative_cases": [
     {
       "name": "wrong_credential_secret",
-      "description": "Wrong credential secret in the witness — credential root assertion fails.",
+      "description": "Wrong credential secret in the witness \u2014 credential root assertion fails.",
       "credential_secret_wrong": 99999,
       "credential_secret_correct": 12345,
       "nullifier_secret": 67890,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "fail — credential root mismatch"
+      "expected": "fail \u2014 credential root mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "99999",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "3912200544712779216939606131208991962922999791831406764329429040309712725426",
+          "nullifier": "20526783071092487996617355422322757332988466889576574758754879113388551447111"
+        }
+      ]
     },
     {
       "name": "wrong_nullifier_secret",
-      "description": "Wrong nullifier secret in the witness — nullifier assertion fails.",
+      "description": "Wrong nullifier secret in the witness \u2014 nullifier assertion fails.",
       "credential_secret": 12345,
       "nullifier_secret_wrong": 11111,
       "nullifier_secret_correct": 67890,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "11111",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "11070903804170452599973802182997778699366186030735897659944877478047015580875"
+        }
+      ]
     },
     {
       "name": "wrong_video_hash_hi",
-      "description": "Wrong video_hash_hi in public inputs — nullifier assertion fails.",
+      "description": "Wrong video_hash_hi in public inputs \u2014 nullifier assertion fails.",
       "credential_secret": 12345,
       "nullifier_secret": 67890,
       "video_hash_hi_wrong": "999999999999999999999999999999999999",
       "video_hash_lo_correct": "45370982256125128461783280990902428194",
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "999999999999999999999999999999999999",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "16751868725531087642642512043201559219806385765430396724159784469962683093062"
+        }
+      ]
     },
     {
       "name": "wrong_video_hash_lo",
-      "description": "Wrong video_hash_lo in public inputs — nullifier assertion fails.",
+      "description": "Wrong video_hash_lo in public inputs \u2014 nullifier assertion fails.",
       "credential_secret": 12345,
       "nullifier_secret": 67890,
       "video_hash_hi_correct": "22685491128062564230891640495451214097",
       "video_hash_lo_wrong": "222222222222222222222222222222222222",
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "222222222222222222222222222222222222",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "905786846592021732336287836957655676455939778836940317439642488829307018868"
+        }
+      ]
     },
     {
       "name": "nullifier_from_different_scope",
@@ -147,7 +397,35 @@
       "verifier_scope_proof": 0,
       "verifier_scope_nullifier": 999,
       "epoch": 0,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "999",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "2542306426449841479912139865640315709712281940806148988719852388962745595455"
+        }
+      ]
     },
     {
       "name": "nullifier_from_different_epoch",
@@ -157,7 +435,35 @@
       "verifier_scope": 42,
       "epoch_proof": 1,
       "epoch_nullifier": 2,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12131010509354848567066567364805405025364140779318892417791340525729690369548"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "2"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "4083217841249244167749690154108964061745549665363461008905354896539664488959"
+        }
+      ]
     },
     {
       "name": "nullifier_from_different_video",
@@ -168,7 +474,35 @@
       "epoch": 0,
       "video_hash_hi_different": "111111111111111111111111111111111111",
       "video_hash_lo_different": "222222222222222222222222222222222222",
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "111111111111111111111111111111111111",
+            "video_hash_lo": "222222222222222222222222222222222222",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "8248825625745483516571251703140127861276225614565002869766320929108689175673"
+        }
+      ]
     },
     {
       "name": "tampered_scope_public_input",
@@ -178,7 +512,35 @@
       "verifier_scope_proof": 0,
       "verifier_scope_public_input": 1,
       "epoch": 0,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "1",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "15350277635259198895244027875561320582964185241264528318999947964348212415226"
+        }
+      ]
     },
     {
       "name": "tampered_epoch_public_input",
@@ -188,7 +550,35 @@
       "verifier_scope": 42,
       "epoch_proof": 1,
       "epoch_public_input": 0,
-      "expected": "fail — nullifier mismatch"
+      "expected": "fail \u2014 nullifier mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12131010509354848567066567364805405025364140779318892417791340525729690369548"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12405199163888150473278634385639760598323384553333892481674015908261991999979"
+        }
+      ]
     },
     {
       "name": "swapped_credential_root_and_nullifier",
@@ -197,7 +587,22 @@
       "nullifier_secret": 67890,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "fail — credential root mismatch"
+      "expected": "fail \u2014 credential root mismatch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        }
+      ]
     },
     {
       "name": "stale_epoch_rejected",
@@ -207,7 +612,35 @@
       "verifier_scope": 42,
       "epoch_proof": 0,
       "epoch_current": 1,
-      "expected": "fail — StaleEpoch"
+      "expected": "fail \u2014 StaleEpoch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12405199163888150473278634385639760598323384553333892481674015908261991999979"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12131010509354848567066567364805405025364140779318892417791340525729690369548"
+        }
+      ]
     },
     {
       "name": "future_epoch_rejected",
@@ -217,10 +650,37 @@
       "verifier_scope": 42,
       "epoch_proof": 2,
       "epoch_current": 1,
-      "expected": "fail — StaleEpoch"
+      "expected": "fail \u2014 StaleEpoch",
+      "derived": [
+        {
+          "label": "reference",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "2"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "4083217841249244167749690154108964061745549665363461008905354896539664488959"
+        },
+        {
+          "label": "changed",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "42",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "12131010509354848567066567364805405025364140779318892417791340525729690369548"
+        }
+      ]
     }
   ],
-
   "boundary_cases": [
     {
       "name": "adjacent_nullifier_secrets",
@@ -230,17 +690,73 @@
       "nullifier_secret_b": 67891,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "distinct"
+      "expected": "distinct",
+      "derived": [
+        {
+          "label": "0",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "1",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67891",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "16832498566479929011494919293945197132334322423182691482656174597533788530025"
+        }
+      ]
     },
     {
       "name": "nullifier_secret_field_edges",
-      "description": "The maximum field secret and zero must remain distinct across the field boundary.",
+      "description": "Legacy large-field secret and zero must remain distinct. The original nullifier_secret_max seed is retained; it is not BN254 prime - 1.",
       "credential_secret": 12345,
       "nullifier_secret_max": "2188824287183927522224640574525727508854836440034343698204186575808495616",
       "nullifier_secret_wrapped": 0,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "distinct"
+      "expected": "distinct",
+      "derived": [
+        {
+          "label": "0",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "2188824287183927522224640574525727508854836440034343698204186575808495616",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "11678101644514203273722612922025316760144294977629716149631863658044201138972"
+        },
+        {
+          "label": "1",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "0",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "19441767637538232397295198265322433273164630312153022885947693874291612471530"
+        }
+      ]
     },
     {
       "name": "scope_epoch_adjacent_boundaries",
@@ -251,7 +767,48 @@
       "base_epoch": 0,
       "adjacent_verifier_scope": 1,
       "adjacent_epoch": 1,
-      "expected": "distinct"
+      "expected": "distinct",
+      "derived": [
+        {
+          "label": "0",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "18610760079131985764419400568681726398148725133221273613301334991321899319091"
+        },
+        {
+          "label": "1",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "1",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "15350277635259198895244027875561320582964185241264528318999947964348212415226"
+        },
+        {
+          "label": "2",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "1"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "21450809273180094601693655882711670819755976203260394146573107732425748949617"
+        }
+      ]
     },
     {
       "name": "video_hash_high_limb_edges",
@@ -262,14 +819,41 @@
       "video_hash_hi_b": 1,
       "verifier_scope": 0,
       "epoch": 0,
-      "expected": "distinct"
+      "expected": "distinct",
+      "derived": [
+        {
+          "label": "0",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "0",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "7744917154512826751543420135882349403984092914574723241645658277794850040446"
+        },
+        {
+          "label": "1",
+          "inputs": {
+            "credential_secret": "12345",
+            "nullifier_secret": "67890",
+            "video_hash_hi": "1",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+            "verifier_scope": "0",
+            "epoch": "0"
+          },
+          "credential_root": "11940318861567702273014974711713338581150835357295601188690884790876948588713",
+          "nullifier": "9137480063041486311876569964521731585479062782213030101627240019973730931299"
+        }
+      ]
     }
   ],
-
   "v1_v2_compatibility": {
-    "description": "v1 (128-byte) and v2 (192-byte) proofs use different derivation formulas and produce different nullifiers for the same credential and video.",
-    "v1_layout": "4 x BN254 field elements (128 bytes)",
-    "v2_layout": "6 x BN254 field elements (192 bytes)",
+    "description": "Historical unscoped/scoped compatibility notes, retained as scenario documentation. These notes do not assert that a particular proof envelope is currently accepted.",
+    "v1_layout": "5 x BN254 field elements (160 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier, domain_tag]",
+    "v2_layout": "8 x BN254 field elements (256 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier, verifier_scope, epoch, domain_tag, circuit_version]",
     "nullifier_independence": "v1 and v2 nullifiers for the same credential/video are different values because the derivation formulas differ (v1 does not include scope_hash).",
     "test_case": {
       "name": "v1_v2_nullifiers_are_different",
@@ -280,5 +864,6 @@
       "v2_nullifier": "different from v1 nullifier",
       "expected": "both v1 and v2 proofs succeed with distinct nullifiers"
     }
-  }
+  },
+  "regenerate_with": "python zk/vectors/generate_vectors.py"
 }

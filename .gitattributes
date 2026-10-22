@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Generated vector checks compare exact UTF-8 bytes on every platform.
+zk/vectors/verifier_conformance_v1.json text eol=lf
+zk/vectors/verifier_conformance_v2.json text eol=lf
+zk/noir/fixtures/scoped_nullifier_vectors.json text eol=lf
