@@ -84,6 +84,7 @@ class AppConfig:
     job_file_ttl_seconds: int = 86_400
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
+    retention_dry_run: bool = False
 
 
 
@@ -163,6 +164,7 @@ def load_config() -> AppConfig:
         job_file_ttl_seconds=_job_file_ttl_env(),
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
+        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
     )
 
 
