@@ -8,10 +8,14 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from analytics.log_processor import LogEntry, LogProcessor
+    from analytics.log_processor import LogEntry, LogProcessor, validate_log_export_safety
 except Exception:
-    LogEntry = None
-    LogProcessor = None
+    try:
+        from backend.analytics.log_processor import LogEntry, LogProcessor, validate_log_export_safety
+    except Exception:
+        LogEntry = None
+        LogProcessor = None
+        validate_log_export_safety = None
 
 
 EXPORT_FORMAT_VERSION = "1.0.0"
@@ -107,6 +111,8 @@ class ExportManager:
                 entries_filtered = []
             if not policy.include_sampled_out_events:
                 entries_filtered = [e for e in entries_filtered if e.export_safe]
+            if validate_log_export_safety is not None:
+                entries_filtered = [e for e in entries_filtered if validate_log_export_safety(e)[0]]
             if policy.require_safety_signature:
                 all_safe = all(e.export_safe for e in entries_filtered)
                 if not all_safe:
