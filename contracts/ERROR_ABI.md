@@ -138,6 +138,7 @@ call can succeed.
 | 86 | `IssuerRotationGraceStillActive` | state | yes | The issuer rotation grace window has not lapsed; retry once it has. |
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
 | 88 | `ReporterDisputesSaturated` | resource | no | The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`. |
+| 89 | `InsufficientApprovals` | auth | no | The action requires admin council threshold approvals. |
 
 ## Privacy Rules
 
