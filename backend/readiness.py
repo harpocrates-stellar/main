@@ -12,6 +12,8 @@ class Dependency(NamedTuple):
     name: str
     check_fn: Callable[[], bool]
     critical: bool
+    ok_status: str = "connected"
+    fail_status: str = "disconnected"
 
 class ReadinessManager:
     """
@@ -25,21 +27,22 @@ class ReadinessManager:
         self.cache: Dict[str, ProbeResult] = {}
         self._lock = threading.Lock()
 
-    def add_dependency(self, name: str, check_fn: Callable[[], bool], critical: bool = True):
-        self.deps.append(Dependency(name, check_fn, critical))
+    def add_dependency(
+        self,
+        name: str,
+        check_fn: Callable[[], bool],
+        critical: bool = True,
+        ok_status: str = "connected",
+        fail_status: str = "disconnected",
+    ):
+        self.deps.append(Dependency(name, check_fn, critical, ok_status, fail_status))
         # Initialize cache
         self.cache[name] = ProbeResult(False, "initializing", 0.0)
 
     def _run_probe(self, dep: Dependency) -> ProbeResult:
         try:
             ok = dep.check_fn()
-            status = "connected" if ok else "disconnected"
-            # Special case for existing schemas
-            if dep.name == "video_tools":
-                status = "available" if ok else "missing"
-            elif dep.name == "database":
-                status = "connected" if ok else "not_configured"
-            
+            status = dep.ok_status if ok else dep.fail_status
             return ProbeResult(ok, status, time.time())
         except Exception:
             return ProbeResult(False, "error", time.time())
