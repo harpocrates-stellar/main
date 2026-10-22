@@ -32,6 +32,7 @@ class MetricsCollector:
         self._cache_evictions = 0
         self._deleted_events = 0
         self._deleted_blobs = 0
+        self._retention_dry_run_eligible: int | None = None
         self._indexer_unknown_topics = 0
         self._indexer_events_total: Dict[str, int] = {}
 
@@ -59,6 +60,7 @@ class MetricsCollector:
             self._cache_evictions = 0
             self._deleted_events = 0
             self._deleted_blobs = 0
+            self._retention_dry_run_eligible = None
             self._indexer_unknown_topics = 0
             self._indexer_events_total.clear()
             self._last_job_refresh = 0.0
@@ -216,6 +218,11 @@ class MetricsCollector:
         with self._lock:
             self._cache_evictions += 1
 
+    def set_retention_dry_run_eligible(self, count: int) -> None:
+        """Record how many proof events a retention dry run found eligible."""
+        with self._lock:
+            self._retention_dry_run_eligible = int(count)
+
     def record_deleted_event(self) -> None:
         """Record a proof event removed by the retention worker."""
         with self._lock:
@@ -352,6 +359,12 @@ class MetricsCollector:
             lines.append("# HELP harpocrates_retention_deleted_events_total Total proof events removed by retention.")
             lines.append("# TYPE harpocrates_retention_deleted_events_total counter")
             lines.append(f"harpocrates_retention_deleted_events_total {self._deleted_events}")
+
+            if self._retention_dry_run_eligible is not None:
+                lines.append("")
+                lines.append("# HELP harpocrates_retention_dry_run_eligible_events Proof events eligible for deletion in the last retention dry run.")
+                lines.append("# TYPE harpocrates_retention_dry_run_eligible_events gauge")
+                lines.append(f"harpocrates_retention_dry_run_eligible_events {self._retention_dry_run_eligible}")
 
             lines.append("")
             lines.append("# HELP harpocrates_retention_deleted_blobs_total Total evidence blobs removed by retention.")

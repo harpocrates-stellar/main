@@ -1104,6 +1104,13 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
+# Single source of truth for retention eligibility. Shared by the dry-run count
+# and the real purge so the two can never diverge.
+EXPIRED_EVENTS_PREDICATE_SQL = (
+    "expires_at is not null and expires_at <= now() and legal_hold = false"
+)
+
+
 def count_expired_events() -> int:
     """Return how many proof events ``purge_expired_events`` would delete.
 
@@ -1114,12 +1121,10 @@ def count_expired_events() -> int:
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 select count(*) as expired
                 from proof_events
-                where expires_at is not null
-                  and expires_at <= now()
-                  and legal_hold = false;
+                where {EXPIRED_EVENTS_PREDICATE_SQL};
                 """
             )
             row = cursor.fetchone()
@@ -1138,13 +1143,11 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 with expired as (
                     select id, proof_id, video_hash, metadata_hash
                     from proof_events
-                    where expires_at is not null
-                      and expires_at <= now()
-                      and legal_hold = false
+                    where {EXPIRED_EVENTS_PREDICATE_SQL}
                     order by id
                     limit %s
                     for update skip locked
