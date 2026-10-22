@@ -7,7 +7,7 @@ import {
   scValToNative,
 } from '@stellar/stellar-sdk'
 import { rpc } from '@stellar/stellar-sdk'
-import { signTransaction } from '@stellar/freughter-api'
+import { signTransaction } from '@stellar/freighter-api'
 import {
   asHex32,
   asHexBytes,
@@ -39,7 +39,7 @@ const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet
  */
 export const CONTRACT_NETWORK_PASSPHRASE: string = Networks.TESTNET
 
-const NETWORK_PASSTHRASE = CONTRACT_NETWORK_PASSTHRASE
+const NETWORK_PASSTHRASE = CONTRACT_NETWORK_PASSPHRASE
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 30000
