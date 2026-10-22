@@ -34,6 +34,27 @@ pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 3;
 /// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 8).
 pub const MAX_REVOCATION_LEAVES: u32 = 8;
 
+/// Maximum number of revocation roots retained in the ring buffer.
+pub const MAX_REVOCATION_ROOT_HISTORY: u32 = 4;
+
+/// Default grace window (in ledgers) during which recent previous revocation
+/// roots remain acceptable in `check_non_revocation` (approx. 10 minutes at 5s/ledger).
+pub const DEFAULT_REVOCATION_ROOT_GRACE_LEDGERS: u32 = 120;
+
+/// Maximum configurable grace window (in ledgers) for previous revocation roots
+/// (approx. 24 hours at 5s/ledger).
+pub const MAX_REVOCATION_ROOT_GRACE_LEDGERS: u32 = 17_280;
+
+/// A revocation root entry stored in the bounded history ring buffer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevocationRootEntry {
+    /// Merkle root of the revocation tree.
+    pub root: BytesN<32>,
+    /// Ledger sequence at which this root was activated.
+    pub activation_ledger: u32,
+}
+
 const TIER_SILENT_WITNESS: u32 = 1;
 const TIER_CONSISTENT_SOURCE: u32 = 2;
 const TIER_PUBLIC_SEAL: u32 = 3;
@@ -4436,9 +4457,53 @@ impl HarpocratesRegistry {
 
     pub fn set_revocation_root(env: Env, admin: Address, revocation_root: BytesN<32>) {
         require_admin(&env, &admin);
+        let activation_ledger = env.ledger().sequence();
+
+        let mut history: SorobanVec<RevocationRootEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RevocationRoots)
+            .unwrap_or_else(|| {
+                let mut v = SorobanVec::new(&env);
+                if let Some(existing) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, BytesN<32>>(&DataKey::RevocationRoot)
+                {
+                    v.push_back(RevocationRootEntry {
+                        root: existing,
+                        activation_ledger,
+                    });
+                }
+                v
+            });
+
+        // If the root already exists in the ring buffer, remove its older entry
+        // before appending at the tail so the buffer stays deduplicated and
+        // ordered from oldest to newest.
+        let mut deduped = SorobanVec::new(&env);
+        for item in history.iter() {
+            if item.root != revocation_root {
+                deduped.push_back(item);
+            }
+        }
+        history = deduped;
+
+        // Evict the oldest root(s) when at capacity (`MAX_REVOCATION_ROOT_HISTORY`).
+        while history.len() >= MAX_REVOCATION_ROOT_HISTORY {
+            let _ = history.pop_front();
+        }
+        history.push_back(RevocationRootEntry {
+            root: revocation_root.clone(),
+            activation_ledger,
+        });
+
         env.storage()
             .persistent()
             .set(&DataKey::RevocationRoot, &revocation_root);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RevocationRoots, &history);
         RevocationRootSet { revocation_root }.publish(&env);
     }
 
@@ -4446,17 +4511,70 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::RevocationRoot)
     }
 
+    /// Return the bounded history of recent revocation roots in chronological
+    /// order (oldest first, current active root last), up to
+    /// [`MAX_REVOCATION_ROOT_HISTORY`] entries.
+    pub fn get_revocation_roots(env: Env) -> soroban_sdk::Vec<RevocationRootEntry> {
+        if let Some(history) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, SorobanVec<RevocationRootEntry>>(&DataKey::RevocationRoots)
+        {
+            return history;
+        }
+        let mut fallback = SorobanVec::new(&env);
+        if let Some(current) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BytesN<32>>(&DataKey::RevocationRoot)
+        {
+            fallback.push_back(RevocationRootEntry {
+                root: current,
+                activation_ledger: 0,
+            });
+        }
+        fallback
+    }
+
+    /// Configure the grace window (in ledgers) during which recent previous
+    /// revocation roots in the ring buffer remain accepted by
+    /// [`Self::check_non_revocation`].
+    ///
+    /// Admin-only. Setting `grace_ledgers == 0` disables the grace window so
+    /// only the current root is accepted. Values above
+    /// [`MAX_REVOCATION_ROOT_GRACE_LEDGERS`] are rejected with
+    /// [`RegistryError::InvalidPublicInputs`].
+    pub fn set_revocation_root_grace_window(env: Env, admin: Address, grace_ledgers: u32) {
+        require_admin(&env, &admin);
+        if grace_ledgers > MAX_REVOCATION_ROOT_GRACE_LEDGERS {
+            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::RevocationRootGraceWindow, &grace_ledgers);
+    }
+
+    /// Return the configured grace window (in ledgers) for accepting previous
+    /// revocation roots, defaulting to [`DEFAULT_REVOCATION_ROOT_GRACE_LEDGERS`].
+    pub fn get_revocation_root_grace_window(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RevocationRootGraceWindow)
+            .unwrap_or(DEFAULT_REVOCATION_ROOT_GRACE_LEDGERS)
+    }
+
     /// Verify a non-revocation proof produced by the `revocation_witness`
     /// Noir circuit.
     ///
     /// The proof demonstrates that `credential_root` is **not** a member of
-    /// the currently-published revocation tree (`revocation_root`) without
+    /// the currently-published revocation tree (`revocation_root`) — or a
+    /// recent previous root still within the configured grace window — without
     /// revealing which revoked credentials exist or which identity is acting.
     ///
     /// # Public input layout (128 bytes, 4 x BN254 field elements)
     ///
     /// ```text
-    /// [  0.. 32)  revocation_root   - must match the on-chain stored root
+    /// [  0.. 32)  revocation_root   - must match the current root or a recent root within the grace window
     /// [ 32.. 64)  nullifier         - one-use replay guard
     /// [ 64.. 96)  domain_separator  - must match REVOCATION_DOMAIN_SEPARATOR
     /// [ 96..128)  credential_root   - must be registered & active on-chain
@@ -4466,7 +4584,7 @@ impl HarpocratesRegistry {
     ///
     /// - `NotInitialized`      if no revocation root has been published yet
     /// - `VerifierNotSet`       if no external verifier contract is configured
-    /// - `InvalidPublicInputs`  if the domain separator or layout is wrong
+    /// - `InvalidPublicInputs`  if the domain separator, layout, or revocation root (unknown/outside grace window) is invalid
     /// - `UnknownCredentialRoot` if the credential has not been registered
     /// - `RevokedCredentialRoot` if the credential root has been revoked
     /// - `DuplicateNullifier`   if this nullifier was already consumed
@@ -4480,14 +4598,70 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         }
 
-        // 2. Revocation root - must match the currently published root.
+        // 2. Revocation root - must match the currently published root or a
+        //    recent root in the bounded history ring buffer within the grace window.
         let stored_root: BytesN<32> = env
             .storage()
             .persistent()
             .get(&DataKey::RevocationRoot)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+
         if parsed.revocation_root != stored_root {
-            panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            let history: SorobanVec<RevocationRootEntry> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RevocationRoots)
+                .unwrap_or_else(|| SorobanVec::new(&env));
+            let grace_ledgers: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RevocationRootGraceWindow)
+                .unwrap_or(DEFAULT_REVOCATION_ROOT_GRACE_LEDGERS);
+            let current_ledger = env.ledger().sequence();
+
+            // Locate `parsed.revocation_root` in the history buffer.
+            // A previous root at index `i` was superseded when the next root
+            // at index `i + 1` was activated (`superseded_at = history[i + 1].activation_ledger`),
+            // and remains valid while `current_ledger <= superseded_at + grace_ledgers`
+            // (with `grace_ledgers > 0`) AND `current_ledger <= entry.activation_ledger + grace_ledgers`
+            // is also respected when checking age since replacement. Specifically, a root is
+            // within the grace window if `grace_ledgers > 0` and the time elapsed since it was
+            // superseded (or since its activation) is within `grace_ledgers`.
+            let len = history.len();
+            let mut matched_valid = false;
+            let mut idx = 0;
+            while idx < len {
+                if let Some(entry) = history.get(idx) {
+                    if entry.root == parsed.revocation_root {
+                        // Determine the ledger at which this root was replaced by a newer root,
+                        // or its own activation ledger if it is the last entry.
+                        let reference_ledger = if idx + 1 < len {
+                            history
+                                .get(idx + 1)
+                                .map(|next| next.activation_ledger)
+                                .unwrap_or(entry.activation_ledger)
+                        } else {
+                            entry.activation_ledger
+                        };
+                        let age_since_activation =
+                            current_ledger.saturating_sub(entry.activation_ledger);
+                        let age_since_replacement =
+                            current_ledger.saturating_sub(reference_ledger);
+                        if grace_ledgers > 0
+                            && age_since_activation <= grace_ledgers
+                            && age_since_replacement <= grace_ledgers
+                        {
+                            matched_valid = true;
+                        }
+                        break;
+                    }
+                }
+                idx += 1;
+            }
+
+            if !matched_valid {
+                panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            }
         }
 
         require_active_credential_root(&env, &parsed.credential_root);
