@@ -196,6 +196,7 @@ describe('ApiClientError / toVerificationErrorCode', () => {
     })
     expect(toVerificationErrorCode(unsupported)).toBe('UNSUPPORTED_ARTIFACT')
 
+    expect(toVerificationErrorCode(Object.assign(new Error('request timed out'), { code: 'timeout' }))).toBe('TIMEOUT')
     expect(toVerificationErrorCode(new Error('nope'))).toBeNull()
   })
 })

@@ -126,7 +126,8 @@ describe('embedVideo', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(options.signal).toBe(controller.signal)
+    expect(options.signal).not.toBe(controller.signal)
+    expect(options.signal).toBeInstanceOf(AbortSignal)
 
     controller.abort()
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })

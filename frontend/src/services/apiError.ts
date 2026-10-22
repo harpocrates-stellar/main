@@ -254,8 +254,13 @@ export function toVerificationErrorCode(
   | 'UNSUPPORTED_ARTIFACT'
   | 'OVERSIZED_ARTIFACT'
   | 'INVALID_EVIDENCE'
+  | 'TIMEOUT'
   | 'DEPENDENCY_UNAVAILABLE'
   | null {
+  if (
+    error instanceof Error &&
+    ((('code' in error) && error.code === 'timeout') || error.name === 'TimeoutError')
+  ) return 'TIMEOUT'
   if (!(error instanceof ApiClientError)) return null
   switch (error.code) {
     case 'PAYLOAD_TOO_LARGE':
