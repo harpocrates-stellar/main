@@ -88,6 +88,9 @@ The offending origin value is intentionally absent from the envelope: error
 payloads must stay privacy-safe and must not echo attacker-controlled input.
 """
 
+FRESHNESS_ERROR = "FRESHNESS_ERROR"
+"""A directory checkpoint exceeds its allowable freshness window (400)."""
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------

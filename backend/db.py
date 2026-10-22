@@ -95,6 +95,10 @@ def clamp_proof_events_limit(limit: int) -> int:
     return max(1, min(limit, PROOF_EVENTS_MAX_LIMIT))
 
 
+encode_issuer_events_cursor = encode_proof_events_cursor
+decode_issuer_events_cursor = decode_proof_events_cursor
+
+
 def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
@@ -1285,3 +1289,367 @@ def get_job_queue_metrics() -> dict[str, Any]:
 
 
 get_job_metrics = get_job_queue_metrics
+
+
+# ---------------------------------------------------------------------------
+# Issuer key transparency persistence
+# ---------------------------------------------------------------------------
+
+
+def insert_issuer_directory_event(
+    *,
+    issuer_address: str,
+    organization_identity_hash: str,
+    sequence: int,
+    event_type: str,
+    key_id: str,
+    public_key_hash: str,
+    previous_event_hash: str | None = None,
+    related_key_id: str | None = None,
+    manifest_hash: str | None = None,
+    reason_hash: str | None = None,
+    event_hash: str | None = None,
+    timestamp: int | None = None,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    if timestamp is None:
+        timestamp = int(time.time())
+
+    if event_hash is None:
+        try:
+            from issuer_key_transparency import (
+                DirectoryEvent,
+                EventType,
+                event_hash as _event_hash,
+            )
+
+            ev = DirectoryEvent(
+                event_type=EventType(event_type),
+                sequence=sequence,
+                timestamp=timestamp,
+                organization_identity_hash=organization_identity_hash,
+                key_id=key_id,
+                public_key_hash=public_key_hash,
+                previous_event_hash=previous_event_hash,
+                related_key_id=related_key_id,
+                manifest_hash=manifest_hash,
+                reason_hash=reason_hash,
+            )
+            event_hash = _event_hash(ev)
+        except Exception:
+            event_hash = ""
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into issuer_directory_events (
+                    issuer_address,
+                    organization_identity_hash,
+                    sequence,
+                    event_type,
+                    key_id,
+                    public_key_hash,
+                    previous_event_hash,
+                    related_key_id,
+                    manifest_hash,
+                    reason_hash,
+                    event_hash,
+                    timestamp
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning
+                    id,
+                    issuer_address,
+                    organization_identity_hash,
+                    sequence,
+                    event_type,
+                    key_id,
+                    public_key_hash,
+                    previous_event_hash,
+                    related_key_id,
+                    manifest_hash,
+                    reason_hash,
+                    event_hash,
+                    timestamp,
+                    created_at;
+                """,
+                (
+                    issuer_address,
+                    organization_identity_hash,
+                    sequence,
+                    event_type,
+                    key_id,
+                    public_key_hash,
+                    previous_event_hash,
+                    related_key_id,
+                    manifest_hash,
+                    reason_hash,
+                    event_hash,
+                    timestamp,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def list_issuer_directory_events(
+    issuer_address: str,
+    limit: int = 25,
+    *,
+    cursor_id: int | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """List append-only directory events for an issuer, sorted by sequence ASC.
+
+    Returns (events, next_cursor). Each event dict conforms to DirectoryEvent.to_dict().
+    """
+    if not database_url():
+        return [], None
+
+    page_size = max(1, min(limit, 100))
+    fetch_size = page_size + 1
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            if cursor_id is None:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        issuer_address,
+                        organization_identity_hash,
+                        sequence,
+                        event_type,
+                        key_id,
+                        public_key_hash,
+                        previous_event_hash,
+                        related_key_id,
+                        manifest_hash,
+                        reason_hash,
+                        event_hash,
+                        timestamp,
+                        created_at
+                    from issuer_directory_events
+                    where issuer_address = %s
+                    order by sequence asc, id asc
+                    limit %s;
+                    """,
+                    (issuer_address, fetch_size),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        issuer_address,
+                        organization_identity_hash,
+                        sequence,
+                        event_type,
+                        key_id,
+                        public_key_hash,
+                        previous_event_hash,
+                        related_key_id,
+                        manifest_hash,
+                        reason_hash,
+                        event_hash,
+                        timestamp,
+                        created_at
+                    from issuer_directory_events
+                    where issuer_address = %s and id > %s
+                    order by sequence asc, id asc
+                    limit %s;
+                    """,
+                    (issuer_address, cursor_id, fetch_size),
+                )
+            rows = [dict(row) for row in cursor.fetchall()]
+
+    next_cursor: str | None = None
+    if len(rows) > page_size:
+        rows = rows[:page_size]
+        next_cursor = encode_proof_events_cursor(int(rows[-1]["id"]))
+
+    formatted_events: list[dict[str, Any]] = []
+    for r in rows:
+        if "eventType" in r:
+            formatted_events.append(r)
+            continue
+        ev: dict[str, Any] = {
+            "eventType": r["event_type"],
+            "keyId": r["key_id"],
+            "organizationIdentityHash": r["organization_identity_hash"],
+            "publicKeyHash": r["public_key_hash"],
+            "sequence": int(r["sequence"]),
+            "timestamp": int(r["timestamp"]),
+        }
+        if r.get("previous_event_hash"):
+            ev["previousEventHash"] = r["previous_event_hash"]
+        if r.get("related_key_id"):
+            ev["relatedKeyId"] = r["related_key_id"]
+        if r.get("manifest_hash"):
+            ev["manifestHash"] = r["manifest_hash"]
+        if r.get("reason_hash"):
+            ev["reasonHash"] = r["reason_hash"]
+        formatted_events.append(ev)
+
+    return formatted_events, next_cursor
+
+
+def insert_issuer_checkpoint(
+    *,
+    issuer_address: str,
+    organization_identity_hash: str,
+    tree_head_hash: str,
+    event_count: int,
+    manifest_hash: str,
+    signature_hash: str | None = None,
+    timestamp: int | None = None,
+    version: int = 1,
+    protocol: str = "harpocrates-issuer-key-transparency",
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    if timestamp is None:
+        timestamp = int(time.time())
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into issuer_checkpoints (
+                    issuer_address,
+                    organization_identity_hash,
+                    tree_head_hash,
+                    event_count,
+                    timestamp,
+                    manifest_hash,
+                    signature_hash,
+                    version,
+                    protocol,
+                    manifest
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning
+                    id,
+                    issuer_address,
+                    organization_identity_hash,
+                    tree_head_hash,
+                    event_count,
+                    timestamp,
+                    manifest_hash,
+                    signature_hash,
+                    version,
+                    protocol,
+                    manifest,
+                    created_at;
+                """,
+                (
+                    issuer_address,
+                    organization_identity_hash,
+                    tree_head_hash,
+                    event_count,
+                    timestamp,
+                    manifest_hash,
+                    signature_hash,
+                    version,
+                    protocol,
+                    Jsonb(manifest) if manifest is not None else None,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+        return dict(row) if row else None
+
+
+def get_latest_checkpoint(
+    issuer_address: str | None = None,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            if issuer_address:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        issuer_address,
+                        organization_identity_hash,
+                        tree_head_hash,
+                        event_count,
+                        timestamp,
+                        manifest_hash,
+                        signature_hash,
+                        version,
+                        protocol,
+                        manifest,
+                        created_at
+                    from issuer_checkpoints
+                    where issuer_address = %s and signature_hash is not null
+                    order by id desc
+                    limit 1;
+                    """,
+                    (issuer_address,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        issuer_address,
+                        organization_identity_hash,
+                        tree_head_hash,
+                        event_count,
+                        timestamp,
+                        manifest_hash,
+                        signature_hash,
+                        version,
+                        protocol,
+                        manifest,
+                        created_at
+                    from issuer_checkpoints
+                    where signature_hash is not null
+                    order by id desc
+                    limit 1;
+                    """
+                )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
+def get_current_issuer_manifest(
+    issuer_address: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not database_url():
+        return None, None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select manifest
+                from issuer_checkpoints
+                where issuer_address = %s and manifest is not null
+                order by id desc
+                limit 1;
+                """,
+                (issuer_address,),
+            )
+            row = cursor.fetchone()
+            if row and row.get("manifest"):
+                manifest = row["manifest"]
+                status = "active"
+                if manifest.get("validUntil") and int(manifest["validUntil"]) <= int(time.time()):
+                    status = "expired"
+                keys = manifest.get("activeKeys", [])
+                if any(k.get("status") == "compromised" for k in keys):
+                    status = "compromised"
+                return manifest, status
+
+    return None, None
+
