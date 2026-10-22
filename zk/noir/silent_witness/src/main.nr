@@ -26,6 +26,11 @@ fn main(
     domain_tag: pub Field,
     circuit_version: pub Field,
 ) {
+    assert(
+        circuit_version == CURRENT_CIRCUIT_VERSION as Field,
+        "circuit version mismatch",
+    );
+
     let scope_hash = std::hash::pedersen_hash([
         SCOPED_NULLIFIER_V1,
         verifier_scope,
@@ -368,7 +373,7 @@ fn test_nullifier_from_different_video() {
 // Negative - domain tag mismatch (NEW: domain separation tests)
 // ============================================================
 
-// Zero domain_tag — never equals the expected Pedersen hash.
+// Zero domain_tag -- never equals the expected Pedersen hash.
 #[test(should_fail_with = "unsupported")]
 fn test_zero_domain_tag_rejected() {
     let cs: Field = 12345;
@@ -448,7 +453,7 @@ fn test_circuit_version_downgrade() {
 }
 
 // ============================================================
-// Positive — nullifier collision boundaries
+// Positive -- nullifier collision boundaries
 // ============================================================
 
 // Adjacent secrets must not collapse to the same field element. This catches

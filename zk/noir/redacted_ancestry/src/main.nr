@@ -643,6 +643,35 @@ fn test_rejects_zero_derivative_digest() {
     );
 }
 
+// Mutation regressions: each zero statement field must reach its own guard,
+// rather than relying only on a later commitment-mismatch assertion.
+#[test(should_fail_with = "parameters digest must be non-zero")]
+fn test_rejects_zero_parameters_digest() {
+    let (parent, deriv, _params, root, nullifier, domain) = fixture_statement();
+    main(
+        TEST_PHI, TEST_PLO, TEST_BLIND, TEST_MASK, TEST_SEED, TEST_CS, TEST_NS,
+        parent, deriv, 0, OPERATION_REDACT, root, nullifier, TEST_DEPTH, domain,
+    );
+}
+
+#[test(should_fail_with = "ancestry root must be non-zero")]
+fn test_rejects_zero_ancestry_root() {
+    let (parent, deriv, params, _root, nullifier, domain) = fixture_statement();
+    main(
+        TEST_PHI, TEST_PLO, TEST_BLIND, TEST_MASK, TEST_SEED, TEST_CS, TEST_NS,
+        parent, deriv, params, OPERATION_REDACT, 0, nullifier, TEST_DEPTH, domain,
+    );
+}
+
+#[test(should_fail_with = "nullifier must be non-zero")]
+fn test_rejects_zero_nullifier() {
+    let (parent, deriv, params, root, _nullifier, domain) = fixture_statement();
+    main(
+        TEST_PHI, TEST_PLO, TEST_BLIND, TEST_MASK, TEST_SEED, TEST_CS, TEST_NS,
+        parent, deriv, params, OPERATION_REDACT, root, 0, TEST_DEPTH, domain,
+    );
+}
+
 // A statement built for one depth must not verify at another depth: the
 // ancestry root binds the depth.
 #[test(should_fail_with = "ancestry root mismatch")]

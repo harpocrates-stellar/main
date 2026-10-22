@@ -1,5 +1,5 @@
 // =============================================================================
-// Silent Witness Aggregator — Bounded Batch Aggregation Circuit
+// Silent Witness Aggregator -- Bounded Batch Aggregation Circuit
 //
 // This circuit aggregates up to MAX_AGGREGATION_SIZE individual Silent Witness
 // proofs into a single, compact UltraHonk proof.  It proves that the same
@@ -12,12 +12,12 @@
 //
 // # Public input layout (bounded by MAX_AGGREGATION_SIZE)
 //
-// For each batch element i ∈ [0, MAX_AGGREGATION_SIZE):
+// For each batch element i in [0, MAX_AGGREGATION_SIZE):
 //
-//   [ 0 + i*4 ]  video_hash_hi_i       – high 128 bits of SHA-256 video hash
-//   [ 1 + i*4 ]  video_hash_lo_i       – low 128 bits of SHA-256 video hash
-//   [ 2 + i*4 ]  credential_root_i     – Pedersen(credential_secret)
-//   [ 3 + i*4 ]  nullifier_i           – Pedersen(credential_secret, nullifier_secret, video_hash_hi_i, video_hash_lo_i)
+//   [ 0 + i*4 ]  video_hash_hi_i       - high 128 bits of SHA-256 video hash
+//   [ 1 + i*4 ]  video_hash_lo_i       - low 128 bits of SHA-256 video hash
+//   [ 2 + i*4 ]  credential_root_i     - Pedersen(credential_secret)
+//   [ 3 + i*4 ]  nullifier_i           - Pedersen(credential_secret, nullifier_secret, video_hash_hi_i, video_hash_lo_i)
 //
 // All credential_root_i must be identical (same identity).
 //
@@ -152,7 +152,7 @@ fn verify_element(
     // NOTE: `index` is intentionally not interpolated into the string because
     // Noir's assert does not universally support runtime string formatting.
     // The failing element is identified by call-site position in the unrolled
-    // verify_element calls in `main` — each call uses a static index argument.
+    // verify_element calls in `main` -- each call uses a static index argument.
     assert(
         claimant_root == canonical_root,
         "batch credential root mismatch"
@@ -174,7 +174,7 @@ fn verify_element(
 }
 
 //==============================================================================
-// Test corpus — Silent Witness Aggregator
+// Test corpus -- Silent Witness Aggregator
 //
 // ALL SECRETS BELOW ARE SYNTHETIC AND FOR TESTING ONLY.
 // Do not use these values in any production credential or proof.
@@ -201,7 +201,7 @@ fn verify_element(
 //==============================================================================
 
 // ============================================================
-// Positive: valid batch — all assertions must pass
+// Positive: valid batch -- all assertions must pass
 // ============================================================
 
 /// Full batch (8 elements) with the same credential across all videos.
@@ -353,7 +353,7 @@ fn test_all_zero_video_hashes() {
 }
 
 // ============================================================
-// Negative — mismatched credential root (different identity)
+// Negative -- mismatched credential root (different identity)
 // ============================================================
 
 /// Element 0 has a different credential root.
@@ -431,7 +431,7 @@ fn test_mismatched_credential_root_last_element() {
 }
 
 // ============================================================
-// Negative — wrong nullifier
+// Negative -- wrong nullifier
 // ============================================================
 
 /// Element 2 has a wrong nullifier (computed with different secrets).
@@ -459,34 +459,32 @@ fn test_wrong_nullifier() {
 }
 
 // ============================================================
-// Negative — wrong private credential_secret
+// Negative -- wrong private credential_secret
 // ============================================================
 
-/// Wrong credential_secret: even though all roots match the wrong secret,
-/// the nullifiers are derived correctly from the wrong secret but the
-/// canonical root is wrong.
+/// Keep the public statement anchored to cs while supplying a different secret.
 #[test(should_fail_with = "batch credential root mismatch")]
 fn test_wrong_credential_secret() {
     let cs: Field = 12345;
     let ns: Field = 67890;
     let wrong_cs: Field = 99999;
-    let wrong_cr = std::hash::pedersen_hash([wrong_cs]);
+    let cr = std::hash::pedersen_hash([cs]);
 
     let z: Field = 0;
     main(wrong_cs, ns,
-        z, z, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z, z]),
-        z + 10, z + 10, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 10, z + 10]),
-        z + 20, z + 20, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 20, z + 20]),
-        z + 30, z + 30, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 30, z + 30]),
-        z + 40, z + 40, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 40, z + 40]),
-        z + 50, z + 50, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 50, z + 50]),
-        z + 60, z + 60, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 60, z + 60]),
-        z + 70, z + 70, wrong_cr, std::hash::pedersen_hash([wrong_cs, ns, z + 70, z + 70]),
+        z, z, cr, std::hash::pedersen_hash([cs, ns, z, z]),
+        z + 10, z + 10, cr, std::hash::pedersen_hash([cs, ns, z + 10, z + 10]),
+        z + 20, z + 20, cr, std::hash::pedersen_hash([cs, ns, z + 20, z + 20]),
+        z + 30, z + 30, cr, std::hash::pedersen_hash([cs, ns, z + 30, z + 30]),
+        z + 40, z + 40, cr, std::hash::pedersen_hash([cs, ns, z + 40, z + 40]),
+        z + 50, z + 50, cr, std::hash::pedersen_hash([cs, ns, z + 50, z + 50]),
+        z + 60, z + 60, cr, std::hash::pedersen_hash([cs, ns, z + 60, z + 60]),
+        z + 70, z + 70, cr, std::hash::pedersen_hash([cs, ns, z + 70, z + 70]),
     );
 }
 
 // ============================================================
-// Negative — swapped public inputs (ordering attack)
+// Negative -- swapped public inputs (ordering attack)
 // ============================================================
 
 /// video_hash_hi_0 and video_hash_lo_0 are swapped.
@@ -515,7 +513,7 @@ fn test_swapped_video_hash_halves_element_0() {
 }
 
 // ============================================================
-// Negative — nullifier from different video
+// Negative -- nullifier from different video
 // ============================================================
 
 /// Element 0 has the correct video hash but a nullifier from a different video.

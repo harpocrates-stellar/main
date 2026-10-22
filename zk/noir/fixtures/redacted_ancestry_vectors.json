@@ -124,6 +124,27 @@
       "id": "ra-neg-016-depth-substitution",
       "description": "Reject a statement whose root was built at a different depth",
       "expect_fail_with": "ancestry root mismatch"
+    },
+    {
+      "id": "ra-neg-017-zero-parameters-digest",
+      "description": "Exercise the explicit non-zero parameters guard before commitment checks",
+      "parameters_digest": 0,
+      "noir_test": "test_rejects_zero_parameters_digest",
+      "expect_fail_with": "parameters digest must be non-zero"
+    },
+    {
+      "id": "ra-neg-018-zero-ancestry-root",
+      "description": "Exercise the explicit non-zero ancestry root guard",
+      "ancestry_root": 0,
+      "noir_test": "test_rejects_zero_ancestry_root",
+      "expect_fail_with": "ancestry root must be non-zero"
+    },
+    {
+      "id": "ra-neg-019-zero-nullifier",
+      "description": "Exercise the explicit non-zero nullifier guard",
+      "nullifier": 0,
+      "noir_test": "test_rejects_zero_nullifier",
+      "expect_fail_with": "nullifier must be non-zero"
     }
   ],
   "privacy_notes": [

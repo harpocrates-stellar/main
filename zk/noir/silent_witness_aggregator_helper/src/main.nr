@@ -12,8 +12,8 @@
 // # Output
 //
 // For each batch element i (i = 0..MAX_AGGREGATION_SIZE-1):
-//   credential_root_i  – Pedersen(credential_secret)
-//   nullifier_i        – Pedersen(credential_secret, nullifier_secret, video_hash_hi_i, video_hash_lo_i)
+//   credential_root_i  - Pedersen(credential_secret)
+//   nullifier_i        - Pedersen(credential_secret, nullifier_secret, video_hash_hi_i, video_hash_lo_i)
 //
 // All credential_root outputs are identical (same identity).
 // =============================================================================
@@ -41,16 +41,7 @@ fn main(
     video_hash_lo_6: Field,
     video_hash_hi_7: Field,
     video_hash_lo_7: Field,
-) -> pub [
-    (Field, Field), // (credential_root, nullifier) for element 0
-    (Field, Field), // element 1
-    (Field, Field), // element 2
-    (Field, Field), // element 3
-    (Field, Field), // element 4
-    (Field, Field), // element 5
-    (Field, Field), // element 6
-    (Field, Field), // element 7
-] {
+) -> pub [(Field, Field); 8] {
     let canonical_root = std::hash::pedersen_hash([credential_secret]);
 
     let nullifier_0 = std::hash::pedersen_hash([credential_secret, nullifier_secret, video_hash_hi_0, video_hash_lo_0]);
@@ -62,7 +53,7 @@ fn main(
     let nullifier_6 = std::hash::pedersen_hash([credential_secret, nullifier_secret, video_hash_hi_6, video_hash_lo_6]);
     let nullifier_7 = std::hash::pedersen_hash([credential_secret, nullifier_secret, video_hash_hi_7, video_hash_lo_7]);
 
-    (
+    [
         (canonical_root, nullifier_0),
         (canonical_root, nullifier_1),
         (canonical_root, nullifier_2),
@@ -71,7 +62,7 @@ fn main(
         (canonical_root, nullifier_5),
         (canonical_root, nullifier_6),
         (canonical_root, nullifier_7),
-    )
+    ]
 }
 
 // =============================================================================

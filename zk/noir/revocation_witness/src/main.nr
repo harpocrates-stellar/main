@@ -299,7 +299,7 @@ fn test_wrong_nullifier_secret() {
 }
 
 /// Credential IS in the revocation tree (leaf 1 = pedersen([33333])).
-#[test(should_fail_with = "credential is in revocation set")]
+#[test(should_fail_with = "revoked")]
 fn test_revoked_credential() {
     let cs: Field = 33333;
     let ns: Field = 67890;
@@ -322,7 +322,7 @@ fn test_revoked_credential() {
 
 /// Credential at leaf 0 (sentinel position - would only match if root == 0).
 /// This test ensures leaf_0 is also checked.
-#[test(should_fail_with = "credential is in revocation set")]
+#[test(should_fail_with = "revoked")]
 fn test_credential_at_leaf_zero() {
     let cs: Field = 0;
     let ns: Field = 67890;
@@ -344,7 +344,7 @@ fn test_credential_at_leaf_zero() {
 }
 
 /// Credential at last leaf (leaf 7).
-#[test(should_fail_with = "credential is in revocation set")]
+#[test(should_fail_with = "revoked")]
 fn test_credential_at_leaf_seven() {
     let cs: Field = 99999;
     let ns: Field = 67890;
@@ -468,4 +468,58 @@ fn test_depth_bound_full_tree_at_max_leaves() {
     // Exactly MAX_REVOCATION_LEAVES distinct leaves - within the bound.
     let _ = MAX_REVOCATION_LEAVES;
     main(cs, ns, l0, l1, l2, l3, l4, l5, l6, l7, tree_root, null, ds, root);
+}
+
+// Synthetic mutation vectors keep the tree and nullifier valid while changing
+// only the public identity or the position of the revoked credential.
+fn run_mutation_vector(revoked_leaf: u32, supplied_root: Field) {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let root = pedersen_hash([cs]);
+    let nullifier = pedersen_hash([cs, ns]);
+    let mut leaves: [Field; 8] = [0, 111, 222, 333, 444, 555, 666, 777];
+    for i in 0..8 {
+        if i == revoked_leaf {
+            leaves[i] = root;
+        }
+    }
+    let tree_root = test_tree_root(
+        leaves[0], leaves[1], leaves[2], leaves[3], leaves[4], leaves[5], leaves[6], leaves[7],
+    );
+    main(
+        cs, ns, leaves[0], leaves[1], leaves[2], leaves[3],
+        leaves[4], leaves[5], leaves[6], leaves[7],
+        tree_root, nullifier, test_domain_separator(), supplied_root,
+    );
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_tampered_credential_root_only() {
+    // Index 8 leaves every tree slot unchanged; the nullifier still binds cs.
+    run_mutation_vector(8, pedersen_hash([99999]));
+}
+
+#[test(should_fail_with = "revoked")]
+fn test_credential_at_leaf_two() {
+    run_mutation_vector(2, pedersen_hash([12345]));
+}
+
+#[test(should_fail_with = "revoked")]
+fn test_credential_at_leaf_three() {
+    run_mutation_vector(3, pedersen_hash([12345]));
+}
+
+#[test(should_fail_with = "revoked")]
+fn test_credential_at_leaf_four() {
+    run_mutation_vector(4, pedersen_hash([12345]));
+}
+
+#[test(should_fail_with = "revoked")]
+fn test_credential_at_leaf_five() {
+    run_mutation_vector(5, pedersen_hash([12345]));
+}
+
+#[test(should_fail_with = "revoked")]
+fn test_credential_at_leaf_six() {
+    run_mutation_vector(6, pedersen_hash([12345]));
 }
