@@ -15,9 +15,14 @@ subscription-management API.
 | `Content-Type` | `application/json` | Body is UTF-8 JSON. |
 | `X-Harpocrates-Signature` | `t=<unix-seconds>,v1=<hex>` | Signature and timestamp. No spaces. |
 | `User-Agent` | `Harpocrates-Webhook/1.0` | Identifies the sender. |
+| `X-Harpocrates-Delivery` | `<delivery_id>` | Numeric ID of the delivery. Stays the same on every retry of that delivery. |
+| `X-Harpocrates-Attempt` | `<retry_count + 1>` | `1` on the first try, then `2`, `3`, and so on for each retry. |
+| `X-Harpocrates-Event` | `<event_type>` | The payload's `event_type`, for routing. Sent only when the payload has one. |
 
-There is no separate delivery-ID or event-ID header. The payload itself is the
-source of event identity.
+These headers carry no other payload data and are not part of the signature;
+the signed message is unchanged. Use `X-Harpocrates-Delivery` to drop retried
+deliveries you have already processed, and `X-Harpocrates-Attempt` to tell a
+retry from a first attempt.
 
 ## Payload fields
 
@@ -105,9 +110,11 @@ far from the receiver's clock; a common tolerance is **five minutes (300
 seconds)**. Keep the tolerance small enough to bound replay exposure and large
 enough to tolerate clock skew.
 
-For duplicate at-least-once deliveries, also make processing idempotent. A
-useful de-duplication key is derived from stable payload fields such as
-`event_type`, `proof_id`, `tx_hash`, and `created_at`. Do not use the signature
+For duplicate at-least-once deliveries, also make processing idempotent. The
+`X-Harpocrates-Delivery` header is the simplest de-duplication key: it stays the
+same across retries of one delivery. To spot the same event across different
+subscriptions, use stable payload fields such as `event_type`, `proof_id`,
+`tx_hash`, and `created_at`. Do not use the signature
 as an idempotency key: each retry is re-signed with a new timestamp.
 
 ## Verification examples
