@@ -15,6 +15,7 @@ export type RegisterProofInput = {
   videoHash: string
   metadataHash: string
   proofId: string
+  grantor?: string
   silentWitness?: {
     publicInputs: string
     proof: string
@@ -28,6 +29,7 @@ export type NormalizedRegisterProofInput = {
   videoHash: Hex32
   metadataHash: Hex32
   proofId: Hex32
+  grantor?: string
   silentWitness?: SilentWitnessArtifacts
 }
 
@@ -149,6 +151,10 @@ export type RegistryMethod =
   | 'register_anonymous_verified'
   | 'register_source'
   | 'register_seal'
+  | 'register_source_delegated'
+  | 'register_seal_delegated'
+  | 'is_delegation_active'
+  | 'get_delegation'
   | 'get_by_video'
   | 'get_issuer'
   | 'get_proof_history_at'
@@ -160,32 +166,17 @@ export type RegistryMethod =
   | 'get_verifier_state'
   | 'get_open_dispute_count'
 
-export type ProofHistoryEntry = {
-  action: number
-  timestamp: string
-  actor: string | null
-  reasonCode: number
-}
+export const DELEGATION_SCOPE_REGISTER_SOURCE = 1 << 0
+export const DELEGATION_SCOPE_REGISTER_SEAL = 1 << 1
+export const DELEGATION_SCOPE_ALL =
+  DELEGATION_SCOPE_REGISTER_SOURCE | DELEGATION_SCOPE_REGISTER_SEAL
 
-export type ProofHistoryResult = {
-  entries: ProofHistoryEntry[]
-  count: number
-}
-
-export type ProofHistoryEntry = {
-  /** Registry action code (see the contract's HistoryAction enum). */
-  action: number
-  /** Ledger sequence / timestamp captured at the time of the action. */
-  timestamp: string
-  /** Actor address that triggered the action, if recorded. */
-  actor: string | null
-  /** Reason code attached to the action. */
-  reasonCode: number
-}
-
-export type ProofHistoryResult = {
-  entries: ProofHistoryEntry[]
-  count: number
+export type DelegationRecord = {
+  grantor: string
+  delegate: string
+  scope: number
+  grantedAt: number
+  expiresAt: number
 }
 
 export type ScopedProofScope = {

@@ -19,6 +19,8 @@ import {
 import type {
   ChainDisputeRecord,
   ChainProofRecord,
+  ChainVerifierState,
+  DelegationRecord,
   IdentityTier,
   IssuerRecord,
   NormalizedRegisterProofInput,
@@ -93,6 +95,72 @@ function resolveStatus(
   return 'FAILED'
 }
 
+export function normalizeRegisterProofInput(input: RegisterProofInput): NormalizedRegisterProofInput {
+  return {
+    ...input,
+    videoHash: asHex32(input.videoHash, 'videoHash'),
+    metadataHash: asHex32(input.metadataHash, 'metadataHash'),
+    proofId: asHex32(input.proofId, 'proofId'),
+    silentWitness: input.silentWitness
+      ? {
+          publicInputs: asHexBytes(input.silentWitness.publicInputs, 'silentWitness.publicInputs'),
+          proof: asHexBytes(input.silentWitness.proof, 'silentWitness.proof'),
+        }
+      : undefined,
+  }
+}
+
+export function methodForTier(tier: IdentityTier, isDelegated = false): RegistryMethod {
+  if (tier === 'silent') return 'register_anonymous_verified'
+  if (tier === 'seal') {
+    return isDelegated ? 'register_seal_delegated' : 'register_seal'
+  }
+  return isDelegated ? 'register_source_delegated' : 'register_source'
+}
+
+export function argsForTier(input: NormalizedRegisterProofInput) {
+  const videoHash = scBytes32(input.videoHash)
+  const metadataHash = scBytes32(input.metadataHash)
+  const proofId = scBytes32(input.proofId)
+  const address = new Address(input.publicKey).toScVal()
+
+  if (input.tier === 'silent') {
+    if (!input.silentWitness) {
+      throw new Error('Silent Witness registration requires Noir proof artifacts.')
+    }
+
+    return [
+      videoHash,
+      metadataHash,
+      proofId,
+      scBytes(input.silentWitness.publicInputs),
+      scBytes(input.silentWitness.proof),
+    ]
+  }
+
+  if (input.grantor) {
+    const grantorAddress = new Address(input.grantor).toScVal()
+    // register_source_delegated(delegate, source, video_hash, metadata_hash, proof_id)
+    // register_seal_delegated(delegate, issuer, video_hash, metadata_hash, proof_id)
+    return [address, grantorAddress, videoHash, metadataHash, proofId]
+  }
+
+  return [address, videoHash, metadataHash, proofId]
+}
+
+export function buildRegisterProofOperation(
+  contractId: string,
+  input: RegisterProofInput,
+) {
+  const normalized = normalizeRegisterProofInput(input)
+  const isDelegated = Boolean(normalized.grantor && normalized.tier !== 'silent')
+  const contract = new Contract(contractId)
+  return contract.call(
+    methodForTier(normalized.tier, isDelegated),
+    ...argsForTier(normalized),
+  )
+}
+
 export async function registerProofOnStellar(
   input: RegisterProofInput,
   waitForConfirmation = true,
@@ -100,8 +168,7 @@ export async function registerProofOnStellar(
   const normalized = normalizeRegisterProofInput(input)
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(normalized.publicKey)
-  const contract = new Contract(normalized.contractId)
-  const operation = contract.call(methodForTier(normalized.tier), ...argsForTier(normalized))
+  const operation = buildRegisterProofOperation(input.contractId, input)
 
   const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -251,50 +318,6 @@ export async function getBatchProofStatuses(
 
   // returns array of status enum values mapped to numbers
   return native.map((val: unknown) => Number(val))
-}
-
-function normalizeRegisterProofInput(input: RegisterProofInput): NormalizedRegisterProofInput {
-  return {
-    ...input,
-    videoHash: asHex32(input.videoHash, 'videoHash'),
-    metadataHash: asHex32(input.metadataHash, 'metadataHash'),
-    proofId: asHex32(input.proofId, 'proofId'),
-    silentWitness: input.silentWitness
-      ? {
-          publicInputs: asHexBytes(input.silentWitness.publicInputs, 'silentWitness.publicInputs'),
-          proof: asHexBytes(input.silentWitness.proof, 'silentWitness.proof'),
-        }
-      : undefined,
-  }
-}
-
-function methodForTier(tier: IdentityTier): RegistryMethod {
-  if (tier === 'silent') return 'register_anonymous_verified'
-  if (tier === 'seal') return 'register_seal'
-  return 'register_source'
-}
-
-function argsForTier(input: NormalizedRegisterProofInput) {
-  const videoHash = scBytes32(input.videoHash)
-  const metadataHash = scBytes32(input.metadataHash)
-  const proofId = scBytes32(input.proofId)
-  const address = new Address(input.publicKey).toScVal()
-
-  if (input.tier === 'silent') {
-    if (!input.silentWitness) {
-      throw new Error('Silent Witness registration requires Noir proof artifacts.')
-    }
-
-    return [
-      videoHash,
-      metadataHash,
-      proofId,
-      scBytes(input.silentWitness.publicInputs),
-      scBytes(input.silentWitness.proof),
-    ]
-  }
-
-  return [address, videoHash, metadataHash, proofId]
 }
 
 export async function getProof(
@@ -472,3 +495,105 @@ export async function getOpenDisputeCount(
 
   return Number(native)
 }
+
+/**
+ * Check whether a delegation from `grantor` to `delegate` is currently active
+ * for the requested `scope` bitmask.
+ *
+ * Calls `is_delegation_active(grantor, delegate, scope)` on the contract.
+ * Returns `false` rather than throwing on missing/expired/wrong-scope delegations.
+ */
+export async function isDelegationActive(
+  contractId: string,
+  grantor: string,
+  delegate: string,
+  scope: number,
+  sourceAddress?: string,
+): Promise<boolean> {
+  const source = sourceAddress || delegate || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        'is_delegation_active' satisfies RegistryMethod,
+        new Address(grantor).toScVal(),
+        new Address(delegate).toScVal(),
+        scU32(scope),
+      ),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return false
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  return Boolean(native)
+}
+
+/**
+ * Read the stored `DelegationRecord` from `grantor` to `delegate`, if any.
+ * Returns `null` if no delegation is recorded.
+ */
+export async function getDelegation(
+  contractId: string,
+  grantor: string,
+  delegate: string,
+  sourceAddress?: string,
+): Promise<DelegationRecord | null> {
+  const source = sourceAddress || delegate || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        'get_delegation' satisfies RegistryMethod,
+        new Address(grantor).toScVal(),
+        new Address(delegate).toScVal(),
+      ),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    grantor: String(native.grantor),
+    delegate: String(native.delegate),
+    scope: Number(native.scope),
+    grantedAt: Number(native.granted_at),
+    expiresAt: Number(native.expires_at),
+  }
+}
+

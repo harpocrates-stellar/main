@@ -78,7 +78,7 @@ export type UseEvidenceReturn = {
   networkMismatch: string | null
   isCancellable: boolean
   handleEvidence: (nextFile: File | null) => Promise<void>
-  registerProof: (wallet: string) => Promise<void>
+  registerProof: (wallet: string, grantor?: string) => Promise<void>
   cancelEvidence: () => void
   /** Cancel an in-flight Silent Witness proof generation (no-op if idle). */
   cancelProving: () => void
@@ -288,7 +288,7 @@ export function useEvidence(): UseEvidenceReturn {
     }
   }
 
-  async function registerProof(wallet: string) {
+  async function registerProof(wallet: string, grantor?: string) {
     if (!proof) return
 
     if (!CONTRACT_ID) {
@@ -317,7 +317,10 @@ export function useEvidence(): UseEvidenceReturn {
       return
     }
 
-    const registrationKey = `${proof.proofId}:${wallet}`
+    const effectiveGrantor = grantor?.trim() ? grantor.trim() : undefined
+    const registrationKey = effectiveGrantor
+      ? `${proof.proofId}:${wallet}:${effectiveGrantor}`
+      : `${proof.proofId}:${wallet}`
     if (completedRegistrationRef.current === registrationKey) {
       setMessage('This proof has already been submitted by this wallet.')
       return
