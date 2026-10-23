@@ -337,6 +337,46 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Webhooks and Secret Rotation
+
+Outbound webhook deliveries sign JSON payloads with HMAC-SHA256 in the
+`X-Harpocrates-Signature` header:
+
+```text
+X-Harpocrates-Signature: t=1700000000,v1=3b7...
+```
+
+### Secret Rotation Overlap Window
+
+`webhook_subscriptions` supports carrying both a current signing secret (`secret_key`)
+and a previous secret (`previous_secret_key`) with an expiration (`previous_secret_expires_at`).
+
+While the previous secret is valid (i.e. before `previous_secret_expires_at` is reached),
+the dispatcher emits signatures for both secrets in the same header:
+
+```text
+X-Harpocrates-Signature: t=1700000000,v1=<new_signature>,v1=<previous_signature>
+```
+
+After the previous secret expires (or when no previous secret is configured), only the
+new signature is emitted:
+
+```text
+X-Harpocrates-Signature: t=1700000000,v1=<new_signature>
+```
+
+### Receiver Verification Behavior
+
+Receivers must:
+1. Parse `X-Harpocrates-Signature` to extract the timestamp `t` and all `v1` signatures.
+2. Check timestamp freshness against replay attacks.
+3. Compute `HMAC-SHA256(secret, t + "." + raw_payload)` using their configured secret.
+4. Compare using constant-time comparison against each `v1` signature present in the header.
+5. **Accept the delivery if ANY `v1` signature matches.**
+
+This allows receivers to rotate secrets independently and deploy new secrets at any point
+during the overlap window without service interruption. Secrets are never logged.
+
 ## Test
 
 ```powershell
