@@ -437,10 +437,18 @@ MIGRATIONS: list[Migration] = [
     ),
     Migration(
         id=12,
-        name="add previous secret columns to webhook_subscriptions",
+        name="add event_index to proof_events and create indexer_state",
         sql="""
-        ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS previous_secret_key TEXT;
-        ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS previous_secret_expires_at TIMESTAMPTZ;
+        ALTER TABLE proof_events ADD COLUMN IF NOT EXISTS event_index INTEGER;
+        CREATE UNIQUE INDEX IF NOT EXISTS proof_events_tx_hash_event_index_idx
+            ON proof_events (tx_hash, event_index)
+            WHERE tx_hash IS NOT NULL AND event_index IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS indexer_state (
+            id TEXT PRIMARY KEY,
+            cursor TEXT NOT NULL,
+            ledger BIGINT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
         """,
     ),
 ]
@@ -533,6 +541,7 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "retention_class", "type": "text"},
         {"column": "expires_at", "type": "timestamp with time zone"},
         {"column": "legal_hold", "type": "boolean"},
+        {"column": "event_index", "type": "integer"},
     ],
     "lineage_events": [
         {"column": "id", "type": "bigint"},
@@ -612,6 +621,12 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "video_hash", "type": "text"},
         {"column": "metadata_hash", "type": "text"},
         {"column": "deleted_at", "type": "timestamp with time zone"},
+    ],
+    "indexer_state": [
+        {"column": "id", "type": "text"},
+        {"column": "cursor", "type": "text"},
+        {"column": "ledger", "type": "bigint"},
+        {"column": "updated_at", "type": "timestamp with time zone"},
     ],
 }
 
