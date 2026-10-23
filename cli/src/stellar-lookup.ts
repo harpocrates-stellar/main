@@ -1,4 +1,4 @@
-import { BASE_FEE, Contract, Networks, StrKey, TransactionBuilder, rpc, scValToNative, nativeToScVal } from '@stellar/stellar-sdk'
+import { Account, BASE_FEE, Contract, Networks, StrKey, TransactionBuilder, rpc, scValToNative, nativeToScVal } from '@stellar/stellar-sdk'
 import { asHex32, bytesToHex, hexToBytes } from './hashing.js'
 
 /**
@@ -214,15 +214,12 @@ export async function lookupByVideoHash(
   const source = options.sourceAddress
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-  if (!source) {
-    throw new Error(
-      'A source address is required for simulation. ' +
-        'Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS env var.',
-    )
-  }
-
   const server = new rpc.Server(rpcUrl)
-  const account = await withTimeout(server.getAccount(source), timeoutMs, 'getAccount')
+  // Read-only simulation does not need a real account; use a local placeholder
+  // account with sequence 0 when no explicit source is supplied.
+  const account = source
+    ? await withTimeout(server.getAccount(source), timeoutMs, 'getAccount')
+    : new Account(DEFAULT_SIMULATION_SOURCE, '0')
   const contract = new Contract(contractId)
 
   // Encode the 32-byte video hash as scBytes32 expected by Soroban.

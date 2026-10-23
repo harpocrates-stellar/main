@@ -4,8 +4,11 @@ From `cli/`, run `npm ci && npm run build`. The executable is `node dist/cli.js`
 It accepts the frontend's v2 proof manifest (and legacy v1), checks the
 selected network and registry contract, looks up the manifest transaction and
 video hash on Stellar RPC, and emits a machine-readable receipt with `--output
-json`. It never needs a wallet or signing key; a funded public source address
-is needed for read-only Soroban simulation.
+json`. It never needs a wallet or signing key. `--source-address` is optional:
+when omitted, read-only Soroban simulation uses a local placeholder account
+(sequence `0`) and needs no funded or existing account, so `verify` works
+offline-friendly and in CI. When supplied, the explicit address is loaded from
+RPC via `getAccount` as before.
 
 ```sh
 node dist/cli.js --version
