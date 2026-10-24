@@ -78,3 +78,4 @@ export {
   MAX_LINEAGE_FANOUT,
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
+export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'

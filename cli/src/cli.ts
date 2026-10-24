@@ -36,6 +36,7 @@ import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
 import { handleRegister } from './register.js'
+import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
 
 function getCliVersion(): string {
   const require = createRequire(import.meta.url)
@@ -132,7 +133,7 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
   const outputFormat = flags.output || flags.o || 'text'
   const offline = flags.offline === 'true'
-  const network = flags.network || 'Test SDF Network ; September 2015'
+  const network = resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE)
   const timeoutMs = parseTimeout(flags.timeout)
 
   if (!contractId || !StrKey.isValidContract(contractId)) {
@@ -258,7 +259,7 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
   const manifest = createProofManifest({
     proofId: metadata.proofId,
     tier: metadata.tier,
-    network: flags.network || 'Test SDF Network ; September 2015',
+    network: resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE),
     contractId: flags['contract-id'] || flags.contractId,
     transactionRef: flags['tx-hash'] || flags.txHash,
     videoHash: flags['video-hash'] || flags.videoHash || '',
@@ -332,7 +333,7 @@ async function handleHash(flags: Record<string, string>): Promise<void> {
 async function handleVerifyReceipt(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
   const receiptPath = flags.receipt || flags.r
   const keysPath = flags.keys || flags.k
-  const network = flags.network
+  const network = flags.network ? resolveNetwork(flags.network) : undefined
   const proofId = flags['proof-id'] || flags.proofId
 
   if (!receiptPath) exit(2, '--receipt is required')
@@ -440,7 +441,7 @@ async function handleVerifyLineage(
   const contractId = flags['contract-id'] || flags.contractId
   const rpcUrl = flags['rpc-url'] || flags.rpcUrl
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
-  const network = flags.network || 'Test SDF Network ; September 2015'
+  const network = resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE)
   const outputFormat = flags.output || flags.o || 'text'
 
   if (!outputDigest) {
@@ -528,7 +529,7 @@ export async function handleStatus(
   const rpcUrl = resolveRpcUrl(flags['rpc-url'] || flags.rpcUrl)
   const sourceAddress =
     flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
-  const network = flags.network || 'Test SDF Network ; September 2015'
+  const network = resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE)
   const outputFormat = flags.output || flags.o || 'text'
 
   if (!rawProofId) {
@@ -624,7 +625,7 @@ Status options:
   --proof-id        32-byte hex proof ID to inspect (required).
   --rpc-url         Stellar RPC URL (default: testnet).
   --source-address  Source address for simulation.
-  --network         Network passphrase (default: testnet).
+  --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --output, -o      Output format: "text" (default) or "json".
 
 Lineage verification options:
@@ -632,7 +633,7 @@ Lineage verification options:
   --contract-id    Contract ID on Stellar (required).
   --rpc-url        Stellar RPC URL (default: testnet).
   --source-address Source address for simulation.
-  --network        Network passphrase (default: testnet).
+  --network        Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --output, -o     Output format: "text" (default) or "json".
 
 C2PA export options:
@@ -648,7 +649,7 @@ C2PA export options:
 Verify Receipt options:
   --receipt, -r     Path to signed receipt JSON or QR payload (use "-" for stdin).
   --keys, -k        Path to JSON file mapping key IDs to JWKs.
-  --network         Optional expected network passphrase.
+  --network         Optional expected network: testnet, mainnet/public, futurenet, or a full passphrase.
   --proof-id        Optional expected proof ID.
   --output, -o      Output format: "text" (default) or "json".
 
@@ -656,7 +657,7 @@ Verify options:
   --contract-id     Contract ID on Stellar (required).
   --manifest        Path to a proof manifest JSON file (use "-" for stdin).
   --tx-hash         Transaction hash to verify on-chain.
-  --network         Network passphrase (default: testnet).
+  --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --rpc-url         Stellar RPC URL (default: testnet).
   --source-address  Source address for simulation.
   --output, -o      Output format: "text" (default) or "json".
@@ -668,7 +669,7 @@ Manifest options:
   --tx-hash         Transaction hash from the registration (required).
   --contract-id     Contract ID on Stellar (required).
   --video-hash      32-byte hex video hash (required).
-  --network         Network passphrase (default: testnet).
+  --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --output, -o      File path to write the manifest to.
   --format          Output format when printing to stdout: "json" (default) or "text".
 
