@@ -110,3 +110,22 @@ CLI build; no chain, metadata, or registry migration is required. The trust
 boundary is the selected Stellar RPC and local clock (used to detect elapsed
 record expiry); use a trusted RPC and synchronized host clock. The CLI
 does not verify Noir proof bytes or replace the browser verifier.
+
+## Single-file bundle
+
+For air-gapped or audit use there's also a self-contained build. From `cli/`,
+run `npm ci && npm run bundle`. That writes `dist/harpocrates.mjs` (all runtime
+deps, including `@stellar/stellar-sdk`, inlined, with a `#!/usr/bin/env node`
+shebang) and `dist/harpocrates.mjs.sha256` in `sha256sum` format. Copy both
+files anywhere and run:
+
+```sh
+sha256sum -c harpocrates.mjs.sha256
+node harpocrates.mjs help
+```
+
+No `node_modules` is needed. `@aztec/bb.js` is still loaded lazily and is not
+bundled, so local proof verification needs it installed next to the bundle.
+`npm run test:bundle` copies the bundle into an empty temp dir and runs `help`
+as a smoke test. CI uploads both files as the `harpocrates-cli-bundle`
+artifact. `npm run build` (tsc) output is unaffected.
