@@ -8,6 +8,7 @@
     "ci": "synthetic driver (deterministic envelope); headroom for runner jitter",
     "native": "host CLI UltraHonk within zk/bench/bench.lock.json native.timeout_ms",
     "browser": "Node/bb.js UltraHonk within browser.timeout_ms (Evidence Studio worker stack)",
+    "browser_aggregator": "Node/bb.js UltraHonk for silent_witness_aggregator within browser.timeout_ms (up to MAX_AGGREGATION_SIZE=8)",
     "soroban_adjacent": "host CPU/memory budget envelope for register_anonymous_verified / classify"
   },
   "rollback": "Delete this file to make compare inert (exit 0). No protocol or proof-format migration.",
@@ -109,6 +110,67 @@
           "public_input_bytes": 160
         },
         "max_peak_rss_bytes": 536870912
+      }
+    },
+    "browser_aggregator": {
+      "description": "Node/bb.js UltraHonk for silent_witness_aggregator (browser-equivalent). Caps sit under browser.timeout_ms=180000.",
+      "prove": {
+        "max_ms": {
+          "p50": 300000.0,
+          "p95": 450000.0,
+          "p99": 550000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 1024
+        },
+        "max_peak_rss_bytes": 4294967296
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 30000.0,
+          "p95": 60000.0,
+          "p99": 90000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 1024
+        },
+        "max_peak_rss_bytes": 2147483648
+      }
+    }
+  },
+  "circuits": {
+    "aggregator": {
+      "fixture_id": "silent_witness_aggregator.synthetic.v1",
+      "targets": {
+        "browser": {
+          "description": "Node/bb.js UltraHonk for silent_witness_aggregator (browser-equivalent). Caps sit under browser.timeout_ms=180000.",
+          "prove": {
+            "max_ms": {
+              "p50": 300000.0,
+              "p95": 450000.0,
+              "p99": 550000.0
+            },
+            "max_sizes": {
+              "proof_bytes": 65536,
+              "public_input_bytes": 1024
+            },
+            "max_peak_rss_bytes": 4294967296
+          },
+          "verify": {
+            "max_ms": {
+              "p50": 30000.0,
+              "p95": 60000.0,
+              "p99": 90000.0
+            },
+            "max_sizes": {
+              "proof_bytes": 65536,
+              "public_input_bytes": 1024
+            },
+            "max_peak_rss_bytes": 2147483648
+          }
+        }
       }
     }
   }

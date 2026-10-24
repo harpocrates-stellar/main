@@ -28,9 +28,15 @@ import process from 'node:process'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HELPER = join(ROOT, 'zk/noir/silent_witness_helper/target/silent_witness_helper.json')
 const MAIN = join(ROOT, 'zk/noir/silent_witness/target/silent_witness.json')
+const AGG_HELPER = join(ROOT, 'zk/noir/silent_witness_aggregator_helper/target/silent_witness_aggregator_helper.json')
+const AGG_MAIN = join(ROOT, 'zk/noir/silent_witness_aggregator/target/silent_witness_aggregator.json')
 const BENCH_LOCK = join(ROOT, 'zk/bench/bench.lock.json')
+const AGGREGATION_FIXTURES = join(ROOT, 'zk/noir/fixtures/aggregation_vectors.json')
 
 const PUBLIC_INPUTS_LEN = 160
+const AGGREGATED_PUBLIC_INPUTS_LEN = 1024
+const MAX_AGGREGATION_SIZE = 8
+const MIN_AGGREGATION_SIZE = 1
 const MIN_PROOF_BYTES = 64
 const MAX_PROOF_BYTES = 65536
 const textEncoder = new TextEncoder()
@@ -143,15 +149,19 @@ function boundedByteLength(value, limit, seen = new WeakSet()) {
   return total
 }
 
-function assertMemoryBudget({ artifactBytes = 0, witnessBytes = 0, proofBytes = 0, publicInputBytes = 0 }, limits) {
+function assertMemoryBudget(
+  { artifactBytes = 0, witnessBytes = 0, proofBytes = 0, publicInputBytes = 0 },
+  limits,
+  maxPublicInputBytes = limits.max_public_input_bytes,
+) {
   if (artifactBytes > limits.max_witness_bytes) reject('memory_limit_exceeded')
   if (witnessBytes == null || witnessBytes > limits.max_witness_bytes) reject('memory_limit_exceeded')
   if (proofBytes > limits.max_proof_bytes) reject('memory_limit_exceeded')
-  if (publicInputBytes > limits.max_public_input_bytes) reject('memory_limit_exceeded')
+  if (publicInputBytes > maxPublicInputBytes) reject('memory_limit_exceeded')
   const runtimeCap =
     limits.max_witness_bytes +
     limits.max_proof_bytes +
-    limits.max_public_input_bytes +
+    maxPublicInputBytes +
     artifactBytes
   if (artifactBytes + witnessBytes + proofBytes + publicInputBytes > runtimeCap) {
     reject('memory_limit_exceeded')
@@ -189,35 +199,94 @@ async function measureOnce({
   artifactBytes,
   limits,
   cold,
+  circuit = 'silent_witness',
+  batch = 8,
+  fixture = null,
 }) {
-  const videoHash = '1111111111111111111111111111111122222222222222222222222222222222'
-  // Synthetic fixture only — never real media or production secrets.
-  const baseInputs = {
-    credential_secret: '123456789',
-    nullifier_secret: '987654321',
-    video_hash_hi: BigInt(`0x${videoHash.slice(0, 32)}`).toString(10),
-    video_hash_lo: BigInt(`0x${videoHash.slice(32)}`).toString(10),
-  }
-  // Enforce the explicit non-worker fallback bound on secret sizes.
-  const credBytes = new TextEncoder().encode(baseInputs.credential_secret).length
-  const nullBytes = new TextEncoder().encode(baseInputs.nullifier_secret).length
-  if (credBytes > FALLBACK_MAX_SECRET_BYTES || nullBytes > FALLBACK_MAX_SECRET_BYTES) {
-    const err = new Error('secret input exceeds explicit fallback limit')
-    err.code = 'fallback_limit_exceeded'
-    throw err
+  let mainInputs
+  const t0 = performance.now()
+
+  if (circuit === 'aggregator') {
+    const credBytes = textEncoder.encode(fixture.credentialSecret).length
+    const nullBytes = textEncoder.encode(fixture.nullifierSecret).length
+    if (credBytes > FALLBACK_MAX_SECRET_BYTES || nullBytes > FALLBACK_MAX_SECRET_BYTES) {
+      const err = new Error('secret input exceeds explicit fallback limit')
+      err.code = 'fallback_limit_exceeded'
+      throw err
+    }
+
+    const helperInputs = {
+      credential_secret: fixture.credentialSecret,
+      nullifier_secret: fixture.nullifierSecret,
+    }
+    for (let i = 0; i < MAX_AGGREGATION_SIZE; i++) {
+      if (i < batch) {
+        const el = fixture.elements[i]
+        helperInputs[`video_hash_hi_${i}`] = el.videoHashHi ?? BigInt(`0x${el.videoHash.slice(0, 32)}`).toString(10)
+        helperInputs[`video_hash_lo_${i}`] = el.videoHashLo ?? BigInt(`0x${el.videoHash.slice(32)}`).toString(10)
+      } else {
+        helperInputs[`video_hash_hi_${i}`] = '0'
+        helperInputs[`video_hash_lo_${i}`] = '0'
+      }
+    }
+
+    const helperResult = await new Noir(helperCircuit).execute(helperInputs)
+    const returned = helperResult.returnValue
+    const getPair = (i) => {
+      if (Array.isArray(returned[i])) return [returned[i][0], returned[i][1]]
+      return [returned[i * 2], returned[i * 2 + 1]]
+    }
+
+    mainInputs = {
+      credential_secret: fixture.credentialSecret,
+      nullifier_secret: fixture.nullifierSecret,
+    }
+    for (let i = 0; i < MAX_AGGREGATION_SIZE; i++) {
+      const [credentialRoot, nullifier] = getPair(i)
+      if (i < batch) {
+        const el = fixture.elements[i]
+        mainInputs[`video_hash_hi_${i}`] = el.videoHashHi ?? BigInt(`0x${el.videoHash.slice(0, 32)}`).toString(10)
+        mainInputs[`video_hash_lo_${i}`] = el.videoHashLo ?? BigInt(`0x${el.videoHash.slice(32)}`).toString(10)
+      } else {
+        mainInputs[`video_hash_hi_${i}`] = '0'
+        mainInputs[`video_hash_lo_${i}`] = '0'
+      }
+      mainInputs[`credential_root_${i}`] = credentialRoot
+      mainInputs[`nullifier_${i}`] = nullifier
+    }
+  } else {
+    const videoHash = '1111111111111111111111111111111122222222222222222222222222222222'
+    // Synthetic fixture only — never real media or production secrets.
+    const baseInputs = {
+      credential_secret: '123456789',
+      nullifier_secret: '987654321',
+      video_hash_hi: BigInt(`0x${videoHash.slice(0, 32)}`).toString(10),
+      video_hash_lo: BigInt(`0x${videoHash.slice(32)}`).toString(10),
+    }
+    // Enforce the explicit non-worker fallback bound on secret sizes.
+    const credBytes = textEncoder.encode(baseInputs.credential_secret).length
+    const nullBytes = textEncoder.encode(baseInputs.nullifier_secret).length
+    if (credBytes > FALLBACK_MAX_SECRET_BYTES || nullBytes > FALLBACK_MAX_SECRET_BYTES) {
+      const err = new Error('secret input exceeds explicit fallback limit')
+      err.code = 'fallback_limit_exceeded'
+      throw err
+    }
+
+    const helperResult = await new Noir(helperCircuit).execute(baseInputs)
+    const [credentialRoot, nullifier] = helperResult.returnValue
+    mainInputs = {
+      ...baseInputs,
+      credential_root: credentialRoot,
+      nullifier,
+    }
   }
 
-  const t0 = performance.now()
-  const helperResult = await new Noir(helperCircuit).execute(baseInputs)
-  const [credentialRoot, nullifier] = helperResult.returnValue
-  const mainInputs = {
-    ...baseInputs,
-    credential_root: credentialRoot,
-    nullifier,
-  }
+  const expectedPublicInputBytes = circuit === 'aggregator' ? AGGREGATED_PUBLIC_INPUTS_LEN : PUBLIC_INPUTS_LEN
+  const maxPublicInputBytes = Math.max(limits.max_public_input_bytes, expectedPublicInputBytes)
+
   const { witness } = await new Noir(mainCircuit).execute(mainInputs)
   const witnessBytes = boundedByteLength(witness, limits.max_witness_bytes + 1)
-  assertMemoryBudget({ artifactBytes, witnessBytes }, limits)
+  assertMemoryBudget({ artifactBytes, witnessBytes }, limits, maxPublicInputBytes)
   const backend = new UltraHonkBackend(mainCircuit.bytecode)
   try {
     const proofData = await backend.generateProof(witness, { keccak: true })
@@ -232,8 +301,8 @@ async function measureOnce({
       artifactBytes,
       witnessBytes,
       proofBytes,
-      publicInputBytes: PUBLIC_INPUTS_LEN,
-    }, limits)
+      publicInputBytes: expectedPublicInputBytes,
+    }, limits, maxPublicInputBytes)
     const v0 = performance.now()
     const verified = await backend.verifyProof(proofData, { keccak: true })
     const verifyMs = performance.now() - v0
@@ -246,7 +315,7 @@ async function measureOnce({
       prove_ms: proveMs,
       verify_ms: verifyMs,
       proof_bytes: proofBytes,
-      public_input_bytes: PUBLIC_INPUTS_LEN,
+      public_input_bytes: expectedPublicInputBytes,
       witness_bytes: witnessBytes,
       peak_rss_bytes: process.memoryUsage().rss,
       cold,
@@ -271,16 +340,49 @@ async function main() {
     process.exit(3)
   }
 
+  if (!SUPPORTED_CIRCUITS.includes(args.circuit)) {
+    signal('bench.fatal', {
+      code: 'unknown_circuit',
+      detail: `--circuit must be one of: ${SUPPORTED_CIRCUITS.join(', ')}`,
+    })
+    process.exit(3)
+  }
+
+  if (args.batch !== undefined && (!Number.isInteger(args.batch) || args.batch < MIN_AGGREGATION_SIZE || args.batch > MAX_AGGREGATION_SIZE)) {
+    signal('bench.fatal', {
+      code: 'invalid_batch_size',
+      detail: `--batch must be an integer between ${MIN_AGGREGATION_SIZE} and ${MAX_AGGREGATION_SIZE}`,
+    })
+    process.exit(3)
+  }
+
   if (args.mode === 'main' && args.timeoutMs < 1) {
     signal('bench.fatal', { code: 'invalid_timeout', detail: '--timeout-ms must be positive' })
     process.exit(3)
   }
 
-  if (!(await exists(MAIN)) || !(await exists(HELPER))) {
+  const helperPath = args.circuit === 'aggregator' ? AGG_HELPER : HELPER
+  const mainPath = args.circuit === 'aggregator' ? AGG_MAIN : MAIN
+
+  if (!(await exists(mainPath)) || !(await exists(helperPath))) {
     signal('bench.fatal', { code: 'dependency-failure', detail: 'compile circuits first' })
     process.exit(3)
   }
   const limits = await loadBenchLimits()
+
+  let fixture = null
+  if (args.circuit === 'aggregator') {
+    if (!(await exists(AGGREGATION_FIXTURES))) {
+      signal('bench.fatal', { code: 'dependency-failure', detail: 'fixtures missing' })
+      process.exit(3)
+    }
+    const rawFixture = JSON.parse(await readFile(AGGREGATION_FIXTURES, 'utf8'))
+    fixture = rawFixture.fixtures?.[0]
+    if (!fixture || !Array.isArray(fixture.elements) || fixture.elements.length < args.batch) {
+      signal('bench.fatal', { code: 'dependency-failure', detail: 'invalid aggregation fixture' })
+      process.exit(3)
+    }
+  }
 
   // Dynamic import so the Python unit CI path does not require node_modules.
   let Noir
@@ -295,16 +397,25 @@ async function main() {
     ;({ UltraHonkBackend } = await import(join(frontendModules, '@aztec/bb.js/dest/node/index.js')))
   }
 
-  const helperArtifact = await readJsonBounded(HELPER, limits.max_witness_bytes)
-  const mainArtifact = await readJsonBounded(MAIN, limits.max_witness_bytes)
+  const helperArtifact = await readJsonBounded(helperPath, limits.max_witness_bytes)
+  const mainArtifact = await readJsonBounded(mainPath, limits.max_witness_bytes)
   const helperCircuit = helperArtifact.value
   const mainCircuit = mainArtifact.value
   const artifactBytes = helperArtifact.rawBytes + mainArtifact.rawBytes
-  assertMemoryBudget({ artifactBytes }, limits)
+
+  const expectedPublicInputBytes = args.circuit === 'aggregator' ? AGGREGATED_PUBLIC_INPUTS_LEN : PUBLIC_INPUTS_LEN
+  const maxPublicInputBytes = Math.max(limits.max_public_input_bytes, expectedPublicInputBytes)
+  assertMemoryBudget({ artifactBytes }, limits, maxPublicInputBytes)
+
+  const fixtureId = args.circuit === 'aggregator'
+    ? 'silent_witness_aggregator.synthetic.v1'
+    : 'silent_witness.synthetic.v1'
 
   signal('bench.start', {
     target: 'browser',
-    fixture_id: 'silent_witness.synthetic.v1',
+    fixture_id: fixtureId,
+    circuit: args.circuit,
+    ...(args.circuit === 'aggregator' ? { batch: args.batch } : {}),
     mode: args.mode,
     threads: args.threads,
   })
@@ -324,6 +435,9 @@ async function main() {
         artifactBytes,
         limits,
         cold,
+        circuit: args.circuit,
+        batch: args.batch,
+        fixture,
       }),
       args.timeoutMs,
     )
@@ -361,8 +475,9 @@ async function main() {
     format: 'harpocrates.zk-bench',
     version: 1,
     target: 'browser',
-    fixture_id: 'silent_witness.synthetic.v1',
-    circuit: 'silent_witness',
+    fixture_id: fixtureId,
+    circuit: args.circuit,
+    ...(args.circuit === 'aggregator' ? { batch: args.batch } : {}),
     // The prover runtime this run stands in for: 'worker' or 'main' (fallback).
     mode: args.mode,
     runtime: {
