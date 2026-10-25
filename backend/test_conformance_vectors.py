@@ -26,7 +26,7 @@ if str(VECTORS_DIR) not in sys.path:
 import generate_malformed_public_inputs  # noqa: E402
 import generate_vectors  # noqa: E402
 
-from verifier_inputs import (
+from verifier_inputs import (  # noqa: E402
     BN254_SCALAR_FIELD_MODULUS,
     CODEC_ID,
     CODEC_ID_V2,
@@ -380,13 +380,17 @@ def test_generators_write_mode_output_unchanged(
     temp_v1 = tmp_path / "verifier_conformance_v1.json"
     temp_v2 = tmp_path / "verifier_conformance_v2.json"
     temp_malformed = tmp_path / "malformed_public_inputs_v1.json"
+    temp_scoped = tmp_path / "scoped_nullifier_vectors.json"
+    committed_scoped = generate_vectors.SCOPED_OUT_PATH.read_bytes()
 
     monkeypatch.setattr(generate_vectors, "OUT_PATH", temp_v1)
     monkeypatch.setattr(generate_vectors, "OUT_PATH_V2", temp_v2)
+    monkeypatch.setattr(generate_vectors, "SCOPED_OUT_PATH", temp_scoped)
     monkeypatch.setattr(generate_malformed_public_inputs, "OUT_PATH", temp_malformed)
 
     assert generate_vectors.main([]) == 0
     assert generate_malformed_public_inputs.main([]) == 0
+    assert temp_scoped.read_bytes() == committed_scoped
 
     assert temp_v1.read_text(encoding="utf-8") == CORPUS_PATH.read_text(encoding="utf-8")
     assert temp_v2.read_text(encoding="utf-8") == CORPUS_V2_PATH.read_text(encoding="utf-8")

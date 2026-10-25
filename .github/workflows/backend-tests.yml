@@ -75,6 +75,22 @@ jobs:
           .venv/bin/python -m pip install --requirement requirements-dev.txt
           .venv/bin/python -m pip install pytest pytest-cov
 
+      - name: Install pinned Nargo for vector conformance tests
+        run: |
+          NARGO_VERSION="$(python -c "import json; print(json.load(open('../zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
+          # Reviewed noirup v0.1.5; bypass the bootstrap's moving latest download.
+          NOIRUP_COMMIT="bedac8fbe6a059177c35e565f9f76db54a795976"
+          NOIRUP_SHA256="b37012eb25a0c44fa84a1b524c3c6d3acbb86d56c8a0bdc3982fddb7772d4772"
+          NOIRUP_PATH="$(mktemp)"
+          trap 'rm -f "$NOIRUP_PATH"' EXIT
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/noir-lang/noirup/${NOIRUP_COMMIT}/noirup" \
+            --output "$NOIRUP_PATH"
+          printf '%s  %s\n' "$NOIRUP_SHA256" "$NOIRUP_PATH" | sha256sum --check --strict
+          export PATH="$HOME/.nargo/bin:$PATH"
+          bash "$NOIRUP_PATH" --version "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
       - name: Run backend tests
         run: |
           set -o pipefail

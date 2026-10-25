@@ -151,9 +151,17 @@ jobs:
       - name: Install Nargo (Noir CLI)
         run: |
           NARGO_VERSION="$(python3 -c "import json; print(json.load(open('zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
-          curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+          # Reviewed noirup v0.1.5; bypass the bootstrap's moving latest download.
+          NOIRUP_COMMIT="bedac8fbe6a059177c35e565f9f76db54a795976"
+          NOIRUP_SHA256="b37012eb25a0c44fa84a1b524c3c6d3acbb86d56c8a0bdc3982fddb7772d4772"
+          NOIRUP_PATH="$(mktemp)"
+          trap 'rm -f "$NOIRUP_PATH"' EXIT
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/noir-lang/noirup/${NOIRUP_COMMIT}/noirup" \
+            --output "$NOIRUP_PATH"
+          printf '%s  %s\n' "$NOIRUP_SHA256" "$NOIRUP_PATH" | sha256sum --check --strict
           export PATH="$HOME/.nargo/bin:$PATH"
-          noirup --version "$NARGO_VERSION"
+          bash "$NOIRUP_PATH" --version "$NARGO_VERSION"
           echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Barretenberg (bb)
@@ -237,6 +245,22 @@ jobs:
       - name: Install test runner
         run: pip install pytest
 
+      - name: Install pinned Nargo for scoped vector generation
+        run: |
+          NARGO_VERSION="$(python -c "import json; print(json.load(open('zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
+          # Reviewed noirup v0.1.5; bypass the bootstrap's moving latest download.
+          NOIRUP_COMMIT="bedac8fbe6a059177c35e565f9f76db54a795976"
+          NOIRUP_SHA256="b37012eb25a0c44fa84a1b524c3c6d3acbb86d56c8a0bdc3982fddb7772d4772"
+          NOIRUP_PATH="$(mktemp)"
+          trap 'rm -f "$NOIRUP_PATH"' EXIT
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/noir-lang/noirup/${NOIRUP_COMMIT}/noirup" \
+            --output "$NOIRUP_PATH"
+          printf '%s  %s\n' "$NOIRUP_SHA256" "$NOIRUP_PATH" | sha256sum --check --strict
+          export PATH="$HOME/.nargo/bin:$PATH"
+          bash "$NOIRUP_PATH" --version "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
       - name: Vectors are byte-identical to their generator
         # A hand-edited corpus would silently weaken every layer's assertions.
         run: |
@@ -246,6 +270,9 @@ jobs:
       - name: Python conformance runner
         working-directory: backend
         run: python -m pytest test_conformance_vectors.py -q
+
+      - name: Scoped nullifier generation and determinism
+        run: python -m pytest zk/vectors/test_scoped_nullifier_vectors.py -q
 
       - name: Python fuzz harness
         working-directory: backend

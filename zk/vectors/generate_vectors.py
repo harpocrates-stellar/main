@@ -8,7 +8,11 @@ truth consumed by every verifier boundary in the repository:
     frontend  frontend/src/verifierInputs.conformance.test.ts (TypeScript codec)
     contract  contracts/contracts/harpocrates-registry/src/test_conformance.rs
 
-Run this script only when the vector corpus changes; the JSON file is checked
+The scoped-nullifier fixture in ``zk/noir/fixtures`` is generated as well,
+using the Nargo version pinned in ``zk/toolchain.lock.json``. Nargo evaluates
+the shared Noir derivation; set ``NARGO`` to use an explicit executable.
+
+Run this script only when the vector corpus changes; JSON files are checked
 in so the runners never depend on Python being available.
 
     python zk/vectors/generate_vectors.py
@@ -26,11 +30,26 @@ from collections.abc import Sequence
 import difflib
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
 import sys
+import tempfile
 
 OUT_PATH = Path(__file__).resolve().parent / "verifier_conformance_v1.json"
 OUT_PATH_V2 = Path(__file__).resolve().parent / "verifier_conformance_v2.json"
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCOPED_OUT_PATH = REPO_ROOT / "zk/noir/fixtures/scoped_nullifier_vectors.json"
+SCOPED_INPUT_NAMES = (
+    "credential_secret",
+    "nullifier_secret",
+    "video_hash_hi",
+    "video_hash_lo",
+    "verifier_scope",
+    "epoch",
+)
 
 CODEC_ID = "hpx-vi/1"
 CODEC_ID_V2 = "hpx-vi/2"
@@ -1113,6 +1132,544 @@ def build_document_v2() -> dict[str, object]:
     }
 
 
+def scoped_case_definitions() -> dict:
+    """Synthetic seeds and scenario descriptions; calculated fields are added below."""
+    return {
+        "_description": "Generated synthetic scoped-nullifier vectors evaluated with the shared Noir "
+        "derivation. The scenario descriptions also document contract policies; they do "
+        "not constitute real proofs.",
+        "_version": "3.0.0",
+        "_domain_separator": "HARPOCRATES_SCOPED_NULLIFIER_V1",
+        "_domain_separator_bytes": "00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631",
+        "_public_input_layout_v2": "8 x BN254 field elements (256 bytes): [video_hash_hi, video_hash_lo, "
+        "credential_root, nullifier, verifier_scope, epoch, domain_tag, "
+        "circuit_version]",
+        "_public_input_layout_v1": "5 x BN254 field elements (160 bytes): [video_hash_hi, video_hash_lo, "
+        "credential_root, nullifier, domain_tag]",
+        "witness": {
+            "credential_secret": 12345,
+            "nullifier_secret": 67890,
+            "video_hash_hi": "22685491128062564230891640495451214097",
+            "video_hash_lo": "45370982256125128461783280990902428194",
+        },
+        "scope_derivation": {
+            "description": "Scope field elements are derived from canonical scope "
+            "strings using SHA-256 mod BN254 field modulus.",
+            "canonical_format": "v:{verifierAddress}:p:{purpose}",
+            "global_scope": "0 (field element representing the unscoped/global context)",
+            "example_scope_strings": [
+                {
+                    "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:default",
+                    "description": "Default purpose for a verifier",
+                },
+                {
+                    "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:attestation",
+                    "description": "Attestation purpose",
+                },
+                {
+                    "scope_string": "v:GCQ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12:p:membership",
+                    "description": "Membership verification " "purpose",
+                },
+            ],
+        },
+        "positive_cases": [
+            {
+                "name": "global_scope_epoch_0",
+                "description": "Global scope (verifier_scope=0) with epoch=0. The default "
+                "configuration.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "pass",
+            },
+            {
+                "name": "explicit_scope_epoch_1",
+                "description": "Explicit verifier scope with epoch 1. Demonstrates scoped "
+                "nullifier derivation.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 1111,
+                "epoch": 1,
+                "expected": "pass",
+            },
+            {
+                "name": "zero_credential_secret",
+                "description": "Zero credential secret is a valid BN254 field element. Edge "
+                "case.",
+                "credential_secret": 0,
+                "nullifier_secret": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "pass",
+            },
+            {
+                "name": "max_field_credential_secret",
+                "description": "Legacy large-field credential secret, retained from the "
+                "original fixture. Despite the historical case name, this seed "
+                "is not BN254 prime - 1.",
+                "credential_secret": "2188824287183927522224640574525727508854836440034343698204186575808495616",
+                "nullifier_secret": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "pass",
+            },
+            {
+                "name": "zero_video_hash",
+                "description": "All-zero video hash (blank-frame video). Edge case with "
+                "correct secrets.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "video_hash_hi": 0,
+                "video_hash_lo": 0,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "pass",
+            },
+            {
+                "name": "cross_scope_different_nullifiers",
+                "description": "Same credential and video, different scopes produce different "
+                "nullifiers. Demonstrates scope binding.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope_a": 0,
+                "verifier_scope_b": 1111,
+                "epoch": 0,
+                "expected": "pass — both scopes produce distinct nullifiers",
+            },
+            {
+                "name": "epoch_rotation_valid",
+                "description": "After epoch rotation, a new proof with the updated epoch is "
+                "accepted.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 42,
+                "epoch_old": 0,
+                "epoch_new": 1,
+                "expected": "pass — epoch 1 proof accepted after rotation",
+            },
+        ],
+        "negative_cases": [
+            {
+                "name": "wrong_credential_secret",
+                "description": "Wrong credential secret in the witness — credential root "
+                "assertion fails.",
+                "credential_secret_wrong": 99999,
+                "credential_secret_correct": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "fail — credential root mismatch",
+            },
+            {
+                "name": "wrong_nullifier_secret",
+                "description": "Wrong nullifier secret in the witness — nullifier assertion "
+                "fails.",
+                "credential_secret": 12345,
+                "nullifier_secret_wrong": 11111,
+                "nullifier_secret_correct": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "wrong_video_hash_hi",
+                "description": "Wrong video_hash_hi in public inputs — nullifier assertion "
+                "fails.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "video_hash_hi_wrong": "999999999999999999999999999999999999",
+                "video_hash_lo_correct": "45370982256125128461783280990902428194",
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "wrong_video_hash_lo",
+                "description": "Wrong video_hash_lo in public inputs — nullifier assertion "
+                "fails.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "video_hash_hi_correct": "22685491128062564230891640495451214097",
+                "video_hash_lo_wrong": "222222222222222222222222222222222222",
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "nullifier_from_different_scope",
+                "description": "Nullifier computed for scope=999 must not satisfy scope=0. "
+                "Proves scope binding.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope_proof": 0,
+                "verifier_scope_nullifier": 999,
+                "epoch": 0,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "nullifier_from_different_epoch",
+                "description": "Nullifier computed for epoch=2 must not satisfy epoch=1. "
+                "Proves epoch binding.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 42,
+                "epoch_proof": 1,
+                "epoch_nullifier": 2,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "nullifier_from_different_video",
+                "description": "Nullifier computed for a different video must not satisfy the "
+                "current video hash.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "video_hash_hi_different": "111111111111111111111111111111111111",
+                "video_hash_lo_different": "222222222222222222222222222222222222",
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "tampered_scope_public_input",
+                "description": "Correct nullifier for scope=0, but scope public input is "
+                "tampered to 1.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope_proof": 0,
+                "verifier_scope_public_input": 1,
+                "epoch": 0,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "tampered_epoch_public_input",
+                "description": "Correct nullifier for epoch=1, but epoch public input is "
+                "tampered to 0.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 42,
+                "epoch_proof": 1,
+                "epoch_public_input": 0,
+                "expected": "fail — nullifier mismatch",
+            },
+            {
+                "name": "swapped_credential_root_and_nullifier",
+                "description": "Credential root and nullifier positions are swapped in public "
+                "inputs.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "fail — credential root mismatch",
+            },
+            {
+                "name": "stale_epoch_rejected",
+                "description": "Proof with epoch 0 is rejected when the current scope epoch "
+                "is 1.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 42,
+                "epoch_proof": 0,
+                "epoch_current": 1,
+                "expected": "fail — StaleEpoch",
+            },
+            {
+                "name": "future_epoch_rejected",
+                "description": "Proof with epoch 2 is rejected when the current scope epoch "
+                "is 1.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "verifier_scope": 42,
+                "epoch_proof": 2,
+                "epoch_current": 1,
+                "expected": "fail — StaleEpoch",
+            },
+        ],
+        "boundary_cases": [
+            {
+                "name": "adjacent_nullifier_secrets",
+                "description": "Adjacent synthetic secrets must derive distinct nullifiers.",
+                "credential_secret": 12345,
+                "nullifier_secret_a": 67890,
+                "nullifier_secret_b": 67891,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "distinct",
+            },
+            {
+                "name": "nullifier_secret_field_edges",
+                "description": "Legacy large-field secret and zero must remain distinct. The "
+                "original nullifier_secret_max seed is retained; it is not "
+                "BN254 prime - 1.",
+                "credential_secret": 12345,
+                "nullifier_secret_max": "2188824287183927522224640574525727508854836440034343698204186575808495616",
+                "nullifier_secret_wrapped": 0,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "distinct",
+            },
+            {
+                "name": "scope_epoch_adjacent_boundaries",
+                "description": "Changing only the adjacent scope or epoch must change the "
+                "nullifier.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "base_verifier_scope": 0,
+                "base_epoch": 0,
+                "adjacent_verifier_scope": 1,
+                "adjacent_epoch": 1,
+                "expected": "distinct",
+            },
+            {
+                "name": "video_hash_high_limb_edges",
+                "description": "Zero and one high video-hash limbs must not collide.",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "video_hash_hi_a": 0,
+                "video_hash_hi_b": 1,
+                "verifier_scope": 0,
+                "epoch": 0,
+                "expected": "distinct",
+            },
+        ],
+        "v1_v2_compatibility": {
+            "description": "Historical unscoped/scoped compatibility notes, retained "
+            "as scenario documentation. These notes do not assert that "
+            "a particular proof envelope is currently accepted.",
+            "v1_layout": "5 x BN254 field elements (160 bytes): [video_hash_hi, "
+            "video_hash_lo, credential_root, nullifier, domain_tag]",
+            "v2_layout": "8 x BN254 field elements (256 bytes): [video_hash_hi, "
+            "video_hash_lo, credential_root, nullifier, verifier_scope, "
+            "epoch, domain_tag, circuit_version]",
+            "nullifier_independence": "v1 and v2 nullifiers for the same "
+            "credential/video are different values because "
+            "the derivation formulas differ (v1 does not "
+            "include scope_hash).",
+            "test_case": {
+                "name": "v1_v2_nullifiers_are_different",
+                "credential_secret": 12345,
+                "nullifier_secret": 67890,
+                "video_hash": "same for both v1 and v2",
+                "v1_nullifier": "different from v2 nullifier",
+                "v2_nullifier": "different from v1 nullifier",
+                "expected": "both v1 and v2 proofs succeed with distinct " "nullifiers",
+            },
+        },
+        "regenerate_with": "python zk/vectors/generate_vectors.py",
+    }
+
+
+def compute_scoped_nullifiers(inputs: Sequence[dict[str, int]]) -> list[dict[str, str]]:
+    """Evaluate the existing Noir derivation; all returned fields are decimal strings.
+
+    A temporary test package imports the shared circuit function rather than
+    maintaining a second Pedersen implementation. Nothing in the repository's
+    Noir sources, Prover.toml files, or target directories is modified.
+    """
+    if not inputs:
+        return []
+    statements = []
+    for index, fields in enumerate(inputs):
+        values = [int(fields[name]) for name in SCOPED_INPUT_NAMES]
+        if any(value < 0 or value >= int(BN254_R_HEX, 16) for value in values):
+            raise ValueError(
+                "scoped nullifier inputs must be canonical BN254 field elements"
+            )
+        arguments = ", ".join(str(value) for value in values)
+        statements.extend(
+            [
+                f"let root_{index} = std::hash::pedersen_hash([{values[0]}]);",
+                f"let nullifier_{index} = compute_scoped_nullifier({arguments});",
+                f'println(f"SCOPED_VECTOR:{index}:{{root_{index}}}:{{nullifier_{index}}}");',
+            ]
+        )
+    with tempfile.TemporaryDirectory(prefix="harpocrates-scoped-vectors-") as scratch:
+        package = Path(scratch)
+        (package / "src").mkdir()
+        common = (REPO_ROOT / "zk/noir/harpocrates_common").as_posix()
+        (package / "Nargo.toml").write_text(
+            '[package]\nname = "scoped_vectors"\ntype = "bin"\n'
+            'compiler_version = ">=1.0.0"\n\n[dependencies]\n'
+            f"harpocrates_common = {{ path = {json.dumps(common)} }}\n",
+            encoding="utf-8",
+        )
+        (package / "src/main.nr").write_text(
+            "use harpocrates_common::compute_scoped_nullifier;\n"
+            "fn main() {}\n#[test]\nfn emit_vectors() {\n"
+            + "\n".join(statements)
+            + "\n}\n",
+            encoding="utf-8",
+        )
+        try:
+            result = subprocess.run(
+                [os.environ.get("NARGO", "nargo"), "test", "--show-output"],
+                cwd=package,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError as error:
+            raise RuntimeError(
+                "scoped vectors require nargo; install the version in "
+                "zk/toolchain.lock.json or set NARGO to its executable path"
+            ) from error
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(
+                f"Noir vector calculation failed:\n{error.stdout}\n{error.stderr}"
+            ) from error
+    rows = re.findall(
+        r"^SCOPED_VECTOR:(\d+):(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)$",
+        result.stdout,
+        re.MULTILINE,
+    )
+    if [int(row[0]) for row in rows] != list(range(len(inputs))):
+        raise RuntimeError(
+            f"Noir did not emit the expected scoped vectors:\n{result.stdout}"
+        )
+    return [
+        {"credential_root": str(int(root, 16)), "nullifier": str(int(nullifier, 16))}
+        for _, root, nullifier in rows
+    ]
+
+
+def build_scoped_document() -> dict[str, object]:
+    document = scoped_case_definitions()
+    base = document["witness"]
+    base.update(verifier_scope=0, epoch=0)
+    requests = [{name: int(base[name]) for name in SCOPED_INPUT_NAMES}]
+    targets = [base]
+
+    def sample(label: str, **overrides: int) -> dict:
+        fields = {name: int(base[name]) for name in SCOPED_INPUT_NAMES}
+        fields.update(overrides)
+        output = {
+            "label": label,
+            "inputs": {name: str(value) for name, value in fields.items()},
+        }
+        requests.append(fields)
+        targets.append(output)
+        return output
+
+    for case in document["positive_cases"]:
+        fields = {name: int(case[name]) for name in SCOPED_INPUT_NAMES if name in case}
+        if case["name"] == "cross_scope_different_nullifiers":
+            case["derived"] = [
+                sample(
+                    "scope_a", **(fields | {"verifier_scope": case["verifier_scope_a"]})
+                ),
+                sample(
+                    "scope_b", **(fields | {"verifier_scope": case["verifier_scope_b"]})
+                ),
+            ]
+        elif case["name"] == "epoch_rotation_valid":
+            case["derived"] = [
+                sample("old", **(fields | {"epoch": case["epoch_old"]})),
+                sample("new", **(fields | {"epoch": case["epoch_new"]})),
+            ]
+        else:
+            case["derived"] = [sample("value", **fields)]
+
+    mutations = {
+        "wrong_credential_secret": (
+            "credential_secret",
+            "credential_secret_correct",
+            "credential_secret_wrong",
+        ),
+        "wrong_nullifier_secret": (
+            "nullifier_secret",
+            "nullifier_secret_correct",
+            "nullifier_secret_wrong",
+        ),
+        "wrong_video_hash_hi": ("video_hash_hi", None, "video_hash_hi_wrong"),
+        "wrong_video_hash_lo": ("video_hash_lo", None, "video_hash_lo_wrong"),
+        "nullifier_from_different_scope": (
+            "verifier_scope",
+            "verifier_scope_proof",
+            "verifier_scope_nullifier",
+        ),
+        "nullifier_from_different_epoch": ("epoch", "epoch_proof", "epoch_nullifier"),
+        "tampered_scope_public_input": (
+            "verifier_scope",
+            "verifier_scope_proof",
+            "verifier_scope_public_input",
+        ),
+        "tampered_epoch_public_input": ("epoch", "epoch_proof", "epoch_public_input"),
+        "stale_epoch_rejected": ("epoch", "epoch_proof", "epoch_current"),
+        "future_epoch_rejected": ("epoch", "epoch_proof", "epoch_current"),
+    }
+    for case in document["negative_cases"]:
+        fields = {name: int(case[name]) for name in SCOPED_INPUT_NAMES if name in case}
+        name = case["name"]
+        if name in mutations:
+            field, correct, wrong = mutations[name]
+            if correct is not None:
+                fields[field] = int(case[correct])
+            case["derived"] = [
+                sample("reference", **fields),
+                sample("changed", **(fields | {field: int(case[wrong])})),
+            ]
+        elif name == "nullifier_from_different_video":
+            case["derived"] = [
+                sample("reference", **fields),
+                sample(
+                    "changed",
+                    **(
+                        fields
+                        | {
+                            "video_hash_hi": int(case["video_hash_hi_different"]),
+                            "video_hash_lo": int(case["video_hash_lo_different"]),
+                        }
+                    ),
+                ),
+            ]
+        else:
+            case["derived"] = [sample("reference", **fields)]
+
+    for case in document["boundary_cases"]:
+        fields = {name: int(case[name]) for name in SCOPED_INPUT_NAMES if name in case}
+        name = case["name"]
+        if name == "adjacent_nullifier_secrets":
+            changes = [
+                {"nullifier_secret": case["nullifier_secret_a"]},
+                {"nullifier_secret": case["nullifier_secret_b"]},
+            ]
+        elif name == "nullifier_secret_field_edges":
+            changes = [
+                {"nullifier_secret": int(case["nullifier_secret_max"])},
+                {"nullifier_secret": case["nullifier_secret_wrapped"]},
+            ]
+        elif name == "scope_epoch_adjacent_boundaries":
+            changes = [
+                {
+                    "verifier_scope": case["base_verifier_scope"],
+                    "epoch": case["base_epoch"],
+                },
+                {
+                    "verifier_scope": case["adjacent_verifier_scope"],
+                    "epoch": case["base_epoch"],
+                },
+                {
+                    "verifier_scope": case["base_verifier_scope"],
+                    "epoch": case["adjacent_epoch"],
+                },
+            ]
+        else:
+            changes = [
+                {"video_hash_hi": case["video_hash_hi_a"]},
+                {"video_hash_hi": case["video_hash_hi_b"]},
+            ]
+        case["derived"] = [
+            sample(str(index), **(fields | change))
+            for index, change in enumerate(changes)
+        ]
+
+    for target, computed in zip(
+        targets, compute_scoped_nullifiers(requests), strict=True
+    ):
+        target.update(computed)
+    return document
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -1124,14 +1681,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:] if Path(sys.argv[0]).name == Path(__file__).name else []
     args = parser.parse_args(list(argv))
 
-    documents = [build_document(), build_document_v2()]
-    outputs = [OUT_PATH, OUT_PATH_V2]
+    documents = [build_document(), build_document_v2(), build_scoped_document()]
+    outputs = [OUT_PATH, OUT_PATH_V2, SCOPED_OUT_PATH]
     seen: set[str] = set()
     mismatched = False
     for document, output in zip(documents, outputs):
         seen.clear()
-        for entry in document["cases"]:  # type: ignore[index]
-            case_id = entry["id"]  # type: ignore[index]
+        if "cases" in document:
+            cases = document["cases"]
+        else:
+            cases = [
+                case
+                for group in ("positive_cases", "negative_cases", "boundary_cases")
+                for case in document[group]
+            ]
+        for entry in cases:
+            case_id = entry.get("id", entry.get("name"))
             if case_id in seen:
                 raise SystemExit(f"duplicate case id: {case_id}")
             seen.add(case_id)
@@ -1142,8 +1707,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"missing vector file: {output}", file=sys.stderr)
                 mismatched = True
                 continue
-            committed = output.read_text(encoding="utf-8")
-            if committed != rendered:
+            committed_bytes = output.read_bytes()
+            committed = committed_bytes.decode("utf-8")
+            if committed_bytes != rendered.encode("utf-8"):
                 diff = "".join(
                     difflib.unified_diff(
                         committed.splitlines(keepends=True),
@@ -1159,13 +1725,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(diff, end="", file=sys.stderr)
                 mismatched = True
             else:
-                print(f"verified {len(document['cases'])} cases in {output}")  # type: ignore[arg-type]
+                print(f"verified {len(cases)} cases in {output}")
         else:
-            output.write_text(
-                rendered,
-                encoding="utf-8",
-            )
-            print(f"wrote {len(document['cases'])} cases to {output}")  # type: ignore[arg-type]
+            output.write_bytes(rendered.encode("utf-8"))
+            print(f"wrote {len(cases)} cases to {output}")
 
     if mismatched:
         raise SystemExit(1)
