@@ -466,10 +466,21 @@ fn transfers_admin_after_proposal_is_accepted() {
     let new_admin = Address::generate(&env);
     let issuer = Address::generate(&env);
 
+    assert_eq!(client.get_admin(), None);
+    assert_eq!(client.get_pending_admin(), None);
+
     client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
     client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
     assert_eq!(env.events().all().events().len(), 1);
+
     client.accept_admin(&new_admin);
+    assert_eq!(client.get_admin(), Some(new_admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
     assert_eq!(env.events().all().events().len(), 1);
 
     client.add_issuer(&new_admin, &issuer, &bytes32(&env, 61));
@@ -488,8 +499,16 @@ fn cancelled_admin_transfer_cannot_be_accepted() {
     let pending_admin = Address::generate(&env);
 
     client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
     client.propose_admin(&admin, &pending_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(pending_admin.clone()));
+
     client.cancel_admin_transfer(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
     assert_eq!(env.events().all().events().len(), 1);
     client.accept_admin(&pending_admin);
 }

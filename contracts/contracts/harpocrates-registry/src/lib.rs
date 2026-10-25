@@ -1994,6 +1994,16 @@ impl HarpocratesRegistry {
         .publish(&env);
     }
 
+    /// Return the current admin address, if initialized.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Admin)
+    }
+
+    /// Return the pending admin address, if an admin transfer is proposed.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::PendingAdmin)
+    }
+
     pub fn cancel_admin_transfer(env: Env, admin: Address) {
         require_admin(&env, &admin);
 
