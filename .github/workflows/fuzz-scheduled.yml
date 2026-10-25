@@ -5,6 +5,11 @@ on:
     - cron: "17 3 * * 0"   # weekly, Sunday 03:17 UTC (off the hour on purpose)
   workflow_dispatch:
     inputs:
+      mutation_only:
+        description: "Run only the Noir constraint mutation checks"
+        type: boolean
+        required: false
+        default: false
       iterations:
         description: "Iterations per fuzz target (digits only)"
         required: false
@@ -22,7 +27,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  constraint-mutation:
+    name: Mutation-test Noir constraints
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned Nargo release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NARGO_VERSION="$(python3 -c "import json; print(json.load(open('zk/toolchain.lock.json'))['toolchain']['nargo']['version'])")"
+          mkdir -p "$RUNNER_TEMP/nargo"
+          gh release download "v$NARGO_VERSION" --repo noir-lang/noir \
+            --pattern 'nargo-x86_64-unknown-linux-gnu.tar.gz' --dir "$RUNNER_TEMP/nargo"
+          tar -xzf "$RUNNER_TEMP/nargo/nargo-x86_64-unknown-linux-gnu.tar.gz" -C "$RUNNER_TEMP/nargo"
+          "$RUNNER_TEMP/nargo/nargo" --version | grep -F "$NARGO_VERSION"
+          echo "$RUNNER_TEMP/nargo" >> "$GITHUB_PATH"
+
+      - name: Test mutation generation and result classification
+        env:
+          NARGO: nargo
+        run: python3 -m unittest discover -s zk/tools -p test_mutate_constraints.py -v
+
+      - name: Mutation-test every circuit
+        run: |
+          python3 zk/tools/mutate_constraints.py \
+            --budget-seconds 2100 --timeout-seconds 180 \
+            --report-dir "$RUNNER_TEMP/constraint-mutations" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation inventory, results and Nargo logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: constraint-mutation-results
+          path: ${{ runner.temp }}/constraint-mutations
+          retention-days: 7
+          if-no-files-found: warn
+
   circuit-fuzz:
+    if: ${{ !inputs.mutation_only }}
     name: Circuit and proof-input fuzzing
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -56,6 +111,7 @@ jobs:
           if-no-files-found: ignore
 
   parser-fuzz:
+    if: ${{ !inputs.mutation_only }}
     name: Parser and codec fuzzing
     runs-on: ubuntu-latest
     timeout-minutes: 30

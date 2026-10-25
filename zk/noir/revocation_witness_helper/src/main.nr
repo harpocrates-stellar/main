@@ -1,5 +1,5 @@
 // =============================================================================
-// Revocation Witness Helper — field derivation + Merkle helpers
+// Revocation Witness Helper -- field derivation + Merkle helpers
 //
 // Depth bound (#357): helpers assume MAX_REVOCATION_WITNESS_DEPTH = 3
 // (MAX_REVOCATION_LEAVES = 8).  Host tooling must reject depth > 3 before
@@ -20,7 +20,7 @@ fn main(
 
 // =============================================================================
 // Test helpers: compute Merkle tree nodes and domain separator for the
-// revocation witness non‑membership circuit.
+// revocation witness non-membership circuit.
 //
 // Run `nargo test --show-output` to extract field values for Prover.toml
 // and shared conformance vectors.

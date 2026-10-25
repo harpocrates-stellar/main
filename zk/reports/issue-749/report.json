@@ -1,0 +1,972 @@
+{
+  "circuits": [
+    {
+      "name": "redacted_ancestry",
+      "mutations": [
+        {
+          "kind": "assert",
+          "function": "assert_valid_depth",
+          "start": 4311,
+          "end": 4352,
+          "line": 102,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.419,
+          "failed_tests": [
+            "test_rejects_negative_like_depth",
+            "test_rejects_oversized_depth",
+            "test_rejects_zero_depth"
+          ],
+          "log": "redacted_ancestry-001.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4938,
+          "end": 5008,
+          "line": 125,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.038,
+          "failed_tests": [
+            "test_rejects_non_redact_operation"
+          ],
+          "log": "redacted_ancestry-002.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5189,
+          "end": 5257,
+          "line": 131,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.87,
+          "failed_tests": [
+            "test_rejects_zero_parent_commitment"
+          ],
+          "log": "redacted_ancestry-003.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5263,
+          "end": 5331,
+          "line": 132,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.051,
+          "failed_tests": [
+            "test_rejects_zero_derivative_digest"
+          ],
+          "log": "redacted_ancestry-004.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5337,
+          "end": 5405,
+          "line": 133,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.259,
+          "failed_tests": [
+            "test_rejects_zero_parameters_digest"
+          ],
+          "log": "redacted_ancestry-005.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5411,
+          "end": 5471,
+          "line": 134,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.045,
+          "failed_tests": [
+            "test_rejects_zero_ancestry_root"
+          ],
+          "log": "redacted_ancestry-006.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5477,
+          "end": 5529,
+          "line": 135,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.208,
+          "failed_tests": [
+            "test_rejects_zero_nullifier"
+          ],
+          "log": "redacted_ancestry-007.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5646,
+          "end": 5714,
+          "line": 139,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.085,
+          "failed_tests": [
+            "test_rejects_zero_credential_secret"
+          ],
+          "log": "redacted_ancestry-008.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5720,
+          "end": 5786,
+          "line": 140,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.944,
+          "failed_tests": [
+            "test_rejects_zero_nullifier_secret"
+          ],
+          "log": "redacted_ancestry-009.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5792,
+          "end": 5856,
+          "line": 141,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.988,
+          "failed_tests": [
+            "test_rejects_zero_parent_blinding"
+          ],
+          "log": "redacted_ancestry-010.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5862,
+          "end": 5924,
+          "line": 142,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.96,
+          "failed_tests": [
+            "test_rejects_zero_redaction_seed"
+          ],
+          "log": "redacted_ancestry-011.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5990,
+          "end": 6063,
+          "line": 145,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.225,
+          "failed_tests": [
+            "test_rejects_direct_cycle"
+          ],
+          "log": "redacted_ancestry-012.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 6170,
+          "end": 6243,
+          "line": 148,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.522,
+          "failed_tests": [
+            "test_rejects_swapped_parent_hash_halves",
+            "test_rejects_wrong_parent_opening"
+          ],
+          "log": "redacted_ancestry-013.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 6334,
+          "end": 6407,
+          "line": 151,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.63,
+          "failed_tests": [
+            "test_rejects_wrong_redaction_params"
+          ],
+          "log": "redacted_ancestry-014.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 6572,
+          "end": 6649,
+          "line": 159,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.143,
+          "failed_tests": [
+            "test_rejects_forged_derivative_digest"
+          ],
+          "log": "redacted_ancestry-015.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 6760,
+          "end": 6823,
+          "line": 162,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.147,
+          "failed_tests": [
+            "test_rejects_depth_substitution",
+            "test_rejects_tampered_ancestry_root"
+          ],
+          "log": "redacted_ancestry-016.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 6927,
+          "end": 6987,
+          "line": 165,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.98,
+          "failed_tests": [
+            "test_rejects_forged_nullifier"
+          ],
+          "log": "redacted_ancestry-017.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 6994,
+          "end": 7060,
+          "line": 167,
+          "column": 5,
+          "source": "redacted_ancestry/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.917,
+          "failed_tests": [
+            "test_rejects_wrong_domain_tag"
+          ],
+          "log": "redacted_ancestry-018.log"
+        }
+      ],
+      "baseline": {
+        "status": "passed",
+        "elapsed_seconds": 1.851,
+        "failed_tests": []
+      },
+      "counts": {
+        "killed": 18,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 22.419
+    },
+    {
+      "name": "redacted_ancestry_helper",
+      "mutations": [],
+      "baseline": null,
+      "counts": {
+        "killed": 0,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 0.002
+    },
+    {
+      "name": "revocation_witness",
+      "mutations": [
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 3008,
+          "end": 3060,
+          "line": 71,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.743,
+          "failed_tests": [
+            "test_tampered_credential_root_only"
+          ],
+          "log": "revocation_witness-001.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 3187,
+          "end": 3238,
+          "line": 75,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.716,
+          "failed_tests": [
+            "test_wrong_credential_secret",
+            "test_wrong_nullifier_secret"
+          ],
+          "log": "revocation_witness-002.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4073,
+          "end": 4126,
+          "line": 92,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.788,
+          "failed_tests": [
+            "test_tampered_revocation_root",
+            "test_tampered_leaves"
+          ],
+          "log": "revocation_witness-003.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4336,
+          "end": 4380,
+          "line": 97,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.236,
+          "failed_tests": [
+            "test_credential_at_leaf_zero"
+          ],
+          "log": "revocation_witness-004.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4386,
+          "end": 4430,
+          "line": 98,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.983,
+          "failed_tests": [
+            "test_revoked_credential"
+          ],
+          "log": "revocation_witness-005.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4436,
+          "end": 4480,
+          "line": 99,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.842,
+          "failed_tests": [
+            "test_credential_at_leaf_two"
+          ],
+          "log": "revocation_witness-006.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4486,
+          "end": 4530,
+          "line": 100,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.193,
+          "failed_tests": [
+            "test_credential_at_leaf_three"
+          ],
+          "log": "revocation_witness-007.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4536,
+          "end": 4580,
+          "line": 101,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.204,
+          "failed_tests": [
+            "test_credential_at_leaf_four"
+          ],
+          "log": "revocation_witness-008.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4586,
+          "end": 4630,
+          "line": 102,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.193,
+          "failed_tests": [
+            "test_credential_at_leaf_five"
+          ],
+          "log": "revocation_witness-009.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4636,
+          "end": 4680,
+          "line": 103,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.58,
+          "failed_tests": [
+            "test_credential_at_leaf_six"
+          ],
+          "log": "revocation_witness-010.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4686,
+          "end": 4730,
+          "line": 104,
+          "column": 5,
+          "source": "revocation_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.05,
+          "failed_tests": [
+            "test_credential_at_leaf_seven"
+          ],
+          "log": "revocation_witness-011.log"
+        }
+      ],
+      "baseline": {
+        "status": "passed",
+        "elapsed_seconds": 0.859,
+        "failed_tests": []
+      },
+      "counts": {
+        "killed": 11,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 13.478
+    },
+    {
+      "name": "revocation_witness_helper",
+      "mutations": [],
+      "baseline": null,
+      "counts": {
+        "killed": 0,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 0.003
+    },
+    {
+      "name": "selective_disclosure",
+      "mutations": [
+        {
+          "kind": "assert",
+          "function": "assert_valid_predicate_type",
+          "start": 576,
+          "end": 677,
+          "line": 24,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 3.207,
+          "failed_tests": [
+            "test_unsupported_predicate_type"
+          ],
+          "log": "selective_disclosure-001.log"
+        },
+        {
+          "kind": "assert",
+          "function": "assert_valid_set_length",
+          "start": 834,
+          "end": 880,
+          "line": 33,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 3.044,
+          "failed_tests": [
+            "test_active_set_length_rejects_empty"
+          ],
+          "log": "selective_disclosure-002.log"
+        },
+        {
+          "kind": "assert",
+          "function": "assert_valid_set_length",
+          "start": 886,
+          "end": 933,
+          "line": 34,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 4.06,
+          "failed_tests": [
+            "test_active_set_length_rejects_oversized",
+            "test_set_membership_too_many_members"
+          ],
+          "log": "selective_disclosure-003.log"
+        },
+        {
+          "kind": "assert",
+          "function": "verify_predicate",
+          "start": 1792,
+          "end": 1855,
+          "line": 69,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.147,
+          "failed_tests": [
+            "test_verify_predicate_rejects_unsupported_type"
+          ],
+          "log": "selective_disclosure-004.log"
+        },
+        {
+          "kind": "assert",
+          "function": "verify_predicate",
+          "start": 1909,
+          "end": 1961,
+          "line": 72,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.623,
+          "failed_tests": [
+            "test_equality_wrong_value",
+            "test_wrong_attribute_value"
+          ],
+          "log": "selective_disclosure-005.log"
+        },
+        {
+          "kind": "assert",
+          "function": "verify_predicate",
+          "start": 2180,
+          "end": 2234,
+          "line": 80,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.142,
+          "failed_tests": [
+            "test_set_membership_not_in_set"
+          ],
+          "log": "selective_disclosure-006.log"
+        },
+        {
+          "kind": "assert",
+          "function": "verify_predicate",
+          "start": 2355,
+          "end": 2419,
+          "line": 84,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.372,
+          "failed_tests": [
+            "test_range_below_lower",
+            "test_range_rejects_small_value_below_large_lower_bound"
+          ],
+          "log": "selective_disclosure-007.log"
+        },
+        {
+          "kind": "assert",
+          "function": "verify_predicate",
+          "start": 2425,
+          "end": 2489,
+          "line": 85,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.688,
+          "failed_tests": [
+            "test_range_above_upper",
+            "test_range_rejects_large_value_above_small_upper_bound"
+          ],
+          "log": "selective_disclosure-008.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 3865,
+          "end": 3975,
+          "line": 141,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.964,
+          "failed_tests": [
+            "test_circuit_version_downgrade"
+          ],
+          "log": "selective_disclosure-009.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 3982,
+          "end": 4021,
+          "line": 146,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.073,
+          "failed_tests": [
+            "test_zero_attributes"
+          ],
+          "log": "selective_disclosure-010.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4027,
+          "end": 4080,
+          "line": 147,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.772,
+          "failed_tests": [
+            "test_too_many_attributes"
+          ],
+          "log": "selective_disclosure-011.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4086,
+          "end": 4139,
+          "line": 148,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.172,
+          "failed_tests": [
+            "test_too_many_predicates"
+          ],
+          "log": "selective_disclosure-012.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4300,
+          "end": 4350,
+          "line": 152,
+          "column": 9,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.449,
+          "failed_tests": [
+            "test_predicate_out_of_range_attr_index"
+          ],
+          "log": "selective_disclosure-013.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 4827,
+          "end": 4879,
+          "line": 165,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.966,
+          "failed_tests": [
+            "test_wrong_blinding",
+            "test_wrong_credential_root"
+          ],
+          "log": "selective_disclosure-014.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5475,
+          "end": 5586,
+          "line": 184,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.033,
+          "failed_tests": [
+            "test_predicate_commitment_mismatch"
+          ],
+          "log": "selective_disclosure-015.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5741,
+          "end": 5792,
+          "line": 195,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 2.096,
+          "failed_tests": [
+            "test_wrong_nullifier"
+          ],
+          "log": "selective_disclosure-016.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 5928,
+          "end": 5969,
+          "line": 202,
+          "column": 5,
+          "source": "selective_disclosure/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.763,
+          "failed_tests": [
+            "test_zero_verifier_digest"
+          ],
+          "log": "selective_disclosure-017.log"
+        }
+      ],
+      "baseline": {
+        "status": "passed",
+        "elapsed_seconds": 3.617,
+        "failed_tests": []
+      },
+      "counts": {
+        "killed": 17,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 44.467
+    },
+    {
+      "name": "silent_witness",
+      "mutations": [
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 818,
+          "end": 928,
+          "line": 29,
+          "column": 5,
+          "source": "silent_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.369,
+          "failed_tests": [
+            "test_circuit_version_downgrade"
+          ],
+          "log": "silent_witness-001.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 1565,
+          "end": 1617,
+          "line": 56,
+          "column": 5,
+          "source": "silent_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.382,
+          "failed_tests": [
+            "test_tampered_credential_root_public_input"
+          ],
+          "log": "silent_witness-002.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 1623,
+          "end": 1674,
+          "line": 57,
+          "column": 5,
+          "source": "silent_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.126,
+          "failed_tests": [
+            "test_nullifier_from_different_epoch",
+            "test_nullifier_from_different_scope",
+            "test_nullifier_from_different_video",
+            "test_swapped_video_hash_halves",
+            "test_swapped_algorithm_id_and_video_hash_hi",
+            "test_tampered_nullifier_public_input",
+            "test_wrong_algorithm_id_in_nullifier",
+            "test_wrong_nullifier_secret",
+            "test_wrong_video_hash_both_halves",
+            "test_wrong_video_hash_hi",
+            "test_wrong_video_hash_lo"
+          ],
+          "log": "silent_witness-003.log"
+        },
+        {
+          "kind": "assert",
+          "function": "main",
+          "start": 1983,
+          "end": 2039,
+          "line": 67,
+          "column": 5,
+          "source": "silent_witness/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 1.118,
+          "failed_tests": [
+            "test_zero_domain_tag_rejected"
+          ],
+          "log": "silent_witness-004.log"
+        }
+      ],
+      "baseline": {
+        "status": "passed",
+        "elapsed_seconds": 1.548,
+        "failed_tests": []
+      },
+      "counts": {
+        "killed": 4,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 6.579
+    },
+    {
+      "name": "silent_witness_aggregator",
+      "mutations": [
+        {
+          "kind": "assert",
+          "function": "verify_element",
+          "start": 6212,
+          "end": 6307,
+          "line": 156,
+          "column": 5,
+          "source": "silent_witness_aggregator/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.488,
+          "failed_tests": [
+            "test_mismatched_credential_root_element_3",
+            "test_mismatched_credential_root_element_0",
+            "test_mismatched_credential_root_last_element",
+            "test_wrong_credential_secret"
+          ],
+          "log": "silent_witness_aggregator-001.log"
+        },
+        {
+          "kind": "assert",
+          "function": "verify_element",
+          "start": 6602,
+          "end": 6699,
+          "line": 170,
+          "column": 5,
+          "source": "silent_witness_aggregator/src/main.nr",
+          "status": "killed",
+          "elapsed_seconds": 0.499,
+          "failed_tests": [
+            "test_nullifier_from_different_video",
+            "test_wrong_nullifier",
+            "test_swapped_video_hash_halves_element_0"
+          ],
+          "log": "silent_witness_aggregator-002.log"
+        }
+      ],
+      "baseline": {
+        "status": "passed",
+        "elapsed_seconds": 0.497,
+        "failed_tests": []
+      },
+      "counts": {
+        "killed": 2,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 1.516
+    },
+    {
+      "name": "silent_witness_aggregator_helper",
+      "mutations": [],
+      "baseline": null,
+      "counts": {
+        "killed": 0,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 0.002
+    },
+    {
+      "name": "silent_witness_helper",
+      "mutations": [],
+      "baseline": null,
+      "counts": {
+        "killed": 0,
+        "survived": 0,
+        "error": 0,
+        "timeout": 0,
+        "budget_exceeded": 0,
+        "not_run": 0
+      },
+      "elapsed_seconds": 0.002
+    }
+  ],
+  "budget_seconds": 2100.0,
+  "elapsed_seconds": 89.412,
+  "counts": {
+    "killed": 52,
+    "survived": 0,
+    "error": 0,
+    "timeout": 0,
+    "budget_exceeded": 0,
+    "not_run": 0
+  },
+  "exit_code": 0
+}

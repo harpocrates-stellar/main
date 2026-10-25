@@ -107,6 +107,18 @@
       "path": "frontend/public/noir/selective_disclosure.json",
       "required": false,
       "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/redacted_ancestry.json",
+      "required": false,
+      "role": "published_acir"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/noir/redacted_ancestry_helper.json",
+      "required": false,
+      "role": "published_acir"
     }
   ],
   "environment": {
@@ -124,24 +136,24 @@
     "zk/noir/harpocrates_common/Nargo.toml": "ce09e4e969a0167b10aa6efd47580f2b1e403c8cf0bb077550ade4f300acc882",
     "zk/noir/harpocrates_common/src/lib.nr": "8bd9d9ec34b80ede862d9659c138397840436e98ff64cc297a7fcbba0f4e0d04",
     "zk/noir/redacted_ancestry/Nargo.toml": "dcef436265f05ea5560a38c1433846319497fd4fbf90cd2e720e4bd6aa882878",
-    "zk/noir/redacted_ancestry/src/main.nr": "e331d7daa77029f6d8b23b7626410e40444eeca889a91e6ed03a8cc8c7b91192",
+    "zk/noir/redacted_ancestry/src/main.nr": "30774d701d0d6729ee7d0957dac39bf1afcfc828fef114a3c1ded5d87eb50a30",
     "zk/noir/redacted_ancestry_helper/Nargo.toml": "6b31312d19cd06066fb6fa84d1bc58a498fda64cb5cf767c71222ff25f55e9fd",
     "zk/noir/redacted_ancestry_helper/src/main.nr": "d2b4267906b49006f339b15801d1567a4eda665f7bb2a9a67c7cb8f18132254d",
     "zk/noir/revocation_witness/Nargo.toml": "fe6560bf479d954446887e396641b7b5fe38269548448c9b6ffba7e0daa9362d",
-    "zk/noir/revocation_witness/src/main.nr": "d32447312441d8a7d32c8352c4a97002fc669338d0098084e3b13df5f18848b3",
+    "zk/noir/revocation_witness/src/main.nr": "1c9b88d91fb719afeb5ecfa515952652af1c42d8e91f9ddd039ee3826dfd3b8b",
     "zk/noir/revocation_witness_helper/Nargo.toml": "cbcf80c3b6df5039b3a94c153f55b841d5af13c9720f230da2cc5b7772689450",
-    "zk/noir/revocation_witness_helper/src/main.nr": "3292a22b6c09ce0d797274a6c1187e4f85598607eed1bd77248b097347d8bff2",
+    "zk/noir/revocation_witness_helper/src/main.nr": "8f476033ed430ff9aff90c4ff335f681f6304fbbfac96454eb3d75b66702e220",
     "zk/noir/selective_disclosure/Nargo.toml": "2d35906d5b7e88b49e5f91e49172902c11751721553276d19aa19079649ddd7b",
-    "zk/noir/selective_disclosure/src/main.nr": "db20441080da1e08962ea984f4b289d6362e3732c4c51eafff8109458fed5bcc",
+    "zk/noir/selective_disclosure/src/main.nr": "1c10c0dbf49aaa6bb0716da8f0fbad263e437f8f5866224b4bde1ab6abed3352",
     "zk/noir/silent_witness/Nargo.toml": "6c7e229512105da836add0a78c41396f5b243e7a1f7cdb2cf96f2a76d63fbd28",
-    "zk/noir/silent_witness/src/main.nr": "a418b2f1eea19a54901b019afb6a42fa96e1616ba608e4ede587a32c1b2c918c",
+    "zk/noir/silent_witness/src/main.nr": "a839dc15eb67ef21d6e38972eb20f7563c6335a779b0b7065affaea37bcca128",
     "zk/noir/silent_witness_aggregator/Nargo.toml": "1d1e30d534565818225841c46a65265eadff432a24f94632bcd0df7eba73a866",
-    "zk/noir/silent_witness_aggregator/src/main.nr": "8f4a07a67931c01fae73ebdf561f578f75c53a0a60fedf57ebe0a27e39b2418a",
+    "zk/noir/silent_witness_aggregator/src/main.nr": "be40d2e398d4cf82b819a16e00c03c58aa3baf620c0ed9929a92b57f5382edf4",
     "zk/noir/silent_witness_aggregator_helper/Nargo.toml": "172d2b81919c29193df5424e57974a2cc517faa6daf9f8de7829703a943dfb17",
-    "zk/noir/silent_witness_aggregator_helper/src/main.nr": "b4a7e472a7d1140bd2e89a5fdba4f9a774bd8fc88a78240daaf1c230fa8a3690",
+    "zk/noir/silent_witness_aggregator_helper/src/main.nr": "99afd408fb2eb369e7aaff26f1a626a96a2f5cf85e13409422d6c52a0ee7e4d7",
     "zk/noir/silent_witness_helper/Nargo.toml": "bd79eb724c4533a42c7ebd9491e508a9045c213c7474eeaf99cc6358d250948b",
     "zk/noir/silent_witness_helper/src/main.nr": "318c667f995a524e8c521d05c204b97a7d29d21e2bc219fe17171b69263dfe86",
-    "zk/toolchain.lock.json": "58c266607fcd1aeb526e1d0cbad59cbd202b43dec54ec94db7a52caa83a00a05"
+    "zk/toolchain.lock.json": "c10295e536383322e6bd0339496e8ef54cb3d898f072133136f67063577b10c7"
   },
   "provenance_globs": [
     "zk/noir/*/src/*.nr",

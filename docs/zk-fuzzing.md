@@ -198,3 +198,93 @@ on them. The codec and the conformance corpus stand on their own.
 - Failing inputs are uploaded only on failure, for 7 days. They are synthetic fuzz inputs; real media, secrets, witness values and private keys are never used or logged.
 - The workflow uses a read-only token, no secrets, and validated inputs.
 - GitHub only runs schedules from the default branch and disables them after 60 days without repository activity; re-enable from the Actions tab if that happens.
+
+## Scheduled circuit constraint mutation checks (#749)
+
+`zk/tools/mutate_constraints.py` checks whether Noir tests detect the removal
+of each explicit production `assert` / `assert_eq`. It discovers current binary
+packages under `zk/noir`, including their local source dependencies, on every
+run. It excludes assertions in `#[test]` functions, comments, and strings.
+Helper packages with no production assertions are reported with zero targets.
+Backend and contract code, dependencies outside this tree, and implicit
+compiler constraints are not mutated.
+
+The script snapshots the Noir tree into a temporary directory, requires the
+unmodified circuit's tests to pass, then comments out one assertion call at a
+time. A unit expression replaces the disabled call so expression-position
+assertions remain valid. Each mutant starts from the original source; tracked
+files and committed circuit artifacts are never overwritten by the script.
+
+The inputs are the positive and negative vectors constructed by the circuit's
+existing Noir tests. `nargo test` does not automatically replay JSON files in
+`zk/vectors`: those include wire-format/codec cases tested by other layers.
+When adding a circuit regression vector, add an executable Noir negative test
+with its synthetic witness and expected rejection reason.
+
+- **Killed:** Nargo's completed JSON test report contains failing tests.
+- **Survived:** all tests still pass after removing the assertion. The command
+  exits with status 1 and lists the source location.
+- **Incomplete:** baseline failure, compilation failure, missing test results,
+  timeout, exhausted budget, or no discovered constraints. Exit status 2;
+  these outcomes are never counted as kills. Untested mutants remain visible.
+
+Use the Nargo version pinned in `zk/toolchain.lock.json`:
+
+```bash
+# Inspect all discovered assertions without invoking Nargo.
+python3 zk/tools/mutate_constraints.py --list
+
+# Run all circuits, or focus investigation on one named package.
+python3 zk/tools/mutate_constraints.py
+python3 zk/tools/mutate_constraints.py --circuit revocation_witness
+
+# Small fixture and report-parser unit tests; no Nargo needed.
+python3 -m unittest discover -s zk/tools -p test_mutate_constraints.py -v
+
+# Also exercise real compilation, survivor detection and subsequent test repair.
+NARGO=nargo python3 -m unittest discover -s zk/tools -p test_mutate_constraints.py -v
+```
+
+Reports default to ignored `tmp/constraint-mutations/`: `report.json` includes
+the complete per-circuit inventory and outcome of each mutant; `summary.md`
+contains totals and survivors. Baseline and mutant logs are separate files.
+`--report-dir` changes the destination, and `--summary` appends Markdown to
+GitHub's job summary. `--nargo` selects an executable explicitly.
+
+The `constraint-mutation` job in `.github/workflows/fuzz-scheduled.yml` shares
+the existing weekly Sunday 03:17 UTC trigger and manual dispatch. It does not
+add a PR trigger. Its 45-minute job timeout includes setup and fixture tests;
+the full mutation campaign has a 2,100-second (35-minute) budget and each
+Nargo invocation has a 180-second timeout. Reports are uploaded even on
+failure. This job is separate from the pre-existing fuzz harness jobs.
+For focused manual validation, set the boolean dispatch input `mutation_only`
+to true; this skips the other fuzz jobs for that dispatch. Its default is
+false, and weekly runs retain all existing jobs.
+
+For a survivor, construct a negative input that exposes that assertion's
+removal, rerun the unchanged baseline and mutation campaign, and commit the
+regression test. A survivor can also reveal a redundant assertion; investigate
+that case rather than excluding it to obtain a green report. Zero survivors
+means the selected explicit deletions were detected, not that missing
+constraints or the entire proof system have been proven secure.
+
+The initial pinned-toolchain baseline exposed existing source failures:
+non-ASCII comments rejected by beta.9, an invalid aggregator-helper array
+return, unsafe constant-helper calls and unsupported `Field` comparisons in
+selective disclosure, stale negative-test setups/messages, and a missing
+silent-witness version assertion already required by its downgrade test.
+These prerequisites were repaired before scoring mutations. Field comparisons
+use full-field `.lt`, without narrowing casts. The redundant empty-set guard
+is exercised through the production set-length validation helper; its test
+does not claim an acceptance counterexample at the full-circuit entry point.
+
+Reference local measurement on 2026-10-22 (WSL Ubuntu 24.04, pinned Nargo
+1.0.0-beta.9): **52 killed, zero survivors, zero errors or untested mutants**
+across the five circuits with production assertions, in **89.412 seconds**.
+This measures the complete script, including baseline runs and temporary
+source copying; GitHub runner provisioning and toolchain installation are
+outside that measurement.
+
+The [checked-in issue #749 report](../zk/reports/issue-749/README.md) contains
+the per-circuit results, complete mutation inventory and reproduction steps
+for that source commit.

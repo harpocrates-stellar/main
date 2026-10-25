@@ -5,15 +5,15 @@ global MAX_PREDICATES: u32 = 8;
 global MAX_SET_MEMBERS: u32 = 8;
 global CURRENT_CIRCUIT_VERSION: u32 = 1;
 
-unconstrained fn eq_predicate_type() -> Field {
+fn eq_predicate_type() -> Field {
     0
 }
 
-unconstrained fn set_membership_predicate_type() -> Field {
+fn set_membership_predicate_type() -> Field {
     1
 }
 
-unconstrained fn range_predicate_type() -> Field {
+fn range_predicate_type() -> Field {
     2
 }
 
@@ -25,6 +25,13 @@ fn assert_valid_predicate_type(predicate_type: Field, is_active: bool) {
         !is_active | (is_eq | is_set | is_range),
         "unsupported predicate type",
     );
+}
+
+fn assert_valid_set_length(set_len: u32, check_set: bool) {
+    let set_len_gt_0 = set_len > 0;
+    let set_len_valid = set_len <= MAX_SET_MEMBERS;
+    assert(!check_set | set_len_gt_0, "malformed");
+    assert(!check_set | set_len_valid, "oversized");
 }
 
 fn attr_commitment(value: Field, blinding: Field) -> Field {
@@ -72,8 +79,8 @@ fn verify_predicate(
     }
     assert(!(is_active & is_set) | set_found, "malformed");
 
-    let range_lower_valid = attr_value >= lower_bound;
-    let range_upper_valid = attr_value <= upper_bound;
+    let range_lower_valid = !attr_value.lt(lower_bound);
+    let range_upper_valid = !upper_bound.lt(attr_value);
     assert(!(is_active & is_range) | range_lower_valid, "malformed");
     assert(!(is_active & is_range) | range_upper_valid, "malformed");
 }
@@ -146,10 +153,7 @@ fn main(
 
         let is_set = predicates[i].predicate_type == set_membership_predicate_type();
         let check_set = is_active & is_set;
-        let set_len_gt_0 = predicates[i].set_len > 0;
-        let set_len_valid = predicates[i].set_len <= MAX_SET_MEMBERS;
-        assert(!check_set | set_len_gt_0, "malformed");
-        assert(!check_set | set_len_valid, "oversized");
+        assert_valid_set_length(predicates[i].set_len, check_set);
     }
 
     let mut commitments: [Field; MAX_ATTRIBUTES] = [0; MAX_ATTRIBUTES];
@@ -457,14 +461,25 @@ fn test_set_membership_empty_set() {
 
 #[test(should_fail_with = "malformed")]
 fn test_wrong_credential_root() {
-    run_test(
+    let wrong_root: Field = 0;
+    let preds = default_preds();
+    main(
         0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
+        0x1111111111111111111111111111111111111111111111111111111111111111,
+        1,
+        wrong_root,
+        pedersen_hash([wrong_root, 1234, 5678, 9999]),
+        1234,
+        5678,
+        42,
+        1,
+        9999,
+        compute_predicate_commitment(preds, 1),
         2,
         default_attr_values(),
         default_blindings(),
         1,
-        default_preds(),
-        true,
+        preds,
     );
 }
 
@@ -485,16 +500,33 @@ fn test_wrong_attribute_value() {
 
 #[test(should_fail_with = "malformed")]
 fn test_wrong_blinding() {
+    let attr_vals = default_attr_values();
     let mut blindings = default_blindings();
+    let mut commitments: [Field; 16] = [0; 16];
+    for i in 0..16 {
+        commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
+    }
+    let credential_root = compute_credential_root(commitments, 2);
+    let preds = default_preds();
+    // Preserve the original public commitment when changing the private blinding.
     blindings[0] = 999999;
-    run_test(
+    main(
         0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
+        0x1111111111111111111111111111111111111111111111111111111111111111,
+        1,
+        credential_root,
+        pedersen_hash([credential_root, 1234, 5678, 9999]),
+        1234,
+        5678,
+        42,
+        1,
+        9999,
+        compute_predicate_commitment(preds, 1),
         2,
-        default_attr_values(),
+        attr_vals,
         blindings,
         1,
-        default_preds(),
-        true,
+        preds,
     );
 }
 
@@ -539,9 +571,112 @@ fn test_zero_attributes() {
         0,
         default_attr_values(),
         default_blindings(),
-        1,
-        default_preds(),
+        0,
+        default_padding_predicates(),
         true,
+    );
+}
+
+#[test(should_fail_with = "oversized")]
+fn test_too_many_attributes() {
+    run_test(
+        0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
+        17,
+        default_attr_values(),
+        default_blindings(),
+        0,
+        default_padding_predicates(),
+        true,
+    );
+}
+
+#[test(should_fail_with = "oversized")]
+fn test_set_membership_too_many_members() {
+    let mut preds = default_padding_predicates();
+    // Membership itself is satisfied; only the declared size is invalid.
+    preds[0] = make_predicate(1, 0, 0, [18, 0, 0, 0, 0, 0, 0, 0], 9, 0, 0);
+    run_test(
+        0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
+        2,
+        default_attr_values(),
+        default_blindings(),
+        1,
+        preds,
+        true,
+    );
+}
+
+#[test(should_fail_with = "unsupported")]
+fn test_verify_predicate_rejects_unsupported_type() {
+    // Exercise this helper's own guard independently of main's type guard.
+    verify_predicate(42, 18, 18, [0; 8], 0, 0, 0, true);
+}
+
+#[test]
+fn test_range_accepts_full_field_boundaries() {
+    let max_field: Field = -1;
+    verify_predicate(2, max_field, 0, [0; 8], 0, max_field, max_field, true);
+    verify_predicate(2, max_field - 1, 0, [0; 8], 0, max_field - 2, max_field, true);
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_range_rejects_small_value_below_large_lower_bound() {
+    let max_field: Field = -1;
+    verify_predicate(2, 1, 0, [0; 8], 0, max_field, max_field, true);
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_range_rejects_large_value_above_small_upper_bound() {
+    let max_field: Field = -1;
+    verify_predicate(2, max_field, 0, [0; 8], 0, 0, 1, true);
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_active_set_length_rejects_empty() {
+    // The later membership guard also rejects an empty set. Test this
+    // production validation helper directly to distinguish the two guards.
+    assert_valid_set_length(0, true);
+}
+
+#[test(should_fail_with = "oversized")]
+fn test_active_set_length_rejects_oversized() {
+    assert_valid_set_length(9, true);
+}
+
+#[test]
+fn test_inactive_set_length_is_not_constrained() {
+    assert_valid_set_length(0, false);
+    assert_valid_set_length(9, false);
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_wrong_nullifier() {
+    let attr_vals = default_attr_values();
+    let blindings = default_blindings();
+    let mut commitments: [Field; 16] = [0; 16];
+    for i in 0..16 {
+        commitments[i] = attr_commitment(attr_vals[i], blindings[i]);
+    }
+    let credential_root = compute_credential_root(commitments, 2);
+    let preds = default_preds();
+    let correct_nullifier = pedersen_hash([credential_root, 1234, 5678, 9999]);
+    main(
+        0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef,
+        0x1111111111111111111111111111111111111111111111111111111111111111,
+        1,
+        credential_root,
+        correct_nullifier + 1,
+        1234,
+        5678,
+        42,
+        1,
+        9999,
+        compute_predicate_commitment(preds, 1),
+        2,
+        attr_vals,
+        blindings,
+        1,
+        preds,
     );
 }
 

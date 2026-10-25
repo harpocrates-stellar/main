@@ -117,6 +117,56 @@
   ],
   "negative_cases": [
     {
+      "name": "tampered_credential_root_only",
+      "description": "Keep the private secret, tree and nullifier consistent; supply only a different public credential root",
+      "credential_secret": 12345,
+      "nullifier_secret": 67890,
+      "public_root_secret": 99999,
+      "leaves": [0, 111, 222, 333, 444, 555, 666, 777],
+      "noir_test": "test_tampered_credential_root_only",
+      "expected_error": "malformed"
+    },
+    {
+      "name": "credential_at_leaf_two",
+      "description": "Only leaf 2 equals the credential root; recompute the tree root",
+      "credential_secret": 12345,
+      "revoked_leaf": 2,
+      "noir_test": "test_credential_at_leaf_two",
+      "expected_error": "revoked"
+    },
+    {
+      "name": "credential_at_leaf_three",
+      "description": "Only leaf 3 equals the credential root; recompute the tree root",
+      "credential_secret": 12345,
+      "revoked_leaf": 3,
+      "noir_test": "test_credential_at_leaf_three",
+      "expected_error": "revoked"
+    },
+    {
+      "name": "credential_at_leaf_four",
+      "description": "Only leaf 4 equals the credential root; recompute the tree root",
+      "credential_secret": 12345,
+      "revoked_leaf": 4,
+      "noir_test": "test_credential_at_leaf_four",
+      "expected_error": "revoked"
+    },
+    {
+      "name": "credential_at_leaf_five",
+      "description": "Only leaf 5 equals the credential root; recompute the tree root",
+      "credential_secret": 12345,
+      "revoked_leaf": 5,
+      "noir_test": "test_credential_at_leaf_five",
+      "expected_error": "revoked"
+    },
+    {
+      "name": "credential_at_leaf_six",
+      "description": "Only leaf 6 equals the credential root; recompute the tree root",
+      "credential_secret": 12345,
+      "revoked_leaf": 6,
+      "noir_test": "test_credential_at_leaf_six",
+      "expected_error": "revoked"
+    },
+    {
       "name": "wrong_credential_secret",
       "description": "Private secret doesn't match the public credential_root",
       "expected_error": "credential root mismatch"
