@@ -11,7 +11,7 @@ export type Command =
   | 'help'
 
 export interface ParsedArgs {
-  command: Command
+  command: string
   flags: Record<string, string>
 }
 
@@ -170,8 +170,11 @@ function describeUsageError(command: string, err: unknown): string {
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv
-  if (command === undefined || !Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
+  if (command === undefined || command === 'help') {
     return { command: 'help', flags: {} }
+  }
+  if (!Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
+    return { command, flags: {} }
   }
 
   const options = COMMAND_OPTIONS[command as Exclude<Command, 'help'>]
