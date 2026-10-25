@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import call, patch
@@ -77,6 +78,7 @@ class ThreatModelCheckTests(unittest.TestCase):
             ]
         )
         self.assertEqual(mock_run_check.call_count, 4)
+
     @patch(
         "devx.threat_model_check.run_check",
         side_effect=[True, False, True, True],
@@ -92,6 +94,55 @@ class ThreatModelCheckTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("compatibility: FAIL", text)
         self.assertIn("Overall: FAILURE (1 check(s) failed)", text)
+
+    @patch(
+        "devx.threat_model_check.run_check",
+        side_effect=[True, False, True, True],
+    )
+    def test_main_json_mode_with_failures(self, _mock_run_check):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = threat_model_check.main(["--json"])
+
+        self.assertEqual(result, 1)
+        data = json.loads(output.getvalue())
+        self.assertEqual(
+            data,
+            {
+                "checks": {
+                    "release": True,
+                    "compatibility": False,
+                    "c2pa": True,
+                    "rfc3161": True,
+                },
+                "failed": 1,
+                "ok": False,
+            },
+        )
+
+    @patch("devx.threat_model_check.run_check", return_value=True)
+    def test_main_json_mode_all_passing(self, _mock_run_check):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = threat_model_check.main(["--json"])
+
+        self.assertEqual(result, 0)
+        data = json.loads(output.getvalue())
+        self.assertEqual(
+            data,
+            {
+                "checks": {
+                    "release": True,
+                    "compatibility": True,
+                    "c2pa": True,
+                    "rfc3161": True,
+                },
+                "failed": 0,
+                "ok": True,
+            },
+        )
 
     @patch("devx.threat_model_check.subprocess.run")
     def test_check_output_is_not_exposed(self, mock_run):
@@ -129,5 +180,7 @@ class ThreatModelCheckTests(unittest.TestCase):
                 ("rfc3161", [threat_model_check.sys.executable, "devx/validate_rfc3161_chains.py"]),
             ),
         )
+
+
 if __name__ == "__main__":
     unittest.main()
