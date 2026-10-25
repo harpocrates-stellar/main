@@ -1,0 +1,109 @@
+name: Devcontainer CI
+
+on:
+  pull_request:
+    paths:
+      - ".devcontainer/**"
+      - ".github/workflows/devcontainer-ci.yml"
+      - "zk/toolchain.lock.json"
+  push:
+    branches:
+      - main
+    paths:
+      - ".devcontainer/**"
+      - ".github/workflows/devcontainer-ci.yml"
+      - "zk/toolchain.lock.json"
+  schedule:
+    # Run weekly on Sunday at midnight UTC
+    - cron: "0 0 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devcontainer-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    name: Build Devcontainer and Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Devcontainer image (build-only job)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          tags: harpocrates-devcontainer:test
+          load: true
+          push: false
+
+      - name: Smoke test toolchain versions inside container
+        run: |
+          docker run --rm harpocrates-devcontainer:test bash -c '
+            set -euo pipefail
+
+            echo "=== Checking toolchains ==="
+            node --version
+            npm --version
+            python3 --version
+            rustc --version
+            cargo --version
+            stellar --version
+
+            echo "=== Checking Noir and Barretenberg pinned versions ==="
+            nargo --version
+            bb --version
+
+            EXPECTED_NARGO="1.0.0-beta.9"
+            EXPECTED_BB="0.87.0"
+
+            ACTUAL_NARGO="$(nargo --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?")"
+            ACTUAL_BB="$(bb --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")"
+
+            if [[ "$ACTUAL_NARGO" != *"$EXPECTED_NARGO"* ]]; then
+              echo "Error: nargo version ($ACTUAL_NARGO) does not match expected ($EXPECTED_NARGO)"
+              exit 1
+            fi
+
+            if [[ "$ACTUAL_BB" != *"$EXPECTED_BB"* ]]; then
+              echo "Error: bb version ($ACTUAL_BB) does not match expected ($EXPECTED_BB)"
+              exit 1
+            fi
+
+            echo "All toolchains verified successfully."
+          '
+
+      - name: Smoke test workspaces inside container
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace harpocrates-devcontainer:test bash -c '
+            set -euo pipefail
+
+            echo "=== Executing post-create setup ==="
+            bash .devcontainer/post-create.sh
+
+            echo "=== Smoke test: Contracts workspace ==="
+            (cd contracts && cargo check)
+
+            echo "=== Smoke test: Backend workspace ==="
+            backend/.venv/bin/python -m unittest discover -s backend -p "test_api_contract_conformance.py" -v
+
+            echo "=== Smoke test: Frontend workspace ==="
+            (cd frontend && npm test -- src/stellar.test.ts)
+
+            echo "=== Smoke test: CLI workspace ==="
+            (cd cli && npm test -- test/stellar-lookup.test.ts)
+
+            echo "=== Smoke test: Noir ZK workspace ==="
+            (cd zk/noir/silent_witness && nargo check)
+
+            echo "All workspace smoke tests passed inside the devcontainer!"
+          '

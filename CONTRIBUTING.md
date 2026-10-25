@@ -37,6 +37,17 @@ noirup
 ```
 
 
+### 1.1 Development Container (Recommended)
+
+For a fully configured environment with all toolchains (Rust, Node, Python, Stellar CLI, Nargo, and Barretenberg) preinstalled at pinned versions, open the repository in VS Code or GitHub Codespaces using the Dev Container:
+
+1. Install Docker and the VS Code [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+2. Open the repository root in VS Code.
+3. Press `F1` and select **Dev Containers: Reopen in Container**.
+4. The post-create script automatically installs workspace dependencies (`npm ci` for `frontend/` and `cli/`), sets up the Python backend virtual environment, and verifies dependency pins.
+
+---
+
 ## 2. Workspace Setup, Build, and Test Commands
 
 ### 2.1 Workspace Installation
