@@ -4132,6 +4132,33 @@ impl HarpocratesRegistry {
         proof_id.and_then(|id| env.storage().persistent().get(&DataKey::Proof(id)))
     }
 
+    /// Return the verification status of multiple videos in a single batch query,
+    /// resolving video hashes to their underlying proof verification statuses.
+    ///
+    /// Unknown video hashes return `ProofVerificationStatus::NotFound` instead of failing the batch.
+    /// The maximum number of video hashes in a single batch is bounded (100) to match `get_proof_statuses`.
+    pub fn get_statuses_by_video(
+        env: Env,
+        video_hashes: soroban_sdk::Vec<BytesN<32>>,
+    ) -> soroban_sdk::Vec<ProofVerificationStatus> {
+        let max_batch_size = 100;
+        if video_hashes.len() > max_batch_size {
+            panic_with_error!(&env, RegistryError::BatchTooLarge);
+        }
+
+        let mut statuses = SorobanVec::new(&env);
+        for video_hash in video_hashes.iter() {
+            let proof_id: Option<BytesN<32>> =
+                env.storage().persistent().get(&DataKey::Video(video_hash));
+            let status = match proof_id {
+                Some(id) => Self::get_proof_status(env.clone(), id),
+                None => ProofVerificationStatus::NotFound,
+            };
+            statuses.push_back(status);
+        }
+        statuses
+    }
+
     pub fn has_nullifier(env: Env, verifier: Address, nullifier: BytesN<32>) -> bool {
         if env.storage().persistent().has(&DataKey::VerifierNullifier(verifier, nullifier.clone())) {
             true

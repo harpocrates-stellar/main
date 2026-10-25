@@ -41,6 +41,7 @@
 //! | `revoke_proof`               | Admin action; mutates existing record.     |
 //! | `revoke_proofs`              | Admin action; batch mutates up to 20 records. |
 //! | `get_proof_status`           | Read-only query; must be sub-linear.       |
+//! | `get_statuses_by_video`      | Read-only batch query by video hash.       |
 //! | `list_lineage_children`      | Read-only query; full page read bounds.    |
 //! | `list_credential_roots`      | Read-only query; paginates credential roots.|
 //!
@@ -563,6 +564,59 @@ fn budget_get_proof_statuses_baseline() {
         MAX_CPU_GET_PROOF_STATUSES,
         MAX_MEM_GET_PROOF_STATUSES,
         "get_proof_statuses",
+    );
+}
+
+const MAX_CPU_GET_STATUSES_BY_VIDEO: u64 = 15_000_000;
+const MAX_MEM_GET_STATUSES_BY_VIDEO: u64 = 4_000_000;
+
+#[test]
+fn budget_get_statuses_by_video_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    // Register 10 proofs with known video hashes
+    let mut video_hashes = SorobanVec::new(&env);
+    for i in 0..10u8 {
+        let proof_id = b32(&env, 0xA0 + i);
+        let video_hash = b32(&env, 0xB0 + i);
+        client.register_source(
+            &source,
+            &video_hash,
+            &b32(&env, 0xC0 + i),
+            &proof_id,
+        );
+        video_hashes.push_back(video_hash);
+    }
+
+    // Pad to 100 video hashes for worst-case read (90 will be missing/not found)
+    for i in 10..100u8 {
+        let mut pad = [0xD0u8; 32];
+        pad[1] = i;
+        video_hashes.push_back(BytesN::from_array(&env, &pad));
+    }
+
+    // Disable resource limits for the footprint
+    env.cost_estimate().disable_resource_limits();
+
+    let (cpu, mem, statuses) = measure(&env, || client.get_statuses_by_video(&video_hashes));
+    assert_eq!(statuses.len(), 100);
+    assert_eq!(statuses.get(0).unwrap(), ProofVerificationStatus::Valid);
+    assert_eq!(statuses.get(10).unwrap(), ProofVerificationStatus::NotFound);
+
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_GET_STATUSES_BY_VIDEO,
+        MAX_MEM_GET_STATUSES_BY_VIDEO,
+        "get_statuses_by_video",
     );
 }
 
