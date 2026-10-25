@@ -1,9 +1,24 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { StrKey } from '@stellar/stellar-sdk'
-import { checkContractMatch } from '../src/stellar-lookup.js'
+import { checkContractMatch, lookupByVideoHash } from '../src/stellar-lookup.js'
 
 const contractBytes = Uint8Array.from({ length: 32 }, (_, index) => index)
 const contractId = StrKey.encodeContract(contractBytes)
+
+const getAccountMock = vi.fn()
+
+vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>()
+  return {
+    ...actual,
+    rpc: {
+      ...actual.rpc,
+      Server: vi.fn().mockImplementation(() => ({
+        getAccount: getAccountMock,
+      })),
+    },
+  }
+})
 
 describe('checkContractMatch', () => {
   it('matches the decoded Stellar contract ID bytes', () => {
@@ -15,6 +30,25 @@ describe('checkContractMatch', () => {
     expect(checkContractMatch(new Uint8Array(32), contractId)).toBe(false)
     expect(checkContractMatch(contractBytes, '0x' + contractId)).toBe(false)
     expect(checkContractMatch(new Uint8Array(), contractId)).toBe(false)
+  })
+})
+
+describe('lookupByVideoHash source handling', () => {
+  beforeEach(() => {
+    getAccountMock.mockReset()
+  })
+
+  it('does not call getAccount when no source address is given', async () => {
+    try {
+      await lookupByVideoHash({
+        videoHash: '00'.repeat(32),
+        rpcUrl: 'https://rpc.example.test',
+        contractId,
+      })
+    } catch {
+      // Network errors from the unreachable RPC are irrelevant here.
+    }
+    expect(getAccountMock).not.toHaveBeenCalled()
   })
 })
 

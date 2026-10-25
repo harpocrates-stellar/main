@@ -30,9 +30,9 @@ pub const SCHEMA_ID_SILENT_WITNESS_V2: u32 = 3;
 /// Maximum Merkle depth for the `revocation_witness` circuit (#357).
 /// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
 /// Raising this value requires a new circuit version — do not change it silently.
-pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 3;
-/// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 8).
-pub const MAX_REVOCATION_LEAVES: u32 = 8;
+pub const MAX_REVOCATION_WITNESS_DEPTH: u32 = 16;
+/// Leaf capacity implied by [`MAX_REVOCATION_WITNESS_DEPTH`] (`2^depth` = 65536).
+pub const MAX_REVOCATION_LEAVES: u32 = 65536;
 
 /// Maximum number of revocation roots retained in the ring buffer.
 pub const MAX_REVOCATION_ROOT_HISTORY: u32 = 4;
@@ -374,6 +374,24 @@ pub struct VerifierState {
     pub overlap_window: u64,
     pub rollback_window: u64,
     pub rollback_window_end: u64,
+}
+
+/// Aggregate snapshot of the registry's operational configuration (#721).
+///
+/// Combines the individual configuration getters and the currently paused
+/// registration domains bitmask into a single read-only response so clients
+/// can inspect the operational state in one simulation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryConfig {
+    pub proof_ttl: u64,
+    pub timelock_min_delay_secs: u64,
+    pub verifier: Option<Address>,
+    pub verifier_state: VerifierState,
+    pub guardian: Option<Address>,
+    pub schema_version: u32,
+    pub revocation_root: Option<BytesN<32>>,
+    pub paused_domains: u32,
 }
 
 /// A verifier's declared circuit-version window (#343).
@@ -1559,6 +1577,102 @@ pub struct TimelockMinDelaySet {
     pub set_by: Address,
 }
 
+// ---------------------------------------------------------------------------
+// Admin Council events and types
+// ---------------------------------------------------------------------------
+
+#[contractevent(topics = ["council", "set"])]
+pub struct AdminCouncilSet {
+    pub threshold: u32,
+    pub member_count: u32,
+    pub effective_at: u64,
+}
+
+#[contractevent(topics = ["council", "cancel_set"])]
+pub struct AdminCouncilCancelled {
+    #[topic]
+    pub admin: Address,
+    pub cancelled_at: u64,
+}
+
+#[contractevent(topics = ["council", "propose"])]
+pub struct CouncilProposalCreated {
+    #[topic]
+    pub proposal_id: u32,
+    pub action: u32,
+    #[topic]
+    pub proposer: Address,
+    pub target: Address,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["council", "approve"])]
+pub struct CouncilProposalApproved {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub member: Address,
+    pub approval_count: u32,
+    pub threshold: u32,
+}
+
+#[contractevent(topics = ["council", "exec"])]
+pub struct CouncilProposalExecuted {
+    #[topic]
+    pub proposal_id: u32,
+    pub action: u32,
+    #[topic]
+    pub executed_by: Address,
+    pub executed_at: u64,
+}
+
+#[contractevent(topics = ["council", "cancel"])]
+pub struct CouncilProposalCancelled {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub cancelled_by: Address,
+    pub cancelled_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum CouncilAction {
+    SetVerifier = 1,
+    RevokeIssuer = 2,
+    UpgradeStorage = 3,
+    SetRevocationRoot = 4,
+    ScheduleVerifierRotation = 5,
+    ActivateVerifierRotation = 6,
+    RollbackVerifierRotation = 7,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminCouncil {
+    pub members: SorobanVec<Address>,
+    pub threshold: u32,
+    pub created_at: u64,
+    pub effective_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CouncilProposal {
+    pub id: u32,
+    pub action: u32,
+    pub proposer: Address,
+    pub target: Address,
+    pub payload: BytesN<32>,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub approvals: SorobanVec<Address>,
+    pub executed: bool,
+    pub cancelled: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -1903,6 +2017,8 @@ pub enum RegistryError {
     CircuitVersionMismatch = 87,
     /// The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`.
     ReporterDisputesSaturated = 88,
+    /// The action requires admin council threshold approvals.
+    InsufficientApprovals = 89,
 }
 
 #[contract]
@@ -1948,6 +2064,9 @@ impl HarpocratesRegistry {
     /// stamped `SchemaVersion` intact; V1 readers treat it as authoritative.
     pub fn upgrade_storage(env: Env, admin: Address) {
         require_admin(&env, &admin);
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
 
         let had_version = env.storage().persistent().has(&DataKey::SchemaVersion);
         let current_version: u32 = env
@@ -2001,6 +2120,49 @@ impl HarpocratesRegistry {
             .unwrap_or(SchemaVersion::V1 as u32)
     }
 
+    /// Return the registry's operational configuration in one read-only call (#721).
+    ///
+    /// Safe to call both before and after `init`. Every field matches the
+    /// corresponding individual getter, and `paused_domains` is the bitwise-OR
+    /// of all registration domains that are currently paused (unexpired).
+    pub fn get_config(env: Env) -> RegistryConfig {
+        let proof_ttl = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofTtl)
+            .unwrap_or(DEFAULT_PROOF_TTL_SECS);
+        let timelock_min_delay_secs = get_timelock_min_delay(&env);
+        let verifier: Option<Address> = env.storage().persistent().get(&DataKey::Verifier);
+        let verifier_state = get_verifier_rotation_state(&env);
+        let guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
+        let schema_version = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(SchemaVersion::V1 as u32);
+        let revocation_root: Option<BytesN<32>> =
+            env.storage().persistent().get(&DataKey::RevocationRoot);
+
+        let now = env.ledger().timestamp();
+        let mut paused_domains = 0u32;
+        for bit in PAUSE_DOMAIN_SINGLE_BITS {
+            if domain_is_paused(&env, bit, now) {
+                paused_domains |= bit;
+            }
+        }
+
+        RegistryConfig {
+            proof_ttl,
+            timelock_min_delay_secs,
+            verifier,
+            verifier_state,
+            guardian,
+            schema_version,
+            revocation_root,
+            paused_domains,
+        }
+    }
+
     pub fn propose_admin(env: Env, admin: Address, pending_admin: Address) {
         require_admin(&env, &admin);
         require_admin_role_available(&env, &pending_admin);
@@ -2013,6 +2175,16 @@ impl HarpocratesRegistry {
             current_admin: admin,
         }
         .publish(&env);
+    }
+
+    /// Return the current admin address, if initialized.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Admin)
+    }
+
+    /// Return the pending admin address, if an admin transfer is proposed.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::PendingAdmin)
     }
 
     pub fn cancel_admin_transfer(env: Env, admin: Address) {
@@ -2095,6 +2267,9 @@ impl HarpocratesRegistry {
 
     pub fn set_verifier(env: Env, admin: Address, verifier: Address) {
         require_admin(&env, &admin);
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
 
         env.storage()
             .persistent()
@@ -2204,6 +2379,9 @@ impl HarpocratesRegistry {
         rollback_window: u64,
     ) {
         require_admin(&env, &admin);
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
 
         let active_verifier = get_active_verifier(&env);
         let state = VerifierState {
@@ -2230,6 +2408,9 @@ impl HarpocratesRegistry {
 
     pub fn activate_verifier_rotation(env: Env, admin: Address) {
         require_admin(&env, &admin);
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
 
         let mut state = get_verifier_rotation_state(&env);
         let pending_verifier = state
@@ -2269,6 +2450,9 @@ impl HarpocratesRegistry {
 
     pub fn rollback_verifier_rotation(env: Env, admin: Address) {
         require_admin(&env, &admin);
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
 
         let state = get_verifier_rotation_state(&env);
         let active_verifier = state
@@ -2455,6 +2639,9 @@ impl HarpocratesRegistry {
 
     pub fn revoke_issuer(env: Env, admin: Address, issuer: Address) {
         require_admin(&env, &admin);
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
 
         let mut record = get_issuer_record(&env, &issuer);
         record.active = false;
@@ -2776,6 +2963,9 @@ impl HarpocratesRegistry {
         if now < proposal.min_execution_at {
             panic_with_error!(&env, RegistryError::ProposalNotReady);
         }
+        if is_council_active(&env) && (proposal.action == 1 || proposal.action == 2) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -2909,6 +3099,311 @@ impl HarpocratesRegistry {
             set_by: admin,
         }
         .publish(&env);
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin Council Governance
+    // -----------------------------------------------------------------------
+
+    /// Configure an optional multi-party admin council guarded by current admin
+    /// and the timelock min delay.
+    pub fn set_admin_council(
+        env: Env,
+        admin: Address,
+        members: SorobanVec<Address>,
+        threshold: u32,
+    ) {
+        require_admin(&env, &admin);
+
+        // If a council is currently active, changing it directly by single-admin is blocked.
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
+
+        if threshold == 0 || threshold > members.len() || members.len() > MAX_SIGNERS {
+            panic_with_error!(&env, RegistryError::InvalidProposalPayload);
+        }
+
+        // Distinct member enforcement (duplicate-signer rejection)
+        let len = members.len();
+        for i in 0..len {
+            for j in (i + 1)..len {
+                if members.get(i).unwrap() == members.get(j).unwrap() {
+                    panic_with_error!(&env, RegistryError::Unauthorized);
+                }
+            }
+        }
+
+        let now = env.ledger().timestamp();
+        let min_delay = get_timelock_min_delay(&env);
+        let effective_at = now.saturating_add(min_delay);
+
+        let council = AdminCouncil {
+            members: members.clone(),
+            threshold,
+            created_at: now,
+            effective_at,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminCouncil, &council);
+
+        AdminCouncilSet {
+            threshold,
+            member_count: members.len(),
+            effective_at,
+        }
+        .publish(&env);
+    }
+
+    /// Return the active admin council, or None if no council is configured or still in timelock delay.
+    pub fn get_admin_council(env: Env) -> Option<AdminCouncil> {
+        let record = get_admin_council_record(&env)?;
+        if env.ledger().timestamp() >= record.effective_at {
+            Some(record)
+        } else {
+            None
+        }
+    }
+
+    /// Return the pending admin council currently in timelock delay, or None.
+    pub fn get_pending_admin_council(env: Env) -> Option<AdminCouncil> {
+        let record = get_admin_council_record(&env)?;
+        if env.ledger().timestamp() < record.effective_at {
+            Some(record)
+        } else {
+            None
+        }
+    }
+
+    /// Cancel a pending admin council before its timelock delay expires.
+    pub fn cancel_pending_admin_council(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        let record = get_admin_council_record(&env)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::AlreadyCancelled));
+        if env.ledger().timestamp() >= record.effective_at {
+            panic_with_error!(&env, RegistryError::AlreadyCancelled);
+        }
+        env.storage().persistent().remove(&DataKey::AdminCouncil);
+        AdminCouncilCancelled {
+            admin,
+            cancelled_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
+    }
+
+    /// Propose a critical action to the active admin council.
+    pub fn propose_council_action(
+        env: Env,
+        proposer: Address,
+        action: u32,
+        target: Address,
+        payload: BytesN<32>,
+    ) -> u32 {
+        let council = Self::get_admin_council(env.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
+
+        proposer.require_auth();
+
+        // Proposer must be a council member
+        let mut is_member = false;
+        for i in 0..council.members.len() {
+            if council.members.get(i).unwrap() == proposer {
+                is_member = true;
+                break;
+            }
+        }
+        if !is_member {
+            panic_with_error!(&env, RegistryError::Unauthorized);
+        }
+
+        if action == 0 || action > 7 {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
+
+        let now = env.ledger().timestamp();
+        let proposal_id = next_council_proposal_id(&env);
+        let expires_at = now.saturating_add(DEFAULT_APPROVAL_TTL_SECS);
+
+        let proposal = CouncilProposal {
+            id: proposal_id,
+            action,
+            proposer: proposer.clone(),
+            target: target.clone(),
+            payload,
+            created_at: now,
+            expires_at,
+            approvals: SorobanVec::new(&env),
+            executed: false,
+            cancelled: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilProposal(proposal_id), &proposal);
+
+        CouncilProposalCreated {
+            proposal_id,
+            action,
+            proposer,
+            target,
+            created_at: now,
+            expires_at,
+        }
+        .publish(&env);
+
+        proposal_id
+    }
+
+    /// Record a council member's approval for a proposal.
+    pub fn approve_council_proposal(env: Env, member: Address, proposal_id: u32) -> bool {
+        let council = Self::get_admin_council(env.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
+
+        member.require_auth();
+
+        // Non-member rejection
+        let mut is_member = false;
+        for i in 0..council.members.len() {
+            if council.members.get(i).unwrap() == member {
+                is_member = true;
+                break;
+            }
+        }
+        if !is_member {
+            panic_with_error!(&env, RegistryError::Unauthorized);
+        }
+
+        let mut proposal = get_council_proposal_or_panic(&env, proposal_id);
+        if proposal.executed {
+            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            panic_with_error!(&env, RegistryError::ProposalCancelled);
+        }
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic_with_error!(&env, RegistryError::AlreadyExpired);
+        }
+
+        // Duplicate-signer rejection
+        for i in 0..proposal.approvals.len() {
+            if proposal.approvals.get(i).unwrap() == member {
+                panic_with_error!(&env, RegistryError::Unauthorized);
+            }
+        }
+
+        proposal.approvals.push_back(member.clone());
+        let count = proposal.approvals.len();
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilProposal(proposal_id), &proposal);
+
+        CouncilProposalApproved {
+            proposal_id,
+            member,
+            approval_count: count,
+            threshold: council.threshold,
+        }
+        .publish(&env);
+
+        count >= council.threshold
+    }
+
+    /// Execute a council proposal once threshold distinct member approvals are gathered.
+    pub fn execute_council_proposal(env: Env, caller: Address, proposal_id: u32) {
+        let council = Self::get_admin_council(env.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
+
+        caller.require_auth();
+
+        let mut proposal = get_council_proposal_or_panic(&env, proposal_id);
+        if proposal.executed {
+            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            panic_with_error!(&env, RegistryError::ProposalCancelled);
+        }
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic_with_error!(&env, RegistryError::AlreadyExpired);
+        }
+
+        // Threshold enforcement
+        if proposal.approvals.len() < council.threshold {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
+
+        proposal.executed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilProposal(proposal_id), &proposal);
+
+        dispatch_council_action(&env, &proposal);
+
+        CouncilProposalExecuted {
+            proposal_id,
+            action: proposal.action,
+            executed_by: caller,
+            executed_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
+    }
+
+    /// Cancel a council proposal.
+    pub fn cancel_council_proposal(env: Env, caller: Address, proposal_id: u32) {
+        let council = Self::get_admin_council(env.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
+
+        caller.require_auth();
+
+        let mut proposal = get_council_proposal_or_panic(&env, proposal_id);
+        if proposal.executed {
+            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            panic_with_error!(&env, RegistryError::AlreadyCancelled);
+        }
+
+        // Caller must be proposer, admin, or a council member
+        let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        let is_admin = admin.as_ref() == Some(&caller);
+        let is_proposer = proposal.proposer == caller;
+        let mut is_member = false;
+        for i in 0..council.members.len() {
+            if council.members.get(i).unwrap() == caller {
+                is_member = true;
+                break;
+            }
+        }
+
+        if !is_admin && !is_proposer && !is_member {
+            panic_with_error!(&env, RegistryError::Unauthorized);
+        }
+
+        proposal.cancelled = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilProposal(proposal_id), &proposal);
+
+        CouncilProposalCancelled {
+            proposal_id,
+            cancelled_by: caller,
+            cancelled_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
+    }
+
+    pub fn get_council_proposal(env: Env, proposal_id: u32) -> Option<CouncilProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CouncilProposal(proposal_id))
+    }
+
+    pub fn get_council_proposal_count(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CouncilProposalSeq)
+            .unwrap_or(0u32)
     }
 
     pub fn get_proof_status(env: Env, proof_id: BytesN<32>) -> ProofVerificationStatus {
@@ -4153,6 +4648,33 @@ impl HarpocratesRegistry {
         proof_id.and_then(|id| env.storage().persistent().get(&DataKey::Proof(id)))
     }
 
+    /// Return the verification status of multiple videos in a single batch query,
+    /// resolving video hashes to their underlying proof verification statuses.
+    ///
+    /// Unknown video hashes return `ProofVerificationStatus::NotFound` instead of failing the batch.
+    /// The maximum number of video hashes in a single batch is bounded (100) to match `get_proof_statuses`.
+    pub fn get_statuses_by_video(
+        env: Env,
+        video_hashes: soroban_sdk::Vec<BytesN<32>>,
+    ) -> soroban_sdk::Vec<ProofVerificationStatus> {
+        let max_batch_size = 100;
+        if video_hashes.len() > max_batch_size {
+            panic_with_error!(&env, RegistryError::BatchTooLarge);
+        }
+
+        let mut statuses = SorobanVec::new(&env);
+        for video_hash in video_hashes.iter() {
+            let proof_id: Option<BytesN<32>> =
+                env.storage().persistent().get(&DataKey::Video(video_hash));
+            let status = match proof_id {
+                Some(id) => Self::get_proof_status(env.clone(), id),
+                None => ProofVerificationStatus::NotFound,
+            };
+            statuses.push_back(status);
+        }
+        statuses
+    }
+
     pub fn has_nullifier(env: Env, verifier: Address, nullifier: BytesN<32>) -> bool {
         if env.storage().persistent().has(&DataKey::VerifierNullifier(verifier, nullifier.clone())) {
             true
@@ -4457,47 +4979,9 @@ impl HarpocratesRegistry {
 
     pub fn set_revocation_root(env: Env, admin: Address, revocation_root: BytesN<32>) {
         require_admin(&env, &admin);
-        let activation_ledger = env.ledger().sequence();
-
-        let mut history: SorobanVec<RevocationRootEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RevocationRoots)
-            .unwrap_or_else(|| {
-                let mut v = SorobanVec::new(&env);
-                if let Some(existing) = env
-                    .storage()
-                    .persistent()
-                    .get::<DataKey, BytesN<32>>(&DataKey::RevocationRoot)
-                {
-                    v.push_back(RevocationRootEntry {
-                        root: existing,
-                        activation_ledger,
-                    });
-                }
-                v
-            });
-
-        // If the root already exists in the ring buffer, remove its older entry
-        // before appending at the tail so the buffer stays deduplicated and
-        // ordered from oldest to newest.
-        let mut deduped = SorobanVec::new(&env);
-        for item in history.iter() {
-            if item.root != revocation_root {
-                deduped.push_back(item);
-            }
+        if is_council_active(&env) {
+            panic_with_error!(&env, RegistryError::InsufficientApprovals);
         }
-        history = deduped;
-
-        // Evict the oldest root(s) when at capacity (`MAX_REVOCATION_ROOT_HISTORY`).
-        while history.len() >= MAX_REVOCATION_ROOT_HISTORY {
-            let _ = history.pop_front();
-        }
-        history.push_back(RevocationRootEntry {
-            root: revocation_root.clone(),
-            activation_ledger,
-        });
-
         env.storage()
             .persistent()
             .set(&DataKey::RevocationRoot, &revocation_root);
@@ -7217,6 +7701,198 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
             ContractUpgraded {
                 old_wasm_hash,
                 new_wasm_hash,
+            }
+            .publish(env);
+        }
+        _ => panic_with_error!(env, RegistryError::InvalidProposalAction),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Admin Council helpers
+// ---------------------------------------------------------------------------
+
+fn get_admin_council_record(env: &Env) -> Option<AdminCouncil> {
+    env.storage().persistent().get(&DataKey::AdminCouncil)
+}
+
+fn is_council_active(env: &Env) -> bool {
+    match get_admin_council_record(env) {
+        Some(council) => env.ledger().timestamp() >= council.effective_at,
+        None => false,
+    }
+}
+
+fn next_council_proposal_id(env: &Env) -> u32 {
+    let current: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::CouncilProposalSeq)
+        .unwrap_or(0u32);
+    let next = current.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CouncilProposalSeq, &next);
+    next
+}
+
+fn get_council_proposal_or_panic(env: &Env, proposal_id: u32) -> CouncilProposal {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CouncilProposal(proposal_id))
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::ProposalNotFound))
+}
+
+fn dispatch_council_action(env: &Env, proposal: &CouncilProposal) {
+    match proposal.action {
+        1 => {
+            // SetVerifier
+            env.storage()
+                .persistent()
+                .set(&DataKey::Verifier, &proposal.target);
+            env.storage().persistent().remove(&DataKey::VerifierState);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::VerifierCircuitVersions);
+            VerifierSet {
+                verifier: proposal.target.clone(),
+            }
+            .publish(env);
+        }
+        2 => {
+            // RevokeIssuer
+            let mut record = get_issuer_record(env, &proposal.target);
+            record.active = false;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Issuer(proposal.target.clone()), &record);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::IssuerRotation(proposal.target.clone()));
+            IssuerRevoked {
+                issuer: proposal.target.clone(),
+            }
+            .publish(env);
+        }
+        3 => {
+            // UpgradeStorage
+            let had_version = env.storage().persistent().has(&DataKey::SchemaVersion);
+            let current_version: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SchemaVersion)
+                .unwrap_or(SchemaVersion::V1 as u32);
+            let target_version = SchemaVersion::V2 as u32;
+
+            if !had_version {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SchemaVersion, &(SchemaVersion::V1 as u32));
+            }
+            let actual_current = if !had_version {
+                SchemaVersion::V1 as u32
+            } else {
+                current_version
+            };
+            if actual_current < target_version {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SchemaVersion, &target_version);
+                SchemaUpgraded {
+                    previous: actual_current,
+                    current: target_version,
+                }
+                .publish(env);
+            }
+        }
+        4 => {
+            // SetRevocationRoot
+            env.storage()
+                .persistent()
+                .set(&DataKey::RevocationRoot, &proposal.payload);
+            RevocationRootSet {
+                revocation_root: proposal.payload.clone(),
+            }
+            .publish(env);
+        }
+        5 => {
+            // ScheduleVerifierRotation
+            let active_verifier = get_active_verifier(env);
+            let state = VerifierState {
+                active_verifier: Some(active_verifier.clone()),
+                pending_verifier: Some(proposal.target.clone()),
+                previous_verifier: Some(active_verifier.clone()),
+                activation_ledger: 0,
+                overlap_window: 0,
+                rollback_window: 0,
+                rollback_window_end: 0,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::VerifierState, &state);
+            VerifierRotationScheduled {
+                active_verifier: active_verifier.clone(),
+                pending_verifier: proposal.target.clone(),
+                activation_ledger: 0,
+                overlap_window: 0,
+                rollback_window: 0,
+            }
+            .publish(env);
+        }
+        6 => {
+            // ActivateVerifierRotation
+            let mut state = get_verifier_rotation_state(env);
+            let pending_verifier = state
+                .pending_verifier
+                .clone()
+                .unwrap_or_else(|| panic_with_error!(env, RegistryError::RotationNotScheduled));
+            let active_verifier = state
+                .active_verifier
+                .clone()
+                .unwrap_or_else(|| panic_with_error!(env, RegistryError::RotationNotScheduled));
+            let current_ledger = u64::from(env.ledger().sequence());
+
+            state.active_verifier = Some(pending_verifier.clone());
+            state.pending_verifier = None;
+            state.rollback_window_end = current_ledger.saturating_add(state.rollback_window.max(0));
+            env.storage()
+                .persistent()
+                .set(&DataKey::VerifierState, &state);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Verifier, &pending_verifier);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::VerifierCircuitVersions);
+            VerifierRotationActivated {
+                active_verifier: pending_verifier,
+                previous_verifier: active_verifier,
+                rollback_window_end: state.rollback_window_end,
+            }
+            .publish(env);
+        }
+        7 => {
+            // RollbackVerifierRotation
+            let state = get_verifier_rotation_state(env);
+            let active_verifier = state
+                .active_verifier
+                .clone()
+                .unwrap_or_else(|| panic_with_error!(env, RegistryError::RotationNotScheduled));
+            let previous_verifier = state
+                .previous_verifier
+                .clone()
+                .unwrap_or_else(|| panic_with_error!(env, RegistryError::RotationNotScheduled));
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Verifier, &previous_verifier);
+            env.storage().persistent().remove(&DataKey::VerifierState);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::VerifierCircuitVersions);
+            VerifierRotationRolledBack {
+                active_verifier: previous_verifier.clone(),
+                previous_verifier: active_verifier,
             }
             .publish(env);
         }

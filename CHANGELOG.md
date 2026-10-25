@@ -87,7 +87,7 @@
 
 - Bound aggregation proof count at `MAX_AGGREGATION_SIZE = 8` (`MIN_AGGREGATION_SIZE = 1`) across Noir circuits, Soroban registry constants, backend/frontend verifier input validators, conformance vectors, and host tooling with structured, privacy-safe rejection codes (#488).
 
-- Bound `revocation_witness` Merkle depth at `MAX_REVOCATION_WITNESS_DEPTH = 3` (8 leaves) across the Noir circuit, registry constants, verifier codec, and host tooling (#357).
+- Raised and parameterised `revocation_witness` Merkle depth bound to `MAX_REVOCATION_WITNESS_DEPTH = 16` (65,536 leaves) across the Noir circuit, registry constants, verifier codec, host tooling, and benchmark baselines (#357).
 
 - Closed an unpinned-circuit gap in the reproducible Noir build pipeline. The
   `selective_disclosure` circuit — fetched by the browser at

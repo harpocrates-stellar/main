@@ -413,8 +413,14 @@ def create_app() -> Flask:
     init_retention_worker()
 
     readiness_manager = ReadinessManager(timeout_seconds=1.0, cache_ttl_seconds=5.0)
-    readiness_manager.add_dependency("database", check_db, critical=True)
-    readiness_manager.add_dependency("video_tools", video_tooling_ready, critical=True)
+    readiness_manager.add_dependency(
+        "database", check_db, critical=True,
+        ok_status="connected", fail_status="not_configured",
+    )
+    readiness_manager.add_dependency(
+        "video_tools", video_tooling_ready, critical=True,
+        ok_status="available", fail_status="missing",
+    )
 
     admission_controller = AdmissionController(
         max_concurrent=config.max_concurrent_requests,

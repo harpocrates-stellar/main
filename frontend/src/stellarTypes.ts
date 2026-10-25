@@ -160,34 +160,6 @@ export type RegistryMethod =
   | 'get_verifier_state'
   | 'get_open_dispute_count'
 
-export type ProofHistoryEntry = {
-  action: number
-  timestamp: string
-  actor: string | null
-  reasonCode: number
-}
-
-export type ProofHistoryResult = {
-  entries: ProofHistoryEntry[]
-  count: number
-}
-
-export type ProofHistoryEntry = {
-  /** Registry action code (see the contract's HistoryAction enum). */
-  action: number
-  /** Ledger sequence / timestamp captured at the time of the action. */
-  timestamp: string
-  /** Actor address that triggered the action, if recorded. */
-  actor: string | null
-  /** Reason code attached to the action. */
-  reasonCode: number
-}
-
-export type ProofHistoryResult = {
-  entries: ProofHistoryEntry[]
-  count: number
-}
-
 export type ScopedProofScope = {
   /** Field element derived from the scope string (SHA-256 mod BN254). */
   scopeField: string

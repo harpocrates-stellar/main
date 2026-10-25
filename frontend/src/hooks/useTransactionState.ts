@@ -17,5 +17,5 @@ export function useTransactionState() {
     machine.send(event)
   }
 
-  return { state, send }
+  return { state, send, machine }
 }

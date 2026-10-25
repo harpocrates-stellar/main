@@ -101,9 +101,10 @@ Non-membership circuit for the published revocation Merkle tree. Proves a
 
 Key properties:
 
-- **MAX_REVOCATION_WITNESS_DEPTH = 3**: fixed upper bound (`MAX_REVOCATION_LEAVES = 8`).
-  Enforced at circuit structure and mirrored in the registry / verifier codec /
-  `zk/tools/revocation_depth.py`. Depth changes require a new circuit version.
+- **MAX_REVOCATION_WITNESS_DEPTH = 16**: parameterised depth bound up to 16 levels
+  (`MAX_REVOCATION_LEAVES = 65536`). Enforced at circuit structure and mirrored in
+  the registry / verifier codec / `zk/tools/revocation_depth.py`. Depth changes
+  require a new circuit version.
 - **Private leaves**: the verifier learns only the root, not which credentials
   are revoked.
 - **Domain binding**: `HARPOCRATES_REVOCATION_V1` prevents cross-version replay.
@@ -164,7 +165,7 @@ it does not replace executing the copied example.
 ### `revocation_witness_helper`
 
 Helper circuit that derives `credential_root` / `nullifier` and Merkle root
-parameters for the depth-bounded revocation tree (same MAX constants).
+parameters for the depth-bounded revocation tree (same `MAX_REVOCATION_WITNESS_DEPTH = 16` constants).
 
 ### `selective_disclosure`
 

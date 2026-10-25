@@ -1,9 +1,16 @@
 {
   "format": "harpocrates.zk-bench-lock",
   "version": 1,
-  "description": "Pinned iteration counts, timeouts, size ceilings, and threshold policy for ZK proof generation and verification benchmarks across browser, native, CI, and Soroban-adjacent targets. See docs/zk-benchmarks.md.",
+  "description": "Pinned iteration counts, timeouts, size ceilings, and threshold policy for ZK proof generation and verification benchmarks across browser, native, CI, Soroban-adjacent, and revocation_witness depth targets. See docs/zk-benchmarks.md.",
   "fixture_id": "silent_witness.synthetic.v1",
   "circuit": "silent_witness",
+  "revocation_witness": {
+    "circuit": "revocation_witness",
+    "fixture_id": "revocation_witness.depth16.v1",
+    "max_depth": 16,
+    "max_leaves": 65536,
+    "public_input_bytes": 128
+  },
   "targets": {
     "native": {
       "description": "nargo execute + bb prove / bb verify on the host CLI",
@@ -37,6 +44,46 @@
       "warm_samples": 1,
       "timeout_ms": 60000,
       "max_concurrency": 1
+    },
+    "revocation_native": {
+      "description": "revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves) on host CLI",
+      "circuit": "revocation_witness",
+      "fixture_id": "revocation_witness.depth16.v1",
+      "depth": 16,
+      "leaf_count": 65536,
+      "public_input_bytes": 128,
+      "cold_samples": 1,
+      "warm_discard": 1,
+      "warm_samples": 3,
+      "timeout_ms": 180000,
+      "max_concurrency": 1
+    },
+    "revocation_browser": {
+      "description": "revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves) in Node/bb.js browser-equivalent path",
+      "circuit": "revocation_witness",
+      "fixture_id": "revocation_witness.depth16.v1",
+      "depth": 16,
+      "leaf_count": 65536,
+      "public_input_bytes": 128,
+      "cold_samples": 1,
+      "warm_discard": 1,
+      "warm_samples": 3,
+      "timeout_ms": 180000,
+      "max_concurrency": 1
+    },
+    "revocation_ci": {
+      "description": "revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves) for CI runners",
+      "circuit": "revocation_witness",
+      "fixture_id": "revocation_witness.depth16.v1",
+      "depth": 16,
+      "leaf_count": 65536,
+      "public_input_bytes": 128,
+      "cold_samples": 1,
+      "warm_discard": 0,
+      "warm_samples": 2,
+      "timeout_ms": 120000,
+      "max_concurrency": 1,
+      "allow_synthetic": true
     }
   },
   "limits": {
