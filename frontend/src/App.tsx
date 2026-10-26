@@ -41,6 +41,11 @@ const BatchVerificationWorkspace = lazy(() =>
     }),
   ),
 );
+const IssuersView = lazy(() =>
+  import("./views/IssuersView").then(({ IssuersView }) => ({
+    default: IssuersView,
+  })),
+);
 
 type AppView = View | "batch";
 
@@ -49,6 +54,7 @@ const VIEW_TITLES: Record<AppView, string> = {
   studio: "Evidence Studio - Harpocrates",
   verify: "Verify evidence - Harpocrates",
   batch: "Batch Workspace - Harpocrates",
+  issuers: "Issuer Directory - Harpocrates",
 };
 
 function methodForTier(tier: IdentityTier) {
@@ -60,7 +66,7 @@ function methodForTier(tier: IdentityTier) {
 function initialView(): AppView {
   const hash = window.location.hash.replace("#", "");
   const view = hash.split("?")[0];
-  return view === "studio" || view === "verify" || view === "batch"
+  return view === "studio" || view === "verify" || view === "batch" || view === "issuers"
     ? view
     : "landing";
 }
@@ -142,7 +148,9 @@ function App() {
       ? "studio-heading"
       : currentView === "verify"
         ? "verify-heading"
-        : null;
+        : currentView === "issuers"
+          ? "issuers-heading"
+          : null;
 
   useEffect(() => {
     if (!viewHeadingId) return;
@@ -289,6 +297,14 @@ function App() {
             >
               Batch Workspace
             </button>
+            <button
+              className={currentView === "issuers" ? "active" : ""}
+              aria-current={currentView === "issuers" ? "page" : undefined}
+              type="button"
+              onClick={() => openView("issuers")}
+            >
+              Issuers
+            </button>
           </div>
           <div className="network-pill">Stellar Testnet</div>
           <button
@@ -396,6 +412,12 @@ function App() {
               />
             </Suspense>
           </section>
+        ) : null}
+
+        {currentView === "issuers" ? (
+          <Suspense fallback={<LazyFallback label="Issuer directory" />}>
+            <IssuersView contractId={CONTRACT_ID} apiBase={API_BASE} />
+          </Suspense>
         ) : null}
       </main>
     </>

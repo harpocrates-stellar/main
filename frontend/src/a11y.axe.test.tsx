@@ -284,6 +284,23 @@ describe('a11y.axe — WCAG 2.2 AA automated checks', () => {
     expect(container.querySelector(`#${titleId}`)).toHaveTextContent(/harpocrates protocol workflow/i)
   })
 
+  it('passes automated accessibility checks for the issuer directory view', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+
+    const issuersNav = screen.getByRole('button', { name: /issuers/i })
+    await user.click(issuersNav)
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: /issuer directory/i })).toBeInTheDocument()
+    })
+
+    await expectNoA11yViolations(
+      await runAxe(container),
+      'App in issuers directory view',
+    )
+  })
+
   // ── Boundary: an empty tree is clean and incomplete rules are disciplined ──
 
   it('reports no violations for an empty tree', async () => {

@@ -127,6 +127,14 @@ export type IssuerRecord = {
   active: boolean
 }
 
+export type IssuerRotationRecord = {
+  previousIssuer: string
+  replacementIssuer: string
+  rotatedAt: number
+  graceExpiresAt: number
+  graceSecs: number
+}
+
 export type SupportedPredicateType = 'Equality' | 'SetMembership' | 'Range'
 
 export type SelectiveDisclosureChainInput = {
@@ -159,6 +167,8 @@ export type RegistryMethod =
   | 'get_schema'
   | 'get_verifier_state'
   | 'get_open_dispute_count'
+  | 'get_issuer_rotation'
+  | 'is_issuer_verifiable'
 
 export type ScopedProofScope = {
   /** Field element derived from the scope string (SHA-256 mod BN254). */
