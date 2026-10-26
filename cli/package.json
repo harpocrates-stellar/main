@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "@aztec/bb.js": "^0.87.0",
-    "@stellar/stellar-sdk": "^17.2.1"
+    "@stellar/stellar-sdk": "^17.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
