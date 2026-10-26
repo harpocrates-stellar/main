@@ -32,7 +32,7 @@
     "./proof-verify": "./dist/proof-verify.js"
   },
   "dependencies": {
-    "@aztec/bb.js": "^0.87.0",
+    "@aztec/bb.js": "^5.2.1",
     "@stellar/stellar-sdk": "^17.2.1"
   },
   "devDependencies": {
