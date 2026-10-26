@@ -79,6 +79,49 @@ def test_browser_runner_modes_are_bounded(lock: zb.Lock):
     )
 
 
+def test_browser_runner_circuits_and_batch_bounds(lock: zb.Lock):
+    runner = (Path(__file__).resolve().parent / "browser_runner.mjs").read_text(encoding="utf-8")
+    assert "SUPPORTED_CIRCUITS = ['silent_witness', 'aggregator']" in runner
+    assert "MAX_AGGREGATION_SIZE = 8" in runner
+    assert "MIN_AGGREGATION_SIZE = 1" in runner
+    assert "AGGREGATED_PUBLIC_INPUTS_LEN = 1024" in runner
+    zb.assert_privacy_safe(
+        {"circuit": "aggregator", "batch": 8, "fixture_id": "silent_witness_aggregator.synthetic.v1"},
+        forbidden_keys=lock.forbidden_report_keys,
+        forbidden_substrings=lock.forbidden_substrings,
+    )
+
+
+def test_browser_runner_cli_validations():
+    import subprocess
+    runner_path = str(Path(__file__).resolve().parent / "browser_runner.mjs")
+
+    # Rejection of unknown circuit
+    proc = subprocess.run(["node", runner_path, "--circuit", "unknown"], capture_output=True, text=True)
+    assert proc.returncode == 3
+    assert "unknown_circuit" in proc.stderr
+
+    # Rejection of invalid batch sizes (bounds 1..8)
+    proc = subprocess.run(["node", runner_path, "--circuit", "aggregator", "--batch", "0"], capture_output=True, text=True)
+    assert proc.returncode == 3
+    assert "invalid_batch_size" in proc.stderr
+
+    proc = subprocess.run(["node", runner_path, "--circuit", "aggregator", "--batch", "9"], capture_output=True, text=True)
+    assert proc.returncode == 3
+    assert "invalid_batch_size" in proc.stderr
+
+    # Missing artifacts exit 3 with dependency-failure
+    proc = subprocess.run(["node", runner_path, "--circuit", "aggregator"], capture_output=True, text=True)
+    assert proc.returncode == 3
+    assert "dependency-failure" in proc.stderr
+    assert "compile circuits first" in proc.stderr
+
+    proc = subprocess.run(["node", runner_path, "--circuit", "silent_witness"], capture_output=True, text=True)
+    assert proc.returncode == 3
+    assert "dependency-failure" in proc.stderr
+    assert "compile circuits first" in proc.stderr
+
+
 def test_lock_rejects_unknown_version(tmp_path: Path):
     raw = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     raw["version"] = 99

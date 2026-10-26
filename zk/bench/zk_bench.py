@@ -969,7 +969,14 @@ def compare_report(report: dict[str, Any], baselines: dict[str, Any]) -> list[st
     """Return human-readable regression findings (empty => ok)."""
     findings: list[str] = []
     target = report.get("target")
-    target_base = baselines.get("targets", {}).get(str(target), {})
+    circuit = report.get("circuit")
+    target_base = {}
+    if circuit and "circuits" in baselines and circuit in baselines["circuits"]:
+        target_base = baselines["circuits"][circuit].get("targets", {}).get(str(target), {})
+    if not target_base and circuit:
+        target_base = baselines.get("targets", {}).get(f"{target}_{circuit}", {})
+    if not target_base:
+        target_base = baselines.get("targets", {}).get(str(target), {})
     if not target_base:
         return findings
 
