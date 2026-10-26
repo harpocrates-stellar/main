@@ -21,6 +21,9 @@ export {
   registerProofOnStellar,
   verifyProof,
   getVerifierState,
+  getIssuerRecord,
+  getIssuerRotation,
+  isIssuerVerifiable,
   CONTRACT_NETWORK_PASSPHRASE,
 } from './harpocratesRegistry'
 // Re-export for use by wallet hook and guard code.

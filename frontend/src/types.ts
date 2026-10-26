@@ -5,7 +5,7 @@ export type { IdentityTier }
 
 export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error' | 'cancelled'
 
-export type View = 'landing' | 'studio' | 'verify'
+export type View = 'landing' | 'studio' | 'verify' | 'issuers'
 
 export type SilentWitnessProof = {
   credentialRoot: string

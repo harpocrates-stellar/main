@@ -22,6 +22,8 @@ import type {
   Hex32,
   IdentityTier,
   IssuerRecord,
+  IssuerRotationRecord,
+  ChainVerifierState,
   NormalizedRegisterProofInput,
   ProofHistoryEntry,
   ProofHistoryResult,
@@ -389,6 +391,88 @@ export async function getIssuerRecord(
 }
 
 /**
+ * Read an issuer's rotation grace record.
+ *
+ * Resolves to null when no rotation record exists for the given issuer address.
+ */
+export async function getIssuerRotation(
+  contractId: string,
+  issuer: string,
+  sourceAddress?: string,
+): Promise<IssuerRotationRecord | null> {
+  const source = requireReadSource(sourceAddress)
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call('get_issuer_rotation' satisfies RegistryMethod, new Address(issuer).toScVal()),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    previousIssuer: native.previous_issuer?.toString?.() ?? String(native.previous_issuer),
+    replacementIssuer: native.replacement_issuer?.toString?.() ?? String(native.replacement_issuer),
+    rotatedAt: Number(native.rotated_at),
+    graceExpiresAt: Number(native.grace_expires_at),
+    graceSecs: Number(native.grace_secs),
+  }
+}
+
+/**
+ * Check whether an issuer may anchor verification of evidence it issued.
+ *
+ * Returns true if the issuer is active, or if rotated out and within the grace window.
+ */
+export async function isIssuerVerifiable(
+  contractId: string,
+  issuer: string,
+  sourceAddress?: string,
+): Promise<boolean> {
+  const source = requireReadSource(sourceAddress)
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call('is_issuer_verifiable' satisfies RegistryMethod, new Address(issuer).toScVal()),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return false
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : false
+  return Boolean(native)
+}
+
+/**
  * Read a dispute record from the registry by dispute ID.
  *
  * Simulation-only read following the pattern of `getProofHistoryCount`; no
@@ -735,18 +819,13 @@ export async function respondDispute(
   }
 }
 
-/**
- * Return the number of currently Open disputes for a given proof.
- */
-export async function getOpenDisputeCount(
+
+
+export async function getVerifierState(
   contractId: string,
-  proofId: string,
   sourceAddress?: string,
-): Promise<number> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    return 0
-  }
+): Promise<ChainVerifierState | null> {
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)
@@ -755,53 +834,7 @@ export async function getOpenDisputeCount(
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(
-      contract.call(
-        'get_open_dispute_count' satisfies RegistryMethod,
-        scBytes32(asHex32(proofId, 'proofId')),
-      ),
-    )
-    .setTimeout(30)
-    .build()
-
-  const simulation = await server.simulateTransaction(transaction)
-  if (rpc.Api.isSimulationError(simulation)) {
-    throw new Error(simulation.error)
-  }
-  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return 0
-  }
-
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : 0
-  return Number(native)
-}
-
-/**
- * Read a dispute record by dispute ID.
- */
-export async function getDispute(
-  contractId: string,
-  disputeId: string,
-  sourceAddress?: string,
-): Promise<ChainDisputeRecord | null> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    return null
-  }
-
-  const server = new rpc.Server(RPC_URL)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-  const transaction = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      contract.call(
-        'get_dispute' satisfies RegistryMethod,
-        scBytes32(asHex32(disputeId, 'disputeId')),
-      ),
-    )
+    .addOperation(contract.call('get_verifier_state' satisfies RegistryMethod))
     .setTimeout(30)
     .build()
 
@@ -817,18 +850,12 @@ export async function getDispute(
   if (!native) return null
 
   return {
-    disputeId: bytesToHex(native.dispute_id),
-    proofId: bytesToHex(native.proof_id),
-    reason: Number(native.reason) as DisputeReason,
-    reporterHash: bytesToHex(native.reporter_hash),
-    commitmentHash: bytesToHex(native.commitment_hash),
-    status: Number(native.status) as DisputeStatus,
-    openedAt: Number(native.opened_at),
-    respondDeadline: Number(native.respond_deadline),
-    resolveDeadline: Number(native.resolve_deadline),
-    responseCommitment: native.response_commitment ? bytesToHex(native.response_commitment) : null,
-    resolvedAt: Number(native.resolved_at),
-    supersededBy: native.superseded_by ? bytesToHex(native.superseded_by) : null,
+    activeVerifier: native.active_verifier ? String(native.active_verifier) : null,
+    pendingVerifier: native.pending_verifier ? String(native.pending_verifier) : null,
+    previousVerifier: native.previous_verifier ? String(native.previous_verifier) : null,
+    activationLedger: String(native.activation_ledger),
+    overlapWindow: String(native.overlap_window),
+    rollbackWindow: String(native.rollback_window),
+    rollbackWindowEnd: String(native.rollback_window_end),
   }
 }
-
