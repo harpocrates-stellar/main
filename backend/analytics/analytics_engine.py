@@ -293,14 +293,19 @@ class AnalyticsEngine:
                             reason="consent_denied",
                         )
                     return event
-                elif status == ConsentStatus.GRACE:
-                    if transition_event_state is not None and EventLifecycleState is not None:
-                        event = transition_event_state(event, EventLifecycleState.CONSENT_PENDING)
-                    event.annotations["consent_grace"] = "true"
                 else:
                     if transition_event_state is not None and EventLifecycleState is not None:
-                        event = transition_event_state(event, EventLifecycleState.CONSENT_PENDING)
-                    event.annotations["consent_grace"] = "true"
+                        event = transition_event_state(
+                            event,
+                            EventLifecycleState.CONSENT_DENIED,
+                            reason="consent_missing",
+                        )
+                        event = transition_event_state(
+                            event,
+                            EventLifecycleState.DROPPED,
+                            reason="consent_missing",
+                        )
+                    return event
             else:
                 if consent_ok:
                     if transition_event_state is not None and EventLifecycleState is not None:

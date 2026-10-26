@@ -18,6 +18,11 @@ from pathlib import Path
 
 
 from flask import Flask, Response, g, jsonify, request, send_file
+from dataclasses import asdict
+from analytics.config import load_analytics_config
+from analytics.analytics_engine import AnalyticsEngine, set_engine
+from analytics.middleware import AnalyticsMiddleware
+from analytics.routes import register_analytics_routes
 from flask_cors import CORS
 
 from http_security import (
@@ -112,7 +117,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -340,6 +345,16 @@ def create_app() -> Flask:
         service_version=config.release_id,
     )
     app = Flask(__name__)
+    analytics_cfg = load_analytics_config()
+    analytics_enabled = os.getenv("ANALYTICS_ENABLED", "false").lower() in ("true", "1", "yes", "on") or (
+        analytics_cfg.rollout.phase != "off"
+    )
+    analytics_engine = None
+    if analytics_enabled:
+        analytics_engine = set_engine(AnalyticsEngine(config=analytics_cfg))
+        app.wsgi_app = AnalyticsMiddleware(app.wsgi_app, engine=analytics_engine).wrap_wsgi
+        register_analytics_routes(app, engine=analytics_engine)
+
     # Initialize verifier cache using config
     app.extensions["verifier_cache"] = VerifierCache(
         max_size=config.verifier_cache_max_size,
@@ -782,22 +797,23 @@ def create_app() -> Flask:
                 dependency.critical,
             )
         trace = current_trace_fields()
-        return jsonify(
-            {
-                "ok": status["ok"],
-                "service": "harpocrates-stego",
-                "database": status.get("database", "not_configured"),
-                "video_tools": status.get("video_tools", "missing"),
-                "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
-                "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
-                "max_aggregation_size": MAX_AGGREGATION_SIZE,
-                "ratelimit_storage": storage_kind,
-                "storage_kind": storage_kind,
-                "request_id": request_id(),
-                "trace_id": trace.get("trace_id"),
-                "correlation_id": trace.get("correlation_id"),
-            }
-        ), 200 if status["ok"] else 503
+        details = {
+            "ok": status["ok"],
+            "service": "harpocrates-stego",
+            "database": status.get("database", "not_configured"),
+            "video_tools": status.get("video_tools", "missing"),
+            "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
+            "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
+            "max_aggregation_size": MAX_AGGREGATION_SIZE,
+            "ratelimit_storage": storage_kind,
+            "storage_kind": storage_kind,
+            "request_id": request_id(),
+            "trace_id": trace.get("trace_id"),
+            "correlation_id": trace.get("correlation_id"),
+        }
+        if analytics_enabled and analytics_engine is not None:
+            details["analytics"] = asdict(analytics_engine.health_snapshot())
+        return jsonify(details), 200 if status["ok"] else 503
 
     def _enforce_video_size(video) -> bool:
         # StreamingFileStorage enforces the limit mid-stream during save();
