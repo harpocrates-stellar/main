@@ -415,3 +415,122 @@ def test_retention_worker_blob_gc_handles_error_gracefully(monkeypatch):
         worker._purge()
 
 
+
+
+class _FakeEventsDB:
+    """In-memory stand-in for the events table, shared by count and purge."""
+
+    def __init__(self, rows: int):
+        self.rows = rows
+        self.delete_calls = 0
+
+    def count_expired_events(self) -> int:
+        return self.rows
+
+    def purge_expired_events(self, batch_size: int):
+        self.delete_calls += 1
+        deleted = min(batch_size, self.rows)
+        self.rows -= deleted
+        return [{"proof_id": f"p{i}"} for i in range(deleted)]
+
+
+def _run_purge(worker, fake, monkeypatch, dry_run):
+    from metrics import collector
+
+    if dry_run:
+        monkeypatch.setenv("HARPOCRATES_RETENTION_DRY_RUN", "true")
+    else:
+        monkeypatch.delenv("HARPOCRATES_RETENTION_DRY_RUN", raising=False)
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+    monkeypatch.setitem(sys.modules, "storage", mock_storage)
+    with patch("retention.count_expired_events", side_effect=fake.count_expired_events), \
+         patch("retention.purge_expired_events", side_effect=lambda batch_size: fake.purge_expired_events(batch_size)), \
+         patch("retention.log_structured") as mock_log:
+        worker._purge()
+    return collector, mock_log
+
+
+def test_config_retention_dry_run_flag(monkeypatch):
+    monkeypatch.delenv("HARPOCRATES_RETENTION_DRY_RUN", raising=False)
+    assert load_config().retention_dry_run is False
+    monkeypatch.setenv("HARPOCRATES_RETENTION_DRY_RUN", "true")
+    assert load_config().retention_dry_run is True
+
+
+def test_retention_dry_run_never_deletes_and_records_gauge(monkeypatch):
+    fake = _FakeEventsDB(rows=130)
+    worker = RetentionWorker(interval_seconds=60, batch_size=50)
+    from metrics import collector as _c
+    _c.reset()
+
+    collector, mock_log = _run_purge(worker, fake, monkeypatch, dry_run=True)
+
+    assert fake.delete_calls == 0
+    assert fake.rows == 130
+    assert "harpocrates_retention_dry_run_eligible_events 130" in collector.generate_prometheus_metrics()
+    logs = [c.args[2] for c in mock_log.call_args_list if len(c.args) >= 3 and isinstance(c.args[2], dict)]
+    dry = [entry for entry in logs if entry.get("event") == "retention_worker_dry_run"]
+    assert dry == [{"event": "retention_worker_dry_run", "eligible_count": 130}]
+    assert not [entry for entry in logs if entry.get("event") == "retention_worker_purged"]
+
+
+def test_retention_dry_run_count_matches_real_run(monkeypatch):
+    fake = _FakeEventsDB(rows=130)
+    worker = RetentionWorker(interval_seconds=60, batch_size=50)
+
+    _run_purge(worker, fake, monkeypatch, dry_run=True)
+    reported = fake.count_expired_events()
+
+    _, mock_log = _run_purge(worker, fake, monkeypatch, dry_run=False)
+    logs = [c.args[2] for c in mock_log.call_args_list if len(c.args) >= 3 and isinstance(c.args[2], dict)]
+    deleted = sum(e["count"] for e in logs if e.get("event") == "retention_worker_purged")
+
+    assert deleted == reported == 130
+    assert fake.rows == 0
+
+
+def test_retention_real_mode_deletes_when_dry_run_unset(monkeypatch):
+    fake = _FakeEventsDB(rows=10)
+    worker = RetentionWorker(interval_seconds=60, batch_size=50)
+    _run_purge(worker, fake, monkeypatch, dry_run=False)
+    assert fake.delete_calls == 1
+    assert fake.rows == 0
+
+
+def test_count_and_purge_share_predicate(monkeypatch):
+    import db
+
+    executed = []
+
+    class _Cursor:
+        def execute(self, sql, params=None):
+            executed.append(sql)
+
+        def fetchone(self):
+            return {"expired": 0}
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Conn(_Cursor):
+        def cursor(self):
+            return _Cursor()
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(db, "database_url", lambda: "postgresql://fake")
+    monkeypatch.setattr(db, "get_connection", lambda: _Conn())
+
+    db.count_expired_events()
+    db.purge_expired_events(batch_size=10)
+
+    assert len(executed) == 2
+    assert all(db.EXPIRED_EVENTS_PREDICATE_SQL in sql for sql in executed)

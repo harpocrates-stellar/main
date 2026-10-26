@@ -248,45 +248,13 @@ def sign_payload(payload_bytes: bytes, secret: str, timestamp: int) -> str:
     return mac.hexdigest()
 
 
-def is_previous_secret_valid(
-    previous_secret_key: Optional[str],
-    previous_secret_expires_at: Any,
-    current_time: Optional[datetime] = None,
-) -> bool:
-    """Return True if previous_secret_key is configured and not yet expired.
-
-    Parameters:
-        previous_secret_key: The previous signing secret string or None.
-        previous_secret_expires_at: Expiration timestamp (datetime, str, int/float, or None).
-        current_time: Reference time for expiration comparison. Defaults to datetime.now(timezone.utc).
-    """
-    if not previous_secret_key:
-        return False
-    if previous_secret_expires_at is None:
-        return True
-
-    if current_time is None:
-        now = datetime.now(timezone.utc)
-    elif current_time.tzinfo is None:
-        now = current_time.replace(tzinfo=timezone.utc)
-    else:
-        now = current_time
-
-    expires_at = previous_secret_expires_at
-    if isinstance(expires_at, str):
-        try:
-            expires_at = datetime.fromisoformat(expires_at)
-        except ValueError:
-            return False
-    elif isinstance(expires_at, (int, float)):
-        expires_at = datetime.fromtimestamp(expires_at, tz=timezone.utc)
-
-    if isinstance(expires_at, datetime):
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        return now < expires_at
-
-    return False
+def _is_header_safe(value: Any) -> bool:
+    """Return True for a non-empty string that is safe to send as a header value."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and all(0x20 < ord(ch) < 0x7F for ch in value)
+    )
 
 
 def dispatch_webhook(
@@ -332,7 +300,12 @@ def dispatch_webhook(
         "Content-Type": "application/json",
         "X-Harpocrates-Signature": sig_header,
         "User-Agent": "Harpocrates-Webhook/1.0",
+        "X-Harpocrates-Delivery": str(delivery["delivery_id"]),
+        "X-Harpocrates-Attempt": str(int(delivery.get("retry_count") or 0) + 1),
     }
+    event_type = payload.get("event_type") if isinstance(payload, dict) else None
+    if _is_header_safe(event_type):
+        headers["X-Harpocrates-Event"] = event_type
 
     req = urllib.request.Request(url, data=payload_bytes, headers=headers, method="POST")
 

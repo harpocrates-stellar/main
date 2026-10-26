@@ -9,6 +9,11 @@ Outbound webhook request fields, headers, HMAC-SHA-256 signature verification,
 replay guidance, and retry/backoff behaviour are documented in
 [Webhook delivery and signature verification](docs/webhooks.md).
 
+Every delivery carries `X-Harpocrates-Delivery` (the delivery ID, stable across
+retries) and `X-Harpocrates-Attempt` (`retry_count + 1`), plus
+`X-Harpocrates-Event` when the payload has an `event_type`. Receivers can use
+them to deduplicate and route calls without parsing the body.
+
 ## Steganography
 
 `POST /api/stego/embed` accepts a video and JSON metadata, then returns an

@@ -2,7 +2,7 @@ import logging
 import threading
 
 from config import load_config
-from db import purge_expired_events
+from db import count_expired_events, purge_expired_events
 from metrics import collector as metrics_collector
 from logging_utils import log_structured
 
@@ -45,7 +45,21 @@ class RetentionWorker:
 
             self._stop_event.wait(self.interval_seconds)
 
+    def _dry_run(self) -> None:
+        """Report how many events a real run would delete, without deleting."""
+        eligible = count_expired_events()
+        metrics_collector.set_retention_dry_run_eligible(eligible)
+        log_structured(
+            LOGGER,
+            logging.INFO,
+            {"event": "retention_worker_dry_run", "eligible_count": eligible},
+        )
+
     def _purge(self) -> None:
+        if getattr(load_config(), "retention_dry_run", False):
+            self._dry_run()
+            return
+
         while True:
             receipts = purge_expired_events(batch_size=self.batch_size)
             num_deleted = len(receipts)

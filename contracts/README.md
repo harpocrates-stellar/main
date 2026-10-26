@@ -267,6 +267,8 @@ upgrade_storage
 propose_admin
 cancel_admin_transfer
 accept_admin
+get_admin
+get_pending_admin
 get_schema_version
 is_admin
 is_issuer

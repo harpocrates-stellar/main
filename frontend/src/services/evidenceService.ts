@@ -9,11 +9,11 @@ import type { IdentityTier, ProofPackage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
 import type { TimeAttestation } from '../timeAttestation'
 import { ApiClientError, parseActionableApiError } from './apiError'
+import { fetchWithTimeout, JSON_REQUEST_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from './http'
 import { FlowCancelledError, throwIfAborted } from '../utils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
-
 export type EmbedResult = {
   embeddedBlob: Blob
   embeddedHash: string
@@ -50,11 +50,11 @@ export async function embedVideo(
   form.append('metadata', JSON.stringify(metadata))
 
   throwIfAborted(signal)
-  const response = await fetch(`${API_BASE}/api/stego/embed`, {
+  const response = await fetchWithTimeout(`${API_BASE}/api/stego/embed`, {
     method: 'POST',
     body: form,
     signal,
-  })
+  }, UPLOAD_TIMEOUT_MS)
 
   if (signal?.aborted) throw new FlowCancelledError()
 
@@ -106,6 +106,7 @@ export async function persistRegistration(
   proof: ProofPackage,
   result: RegisterProofResult,
   sourceAddress: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const payload: RegistrationPayload = {
     fileName: proof.fileName,
@@ -133,11 +134,12 @@ export async function persistRegistration(
     payload.timeAttestation = proof.timeAttestation
   }
 
-  await fetch(`${API_BASE}/api/proofs/register`, {
+  await fetchWithTimeout(`${API_BASE}/api/proofs/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-  })
+    signal,
+  }, JSON_REQUEST_TIMEOUT_MS)
 }
 
 /**
@@ -185,8 +187,8 @@ export async function addStellarAnchorToAttestation(
 }
 
 /** Fetch recent proof events from NeonDB (up to `limit`). */
-export async function fetchRecentEvents(limit = 6) {
-  const response = await fetch(`${API_BASE}/api/proofs?limit=${limit}`)
+export async function fetchRecentEvents(limit = 6, signal?: AbortSignal) {
+  const response = await fetchWithTimeout(`${API_BASE}/api/proofs?limit=${limit}`, { signal }, JSON_REQUEST_TIMEOUT_MS)
   if (!response.ok) throw new ApiClientError(await parseActionableApiError(response, 'Database event feed is unavailable.'))
   const data = await response.json()
   return data.events ?? []

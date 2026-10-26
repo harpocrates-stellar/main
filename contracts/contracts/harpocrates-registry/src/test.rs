@@ -466,10 +466,21 @@ fn transfers_admin_after_proposal_is_accepted() {
     let new_admin = Address::generate(&env);
     let issuer = Address::generate(&env);
 
+    assert_eq!(client.get_admin(), None);
+    assert_eq!(client.get_pending_admin(), None);
+
     client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
     client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
     assert_eq!(env.events().all().events().len(), 1);
+
     client.accept_admin(&new_admin);
+    assert_eq!(client.get_admin(), Some(new_admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
     assert_eq!(env.events().all().events().len(), 1);
 
     client.add_issuer(&new_admin, &issuer, &bytes32(&env, 61));
@@ -488,8 +499,16 @@ fn cancelled_admin_transfer_cannot_be_accepted() {
     let pending_admin = Address::generate(&env);
 
     client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
     client.propose_admin(&admin, &pending_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(pending_admin.clone()));
+
     client.cancel_admin_transfer(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
     assert_eq!(env.events().all().events().len(), 1);
     client.accept_admin(&pending_admin);
 }
@@ -858,4 +877,89 @@ fn test_assurance_disputed_proof() {
     assert_eq!(assurance.open_dispute_count, client.get_open_dispute_count(&proof_id));
     assert_eq!(assurance.status, ProofVerificationStatus::Valid);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
+}
+
+
+#[test]
+fn test_get_statuses_by_video_mixed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    // 1. Valid proof
+    let v_valid = bytes32(&env, 0x11);
+    let p_valid = bytes32(&env, 0x21);
+    client.register_source(&source, &v_valid, &bytes32(&env, 0x31), &p_valid);
+
+    // 2. Revoked proof
+    let v_revoked = bytes32(&env, 0x12);
+    let p_revoked = bytes32(&env, 0x22);
+    client.register_source(&source, &v_revoked, &bytes32(&env, 0x32), &p_revoked);
+    client.revoke_proof(&admin, &p_revoked);
+
+    // 3. Expired proof (explicitly set expires_at or expired status)
+    let v_expired = bytes32(&env, 0x13);
+    let p_expired = bytes32(&env, 0x23);
+    client.register_source(&source, &v_expired, &bytes32(&env, 0x33), &p_expired);
+    // Advance ledger timestamp beyond TTL (proof TTL is 30 days = 2_592_000s)
+    env.ledger().set_timestamp(1_000_000 + 3_000_000);
+
+    // 4. Unknown hash
+    let v_unknown = bytes32(&env, 0x99);
+
+    let mut query = soroban_sdk::Vec::new(&env);
+    query.push_back(v_valid.clone());
+    query.push_back(v_unknown.clone());
+    query.push_back(v_revoked.clone());
+    query.push_back(v_expired.clone());
+
+    let statuses = client.get_statuses_by_video(&query);
+    assert_eq!(statuses.len(), 4);
+    assert_eq!(statuses.get(0).unwrap(), ProofVerificationStatus::Valid);
+    assert_eq!(statuses.get(1).unwrap(), ProofVerificationStatus::NotFound);
+    assert_eq!(statuses.get(2).unwrap(), ProofVerificationStatus::Revoked);
+    assert_eq!(statuses.get(3).unwrap(), ProofVerificationStatus::Expired);
+}
+
+#[test]
+fn test_get_statuses_by_video_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    let query = soroban_sdk::Vec::new(&env);
+    let statuses = client.get_statuses_by_video(&query);
+    assert_eq!(statuses.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #43)")]
+fn test_get_statuses_by_video_oversized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    let mut query = soroban_sdk::Vec::new(&env);
+    for i in 0..101u8 {
+        let mut hash = [0xEEu8; 32];
+        hash[0] = i;
+        query.push_back(BytesN::from_array(&env, &hash));
+    }
+
+    client.get_statuses_by_video(&query);
 }

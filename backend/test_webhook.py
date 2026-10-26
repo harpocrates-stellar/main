@@ -209,3 +209,95 @@ def test_validate_event_types_allows_known():
 def test_validate_event_types_rejects_unknown():
     with pytest.raises(ValueError):
         validate_event_types(["embed"])
+
+
+def _dispatch_and_capture(mock_safe_urlopen, delivery):
+    mock_safe_urlopen.return_value = FetchResult(status=204, body=b"")
+    dispatch_webhook(delivery)
+    return mock_safe_urlopen.call_args.args[0]
+
+
+@mock.patch("webhook.update_delivery_status")
+@mock.patch("webhook.safe_urlopen")
+def test_dispatch_webhook_sends_delivery_attempt_and_event_headers(
+    mock_safe_urlopen, _mock_update
+):
+    request = _dispatch_and_capture(mock_safe_urlopen, {
+        "delivery_id": 42,
+        "url": "http://example.com/webhook",
+        "secret_key": "sec",
+        "retry_count": 0,
+        "payload": {"event_type": "register", "proof_id": "b" * 64},
+    })
+
+    assert request.get_header("X-harpocrates-delivery") == "42"
+    assert request.get_header("X-harpocrates-attempt") == "1"
+    assert request.get_header("X-harpocrates-event") == "register"
+
+
+@mock.patch("webhook.update_delivery_status")
+@mock.patch("webhook.safe_urlopen")
+def test_dispatch_webhook_attempt_header_counts_retries(
+    mock_safe_urlopen, _mock_update
+):
+    request = _dispatch_and_capture(mock_safe_urlopen, {
+        "delivery_id": 7,
+        "url": "http://example.com/webhook",
+        "secret_key": "sec",
+        "retry_count": 3,
+        "payload": {"event_type": "embed"},
+    })
+
+    assert request.get_header("X-harpocrates-delivery") == "7"
+    assert request.get_header("X-harpocrates-attempt") == "4"
+
+
+@pytest.mark.parametrize("payload", [
+    {"video_hash": "a" * 64},
+    {"event_type": None},
+    {"event_type": ""},
+    {"event_type": "bad\r\nInjected: yes"},
+])
+@mock.patch("webhook.update_delivery_status")
+@mock.patch("webhook.safe_urlopen")
+def test_dispatch_webhook_omits_event_header_without_safe_event_type(
+    mock_safe_urlopen, _mock_update, payload
+):
+    request = _dispatch_and_capture(mock_safe_urlopen, {
+        "delivery_id": 9,
+        "url": "http://example.com/webhook",
+        "secret_key": "sec",
+        "retry_count": 0,
+        "payload": payload,
+    })
+
+    assert request.get_header("X-harpocrates-event") is None
+    assert request.get_header("X-harpocrates-delivery") == "9"
+    assert request.get_header("X-harpocrates-attempt") == "1"
+
+
+@mock.patch("webhook.update_delivery_status")
+@mock.patch("webhook.safe_urlopen")
+@mock.patch("webhook.time.time", return_value=SAMPLE_TIMESTAMP)
+def test_new_headers_leave_signature_and_body_unchanged(
+    _mock_time, mock_safe_urlopen, _mock_update
+):
+    request = _dispatch_and_capture(mock_safe_urlopen, {
+        "delivery_id": 3,
+        "url": "http://example.com/webhook",
+        "secret_key": SAMPLE_SECRET,
+        "retry_count": 2,
+        "payload": SAMPLE_PAYLOAD,
+    })
+
+    assert request.data == SAMPLE_BODY.encode("utf-8")
+    assert request.get_header("X-harpocrates-signature") == (
+        f"t={SAMPLE_TIMESTAMP},v1={SAMPLE_SIGNATURE}"
+    )
+    header_values = [
+        request.get_header("X-harpocrates-delivery"),
+        request.get_header("X-harpocrates-attempt"),
+    ]
+    assert header_values == ["3", "3"]
+    for value in header_values:
+        assert "a" * 64 not in value

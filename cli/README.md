@@ -4,8 +4,11 @@ From `cli/`, run `npm ci && npm run build`. The executable is `node dist/cli.js`
 It accepts the frontend's v2 proof manifest (and legacy v1), checks the
 selected network and registry contract, looks up the manifest transaction and
 video hash on Stellar RPC, and emits a machine-readable receipt with `--output
-json`. It never needs a wallet or signing key; a funded public source address
-is needed for read-only Soroban simulation.
+json`. It never needs a wallet or signing key. `--source-address` is optional:
+when omitted, read-only Soroban simulation uses a local placeholder account
+(sequence `0`) and needs no funded or existing account, so `verify` works
+offline-friendly and in CI. When supplied, the explicit address is loaded from
+RPC via `getAccount` as before.
 
 ```sh
 node dist/cli.js --version
@@ -110,3 +113,22 @@ CLI build; no chain, metadata, or registry migration is required. The trust
 boundary is the selected Stellar RPC and local clock (used to detect elapsed
 record expiry); use a trusted RPC and synchronized host clock. The CLI
 does not verify Noir proof bytes or replace the browser verifier.
+
+## Single-file bundle
+
+For air-gapped or audit use there's also a self-contained build. From `cli/`,
+run `npm ci && npm run bundle`. That writes `dist/harpocrates.mjs` (all runtime
+deps, including `@stellar/stellar-sdk`, inlined, with a `#!/usr/bin/env node`
+shebang) and `dist/harpocrates.mjs.sha256` in `sha256sum` format. Copy both
+files anywhere and run:
+
+```sh
+sha256sum -c harpocrates.mjs.sha256
+node harpocrates.mjs help
+```
+
+No `node_modules` is needed. `@aztec/bb.js` is still loaded lazily and is not
+bundled, so local proof verification needs it installed next to the bundle.
+`npm run test:bundle` copies the bundle into an empty temp dir and runs `help`
+as a smoke test. CI uploads both files as the `harpocrates-cli-bundle`
+artifact. `npm run build` (tsc) output is unaffected.
