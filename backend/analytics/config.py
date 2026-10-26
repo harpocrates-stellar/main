@@ -30,7 +30,7 @@ class RolloutPhase(str):
     FULL = "full"
 
 
-ANALYTICS_ROLLOUT_PHASE = os.getenv("ANALYTICS_ROLLOUT", RolloutPhase.SHADOW)
+ANALYTICS_ROLLOUT_PHASE = os.getenv("ANALYTICS_ROLLOUT", RolloutPhase.OFF)
 
 
 @dataclass
