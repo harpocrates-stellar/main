@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload synthetic failing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: circuit-fuzz-failures
           path: SET THIS   # the fuzzer's crash/failing-input directory
@@ -80,7 +80,7 @@ jobs:
 
       - name: Upload synthetic failing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parser-fuzz-failures
           path: SET THIS
