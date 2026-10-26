@@ -571,6 +571,8 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "secret_key", "type": "text"},
         {"column": "is_active", "type": "boolean"},
         {"column": "created_at", "type": "timestamp with time zone"},
+        {"column": "previous_secret_key", "type": "text"},
+        {"column": "previous_secret_expires_at", "type": "timestamp with time zone"},
     ],
     "webhook_deliveries": [
         {"column": "id", "type": "bigint"},

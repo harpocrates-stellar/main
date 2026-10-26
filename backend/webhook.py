@@ -1,3 +1,25 @@
+"""
+Webhook delivery and cryptographic payload signing for Harpocrates events.
+
+Signature Header Format and Verification:
+-----------------------------------------
+Outbound webhook requests carry the `X-Harpocrates-Signature` header:
+    X-Harpocrates-Signature: t=<timestamp>,v1=<signature>[,v1=<previous_signature>]
+
+During a secret rotation overlap window, both the current secret and the previous
+secret (while valid / before expiry) are emitted:
+    t=<timestamp>,v1=<current_signature>,v1=<previous_signature>
+
+Receiver Verification Behavior:
+-------------------------------
+Receivers must:
+1. Extract timestamp `t` and all `v1` signatures from the header.
+2. Verify timestamp freshness to prevent replay attacks.
+3. Compute HMAC-SHA256(secret, f"{t}.{raw_payload}") using their configured secret.
+4. Accept the webhook delivery if ANY `v1` signature matches.
+   Secrets are strictly confidential and must never be logged.
+"""
+
 import hashlib
 import hmac
 import json
@@ -147,7 +169,8 @@ def lease_deliveries(limit: int = 10, lease_duration: int = 30) -> List[dict]:
             for d in deliveries:
                 cur.execute(
                     """
-                    SELECT s.url, s.secret_key, e.event_type, e.file_name, e.video_hash,
+                    SELECT s.url, s.secret_key, s.previous_secret_key, s.previous_secret_expires_at,
+                           e.event_type, e.file_name, e.video_hash,
                            e.metadata_hash, e.proof_id, e.tier, e.embedded_hash,
                            e.tx_hash, e.tx_status, e.source_address, e.contract_id,
                            e.metadata, e.created_at
@@ -164,6 +187,8 @@ def lease_deliveries(limit: int = 10, lease_duration: int = 30) -> List[dict]:
                         "retry_count": d["retry_count"],
                         "url": row["url"],
                         "secret_key": row["secret_key"],
+                        "previous_secret_key": row.get("previous_secret_key") if hasattr(row, "get") else row["previous_secret_key"],
+                        "previous_secret_expires_at": row.get("previous_secret_expires_at") if hasattr(row, "get") else row["previous_secret_expires_at"],
                         "payload": {
                             "event_type": row["event_type"],
                             "file_name": row["file_name"],
@@ -239,17 +264,41 @@ def dispatch_webhook(
     read_timeout: float = _DEFAULT_READ_TIMEOUT,
     max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
 ) -> None:
+    """Dispatch an event payload to a webhook subscription URL.
+
+    Signs the request with the subscription's active secret key using HMAC SHA-256.
+    If a previous secret key is configured and has not yet expired, signatures for
+    both the new secret and previous secret are emitted in the X-Harpocrates-Signature
+    header:
+        X-Harpocrates-Signature: t=<timestamp>,v1=<new_sig>,v1=<prev_sig>
+
+    Receiver Verification Behavior:
+    -------------------------------
+    Receivers should parse the `X-Harpocrates-Signature` header, compute HMAC SHA-256
+    with their configured secret, and accept the payload if ANY `v1` signature matches.
+    This enables zero-downtime secret rotation during the overlap window.
+    Secrets are strictly confidential and must never be logged.
+    """
     url = delivery["url"]
     secret = delivery["secret_key"]
+    previous_secret = delivery.get("previous_secret_key")
+    previous_secret_expires_at = delivery.get("previous_secret_expires_at")
     payload = delivery["payload"]
 
     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     timestamp = int(time.time())
+    now = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
     signature = sign_payload(payload_bytes, secret, timestamp)
+    if is_previous_secret_valid(previous_secret, previous_secret_expires_at, now):
+        prev_signature = sign_payload(payload_bytes, previous_secret, timestamp)
+        sig_header = f"t={timestamp},v1={signature},v1={prev_signature}"
+    else:
+        sig_header = f"t={timestamp},v1={signature}"
 
     headers = {
         "Content-Type": "application/json",
-        "X-Harpocrates-Signature": f"t={timestamp},v1={signature}",
+        "X-Harpocrates-Signature": sig_header,
         "User-Agent": "Harpocrates-Webhook/1.0",
         "X-Harpocrates-Delivery": str(delivery["delivery_id"]),
         "X-Harpocrates-Attempt": str(int(delivery.get("retry_count") or 0) + 1),
