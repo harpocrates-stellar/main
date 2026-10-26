@@ -8,6 +8,7 @@ export type Command =
   | 'verify-receipt'
   | 'c2pa'
   | 'verify-lineage'
+  | 'lineage'
   | 'help'
 
 export interface ParsedArgs {
@@ -99,6 +100,19 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     debug: toggle,
   },
   'verify-lineage': {
+    'output-digest': text,
+    outputDigest: text,
+    'contract-id': text,
+    contractId: text,
+    'rpc-url': text,
+    rpcUrl: text,
+    'source-address': text,
+    sourceAddress: text,
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
+  lineage: {
     'output-digest': text,
     outputDigest: text,
     'contract-id': text,

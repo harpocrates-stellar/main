@@ -40,6 +40,21 @@ node dist/cli.js status --proof-id <64-hex> \
 
 `status` simulates `get_proof_status(proof_id)` against the registry and maps the result to a stable status string (`registered`, `revoked`, `expired`, or `unknown`) and exit code (`0` for `registered`, `1` for `expired`, `2` for `revoked`, `3` for `unknown`). Malformed or missing `--proof-id` values exit `2` immediately without making an RPC call.
 
+To show where a derivative came from, look up its on-chain lineage record by
+its 32-byte output digest:
+
+```sh
+node dist/cli.js lineage --output-digest <64-hex> \
+  --contract-id C... --network 'Test SDF Network ; September 2015' --output json
+```
+
+`lineage` simulates `get_lineage(output_digest)` and prints the parent proof
+IDs, the transformation kind and the depth. It never prints the manifest
+digest, parent commitments or any metadata contents. A missing record exits
+`3` with a clear message; a malformed registry response or RPC failure exits
+`8`; a missing or malformed `--output-digest` exits `2` without an RPC call.
+It does not walk ancestors recursively; use `verify-lineage` for that.
+
 To verify a signed verification receipt offline without hitting the RPC:
 
 ```sh
@@ -78,15 +93,15 @@ Script authors and CI integrations can rely on the following exit codes to deter
 
 | Code | Meaning | Emitted by |
 | :--- | :--- | :--- |
-| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
+| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage`, `lineage` |
 | `1` | `expired` | `verify`, `status`, `verify-lineage` |
-| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
-| `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `lineage`, `manifest`, `hash`, `c2pa` |
+| `3` | `not_found` / `missing` / `unknown` (no lineage record) | `verify`, `status`, `verify-lineage`, `lineage` |
 | `4` | `network_mismatch` | `verify` |
 | `5` | `contract_mismatch` | `verify` |
 | `6` | `pending` (offline verification) | `verify` |
 | `7` | `failed` transaction | `verify` |
-| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage`, `lineage` |
 
 An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
 
