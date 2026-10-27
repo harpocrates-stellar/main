@@ -223,6 +223,58 @@ def sign_payload(payload_bytes: bytes, secret: str, timestamp: int) -> str:
     return mac.hexdigest()
 
 
+def verify_signature(
+    header: str,
+    payload_bytes: bytes,
+    secret: str,
+    *,
+    tolerance_seconds: int = 300,
+    now: Optional[int] = None,
+) -> bool:
+    """Verify an X-Harpocrates-Signature header.
+
+    Expected header format: 't=<timestamp>,v1=<signature>'
+
+    Validates:
+    - Rejects malformed headers (missing t or v1, extra or missing equals, non-integer t, empty signature).
+    - Checks types: header (str), payload_bytes (bytes-like), secret (str).
+    - If tolerance_seconds is non-negative, rejects timestamps outside the tolerance window:
+      (now - tolerance_seconds) <= timestamp <= (now + tolerance_seconds).
+      Stale timestamps and future timestamps beyond tolerance are rejected.
+    - Constant-time HMAC comparison using hmac.compare_digest.
+    """
+    if not isinstance(header, str) or not isinstance(payload_bytes, (bytes, bytearray, memoryview)):
+        return False
+    if not isinstance(secret, str):
+        return False
+
+    parts = {}
+    for item in header.split(","):
+        key, separator, value = item.strip().partition("=")
+        if not separator or not key:
+            return False
+        parts[key] = value
+
+    try:
+        raw_t = parts.get("t")
+        received_sig = parts.get("v1")
+        if raw_t is None or received_sig is None:
+            return False
+        if not received_sig:
+            return False
+        timestamp = int(raw_t)
+    except (ValueError, TypeError):
+        return False
+
+    current_time = int(time.time()) if now is None else int(now)
+    if tolerance_seconds is not None and tolerance_seconds >= 0:
+        if abs(current_time - timestamp) > tolerance_seconds:
+            return False
+
+    expected_sig = sign_payload(bytes(payload_bytes), secret, timestamp)
+    return hmac.compare_digest(expected_sig, received_sig)
+
+
 def _is_header_safe(value: Any) -> bool:
     """Return True for a non-empty string that is safe to send as a header value."""
     return (

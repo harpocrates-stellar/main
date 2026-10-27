@@ -198,16 +198,37 @@ function verifyWebhook(body, signatureHeader, secret, toleranceSeconds = 300) {
 // is the untouched Buffer instead of parsed JSON.
 ```
 
-## Test vector
+## Test vectors
 
-The following compact body is used by the backend test suite to keep this
-document and `sign_payload` in sync:
+The following compact bodies and signatures can be used for cross-language
+verification test suites to ensure HMAC-SHA-256 calculation and header parsing
+match the Harpocrates reference implementation.
+
+### Vector 1 (Minimal embed payload)
 
 ```text
 body:      {"event_type":"embed","video_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 secret:    whsec_test_secret
 timestamp: 1700000000
 header:    t=1700000000,v1=279de12b5d5c5157d75c884b6cad8caef222af865638c922969ed4e920c5beaf
+```
+
+### Vector 2 (Registration event with Soroban contract)
+
+```text
+body:      {"event_type":"registration","contract_id":"CA3D5KRYM6CB7OWQ6TWYRR3Z4EK7O3YJXYTO2B2UNTWO5CDW252NO3ST","proof_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tier":"seal"}
+secret:    whsec_test_secret_beta
+timestamp: 1710000000
+header:    t=1710000000,v1=155aaba5797185e03a6cac932efae52cdcc6334119e4a4b54698d694f17bc5ae
+```
+
+### Vector 3 (Verification status event)
+
+```text
+body:      {"event_type":"verification","tx_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","tx_status":"confirmed"}
+secret:    whsec_test_secret_gamma
+timestamp: 1720000000
+header:    t=1720000000,v1=7709c1f88e7d53789ca538e9bdc8cb5dd04cb4d0fe7a7c7d8c25065eb2422ea9
 ```
 
 ## Delivery, retries, and backoff
