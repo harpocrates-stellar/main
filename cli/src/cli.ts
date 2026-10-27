@@ -35,7 +35,6 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
 
 function getCliVersion(): string {
@@ -116,8 +115,10 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
+    case 'register': {
+      const { handleRegister } = await import('./register.js')
       return await handleRegister(flags, debugLog)
+    }
     case 'help':
       return printHelp()
     default:
@@ -125,9 +126,110 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   }
 }
 
+export const MAX_BATCH_SIZE = 1000
+
+export interface VerifyManifestOptions {
+  contractId: string
+  network?: string
+  txHash?: string
+  rpcUrl?: string
+  sourceAddress?: string
+  offline?: boolean
+  timeoutMs?: number
+  debugLog?: (event: Record<string, unknown>) => void
+}
+
+export class VerificationError extends Error {
+  readonly exitCode: number
+  readonly result?: string
+
+  constructor(message: string, exitCode: number, result?: string) {
+    super(message)
+    this.name = 'VerificationError'
+    this.exitCode = exitCode
+    this.result = result
+  }
+}
+
+export async function verifyManifest(
+  rawManifest: string | ReturnType<typeof parseManifest>,
+  options: VerifyManifestOptions,
+): Promise<VerificationReceipt> {
+  const {
+    contractId,
+    network = resolveNetwork(DEFAULT_NETWORK_PASSPHRASE),
+    txHash,
+    rpcUrl,
+    sourceAddress,
+    offline = false,
+    timeoutMs,
+    debugLog = () => {},
+  } = options
+
+  if (!contractId || !StrKey.isValidContract(contractId)) {
+    throw new VerificationError('a valid --contract-id is required for verification', 8)
+  }
+
+  let manifest: ReturnType<typeof parseManifest>
+  if (typeof rawManifest === 'string') {
+    try {
+      manifest = parseManifest(rawManifest)
+    } catch {
+      throw new VerificationError('invalid or unreadable manifest', 8)
+    }
+  } else {
+    manifest = rawManifest
+  }
+
+  if (manifest.contractId !== contractId) {
+    throw new VerificationError('contract_mismatch', 5, 'contract_mismatch')
+  }
+  if (manifest.network !== network) {
+    throw new VerificationError('network_mismatch', 4, 'network_mismatch')
+  }
+  if (txHash && txHash.toLowerCase() !== manifest.transactionRef.toLowerCase()) {
+    throw new VerificationError('transaction hash does not match manifest', 8)
+  }
+
+  debugLog({ event: 'verify.manifest', manifest: redactSensitive(manifest) })
+
+  if (offline) {
+    return createReceipt(
+      manifest,
+      { status: 'pending', txHash: manifest.transactionRef },
+      null,
+      'pending',
+    )
+  }
+
+  try {
+    const txVerification = await verifyTransaction(manifest.transactionRef, contractId, {
+      rpcUrl,
+      sourceAddress,
+      timeoutMs,
+    })
+
+    const chainRecord = await lookupByVideoHash(contractId, manifest.videoHash, {
+      rpcUrl,
+      sourceAddress,
+      networkPassphrase: network,
+      timeoutMs,
+    })
+
+    const result = classifyVerification(manifest, txVerification, chainRecord)
+    return createReceipt(manifest, txVerification, chainRecord, result)
+  } catch (err) {
+    if (err instanceof LookupTimeoutError) {
+      throw new VerificationError('verification dependency failed: RPC timeout', 8)
+    }
+    throw new VerificationError('verification dependency failed', 8)
+  }
+}
+
 async function handleVerify(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
   const contractId = flags['contract-id'] || flags.contractId
   const manifestPath = flags.manifest || flags.m
+  const manifestsDir = flags.manifests
   const txHash = flags['tx-hash'] || flags.txHash
   const rpcUrl = flags['rpc-url'] || flags.rpcUrl
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
@@ -140,58 +242,8 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
     exit(8, 'a valid --contract-id is required for verification')
   }
 
-  // ── Read manifest (file, stdin, or flag-constructed) ──────────────────
-  let manifest: ReturnType<typeof parseManifest>
-
-  if (!manifestPath) {
-    exit(8, '--manifest is required for verification')
-  }
-  try {
-    manifest = parseManifest(await readText(manifestPath))
-  } catch {
-    exit(8, 'invalid or unreadable manifest')
-  }
-
-  if (manifest.contractId !== contractId) exit(5, 'contract_mismatch')
-  if (manifest.network !== network) exit(4, 'network_mismatch')
-  if (txHash && txHash.toLowerCase() !== manifest.transactionRef.toLowerCase()) {
-    exit(8, 'transaction hash does not match manifest')
-  }
-
-  debugLog({ event: 'verify.manifest', manifest: redactSensitive(manifest) })
-
-  let receipt: VerificationReceipt
-
-  if (offline) {
-    receipt = createReceipt(
-      manifest,
-      { status: 'pending', txHash: manifest.transactionRef },
-      null,
-      'pending',
-    )
-  } else {
-    try {
-      const txVerification = await verifyTransaction(manifest.transactionRef, contractId, { rpcUrl, sourceAddress, timeoutMs })
-
-      const chainRecord = await lookupByVideoHash(contractId, manifest.videoHash, {
-        rpcUrl,
-        sourceAddress,
-        networkPassphrase: network,
-        timeoutMs,
-      })
-
-      const result = classifyVerification(manifest, txVerification, chainRecord)
-      receipt = createReceipt(manifest, txVerification, chainRecord, result)
-    } catch (err) {
-      if (err instanceof LookupTimeoutError) exit(8, 'verification dependency failed: RPC timeout')
-      exit(8, 'verification dependency failed')
-    }
-  }
-
-  if (outputFormat === 'json') {
-    printJson(receipt)
-  } else {
-    printText(formatReceipt(receipt))
+  if (!manifestPath && !manifestsDir) {
+    exit(8, '--manifest or --manifests is required for verification')
   }
 
   const exitCodes: Record<string, number> = {
@@ -205,7 +257,192 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
     failed: 7,
     error: 8,
   }
-  exit(exitCodes[receipt.result] ?? 8)
+
+  // ── Batch mode ──────────────────────────────────────────────────────────
+  if (manifestsDir) {
+    const concurrency = parseConcurrency(flags.concurrency)
+    return await handleBatchVerify({
+      manifestsDir,
+      contractId,
+      network,
+      rpcUrl,
+      sourceAddress,
+      offline,
+      timeoutMs,
+      concurrency,
+      outputFormat,
+      debugLog,
+      exitCodes,
+    })
+  }
+
+  // ── Single-manifest mode ─────────────────────────────────────────────────
+  let rawContent: string
+  try {
+    rawContent = await readText(manifestPath!)
+  } catch {
+    exit(8, 'invalid or unreadable manifest')
+  }
+
+  try {
+    const receipt = await verifyManifest(rawContent, {
+      contractId,
+      network,
+      txHash,
+      rpcUrl,
+      sourceAddress,
+      offline,
+      timeoutMs,
+      debugLog,
+    })
+
+    if (outputFormat === 'json') {
+      printJson(receipt)
+    } else {
+      printText(formatReceipt(receipt))
+    }
+
+    exit(exitCodes[receipt.result] ?? 8)
+  } catch (err) {
+    if (err instanceof VerificationError) {
+      exit(err.exitCode, err.message)
+    }
+    exit(8, 'verification dependency failed')
+  }
+}
+
+function parseConcurrency(raw: string | undefined): number {
+  if (raw === undefined) return 4
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1 || value > 16) {
+    exit(2, '--concurrency must be an integer between 1 and 16')
+  }
+  return value
+}
+
+interface BatchVerifyContext {
+  manifestsDir: string
+  contractId: string
+  network: string
+  rpcUrl?: string
+  sourceAddress?: string
+  offline: boolean
+  timeoutMs: number
+  concurrency: number
+  outputFormat: string
+  debugLog: (event: Record<string, unknown>) => void
+  exitCodes: Record<string, number>
+}
+
+async function handleBatchVerify(ctx: BatchVerifyContext): Promise<void> {
+  const { readdir, stat } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+
+  let entries: string[]
+  try {
+    const dirStat = await stat(ctx.manifestsDir)
+    if (!dirStat.isDirectory()) {
+      exit(8, `--manifests path is not a directory: ${ctx.manifestsDir}`)
+    }
+    const allFiles = await readdir(ctx.manifestsDir)
+    entries = allFiles.filter((f) => f.endsWith('.json')).sort()
+  } catch {
+    exit(8, `cannot read manifests directory: ${ctx.manifestsDir}`)
+  }
+
+  if (entries.length > MAX_BATCH_SIZE) {
+    exit(8, `batch size ${entries.length} exceeds maximum allowed limit of ${MAX_BATCH_SIZE}`)
+  }
+
+  const counts: Record<string, number> = {
+    valid: 0,
+    expired: 0,
+    revoked: 0,
+    not_found: 0,
+    network_mismatch: 0,
+    contract_mismatch: 0,
+    pending: 0,
+    failed: 0,
+    error: 0,
+  }
+
+  type ItemOutcome = { file: string; receipt?: VerificationReceipt; error?: string; result: string }
+  const outcomes: ItemOutcome[] = new Array(entries.length)
+
+  let cursor = 0
+  const workerCount = Math.min(ctx.concurrency, Math.max(1, entries.length))
+  const isJsonl = ctx.outputFormat === 'jsonl'
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < entries.length) {
+      const idx = cursor++
+      const fileName = entries[idx]
+      const fullPath = join(ctx.manifestsDir, fileName)
+
+      try {
+        const raw = await readText(fullPath)
+        const receipt = await verifyManifest(raw, {
+          contractId: ctx.contractId,
+          network: ctx.network,
+          rpcUrl: ctx.rpcUrl,
+          sourceAddress: ctx.sourceAddress,
+          offline: ctx.offline,
+          timeoutMs: ctx.timeoutMs,
+          debugLog: ctx.debugLog,
+        })
+        outcomes[idx] = { file: fileName, receipt, result: receipt.result }
+        if (isJsonl) {
+          process.stdout.write(JSON.stringify({ file: fileName, receipt, result: receipt.result }) + '\n')
+        }
+      } catch (err) {
+        const result = err instanceof VerificationError && err.result ? err.result : 'error'
+        const errMsg = err instanceof Error ? err.message : String(err)
+        outcomes[idx] = { file: fileName, error: errMsg, result }
+        if (isJsonl) {
+          process.stdout.write(JSON.stringify({ file: fileName, error: errMsg, result }) + '\n')
+        }
+      }
+    }
+  })
+
+  await Promise.all(workers)
+
+  for (const item of outcomes) {
+    if (item) {
+      counts[item.result] = (counts[item.result] ?? 0) + 1
+    }
+  }
+
+  const allVerified = outcomes.length > 0 && outcomes.every((o) => o && o.result === 'valid')
+
+  if (ctx.outputFormat === 'json') {
+    printJson({
+      total: outcomes.length,
+      counts,
+      allVerified,
+      items: outcomes,
+    })
+  } else if (!isJsonl) {
+    printText('═══════════════════════════════════════════')
+    printText('  Harpocrates Batch Verification Summary')
+    printText('═══════════════════════════════════════════')
+    printText(`  Total items:     ${outcomes.length}`)
+    printText(`  Valid:           ${counts.valid}`)
+    printText(`  Expired:         ${counts.expired}`)
+    printText(`  Revoked:         ${counts.revoked}`)
+    printText(`  Not found:       ${counts.not_found}`)
+    printText(`  Network mismatch:${counts.network_mismatch}`)
+    printText(`  Contract mismatch:${counts.contract_mismatch}`)
+    printText(`  Pending:         ${counts.pending}`)
+    printText(`  Failed:          ${counts.failed}`)
+    printText(`  Errors:          ${counts.error}`)
+    printText('═══════════════════════════════════════════')
+  }
+
+  if (!allVerified) {
+    exit(1)
+  }
+  exit(0)
 }
 
 function parseTimeout(raw: string | undefined): number {
@@ -656,6 +893,8 @@ Verify Receipt options:
 Verify options:
   --contract-id     Contract ID on Stellar (required).
   --manifest        Path to a proof manifest JSON file (use "-" for stdin).
+  --manifests       Path to a directory containing manifest JSON files for batch verification.
+  --concurrency     Max concurrent lookups in batch mode (1-16, default: 4).
   --tx-hash         Transaction hash to verify on-chain.
   --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --rpc-url         Stellar RPC URL (default: testnet).

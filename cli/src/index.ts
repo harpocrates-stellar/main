@@ -79,3 +79,5 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export { verifyManifest, MAX_BATCH_SIZE, VerificationError } from './cli.js'
+export type { VerifyManifestOptions } from './cli.js'

@@ -44,6 +44,8 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
   verify: {
     ...ON_CHAIN,
     manifest: alias('m'),
+    manifests: text,
+    concurrency: text,
     'rpc-url': text,
     rpcUrl: text,
     'source-address': text,
@@ -192,6 +194,14 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     if (!Number.isInteger(timeout) || timeout <= 0) {
       throw new CliUsageError(
         `invalid value ${flags.timeout} for '--timeout'; expected a positive integer of milliseconds; ${HELP_HINT}`,
+      )
+    }
+  }
+  if (flags.concurrency !== undefined) {
+    const concurrency = Number(flags.concurrency)
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) {
+      throw new CliUsageError(
+        `invalid value ${flags.concurrency} for '--concurrency'; expected an integer between 1 and 16; ${HELP_HINT}`,
       )
     }
   }

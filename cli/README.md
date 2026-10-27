@@ -19,6 +19,13 @@ node dist/cli.js --version
 node dist/cli.js verify --manifest proof.json \
   --contract-id C... --network 'Test SDF Network ; September 2015' \
   --source-address G... --output json
+`
+
+Batch verification of multiple manifests with bounded concurrency:
+
+`sh
+node dist/cli.js verify --manifests ./manifests \
+  --contract-id C... --concurrency 4 --output jsonl
 ```
 
 RPC lookups are bounded by a request timeout (default 15000 ms). Override it
