@@ -207,6 +207,26 @@ class TestMetricsCollectorJobQueue(unittest.TestCase):
         self.assertIsInstance(rendered, str)
         self.assertNotIn("harpocrates_jobs", rendered)
 
+    def test_record_webhook_delivery_bounded_outcomes(self) -> None:
+        for outcome in ("success", "timeout", "http_error", "too_large", "error"):
+            self.collector.record_webhook_delivery(outcome)
+        # Unrecognized outcome should map to bounded "error"
+        self.collector.record_webhook_delivery("unexpected_status_xyz")
+        rendered = self.collector.generate_prometheus_metrics()
+        self.assertIn("# HELP harpocrates_webhook_deliveries_total Total count of webhook deliveries by outcome.", rendered)
+        self.assertIn("# TYPE harpocrates_webhook_deliveries_total counter", rendered)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="success"} 1', rendered)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="timeout"} 1', rendered)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="http_error"} 1', rendered)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="too_large"} 1', rendered)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="error"} 2', rendered)
+
+    def test_metrics_no_urls_or_subscription_ids_in_webhook_deliveries(self) -> None:
+        self.collector.record_webhook_delivery("success")
+        rendered = self.collector.generate_prometheus_metrics()
+        self.assertNotIn("url", rendered.lower().split("harpocrates_webhook_deliveries_total")[1].split("#")[0])
+        self.assertNotIn("subscription", rendered.lower())
+
     def test_record_deleted_blob_metric(self) -> None:
         self.collector.record_deleted_blob(3)
         rendered = self.collector.generate_prometheus_metrics()
@@ -228,6 +248,16 @@ class TestMetricsFlaskEndpoint(unittest.TestCase):
             return Response(output, mimetype="text/plain; version=0.0.4; charset=utf-8")
 
         self.client = self.app.test_client()
+
+    def test_metrics_endpoint_exposes_webhook_delivery_counters(self) -> None:
+        self.collector.record_webhook_delivery("success")
+        self.collector.record_webhook_delivery("timeout")
+        response = self.client.get("/metrics")
+        self.assertEqual(response.status_code, 200)
+        body = response.data.decode("utf-8")
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="success"} 1', body)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="timeout"} 1', body)
+        self.assertIn('harpocrates_webhook_deliveries_total{outcome="http_error"} 0', body)
 
     def test_metrics_endpoint_exposes_job_gauges(self) -> None:
         mock_data = {

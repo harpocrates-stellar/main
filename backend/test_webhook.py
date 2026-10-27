@@ -7,7 +7,8 @@ from unittest import mock
 
 import pytest
 
-from fetch_external import FetchResult
+from fetch_external import FetchResult, FetchTimeoutError, ResponseTooLargeError
+from metrics import collector as metrics_collector
 from webhook import (
     MAX_RETRIES,
     RETRY_BACKOFF_SECONDS,
@@ -301,3 +302,55 @@ def test_new_headers_leave_signature_and_body_unchanged(
     assert header_values == ["3", "3"]
     for value in header_values:
         assert "a" * 64 not in value
+
+
+@mock.patch("webhook.update_delivery_status")
+@mock.patch("webhook.safe_urlopen")
+def test_dispatch_webhook_records_outcome_metrics(mock_safe_urlopen, _mock_update):
+    metrics_collector.reset()
+    delivery = {
+        "delivery_id": 10,
+        "url": "http://example.com/webhook",
+        "secret_key": "sec",
+        "retry_count": 0,
+        "payload": {"event_type": "embed"},
+    }
+
+    # 1. Success
+    mock_safe_urlopen.return_value = FetchResult(status=200, body=b"ok")
+    dispatch_webhook(delivery)
+
+    # 2. Non-2xx HTTP status (handled via result status)
+    mock_safe_urlopen.return_value = FetchResult(status=500, body=b"error")
+    dispatch_webhook(delivery)
+
+    # 3. HTTPError exception
+    mock_safe_urlopen.side_effect = urllib.error.HTTPError(
+        "http://example.com", 404, "Not Found", {}, None
+    )
+    dispatch_webhook(delivery)
+
+    # 4. Timeout
+    mock_safe_urlopen.side_effect = FetchTimeoutError("timed out")
+    dispatch_webhook(delivery)
+
+    # 5. ResponseTooLargeError
+    mock_safe_urlopen.side_effect = ResponseTooLargeError("too large")
+    dispatch_webhook(delivery)
+
+    # 6. Unexpected error
+    mock_safe_urlopen.side_effect = RuntimeError("network cable pulled")
+    dispatch_webhook(delivery)
+
+    prom_output = metrics_collector.generate_prometheus_metrics()
+    assert 'harpocrates_webhook_deliveries_total{outcome="success"} 1' in prom_output
+    assert 'harpocrates_webhook_deliveries_total{outcome="http_error"} 2' in prom_output
+    assert 'harpocrates_webhook_deliveries_total{outcome="timeout"} 1' in prom_output
+    assert 'harpocrates_webhook_deliveries_total{outcome="too_large"} 1' in prom_output
+    assert 'harpocrates_webhook_deliveries_total{outcome="error"} 1' in prom_output
+    # Ensure no URL or subscription id appears in labels
+    lines = [l for l in prom_output.splitlines() if l.startswith("harpocrates_webhook_deliveries_total{")]
+    for line in lines:
+        assert "http://example.com" not in line
+        assert "delivery_id" not in line
+        assert "subscription" not in line

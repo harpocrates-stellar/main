@@ -12,6 +12,7 @@ import urllib.error
 from psycopg.types.json import Jsonb
 
 from db import get_connection, database_url
+from metrics import collector as metrics_collector
 from fetch_external import (
     FetchTimeoutError,
     ResponseTooLargeError,
@@ -273,12 +274,14 @@ def dispatch_webhook(
         status_code = result.status
         if 200 <= status_code < 300:
             success = True
+            metrics_collector.record_webhook_delivery("success")
         else:
             LOGGER.warning(
                 "Webhook delivery %d: non-2xx status %d",
                 delivery["delivery_id"],
                 status_code,
             )
+            metrics_collector.record_webhook_delivery("http_error")
 
     except FetchTimeoutError as exc:
         LOGGER.warning(
@@ -286,6 +289,7 @@ def dispatch_webhook(
             delivery["delivery_id"],
             exc,
         )
+        metrics_collector.record_webhook_delivery("timeout")
 
     except ResponseTooLargeError as exc:
         LOGGER.warning(
@@ -293,6 +297,7 @@ def dispatch_webhook(
             delivery["delivery_id"],
             exc,
         )
+        metrics_collector.record_webhook_delivery("too_large")
 
     except urllib.error.HTTPError as exc:
         status_code = exc.code
@@ -301,6 +306,7 @@ def dispatch_webhook(
             delivery["delivery_id"],
             exc.code,
         )
+        metrics_collector.record_webhook_delivery("http_error")
 
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning(
@@ -308,6 +314,7 @@ def dispatch_webhook(
             delivery["delivery_id"],
             type(exc).__name__,
         )
+        metrics_collector.record_webhook_delivery("error")
 
     update_delivery_status(
         delivery["delivery_id"], success, status_code, delivery["retry_count"]

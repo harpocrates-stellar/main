@@ -35,6 +35,13 @@ class MetricsCollector:
         self._retention_dry_run_eligible: int | None = None
         self._indexer_unknown_topics = 0
         self._indexer_events_total: Dict[str, int] = {}
+        self._webhook_deliveries_total: Dict[str, int] = {
+            "success": 0,
+            "timeout": 0,
+            "http_error": 0,
+            "too_large": 0,
+            "error": 0,
+        }
 
         # Job queue backlog metrics (refreshed at most every N seconds)
         self._job_refresh_interval = (
@@ -63,6 +70,13 @@ class MetricsCollector:
             self._retention_dry_run_eligible = None
             self._indexer_unknown_topics = 0
             self._indexer_events_total.clear()
+            self._webhook_deliveries_total = {
+                "success": 0,
+                "timeout": 0,
+                "http_error": 0,
+                "too_large": 0,
+                "error": 0,
+            }
             self._last_job_refresh = 0.0
             self._cached_job_counts.clear()
             self._cached_oldest_queued.clear()
@@ -249,6 +263,17 @@ class MetricsCollector:
         with self._lock:
             return self._indexer_unknown_topics
 
+    def record_webhook_delivery(self, outcome: str) -> None:
+        """Record the outcome of a webhook delivery attempt."""
+        clean_outcome = outcome.strip() if outcome else "error"
+        valid_outcomes = {"success", "timeout", "http_error", "too_large", "error"}
+        if clean_outcome not in valid_outcomes:
+            clean_outcome = "error"
+        with self._lock:
+            self._webhook_deliveries_total[clean_outcome] = (
+                self._webhook_deliveries_total.get(clean_outcome, 0) + 1
+            )
+
     def record_indexer_event(self, event_type: str) -> None:
         """Record an on-chain event successfully indexed."""
         clean = (event_type or "unknown").strip()
@@ -375,6 +400,14 @@ class MetricsCollector:
             lines.append("# HELP harpocrates_indexer_unknown_topics_total Total on-chain events skipped due to unknown topic.")
             lines.append("# TYPE harpocrates_indexer_unknown_topics_total counter")
             lines.append(f"harpocrates_indexer_unknown_topics_total {self._indexer_unknown_topics}")
+
+            lines.append("")
+            lines.append("# HELP harpocrates_webhook_deliveries_total Total count of webhook deliveries by outcome.")
+            lines.append("# TYPE harpocrates_webhook_deliveries_total counter")
+            for outcome in sorted(self._webhook_deliveries_total.keys()):
+                lines.append(
+                    f'harpocrates_webhook_deliveries_total{{outcome="{_escape_label(outcome)}"}} {self._webhook_deliveries_total[outcome]}'
+                )
 
             if self._indexer_events_total:
                 lines.append("")
