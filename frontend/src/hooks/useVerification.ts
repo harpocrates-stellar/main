@@ -30,6 +30,7 @@ export type VerificationErrorCode =
   | 'REVOKED_EVIDENCE'
   | 'VERIFICATION_FAILED'
   | 'DEPENDENCY_UNAVAILABLE'
+  | 'TIMEOUT'
   | 'CANCELLED'
   | 'WALLET_UNAVAILABLE'
   | 'METADATA_ENVELOPE_MISMATCH'
@@ -48,6 +49,7 @@ const SAFE_MESSAGES: Record<VerificationErrorCode, string> = {
   REVOKED_EVIDENCE: 'Revoked: the chain record for this artifact has been revoked. Do not trust it as valid evidence.',
   VERIFICATION_FAILED: 'Verification failed. No trust decision was made.',
   DEPENDENCY_UNAVAILABLE: 'Verification services are unavailable. No trust decision was made.',
+  TIMEOUT: 'The verification request timed out. Check your connection and try again.',
   CANCELLED: 'Verification cancelled.',
   WALLET_UNAVAILABLE: 'Wallet unavailable. Connect a wallet or try again without wallet lookup.',
   METADATA_ENVELOPE_MISMATCH:

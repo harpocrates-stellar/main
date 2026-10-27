@@ -662,6 +662,46 @@ def find_proof_events_by_video(
     return rows, next_cursor
 
 
+def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
+    if not database_url():
+        return [
+            dict(r) for r in _INDEXED_EVENTS.values() if r.get("proof_id") == proof_id
+        ]
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time,
+                    event_index,
+                    created_at
+                from proof_events
+                where proof_id = %s
+                order by id desc;
+                """,
+                (proof_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def find_proof_owner(proof_id: str) -> str | None:
     """Return the ``source_address`` that first registered ``proof_id``.
 
@@ -1068,6 +1108,13 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
+# Single source of truth for retention eligibility. Shared by the dry-run count
+# and the real purge so the two can never diverge.
+EXPIRED_EVENTS_PREDICATE_SQL = (
+    "expires_at is not null and expires_at <= now() and legal_hold = false"
+)
+
+
 def count_expired_events() -> int:
     """Return how many proof events ``purge_expired_events`` would delete.
 
@@ -1078,12 +1125,10 @@ def count_expired_events() -> int:
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 select count(*) as expired
                 from proof_events
-                where expires_at is not null
-                  and expires_at <= now()
-                  and legal_hold = false;
+                where {EXPIRED_EVENTS_PREDICATE_SQL};
                 """
             )
             row = cursor.fetchone()
@@ -1102,13 +1147,11 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 with expired as (
                     select id, proof_id, video_hash, metadata_hash
                     from proof_events
-                    where expires_at is not null
-                      and expires_at <= now()
-                      and legal_hold = false
+                    where {EXPIRED_EVENTS_PREDICATE_SQL}
                     order by id
                     limit %s
                     for update skip locked
@@ -1147,6 +1190,7 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
+        "progress": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     return job_id
@@ -1181,13 +1225,61 @@ def lease_job(
     return None
 
 
-def heartbeat_job(job_id: int, progress: float = 0.0, lease_duration: int = 300) -> None:
-    """Record a heartbeat against an in-memory job lease."""
-    del lease_duration
+def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+    """Record a heartbeat against an in-memory job lease.
+
+    The heartbeat only extends the lease. Progress is reported separately via
+    :func:`report_job_progress`; ``progress`` is accepted for backwards
+    compatibility and ignored so a heartbeat never overwrites real progress.
+    """
+    del lease_duration, progress
     job = _JOBS.get(job_id)
     if job and job.get("status") == "running":
-        job["progress"] = progress
         job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+
+
+# Processors may call report_job_progress as often as they like (for example
+# once per decoded frame); updates are stored at most once per this interval.
+JOB_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
+JOB_PROGRESS_PHASE_MAX_LENGTH = 64
+
+
+def report_job_progress(
+    job_id: int,
+    phase: str,
+    percent: float | None = None,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Record ``{"phase", "percent"}`` progress for a running job.
+
+    ``phase`` is a short machine-readable step name (for example
+    ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
+    measurable fraction. Updates are throttled to at most one per
+    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
+    updated. Returns True when the update was stored.
+    """
+    job = _JOBS.get(job_id)
+    if not job or job.get("status") != "running":
+        return False
+    if not isinstance(phase, str) or not phase.strip():
+        raise ValueError("progress phase must be a non-empty string")
+    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+    if percent is not None:
+        try:
+            percent = float(percent)
+        except (TypeError, ValueError):
+            raise ValueError("progress percent must be a number or None") from None
+        if percent != percent:  # NaN
+            raise ValueError("progress percent must be a number or None")
+        percent = round(min(100.0, max(0.0, percent)), 1)
+    current = time.monotonic() if now is None else now
+    last = job.get("_progress_at")
+    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+        return False
+    job["_progress_at"] = current
+    job["progress"] = {"phase": phase, "percent": percent}
+    return True
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
@@ -1291,365 +1383,192 @@ def get_job_queue_metrics() -> dict[str, Any]:
 get_job_metrics = get_job_queue_metrics
 
 
-# ---------------------------------------------------------------------------
-# Issuer key transparency persistence
-# ---------------------------------------------------------------------------
+_INDEXED_EVENTS: dict[tuple[str, int], dict[str, Any]] = {}
+_INDEXER_STATE: dict[str, dict[str, Any]] = {}
+_mock_indexed_id = 100000
 
 
-def insert_issuer_directory_event(
+def insert_indexed_proof_event(
     *,
-    issuer_address: str,
-    organization_identity_hash: str,
-    sequence: int,
     event_type: str,
-    key_id: str,
-    public_key_hash: str,
-    previous_event_hash: str | None = None,
-    related_key_id: str | None = None,
-    manifest_hash: str | None = None,
-    reason_hash: str | None = None,
-    event_hash: str | None = None,
-    timestamp: int | None = None,
-) -> dict[str, Any] | None:
-    if not database_url():
-        return None
+    tx_hash: str,
+    event_index: int,
+    proof_id: str | None = None,
+    contract_id: str | None = None,
+    tx_status: str | None = "confirmed",
+    video_hash: str | None = None,
+    metadata_hash: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Insert an on-chain indexed proof event idempotently.
 
-    if timestamp is None:
-        timestamp = int(time.time())
-
-    if event_hash is None:
-        try:
-            from issuer_key_transparency import (
-                DirectoryEvent,
-                EventType,
-                event_hash as _event_hash,
-            )
-
-            ev = DirectoryEvent(
-                event_type=EventType(event_type),
-                sequence=sequence,
-                timestamp=timestamp,
-                organization_identity_hash=organization_identity_hash,
-                key_id=key_id,
-                public_key_hash=public_key_hash,
-                previous_event_hash=previous_event_hash,
-                related_key_id=related_key_id,
-                manifest_hash=manifest_hash,
-                reason_hash=reason_hash,
-            )
-            event_hash = _event_hash(ev)
-        except Exception:
-            event_hash = ""
-
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                insert into issuer_directory_events (
-                    issuer_address,
-                    organization_identity_hash,
-                    sequence,
-                    event_type,
-                    key_id,
-                    public_key_hash,
-                    previous_event_hash,
-                    related_key_id,
-                    manifest_hash,
-                    reason_hash,
-                    event_hash,
-                    timestamp
-                )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                returning
-                    id,
-                    issuer_address,
-                    organization_identity_hash,
-                    sequence,
-                    event_type,
-                    key_id,
-                    public_key_hash,
-                    previous_event_hash,
-                    related_key_id,
-                    manifest_hash,
-                    reason_hash,
-                    event_hash,
-                    timestamp,
-                    created_at;
-                """,
-                (
-                    issuer_address,
-                    organization_identity_hash,
-                    sequence,
-                    event_type,
-                    key_id,
-                    public_key_hash,
-                    previous_event_hash,
-                    related_key_id,
-                    manifest_hash,
-                    reason_hash,
-                    event_hash,
-                    timestamp,
-                ),
-            )
-            row = cursor.fetchone()
-        connection.commit()
-        return dict(row) if row else None
-
-
-def list_issuer_directory_events(
-    issuer_address: str,
-    limit: int = 25,
-    *,
-    cursor_id: int | None = None,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """List append-only directory events for an issuer, sorted by sequence ASC.
-
-    Returns (events, next_cursor). Each event dict conforms to DirectoryEvent.to_dict().
+    Returns ``(row, created)`` where *created* is ``True`` when a new row was
+    written and ``False`` when an existing row with the same ``(tx_hash, event_index)``
+    was already present.
     """
+    global _mock_indexed_id
     if not database_url():
-        return [], None
-
-    page_size = max(1, min(limit, 100))
-    fetch_size = page_size + 1
-
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            if cursor_id is None:
-                cursor.execute(
-                    """
-                    select
-                        id,
-                        issuer_address,
-                        organization_identity_hash,
-                        sequence,
-                        event_type,
-                        key_id,
-                        public_key_hash,
-                        previous_event_hash,
-                        related_key_id,
-                        manifest_hash,
-                        reason_hash,
-                        event_hash,
-                        timestamp,
-                        created_at
-                    from issuer_directory_events
-                    where issuer_address = %s
-                    order by sequence asc, id asc
-                    limit %s;
-                    """,
-                    (issuer_address, fetch_size),
-                )
-            else:
-                cursor.execute(
-                    """
-                    select
-                        id,
-                        issuer_address,
-                        organization_identity_hash,
-                        sequence,
-                        event_type,
-                        key_id,
-                        public_key_hash,
-                        previous_event_hash,
-                        related_key_id,
-                        manifest_hash,
-                        reason_hash,
-                        event_hash,
-                        timestamp,
-                        created_at
-                    from issuer_directory_events
-                    where issuer_address = %s and id > %s
-                    order by sequence asc, id asc
-                    limit %s;
-                    """,
-                    (issuer_address, cursor_id, fetch_size),
-                )
-            rows = [dict(row) for row in cursor.fetchall()]
-
-    next_cursor: str | None = None
-    if len(rows) > page_size:
-        rows = rows[:page_size]
-        next_cursor = encode_proof_events_cursor(int(rows[-1]["id"]))
-
-    formatted_events: list[dict[str, Any]] = []
-    for r in rows:
-        if "eventType" in r:
-            formatted_events.append(r)
-            continue
-        ev: dict[str, Any] = {
-            "eventType": r["event_type"],
-            "keyId": r["key_id"],
-            "organizationIdentityHash": r["organization_identity_hash"],
-            "publicKeyHash": r["public_key_hash"],
-            "sequence": int(r["sequence"]),
-            "timestamp": int(r["timestamp"]),
+        key = (tx_hash, event_index)
+        if key in _INDEXED_EVENTS:
+            return dict(_INDEXED_EVENTS[key]), False
+        _mock_indexed_id += 1
+        now = created_at or datetime.now(timezone.utc)
+        row = {
+            "id": _mock_indexed_id,
+            "event_type": event_type,
+            "proof_id": proof_id,
+            "video_hash": video_hash,
+            "metadata_hash": metadata_hash,
+            "tx_hash": tx_hash,
+            "tx_status": tx_status,
+            "contract_id": contract_id,
+            "event_index": event_index,
+            "metadata": metadata,
+            "created_at": now,
         }
-        if r.get("previous_event_hash"):
-            ev["previousEventHash"] = r["previous_event_hash"]
-        if r.get("related_key_id"):
-            ev["relatedKeyId"] = r["related_key_id"]
-        if r.get("manifest_hash"):
-            ev["manifestHash"] = r["manifest_hash"]
-        if r.get("reason_hash"):
-            ev["reasonHash"] = r["reason_hash"]
-        formatted_events.append(ev)
+        _INDEXED_EVENTS[key] = row
+        return dict(row), True
 
-    return formatted_events, next_cursor
-
-
-def insert_issuer_checkpoint(
-    *,
-    issuer_address: str,
-    organization_identity_hash: str,
-    tree_head_hash: str,
-    event_count: int,
-    manifest_hash: str,
-    signature_hash: str | None = None,
-    timestamp: int | None = None,
-    version: int = 1,
-    protocol: str = "harpocrates-issuer-key-transparency",
-    manifest: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    if not database_url():
-        return None
-
-    if timestamp is None:
-        timestamp = int(time.time())
-
+    idempotency_key = f"indexer:{tx_hash}:{event_index}"
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                insert into issuer_checkpoints (
-                    issuer_address,
-                    organization_identity_hash,
-                    tree_head_hash,
-                    event_count,
-                    timestamp,
-                    manifest_hash,
-                    signature_hash,
-                    version,
-                    protocol,
-                    manifest
+                insert into proof_events (
+                    event_type,
+                    proof_id,
+                    video_hash,
+                    metadata_hash,
+                    tx_hash,
+                    tx_status,
+                    contract_id,
+                    event_index,
+                    idempotency_key,
+                    metadata,
+                    created_at
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now()))
+                on conflict (tx_hash, event_index)
+                where tx_hash is not null and event_index is not null
+                do nothing
                 returning
                     id,
-                    issuer_address,
-                    organization_identity_hash,
-                    tree_head_hash,
-                    event_count,
-                    timestamp,
-                    manifest_hash,
-                    signature_hash,
-                    version,
-                    protocol,
-                    manifest,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time,
+                    event_index,
                     created_at;
                 """,
                 (
-                    issuer_address,
-                    organization_identity_hash,
-                    tree_head_hash,
-                    event_count,
-                    timestamp,
-                    manifest_hash,
-                    signature_hash,
-                    version,
-                    protocol,
-                    Jsonb(manifest) if manifest is not None else None,
+                    event_type,
+                    proof_id,
+                    video_hash,
+                    metadata_hash,
+                    tx_hash,
+                    tx_status,
+                    contract_id,
+                    event_index,
+                    idempotency_key,
+                    Jsonb(metadata) if metadata is not None else None,
+                    created_at,
                 ),
             )
             row = cursor.fetchone()
-        connection.commit()
-        return dict(row) if row else None
+            if row is not None:
+                connection.commit()
+                return dict(row), True
 
-
-def get_latest_checkpoint(
-    issuer_address: str | None = None,
-) -> dict[str, Any] | None:
-    if not database_url():
-        return None
-
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            if issuer_address:
-                cursor.execute(
-                    """
-                    select
-                        id,
-                        issuer_address,
-                        organization_identity_hash,
-                        tree_head_hash,
-                        event_count,
-                        timestamp,
-                        manifest_hash,
-                        signature_hash,
-                        version,
-                        protocol,
-                        manifest,
-                        created_at
-                    from issuer_checkpoints
-                    where issuer_address = %s and signature_hash is not null
-                    order by id desc
-                    limit 1;
-                    """,
-                    (issuer_address,),
-                )
-            else:
-                cursor.execute(
-                    """
-                    select
-                        id,
-                        issuer_address,
-                        organization_identity_hash,
-                        tree_head_hash,
-                        event_count,
-                        timestamp,
-                        manifest_hash,
-                        signature_hash,
-                        version,
-                        protocol,
-                        manifest,
-                        created_at
-                    from issuer_checkpoints
-                    where signature_hash is not null
-                    order by id desc
-                    limit 1;
-                    """
-                )
-            row = cursor.fetchone()
-            return dict(row) if row else None
-
-
-def get_current_issuer_manifest(
-    issuer_address: str,
-) -> tuple[dict[str, Any] | None, str | None]:
-    if not database_url():
-        return None, None
-
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
+            # Existing event lookup on conflict
             cursor.execute(
                 """
-                select manifest
-                from issuer_checkpoints
-                where issuer_address = %s and manifest is not null
-                order by id desc
+                select
+                    id,
+                    event_type,
+                    file_name,
+                    video_hash,
+                    metadata_hash,
+                    proof_id,
+                    tier,
+                    embedded_hash,
+                    tx_hash,
+                    tx_status,
+                    source_address,
+                    contract_id,
+                    retention_class,
+                    expires_at,
+                    legal_hold,
+                    metadata,
+                    time_attestation,
+                    claimed_capture_time,
+                    event_index,
+                    created_at
+                from proof_events
+                where tx_hash = %s and event_index = %s
                 limit 1;
                 """,
-                (issuer_address,),
+                (tx_hash, event_index),
+            )
+            existing = cursor.fetchone()
+        connection.rollback()
+
+    if existing:
+        return dict(existing), False
+    raise RuntimeError(f"Conflict on tx {tx_hash}:{event_index} but row not found")
+
+
+def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:
+    if not database_url():
+        return _INDEXER_STATE.get(indexer_id, {}).get("cursor")
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select cursor from indexer_state where id = %s;",
+                (indexer_id,),
             )
             row = cursor.fetchone()
-            if row and row.get("manifest"):
-                manifest = row["manifest"]
-                status = "active"
-                if manifest.get("validUntil") and int(manifest["validUntil"]) <= int(time.time()):
-                    status = "expired"
-                keys = manifest.get("activeKeys", [])
-                if any(k.get("status") == "compromised" for k in keys):
-                    status = "compromised"
-                return manifest, status
+            return row["cursor"] if row else None
 
-    return None, None
 
+def save_indexer_cursor(
+    indexer_id: str = "soroban_events",
+    cursor: str = "",
+    ledger: int | None = None,
+) -> None:
+    if not database_url():
+        _INDEXER_STATE[indexer_id] = {
+            "cursor": cursor,
+            "ledger": ledger,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        return
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor_db:
+            cursor_db.execute(
+                """
+                insert into indexer_state (id, cursor, ledger, updated_at)
+                values (%s, %s, %s, now())
+                on conflict (id) do update
+                set cursor = excluded.cursor,
+                    ledger = excluded.ledger,
+                    updated_at = excluded.updated_at;
+                """,
+                (indexer_id, cursor, ledger),
+            )
+        connection.commit()

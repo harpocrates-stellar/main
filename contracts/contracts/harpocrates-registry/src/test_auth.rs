@@ -483,3 +483,48 @@ fn auth_revoke_receipt_signer_source_rejected() {
     client.add_receipt_signer(&admin, &key);
     client.revoke_receipt_signer(&source, &key);
 }
+
+// ---------------------------------------------------------------------------
+// get_admin & get_pending_admin
+// ---------------------------------------------------------------------------
+
+/// get_admin and get_pending_admin: public, read-only getters without auth or storage writes.
+#[test]
+fn test_admin_getters_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Before init: both return None
+    assert_eq!(client.get_admin(), None);
+    assert_eq!(client.get_pending_admin(), None);
+
+    let admin = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
+    // Propose admin transfer
+    client.propose_admin(&admin, &pending_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(pending_admin.clone()));
+
+    // Cancel admin transfer
+    client.cancel_admin_transfer(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
+    // Propose again and accept
+    client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+    client.accept_admin(&new_admin);
+    assert_eq!(client.get_admin(), Some(new_admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+}

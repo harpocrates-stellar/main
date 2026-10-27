@@ -35,9 +35,23 @@ def lock() -> zb.Lock:
 
 def test_repo_lock_loads_all_targets(lock: zb.Lock):
     assert lock.fixture_id == "silent_witness.synthetic.v1"
-    assert set(lock.targets) == {"native", "browser", "ci", "soroban_adjacent"}
+    assert set(lock.targets) == {
+        "native",
+        "browser",
+        "ci",
+        "soroban_adjacent",
+        "revocation_native",
+        "revocation_browser",
+        "revocation_ci",
+    }
     assert lock.limits.max_samples > 0
     assert lock.limits.max_proof_bytes == 65536
+    for target in ("revocation_native", "revocation_browser", "revocation_ci"):
+        cfg = lock.targets[target]
+        assert cfg.circuit == "revocation_witness"
+        assert cfg.depth == 16
+        assert cfg.leaf_count == 65536
+        assert cfg.public_input_bytes == 128
 
 
 def test_browser_target_matches_non_worker_fallback_limits(lock: zb.Lock):
@@ -93,8 +107,101 @@ def test_percentiles_are_monotonic():
 
 
 def test_percentile_rejects_empty():
+    with pytest.raises(zb.BenchError, match="empty sample list"):
+        zb.percentile([], 50)
     with pytest.raises(zb.BenchError, match="no timing samples"):
         zb.summarize_timings([])
+
+
+def test_percentile_rejects_out_of_range():
+    with pytest.raises(zb.BenchError, match="percentile out of range"):
+        zb.percentile([10.0, 20.0], -0.1)
+    with pytest.raises(zb.BenchError, match="percentile out of range"):
+        zb.percentile([10.0, 20.0], 100.1)
+
+
+def test_percentile_single_sample():
+    for pct in (0, 50, 95, 100):
+        assert zb.percentile([42.5], pct) == 42.5
+    summary = zb.summarize_timings([42.5])
+    assert summary == {
+        "p50": 42.5,
+        "p95": 42.5,
+        "p99": 42.5,
+        "min": 42.5,
+        "max": 42.5,
+        "mean": 42.5,
+        "count": 1.0,
+    }
+
+
+def test_percentile_identical_samples():
+    samples = [15.25, 15.25, 15.25, 15.25]
+    for pct in (0, 50, 95, 100):
+        assert zb.percentile(samples, pct) == 15.25
+    summary = zb.summarize_timings(samples)
+    assert summary == {
+        "p50": 15.25,
+        "p95": 15.25,
+        "p99": 15.25,
+        "min": 15.25,
+        "max": 15.25,
+        "mean": 15.25,
+        "count": 4.0,
+    }
+
+
+def test_percentile_odd_and_even_counts_and_boundaries():
+    odd = [10.0, 20.0, 30.0, 40.0, 50.0]
+    assert zb.percentile(odd, 0) == 10.0
+    assert zb.percentile(odd, 50) == 20.0
+    assert zb.percentile(odd, 95) == 50.0
+    assert zb.percentile(odd, 100) == 50.0
+
+    even = [10.0, 20.0, 30.0, 40.0]
+    assert zb.percentile(even, 0) == 10.0
+    assert zb.percentile(even, 50) == 20.0
+    assert zb.percentile(even, 95) == 40.0
+    assert zb.percentile(even, 100) == 40.0
+
+
+def test_percentile_and_summarize_timings_unsorted_input_contract():
+    # percentile() operates on a pre-sorted sequence directly without sorting
+    unsorted = [50.0, 10.0, 40.0, 20.0, 30.0]
+    assert zb.percentile(unsorted, 0) == 50.0
+    assert zb.percentile(unsorted, 100) == 30.0
+
+    # summarize_timings() sorts its input before computing percentiles and bounds
+    summary_unsorted = zb.summarize_timings(unsorted)
+    summary_sorted = zb.summarize_timings(sorted(unsorted))
+    assert summary_unsorted == summary_sorted
+    assert summary_unsorted["min"] == 10.0
+    assert summary_unsorted["max"] == 50.0
+    assert summary_unsorted["p50"] == 20.0
+    assert summary_unsorted["p95"] == 50.0
+    assert summary_unsorted["p99"] == 50.0
+
+
+def test_summarize_timings_keys_and_rounding():
+    # Nearest-rank uses round() on (pct / 100.0) * n:
+    # For n=3 and pct=50 -> 1.5 -> round(1.5) == 2 -> index 1 (second element)
+    # For n=5 and pct=50 -> 2.5 -> round(2.5) == 2 -> index 1 (second element)
+    summary_3 = zb.summarize_timings([10, 20, 30])
+    assert set(summary_3.keys()) == {"p50", "p95", "p99", "min", "max", "mean", "count"}
+    assert all(isinstance(v, float) for v in summary_3.values())
+    assert summary_3["p50"] == 20.0
+    assert summary_3["p95"] == 30.0
+    assert summary_3["p99"] == 30.0
+    assert summary_3["min"] == 10.0
+    assert summary_3["max"] == 30.0
+    assert summary_3["mean"] == 20.0
+    assert summary_3["count"] == 3.0
+
+    summary_5 = zb.summarize_timings([10, 20, 30, 40, 50])
+    assert summary_5["p50"] == 20.0
+    assert summary_5["p95"] == 50.0
+    assert summary_5["p99"] == 50.0
+    assert summary_5["count"] == 5.0
 
 
 def test_percentile_rejects_oversized_list():
@@ -179,7 +286,7 @@ def test_oversized_witness_fails_deterministically(lock: zb.Lock):
             witness_bytes=lock.limits.max_witness_bytes + 1,
             limits=lock.limits,
         )
-    assert exc.value.code == "witness_oversized"
+    assert exc.value.code == "oversized"
 
 
 def test_concurrency_capacity_rejected(lock: zb.Lock):
@@ -372,7 +479,15 @@ def test_published_baselines_load_and_pass_synthetic(lock: zb.Lock):
     assert baselines is not None, "zk/bench/baselines.lock.json must be published"
     assert baselines["format"] == zb.BASELINES_FORMAT
     assert baselines["version"] == 1
-    required = {"ci", "native", "browser", "soroban_adjacent"}
+    required = {
+        "ci",
+        "native",
+        "browser",
+        "soroban_adjacent",
+        "revocation_ci",
+        "revocation_native",
+        "revocation_browser",
+    }
     assert required <= set(baselines.get("targets", {}).keys())
     for target in sorted(required):
         report = zb.run_target(lock, target, force_synthetic=True)
@@ -386,15 +501,57 @@ def test_published_baselines_load_and_pass_synthetic(lock: zb.Lock):
         )
 
 
+def test_revocation_browser_proving_baseline_recorded(lock: zb.Lock):
+    """baselines.lock.json must record browser proving time for revocation_witness at depth 16."""
+    baselines = zb.load_baselines(zb.DEFAULT_BASELINES)
+    assert baselines is not None
+    rev_meta = baselines.get("revocation_witness", {})
+    assert rev_meta.get("circuit") == "revocation_witness"
+    assert rev_meta.get("max_depth") == 16
+    assert rev_meta.get("max_leaves") == 65536
+    assert rev_meta.get("public_input_bytes") == 128
+    browser_prove = rev_meta.get("browser_prove_ms", {})
+    assert 0 < browser_prove.get("p50", 0) <= browser_prove.get("p95", 0) <= browser_prove.get("p99", 0)
+    assert browser_prove["p99"] <= lock.targets["revocation_browser"].timeout_ms
+
+    rev_browser_target = baselines["targets"]["revocation_browser"]
+    assert rev_browser_target["depth"] == 16
+    assert rev_browser_target["leaf_count"] == 65536
+    assert rev_browser_target["recorded_prove_ms"]["p50"] == browser_prove["p50"]
+    assert rev_browser_target["recorded_prove_ms"]["p95"] == browser_prove["p95"]
+    assert rev_browser_target["prove"]["max_sizes"]["public_input_bytes"] == 128
+
+
+def test_revocation_synthetic_rejects_over_depth(lock: zb.Lock):
+    with pytest.raises(zb.RejectedError) as exc:
+        zb.synthetic_op(
+            phase="prove",
+            seed=1,
+            limits=lock.limits,
+            public_input_bytes=128,
+            depth=zb.MAX_REVOCATION_WITNESS_DEPTH + 1,
+        )
+    assert exc.value.code == "depth_oversize"
+
+
 def test_published_baselines_ci_cli_compare(lock: zb.Lock, tmp_path: Path):
     """CLI compare against the committed baselines must exit 0 for a synthetic CI report."""
-    report = zb.run_target(lock, "ci", force_synthetic=True)
-    report_path = tmp_path / "ci.json"
-    zb.write_report(report, report_path, limits=lock.limits)
-    code = zb.main(
-        ["--lock", str(LOCK_PATH), "compare", "--report", str(report_path), "--baselines", str(zb.DEFAULT_BASELINES)]
-    )
-    assert code == zb.EXIT_OK
+    for target in ("ci", "revocation_ci"):
+        report = zb.run_target(lock, target, force_synthetic=True)
+        report_path = tmp_path / f"{target}.json"
+        zb.write_report(report, report_path, limits=lock.limits)
+        code = zb.main(
+            [
+                "--lock",
+                str(LOCK_PATH),
+                "compare",
+                "--report",
+                str(report_path),
+                "--baselines",
+                str(zb.DEFAULT_BASELINES),
+            ]
+        )
+        assert code == zb.EXIT_OK
 
 
 def test_published_baselines_detect_size_regression(lock: zb.Lock):
@@ -407,3 +564,14 @@ def test_published_baselines_detect_size_regression(lock: zb.Lock):
         phase["sizes"]["proof_bytes"] = 65535
     findings = zb.compare_report(report, baselines)
     assert any("proof_bytes" in f for f in findings), findings
+
+
+def test_main_run_rejects_unknown_or_empty_phases(capsys):
+    """Unknown or empty phases must fail fast, exit 2 via parser.error, and list valid phases."""
+    for bad_phases in ["prov", "prove,invalid", ",,,", ""]:
+        with pytest.raises(SystemExit) as excinfo:
+            zb.main(["run", "--target", "ci", "--synthetic", "--phases", bad_phases])
+        assert excinfo.value.code == zb.EXIT_USAGE
+        err = capsys.readouterr().err
+        assert "prove" in err and "verify" in err
+

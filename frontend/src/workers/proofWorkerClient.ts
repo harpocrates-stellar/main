@@ -60,13 +60,6 @@ type PendingJob = {
  * in-flight UltraHonk work cannot continue holding witness material. Secrets
  * are transferred (detached) into the worker and never logged.
  */
-export class ProofWorkerClient {
-  private worker: Worker
-  private pending: Map<string, PendingJob> = new Map()
-  /** Monotonic generation so messages from a terminated worker are ignored. */
-  private generation = 0
-  private destroyed = false
-
 export type ProofWorkerClientResult = {
   requestId: string
   result: Promise<SilentWitnessProof>

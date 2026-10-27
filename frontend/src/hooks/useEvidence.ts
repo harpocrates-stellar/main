@@ -4,7 +4,7 @@
  * Source-file hashing runs chunk-by-chunk inside a dedicated Web Worker with
  * byte-level progress, keeping the UI responsive for large videos.
  *
- * Silent Witness proving runs in a cancellable Web Worker so the UI hays responsive
+ * Silent Witness proving runs in a cancellable Web Worker so the UI keeps responsive
  * and in-flight proofs can be aborted without leaking witness material (see
  * docs/proof-worker.md).
  */
@@ -19,6 +19,7 @@ import {
   ProofWorkerError,
 } from '../workers/proofWorkerClient'
 import { hashFileInWorker } from '../workers/fileHashWorkerClient'
+import { appConfig } from '../config'
 
 export const TIERS = [
   {
@@ -42,10 +43,9 @@ export const TIERS = [
     icon: Building2,
     description:
       'Verified issuer account signs the evidence as an official source. The connected wallet must be registered by the admin first.',
-  },
-]
+  },]
 
-const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
+const CONTRACT_ID = appConfig.harpocratesRegistryId
 
 // Privacy-safe stable copy — never includes file names, hashes, or secrets.
 const CANCELLED_MESSAGES: Record<Stage, string> = {
@@ -104,19 +104,26 @@ export function useEvidence(): UseEvidenceReturn {
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
-  const registrationInFlightRef = useRef(false)
+  const registrationInFlightedRef = useRef<boolean>(false)
   const completedRegistrationRef = useRef<string | null>(null)
   const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
 
   // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber a
   // newer flow or a reset caused by cancellation.
-  const seqRef = useRef(0)
+  const seqRef = useRef<number>(0)
   const abortRef = useRef<AbortController | null>(null)
   const proofClientRef = useRef<ProofWorkerClient | null>(null)
   const proofRequestIdRef = useRef<string | null>(null)
   const stageRef = useRef<Stage>('idle')
   const proveAbortRef = useRef<AbortController | null>(null)
   const evidenceFlowAbortRef = useRef<AbortController | null>(null)
+  const cachedFileHashRef = useRef<{
+    file: File
+    name: string
+    size: number
+    lastModified: number
+    digest: string
+  } | null>(null)
 
   useEffect(() => {
     stageRef.current = stage
@@ -185,27 +192,57 @@ export function useEvidence(): UseEvidenceReturn {
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
     setFile(nextFile)
-    setHashProgress({
-      processedBytes: 0,
-      totalBytes: nextFile.size,
-      percentage: nextFile.size === 0 ? 100 : 0,
-    })
-    setStage('hashing')
-    setMessage('Hashing video locally in the browser: 0%.')
+
+    const cached = cachedFileHashRef.current
+    const isCacheHit =
+      cached !== null &&
+      cached.file === nextFile &&
+      cached.name === nextFile.name &&
+      cached.size === nextFile.size &&
+      cached.lastModified === nextFile.lastModified
+
+    if (!isCacheHit) {
+      cachedFileHashRef.current = null
+      setHashProgress({
+        processedBytes: 0,
+        totalBytes: nextFile.size,
+        percentage: nextFile.size === 0 ? 100 : 0,
+      })
+      setStage('hashing')
+      setMessage('Hashing video locally in the browser: 0%.')
+    } else {
+      setHashProgress({
+        processedBytes: nextFile.size,
+        totalBytes: nextFile.size,
+        percentage: 100,
+      })
+    }
 
     try {
-      const sourceHash = await hashFileInWorker(
-        nextFile,
-        (progress) => {
-          if (!isCurrentFlow()) return
-          setHashProgress(progress)
-          setMessage(
-            `Hashing video locally in the browser: ${progress.percentagg}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
-          )
-        },
-        controller.signal,
-      )
-      if (!isCurrentFlow()) return
+      let sourceHash: string
+      if (isCacheHit) {
+        sourceHash = cached.digest
+      } else {
+        sourceHash = await hashFileInWorker(
+          nextFile,
+          (progress) => {
+            if (!isCurrentFlow()) return
+            setHashProgress(progress)
+            setMessage(
+              `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
+            )
+          },
+          controller.signal,
+        )
+        if (!isCurrentFlow()) return
+        cachedFileHashRef.current = {
+          file: nextFile,
+          name: nextFile.name,
+          size: nextFile.size,
+          lastModified: nextFile.lastModified,
+          digest: sourceHash,
+        }
+      }
 
       const { sha256 } = await import('../utils')
       const proofId = await sha256(`${sourceHash}:${crypto.randomUUID()}`)
@@ -230,7 +267,7 @@ export function useEvidence(): UseEvidenceReturn {
       if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
       setProcessedVideoUrl(URL.createObjectURL(embeddedBlob))
       setProof({
-        fileName: `harpocrates-${nextFile.name.replace(/\.[^.]+$/, '')}.mp4`,
+        fileName: `harpocrates-${nextFile.name.replace(/[^.]+$/, '')}.mp4`,
         sourceHash,
         videoHash: embeddedHash,
         metadataHash,
@@ -265,10 +302,10 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     try {
-      const { getWalletNetwork, CONTRACT_NETWORK_PASSHRASE } = await import('../stellar')
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSTHRASE } = await import('../stellar')
       const { checkNetworkMatch } = await import('../networkGuard')
       const walletPassphrase = await getWalletNetwork()
-      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSHRASE)
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSTHRASE)
       if (!check.ok) {
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
@@ -291,11 +328,11 @@ export function useEvidence(): UseEvidenceReturn {
         setMessage('A completed registration still needs to be saved. Please retry it first.')
         return
       }
-      if (registrationInFlightRef.current) {
+      if (registrationInFlightedRef.current) {
         setMessage('Registration is already in progress. Please wait for its result.')
         return
       }
-      registrationInFlightRef.current = true
+      registrationInFlightedRef.current = true
       setMessage('Saving the completed Stellar registration.')
       try {
         const { persistRegistration } = await import('../services/evidenceService')
@@ -309,22 +346,22 @@ export function useEvidence(): UseEvidenceReturn {
         setStage('error')
         setMessage(error instanceof Error ? error.message : 'Could not save the Stellar registration.')
       } finally {
-        registrationInFlightRef.current = false
+        registrationInFlightedRef.current = false
       }
       return
     }
-    if (registrationInFlightRef.current) {
+    if (registrationInFlightedRef.current) {
       setMessage('Registration is already in progress. Please wait for its result.')
       return
     }
-    registrationInFlightRef.current = true
+    registrationInFlightedRef.current = true
 
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
     try {
       const proofForRegistration =
         selectedTier === 'silent' && !proof.silentWitness
-          ? awattachSilentWitnessProof(proof, seqRef.current, abortRef.current?.signal)
+          ? await attachSilentWitnessProof(proof, seqRef.current, abortRef.current?.signal)
           : proof
       if (seqRef.current !== seqRef.current) return
 
@@ -351,7 +388,7 @@ export function useEvidence(): UseEvidenceReturn {
       setStage('error')
       setMessage(error instanceof Error ? error.message : 'Stellar registration failed.')
     } finally {
-      registrationInFlightRef.current = false
+      registrationInFlightedRef.current = false
     }
   }
 
@@ -415,6 +452,7 @@ export function useEvidence(): UseEvidenceReturn {
       cancelProving()
     }
     resetFlow()
+    setHashProgress(null)
     setStage('cancelled')
     setMessage(CANCELLED_MESSAGES[currentStage])
   }

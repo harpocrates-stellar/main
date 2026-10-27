@@ -32,8 +32,18 @@ export {
 export type { HarpocratesMetadata, IdentityTier } from './metadata.js'
 export { createProofManifest, serializeManifest, parseManifest } from './manifest.js'
 export type { ProofManifest, ManifestInput } from './manifest.js'
-export { lookupByVideoHash, verifyTransaction } from './stellar-lookup.js'
-export type { ChainProofRecord, StellarLookupOptions, TransactionVerification } from './stellar-lookup.js'
+export {
+  lookupByVideoHash,
+  lookupProofStatus,
+  normalizeProofStatus,
+  verifyTransaction,
+} from './stellar-lookup.js'
+export type {
+  ChainProofRecord,
+  ProofLifecycleStatus,
+  StellarLookupOptions,
+  TransactionVerification,
+} from './stellar-lookup.js'
 export { createReceipt, formatReceipt } from './receipt.js'
 export type { VerificationReceipt, VerificationResult } from './receipt.js'
 export { computeResult, networkName } from './normalize.js'
@@ -68,3 +78,4 @@ export {
   MAX_LINEAGE_FANOUT,
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
+export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'

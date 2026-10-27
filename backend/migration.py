@@ -437,51 +437,18 @@ MIGRATIONS: list[Migration] = [
     ),
     Migration(
         id=12,
-        name="create issuer directory events and checkpoints tables",
+        name="add event_index to proof_events and create indexer_state",
         sql="""
-        CREATE TABLE IF NOT EXISTS issuer_directory_events (
-            id BIGSERIAL PRIMARY KEY,
-            issuer_address TEXT NOT NULL,
-            organization_identity_hash TEXT NOT NULL,
-            sequence BIGINT NOT NULL,
-            event_type TEXT NOT NULL,
-            key_id TEXT NOT NULL,
-            public_key_hash TEXT NOT NULL,
-            previous_event_hash TEXT,
-            related_key_id TEXT,
-            manifest_hash TEXT,
-            reason_hash TEXT,
-            event_hash TEXT NOT NULL,
-            timestamp BIGINT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (issuer_address, sequence)
+        ALTER TABLE proof_events ADD COLUMN IF NOT EXISTS event_index INTEGER;
+        CREATE UNIQUE INDEX IF NOT EXISTS proof_events_tx_hash_event_index_idx
+            ON proof_events (tx_hash, event_index)
+            WHERE tx_hash IS NOT NULL AND event_index IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS indexer_state (
+            id TEXT PRIMARY KEY,
+            cursor TEXT NOT NULL,
+            ledger BIGINT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
-        CREATE INDEX IF NOT EXISTS issuer_directory_events_cursor_idx
-            ON issuer_directory_events (issuer_address, id ASC);
-        CREATE INDEX IF NOT EXISTS issuer_directory_events_seq_idx
-            ON issuer_directory_events (issuer_address, sequence ASC);
-
-        CREATE TABLE IF NOT EXISTS issuer_checkpoints (
-            id BIGSERIAL PRIMARY KEY,
-            issuer_address TEXT NOT NULL,
-            organization_identity_hash TEXT NOT NULL,
-            tree_head_hash TEXT NOT NULL,
-            event_count BIGINT NOT NULL,
-            timestamp BIGINT NOT NULL,
-            manifest_hash TEXT NOT NULL,
-            signature_hash TEXT,
-            version INTEGER NOT NULL DEFAULT 1,
-            protocol TEXT NOT NULL DEFAULT 'harpocrates-issuer-key-transparency',
-            manifest JSONB,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        CREATE INDEX IF NOT EXISTS issuer_checkpoints_issuer_idx
-            ON issuer_checkpoints (issuer_address, id DESC);
-        CREATE INDEX IF NOT EXISTS issuer_checkpoints_created_at_idx
-            ON issuer_checkpoints (created_at DESC);
-        CREATE INDEX IF NOT EXISTS issuer_checkpoints_signed_idx
-            ON issuer_checkpoints (id DESC)
-            WHERE signature_hash IS NOT NULL;
         """,
     ),
 ]
@@ -574,6 +541,7 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "retention_class", "type": "text"},
         {"column": "expires_at", "type": "timestamp with time zone"},
         {"column": "legal_hold", "type": "boolean"},
+        {"column": "event_index", "type": "integer"},
     ],
     "lineage_events": [
         {"column": "id", "type": "bigint"},
@@ -652,35 +620,11 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "metadata_hash", "type": "text"},
         {"column": "deleted_at", "type": "timestamp with time zone"},
     ],
-    "issuer_directory_events": [
-        {"column": "id", "type": "bigint"},
-        {"column": "issuer_address", "type": "text"},
-        {"column": "organization_identity_hash", "type": "text"},
-        {"column": "sequence", "type": "bigint"},
-        {"column": "event_type", "type": "text"},
-        {"column": "key_id", "type": "text"},
-        {"column": "public_key_hash", "type": "text"},
-        {"column": "previous_event_hash", "type": "text"},
-        {"column": "related_key_id", "type": "text"},
-        {"column": "manifest_hash", "type": "text"},
-        {"column": "reason_hash", "type": "text"},
-        {"column": "event_hash", "type": "text"},
-        {"column": "timestamp", "type": "bigint"},
-        {"column": "created_at", "type": "timestamp with time zone"},
-    ],
-    "issuer_checkpoints": [
-        {"column": "id", "type": "bigint"},
-        {"column": "issuer_address", "type": "text"},
-        {"column": "organization_identity_hash", "type": "text"},
-        {"column": "tree_head_hash", "type": "text"},
-        {"column": "event_count", "type": "bigint"},
-        {"column": "timestamp", "type": "bigint"},
-        {"column": "manifest_hash", "type": "text"},
-        {"column": "signature_hash", "type": "text"},
-        {"column": "version", "type": "integer"},
-        {"column": "protocol", "type": "text"},
-        {"column": "manifest", "type": "jsonb"},
-        {"column": "created_at", "type": "timestamp with time zone"},
+    "indexer_state": [
+        {"column": "id", "type": "text"},
+        {"column": "cursor", "type": "text"},
+        {"column": "ledger", "type": "bigint"},
+        {"column": "updated_at", "type": "timestamp with time zone"},
     ],
 }
 

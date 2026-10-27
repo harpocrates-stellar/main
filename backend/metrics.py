@@ -31,6 +31,10 @@ class MetricsCollector:
         self._cache_misses = 0
         self._cache_evictions = 0
         self._deleted_events = 0
+        self._deleted_blobs = 0
+        self._retention_dry_run_eligible: int | None = None
+        self._indexer_unknown_topics = 0
+        self._indexer_events_total: Dict[str, int] = {}
 
         # Job queue backlog metrics (refreshed at most every N seconds)
         self._job_refresh_interval = (
@@ -55,6 +59,10 @@ class MetricsCollector:
             self._cache_misses = 0
             self._cache_evictions = 0
             self._deleted_events = 0
+            self._deleted_blobs = 0
+            self._retention_dry_run_eligible = None
+            self._indexer_unknown_topics = 0
+            self._indexer_events_total.clear()
             self._last_job_refresh = 0.0
             self._cached_job_counts.clear()
             self._cached_oldest_queued.clear()
@@ -210,10 +218,42 @@ class MetricsCollector:
         with self._lock:
             self._cache_evictions += 1
 
+    def set_retention_dry_run_eligible(self, count: int) -> None:
+        """Record how many proof events a retention dry run found eligible."""
+        with self._lock:
+            self._retention_dry_run_eligible = int(count)
+
     def record_deleted_event(self) -> None:
         """Record a proof event removed by the retention worker."""
         with self._lock:
             self._deleted_events += 1
+
+    def record_deleted_blob(self, count: int = 1) -> None:
+        """Record unreferenced evidence blob(s) deleted by retention."""
+        if count <= 0:
+            return
+        with self._lock:
+            self._deleted_blobs += count
+
+    def record_deleted_blobs(self, count: int = 1) -> None:
+        """Alias for record_deleted_blob."""
+        self.record_deleted_blob(count)
+
+    def record_indexer_unknown_topic(self) -> None:
+        """Record an on-chain event skipped due to unknown topic."""
+        with self._lock:
+            self._indexer_unknown_topics += 1
+
+    def get_indexer_unknown_topics_count(self) -> int:
+        """Return the count of on-chain events skipped due to unknown topic."""
+        with self._lock:
+            return self._indexer_unknown_topics
+
+    def record_indexer_event(self, event_type: str) -> None:
+        """Record an on-chain event successfully indexed."""
+        clean = (event_type or "unknown").strip()
+        with self._lock:
+            self._indexer_events_total[clean] = self._indexer_events_total.get(clean, 0) + 1
 
     def record_dependency_status(self, name: str, status: str, critical: bool) -> None:
         """Record the latest bounded readiness state for one dependency."""
@@ -319,6 +359,29 @@ class MetricsCollector:
             lines.append("# HELP harpocrates_retention_deleted_events_total Total proof events removed by retention.")
             lines.append("# TYPE harpocrates_retention_deleted_events_total counter")
             lines.append(f"harpocrates_retention_deleted_events_total {self._deleted_events}")
+
+            if self._retention_dry_run_eligible is not None:
+                lines.append("")
+                lines.append("# HELP harpocrates_retention_dry_run_eligible_events Proof events eligible for deletion in the last retention dry run.")
+                lines.append("# TYPE harpocrates_retention_dry_run_eligible_events gauge")
+                lines.append(f"harpocrates_retention_dry_run_eligible_events {self._retention_dry_run_eligible}")
+
+            lines.append("")
+            lines.append("# HELP harpocrates_retention_deleted_blobs_total Total evidence blobs removed by retention.")
+            lines.append("# TYPE harpocrates_retention_deleted_blobs_total counter")
+            lines.append(f"harpocrates_retention_deleted_blobs_total {self._deleted_blobs}")
+
+            lines.append("")
+            lines.append("# HELP harpocrates_indexer_unknown_topics_total Total on-chain events skipped due to unknown topic.")
+            lines.append("# TYPE harpocrates_indexer_unknown_topics_total counter")
+            lines.append(f"harpocrates_indexer_unknown_topics_total {self._indexer_unknown_topics}")
+
+            if self._indexer_events_total:
+                lines.append("")
+                lines.append("# HELP harpocrates_indexer_events_total Total on-chain events indexed by event type.")
+                lines.append("# TYPE harpocrates_indexer_events_total counter")
+                for event_type, count in sorted(self._indexer_events_total.items()):
+                    lines.append(f'harpocrates_indexer_events_total{{event_type="{_escape_label(event_type)}"}} {count}')
 
             # 8. Job queue backlog and oldest-job age gauges (refreshed at most every N seconds)
             now = time.monotonic()

@@ -60,6 +60,9 @@ classify_cli_error = lambda x: x
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 """Legacy payload-limit code retained for compatibility (413)."""
 
+STEGO_LIMIT_EXCEEDED = "STEGO_LIMIT_EXCEEDED"
+"""Steganography processing exceeded configured memory or CPU limits (413)."""
+
 NOT_FOUND = "NOT_FOUND"
 """The requested resource or capability is unavailable (404)."""
 
@@ -136,6 +139,42 @@ def error_response(
         ),
         status,
     )
+
+
+LINEAGE_LIMIT_MIN = 1
+"""Minimum accepted ``limit`` for lineage list endpoints."""
+
+LINEAGE_LIMIT_MAX = 1000
+"""Maximum accepted ``limit`` for lineage list endpoints."""
+
+
+def clamp_lineage_limit(value: Any) -> int:
+    """Validate and clamp a lineage list ``limit`` query parameter.
+
+    Mirrors :func:`clamp_proof_events_limit` semantics for the lineage
+    endpoints: non-integer values raise :class:`ValueError`, and integer
+    values are clamped into ``[LINEAGE_LIMIT_MIN, LINEAGE_LIMIT_MAX]``.
+
+    Args:
+        value: Raw query-string value (typically ``request.args.get("limit")``).
+
+    Returns:
+        The clamped integer limit.
+
+    Raises:
+        ValueError: If *value* is not an integer (including ``None``).
+    """
+    if value is None:
+        raise ValueError("limit must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be an integer") from exc
+    if parsed < LINEAGE_LIMIT_MIN:
+        return LINEAGE_LIMIT_MIN
+    if parsed > LINEAGE_LIMIT_MAX:
+        return LINEAGE_LIMIT_MAX
+    return parsed
 
 
 def ok_response(

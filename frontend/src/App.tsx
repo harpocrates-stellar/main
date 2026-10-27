@@ -1,96 +1,165 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Wallet, X } from 'lucide-react'
-import EvilEye from './components/EvilEye'
-import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
-import { LandingView } from './views/LandingView'
-import { StudioView } from './views/StudioView'
-import { VerifyView } from './views/VerifyView'
-import { useWallet } from './hooks/useWallet'
-import { useEvidence } from './hooks/useEvidence'
-import { useVerification } from './hooks/useVerification'
-import { useLiveRegion, useA11yStage, useSkipLink } from './hooks/useA11y'
-import type { IdentityTier } from './types'
-import type { View } from './types'
-import { createProofManifest } from './proofManifest'
-import { CONTRACT_NETWORK_PASSPHRASE } from './stellar'
-import { buildProvenanceRecord } from './provenance/provenanceModel'
-import { parseVerificationShareLink, type VerificationSharePayload } from './verificationShareLink'
-import { checkReleaseCompatibility, type ReleaseCompatibilityResult } from './releaseCompatibility'
-import './App.css'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Wallet, X } from "lucide-react";
+import EvilEye from "./components/EvilEye";
+import { LazyFallback } from "./components/LazyFallback";
+import { LandingView } from "./views/LandingView";
+import { VerifyView } from "./views/VerifyView";
+import { useWallet } from "./hooks/useWallet";
+import { useEvidence } from "./hooks/useEvidence";
+import { useVerification } from "./hooks/useVerification";
+import { useLiveRegion, useA11yStage, useSkipLink } from "./hooks/useA11y";
+import { useOpenDisputeCount } from "./hooks/useOpenDisputeCount";
+import type { IdentityTier } from "./types";
+import type { View } from "./types";
+import { createProofManifest } from "./proofManifest";
+import { CONTRACT_NETWORK_PASSPHRASE } from "./stellar";
+import { buildProvenanceRecord } from "./provenance/provenanceModel";
+import {
+  parseVerificationShareLink,
+  type VerificationSharePayload,
+} from "./verificationShareLink";
+import {
+  checkReleaseCompatibility,
+  type ReleaseCompatibilityResult,
+} from "./releaseCompatibility";
+import { appConfig } from "./config";
+import "./App.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
-const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
-const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
+const API_BASE = appConfig.apiBase;
+const CONTRACT_ID = appConfig.harpocratesRegistryId;
+const RPC_URL = appConfig.stellarRpcUrl;
 
-type AppView = View | 'batch'
+const StudioView = lazy(() =>
+  import("./views/StudioView").then(({ StudioView }) => ({
+    default: StudioView,
+  })),
+);
+const BatchVerificationWorkspace = lazy(() =>
+  import("./components/BatchVerificationWorkspace").then(
+    ({ default: BatchVerificationWorkspace }) => ({
+      default: BatchVerificationWorkspace,
+    }),
+  ),
+);
+
+type AppView = View | "batch";
+
+const VIEW_TITLES: Record<AppView, string> = {
+  landing: "Harpocrates",
+  studio: "Evidence Studio - Harpocrates",
+  verify: "Verify evidence - Harpocrates",
+  batch: "Batch Workspace - Harpocrates",
+};
 
 function methodForTier(tier: IdentityTier) {
-  if (tier === 'silent') return 'register_anonymous_verified'
-  if (tier === 'seal') return 'register_seal'
-  return 'register_source'
+  if (tier === "silent") return "register_anonymous_verified";
+  if (tier === "seal") return "register_seal";
+  return "register_source";
 }
 
 function initialView(): AppView {
-  const hash = window.location.hash.replace('#', '')
-  const view = hash.split('?')[0]
-  return view === 'studio' || view === 'verify' || view === 'batch' ? view : 'landing'
+  const hash = window.location.hash.replace("#", "");
+  const view = hash.split("?")[0];
+  return view === "studio" || view === "verify" || view === "batch"
+    ? view
+    : "landing";
 }
 
 function initialSharePayload(): VerificationSharePayload | null {
-  const parsed = parseVerificationShareLink(window.location.href)
-  return parsed.ok ? parsed.payload : null
+  const parsed = parseVerificationShareLink(window.location.href);
+  return parsed.ok ? parsed.payload : null;
 }
 
 function App() {
-  const [currentView, setCurrentView] = useState<AppView>(initialView)
-  const [sharePayload] = useState<VerificationSharePayload | null>(initialSharePayload)
-  const [isScrolled, setIsScrolled] = useState(false)
-  const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
-  const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
-
-  const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
-  const evidence = useEvidence()
-  const verification = useVerification()
+  const [currentView, setCurrentView] = useState<AppView>(initialView);
+  const currentViewRef = useRef(currentView);
+  const [sharePayload] = useState<VerificationSharePayload | null>(
+    initialSharePayload,
+  );
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() =>
+    checkReleaseCompatibility(),
+  );
+  const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] =
+    useState(false);
 
   useEffect(() => {
-    if (!sharePayload) return
-    setCurrentView('verify')
-    void verification.loadSharedVerification(sharePayload)
-  }, [sharePayload, verification.loadSharedVerification])
+    document.title = VIEW_TITLES[currentView];
+  }, [currentView]);
 
-  const liveStatus = useLiveRegion()
-  const liveAlert = useLiveRegion()
-  const { statusLabel } = useA11yStage(evidence.stage)
-  const { mainRef, handleSkip } = useSkipLink()
+  const {
+    wallet,
+    networkMismatch: walletNetworkMismatch,
+    connectWallet,
+  } = useWallet();
+  const evidence = useEvidence();
+  const verification = useVerification();
 
-  const prevStageRef = useRef(evidence.stage)
   useEffect(() => {
-    if (evidence.stage === prevStageRef.current) return
-    prevStageRef.current = evidence.stage
+    const syncViewFromLocation = () => {
+      const nextView = initialView();
+      if (nextView === currentViewRef.current) return;
 
-    if (evidence.stage === 'error') {
-      liveAlert.announce(evidence.message)
-    } else if (evidence.stage !== 'idle') {
-      liveStatus.announce(statusLabel)
+      evidence.cancelProving();
+      currentViewRef.current = nextView;
+      setCurrentView(nextView);
+    };
+
+    window.addEventListener("popstate", syncViewFromLocation);
+    window.addEventListener("hashchange", syncViewFromLocation);
+    return () => {
+      window.removeEventListener("popstate", syncViewFromLocation);
+      window.removeEventListener("hashchange", syncViewFromLocation);
+    };
+  }, [evidence.cancelProving]);
+
+  useEffect(() => {
+    if (!sharePayload) return;
+    currentViewRef.current = "verify";
+    setCurrentView("verify");
+    void verification.loadSharedVerification(sharePayload);
+  }, [sharePayload, verification.loadSharedVerification]);
+
+  const liveStatus = useLiveRegion();
+  const liveAlert = useLiveRegion();
+  const { statusLabel } = useA11yStage(evidence.stage);
+  const { mainRef, handleSkip } = useSkipLink();
+
+  const prevStageRef = useRef(evidence.stage);
+  useEffect(() => {
+    if (evidence.stage === prevStageRef.current) return;
+    prevStageRef.current = evidence.stage;
+
+    if (evidence.stage === "error") {
+      liveAlert.announce(evidence.message);
+    } else if (evidence.stage !== "idle") {
+      liveStatus.announce(statusLabel);
     }
-  }, [evidence.stage, evidence.message, statusLabel, liveAlert, liveStatus])
+  }, [evidence.stage, evidence.message, statusLabel, liveAlert, liveStatus]);
 
-  const viewHeadingId = currentView === 'studio'
-    ? 'studio-heading'
-    : currentView === 'verify'
-      ? 'verify-heading'
-      : null
+  const viewHeadingId =
+    currentView === "studio"
+      ? "studio-heading"
+      : currentView === "verify"
+        ? "verify-heading"
+        : null;
 
   useEffect(() => {
-    if (!viewHeadingId) return
+    if (!viewHeadingId) return;
     const timer = setTimeout(() => {
-      document.getElementById(viewHeadingId)?.focus()
-    }, 50)
-    return () => clearTimeout(timer)
-  }, [viewHeadingId])
+      document.getElementById(viewHeadingId)?.focus();
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [viewHeadingId]);
+
+  const openDisputeCount = useOpenDisputeCount({
+    proofId: evidence.proof?.proofId ?? null,
+    sourceAddress: wallet || undefined,
+    contractId: CONTRACT_ID,
+  });
 
   const provenanceRecord = useMemo(() => {
-    if (!evidence.proof) return null
+    if (!evidence.proof) return null;
 
     return buildProvenanceRecord({
       manifest: createProofManifest({
@@ -98,7 +167,7 @@ function App() {
         tier: evidence.proof.tier,
         network: CONTRACT_NETWORK_PASSPHRASE,
         contractId: CONTRACT_ID,
-        transactionRef: evidence.registration?.hash ?? '',
+        transactionRef: evidence.registration?.hash ?? "",
         videoHash: evidence.proof.videoHash,
         metadataHash: evidence.proof.metadataHash,
         sourceHash: evidence.proof.sourceHash,
@@ -108,22 +177,39 @@ function App() {
       rpcUrl: RPC_URL,
       transactionHash: evidence.registration?.hash ?? null,
       method: methodForTier(evidence.proof.tier),
-    })
-  }, [evidence.proof, evidence.registration?.hash, verification.chainProof])
+      openDisputeCount,
+    });
+  }, [
+    evidence.proof,
+    evidence.registration?.hash,
+    verification.chainProof,
+    openDisputeCount,
+  ]);
 
   useEffect(() => {
-    const updateScrollState = () => setIsScrolled(window.scrollY > 36)
-    updateScrollState()
-    window.addEventListener('scroll', updateScrollState, { passive: true })
-    return () => window.removeEventListener('scroll', updateScrollState)
-  }, [])
+    const updateScrollState = () => setIsScrolled(window.scrollY > 36);
+    updateScrollState();
+    window.addEventListener("scroll", updateScrollState, { passive: true });
+    return () => window.removeEventListener("scroll", updateScrollState);
+  }, []);
 
   function openView(view: AppView) {
-    if (view !== currentView) evidence.cancelProving()
-    setCurrentView(view)
-    const nextHash = view === 'landing' ? window.location.pathname : `${window.location.pathname}#${view}`
-    window.history.replaceState(null, '', nextHash)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    const changed = view !== currentViewRef.current;
+    if (changed) {
+      evidence.cancelProving();
+      currentViewRef.current = view;
+      setCurrentView(view);
+    }
+    const nextHash =
+      view === "landing"
+        ? window.location.pathname
+        : `${window.location.pathname}#${view}`;
+    if (changed) {
+      window.history.pushState(null, "", nextHash);
+    } else if (window.location.pathname + window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   return (
@@ -132,10 +218,20 @@ function App() {
         Skip to main content
       </a>
 
-      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
         {liveStatus.message}
       </div>
-      <div role="alert" aria-live="assertive" aria-atomic="true" className="sr-only">
+      <div
+        role="alert"
+        aria-live="assertive"
+        aria-atomic="true"
+        className="sr-only"
+      >
         {liveAlert.message}
       </div>
 
@@ -156,46 +252,64 @@ function App() {
           <div className="prismatic-veil" />
         </div>
 
-        <nav className={isScrolled ? 'topbar scrolled' : 'topbar'} aria-label="Site navigation">
-          <button className="brand" type="button" onClick={() => openView('landing')} title="Home">
+        <nav
+          className={isScrolled ? "topbar scrolled" : "topbar"}
+          aria-label="Site navigation"
+        >
+          <button
+            className="brand"
+            type="button"
+            onClick={() => openView("landing")}
+            title="Home"
+          >
             Harpocrates
           </button>
           <div className="navlinks" role="group" aria-label="Primary">
             <button
-              className={currentView === 'studio' ? 'active' : ''}
-              aria-current={currentView === 'studio' ? 'page' : undefined}
+              className={currentView === "studio" ? "active" : ""}
+              aria-current={currentView === "studio" ? "page" : undefined}
               type="button"
-              onClick={() => openView('studio')}
+              onClick={() => openView("studio")}
             >
               Evidence
             </button>
             <button
-              className={currentView === 'verify' ? 'active' : ''}
-              aria-current={currentView === 'verify' ? 'page' : undefined}
+              className={currentView === "verify" ? "active" : ""}
+              aria-current={currentView === "verify" ? "page" : undefined}
               type="button"
-              onClick={() => openView('verify')}
+              onClick={() => openView("verify")}
             >
               Verify
             </button>
             <button
-              className={currentView === 'batch' ? 'active' : ''}
-              aria-current={currentView === 'batch' ? 'page' : undefined}
+              className={currentView === "batch" ? "active" : ""}
+              aria-current={currentView === "batch" ? "page" : undefined}
               type="button"
-              onClick={() => openView('batch')}
+              onClick={() => openView("batch")}
             >
               Batch Workspace
             </button>
           </div>
           <div className="network-pill">Stellar Testnet</div>
           <button
-            className={`icon-button${walletNetworkMismatch ? ' wallet-mismatch' : ''}`}
+            className={`icon-button${walletNetworkMismatch ? " wallet-mismatch" : ""}`}
             type="button"
             onClick={() => void connectWallet().catch(() => {})}
-            title={walletNetworkMismatch ? 'Wallet network mismatch — click to reconnect' : 'Connect wallet'}
-            aria-describedby={walletNetworkMismatch ? 'navbar-network-mismatch' : undefined}
+            title={
+              walletNetworkMismatch
+                ? "Wallet network mismatch — click to reconnect"
+                : "Connect wallet"
+            }
+            aria-describedby={
+              walletNetworkMismatch ? "navbar-network-mismatch" : undefined
+            }
           >
             <Wallet size={18} aria-hidden="true" />
-            <span>{wallet ? `${wallet.slice(0, 5)}...${wallet.slice(-4)}` : 'Connect'}</span>
+            <span>
+              {wallet
+                ? `${wallet.slice(0, 5)}...${wallet.slice(-4)}`
+                : "Connect"}
+            </span>
           </button>
         </nav>
 
@@ -207,7 +321,9 @@ function App() {
             aria-live="assertive"
             aria-atomic="true"
           >
-            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <span className="network-mismatch-icon" aria-hidden="true">
+              ⚠
+            </span>
             <span>{walletNetworkMismatch}</span>
           </div>
         ) : null}
@@ -221,12 +337,15 @@ function App() {
             aria-atomic="true"
             aria-label="Incompatible release configuration"
           >
-            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <span className="network-mismatch-icon" aria-hidden="true">
+              ⚠
+            </span>
             <div className="release-compatibility-banner__content">
-              <strong>Incompatible Release Configuration:</strong> Expected release{' '}
-              <code>{releaseCompatibility.expectedReleaseId}</code> on network{' '}
-              <code>{releaseCompatibility.expectedNetwork}</code>, but configured with release{' '}
-              <code>{releaseCompatibility.configuredReleaseId}</code> on network{' '}
+              <strong>Incompatible Release Configuration:</strong> Expected
+              release <code>{releaseCompatibility.expectedReleaseId}</code> on
+              network <code>{releaseCompatibility.expectedNetwork}</code>, but
+              configured with release{" "}
+              <code>{releaseCompatibility.configuredReleaseId}</code> on network{" "}
               <code>{releaseCompatibility.configuredNetwork}</code>.
             </div>
             <button
@@ -240,31 +359,47 @@ function App() {
           </div>
         ) : null}
 
-        {currentView === 'landing' ? (
-          <LandingView onOpenStudio={() => openView('studio')} onOpenVerify={() => openView('verify')} />
+        {currentView === "landing" ? (
+          <LandingView
+            onOpenStudio={() => openView("studio")}
+            onOpenVerify={() => openView("verify")}
+          />
         ) : null}
 
-        {currentView === 'studio' ? (
-          <StudioView
+        {currentView === "studio" ? (
+          <Suspense fallback={<LazyFallback label="Studio" />}>
+            <StudioView
+              wallet={wallet}
+              evidence={evidence}
+              verification={verification}
+              provenanceRecord={provenanceRecord}
+            />
+          </Suspense>
+        ) : null}
+
+        {currentView === "verify" ? (
+          <VerifyView
             wallet={wallet}
-            evidence={evidence}
+            networkMismatch={walletNetworkMismatch}
             verification={verification}
             provenanceRecord={provenanceRecord}
           />
         ) : null}
 
-        {currentView === 'verify' ? (
-          <VerifyView wallet={wallet} networkMismatch={walletNetworkMismatch} verification={verification} provenanceRecord={provenanceRecord} />
-        ) : null}
-
-        {currentView === 'batch' ? (
+        {currentView === "batch" ? (
           <section className="workspace app-page verify-page" id="batch">
-            <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            <Suspense fallback={<LazyFallback label="Batch workspace" />}>
+              <BatchVerificationWorkspace
+                apiBase={API_BASE}
+                contractId={CONTRACT_ID}
+                wallet={wallet || undefined}
+              />
+            </Suspense>
           </section>
         ) : null}
       </main>
     </>
-  )
+  );
 }
 
-export default App
+export default App;

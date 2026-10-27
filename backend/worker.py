@@ -1,3 +1,4 @@
+import logging
 import time
 import os
 from logging_utils import log_structured
@@ -8,6 +9,7 @@ from pathlib import Path
 from db import (
     lease_job,
     heartbeat_job,
+    report_job_progress,
     complete_job,
     fail_job,
     insert_proof_event,
@@ -17,7 +19,7 @@ from db import (
     update_tx_status,
 )
 from envelope import canonical_metadata_hash
-from stego import embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
 from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
@@ -26,6 +28,7 @@ from config import load_config
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
 from tracing import traced_job
+from chain_indexer import run_indexer_loop
 
 LOGGER = logging.getLogger("harpocrates.worker")
 if not LOGGER.handlers:
@@ -49,13 +52,20 @@ def process_embed(job: dict) -> dict:
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
         
+    report_job_progress(job_id, "hashing_source")
     source_hash = sha256_file(input_path)
-    
-    embed_metadata(input_path, output_path, metadata)
-    
+
+    def on_frame(frames_done: int, frames_total: int | None) -> None:
+        percent = (frames_done / frames_total * 100.0) if frames_total else None
+        report_job_progress(job_id, "embedding", percent)
+
+    embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
+
+    report_job_progress(job_id, "hashing_output")
     embedded_hash = sha256_file(output_path)
     metadata_hash = canonical_metadata_hash(metadata)
-    
+
+    report_job_progress(job_id, "recording")
     db_event = insert_proof_event(
         event_type="embed",
         file_name=normalize_filename(filename),
@@ -113,11 +123,14 @@ def process_extract(job: dict) -> dict:
 @traced_job("job.proof.noir")
 def process_silent_witness(job: dict) -> dict:
     payload = job["payload"]
-    
+
     video_hash = payload["video_hash"]
     credential_secret = payload["credential_secret"]
     nullifier_secret = payload["nullifier_secret"]
-    
+
+    # Phase names only: proof generation runs as one external command and
+    # reports no measurable fraction, so percent stays None.
+    report_job_progress(job["id"], "generating_proof")
     proof = generate_silent_witness(
         video_hash,
         credential_secret,
@@ -132,7 +145,7 @@ def process_verify_tx(job: dict) -> dict:
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
-        heartbeat_job(job_id, progress=0.5, lease_duration=300)
+        heartbeat_job(job_id, lease_duration=300)
         stop_event.wait(60)
 
 def tx_verification_loop(stop_event: threading.Event):
@@ -251,6 +264,10 @@ def run_worker(
     verification_thread = threading.Thread(target=tx_verification_loop, args=(stop_event,))
     verification_thread.daemon = True
     verification_thread.start()
+
+    indexer_thread = threading.Thread(target=run_indexer_loop, args=(stop_event,))
+    indexer_thread.daemon = True
+    indexer_thread.start()
 
     while not stop_event.is_set():
         try:

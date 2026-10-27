@@ -148,6 +148,7 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::IssuerRotationGraceStillActive => "IssuerRotationGraceStillActive",
         RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
         RegistryError::ReporterDisputesSaturated => "ReporterDisputesSaturated",
+        RegistryError::InsufficientApprovals => "InsufficientApprovals",
     }
 }
 
@@ -243,6 +244,7 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::IssuerRotationGraceStillActive,
     RegistryError::CircuitVersionMismatch,
     RegistryError::ReporterDisputesSaturated,
+    RegistryError::InsufficientApprovals,
 ];
 
 #[cfg(test)]
@@ -379,7 +381,7 @@ fn retryable_codes_require_external_condition_only() {
             retryable.push(row.code);
         }
     }
-    let expected: &[u32] = &[21, 32, 41, 66, 86];
+    let expected: &[u32] = &[21, 32, 41, 66, 86, 88];
     assert_eq!(
         retryable.as_slice(),
         expected,

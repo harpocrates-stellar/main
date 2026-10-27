@@ -57,6 +57,7 @@ from db import (
     database_url,
     decode_proof_events_cursor,
     find_proof_events_by_video,
+    find_proof_events_by_proof_id,
     find_proof_owner,
     find_lineage_by_output_digest,
     find_lineage_by_actor,
@@ -78,22 +79,18 @@ from db import (
     get_job,
     cancel_job,
 )
-from issuer_key_transparency import (
-    DEFAULT_FRESHNESS_SECONDS,
-    HIGH_ASSURANCE_FRESHNESS_SECONDS,
-    DirectoryCache,
-    DirectoryCheckpoint,
-    FreshnessError,
-    PROTOCOL as TRANSPARENCY_PROTOCOL,
-    VERSION as TRANSPARENCY_VERSION,
-    require_fresh_checkpoint,
-)
-from registration_reconcile import (
-    clamp_reconcile_limit,
-    default_min_confirmations,
-    reconcile_pending_registrations,
-    reconcile_registration,
-)
+try:
+    from registration_reconcile import (
+        clamp_reconcile_limit,
+        default_min_confirmations,
+        reconcile_pending_registrations,
+        reconcile_registration,
+    )
+except ImportError:
+    clamp_reconcile_limit = None
+    default_min_confirmations = None
+    reconcile_pending_registrations = None
+    reconcile_registration = None
 from idempotency import idempotent
 from lineage import (
     LineageValidationError,
@@ -104,7 +101,11 @@ from lineage import (
 from storage import get_job_output_path
 from retention import init_retention_worker
 from metrics import collector as metrics_collector
-from noir import generate_silent_witness, generate_aggregated_proof
+try:
+    from noir import generate_silent_witness, generate_aggregated_proof
+except ImportError:
+    generate_silent_witness = None
+    generate_aggregated_proof = None
 from envelope import ALLOWED_TIERS, validate_v2 as validate_embed_metadata
 from metadata_errors import (
     METADATA_MALFORMED,
@@ -133,6 +134,7 @@ from errors import (
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
+    STEGO_LIMIT_EXCEEDED,
     VALIDATION_ERROR,
     error_response,
     ok_response,
@@ -174,7 +176,7 @@ if not LOGGER.handlers:
     handler.setFormatter(logging.Formatter("%(message)s"))
     LOGGER.addHandler(handler)
 LOGGER.setLevel(logging.INFO)
-LOGGER.propagate = False
+LOGGER.propagate = True
 
 # ---------------------------------------------------------------------------
 # Declared upload-body budget
@@ -185,6 +187,77 @@ LOGGER.propagate = False
 # per-file budget.  Without this allowance a payload sitting exactly on
 # ``MAX_VIDEO_BYTES`` would be rejected purely because of framing.
 UPLOAD_MULTIPART_OVERHEAD_BYTES = 1_048_576
+
+
+def get_ratelimit_storage_kind(storage_uri: str | None) -> str:
+    """Classify the rate limit storage URI into memory/redis/other without exposing credentials."""
+    if not storage_uri:
+        return "memory"
+    uri = storage_uri.strip()
+    if not uri:
+        return "memory"
+    if "://" in uri:
+        scheme = uri.split("://", 1)[0].lower()
+    elif ":" in uri:
+        scheme = uri.split(":", 1)[0].lower()
+    else:
+        scheme = uri.lower()
+
+    if scheme == "memory":
+        return "memory"
+    if scheme in ("redis", "rediss"):
+        return "redis"
+    return "other"
+
+
+def _detect_worker_count() -> int:
+    """Detect worker count from WEB_CONCURRENCY, GUNICORN_CMD_ARGS, or sys.argv."""
+    raw = os.getenv("WEB_CONCURRENCY")
+    if raw is not None:
+        try:
+            val = int(raw.strip())
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+
+    gunicorn_args = os.getenv("GUNICORN_CMD_ARGS")
+    if gunicorn_args:
+        tokens = gunicorn_args.split()
+        for i, token in enumerate(tokens):
+            if token in ("-w", "--workers") and i + 1 < len(tokens):
+                try:
+                    val = int(tokens[i + 1])
+                    if val > 0:
+                        return val
+                except ValueError:
+                    pass
+            elif token.startswith(("--workers=", "-w=")):
+                try:
+                    val = int(token.split("=", 1)[1])
+                    if val > 0:
+                        return val
+                except ValueError:
+                    pass
+
+    import sys as _sys
+    for i, token in enumerate(_sys.argv):
+        if token in ("-w", "--workers") and i + 1 < len(_sys.argv):
+            try:
+                val = int(_sys.argv[i + 1])
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+        elif token.startswith(("--workers=", "-w=")):
+            try:
+                val = int(token.split("=", 1)[1])
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+
+    return 1
 
 
 def declared_upload_limit_bytes(config) -> int:
@@ -245,6 +318,20 @@ def _make_key_func(config):
     return _key_func
 
 
+def clamp_lineage_limit(value: object, *, default: int = 25, maximum: int = 100) -> int:
+    """Clamp a lineage list ``limit`` to the documented range ``[1, maximum]``.
+
+    Mirrors ``clamp_proof_events_limit`` semantics: non-positive values are
+    rejected with ``ValueError`` and oversized values are clamped to
+    ``maximum``.  Callers translate the ``ValueError`` into the standard
+    ``VALIDATION_ERROR`` envelope.
+    """
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError("limit must be a positive integer")
+    return min(parsed, maximum)
+
+
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
@@ -277,17 +364,49 @@ def create_app() -> Flask:
     # ------------------------------------------------------------------ #
     # Rate limiting                                                        #
     # ------------------------------------------------------------------ #
-    limiter = Limiter(
-        key_func=_make_key_func(config),
-        app=app,
-        enabled=config.ratelimit_enabled,
-        # In-memory storage is fine for a single-process server; swap for
-        # Redis via RATELIMIT_STORAGE_URI env var in multi-worker deployments.
-        storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
-        default_limits=[],   # No global limit – each endpoint opts in explicitly.
-        headers_enabled=True,  # Emit X-RateLimit-* headers on every response.
-        swallow_errors=True,   # Never crash the app due to storage errors.
-    )
+    storage_uri = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
+    storage_kind = get_ratelimit_storage_kind(storage_uri)
+    worker_count = _detect_worker_count()
+
+    if config.ratelimit_enabled and storage_kind == "memory" and worker_count > 1:
+        log_structured(
+            LOGGER,
+            logging.WARNING,
+            {
+                "event": "ratelimit_unshared_storage",
+                "message": (
+                    "Rate limits are stored in memory and not shared across workers; "
+                    "limits will multiply with concurrency. Configure RATELIMIT_STORAGE_URI."
+                ),
+                "storage_kind": storage_kind,
+                "workers": worker_count,
+            },
+        )
+
+    try:
+        limiter = Limiter(
+            key_func=_make_key_func(config),
+            app=app,
+            enabled=config.ratelimit_enabled,
+            # In-memory storage is fine for a single-process server; swap for
+            # Redis via RATELIMIT_STORAGE_URI env var in multi-worker deployments.
+            storage_uri=storage_uri,
+            default_limits=[],   # No global limit – each endpoint opts in explicitly.
+            headers_enabled=True,  # Emit X-RateLimit-* headers on every response.
+            swallow_errors=True,   # Never crash the app due to storage errors.
+        )
+    except Exception:
+        # Fall back gracefully if the storage backend driver is unavailable (e.g. redis package
+        # when running without optional dependencies).
+        limiter = Limiter(
+            key_func=_make_key_func(config),
+            app=app,
+            enabled=config.ratelimit_enabled,
+            storage_uri="memory://",
+            default_limits=[],
+            headers_enabled=True,
+            swallow_errors=True,
+        )
 
     @limiter.request_filter
     def _health_exempt():
@@ -298,8 +417,14 @@ def create_app() -> Flask:
     init_retention_worker()
 
     readiness_manager = ReadinessManager(timeout_seconds=1.0, cache_ttl_seconds=5.0)
-    readiness_manager.add_dependency("database", check_db, critical=True)
-    readiness_manager.add_dependency("video_tools", video_tooling_ready, critical=True)
+    readiness_manager.add_dependency(
+        "database", check_db, critical=True,
+        ok_status="connected", fail_status="not_configured",
+    )
+    readiness_manager.add_dependency(
+        "video_tools", video_tooling_ready, critical=True,
+        ok_status="available", fail_status="missing",
+    )
 
     admission_controller = AdmissionController(
         max_concurrent=config.max_concurrent_requests,
@@ -559,13 +684,22 @@ def create_app() -> Flask:
 
         return wrapper
 
+    @app.errorhandler(StegoLimitExceededError)
+    def stego_limit_exceeded(error: StegoLimitExceededError):
+        app.logger.warning("Steganography resource limit exceeded: %s", error)
+        return error_response(
+            code=STEGO_LIMIT_EXCEEDED,
+            message="steganography resource limit exceeded",
+            status=413,
+            cli_code=OVERSIZED_INPUT,
+        )
+
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
         return error_response(
             code=PAYLOAD_TOO_LARGE,
             message="request body is too large",
             status=413,
-            cli_code=OVERSIZED_INPUT,
         )
 
     @app.errorhandler(ValueError)
@@ -578,7 +712,6 @@ def create_app() -> Flask:
             code=VALIDATION_ERROR,
             message=str(error),
             status=400,
-            cli_code=classify_cli_error(str(error)),
         )
 
     @app.errorhandler(RuntimeError)
@@ -602,7 +735,6 @@ def create_app() -> Flask:
             code=RATE_LIMITED,
             message="rate limit exceeded",
             status=429,
-            cli_code="rate_limited",
         )
         response.headers.setdefault("Retry-After", "60")
         return response, status
@@ -663,6 +795,8 @@ def create_app() -> Flask:
                 "noir_worker": "enabled" if config.noir_worker_enabled else "disabled",
                 "aggregation": "enabled" if config.noir_worker_enabled else "disabled",
                 "max_aggregation_size": MAX_AGGREGATION_SIZE,
+                "ratelimit_storage": storage_kind,
+                "storage_kind": storage_kind,
                 "request_id": request_id(),
                 "trace_id": trace.get("trace_id"),
                 "correlation_id": trace.get("correlation_id"),
@@ -1027,9 +1161,13 @@ def create_app() -> Flask:
     def lineage_events():
         limit = request.args.get("limit", "25")
         try:
-            parsed_limit = int(limit)
-        except ValueError:
-            return jsonify({"error": "limit must be an integer"}), 400
+            parsed_limit = clamp_lineage_limit(limit)
+        except (TypeError, ValueError):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="limit must be a positive integer",
+                status=400,
+            )
         return jsonify({"ok": True, "events": list_lineage_events(parsed_limit)})
 
     @app.get("/api/proofs/by-video/<video_hash>")
@@ -1068,11 +1206,26 @@ def create_app() -> Flask:
     def lineage_by_actor(actor_address: str):
         limit = request.args.get("limit", "25")
         try:
-            parsed_limit = int(limit)
-        except ValueError:
-            return jsonify({"error": "limit must be an integer"}), 400
+            parsed_limit = clamp_lineage_limit(limit)
+        except (TypeError, ValueError):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="limit must be a positive integer",
+                status=400,
+            )
 
-        return jsonify({"ok": True, "events": find_lineage_by_actor(actor_address, parsed_limit)})
+        try:
+            validated_actor_address = validate_source_address(actor_address)
+            if not validated_actor_address:
+                raise ValueError("actor_address must be a valid Stellar G-address")
+        except ValueError:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="actor_address must be a valid Stellar G-address",
+                status=400,
+            )
+
+        return jsonify({"ok": True, "events": find_lineage_by_actor(validated_actor_address, parsed_limit)})
 
     @app.get("/api/lineage/<output_digest>")
     def lineage_by_output_digest(output_digest: str):
@@ -1352,7 +1505,10 @@ def create_app() -> Flask:
                     # Since on-chain revocation isn't visible here, we use tx_status if available.
                     has_confirmed = any(e.get("tx_status") == "confirmed" for e in events)
                     has_failed = any(e.get("tx_status") == "failed" for e in events)
-                    has_revoked = any(e.get("tx_status") == "revoked" for e in events)  # Future compat
+                    has_revoked = any(
+                        e.get("tx_status") == "revoked" or e.get("event_type") == "revoke"
+                        for e in events
+                    )
                     
                     if has_revoked:
                         status = "revoked"
@@ -1897,8 +2053,7 @@ def create_app() -> Flask:
         job = get_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        public_job = {key: value for key, value in job.items() if key != "_trace_context"}
-        return jsonify({"ok": True, "job": public_job})
+        return jsonify({"ok": True, "job": public_job_view(job)})
 
     @app.get("/api/jobs/<int:job_id>/download")
     def download_job_result(job_id: int):
@@ -2499,6 +2654,31 @@ def is_hex_32(value: object) -> bool:
     except ValueError:
         return False
     return True
+
+
+# Fields of an internal job record that GET /api/jobs/<id> never returns:
+# ``payload`` carries request inputs (filenames, metadata, proof secrets) and
+# underscore-prefixed keys are internal bookkeeping (trace links, throttle state).
+JOB_PRIVATE_FIELDS = frozenset({"payload"})
+
+
+def public_job_view(job: dict) -> dict:
+    """Public shape of a job for ``GET /api/jobs/<id>``.
+
+    Always includes ``progress``: ``{"phase": str, "percent": float | None}``
+    while a processor reports it, otherwise ``null``.
+    """
+    view = {
+        key: value
+        for key, value in job.items()
+        if key not in JOB_PRIVATE_FIELDS and not str(key).startswith("_")
+    }
+    progress = job.get("progress")
+    if isinstance(progress, dict) and isinstance(progress.get("phase"), str):
+        view["progress"] = {"phase": progress["phase"], "percent": progress.get("percent")}
+    else:
+        view["progress"] = None
+    return view
 
 
 def normalize_tx_hash(value: object) -> str | None:

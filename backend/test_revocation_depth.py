@@ -14,8 +14,8 @@ from verifier_inputs import (
 
 
 def test_protocol_constants():
-    assert MAX_REVOCATION_WITNESS_DEPTH == 3
-    assert MAX_REVOCATION_LEAVES == 8
+    assert MAX_REVOCATION_WITNESS_DEPTH == 16
+    assert MAX_REVOCATION_LEAVES == 65_536
     assert MAX_REVOCATION_LEAVES == 2**MAX_REVOCATION_WITNESS_DEPTH
 
 
@@ -24,12 +24,17 @@ def test_accepts_bound_depths():
         check_revocation_witness_depth(depth)
 
 
+def test_accepts_max_depth():
+    check_revocation_witness_depth(16)
+
+
 def test_rejects_oversized_depth():
-    with pytest.raises(VerifierInputError) as exc:
-        check_revocation_witness_depth(MAX_REVOCATION_WITNESS_DEPTH + 1)
-    assert exc.value.code == RejectCode.PROOF_OVERSIZE
-    assert exc.value.field == "depth"
-    assert "leaf" not in str(exc.value).lower()
+    for over_depth in (MAX_REVOCATION_WITNESS_DEPTH + 1, 17, 32):
+        with pytest.raises(VerifierInputError) as exc:
+            check_revocation_witness_depth(over_depth)
+        assert exc.value.code == RejectCode.PROOF_OVERSIZE
+        assert exc.value.field == "depth"
+        assert "leaf" not in str(exc.value).lower()
 
 
 def test_rejects_undersized_and_malformed():

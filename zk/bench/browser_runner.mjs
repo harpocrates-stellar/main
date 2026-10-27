@@ -28,9 +28,13 @@ import process from 'node:process'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HELPER = join(ROOT, 'zk/noir/silent_witness_helper/target/silent_witness_helper.json')
 const MAIN = join(ROOT, 'zk/noir/silent_witness/target/silent_witness.json')
+const REVOCATION_HELPER = join(ROOT, 'zk/noir/revocation_witness_helper/target/revocation_witness_helper.json')
+const REVOCATION_MAIN = join(ROOT, 'zk/noir/revocation_witness/target/revocation_witness.json')
 const BENCH_LOCK = join(ROOT, 'zk/bench/bench.lock.json')
 
 const PUBLIC_INPUTS_LEN = 160
+const REVOCATION_PUBLIC_INPUTS_LEN = 128
+const MAX_REVOCATION_WITNESS_DEPTH = 16
 const MIN_PROOF_BYTES = 64
 const MAX_PROOF_BYTES = 65536
 const textEncoder = new TextEncoder()
@@ -42,13 +46,12 @@ const textEncoder = new TextEncoder()
 const FALLBACK_MAX_SECRET_BYTES = 256
 const FALLBACK_MAX_CONCURRENCY = 1
 const RUNTIME_MODES = ['worker', 'main']
-
 function signal(event, fields = {}) {
   console.error(JSON.stringify({ event, ...fields }))
 }
 
 function parseArgs(argv) {
-  const out = { cold: 1, warm: 2, discard: 1, timeoutMs: 180_000, mode: 'worker' }
+  const out = { cold: 1, warm: 2, discard: 1, timeoutMs: 180_000, mode: 'worker', threads: FALLBACK_MAX_CONCURRENCY }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--cold') out.cold = Number(argv[++i])
@@ -56,6 +59,7 @@ function parseArgs(argv) {
     else if (a === '--discard') out.discard = Number(argv[++i])
     else if (a === '--timeout-ms') out.timeoutMs = Number(argv[++i])
     else if (a === '--mode') out.mode = argv[++i]
+    else if (a === '--threads') out.threads = Number(argv[++i])
     else if (a === '--help') out.help = true
   }
   return out
@@ -259,7 +263,7 @@ async function measureOnce({
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.help) {
-    console.log('browser_runner.mjs [--cold N] [--warm N] [--discard N] [--timeout-ms MS] [--mode worker|main]')
+    console.log('browser_runner.mjs [--cold N] [--warm N] [--discard N] [--timeout-ms MS] [--mode worker|main] [--threads N]')
     process.exit(0)
   }
 
@@ -271,12 +275,36 @@ async function main() {
     process.exit(3)
   }
 
+  if (!SUPPORTED_CIRCUITS.includes(args.circuit)) {
+    signal('bench.fatal', {
+      code: 'unsupported_circuit',
+      detail: `--circuit must be one of: ${SUPPORTED_CIRCUITS.join(', ')}`,
+    })
+    process.exit(3)
+  }
+
+  if (args.circuit === 'revocation_witness') {
+    if (!Number.isInteger(args.depth) || args.depth < 1) {
+      signal('bench.fatal', { code: 'depth_undersize', detail: '--depth must be >= 1' })
+      process.exit(3)
+    }
+    if (args.depth > MAX_REVOCATION_WITNESS_DEPTH) {
+      signal('bench.fatal', { code: 'depth_oversize', detail: `--depth exceeds MAX_REVOCATION_WITNESS_DEPTH=${MAX_REVOCATION_WITNESS_DEPTH}` })
+      process.exit(3)
+    }
+  }
+
   if (args.mode === 'main' && args.timeoutMs < 1) {
     signal('bench.fatal', { code: 'invalid_timeout', detail: '--timeout-ms must be positive' })
     process.exit(3)
   }
 
-  if (!(await exists(MAIN)) || !(await exists(HELPER))) {
+  const mainPath = args.circuit === 'revocation_witness' ? REVOCATION_MAIN : MAIN
+  const helperPath = args.circuit === 'revocation_witness' ? REVOCATION_HELPER : HELPER
+  const targetName = args.circuit === 'revocation_witness' ? 'revocation_browser' : 'browser'
+  const fixtureId = args.circuit === 'revocation_witness' ? 'revocation_witness.depth16.v1' : 'silent_witness.synthetic.v1'
+
+  if (!(await exists(mainPath)) || !(await exists(helperPath))) {
     signal('bench.fatal', { code: 'dependency-failure', detail: 'compile circuits first' })
     process.exit(3)
   }
@@ -295,17 +323,18 @@ async function main() {
     ;({ UltraHonkBackend } = await import(join(frontendModules, '@aztec/bb.js/dest/node/index.js')))
   }
 
-  const helperArtifact = await readJsonBounded(HELPER, limits.max_witness_bytes)
-  const mainArtifact = await readJsonBounded(MAIN, limits.max_witness_bytes)
+  const helperArtifact = await readJsonBounded(helperPath, limits.max_witness_bytes)
+  const mainArtifact = await readJsonBounded(mainPath, limits.max_witness_bytes)
   const helperCircuit = helperArtifact.value
   const mainCircuit = mainArtifact.value
   const artifactBytes = helperArtifact.rawBytes + mainArtifact.rawBytes
   assertMemoryBudget({ artifactBytes }, limits)
 
   signal('bench.start', {
-    target: 'browser',
-    fixture_id: 'silent_witness.synthetic.v1',
+    target: targetName,
+    fixture_id: fixtureId,
     mode: args.mode,
+    threads: args.threads,
   })
 
   const proveSamples = []
@@ -330,13 +359,14 @@ async function main() {
     verifySamples.push(sample.verify_ms)
     sizes = {
       proof_bytes: sample.proof_bytes,
-      public_input_bytes: sample.public_input_bytes,
+      public_input_bytes: args.circuit === 'revocation_witness' ? REVOCATION_PUBLIC_INPUTS_LEN : sample.public_input_bytes,
       witness_bytes: sample.witness_bytes,
     }
     memory = { peak_rss_bytes: sample.peak_rss_bytes }
     signal('bench.sample', {
-      target: 'browser',
+      target: targetName,
       mode: args.mode,
+      threads: args.threads,
       state: 'ok',
       elapsed_ms: sample.prove_ms,
     })
@@ -358,9 +388,10 @@ async function main() {
   const report = {
     format: 'harpocrates.zk-bench',
     version: 1,
-    target: 'browser',
-    fixture_id: 'silent_witness.synthetic.v1',
-    circuit: 'silent_witness',
+    target: targetName,
+    fixture_id: fixtureId,
+    circuit: args.circuit,
+    ...(args.circuit === 'revocation_witness' ? { depth: args.depth, leaf_count: 1 << args.depth } : {}),
     // The prover runtime this run stands in for: 'worker' or 'main' (fallback).
     mode: args.mode,
     runtime: {
@@ -369,7 +400,7 @@ async function main() {
       node_version: process.version,
       cpu_count: os.cpus()?.length ?? 0,
       ci: Boolean(process.env.CI || process.env.GITHUB_ACTIONS),
-      threading: { max_concurrency: FALLBACK_MAX_CONCURRENCY },
+      threading: { max_concurrency: args.threads, requested_threads: args.threads },
     },
     phases: [
       {
@@ -391,7 +422,7 @@ async function main() {
     generated_at_unix: Math.floor(Date.now() / 1000),
   }
 
-  signal('bench.done', { target: 'browser', outcome: 'ok' })
+  signal('bench.done', { target: targetName, outcome: 'ok' })
   console.log(JSON.stringify(report))
 }
 

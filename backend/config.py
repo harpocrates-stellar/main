@@ -72,13 +72,21 @@ class AppConfig:
     verifier_cache_max_size: int
     verifier_cache_positive_ttl_seconds: float
     verifier_cache_negative_ttl_seconds: float
+    # Stego process pool and resource limits
+    stego_memory_limit_bytes: int = 536_870_912
+    stego_cpu_limit_seconds: int = 60
+    stego_pool_max_workers: int = 4
     # External evidence fetch safety bounds
-    external_fetch_connect_timeout_seconds: float
-    external_fetch_read_timeout_seconds: float
-    external_fetch_max_response_bytes: int
+    external_fetch_connect_timeout_seconds: float = 5.0
+    external_fetch_read_timeout_seconds: float = 10.0
+    external_fetch_max_response_bytes: int = 65_536
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
     job_file_ttl_seconds: int = 86_400
+    retention_blob_gc_enabled: bool = False
+    retention_unreferenced_blobs_enabled: bool = False
+    retention_dry_run: bool = False
+
 
 
 def load_config() -> AppConfig:
@@ -148,11 +156,17 @@ def load_config() -> AppConfig:
         verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
         verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
         verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
+        stego_memory_limit_bytes=_int_env("STEGO_MEMORY_LIMIT_BYTES", 536_870_912),
+        stego_cpu_limit_seconds=_int_env("STEGO_CPU_LIMIT_SECONDS", 60),
+        stego_pool_max_workers=_int_env("STEGO_POOL_MAX_WORKERS", 4),
         external_fetch_connect_timeout_seconds=_float_env("EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS", 5.0),
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
         job_file_ttl_seconds=_job_file_ttl_env(),
+        retention_blob_gc_enabled=_blob_gc_enabled_env(),
+        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
+        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
     )
 
 
@@ -294,3 +308,18 @@ def _job_file_ttl_env(
     if parsed < 0:
         raise RuntimeError(f"{name} must be non-negative")
     return parsed
+
+
+def _blob_gc_enabled_env() -> bool:
+    """Return whether blob garbage collection is enabled in retention worker."""
+    for var in (
+        "RETENTION_BLOB_GC_ENABLED",
+        "HARPOCRATES_RETENTION_BLOB_GC_ENABLED",
+        "RETENTION_UNREFERENCED_BLOBS_ENABLED",
+        "HARPOCRATES_RETENTION_UNREFERENCED_BLOBS_ENABLED",
+    ):
+        val = os.getenv(var)
+        if val is not None:
+            return val.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
