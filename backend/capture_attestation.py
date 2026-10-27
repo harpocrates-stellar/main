@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from canonical import canonical_json_bytes, is_hex
+
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -163,7 +165,7 @@ def decode_attestation(obj: dict[str, Any]) -> CaptureAttestation:
 def canonical_attestation_hash(attestation: CaptureAttestation) -> str:
     """Compute the canonical SHA-256 hash of an attestation object."""
     encoded = encode_attestation(attestation)
-    canonical = _canonical_json(encoded)
+    canonical = canonical_json_bytes(encoded)
     return hashlib.sha256(canonical).hexdigest()
 
 
@@ -202,11 +204,7 @@ def make_device_commitment(capture_nonce: str, per_session_device_key: bytes) ->
 
 
 def _is_hex32(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
-
-
-def _canonical_json(obj: object) -> bytes:
-    return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return is_hex(value, length=64)
 
 
 def _validate_attestation(attestation: CaptureAttestation) -> None:

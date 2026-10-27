@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable
 
+from canonical import canonical_json_bytes, is_hex
+
 PROTOCOL = "harpocrates-issuer-key-transparency"
 VERSION = 1
 SUPPORTED_VERSIONS = {1}
@@ -50,24 +52,12 @@ class FreshnessError(TransparencyError):
     """Raised when a cached directory checkpoint is stale (fail-closed)."""
 
 
-def _canonical_json(obj: Any) -> bytes:
-    return json.dumps(obj, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode(
-        "utf-8"
-    )
-
-
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def _is_hex(value: str, length: int = 64) -> bool:
-    if not isinstance(value, str) or len(value) != length:
-        return False
-    try:
-        int(value, 16)
-        return True
-    except ValueError:
-        return False
+    return is_hex(value, length=length)
 
 
 def _require_hex(name: str, value: str, length: int = 64) -> str:
@@ -189,7 +179,7 @@ def canonicalize_manifest(manifest: IssuerManifest) -> str:
     payload = manifest.to_dict()
     # Signature is over the unsigned body — exclude signatureHash from digest input.
     payload.pop("signatureHash", None)
-    encoded = _canonical_json(payload)
+    encoded = canonical_json_bytes(payload)
     if len(encoded) > MAX_MANIFEST_BYTES:
         raise TransparencyError("issuer manifest exceeds size bound")
     if len(manifest.active_keys) > MAX_ACTIVE_KEYS:
@@ -266,7 +256,7 @@ class DirectoryEvent:
 
 
 def event_hash(event: DirectoryEvent) -> str:
-    return _sha256_hex(_canonical_json(event.to_dict()))
+    return _sha256_hex(canonical_json_bytes(event.to_dict()))
 
 
 @dataclass
@@ -321,7 +311,7 @@ class DirectoryCheckpoint:
 def canonicalize_checkpoint(checkpoint: DirectoryCheckpoint) -> str:
     payload = checkpoint.to_dict()
     payload.pop("signatureHash", None)
-    encoded = _canonical_json(payload)
+    encoded = canonical_json_bytes(payload)
     if len(encoded) > MAX_CHECKPOINT_BYTES:
         raise TransparencyError("checkpoint exceeds size bound")
     return encoded.decode("utf-8")

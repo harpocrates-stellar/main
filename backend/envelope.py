@@ -6,6 +6,8 @@ import zlib
 from typing import Any
 from datetime import datetime, timezone, timedelta
 
+from canonical import canonical_json_bytes, is_hex
+
 from metadata_errors import (
     METADATA_INVALID_FIELD,
     METADATA_MALFORMED,
@@ -31,19 +33,11 @@ _HEX_32_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 def canonical_metadata_hash(metadata: dict[str, Any]) -> str:
     """Returns the canonical deterministic hash for any supported metadata."""
-    return hashlib.sha256(_canonical_json(metadata)).hexdigest()
-
-
-def _canonical_json(metadata: dict[str, Any]) -> bytes:
-    return json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(canonical_json_bytes(metadata)).hexdigest()
 
 
 def _is_hex_32(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    # ``int(value, 16)`` also accepts a ``0x`` prefix and surrounding whitespace,
-    # which would let malformed hashes through; match the 32-byte hex shape exactly.
-    return _HEX_32_PATTERN.fullmatch(value) is not None
+    return is_hex(value, length=64)
 
 
 def _validate_timestamp(value: Any) -> None:
@@ -164,7 +158,7 @@ def pack_envelope(metadata: dict[str, Any], version: int = 2) -> bytes:
             f"unsupported metadata version {version}",
         )
 
-    canonical = _canonical_json(metadata)
+    canonical = canonical_json_bytes(metadata)
     # Bound the metadata itself, not just its compressed form: a highly
     # compressible field must not be able to smuggle an oversized payload.
     if len(canonical) > MAX_DECOMPRESSED_BYTES:

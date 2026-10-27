@@ -5,6 +5,8 @@ import json
 import os
 from typing import Any
 
+from canonical import is_hex
+
 SUPPORTED_OPERATIONS = {"crop", "transcode", "blur", "redact", "compose"}
 MAX_LINEAGE_DEPTH = 4
 MAX_LINEAGE_FANOUT = 4
@@ -152,4 +154,4 @@ def _contains_in_ancestry(
 
 
 def _is_hex_32(value: str) -> bool:
-    return len(value) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in value)
+    return is_hex(value, length=64)

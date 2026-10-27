@@ -17,6 +17,8 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from canonical import canonical_json_bytes, is_hex
 from datetime import datetime, timezone
 
 try:
@@ -236,7 +238,7 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
 def canonical_time_attestation_hash(attestation: TimeAttestation) -> str:
     """Compute the canonical SHA-256 hash of a time attestation."""
     encoded = encode_time_attestation(attestation)
-    canonical = _canonical_json(encoded)
+    canonical = canonical_json_bytes(encoded)
     return hashlib.sha256(canonical).hexdigest()
 
 
@@ -602,20 +604,9 @@ def verify_rfc3161_anchors(
 
 # ── Internal helpers ───────────────────────────────────────────────────────
 
-def _canonical_json(obj: dict[str, Any]) -> bytes:
-    """Encode dictionary to canonical JSON bytes."""
-    return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
-
 def _is_valid_hex(value: str, expected_length: int) -> bool:
     """Check if value is a valid hex string of expected length."""
-    if len(value) != expected_length:
-        return False
-    try:
-        int(value, 16)
-        return True
-    except ValueError:
-        return False
+    return is_hex(value, length=expected_length)
 
 
 def _validate_time_attestation_obj(obj: dict[str, Any]) -> None:

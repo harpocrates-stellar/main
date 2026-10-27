@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from canonical import canonical_json_bytes, is_hex
+
 # ---------------------------------------------------------------------------
 # Version and constants
 # ---------------------------------------------------------------------------
@@ -449,7 +451,7 @@ def export_c2pa_manifest(
         },
     }
 
-    canonical = _canonical_json(manifest)
+    canonical = canonical_json_bytes(manifest)
     digest = hashlib.sha256(canonical).hexdigest()
     return C2paExportedManifest(manifest=manifest, digest=digest)
 
@@ -467,7 +469,7 @@ def verify_round_trip(exported: C2paExportedManifest) -> bool:
     verification.
     """
     try:
-        raw = _canonical_json(exported.manifest)
+        raw = canonical_json_bytes(exported.manifest)
         parsed = parse_c2pa_manifest(raw)
     except C2paParseError:
         return False
@@ -591,7 +593,7 @@ def _parse_binding(
         val = raw[hex_field]
         if not isinstance(val, str):
             raise C2paParseError(_Reason.INVALID_TYPE, f"{prefix}.{hex_field}")
-        if not _HEX32_RE.match(val.lower()):
+        if not is_hex(val, length=64):
             raise C2paParseError(_Reason.INVALID_VALUE, f"{prefix}.{hex_field}")
 
     tier = raw["tier"]
@@ -638,13 +640,8 @@ def _require_consistent_embedded_binding(
 
 
 def _validate_hex32(value: Any, name: str) -> None:
-    if not isinstance(value, str) or not _HEX32_RE.match(value.lower()):
+    if not is_hex(value, length=64):
         raise ValueError(f"{name} must be a 32-byte lower-case hex string (64 chars)")
-
-
-def _canonical_json(obj: Any) -> bytes:
-    """Deterministic, compact JSON encoding (keys sorted recursively)."""
-    return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _check_depth(obj: Any, limit: int, _current: int = 0) -> None:

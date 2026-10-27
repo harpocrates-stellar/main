@@ -16,6 +16,7 @@ from typing import Any
 
 from hypothesis import HealthCheck, Phase, given, seed, settings, strategies as st
 
+from canonical import canonical_json_bytes
 from envelope import (
     ALLOWED_TIERS,
     MAGIC_V1,
@@ -25,7 +26,6 @@ from envelope import (
     canonical_metadata_hash,
     pack_envelope,
     unpack_envelope,
-    _canonical_json,
 )
 
 #: Default deterministic seed shared across property tests for reproducible CI runs.
@@ -107,7 +107,7 @@ valid_v2_metadata_strategy = st.builds(
     proof_id=_hex_64_strategy,
     ts=_timestamp_strategy,
     extra=_extra_fields_strategy,
-).filter(lambda m: len(_canonical_json(m)) <= MAX_DECOMPRESSED_BYTES)
+).filter(lambda m: len(canonical_json_bytes(m)) <= MAX_DECOMPRESSED_BYTES)
 
 
 # ---------------------------------------------------------------------------
