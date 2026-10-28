@@ -34,7 +34,7 @@ struct MockVerifierLifecycle;
 #[contractimpl]
 impl MockVerifierLifecycle {
     pub fn verify_proof(_env: Env, public_inputs: Bytes, proof: Bytes) {
-        if public_inputs.len() != 128 || proof.is_empty() {
+        if !matches!(public_inputs.len(), 128 | 160) || proof.is_empty() {
             panic!("invalid proof");
         }
     }
@@ -62,11 +62,14 @@ fn make_pi(env: &Env, vh: &BytesN<32>, cr: &BytesN<32>, nu: &BytesN<32>) -> Byte
     cr.copy_into_slice(&mut c);
     let mut n = [0u8; 32];
     nu.copy_into_slice(&mut n);
-    let mut buf = [0u8; 128];
+    let mut d = [0u8; 32];
+    expected_domain_tag(env).copy_into_slice(&mut d);
+    let mut buf = [0u8; 160];
     buf[16..32].copy_from_slice(&v[..16]);
     buf[48..64].copy_from_slice(&v[16..]);
     buf[64..96].copy_from_slice(&c);
     buf[96..128].copy_from_slice(&n);
+    buf[128..160].copy_from_slice(&d);
     Bytes::from_array(env, &buf)
 }
 
@@ -128,6 +131,7 @@ fn lifecycle_anonymous_emits_history() {
     let proof_id = b32(&env, 0x01);
 
     client.init(&admin);
+    client.set_verifier(&admin, &env.register(MockVerifierLifecycle, ()));
     client.add_credential_root(&admin, &b32(&env, 0x05), &b32(&env, 0x06));
 
     client.register_anonymous(
@@ -197,6 +201,8 @@ fn lifecycle_source_emits_history() {
 
     client.init(&admin);
     client.register_source(&source, &b32(&env, 0x22), &b32(&env, 0x23), &proof_id);
+    // Capture the registration call's events before any read-only call.
+    let events = env.events().all();
 
     assert_eq!(client.get_proof_history_count(&proof_id), 1);
     let history = collect_history(&env, &client, &proof_id);
@@ -210,27 +216,13 @@ fn lifecycle_source_emits_history() {
 
     // Registration has one stable observable order: ProofRegistered first,
     // then its append-only lifecycle history entry. This also guards the
-    // batch path, which uses the same save_record helper.
-    let events = env.events().all();
-    assert_eq!(events.events().len(), 2);
-    let registration_topics: SorobanVec<Val> = events.events().get(0).unwrap().1.clone();
-    let history_topics: SorobanVec<Val> = events.events().get(1).unwrap().1.clone();
-    assert_eq!(
-        registration_topics.get(0).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "proof")
-    );
-    assert_eq!(
-        registration_topics.get(1).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "reg")
-    );
-    assert_eq!(
-        history_topics.get(0).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "proof")
-    );
-    assert_eq!(
-        history_topics.get(1).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "history")
-    );
+    // batch path, which uses the same save_record helper. The default
+    // metadata envelope stamp (#317) follows them.
+    assert_eq!(events.events().len(), 3);
+    let registration_topics = event_test_utils::symbol_topics(&events.events()[0]);
+    let history_topics = event_test_utils::symbol_topics(&events.events()[1]);
+    assert_eq!(&registration_topics[..2], &["proof", "reg"]);
+    assert_eq!(&history_topics[..2], &["proof", "history"]);
 }
 
 #[test]

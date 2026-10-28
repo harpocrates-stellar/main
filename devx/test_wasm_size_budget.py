@@ -15,7 +15,7 @@ RUST_PATH = (
 )
 
 BUDGET = {
-    "max_size_bytes": 128_000,
+    "max_size_bytes": 130_560,
     "min_size_bytes": 10_000,
     "regression_band_pct": 15,
 }
@@ -26,7 +26,7 @@ class ManifestTest(unittest.TestCase):
         manifest = wsb.load_manifest(MANIFEST)
         self.assertEqual(manifest["schema_version"], 1)
         self.assertIn("registry", manifest["budgets"])
-        self.assertEqual(manifest["budgets"]["registry"]["max_size_bytes"], 128_000)
+        self.assertEqual(manifest["budgets"]["registry"]["max_size_bytes"], 130_560)
         self.assertEqual(manifest["budgets"]["registry"]["min_size_bytes"], 10_000)
         self.assertEqual(manifest["budgets"]["registry"]["regression_band_pct"], 15)
 

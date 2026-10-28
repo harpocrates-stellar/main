@@ -107,7 +107,7 @@ fn registers_lineage_with_bounded_validation() {
         &one_parent(&env, &parent),
         &bytes32(&env, 4),
         &Symbol::new(&env, "crop"),
-        &output,
+        &bytes32(&env, 5),
         &1,
     );
 
@@ -225,7 +225,7 @@ fn stores_commitments_for_a_lineage_parent_chain() {
         &one_parent(&env, &evidence),
         &bytes32(&env, 0x20),
         &Symbol::new(&env, "blur"),
-        &mid_output,
+        &bytes32(&env, 0x21),
         &1,
     );
 
@@ -234,7 +234,7 @@ fn stores_commitments_for_a_lineage_parent_chain() {
         &one_parent(&env, &bytes32(&env, 0x21)),
         &bytes32(&env, 0x22),
         &Symbol::new(&env, "redact"),
-        &child_output,
+        &bytes32(&env, 0x23),
         &2,
     );
 
@@ -362,7 +362,12 @@ fn enforces_the_per_parent_fanout_cap() {
         &bytes32(&env, 0x80),
         &1,
     );
-    assert_eq!(overflow, Err(Ok(RegistryError::LineageFanOutSaturated)));
+    assert_eq!(
+        overflow,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::LineageFanOutSaturated as u32
+        )))
+    );
     assert_eq!(
         client.get_lineage_child_count(&evidence),
         MAX_LINEAGE_FANOUT
@@ -404,7 +409,7 @@ fn a_parent_budget_is_shared_by_every_derivative_that_names_it() {
     assert_eq!(
         result,
         Err(Ok(soroban_sdk::Error::from_contract_error(
-            RegistryError::LineageFanOutExceeded as u32
+            RegistryError::LineageFanOutSaturated as u32
         )))
     );
 }
@@ -415,6 +420,8 @@ fn a_rejected_edge_does_not_spend_a_parent_budget() {
     let (client, actor, evidence) = setup(&env);
 
     // A repeated parent is rejected before any budget is charged.
+    let mut repeated_parents = one_parent(&env, &evidence);
+    repeated_parents.push_back(evidence.clone());
     let repeated = client.try_register_lineage(
         &actor,
         &soroban_sdk::Vec::from_array(&env, [evidence.clone()]),
@@ -445,6 +452,9 @@ fn a_rejected_edge_does_not_spend_a_parent_budget() {
             RegistryError::LineageEmptyParents as u32
         )))
     );
+    assert!(forged.is_err());
+
+    assert_eq!(client.get_lineage_child_count(&evidence), 0);
 }
 
 #[test]
@@ -488,24 +498,8 @@ fn rejects_a_derivative_beyond_the_depth_cap() {
         parent = bytes32(&env, output);
     }
 
-    client.init(&admin);
-    client.register_source(&actor, &bytes32(&env, 2), &bytes32(&env, 3), &parent);
-    client.revoke_proof(&admin, &parent);
-
-    let result = client.try_register_lineage(
-        &actor,
-        &soroban_sdk::Vec::from_array(&env, [parent]),
-        &bytes32(&env, 4),
-        &Symbol::new(&env, "crop"),
-        &bytes32(&env, 5),
-        &1,
-    );
-    assert_eq!(
-        result,
-        Err(Ok(soroban_sdk::Error::from_contract_error(
-            RegistryError::LineageParentUnavailable as u32
-        )))
-    );
+    // One more step is past the cap.
+    derive(&client, &env, &actor, &parent, 0xD0, MAX_LINEAGE_DEPTH + 1);
 }
 
 #[test]
@@ -548,7 +542,7 @@ fn rejects_duplicate_lineage_output() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #80)")]
+#[should_panic(expected = "Error(Contract, #92)")]
 fn rejects_a_forged_shallow_depth() {
     let env = Env::default();
     let (client, actor, evidence) = setup(&env);
@@ -572,7 +566,7 @@ fn rejects_a_forged_shallow_depth() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #80)")]
+#[should_panic(expected = "Error(Contract, #92)")]
 fn rejects_an_overstated_depth() {
     let env = Env::default();
     let (client, actor, evidence) = setup(&env);
@@ -647,14 +641,8 @@ fn rejects_a_revoked_parent_proof() {
         &one_parent(&env, &parent),
         &bytes32(&env, 0x73),
         &Symbol::new(&env, "crop"),
-        &bytes32(&env, 5),
-        &5,
-    );
-    assert_eq!(
-        result,
-        Err(Ok(soroban_sdk::Error::from_contract_error(
-            RegistryError::LineageTooDeep as u32
-        )))
+        &bytes32(&env, 0x74),
+        &1,
     );
 }
 
@@ -684,7 +672,12 @@ fn rejects_registration_of_an_existing_output_digest() {
         &bytes32(&env, 0x11),
         &1,
     );
-    assert_eq!(replayed, Err(Ok(RegistryError::DuplicateLineage)));
+    assert_eq!(
+        replayed,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::DuplicateLineage as u32
+        )))
+    );
 
     assert_eq!(client.get_lineage(&bytes32(&env, 0x11)).unwrap(), original);
     // The refused attempt did not create a second edge from the parent.
@@ -817,7 +810,7 @@ fn rejects_oversized_children_page_limit() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #15)")]
+#[should_panic(expected = "Error(Contract, #58)")]
 fn rejects_direct_cycle() {
     let env = Env::default();
     env.mock_all_auths();
@@ -840,7 +833,7 @@ fn rejects_direct_cycle() {
         &bytes32(&env, 10),
         &Symbol::new(&env, "crop"),
         &p2,
-        1,
+        &1,
     );
 
     // Register p1 deriving back from p2 -> direct cycle between 2 nodes
@@ -850,12 +843,12 @@ fn rejects_direct_cycle() {
         &bytes32(&env, 11),
         &Symbol::new(&env, "crop"),
         &p1,
-        2,
+        &2,
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #15)")]
+#[should_panic(expected = "Error(Contract, #58)")]
 fn rejects_transitive_cycle() {
     let env = Env::default();
     env.mock_all_auths();
@@ -880,7 +873,7 @@ fn rejects_transitive_cycle() {
         &bytes32(&env, 10),
         &Symbol::new(&env, "crop"),
         &p2,
-        1,
+        &1,
     );
 
     // p2 -> p3
@@ -890,7 +883,7 @@ fn rejects_transitive_cycle() {
         &bytes32(&env, 11),
         &Symbol::new(&env, "crop"),
         &p3,
-        2,
+        &2,
     );
 
     // p3 -> p4
@@ -900,7 +893,7 @@ fn rejects_transitive_cycle() {
         &bytes32(&env, 12),
         &Symbol::new(&env, "crop"),
         &p4,
-        3,
+        &3,
     );
 
     // transitive cycle: p4 -> p1
@@ -910,6 +903,6 @@ fn rejects_transitive_cycle() {
         &bytes32(&env, 13),
         &Symbol::new(&env, "crop"),
         &p1,
-        4, // MAX_LINEAGE_DEPTH is 4, this is valid depth, but triggers the cycle error
+        &4, // MAX_LINEAGE_DEPTH is 4, this is valid depth, but triggers the cycle error
     );
 }

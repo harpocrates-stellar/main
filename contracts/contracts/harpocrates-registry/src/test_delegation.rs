@@ -781,3 +781,199 @@ fn direct_registration_is_unaffected_by_the_delegation_feature() {
         Some(grantor)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Listing and pagination (#714)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_delegations_empty_when_no_grants() {
+    let (env, contract_id, _, grantor, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let page = client.list_delegations(&grantor, &0, &10);
+    assert_eq!(page.entries.len(), 0);
+    assert_eq!(page.next_cursor, None);
+    assert_eq!(page.total, 0);
+}
+
+#[test]
+fn list_delegations_matches_grants_after_grant_regrant_revoke() {
+    let (env, contract_id, _, grantor, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let d1 = Address::generate(&env);
+    let d2 = Address::generate(&env);
+    let d3 = Address::generate(&env);
+
+    client.grant_delegation(&grantor, &d1, &DELEGATION_SCOPE_REGISTER_SOURCE, &ONE_DAY);
+    client.grant_delegation(&grantor, &d2, &DELEGATION_SCOPE_REGISTER_SEAL, &ONE_DAY);
+    client.grant_delegation(&grantor, &d3, &DELEGATION_SCOPE_ALL, &ONE_DAY);
+
+    assert_eq!(client.get_delegation_count(&grantor), 3);
+    let page = client.list_delegations(&grantor, &0, &10);
+    assert_eq!(page.entries.len(), 3);
+    assert_eq!(page.total, 3);
+    assert_eq!(page.next_cursor, None);
+
+    // Re-grant d2 with modified scope and duration: does NOT duplicate index entry
+    client.grant_delegation(&grantor, &d2, &DELEGATION_SCOPE_ALL, &(2 * ONE_DAY));
+    assert_eq!(client.get_delegation_count(&grantor), 3);
+    let page2 = client.list_delegations(&grantor, &0, &10);
+    assert_eq!(page2.entries.len(), 3);
+    assert_eq!(page2.total, 3);
+
+    // Verify d2 has updated record
+    let mut found_d2 = false;
+    for entry in page2.entries.iter() {
+        if entry.delegate == d2 {
+            found_d2 = true;
+            assert_eq!(entry.record.scope, DELEGATION_SCOPE_ALL);
+            assert_eq!(entry.record.expires_at, 1_000 + 2 * ONE_DAY);
+        }
+    }
+    assert!(found_d2);
+
+    // Revoke d1 (slot reuse test: d3 is swapped into slot 0)
+    client.revoke_delegation(&grantor, &grantor, &d1);
+    assert_eq!(client.get_delegation_count(&grantor), 2);
+
+    let page3 = client.list_delegations(&grantor, &0, &10);
+    assert_eq!(page3.entries.len(), 2);
+    assert_eq!(page3.total, 2);
+
+    let mut delegates = std::vec::Vec::new();
+    for entry in page3.entries.iter() {
+        delegates.push(entry.delegate.clone());
+    }
+    assert!(delegates.contains(&d2));
+    assert!(delegates.contains(&d3));
+    assert!(!delegates.contains(&d1));
+
+    // Can grant a new delegate into the freed slot
+    let d4 = Address::generate(&env);
+    client.grant_delegation(&grantor, &d4, &DELEGATION_SCOPE_REGISTER_SOURCE, &ONE_DAY);
+    assert_eq!(client.get_delegation_count(&grantor), 3);
+    let page4 = client.list_delegations(&grantor, &0, &10);
+    assert_eq!(page4.entries.len(), 3);
+    assert_eq!(page4.total, 3);
+}
+
+#[test]
+fn list_delegations_pagination_and_limits() {
+    let (env, contract_id, _, grantor, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let mut delegates = std::vec::Vec::new();
+    for _ in 0..5 {
+        let d = Address::generate(&env);
+        client.grant_delegation(&grantor, &d, &DELEGATION_SCOPE_REGISTER_SOURCE, &ONE_DAY);
+        delegates.push(d);
+    }
+    assert_eq!(client.get_delegation_count(&grantor), 5);
+
+    // Page 1: limit 2
+    let p1 = client.list_delegations(&grantor, &0, &2);
+    assert_eq!(p1.entries.len(), 2);
+    assert_eq!(p1.next_cursor, Some(2));
+    assert_eq!(p1.total, 5);
+
+    // Page 2: limit 2
+    let p2 = client.list_delegations(&grantor, &p1.next_cursor.unwrap(), &2);
+    assert_eq!(p2.entries.len(), 2);
+    assert_eq!(p2.next_cursor, Some(4));
+    assert_eq!(p2.total, 5);
+
+    // Page 3: limit 2 -> remaining 1 entry
+    let p3 = client.list_delegations(&grantor, &p2.next_cursor.unwrap(), &2);
+    assert_eq!(p3.entries.len(), 1);
+    assert_eq!(p3.next_cursor, None);
+    assert_eq!(p3.total, 5);
+
+    // Out-of-bounds cursor
+    let p4 = client.list_delegations(&grantor, &10, &2);
+    assert_eq!(p4.entries.len(), 0);
+    assert_eq!(p4.next_cursor, None);
+    assert_eq!(p4.total, 5);
+
+    // Zero limit is capped to MAX_DELEGATIONS_PER_GRANTOR
+    let p_default = client.list_delegations(&grantor, &0, &0);
+    assert_eq!(p_default.entries.len(), 5);
+    assert_eq!(p_default.next_cursor, None);
+    assert_eq!(p_default.total, 5);
+}
+
+#[test]
+fn property_model_test_delegation_sequences() {
+    let (env, contract_id, _, grantor, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Reference model: Vec of (delegate address, (scope, duration))
+    let mut model: std::vec::Vec<(Address, (u32, u64))> = std::vec::Vec::new();
+
+    let mut pool = std::vec::Vec::new();
+    for _ in 0..12 {
+        pool.push(Address::generate(&env));
+    }
+
+    // Pseudo-random deterministic sequence of operations
+    let ops = [
+        (0, 0, 1, 100), // Grant pool[0]
+        (0, 1, 2, 200), // Grant pool[1]
+        (0, 2, 3, 300), // Grant pool[2]
+        (0, 0, 2, 500), // Re-grant pool[0]
+        (1, 1, 0, 0),   // Revoke pool[1]
+        (0, 3, 1, 400), // Grant pool[3]
+        (0, 4, 2, 150), // Grant pool[4]
+        (1, 0, 0, 0),   // Revoke pool[0]
+        (0, 5, 3, 600), // Grant pool[5]
+        (0, 1, 1, 700), // Re-grant pool[1] (was revoked, becomes new grant)
+        (1, 2, 0, 0),   // Revoke pool[2]
+        (0, 6, 2, 800), // Grant pool[6]
+        (1, 9, 0, 0),   // Revoke pool[9] (not in model, no-op)
+    ];
+
+    for (op, pool_idx, scope, duration) in ops.iter() {
+        let delegate = &pool[*pool_idx];
+        if *op == 0 {
+            // Grant / regrant
+            client.grant_delegation(&grantor, delegate, scope, duration);
+            if let Some(pos) = model.iter().position(|(d, _)| d == delegate) {
+                model[pos] = (delegate.clone(), (*scope, *duration));
+            } else {
+                model.push((delegate.clone(), (*scope, *duration)));
+            }
+        } else {
+            // Revoke
+            client.revoke_delegation(&grantor, &grantor, delegate);
+            if let Some(pos) = model.iter().position(|(d, _)| d == delegate) {
+                model.remove(pos);
+            }
+        }
+
+        // Compare contract listing with reference model
+        assert_eq!(client.get_delegation_count(&grantor), model.len() as u32);
+        let page = client.list_delegations(&grantor, &0, &MAX_DELEGATIONS_PER_GRANTOR);
+        assert_eq!(page.entries.len(), model.len() as u32);
+        assert_eq!(page.total, model.len() as u32);
+
+        let mut listed = std::vec::Vec::new();
+        for entry in page.entries.iter() {
+            listed.push((entry.delegate.clone(), entry.record.scope));
+        }
+
+        for (delegate, (expected_scope, _)) in model.iter() {
+            let found = listed.iter().find(|(d, _)| d == delegate);
+            assert!(
+                found.is_some(),
+                "Delegate in model must exist in contract listing"
+            );
+            assert_eq!(
+                found.unwrap().1,
+                *expected_scope,
+                "Delegate scope in listing must match model"
+            );
+        }
+    }
+}
+

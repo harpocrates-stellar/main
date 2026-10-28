@@ -125,7 +125,7 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
     // Getter remains compatible (treats missing as V1).
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V2 as u32
+        SchemaVersion::V1 as u32
     );
 
     let before = schema_upgrade_event_count(&env, &contract_id);
@@ -220,7 +220,9 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
     client.upgrade_storage(&admin);
     let end = schema_upgrade_event_count(&env, &contract_id);
 
-    assert_eq!(end, mid);
+    // The first call migrates (one event); the repeat call emits nothing.
+    assert_eq!(mid, 1);
+    assert_eq!(end, 0);
     assert_eq!(
         client.get_storage_schema_version(),
         SchemaVersion::V2 as u32

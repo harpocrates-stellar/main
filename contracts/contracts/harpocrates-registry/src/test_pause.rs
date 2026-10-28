@@ -31,6 +31,18 @@ fn b32(env: &Env, v: u8) -> BytesN<32> {
 /// Returns (env, contract_id, admin, guardian, source) with the ledger
 /// timestamp starting at `start_ts`.
 #[cfg(test)]
+#[contract]
+struct MockPauseVerifier;
+
+#[contractimpl]
+impl MockPauseVerifier {
+    pub fn verify_proof(_env: Env, _public_inputs: soroban_sdk::Bytes, proof: soroban_sdk::Bytes) {
+        if proof.is_empty() {
+            panic!("invalid proof");
+        }
+    }
+}
+
 fn setup(start_ts: u64) -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -58,6 +70,7 @@ fn pause_blocks_only_the_targeted_tier() {
     let (env, contract_id, admin, _, _) = setup(1_000);
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     client.add_credential_root(&admin, &b32(&env, 5), &b32(&env, 6));
+    client.set_verifier(&admin, &env.register(MockPauseVerifier, ()));
 
     client.pause(&admin, &PAUSE_DOMAIN_TIER2_REGISTRATION, &3600u64);
     assert!(client.is_paused(&PAUSE_DOMAIN_TIER2_REGISTRATION));

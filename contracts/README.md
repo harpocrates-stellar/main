@@ -377,7 +377,7 @@ Registry administration and Tier 3 issuance are disjoint roles. The admin can
 manage protocol state, credential roots, verifiers, proofs, and the issuer
 allowlist, but an active admin address cannot be granted issuer authority.
 An active issuer cannot be proposed or accepted as admin. Both rejected paths
-return the stable, privacy-safe `RoleConflict` contract error (`#53`); no media,
+return the stable, privacy-safe `RoleConflict` contract error (`#93`); no media,
 metadata, witness, proof, or key material is included.
 
 `is_admin(address)` and `is_issuer(address)` expose the effective role without

@@ -132,6 +132,7 @@ fn registers_all_identity_tiers() {
     let issuer = Address::generate(&env);
 
     client.init(&admin);
+    client.set_verifier(&admin, &env.register(MockNoirVerifier, ()));
     client.add_issuer(&admin, &issuer, &bytes32(&env, 9));
     client.add_credential_root(&admin, &bytes32(&env, 5), &bytes32(&env, 10));
 
@@ -177,6 +178,7 @@ fn rejects_reused_nullifier() {
     let admin = Address::generate(&env);
 
     client.init(&admin);
+    client.set_verifier(&admin, &env.register(MockNoirVerifier, ()));
     client.add_credential_root(&admin, &bytes32(&env, 5), &bytes32(&env, 10));
     client.register_anonymous(
         &bytes32(&env, 1),
@@ -232,7 +234,7 @@ fn registers_silent_witness_through_external_verifier() {
     client.set_verifier(&admin, &verifier_id);
     client.add_credential_root(&admin, &credential_root, &bytes32(&env, 45));
     assert_eq!(client.get_verifier(), Some(verifier_id));
-    assert!(client.get_credential_root(&credential_root).unwrap().active);
+    assert!(client.get_credential_root(&credential_root).unwrap().status == STATUS_REGISTERED);
 
     let record = client.register_anonymous_verified(
         &video_hash,

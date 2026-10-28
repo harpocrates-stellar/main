@@ -51,9 +51,10 @@ grant_delegation(grantor, delegate, scope, duration_secs) -> u64
 revoke_delegation(revoker, grantor, delegate)
 
 // Read-only.
-get_delegation(grantor, delegate)              -> Option<DelegationRecord>
-is_delegation_active(grantor, delegate, scope) -> bool
-get_delegation_count(grantor)                  -> u32
+get_delegation(grantor, delegate)                     -> Option<DelegationRecord>
+is_delegation_active(grantor, delegate, scope)        -> bool
+get_delegation_count(grantor)                         -> u32
+list_delegations(grantor, cursor, limit)              -> DelegationPage
 
 // Delegated registration. Authorizes the delegate, attributes the grantor.
 register_source_delegated(delegate, source, video_hash, metadata_hash, proof_id) -> ProofRecord
@@ -193,12 +194,10 @@ client.revoke_delegation(&admin, &source, &pipeline);
   and pause controls.
 
 ## Limitations
-
-- Delegations cannot be enumerated on chain. `get_delegation` requires knowing
-  the delegate address; there is no `list_delegations(grantor)`, because an
-  unbounded iteration over an attacker-influenced set is exactly the pattern
-  this contract avoids elsewhere. Off-chain indexers should follow
-  `DelegationGranted` and `DelegationRevoked` events.
+ 
+- Delegations can be enumerated on chain via `list_delegations(grantor, cursor, limit)`.
+  The page size and total storage entries per grantor are bounded by
+  `MAX_DELEGATIONS_PER_GRANTOR` (32), preserving the predictable resource budget.
 - A lapsed delegation holds its slot until pruned. A grantor that cycles through
   32 short-lived delegates must revoke before granting the 33rd.
 - Scope is coarse: "may register source proofs", not "may register source proofs
