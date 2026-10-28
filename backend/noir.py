@@ -21,7 +21,9 @@ from verifier_inputs import (
 
 try:
     import sys
-    sys.path.insert(0, str(ROOT_DIR / "zk" / "tools"))
+    _zk_tools_dir = str(ROOT_DIR / "zk" / "tools")
+    if _zk_tools_dir not in sys.path:
+        sys.path.append(_zk_tools_dir)
     from validate_prover_inputs import validate_prover_inputs  # type: ignore[import-not-found]
 except ImportError:
     validate_prover_inputs = None

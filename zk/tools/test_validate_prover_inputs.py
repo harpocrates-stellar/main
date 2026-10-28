@@ -169,9 +169,11 @@ def test_cli_exit_code_and_stderr(tmp_path, capsys):
     code = main([str(bad_toml), "--schema", str(SCHEMA_PATH)])
     assert code != 0
     captured = capsys.readouterr()
-    assert "not_a_hex_or_dec" not in captured.stderr
-    assert "not_a_hex_or_dec" not in captured.stdout
-    assert "missing_required_field" in captured.stderr or "malformed_field_element" in captured.stderr
+    err = getattr(captured, "err", getattr(captured, "stderr", ""))
+    out = getattr(captured, "out", getattr(captured, "stdout", ""))
+    assert "not_a_hex_or_dec" not in err
+    assert "not_a_hex_or_dec" not in out
+    assert "missing_required_field" in err or "malformed_field_element" in err
 
 
 def test_cli_success(tmp_path):

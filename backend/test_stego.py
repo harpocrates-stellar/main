@@ -23,7 +23,8 @@ from stego import (
 
 # Root directory for devx imports
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "devx"))
+if str(REPO_ROOT / "devx") not in sys.path:
+    sys.path.append(str(REPO_ROOT / "devx"))
 try:
     import generate_synthetic_media
 except ImportError:

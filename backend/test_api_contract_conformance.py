@@ -47,7 +47,7 @@ REPO_ROOT = BACKEND_DIR.parent
 
 # The OpenAPI generator reads the same AST contract this suite pins against.
 if str(REPO_ROOT / "devx") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "devx"))
+    sys.path.append(str(REPO_ROOT / "devx"))
 
 import generate_api_schema  # noqa: E402  (path is set above)
 

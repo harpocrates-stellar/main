@@ -18,6 +18,7 @@ import {
 } from './stellarEncoding'
 import type {
   ChainDisputeRecord,
+  DelegationRecord,
   ChainProofRecord,
   Hex32,
   IdentityTier,
@@ -40,7 +41,7 @@ const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet
  */
 export const CONTRACT_NETWORK_PASSPHRASE: string = Networks.TESTNET
 
-const NETWORK_PASSTHRASE = CONTRACT_NETWORK_PASSPHRASE
+const NETWORK_PASSPHRASE = CONTRACT_NETWORK_PASSPHRASE
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 30000
@@ -94,6 +95,72 @@ function resolveStatus(
   return 'FAILED'
 }
 
+export function normalizeRegisterProofInput(input: RegisterProofInput): NormalizedRegisterProofInput {
+  return {
+    ...input,
+    videoHash: asHex32(input.videoHash, 'videoHash'),
+    metadataHash: asHex32(input.metadataHash, 'metadataHash'),
+    proofId: asHex32(input.proofId, 'proofId'),
+    silentWitness: input.silentWitness
+      ? {
+          publicInputs: asHexBytes(input.silentWitness.publicInputs, 'silentWitness.publicInputs'),
+          proof: asHexBytes(input.silentWitness.proof, 'silentWitness.proof'),
+        }
+      : undefined,
+  }
+}
+
+export function methodForTier(tier: IdentityTier, isDelegated = false): RegistryMethod {
+  if (tier === 'silent') return 'register_anonymous_verified'
+  if (tier === 'seal') {
+    return isDelegated ? 'register_seal_delegated' : 'register_seal'
+  }
+  return isDelegated ? 'register_source_delegated' : 'register_source'
+}
+
+export function argsForTier(input: NormalizedRegisterProofInput) {
+  const videoHash = scBytes32(input.videoHash)
+  const metadataHash = scBytes32(input.metadataHash)
+  const proofId = scBytes32(input.proofId)
+  const address = new Address(input.publicKey).toScVal()
+
+  if (input.tier === 'silent') {
+    if (!input.silentWitness) {
+      throw new Error('Silent Witness registration requires Noir proof artifacts.')
+    }
+
+    return [
+      videoHash,
+      metadataHash,
+      proofId,
+      scBytes(input.silentWitness.publicInputs),
+      scBytes(input.silentWitness.proof),
+    ]
+  }
+
+  if (input.grantor) {
+    const grantorAddress = new Address(input.grantor).toScVal()
+    // register_source_delegated(delegate, source, video_hash, metadata_hash, proof_id)
+    // register_seal_delegated(delegate, issuer, video_hash, metadata_hash, proof_id)
+    return [address, grantorAddress, videoHash, metadataHash, proofId]
+  }
+
+  return [address, videoHash, metadataHash, proofId]
+}
+
+export function buildRegisterProofOperation(
+  contractId: string,
+  input: RegisterProofInput,
+) {
+  const normalized = normalizeRegisterProofInput(input)
+  const isDelegated = Boolean(normalized.grantor && normalized.tier !== 'silent')
+  const contract = new Contract(contractId)
+  return contract.call(
+    methodForTier(normalized.tier, isDelegated),
+    ...argsForTier(normalized),
+  )
+}
+
 export async function registerProofOnStellar(
   input: RegisterProofInput,
   waitForConfirmation = true,
@@ -101,12 +168,11 @@ export async function registerProofOnStellar(
   const normalized = normalizeRegisterProofInput(input)
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(normalized.publicKey)
-  const contract = new Contract(normalized.contractId)
-  const operation = contract.call(methodForTier(normalized.tier), ...argsForTier(normalized))
+  const operation = buildRegisterProofOperation(input.contractId, input)
 
   const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSTHRASE,
+    networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(operation)
     .setTimeout(90)
@@ -114,7 +180,7 @@ export async function registerProofOnStellar(
 
   const prepared = await server.prepareTransaction(transaction)
   const signed = await signTransaction(prepared.toXDR(), {
-    networkPassphrase: NETWORK_PASSTHRASE,
+    networkPassphrase: NETWORK_PASSPHRASE,
     address: normalized.publicKey,
   })
 
@@ -233,7 +299,7 @@ export async function getBatchProofStatuses(
   
   const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSTHRASE,
+    networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call('get_proof_statuses', ...scProofIds))
     .setTimeout(30)
@@ -252,50 +318,6 @@ export async function getBatchProofStatuses(
 
   // returns array of status enum values mapped to numbers
   return native.map((val: unknown) => Number(val))
-}
-
-function normalizeRegisterProofInput(input: RegisterProofInput): NormalizedRegisterProofInput {
-  return {
-    ...input,
-    videoHash: asHex32(input.videoHash, 'videoHash'),
-    metadataHash: asHex32(input.metadataHash, 'metadataHash'),
-    proofId: asHex32(input.proofId, 'proofId'),
-    silentWitness: input.silentWitness
-      ? {
-          publicInputs: asHexBytes(input.silentWitness.publicInputs, 'silentWitness.publicInputs'),
-          proof: asHexBytes(input.silentWitness.proof, 'silentWitness.proof'),
-        }
-      : undefined,
-  }
-}
-
-function methodForTier(tier: IdentityTier): RegistryMethod {
-  if (tier === 'silent') return 'register_anonymous_verified'
-  if (tier === 'seal') return 'register_seal'
-  return 'register_source'
-}
-
-function argsForTier(input: NormalizedRegisterProofInput) {
-  const videoHash = scBytes32(input.videoHash)
-  const metadataHash = scBytes32(input.metadataHash)
-  const proofId = scBytes32(input.proofId)
-  const address = new Address(input.publicKey).toScVal()
-
-  if (input.tier === 'silent') {
-    if (!input.silentWitness) {
-      throw new Error('Silent Witness registration requires Noir proof artifacts.')
-    }
-
-    return [
-      videoHash,
-      metadataHash,
-      proofId,
-      scBytes(input.silentWitness.publicInputs),
-      scBytes(input.silentWitness.proof),
-    ]
-  }
-
-  return [address, videoHash, metadataHash, proofId]
 }
 
 export async function getProof(
@@ -735,58 +757,44 @@ export async function respondDispute(
   }
 }
 
-/**
- * Return the number of currently Open disputes for a given proof.
- */
-export async function getOpenDisputeCount(
+
+
+
+
+export async function getProofHistory(
   contractId: string,
   proofId: string,
   sourceAddress?: string,
-): Promise<number> {
+  limit = 256,
+): Promise<ProofHistoryResult> {
   const source = sourceAddress || READONLY_SOURCE
   if (!source) {
-    return 0
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
   }
 
-  const server = new rpc.Server(RPC_URL)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-  const transaction = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      contract.call(
-        'get_open_dispute_count' satisfies RegistryMethod,
-        scBytes32(asHex32(proofId, 'proofId')),
-      ),
-    )
-    .setTimeout(30)
-    .build()
+  const count = await getProofHistoryCount(contractId, proofId, sourceAddress)
+  const cappedLimit = Math.min(limit, count)
+  const entries: ProofHistoryEntry[] = []
 
-  const simulation = await server.simulateTransaction(transaction)
-  if (rpc.Api.isSimulationError(simulation)) {
-    throw new Error(simulation.error)
-  }
-  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return 0
+  for (let seq = 1; seq <= cappedLimit; seq += 1) {
+    const entry = await getProofHistoryAt(contractId, proofId, sourceAddress, seq)
+    if (entry) {
+      entries.push(entry)
+    }
   }
 
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : 0
-  return Number(native)
+  return { entries, count }
 }
 
-/**
- * Read a dispute record by dispute ID.
- */
-export async function getDispute(
+export async function getProofHistoryAt(
   contractId: string,
-  disputeId: string,
+  proofId: string,
   sourceAddress?: string,
-): Promise<ChainDisputeRecord | null> {
+  seq = 1,
+): Promise<ProofHistoryEntry | null> {
   const source = sourceAddress || READONLY_SOURCE
   if (!source) {
-    return null
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
   }
 
   const server = new rpc.Server(RPC_URL)
@@ -798,8 +806,9 @@ export async function getDispute(
   })
     .addOperation(
       contract.call(
-        'get_dispute' satisfies RegistryMethod,
-        scBytes32(asHex32(disputeId, 'disputeId')),
+        'get_proof_history_at' satisfies RegistryMethod,
+        scBytes32(asHex32(proofId, 'proofId')),
+        scU32(seq),
       ),
     )
     .setTimeout(30)
@@ -817,18 +826,331 @@ export async function getDispute(
   if (!native) return null
 
   return {
-    disputeId: bytesToHex(native.dispute_id),
-    proofId: bytesToHex(native.proof_id),
-    reason: Number(native.reason) as DisputeReason,
-    reporterHash: bytesToHex(native.reporter_hash),
-    commitmentHash: bytesToHex(native.commitment_hash),
-    status: Number(native.status) as DisputeStatus,
-    openedAt: Number(native.opened_at),
-    respondDeadline: Number(native.respond_deadline),
-    resolveDeadline: Number(native.resolve_deadline),
-    responseCommitment: native.response_commitment ? bytesToHex(native.response_commitment) : null,
-    resolvedAt: Number(native.resolved_at),
-    supersededBy: native.superseded_by ? bytesToHex(native.superseded_by) : null,
+    action: Number(native.action) as ProofHistoryEntry['action'],
+    timestamp: native.timestamp?.toString?.() ?? String(native.timestamp),
+    actor: native.actor == null ? null : String(native.actor),
+    reasonCode: Number(native.reason_code),
   }
 }
 
+export async function getProofHistoryCount(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+): Promise<number> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_proof_history_count' satisfies RegistryMethod, scBytes32(asHex32(proofId, 'proofId'))))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return 0
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : 0
+  return Number(native)
+}
+
+export async function verifyProof(
+  contractId: string,
+  publicKey: string,
+  proofId: string,
+  reasonCode: number,
+): Promise<RegisterProofResult> {
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(publicKey)
+  const contract = new Contract(contractId)
+  const operation = contract.call(
+    'verify_proof' satisfies RegistryMethod,
+    new Address(publicKey).toScVal(),
+    scBytes32(asHex32(proofId, 'proofId')),
+    scU32(reasonCode),
+  )
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(90)
+    .build()
+
+  const prepared = await server.prepareTransaction(transaction)
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: publicKey,
+  })
+
+  if (signed.error) {
+    throw new Error(signed.error.message)
+  }
+
+  const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
+  const submitted = await server.sendTransaction(signedTransaction)
+
+  if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
+    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+  }
+
+  return {
+    hash: submitted.hash,
+    status: submitted.status,
+    txState: initialTxState(submitted.status),
+  }
+}
+
+export async function expireProof(
+  contractId: string,
+  publicKey: string,
+  proofId: string,
+  reasonCode: number,
+): Promise<RegisterProofResult> {
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(publicKey)
+  const contract = new Contract(contractId)
+  const operation = contract.call(
+    'expire_proof' satisfies RegistryMethod,
+    new Address(publicKey).toScVal(),
+    scBytes32(asHex32(proofId, 'proofId')),
+    scU32(reasonCode),
+  )
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(90)
+    .build()
+
+  const prepared = await server.prepareTransaction(transaction)
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: publicKey,
+  })
+
+  if (signed.error) {
+    throw new Error(signed.error.message)
+  }
+
+  const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
+  const submitted = await server.sendTransaction(signedTransaction)
+
+  if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
+    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+  }
+
+  return {
+    hash: submitted.hash,
+    status: submitted.status,
+    txState: initialTxState(submitted.status),
+  }
+}
+
+export async function correctProof(
+  contractId: string,
+  publicKey: string,
+  proofId: string,
+  newMetadataHash: string,
+  reasonCode: number,
+): Promise<RegisterProofResult> {
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(publicKey)
+  const contract = new Contract(contractId)
+  const operation = contract.call(
+    'correct_proof' satisfies RegistryMethod,
+    new Address(publicKey).toScVal(),
+    scBytes32(asHex32(proofId, 'proofId')),
+    scBytes32(asHex32(newMetadataHash, 'newMetadataHash')),
+    scU32(reasonCode),
+  )
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(90)
+    .build()
+
+  const prepared = await server.prepareTransaction(transaction)
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: publicKey,
+  })
+
+  if (signed.error) {
+    throw new Error(signed.error.message)
+  }
+
+  const signedTransaction = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE)
+  const submitted = await server.sendTransaction(signedTransaction)
+
+  if ('errorResultXdr' in submitted && submitted.errorResultXdr) {
+    throw new Error(`Stellar RPC rejected the transaction: ${submitted.errorResultXdr}`)
+  }
+
+  return {
+    hash: submitted.hash,
+    status: submitted.status,
+    txState: initialTxState(submitted.status),
+  }
+}
+
+export async function getVerifierState(
+  contractId: string,
+  sourceAddress?: string,
+): Promise<ChainVerifierState | null> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_verifier_state' satisfies RegistryMethod))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    activeVerifier: native.active_verifier ? String(native.active_verifier) : null,
+    pendingVerifier: native.pending_verifier ? String(native.pending_verifier) : null,
+    previousVerifier: native.previous_verifier ? String(native.previous_verifier) : null,
+    activationLedger: String(native.activation_ledger),
+    overlapWindow: String(native.overlap_window),
+    rollbackWindow: String(native.rollback_window),
+    rollbackWindowEnd: String(native.rollback_window_end),
+  }
+}
+
+/**
+ * Check whether a delegation from `grantor` to `delegate` is currently active
+ * for the requested `scope` bitmask.
+ *
+ * Calls `is_delegation_active(grantor, delegate, scope)` on the contract.
+ * Returns `false` rather than throwing on missing/expired/wrong-scope delegations.
+ */
+export async function isDelegationActive(
+  contractId: string,
+  grantor: string,
+  delegate: string,
+  scope: number,
+  sourceAddress?: string,
+): Promise<boolean> {
+  const source = sourceAddress || delegate || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        'is_delegation_active' satisfies RegistryMethod,
+        new Address(grantor).toScVal(),
+        new Address(delegate).toScVal(),
+        scU32(scope),
+      ),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return false
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  return Boolean(native)
+}
+
+/**
+ * Read the stored `DelegationRecord` from `grantor` to `delegate`, if any.
+ * Returns `null` if no delegation is recorded.
+ */
+export async function getDelegation(
+  contractId: string,
+  grantor: string,
+  delegate: string,
+  sourceAddress?: string,
+): Promise<DelegationRecord | null> {
+  const source = sourceAddress || delegate || READONLY_SOURCE
+  if (!source) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        'get_delegation' satisfies RegistryMethod,
+        new Address(grantor).toScVal(),
+        new Address(delegate).toScVal(),
+      ),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    grantor: String(native.grantor),
+    delegate: String(native.delegate),
+    scope: Number(native.scope),
+    grantedAt: Number(native.granted_at),
+    expiresAt: Number(native.expires_at),
+  }
+}

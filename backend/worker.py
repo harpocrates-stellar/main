@@ -269,6 +269,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = time.time()
     while not stop_event.is_set():
         try:
             now_time = time.time()
