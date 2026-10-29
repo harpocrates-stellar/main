@@ -95,6 +95,10 @@ def clamp_proof_events_limit(limit: int) -> int:
     return max(1, min(limit, PROOF_EVENTS_MAX_LIMIT))
 
 
+encode_issuer_events_cursor = encode_proof_events_cursor
+decode_issuer_events_cursor = decode_proof_events_cursor
+
+
 def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 

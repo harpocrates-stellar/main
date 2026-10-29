@@ -38,6 +38,7 @@ from errors import (
     DEPENDENCY_UNAVAILABLE,
     FORBIDDEN,
     FORBIDDEN_ORIGIN,
+    FRESHNESS_ERROR,
     GONE,
     INTERNAL_ERROR,
     MALFORMED_INPUT,
@@ -60,10 +61,13 @@ from db import (
     find_proof_owner,
     find_lineage_by_output_digest,
     find_lineage_by_actor,
+    get_current_issuer_manifest,
+    get_latest_checkpoint,
     init_db,
     insert_lineage_event,
     insert_proof_event,
     insert_proof_history_event,
+    list_issuer_directory_events,
     list_lineage_events,
     list_proof_events,
     list_proof_history_events,
@@ -1241,6 +1245,166 @@ def create_app() -> Flask:
             )
 
         return ok_response({"record": record})
+
+    @app.get("/api/issuers/<issuer_address>/keys")
+    @limiter.limit(config.ratelimit_issuers)
+    def issuer_keys(issuer_address: str):
+        try:
+            validated_address = validate_source_address(issuer_address)
+            if not validated_address:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="issuer_address is required",
+                    status=400,
+                )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        manifest, status = get_current_issuer_manifest(validated_address)
+        if not manifest:
+            return error_response(
+                code=NOT_FOUND,
+                message="issuer manifest not found",
+                status=404,
+            )
+
+        keys = manifest.get("activeKeys", [])
+        return ok_response({
+            "manifest": manifest,
+            "status": status or "active",
+            "keys": keys,
+        })
+
+    @app.get("/api/issuers/<issuer_address>/events")
+    @limiter.limit(config.ratelimit_issuers)
+    def issuer_events(issuer_address: str):
+        try:
+            validated_address = validate_source_address(issuer_address)
+            if not validated_address:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="issuer_address is required",
+                    status=400,
+                )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        limit_param = request.args.get("limit", "25")
+        try:
+            parsed_limit = int(limit_param)
+        except ValueError:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="limit must be an integer",
+                status=400,
+            )
+
+        cursor_token = request.args.get("cursor")
+        cursor_id = None
+        if cursor_token is not None and cursor_token != "":
+            try:
+                cursor_id = decode_proof_events_cursor(cursor_token)
+            except ValueError:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="invalid cursor",
+                    status=400,
+                )
+
+        events, next_cursor = list_issuer_directory_events(
+            validated_address, parsed_limit, cursor_id=cursor_id
+        )
+        return ok_response({
+            "events": events,
+            "nextCursor": next_cursor,
+        })
+
+    @app.get("/api/issuers/checkpoint")
+    @limiter.limit(config.ratelimit_issuers)
+    def issuer_checkpoint():
+        issuer_address_param = request.args.get("issuer_address") or request.args.get("issuer")
+        validated_address = None
+        if issuer_address_param:
+            try:
+                validated_address = validate_source_address(issuer_address_param)
+            except ValueError as exc:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+
+        checkpoint_row = get_latest_checkpoint(validated_address)
+        if not checkpoint_row:
+            return error_response(
+                code=NOT_FOUND,
+                message="checkpoint not found",
+                status=404,
+            )
+
+        high_assurance = request.args.get("high_assurance", "").strip().lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        max_age_param = request.args.get("max_age")
+        max_age: int | None = None
+        if max_age_param is not None and max_age_param != "":
+            try:
+                max_age = int(max_age_param)
+            except ValueError:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="max_age must be an integer",
+                    status=400,
+                )
+
+        cp = DirectoryCheckpoint(
+            tree_head_hash=checkpoint_row["tree_head_hash"],
+            event_count=int(checkpoint_row["event_count"]),
+            timestamp=int(checkpoint_row["timestamp"]),
+            organization_identity_hash=checkpoint_row["organization_identity_hash"],
+            manifest_hash=checkpoint_row["manifest_hash"],
+            signature_hash=checkpoint_row.get("signature_hash"),
+            version=int(checkpoint_row.get("version", TRANSPARENCY_VERSION)),
+            protocol=str(checkpoint_row.get("protocol", TRANSPARENCY_PROTOCOL)),
+        )
+
+        enforce_freshness = request.args.get("enforce_freshness", "").strip().lower() not in (
+            "false",
+            "0",
+            "no",
+        )
+        if enforce_freshness:
+            cache_max_age = max_age if max_age is not None else DEFAULT_FRESHNESS_SECONDS
+            cache = DirectoryCache(
+                checkpoint=cp,
+                fetched_at=int(checkpoint_row["timestamp"]),
+                max_age_seconds=cache_max_age,
+            )
+            try:
+                require_fresh_checkpoint(cache, high_assurance=high_assurance)
+            except FreshnessError as exc:
+                return error_response(
+                    code=FRESHNESS_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+
+        data = {
+            "checkpoint": cp.to_dict(),
+        }
+        if checkpoint_row.get("manifest"):
+            data["manifest"] = checkpoint_row["manifest"]
+        return ok_response(data)
 
     @app.post("/api/proofs/lineage")
     def register_lineage_event():

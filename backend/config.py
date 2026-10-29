@@ -46,6 +46,7 @@ class AppConfig:
     ratelimit_upload_session: str
     ratelimit_upload_chunk: str
     ratelimit_verify: str
+    ratelimit_issuers: str
     release_id: str
     release_network: str
     metrics_enabled: bool
@@ -129,6 +130,7 @@ def load_config() -> AppConfig:
         ratelimit_upload_session=_str_env("RATELIMIT_UPLOAD_SESSION") or "60 per minute",
         ratelimit_upload_chunk=_str_env("RATELIMIT_UPLOAD_CHUNK") or "240 per minute",
         ratelimit_verify=_str_env("RATELIMIT_VERIFY") or "30 per minute",
+        ratelimit_issuers=_str_env("RATELIMIT_ISSUERS") or "60 per minute",
         release_id=_release_id(os.getenv("HARPOCRATES_RELEASE_ID", "harpocrates-1.0.0")),
         release_network=_release_network(os.getenv("HARPOCRATES_RELEASE_NETWORK", "testnet")),
         metrics_enabled=_bool_env("METRICS_ENABLED", True),
@@ -211,8 +213,8 @@ def _release_id(value: str) -> str:
 
 
 def _release_network(value: str) -> str:
-    if value not in {"local", "testnet", "mainnet"}:
-        raise RuntimeError("HARPOCRATES_RELEASE_NETWORK must be local, testnet, or mainnet")
+    if value not in {"local", "testnet", "mainnet", "futurenet"}:
+        raise RuntimeError("HARPOCRATES_RELEASE_NETWORK must be local, testnet, mainnet, or futurenet")
     return value
 
 

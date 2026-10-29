@@ -122,8 +122,8 @@
         "DATABASE_URL": "",
         "NOIR_WORKER_ENABLED": "false",
         "METRICS_ENABLED": "false",
-        "MAX_JSON_BYTES": "256",
-        "MAX_METADATA_BYTES": "128",
+        "MAX_JSON_BYTES": "1024",
+        "MAX_METADATA_BYTES": "1024",
         "HARPOCRATES_RELEASE_ID": "harpocrates-1.0.0",
         "HARPOCRATES_RELEASE_NETWORK": "futurenet"
       },

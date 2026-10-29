@@ -100,17 +100,14 @@ def generate_schema(app_path: Path, schemas_dir: Path, lenient: bool = False):
 
     # Normalize Flask-style path parameters to OpenAPI style and attach
     # path parameter definitions for routes such as /api/lineage/<output_digest>.
-    normalized_paths = {}
     for path, methods in paths.items():
-        normalized = _normalize_path(path)
-        normalized_paths.setdefault(normalized, {})
         parameters = _build_parameters(path)
         for method, operation in methods.items():
             if parameters:
                 operation = dict(operation)
-                operation["parameters"] = parameters
-            normalized_paths[normalized][method] = operation
-    schema["paths"] = normalized_paths
+                operation['parameters'] = parameters
+            paths[path][method] = operation
+    schema['paths'] = paths
     
     # Load canonical schemas safely
     errors = []

@@ -50,6 +50,9 @@ class FreshnessError(TransparencyError):
     """Raised when a cached directory checkpoint is stale (fail-closed)."""
 
 
+FRESHNESS_ERROR = "FRESHNESS_ERROR"
+
+
 def _canonical_json(obj: Any) -> bytes:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode(
         "utf-8"
