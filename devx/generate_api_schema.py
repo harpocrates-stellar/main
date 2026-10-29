@@ -5,23 +5,56 @@ import argparse
 import re
 from pathlib import Path
 
-def extract_routes_from_ast(app_path: Path):
+_ROUTE_METHODS = {"get", "post", "put", "delete", "patch"}
+
+
+def _extract_routes_from_file(py_path: Path):
     routes = []
-    tree = ast.parse(app_path.read_text(encoding="utf-8"))
-    
+    tree = ast.parse(py_path.read_text(encoding="utf-8"))
+
+    # Collect Flask app / Blueprint variable names defined in this module
+    target_names = {"app", "bp"}
     for node in ast.walk(tree):
-        # Handle module-level route registrations via decorators on functions
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            func_name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else (func.attr if isinstance(func, ast.Attribute) else None)
+            )
+            if func_name in {"Flask", "Blueprint"}:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        target_names.add(target.id)
+
+    for node in ast.walk(tree):
+        # Handle module-level or blueprint route registrations via decorators on functions
         # and also detect path parameters like <output_digest>.
         if isinstance(node, ast.FunctionDef):
             for decorator in node.decorator_list:
-                # Handle @app.get("/path"), @app.post("/path"), @app.put("/path")
+                # Handle @app.get("/path"), @bp.post("/path"), etc.
                 if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
-                    if isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "app":
-                        method = decorator.func.attr # "get", "post", "put"
-                        if method in {"get", "post", "put", "delete", "patch"}:
+                    if (
+                        isinstance(decorator.func.value, ast.Name)
+                        and decorator.func.value.id in target_names
+                    ):
+                        method = decorator.func.attr  # "get", "post", "put", ...
+                        if method in _ROUTE_METHODS:
                             if decorator.args and isinstance(decorator.args[0], ast.Constant):
                                 path = decorator.args[0].value
-                                routes.append((path, method.upper(), node.name))
+                                if isinstance(path, str):
+                                    routes.append((path, method.upper(), node.name))
+    return routes
+
+
+def extract_routes_from_ast(app_path: Path):
+    routes = _extract_routes_from_file(app_path)
+    routes_dir = app_path.parent / "routes"
+    if routes_dir.is_dir():
+        for route_file in sorted(routes_dir.glob("*.py")):
+            if route_file.name == "__init__.py":
+                continue
+            routes.extend(_extract_routes_from_file(route_file))
     return routes
 
 def _normalize_path(path: str) -> str:
@@ -50,21 +83,7 @@ def _build_parameters(path: str):
     return parameters
 
 def _legacy_extract_routes_from_ast(app_path: Path):
-    routes = []
-    tree = ast.parse(app_path.read_text(encoding="utf-8"))
-    
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            for decorator in node.decorator_list:
-                # Handle @app.get("/path"), @app.post("/path"), @app.put("/path")
-                if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
-                    if isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "app":
-                        method = decorator.func.attr # "get", "post", "put"
-                        if method in {"get", "post", "put", "delete", "patch"}:
-                            if decorator.args and isinstance(decorator.args[0], ast.Constant):
-                                path = decorator.args[0].value
-                                routes.append((path, method.upper(), node.name))
-    return routes
+    return extract_routes_from_ast(app_path)
 
 class SchemaError(Exception):
     def __init__(self, errors: list[str]):
@@ -181,4 +200,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
