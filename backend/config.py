@@ -213,8 +213,8 @@ def _release_id(value: str) -> str:
 
 
 def _release_network(value: str) -> str:
-    if value not in {"local", "testnet", "mainnet"}:
-        raise RuntimeError("HARPOCRATES_RELEASE_NETWORK must be local, testnet, or mainnet")
+    if value not in {"local", "testnet", "mainnet", "futurenet"}:
+        raise RuntimeError("HARPOCRATES_RELEASE_NETWORK must be local, testnet, mainnet, or futurenet")
     return value
 
 

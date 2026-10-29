@@ -677,7 +677,7 @@ class SuccessEnvelopeConformanceTest(unittest.TestCase):
         self.assertIs(body["ok"], True)
         self.assertEqual(body["service"], "harpocrates-stego")
         self.assertEqual(body["release_id"], "harpocrates-1.0.0")
-        self.assertIn(body["network"], {"local", "testnet", "mainnet"})
+        self.assertIn(body["network"], {"local", "testnet", "mainnet", "futurenet"})
         self.assertEqual(body["request_id"], response.headers["X-Request-ID"])
 
     def test_ready_contract_reports_dependency_and_aggregation_bounds(self) -> None:

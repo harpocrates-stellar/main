@@ -8,7 +8,10 @@ def test_get_storage_dir_creates_private_directory(monkeypatch, tmp_path):
     if os.name != "posix":
         pytest.skip("POSIX only test")
 
-    from backend import storage
+    try:
+        from backend import storage
+    except ImportError:
+        import storage
 
     target = tmp_path / "jobs"
     monkeypatch.setenv("HARPOCRATES_STORAGE_DIR", str(target))
@@ -25,7 +28,10 @@ def test_get_storage_dir_tightens_existing_directory(monkeypatch, tmp_path):
     if os.name != "posix":
         pytest.skip("POSIX only test")
 
-    from backend import storage
+    try:
+        from backend import storage
+    except ImportError:
+        import storage
 
     target = tmp_path / "jobs"
     target.mkdir()
