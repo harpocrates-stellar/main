@@ -58,7 +58,7 @@
     {
       "component": "frontend",
       "path": "frontend/src/harpocratesRegistry.ts",
-      "sha256": "18d03df6c9990e80adc47980d81430ecc805c0a23f7306aff44e5ea6cd290dec"
+      "sha256": "b0822278cc151774b0342b9115840a5dbf1d44cb511b8a16e5968c0e27afcfb5"
     },
     {
       "component": "frontend",
@@ -68,17 +68,17 @@
     {
       "component": "backend",
       "path": "backend/app.py",
-      "sha256": "a0e67748d062565cc970bb0bbdc2ed64a7be84b751fbf67a51720409f7fc96b9"
+      "sha256": "e6daa5a2be6147c1dee58de68f337930bee999fe05eaa8dfc8219e2696dc4a12"
     },
     {
       "component": "backend",
       "path": "backend/config.py",
-      "sha256": "899105679133b7940c018a8bbff8120c8735c40464c3a823e02b25f6b0da11a6"
+      "sha256": "d8f5a5a3e05a1dce822a7143dc9187f2f534b30801f421d21091c07e129c1ac9"
     },
     {
       "component": "backend",
       "path": "backend/metrics.py",
-      "sha256": "0348f6d795e3f6164e0687333ebf37e54b99c7f1a1b437666a364370f42183d4"
+      "sha256": "91b783def9be374c33921e3cd2c123a2fdb0ef111b2cf79f51020900686ebb87"
     },
     {
       "component": "circuit",
@@ -98,7 +98,7 @@
     {
       "component": "registry",
       "path": "contracts/contracts/harpocrates-registry/src/lib.rs",
-      "sha256": "8142586fb881bab0bbf81ca67ac95d51e509abb0f63119c17ee0727a6d9f5811"
+      "sha256": "3242a909431f49952276cdd7faac9d4907f616a85222f1e9c97910c09a3b4342"
     },
     {
       "component": "registry",
