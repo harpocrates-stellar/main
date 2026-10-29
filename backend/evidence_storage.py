@@ -8,12 +8,35 @@ import db
 logger = logging.getLogger("harpocrates.evidence_storage")
 
 
+def _load_master_fernet() -> Fernet:
+    """Load and validate the master encryption key from MASTER_ENCRYPTION_KEY.
+
+    Raises ValueError with a safe message (never logging or exposing key material)
+    when the variable is unset, blank, or not valid Fernet base64.
+    """
+    master_key_b64 = os.getenv("MASTER_ENCRYPTION_KEY")
+    if not master_key_b64 or not master_key_b64.strip():
+        raise ValueError("MASTER_ENCRYPTION_KEY is not set")
+    try:
+        return Fernet(master_key_b64.strip().encode("ascii"))
+    except Exception:
+        raise ValueError(
+            "MASTER_ENCRYPTION_KEY must be a valid 32-byte url-safe base64-encoded key"
+        ) from None
+
+
+def check_master_key() -> bool:
+    """Return True if MASTER_ENCRYPTION_KEY is present and valid Fernet base64."""
+    try:
+        _load_master_fernet()
+        return True
+    except ValueError:
+        return False
+
+
 def generate_dek() -> Tuple[bytes, bytes]:
     """Generates a Data Encryption Key (DEK) and its encrypted form (using a Master Key)."""
-    master_key_b64 = os.getenv("MASTER_ENCRYPTION_KEY")
-    if not master_key_b64:
-        master_key_b64 = Fernet.generate_key().decode()
-    f = Fernet(master_key_b64.encode())
+    f = _load_master_fernet()
 
     dek = Fernet.generate_key()
     encrypted_dek = f.encrypt(dek)
@@ -22,10 +45,7 @@ def generate_dek() -> Tuple[bytes, bytes]:
 
 
 def decrypt_dek(encrypted_dek: bytes) -> bytes:
-    master_key_b64 = os.getenv("MASTER_ENCRYPTION_KEY")
-    if not master_key_b64:
-        raise ValueError("MASTER_ENCRYPTION_KEY is not set")
-    f = Fernet(master_key_b64.encode())
+    f = _load_master_fernet()
     return f.decrypt(encrypted_dek)
 
 

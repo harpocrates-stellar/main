@@ -236,27 +236,36 @@ def master_key(monkeypatch: pytest.MonkeyPatch) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_generate_and_decrypt_dek_roundtrip(master_key: str) -> None:
-    dek, encrypted_dek = evidence_storage.generate_dek()
-
-    assert isinstance(dek, bytes)
-    assert isinstance(encrypted_dek, bytes)
-    assert dek != encrypted_dek
-
-    recovered = evidence_storage.decrypt_dek(encrypted_dek)
-    assert recovered == dek
-    assert Fernet(master_key.encode("ascii")).decrypt(encrypted_dek) == dek
-
-
-def test_generate_dek_without_master_key_env_uses_ephemeral_key(
-    monkeypatch: pytest.MonkeyPatch,
+def test_generate_and_decrypt_dek_roundtrip(
+    master_key: str, caplog: pytest.LogCaptureFixture
 ) -> None:
+    import logging
+
+    with caplog.at_level(logging.DEBUG):
+        dek, encrypted_dek = evidence_storage.generate_dek()
+
+        assert isinstance(dek, bytes)
+        assert isinstance(encrypted_dek, bytes)
+        assert dek != encrypted_dek
+
+        recovered = evidence_storage.decrypt_dek(encrypted_dek)
+        assert recovered == dek
+        assert Fernet(master_key.encode("ascii")).decrypt(encrypted_dek) == dek
+
+    assert master_key not in caplog.text
+    assert dek.decode("ascii") not in caplog.text
+
+
+def test_generate_dek_rejects_missing_master_key(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
     monkeypatch.delenv("MASTER_ENCRYPTION_KEY", raising=False)
 
-    dek, encrypted_dek = evidence_storage.generate_dek()
-    assert isinstance(dek, bytes)
-    assert isinstance(encrypted_dek, bytes)
-    assert dek != encrypted_dek
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(ValueError, match="MASTER_ENCRYPTION_KEY is not set"):
+            evidence_storage.generate_dek()
 
 
 def test_decrypt_dek_rejects_missing_master_key(
@@ -265,6 +274,77 @@ def test_decrypt_dek_rejects_missing_master_key(
     monkeypatch.delenv("MASTER_ENCRYPTION_KEY", raising=False)
     with pytest.raises(ValueError, match="MASTER_ENCRYPTION_KEY is not set"):
         evidence_storage.decrypt_dek(b"some-encrypted-bytes")
+
+
+@pytest.mark.parametrize(
+    "malformed_key",
+    [
+        "   ",
+        "not-valid-base64!!!",
+        "c2hvcnQ=",  # valid base64 ("short"), wrong length for Fernet
+        "a" * 44,    # 44 chars, not valid urlsafe base64 decoding to 32 bytes
+    ],
+)
+def test_malformed_master_key_raises_without_leaking_key(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    malformed_key: str,
+) -> None:
+    import logging
+
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", malformed_key)
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(ValueError) as gen_exc:
+            evidence_storage.generate_dek()
+        with pytest.raises(ValueError) as dec_exc:
+            evidence_storage.decrypt_dek(b"some-encrypted-bytes")
+
+    assert str(gen_exc.value) == str(dec_exc.value)
+    stripped = malformed_key.strip()
+    if stripped:
+        assert stripped not in str(gen_exc.value)
+        assert stripped not in caplog.text
+
+
+def test_readiness_surfaces_evidence_storage_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from readiness import ReadinessManager
+
+    monkeypatch.setenv("EVIDENCE_STORAGE_ENABLED", "true")
+    monkeypatch.delenv("MASTER_ENCRYPTION_KEY", raising=False)
+
+    manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+    status_missing = manager.check()
+    assert status_missing["ok"] is False
+    assert status_missing["evidence_storage"] == "not_configured"
+
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "malformed-key")
+    status_malformed = manager.check()
+    assert status_malformed["ok"] is False
+    assert status_malformed["evidence_storage"] == "not_configured"
+
+    valid_key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", valid_key)
+    status_valid = manager.check()
+    assert status_valid["ok"] is True
+    assert status_valid["evidence_storage"] == "connected"
+
+
+def test_readiness_ignores_evidence_storage_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from readiness import ReadinessManager, check_evidence_storage
+
+    monkeypatch.delenv("EVIDENCE_STORAGE_ENABLED", raising=False)
+    monkeypatch.delenv("MASTER_ENCRYPTION_KEY", raising=False)
+
+    manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+    status = manager.check()
+    assert status["ok"] is True
+    assert "evidence_storage" not in status
+    assert check_evidence_storage() is False
 
 
 def test_decrypt_dek_rejects_wrong_key_or_corrupt_ciphertext(
