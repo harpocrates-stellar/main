@@ -48,7 +48,19 @@ supersede_dispute(admin, dispute_id, superseding_proof_id) -> DisputeRecord
 get_dispute(dispute_id) -> Option<DisputeRecord>
 get_open_dispute_count(proof_id) -> u32
 get_reporter_open_dispute_count(reporter) -> u32
+get_supersession_link(proof_id) -> Option<SupersessionLink>
+get_supersession_by_orig(original_proof_id) -> Option<SupersessionLink>
+get_supersession_by_new(superseding_id) -> Option<SupersessionLink>
+get_dispute_supersession(dispute_id) -> Option<SupersessionLink>
 ```
+
+* `get_supersession_link`, `get_supersession_by_orig`, `get_supersession_by_new`,
+  and `get_dispute_supersession` return a `SupersessionLink` containing both the
+  original and superseding statement identities (`original_proof_id`,
+  `superseding_proof_id`), their live `ProofVerificationStatus` and tier, the
+  authorizing `dispute_id`, and `linked_at`. Supersession is resolved strictly
+  from explicit `supersede_dispute` edges and is never inferred from registration
+  timestamps, revocations, metadata corrections, or event ordering alone.
 
 * `open_dispute` requires the reporter's own authorization. `dispute_id` must
   be fresh, the proof must exist, the per-proof open-dispute cap must not be
