@@ -68,6 +68,21 @@ Run the Vitest and React Testing Library suite:
 npm test
 ```
 
+## Structured Verification Result Model
+
+`src/services/verificationFlow.ts` (`evaluateStructuredVerificationResult`, `runVerificationFlow`, and `verifyUploadedVideo`) and `src/views/VerifyView.tsx` (`StructuredTrustDimensionsPanel`) evaluate four orthogonal trust dimensions independently:
+
+- `contentIntegrity`: embedded Harpocrates metadata envelope and canonical digest consistency (`videoHash`, `metadataHash`)
+- `chainRegistration`: Soroban `HarpocratesRegistry` commitment presence, revocation standing, and identity-tier binding
+- `issuerTrust`: registry issuer standing for issuer-bearing tiers (`trusted`, `revoked`, `unknown`, `expired`, or `not-applicable` for anonymous / non-issuer tiers)
+- `freshness`: proof expiry window, live observation staleness, and Stellar network passphrase alignment
+
+Composition is strictly fail-closed and non-masking:
+
+- Any `failed` dimension yields `overallVerdict: 'rejected'` (even when the remaining three dimensions are `verified`), suppresses shareable verification link generation, and surfaces both passing and failing dimension statuses side by side.
+- Zero `failed` dimensions with one or more `unverified` dimensions (for example offline local checks or an unknown/incomplete issuer lookup) yields `overallVerdict: 'unconfirmed'`.
+- `overallVerdict: 'verified'` requires every applicable dimension to be `verified` (`not-applicable` is permitted only for `issuerTrust` on anonymous or source-witness tiers without an institutional issuer).
+
 ## Browser storage policy
 
 All application-owned browser persistence must go through the wrappers in

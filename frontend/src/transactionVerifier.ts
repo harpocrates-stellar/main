@@ -71,9 +71,14 @@ function envelopeXdrContainsContractId(xdrBytes: Uint8Array, contractId: string)
 
 function tryParseEnvelope(envelope: xdr.TransactionEnvelope): { operationCount: number } | null {
   try {
-    if (envelope.switch() !== xdr.EnvelopeType.envelopeTypeTx()) return null
-    const tx = (envelope as unknown as { tx(): xdr.Transaction }).tx()
-    return { operationCount: tx.operations().length }
+    const envAny = envelope as unknown as {
+      switch?: () => unknown
+      v1?: () => { tx: () => { operations: () => unknown[] } }
+      tx?: () => { operations: () => unknown[] }
+    }
+    const txObj = envAny.v1?.().tx() ?? envAny.tx?.()
+    if (!txObj) return null
+    return { operationCount: txObj.operations().length }
   } catch {
     return null
   }

@@ -16,9 +16,12 @@ import {
   scBytes32,
   scU32,
 } from './stellarEncoding'
+import { assertReleaseCompatibility } from './releaseCompatibility'
+import { TransactionStateMachine } from './transactionStateMachine'
+import { sha256 } from './utils'
 import type {
-  ChainDisputeRecord,
   ChainProofRecord,
+  ChainVerifierState,
   Hex32,
   IdentityTier,
   IssuerRecord,
@@ -41,6 +44,7 @@ const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet
 export const CONTRACT_NETWORK_PASSPHRASE: string = Networks.TESTNET
 
 const NETWORK_PASSTHRASE = CONTRACT_NETWORK_PASSPHRASE
+const NETWORK_PASSPHRASE = CONTRACT_NETWORK_PASSPHRASE
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 30000
@@ -388,104 +392,19 @@ export async function getIssuerRecord(
   }
 }
 
-/**
- * Read a dispute record from the registry by dispute ID.
- *
- * Simulation-only read following the pattern of `getProofHistoryCount`; no
- * signing is required. Resolves to `null` when the contract returns an
- * empty `Option` (no such dispute).
- */
-export async function getDispute(
-  contractId: string,
-  disputeId: string,
-  sourceAddress?: string,
-): Promise<ChainDisputeRecord | null> {
-  const source = requireReadSource(sourceAddress)
-
-  const server = new rpc.Server(RPC_URL)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-  const transaction = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call('get_dispute' satisfies RegistryMethod, scBytes32(asHex32(disputeId, 'disputeId'))))
-    .setTimeout(30)
-    .build()
-
-  const simulation = await server.simulateTransaction(transaction)
-  if (rpc.Api.isSimulationError(simulation)) {
-    throw new Error(simulation.error)
-  }
-  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return null
-  }
-
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
-  if (native === null || native === undefined) return null
-
-  return {
-    disputeId: native.dispute_id?.toString?.() ?? String(native.dispute_id),
-    proofId: native.proof_id?.toString?.() ?? String(native.proof_id),
-    opener: native.opener ?? null,
-    reason: native.reason ?? '',
-    status: Number(native.status),
-    createdAt: native.created_at?.toString?.() ?? String(native.created_at),
-    resolvedAt: toUnixSeconds(native.resolved_at),
-  }
-}
-
-/**
- * Read the number of open disputes for a proof ID.
- *
- * Simulation-only read following the pattern of `getProofHistoryCount`; no
- * signing is required. Resolves to `null` when the contract returns an
- * empty `Option`.
- */
-export async function getOpenDisputeCount(
-  contractId: string,
-  proofId: string,
-  sourceAddress?: string,
-): Promise<number | null> {
-  const source = requireReadSource(sourceAddress)
-
-  const server = new rpc.Server(RPC_URL)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-  const transaction = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call('get_open_dispute_count' satisfies RegistryMethod, scBytes32(asHex32(proofId, 'proofId'))))
-    .setTimeout(30)
-    .build()
-
-  const simulation = await server.simulateTransaction(transaction)
-  if (rpc.Api.isSimulationError(simulation)) {
-    throw new Error(simulation.error)
-  }
-  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return null
-  }
-
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
-  if (native === null || native === undefined) return null
-
-  return Number(native)
-}
-
 // ---------------------------------------------------------------------------
 // Dispute Workflow (#contracts/DISPUTE.md)
 // ---------------------------------------------------------------------------
 
-export enum DisputeReason {
-  ContentError = 1,
-  MetadataError = 2,
-  TierMismatch = 3,
-  CredentialLapsed = 4,
-  PrivacyViolation = 5,
-  Other = 6,
-}
+export const DisputeReason = {
+  ContentError: 1,
+  MetadataError: 2,
+  TierMismatch: 3,
+  CredentialLapsed: 4,
+  PrivacyViolation: 5,
+  Other: 6,
+} as const
+export type DisputeReason = (typeof DisputeReason)[keyof typeof DisputeReason]
 
 export const DISPUTE_REASON_LABELS: Record<DisputeReason, string> = {
   [DisputeReason.ContentError]: 'Content error (tampered or invalid video/content)',
@@ -496,13 +415,14 @@ export const DISPUTE_REASON_LABELS: Record<DisputeReason, string> = {
   [DisputeReason.Other]: 'Other',
 }
 
-export enum DisputeStatus {
-  Open = 1,
-  Responded = 2,
-  Resolved = 3,
-  Dismissed = 4,
-  Superseded = 5,
-}
+export const DisputeStatus = {
+  Open: 1,
+  Responded: 2,
+  Resolved: 3,
+  Dismissed: 4,
+  Superseded: 5,
+} as const
+export type DisputeStatus = (typeof DisputeStatus)[keyof typeof DisputeStatus]
 
 export const DISPUTE_STATUS_LABELS: Record<DisputeStatus, string> = {
   [DisputeStatus.Open]: 'Open',
@@ -645,7 +565,7 @@ export async function openDispute(
     machine?.send({ type: 'TX_HASH_RECEIVED', hash })
 
     const txState = initialTxState(submitted.status)
-    if (submitted.status === 'SUCCESS') {
+    if (String(submitted.status) === 'SUCCESS') {
       machine?.send({ type: 'CONFIRMED' })
     }
 
@@ -719,7 +639,7 @@ export async function respondDispute(
     machine?.send({ type: 'TX_HASH_RECEIVED', hash })
 
     const txState = initialTxState(submitted.status)
-    if (submitted.status === 'SUCCESS') {
+    if (String(submitted.status) === 'SUCCESS') {
       machine?.send({ type: 'CONFIRMED' })
     }
 
@@ -830,5 +750,165 @@ export async function getDispute(
     resolvedAt: Number(native.resolved_at),
     supersededBy: native.superseded_by ? bytesToHex(native.superseded_by) : null,
   }
+}
+
+export async function getVerifierState(
+  contractId: string,
+  sourceAddress?: string,
+): Promise<ChainVerifierState | null> {
+  const source = sourceAddress || READONLY_SOURCE
+  if (!source) return null
+
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_verifier_state' satisfies RegistryMethod))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+
+  return {
+    activeVerifier: native.active_verifier ?? null,
+    pendingVerifier: native.pending_verifier ?? null,
+    previousVerifier: native.previous_verifier ?? null,
+    activationLedger: String(native.activation_ledger ?? '0'),
+    overlapWindow: String(native.overlap_window ?? '0'),
+    rollbackWindow: String(native.rollback_window ?? '0'),
+    rollbackWindowEnd: String(native.rollback_window_end ?? '0'),
+  }
+}
+
+export async function getProofHistoryCount(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+): Promise<number> {
+  const source = requireReadSource(sourceAddress)
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call('get_proof_history_count' satisfies RegistryMethod, scBytes32(asHex32(proofId, 'proofId'))),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  const native =
+    rpc.Api.isSimulationSuccess(simulation) || rpc.Api.isSimulationRestore(simulation)
+      ? simulation.result?.retval
+        ? scValToNative(simulation.result.retval)
+        : 0
+      : 0
+  return Number(native ?? 0)
+}
+
+export async function getProofHistoryAt(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+  index = 0,
+): Promise<ProofHistoryEntry | null> {
+  const source = requireReadSource(sourceAddress)
+  const server = new rpc.Server(RPC_URL)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        'get_proof_history_at' satisfies RegistryMethod,
+        scBytes32(asHex32(proofId, 'proofId')),
+        scU32(index),
+      ),
+    )
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  if (!native) return null
+  return {
+    action: Number(native.action) as ProofHistoryEntry['action'],
+    timestamp: String(native.timestamp ?? ''),
+    actor: native.actor ?? null,
+    reasonCode: Number(native.reason_code ?? 0),
+  }
+}
+
+export async function getProofHistory(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+): Promise<ProofHistoryResult> {
+  const count = await getProofHistoryCount(contractId, proofId, sourceAddress)
+  const entries: ProofHistoryEntry[] = []
+  for (let i = 0; i < count; i++) {
+    const entry = await getProofHistoryAt(contractId, proofId, sourceAddress, i)
+    if (entry) entries.push(entry)
+  }
+  return { entries, count }
+}
+
+export async function correctProof(
+  contractId: string,
+  publicKey: string,
+  oldProofId: string,
+  newProofId: string,
+): Promise<RegisterProofResult> {
+  void contractId
+  void publicKey
+  void oldProofId
+  void newProofId
+  return { hash: '', status: 'UNSUPPORTED', txState: 'failed' }
+}
+
+export async function expireProof(
+  contractId: string,
+  publicKey: string,
+  proofId: string,
+): Promise<RegisterProofResult> {
+  void contractId
+  void publicKey
+  void proofId
+  return { hash: '', status: 'UNSUPPORTED', txState: 'failed' }
+}
+
+export async function verifyProof(
+  contractId: string,
+  proofId: string,
+  sourceAddress?: string,
+): Promise<boolean> {
+  const record = await getProof(contractId, proofId, sourceAddress)
+  return record !== null && record.status === 1
 }
 

@@ -1,4 +1,6 @@
-import { safeLocalStorage } from './safeLocalStorage';
+import { safeLocalStorage } from '../safeStorage';
+
+type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export interface CheckpointEnvelope<T> {
   version: number;
@@ -9,7 +11,7 @@ export interface CheckpointEnvelope<T> {
 }
 
 export interface CheckpointStorageOptions {
-  storage?: Storage;
+  storage?: StorageLike;
   now?: () => number;
   keyPrefix?: string;
 }
@@ -18,7 +20,7 @@ const CURRENT_VERSION = 1;
 const DEFAULT_PREFIX = 'checkpoint:';
 
 export class CheckpointStorage<T = unknown> {
-  private readonly storage: Storage;
+  private readonly storage: StorageLike;
   private readonly now: () => number;
   private readonly keyPrefix: string;
 
