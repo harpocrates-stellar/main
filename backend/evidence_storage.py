@@ -1,9 +1,17 @@
 import logging
 import os
 import hashlib
-from typing import Tuple
+from pathlib import Path
+from typing import Any, Tuple
 from cryptography.fernet import Fernet
 import db
+from storage import (
+    DEFAULT_GC_RETRY_AFTER_SECONDS,
+    RetryableStorageError,
+    finalize_preserved_blob,
+    restore_preserved_blob,
+    stage_blob_preservation,
+)
 
 logger = logging.getLogger("harpocrates.evidence_storage")
 
@@ -101,63 +109,129 @@ def remove_tenant_ref(tenant_id: str, content_hash: str) -> bool:
     return True
 
 
-def collect_unreferenced_blobs(limit: int = 100) -> int:
+def collect_unreferenced_blobs(
+    limit: int = 100,
+    *,
+    retry_after_seconds: int = DEFAULT_GC_RETRY_AFTER_SECONDS,
+) -> int:
     """Transactionally delete blob rows and files that have zero references.
 
-    Uses SELECT ... FOR UPDATE to avoid races with concurrent record_tenant_ref.
-    Deletes the underlying file first; if file deletion fails, the blob row
-    is left intact so the deletion will be retried on the next run.
-    Deletions are recorded in metrics without exposing content hashes.
+    Uses SELECT ... FOR UPDATE and a guarded DELETE ... WHERE NOT EXISTS (...)
+    so physical blob data is never permanently removed before a committed
+    reference check. Encrypted files are preserved via a staged link/copy until
+    the database metadata deletion commits; if the metadata update or commit
+    fails, all staged files are atomically restored and a bounded
+    `RetryableStorageError` is raised.
     """
     if limit < 1:
         return 0
 
     collected = 0
+    staged_files: list[tuple[Path | None, str]] = []
+
     with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                select content_hash, storage_path
-                from blobs
-                where not exists (
-                    select 1 from tenant_blob_refs
-                    where tenant_blob_refs.content_hash = blobs.content_hash
-                      and tenant_blob_refs.ref_count > 0
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    select content_hash, storage_path
+                    from blobs
+                    where not exists (
+                        select 1 from tenant_blob_refs
+                        where tenant_blob_refs.content_hash = blobs.content_hash
+                          and tenant_blob_refs.ref_count > 0
+                    )
+                    order by created_at asc
+                    limit %s
+                    for update
+                    """,
+                    (limit,)
                 )
-                order by created_at asc
-                limit %s
-                for update
-                """,
-                (limit,)
-            )
-            rows = cursor.fetchall()
-            if not rows:
-                conn.commit()
-                return 0
+                rows = cursor.fetchall()
+                if not rows:
+                    conn.commit()
+                    return 0
 
-            for row in rows:
-                content_hash = row["content_hash"] if isinstance(row, dict) else row[0]
-                storage_path = row["storage_path"] if isinstance(row, dict) else row[1]
+                for row in rows:
+                    content_hash = row["content_hash"] if isinstance(row, dict) else row[0]
+                    storage_path = row["storage_path"] if isinstance(row, dict) else row[1]
 
-                # Attempt file deletion first
-                try:
+                    staged_path: Path | None = None
                     if storage_path:
                         try:
-                            os.unlink(storage_path)
-                        except FileNotFoundError:
-                            pass
-                except OSError as err:
-                    # File deletion failed: do not delete the blob row so it is retried next run
-                    logger.warning(
-                        "Failed to delete evidence blob file; will retry on next run: %s",
-                        type(err).__name__,
+                            staged_path = stage_blob_preservation(storage_path)
+                        except OSError as err:
+                            logger.warning(
+                                "Failed to stage evidence blob preservation; skipping GC candidate: %s",
+                                type(err).__name__,
+                            )
+                            continue
+
+                        try:
+                            try:
+                                os.unlink(storage_path)
+                            except FileNotFoundError:
+                                pass
+                        except OSError as err:
+                            finalize_preserved_blob(staged_path)
+                            logger.warning(
+                                "Failed to delete evidence blob file; will retry on next run: %s",
+                                type(err).__name__,
+                            )
+                            continue
+
+                    if storage_path:
+                        staged_files.append((staged_path, storage_path))
+
+                    cursor.execute(
+                        """
+                        delete from blobs where content_hash = %s
+                        and not exists (
+                            select 1 from tenant_blob_refs
+                            where tenant_blob_refs.content_hash = blobs.content_hash
+                              and tenant_blob_refs.ref_count > 0
+                        )
+                        """,
+                        (content_hash,),
                     )
-                    continue
+                    rowcount = getattr(cursor, "rowcount", None)
+                    if isinstance(rowcount, int) and rowcount == 0:
+                        if storage_path:
+                            staged_files.pop()
+                            restore_preserved_blob(staged_path, storage_path)
+                        continue
 
-                cursor.execute("delete from blobs where content_hash = %s", (content_hash,))
-                collected += 1
+                    collected += 1
 
-        conn.commit()
+            conn.commit()
+        except RetryableStorageError:
+            raise
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            preserved_count = 0
+            for staged_path, original_path in staged_files:
+                try:
+                    restore_preserved_blob(staged_path, original_path)
+                    if Path(original_path).exists():
+                        preserved_count += 1
+                except OSError:
+                    pass
+            logger.warning(
+                "Evidence GC metadata update failed (%s); preserved %d encrypted artifact(s).",
+                type(exc).__name__,
+                preserved_count,
+            )
+            raise RetryableStorageError(
+                code="GC_METADATA_UPDATE_FAILED",
+                retry_after_seconds=retry_after_seconds,
+                preserved_count=preserved_count,
+            ) from exc
+
+    for staged_path, _ in staged_files:
+        finalize_preserved_blob(staged_path)
 
     if collected > 0:
         try:
@@ -167,6 +241,30 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
             pass
 
     return collected
+
+
+def run_garbage_collection_cycle(
+    limit: int = 100,
+    *,
+    retry_after_seconds: int = DEFAULT_GC_RETRY_AFTER_SECONDS,
+) -> dict[str, Any]:
+    """Execute one GC cycle and return a bounded status or retryable error dict."""
+    try:
+        deleted = collect_unreferenced_blobs(
+            limit=limit,
+            retry_after_seconds=retry_after_seconds,
+        )
+    except RetryableStorageError as err:
+        return {
+            "ok": False,
+            "collected": 0,
+            "error": err.to_dict(),
+        }
+    return {
+        "ok": True,
+        "collected": deleted,
+        "error": None,
+    }
 
 
 def get_blob_info(content_hash: str) -> dict | None:
