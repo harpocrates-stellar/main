@@ -342,6 +342,30 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Canonical Registration Statement Intent Binding
+
+`POST /api/proofs/register` and `registration_reconcile.py` bind every registration
+intent to a domain-separated SHA-256 digest (`harpocrates:evidence-statement-intent:v1:`)
+computed over the canonical evidence statement (`proofId`, `videoHash`,
+`metadataHash`, `tier`, `sourceAddress`, `contractId`, and `schema`).
+
+- **Pre-verification persistence:** `persist_registration_intent()` persists the
+  canonical `intent_digest` (in bounded memory, optional atomic file storage via
+  `REGISTRATION_INTENT_STORE_PATH`, and `idempotency_records` when `DATABASE_URL`
+  is configured) strictly before transaction verification (`verify_tx` worker or
+  `reconcile_registration`) executes.
+- **Fail-closed statement verification:** During reconciliation, any transaction
+  whose registered statement, hash memo, contract ID, or submitting Stellar
+  account diverges from the approved canonical statement is rejected as
+  `status: "failed"` with `reason: "statement_intent_mismatch"`, preventing a
+  mismatched transaction from confirming the registration.
+- **Privacy & configuration:** Only non-secret digests and protocol tier metadata
+  are persisted (`sourceAddress` is bound via a one-way domain-separated digest
+  and never stored in cleartext). Optional environment variables:
+  `REGISTRATION_INTENT_STORE_PATH` (path for durable atomic JSON persistence),
+  `REGISTRATION_INTENT_MAX_ENTRIES` (bounded cache size, default `4096`), and
+  `REQUIRE_ONCHAIN_STATEMENT_INTENT` (`true`/`false`, default `false`).
+
 ## Test
 
 ```powershell

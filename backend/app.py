@@ -87,7 +87,13 @@ except ImportError:
     default_min_confirmations = None
     reconcile_pending_registrations = None
     reconcile_registration = None
-from idempotency import idempotent
+from idempotency import (
+    CanonicalEvidenceStatement,
+    StatementIntentConflictError,
+    _db_available,
+    idempotent,
+    persist_registration_intent,
+)
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
@@ -112,7 +118,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1531,6 +1537,25 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        try:
+            statement_intent = persist_registration_intent(
+                CanonicalEvidenceStatement(
+                    proof_id=proof_id,
+                    video_hash=video_hash,
+                    metadata_hash=metadata_hash,
+                    tier=tier,
+                    source_address=validated_source_address or "",
+                    contract_id=validated_contract_id or "",
+                ),
+                tx_hash=normalized_tx_hash,
+                allow_overwrite=not _db_available(),
+            )
+        except StatementIntentConflictError:
+            return jsonify({
+                "error": "transaction hash already bound to a different evidence statement",
+                "conflict_field": "tx_hash",
+            }), 409
+
         if db_event and db_event.get("id") and created:
             # A newly registered proof can change the on-chain verification
             # result. Evict all cached results for this proof before clients
@@ -1538,10 +1563,23 @@ def create_app() -> Flask:
             app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
+                enqueue_job(
+                    "verify_tx",
+                    {
+                        "proof_id": proof_id,
+                        "tx_hash": normalized_tx_hash,
+                        "contract_id": validated_contract_id,
+                        "intent_digest": statement_intent.intent_digest,
+                    },
+                )
 
         status = 201 if created else 200
-        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+        return jsonify({
+            "ok": True,
+            "db_event": db_event,
+            "created": created,
+            "intent_digest": statement_intent.intent_digest,
+        }), status
 
     @app.post("/api/proofs/reconcile")
     def reconcile_registration_confirmations():
@@ -1593,12 +1631,34 @@ def create_app() -> Flask:
 
         tx_hash = payload.get("txHash")
         if tx_hash is not None:
+            reconcile_kwargs: dict[str, object] = {}
+            if "proofId" in payload and payload.get("proofId") is not None:
+                proof_id_param = payload.get("proofId")
+                if not is_hex_32(proof_id_param):
+                    return error_response(
+                        code=VALIDATION_ERROR,
+                        message="proofId must be a 32-byte hex string",
+                        status=400,
+                    )
+                reconcile_kwargs["proof_id"] = proof_id_param
+            if "approvedStatement" in payload and payload.get("approvedStatement") is not None:
+                reconcile_kwargs["approved_statement"] = payload.get("approvedStatement")
+            if "registeredStatement" in payload and payload.get("registeredStatement") is not None:
+                reconcile_kwargs["registered_statement"] = payload.get("registeredStatement")
+            if "requireIntent" in payload:
+                reconcile_kwargs["require_intent"] = bool(payload.get("requireIntent"))
+            if "requireOnchainStatement" in payload:
+                reconcile_kwargs["require_onchain_statement"] = bool(
+                    payload.get("requireOnchainStatement")
+                )
+
             try:
                 result = reconcile_registration(
                     tx_hash,
                     previous_status=None if force else "pending",
                     min_confirmations=min_confirmations,
                     force=force,
+                    **reconcile_kwargs,
                 )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400

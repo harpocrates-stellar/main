@@ -1,7 +1,11 @@
 """Horizon-backed Stellar transaction status checks for registration reconcile."""
 
 from __future__ import annotations
+import base64
+import binascii
 from dataclasses import dataclass
+from typing import Any, Mapping
+
 
 @dataclass
 class TxVerificationResult:
@@ -12,6 +16,11 @@ class TxVerificationResult:
     confirmations: int | None = None
     successful: bool | None = None
     source: str | None = None
+    registered_statement_digest: str | None = None
+    registered_statement_present: bool = False
+    registered_statement_valid: bool | None = None
+    tx_source_account: str | None = None
+    tx_contract_id: str | None = None
 
 
 def normalize_tx_hash(value: object) -> str:
@@ -82,6 +91,83 @@ def _latest_ledger(rpc_url: str, timeout: float = 10.0) -> int | None:
     return None
 
 
+def _decode_hash_memo_or_hex(raw_value: object) -> str | None:
+    if not isinstance(raw_value, str):
+        return None
+    cleaned = raw_value.strip()
+    if not cleaned:
+        return None
+    hex_candidate = cleaned[2:] if cleaned.lower().startswith("0x") else cleaned
+    if len(hex_candidate) == 64 and all(c in "0123456789abcdefABCDEF" for c in hex_candidate):
+        return hex_candidate.lower()
+    try:
+        decoded = base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if len(decoded) == 32:
+        return decoded.hex()
+    return None
+
+
+def extract_registered_statement_digest(
+    tx_data: Mapping[str, Any],
+) -> tuple[str | None, bool, bool]:
+    """Extract canonical statement digest from a Horizon/indexer transaction payload.
+
+    Returns ``(digest_or_none, statement_present, statement_valid)``.
+    """
+    from idempotency import CanonicalEvidenceStatement
+
+    source_account = (
+        tx_data.get("source_account")
+        if isinstance(tx_data.get("source_account"), str)
+        else None
+    )
+    contract_id_raw = tx_data.get("contract_id") or tx_data.get("contractId")
+    contract_id = contract_id_raw if isinstance(contract_id_raw, str) else None
+
+    for key in (
+        "registered_statement",
+        "registeredStatement",
+        "evidence_statement",
+        "evidenceStatement",
+    ):
+        if key in tx_data and tx_data[key] is not None:
+            raw_stmt = tx_data[key]
+            if not isinstance(raw_stmt, Mapping):
+                return None, True, False
+            try:
+                stmt = CanonicalEvidenceStatement.from_mapping(
+                    raw_stmt,
+                    default_source_address=source_account,
+                    default_contract_id=contract_id,
+                )
+            except ValueError:
+                return None, True, False
+            return stmt.intent_digest(), True, True
+
+    for key in (
+        "registered_statement_digest",
+        "registeredStatementDigest",
+        "statement_digest",
+        "intent_digest",
+    ):
+        if key in tx_data and tx_data[key] is not None:
+            parsed = _decode_hash_memo_or_hex(tx_data[key])
+            if parsed is None:
+                return None, True, False
+            return parsed, True, True
+
+    memo_type = tx_data.get("memo_type")
+    if isinstance(memo_type, str) and memo_type.strip().lower() == "hash":
+        parsed = _decode_hash_memo_or_hex(tx_data.get("memo"))
+        if parsed is None:
+            return None, True, False
+        return parsed, True, True
+
+    return None, False, True
+
+
 @traced(
     "stellar.horizon.verify_transaction",
     attributes={"rpc.system": "stellar", "peer.service": "stellar-horizon"},
@@ -135,6 +221,15 @@ def verify_transaction(
             except (TypeError, ValueError):
                 ledger = None
 
+            stmt_digest, stmt_present, stmt_valid = extract_registered_statement_digest(data)
+            tx_source_account = (
+                data.get("source_account")
+                if isinstance(data.get("source_account"), str)
+                else None
+            )
+            raw_contract = data.get("contract_id") or data.get("contractId")
+            tx_contract_id = raw_contract if isinstance(raw_contract, str) else None
+
             if not successful:
                 return TxVerificationResult(
                     status="failed",
@@ -142,6 +237,11 @@ def verify_transaction(
                     successful=False,
                     source=rpc_url,
                     reason="tx_unsuccessful",
+                    registered_statement_digest=stmt_digest,
+                    registered_statement_present=stmt_present,
+                    registered_statement_valid=stmt_valid,
+                    tx_source_account=tx_source_account,
+                    tx_contract_id=tx_contract_id,
                 )
 
             latest = _latest_ledger(rpc_url, timeout=timeout)
@@ -158,6 +258,11 @@ def verify_transaction(
                     successful=True,
                     source=rpc_url,
                     reason="confirmations_unavailable",
+                    registered_statement_digest=stmt_digest,
+                    registered_statement_present=stmt_present,
+                    registered_statement_valid=stmt_valid,
+                    tx_source_account=tx_source_account,
+                    tx_contract_id=tx_contract_id,
                 )
 
             if confirmations < min_confirmations:
@@ -169,6 +274,11 @@ def verify_transaction(
                     successful=True,
                     source=rpc_url,
                     reason="awaiting_confirmations",
+                    registered_statement_digest=stmt_digest,
+                    registered_statement_present=stmt_present,
+                    registered_statement_valid=stmt_valid,
+                    tx_source_account=tx_source_account,
+                    tx_contract_id=tx_contract_id,
                 )
 
             return TxVerificationResult(
@@ -179,6 +289,11 @@ def verify_transaction(
                 successful=True,
                 source=rpc_url,
                 reason="confirmed",
+                registered_statement_digest=stmt_digest,
+                registered_statement_present=stmt_present,
+                registered_statement_valid=stmt_valid,
+                tx_source_account=tx_source_account,
+                tx_contract_id=tx_contract_id,
             )
         except Exception as exc:
             saw_dependency_failure = True

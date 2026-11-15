@@ -28,6 +28,11 @@ class AppConfig:
         for field in secret_fields:
             if field in raw:
                 raw[field] = raw[field] is not None
+        if "register_scoped_keys" in raw:
+            raw["register_scoped_keys"] = len(self.register_scoped_keys)
+        for dt_field in ("register_api_key_expires", "register_api_key_previous_expires"):
+            if isinstance(raw.get(dt_field), datetime):
+                raw[dt_field] = raw[dt_field].isoformat()
         return raw
     cors_origins: list[str]
     max_content_length: int

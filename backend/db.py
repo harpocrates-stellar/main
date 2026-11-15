@@ -1033,7 +1033,7 @@ def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                select id, proof_id, tx_hash, tx_status, contract_id, created_at
+                select id, proof_id, video_hash, metadata_hash, tier, source_address, tx_hash, tx_status, contract_id, created_at
                 from proof_events
                 where tx_hash is not null
                   and tx_status = 'pending'
