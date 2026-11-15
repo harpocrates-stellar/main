@@ -647,3 +647,287 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+# ── Cross-run issuer trust change explanations ─────────────────────────────
+
+ISSUER_TRUST_CHANGE_SCHEMA = "harpocrates-issuer-trust-change-report/v1"
+
+
+class IssuerTrustChangeReason(str, Enum):
+    UNCHANGED = "unchanged"
+    KEY_ROTATED = "key_rotated"
+    KEY_EXPIRED = "key_expired"
+    KEY_COMPROMISED = "key_compromised"
+    STALE_DIRECTORY_STATE = "stale_directory_state"
+    CHECKPOINT_ROLLBACK_OR_SPLIT_VIEW = "checkpoint_rollback_or_split_view"
+    KEY_ACTIVATED = "key_activated"
+    POLICY_CHANGED = "policy_changed"
+
+
+@dataclass(frozen=True)
+class IssuerVerificationObservation:
+    """Point-in-time issuer trust observation from a single verification run."""
+
+    directory: IssuerDirectory
+    cache: DirectoryCache
+    key_id: str
+    signature_timestamp: int
+    evaluated_at: int
+    high_assurance: bool = False
+
+
+@dataclass(frozen=True)
+class IssuerRunTrustOutcome:
+    """Normalized trust posture evaluated for one verification run."""
+
+    trusted: bool
+    signature_valid: bool
+    checkpoint_fresh: bool
+    checkpoint_consistent: bool
+    key_status: str | None
+    compromise_flagged: bool
+    expired: bool
+    tree_head_hash: str
+    event_count: int
+    manifest_hash: str | None
+    policy_hash: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "checkpointConsistent": self.checkpoint_consistent,
+            "checkpointFresh": self.checkpoint_fresh,
+            "compromiseFlagged": self.compromise_flagged,
+            "eventCount": self.event_count,
+            "expired": self.expired,
+            "keyStatus": self.key_status,
+            "manifestHash": self.manifest_hash,
+            "policyHash": self.policy_hash,
+            "signatureValid": self.signature_valid,
+            "treeHeadHash": self.tree_head_hash,
+            "trusted": self.trusted,
+        }
+
+
+@dataclass(frozen=True)
+class IssuerTrustChangeReport:
+    """Structured explanation of issuer trust differences across two runs."""
+
+    organization_identity_hash: str
+    key_id: str
+    signature_timestamp: int
+    trust_changed: bool
+    primary_reason: IssuerTrustChangeReason
+    reasons: tuple[IssuerTrustChangeReason, ...]
+    previous_run: IssuerRunTrustOutcome
+    current_run: IssuerRunTrustOutcome
+    summary: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "currentRun": self.current_run.to_dict(),
+            "keyId": self.key_id,
+            "organizationIdentityHash": self.organization_identity_hash,
+            "previousRun": self.previous_run.to_dict(),
+            "primaryReason": self.primary_reason.value,
+            "reasons": [r.value for r in self.reasons],
+            "schema": ISSUER_TRUST_CHANGE_SCHEMA,
+            "signatureTimestamp": self.signature_timestamp,
+            "summary": self.summary,
+            "trustChanged": self.trust_changed,
+        }
+
+
+def _lookup_manifest_key(manifest: IssuerManifest | None, key_id: str) -> IssuerKey | None:
+    if manifest is None:
+        return None
+    for k in manifest.active_keys:
+        if k.key_id == key_id:
+            return k
+    return None
+
+
+def _evaluate_observation(obs: IssuerVerificationObservation) -> IssuerRunTrustOutcome:
+    if isinstance(obs.signature_timestamp, bool) or not isinstance(obs.signature_timestamp, int):
+        raise TransparencyError("signature_timestamp must be an integer")
+    if isinstance(obs.evaluated_at, bool) or not isinstance(obs.evaluated_at, int):
+        raise TransparencyError("evaluated_at must be an integer")
+    if not isinstance(obs.high_assurance, bool):
+        raise TransparencyError("high_assurance must be a boolean")
+    if not isinstance(obs.key_id, str) or not obs.key_id.strip():
+        raise TransparencyError("key_id must be a non-empty string")
+
+    try:
+        require_fresh_checkpoint(
+            obs.cache,
+            high_assurance=obs.high_assurance,
+            now=obs.evaluated_at,
+        )
+        checkpoint_fresh = True
+    except FreshnessError:
+        checkpoint_fresh = False
+
+    consistency_errors = verify_checkpoint_consistency(obs.directory, obs.cache.checkpoint)
+    checkpoint_consistent = len(consistency_errors) == 0
+
+    dir_key = obs.directory.keys.get(obs.key_id)
+    mf = obs.directory.current_manifest
+    mf_key = _lookup_manifest_key(mf, obs.key_id)
+    effective_key = dir_key if dir_key is not None else mf_key
+
+    sig_valid = key_valid_for_historical_signature(
+        obs.directory, obs.key_id, obs.signature_timestamp
+    )
+    if not sig_valid and dir_key is None and mf_key is not None:
+        sig_valid = obs.signature_timestamp >= mf_key.valid_from and (
+            mf_key.valid_until is None or obs.signature_timestamp < mf_key.valid_until
+        )
+
+    compromise_flagged = bool(
+        effective_key is not None and effective_key.status == KeyStatus.COMPROMISED
+    )
+    compromised_at_sig = key_was_compromised_at(
+        obs.directory, obs.key_id, obs.signature_timestamp
+    )
+
+    manifest_expired = bool(
+        mf is not None and mf.valid_until is not None and obs.evaluated_at >= mf.valid_until
+    )
+    key_window_expired = bool(
+        effective_key is not None
+        and effective_key.status in {KeyStatus.ACTIVE, KeyStatus.RETIRED}
+        and effective_key.valid_until is not None
+        and (
+            obs.signature_timestamp >= effective_key.valid_until
+            or obs.evaluated_at >= effective_key.valid_until
+        )
+    )
+    retired_status = bool(
+        effective_key is not None and effective_key.status == KeyStatus.RETIRED
+    )
+    expired = manifest_expired or key_window_expired or retired_status
+
+    if manifest_expired:
+        sig_valid = False
+    if mf_key is not None and mf_key.valid_until is not None and obs.signature_timestamp >= mf_key.valid_until:
+        sig_valid = False
+
+    trusted = (
+        checkpoint_fresh
+        and checkpoint_consistent
+        and sig_valid
+        and not compromised_at_sig
+        and not compromise_flagged
+        and not manifest_expired
+    )
+
+    return IssuerRunTrustOutcome(
+        trusted=trusted,
+        signature_valid=sig_valid,
+        checkpoint_fresh=checkpoint_fresh,
+        checkpoint_consistent=checkpoint_consistent,
+        key_status=effective_key.status.value if effective_key is not None else None,
+        compromise_flagged=compromise_flagged,
+        expired=expired,
+        tree_head_hash=obs.directory.tree_head(),
+        event_count=len(obs.directory.events),
+        manifest_hash=manifest_hash(mf) if mf is not None else None,
+        policy_hash=mf.policy_hash if mf is not None else None,
+    )
+
+
+_REASON_SUMMARIES: dict[IssuerTrustChangeReason, str] = {
+    IssuerTrustChangeReason.UNCHANGED: "Issuer trust posture did not change across verification runs.",
+    IssuerTrustChangeReason.KEY_ROTATED: "Issuer signing key rotated since the prior verification run.",
+    IssuerTrustChangeReason.KEY_EXPIRED: "Issuer key or manifest validity window expired or retired.",
+    IssuerTrustChangeReason.KEY_COMPROMISED: "Issuer key was marked compromised in the transparency log.",
+    IssuerTrustChangeReason.STALE_DIRECTORY_STATE: "Cached issuer directory checkpoint exceeded freshness bounds.",
+    IssuerTrustChangeReason.CHECKPOINT_ROLLBACK_OR_SPLIT_VIEW: "Checkpoint rollback or split-view inconsistency detected across runs.",
+    IssuerTrustChangeReason.KEY_ACTIVATED: "Issuer signing key was newly activated in the directory.",
+    IssuerTrustChangeReason.POLICY_CHANGED: "Issuer manifest policy hash changed across verification runs.",
+}
+
+
+def explain_issuer_trust_change(
+    previous: IssuerVerificationObservation,
+    current: IssuerVerificationObservation,
+) -> IssuerTrustChangeReport:
+    """Compare two verification runs and explain specific issuer trust changes."""
+    org_prev = _require_hex(
+        "organizationIdentityHash", previous.directory.organization_identity_hash
+    )
+    org_curr = _require_hex(
+        "organizationIdentityHash", current.directory.organization_identity_hash
+    )
+    if org_prev != org_curr:
+        raise TransparencyError("cannot compare runs for different organizationIdentityHash values")
+    if previous.key_id != current.key_id:
+        raise TransparencyError("cannot compare runs for different key_id values")
+
+    prev_outcome = _evaluate_observation(previous)
+    curr_outcome = _evaluate_observation(current)
+    rollback_errs = detect_rollback(previous.cache.checkpoint, current.cache.checkpoint)
+    if rollback_errs:
+        curr_outcome = IssuerRunTrustOutcome(
+            trusted=False,
+            signature_valid=curr_outcome.signature_valid,
+            checkpoint_fresh=curr_outcome.checkpoint_fresh,
+            checkpoint_consistent=False,
+            key_status=curr_outcome.key_status,
+            compromise_flagged=curr_outcome.compromise_flagged,
+            expired=curr_outcome.expired,
+            tree_head_hash=curr_outcome.tree_head_hash,
+            event_count=curr_outcome.event_count,
+            manifest_hash=curr_outcome.manifest_hash,
+            policy_hash=curr_outcome.policy_hash,
+        )
+
+    reasons: list[IssuerTrustChangeReason] = []
+    if rollback_errs or not curr_outcome.checkpoint_consistent:
+        reasons.append(IssuerTrustChangeReason.CHECKPOINT_ROLLBACK_OR_SPLIT_VIEW)
+    if curr_outcome.compromise_flagged and not prev_outcome.compromise_flagged:
+        reasons.append(IssuerTrustChangeReason.KEY_COMPROMISED)
+    if not curr_outcome.checkpoint_fresh and (
+        prev_outcome.checkpoint_fresh or not curr_outcome.trusted
+    ):
+        reasons.append(IssuerTrustChangeReason.STALE_DIRECTORY_STATE)
+    if curr_outcome.expired and (
+        not prev_outcome.expired
+        or curr_outcome.key_status == KeyStatus.RETIRED.value
+        or prev_outcome.trusted != curr_outcome.trusted
+    ):
+        reasons.append(IssuerTrustChangeReason.KEY_EXPIRED)
+    if (
+        curr_outcome.key_status == KeyStatus.ROTATED.value
+        and prev_outcome.key_status != KeyStatus.ROTATED.value
+    ):
+        reasons.append(IssuerTrustChangeReason.KEY_ROTATED)
+    if prev_outcome.key_status is None and curr_outcome.key_status == KeyStatus.ACTIVE.value:
+        reasons.append(IssuerTrustChangeReason.KEY_ACTIVATED)
+    if (
+        prev_outcome.policy_hash is not None
+        and curr_outcome.policy_hash is not None
+        and prev_outcome.policy_hash != curr_outcome.policy_hash
+    ):
+        reasons.append(IssuerTrustChangeReason.POLICY_CHANGED)
+
+    if not reasons:
+        reasons.append(IssuerTrustChangeReason.UNCHANGED)
+
+    primary = reasons[0]
+    trust_changed = (
+        prev_outcome.trusted != curr_outcome.trusted
+        or primary != IssuerTrustChangeReason.UNCHANGED
+    )
+    return IssuerTrustChangeReport(
+        organization_identity_hash=org_curr,
+        key_id=current.key_id,
+        signature_timestamp=current.signature_timestamp,
+        trust_changed=trust_changed,
+        primary_reason=primary,
+        reasons=tuple(reasons),
+        previous_run=prev_outcome,
+        current_run=curr_outcome,
+        summary=_REASON_SUMMARIES[primary],
+    )
+

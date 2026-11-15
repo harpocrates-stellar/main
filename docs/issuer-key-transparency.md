@@ -112,3 +112,15 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Cross-run issuer trust change reasons
+
+When re-verifying evidence across time, `explain_issuer_trust_change(previous_observation, current_observation)` produces a structured `IssuerTrustChangeReport` (`schema: harpocrates-issuer-trust-change-report/v1`) instead of collapsing all differences into a generic invalid-issuer error:
+
+- **`key_rotated`:** Key transitioned from `active` to `rotated` (preserving pre-rotation historical validity when `signature_timestamp < valid_until`, and flagging post-rotation invalidity when `signature_timestamp >= valid_until`).
+- **`key_expired`:** Key or manifest validity window elapsed or the key transitioned to `retired`.
+- **`key_compromised`:** Key transitioned to `compromised` in the transparency log.
+- **`stale_directory_state`:** Cached checkpoint exceeded `DEFAULT_FRESHNESS_SECONDS` or `HIGH_ASSURANCE_FRESHNESS_SECONDS`.
+- **`checkpoint_rollback_or_split_view`:** Checkpoint rollback or tree-head split-view detected across runs.
+- **`key_activated` / `policy_changed` / `unchanged`:** Distinguishes newly onboarded keys, policy updates, and identical runs.
+
