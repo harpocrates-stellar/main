@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1171,39 +1172,83 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
+
+TERMINAL_JOB_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "cancelled", "abandoned"}
+)
+
+# Canonical ordered processing stages per job type. Advancing to a later stage
+# marks every preceding pipeline stage completed so stale callbacks cannot
+# regress job progress.
+JOB_STAGE_ORDER: dict[str, tuple[str, ...]] = {
+    "embed": ("hashing_source", "embedding", "hashing_output", "recording"),
+    "extract": ("hashing_source", "extracting", "recording"),
+    "silent_witness": ("generating_proof",),
+    "verify_tx": ("verifying_tx",),
+}
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "stage_revision": 0,
+            "_completed_stages": set(),
+            "_current_stage": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
 def get_job(job_id: int) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
 def cancel_job(job_id: int) -> bool:
     """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "pending":
+            job["stage_revision"] = int(job.get("stage_revision", 0)) + 1
+            job["status"] = "cancelled"
+            job["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+            job["_current_stage"] = None
+            return True
+        return False
+
+
+def transition_job_to_running(job_id: int, worker_id: str | None = None) -> bool:
+    """Transition a pending job to ``running``, rejecting terminal or active jobs."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        status = job.get("status")
+        if status in TERMINAL_JOB_STATUSES or status != "pending":
+            return False
+        job["status"] = "running"
+        if worker_id is not None:
+            job["worker_id"] = worker_id
+        job["stage_revision"] = int(job.get("stage_revision", 0)) + 1
+        job["_completed_stages"] = set()
+        job["_current_stage"] = None
+        job["_progress_at"] = None
+        job["progress"] = None
         return True
-    return False
 
 
 def lease_job(
@@ -1213,12 +1258,23 @@ def lease_job(
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
     del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
-    return None
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            status = job.get("status")
+            if status in TERMINAL_JOB_STATUSES:
+                continue
+            if status == "pending" and job.get("type") in job_types:
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                job["stage_revision"] = int(job.get("stage_revision", 0)) + 1
+                job["_completed_stages"] = set()
+                job["_current_stage"] = None
+                job["_progress_at"] = None
+                job["progress"] = None
+                snapshot = dict(job)
+                snapshot.pop("_completed_stages", None)
+                return snapshot
+        return None
 
 
 def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
@@ -1229,9 +1285,10 @@ def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: in
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
     del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running":
+            job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1240,66 +1297,198 @@ JOB_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
 JOB_PROGRESS_PHASE_MAX_LENGTH = 64
 
 
+def _normalize_stage_name(phase: str) -> str:
+    if not isinstance(phase, str) or not phase.strip():
+        raise ValueError("progress phase must be a non-empty string")
+    return phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+
+
+def _validate_stage_revision(revision: int | None) -> int | None:
+    if revision is None:
+        return None
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise ValueError("progress revision must be a positive integer")
+    return revision
+
+
+def _resolve_current_stage(job: dict[str, Any]) -> str | None:
+    current_stage = job.get("_current_stage")
+    if isinstance(current_stage, str) and current_stage:
+        return current_stage
+    progress = job.get("progress")
+    if isinstance(progress, dict) and isinstance(progress.get("phase"), str):
+        return progress["phase"]
+    return None
+
+
+def _is_stage_regression(
+    job_type: str,
+    incoming_phase: str,
+    current_stage: str | None,
+    completed_stages: set[str],
+) -> bool:
+    if incoming_phase in completed_stages:
+        return True
+    pipeline = JOB_STAGE_ORDER.get(job_type, ())
+    if incoming_phase in pipeline:
+        incoming_idx = pipeline.index(incoming_phase)
+        if current_stage in pipeline and incoming_idx < pipeline.index(current_stage):
+            return True
+        for done_stage in completed_stages:
+            if done_stage in pipeline and incoming_idx <= pipeline.index(done_stage):
+                return True
+    return False
+
+
+def complete_job_stage(
+    job_id: int,
+    stage: str,
+    *,
+    revision: int | None = None,
+) -> bool:
+    """Mark ``stage`` completed on a running job using monotonic stage revisions.
+
+    Once marked completed, any subsequent progress update targeting ``stage``
+    (or an earlier stage in the job type's pipeline) is rejected.
+    """
+    clean_stage = _normalize_stage_name(stage)
+    validated_rev = _validate_stage_revision(revision)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") in TERMINAL_JOB_STATUSES or job.get("status") != "running":
+            return False
+        current_rev = int(job.get("stage_revision", 0))
+        if validated_rev is not None:
+            if validated_rev <= current_rev:
+                return False
+            next_rev = validated_rev
+        else:
+            next_rev = current_rev + 1
+
+        completed_stages: set[str] = job.setdefault("_completed_stages", set())
+        current_stage = _resolve_current_stage(job)
+        job_type = str(job.get("type", ""))
+        if _is_stage_regression(job_type, clean_stage, current_stage, completed_stages):
+            return False
+
+        pipeline = JOB_STAGE_ORDER.get(job_type, ())
+        if clean_stage in pipeline:
+            for earlier in pipeline[: pipeline.index(clean_stage)]:
+                completed_stages.add(earlier)
+        if current_stage is not None and current_stage != clean_stage:
+            completed_stages.add(current_stage)
+        completed_stages.add(clean_stage)
+        if current_stage == clean_stage:
+            job["_current_stage"] = None
+        job["stage_revision"] = next_rev
+        return True
+
+
 def report_job_progress(
     job_id: int,
     phase: str,
     percent: float | None = None,
     *,
     now: float | None = None,
+    revision: int | None = None,
 ) -> bool:
     """Record ``{"phase", "percent"}`` progress for a running job.
 
     ``phase`` is a short machine-readable step name (for example
     ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
-    measurable fraction. Updates are throttled to at most one per
-    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
-    updated. Returns True when the update was stored.
+    measurable fraction. Ordering uses monotonic stage revisions rather than
+    wall-clock timestamps, and updates that regress an already-completed
+    processing stage are rejected. Updates are throttled to at most one per
+    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running,
+    non-terminal jobs are updated. Returns True when the update was stored.
     """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") in TERMINAL_JOB_STATUSES or job.get("status") != "running":
+            return False
+        phase = _normalize_stage_name(phase)
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        validated_rev = _validate_stage_revision(revision)
+
+        current_rev = int(job.get("stage_revision", 0))
+        if validated_rev is not None:
+            if validated_rev <= current_rev:
+                return False
+            next_rev = validated_rev
+        else:
+            next_rev = current_rev + 1
+
+        completed_stages: set[str] = job.setdefault("_completed_stages", set())
+        current_stage = _resolve_current_stage(job)
+        job_type = str(job.get("type", ""))
+        if _is_stage_regression(job_type, phase, current_stage, completed_stages):
+            return False
+
+        current = time.monotonic() if now is None else float(now)
+        last = job.get("_progress_at")
+        if last is not None:
+            if 0.0 <= current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+                return False
+            if validated_rev is None and phase == current_stage and current < last:
+                return False
+
+        if current_stage is not None and current_stage != phase:
+            completed_stages.add(current_stage)
+        pipeline = JOB_STAGE_ORDER.get(job_type, ())
+        if phase in pipeline:
+            for earlier in pipeline[: pipeline.index(phase)]:
+                completed_stages.add(earlier)
+
+        job["_current_stage"] = phase
+        job["stage_revision"] = next_rev
+        job["_progress_at"] = current if (last is None or current > last) else last
+        job["progress"] = {"phase": phase, "percent": percent}
+        return True
 
 
-def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+def complete_job(job_id: int, result: Any = None) -> bool:
+    """Mark an in-memory job completed unless it is already terminal."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") in TERMINAL_JOB_STATUSES:
+            return False
+        current_stage = _resolve_current_stage(job)
+        if current_stage is not None:
+            job.setdefault("_completed_stages", set()).add(current_stage)
+        job["_current_stage"] = None
+        job["stage_revision"] = int(job.get("stage_revision", 0)) + 1
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
+        return True
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> bool:
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    Terminal jobs never transition back to ``pending`` or ``running``.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") in TERMINAL_JOB_STATUSES:
+            return False
+        job["stage_revision"] = int(job.get("stage_revision", 0)) + 1
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        job["_current_stage"] = None
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+        return True
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

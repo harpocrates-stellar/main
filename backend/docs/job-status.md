@@ -13,6 +13,7 @@
     "result": null,
     "created_at": "2026-10-18T16:00:00+00:00",
     "heartbeat_at": "2026-10-18T16:00:30+00:00",
+    "stage_revision": 4,
     "progress": { "phase": "embedding", "percent": 42.5 }
   }
 }
@@ -33,10 +34,21 @@ Phases reported today:
 - `silent_witness`: `generating_proof` (the proof runs as one external command, so
   only the phase name is reported).
 
-Processors call `db.report_job_progress(job_id, phase, percent)` as often as they
-like; the value is stored at most once per second per job
+Processors call `db.report_job_progress(job_id, phase, percent, revision=...)` as
+often as they like; the value is stored at most once per second per job
 (`JOB_PROGRESS_MIN_INTERVAL_SECONDS`), and only while the job is `running`.
 Heartbeats extend the lease only and never overwrite progress.
+
+## Monotonic stage revisions and terminal-job invariants
+
+- Progress ordering is governed by monotonic `stage_revision` counters and
+  canonical stage order (`JOB_STAGE_ORDER`) rather than wall-clock timestamps.
+- Advancing to a later stage (or calling `db.complete_job_stage`) marks earlier
+  stages completed; any delayed or out-of-order progress update that carries a
+  stale `revision` or targets an already-completed stage is rejected (`False`).
+- Once a job enters a terminal state (`completed`, `failed`, `cancelled`,
+  `abandoned`), it never accepts progress updates and cannot transition back to
+  `pending` or `running`.
 
 ## What the response never contains
 
