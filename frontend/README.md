@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Verification export preview
+
+`VerificationExportPreview` (`src/components/VerificationExportPreview.tsx`) and
+`freezeReviewedVerificationExport` / `serializeReviewedVerificationExport`
+(`src/services/verificationFlow.ts`) capture an immutable snapshot of the
+user-reviewed verification result before export. The preview enumerates all
+public exported fields, observation freshness (`fresh`, `stale`, or
+`unverified`), and any unresolved checks, then serializes that exact reviewed
+snapshot without silently refreshing its trust context or triggering network I/O.
