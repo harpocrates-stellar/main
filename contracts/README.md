@@ -272,6 +272,10 @@ get_pending_admin
 get_schema_version
 is_admin
 is_issuer
+create_approval_invitation
+accept_approval_invitation
+cancel_approval_invitation
+get_approval_invitation
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -579,6 +583,20 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## Expiring Institutional Approval Invitations (#1187)
+
+`create_approval_invitation`, `accept_approval_invitation`,
+`cancel_approval_invitation`, and `get_approval_invitation` provide bounded
+two-step invitations across institutional roles (`INVITE_ROLE_ADMIN`,
+`INVITE_ROLE_ISSUER`, `INVITE_ROLE_GUARDIAN`, and `INVITE_ROLE_SEAL_SIGNER`):
+
+- Invitations enforce `1..=MAX_INVITATION_TTL_SECS` (`2_592_000` seconds,
+  reverting with `InvalidInvitationDuration` `#115` otherwise).
+- Prior role assignments remain active and authoritative until the invited
+  candidate calls `accept_approval_invitation` strictly before `expires_at`
+  (`InvitationExpired` `#114` at or after the deadline; `InvitationNotFound`
+  `#113` if absent or cancelled).
 
 ## Contract Error ABI (#344)
 

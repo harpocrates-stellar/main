@@ -162,6 +162,9 @@ call can succeed.
 | 110 | `InvalidSealThreshold` | malformed | no | `required_approvals` is zero or exceeds `max_signers`. |
 | 111 | `SealSignerSetTooLarge` | oversized | no | `max_signers` or the signer set exceeds the configured limit. |
 | 112 | `SealAlreadyFinalized` | conflict | no | The threshold seal for this proof has already been finalized. |
+| 113 | `InvitationNotFound` | state | no | No pending institutional approval invitation exists for the requested role and candidate. |
+| 114 | `InvitationExpired` | expired | no | The institutional approval invitation deadline has elapsed and can no longer be accepted. |
+| 115 | `InvalidInvitationDuration` | malformed | no | The requested invitation duration is zero, exceeds the maximum TTL, or overflows ledger time. |
 
 ## Privacy Rules
 

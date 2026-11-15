@@ -1343,6 +1343,60 @@ pub struct SchemaRecord {
     pub created_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Expiring institutional approval invitations (#1187)
+// ---------------------------------------------------------------------------
+
+pub const INVITE_ROLE_ADMIN: u32 = 1;
+pub const INVITE_ROLE_ISSUER: u32 = 2;
+pub const INVITE_ROLE_GUARDIAN: u32 = 3;
+pub const INVITE_ROLE_SEAL_SIGNER: u32 = 4;
+pub const MAX_INVITATION_TTL_SECS: u64 = 2_592_000;
+
+/// Pending two-step institutional approval invitation with strict deadline (#1187).
+///
+/// The prior role assignment remains authoritative until the candidate calls
+/// `accept_approval_invitation` before `expires_at`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovalInvitation {
+    pub role_kind: u32,
+    pub candidate: Address,
+    pub inviter: Address,
+    pub metadata_hash: BytesN<32>,
+    pub policy_version: u32,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["invite", "create"])]
+pub struct ApprovalInvitationCreated {
+    #[topic]
+    pub role_kind: u32,
+    #[topic]
+    pub candidate: Address,
+    pub inviter: Address,
+    pub expires_at: u64,
+}
+
+#[contractevent(topics = ["invite", "accept"])]
+pub struct ApprovalInvitationAccepted {
+    #[topic]
+    pub role_kind: u32,
+    #[topic]
+    pub candidate: Address,
+    pub accepted_at: u64,
+}
+
+#[contractevent(topics = ["invite", "cancel"])]
+pub struct ApprovalInvitationCancelled {
+    #[topic]
+    pub role_kind: u32,
+    #[topic]
+    pub candidate: Address,
+    pub cancelled_by: Address,
+}
+
 #[contractevent(topics = ["schema", "add"])]
 pub struct SchemaAdded {
     #[topic]
@@ -1963,6 +2017,8 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Pending expiring institutional approval invitation keyed by `(role_kind, candidate)` (#1187).
+    ApprovalInvitation(u32, Address),
 }
 
 #[contracterror]
@@ -2157,6 +2213,12 @@ pub enum RegistryError {
     SealSignerSetTooLarge = 111,
     /// The threshold seal for this proof has already been finalized (#124).
     SealAlreadyFinalized = 112,
+    /// No pending institutional approval invitation exists for the requested role and candidate (#1187).
+    InvitationNotFound = 113,
+    /// The institutional approval invitation deadline has elapsed (#1187).
+    InvitationExpired = 114,
+    /// The requested invitation duration is zero, above the cap, or overflows (#1187).
+    InvalidInvitationDuration = 115,
 }
 
 #[contract]
@@ -6310,6 +6372,259 @@ impl HarpocratesRegistry {
     }
 
     // -----------------------------------------------------------------------
+    // Expiring institutional approval invitations (#1187)
+    // -----------------------------------------------------------------------
+
+    /// Stage an expiring institutional approval invitation without altering
+    /// the currently active role assignment (#1187).
+    pub fn create_approval_invitation(
+        env: Env,
+        admin: Address,
+        role_kind: u32,
+        candidate: Address,
+        metadata_hash: BytesN<32>,
+        policy_version: u32,
+        ttl_secs: u64,
+    ) -> ApprovalInvitation {
+        require_admin(&env, &admin);
+        if role_kind < INVITE_ROLE_ADMIN || role_kind > INVITE_ROLE_SEAL_SIGNER {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
+        if ttl_secs == 0 || ttl_secs > MAX_INVITATION_TTL_SECS {
+            panic_with_error!(&env, RegistryError::InvalidInvitationDuration);
+        }
+
+        let now = env.ledger().timestamp();
+        let expires_at = now
+            .checked_add(ttl_secs)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvalidInvitationDuration));
+
+        match role_kind {
+            INVITE_ROLE_ADMIN => {
+                require_admin_role_available(&env, &candidate);
+            }
+            INVITE_ROLE_ISSUER => {
+                require_issuer_role_available(&env, &candidate);
+                if env
+                    .storage()
+                    .persistent()
+                    .get::<_, Address>(&DataKey::PendingAdmin)
+                    .as_ref()
+                    == Some(&candidate)
+                {
+                    panic_with_error!(&env, RegistryError::RoleConflict);
+                }
+            }
+            INVITE_ROLE_GUARDIAN => {}
+            INVITE_ROLE_SEAL_SIGNER => {
+                let policy: SealPolicy = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SealPolicy(policy_version))
+                    .unwrap_or_else(|| panic_with_error!(&env, RegistryError::SealPolicyCancelled));
+                if policy.status != STATUS_POLICY_ACTIVE
+                    || (policy.expires_at > 0 && now > policy.expires_at)
+                {
+                    panic_with_error!(&env, RegistryError::SealPolicyCancelled);
+                }
+                let issuer_rec = get_issuer_record(&env, &candidate);
+                if !issuer_rec.active {
+                    panic_with_error!(&env, RegistryError::UnknownIssuer);
+                }
+                require_issuer_role_available(&env, &candidate);
+                let mut already_present = false;
+                for existing in policy.signers.iter() {
+                    if existing == candidate {
+                        already_present = true;
+                        break;
+                    }
+                }
+                if !already_present && policy.signers.len() >= policy.max_signers {
+                    panic_with_error!(&env, RegistryError::SealSignerSetTooLarge);
+                }
+            }
+            _ => panic_with_error!(&env, RegistryError::InvalidProposalAction),
+        }
+
+        let invitation = ApprovalInvitation {
+            role_kind,
+            candidate: candidate.clone(),
+            inviter: admin.clone(),
+            metadata_hash,
+            policy_version,
+            created_at: now,
+            expires_at,
+        };
+        env.storage().persistent().set(
+            &DataKey::ApprovalInvitation(role_kind, candidate.clone()),
+            &invitation,
+        );
+        ApprovalInvitationCreated {
+            role_kind,
+            candidate,
+            inviter: admin,
+            expires_at,
+        }
+        .publish(&env);
+
+        invitation
+    }
+
+    /// Accept a pending institutional approval invitation before its deadline,
+    /// transitioning the role assignment only upon timely acceptance (#1187).
+    pub fn accept_approval_invitation(env: Env, candidate: Address, role_kind: u32) {
+        candidate.require_auth();
+
+        let key = DataKey::ApprovalInvitation(role_kind, candidate.clone());
+        let invitation: ApprovalInvitation = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvitationNotFound));
+
+        let now = env.ledger().timestamp();
+        if now >= invitation.expires_at {
+            panic_with_error!(&env, RegistryError::InvitationExpired);
+        }
+
+        match invitation.role_kind {
+            INVITE_ROLE_ADMIN => {
+                require_admin_role_available(&env, &candidate);
+                let previous_admin: Address = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Admin)
+                    .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+                env.storage().persistent().set(&DataKey::Admin, &candidate);
+                if env
+                    .storage()
+                    .persistent()
+                    .get::<_, Address>(&DataKey::PendingAdmin)
+                    .as_ref()
+                    == Some(&candidate)
+                {
+                    env.storage().persistent().remove(&DataKey::PendingAdmin);
+                }
+                AdminAccepted {
+                    new_admin: candidate.clone(),
+                    previous_admin,
+                }
+                .publish(&env);
+            }
+            INVITE_ROLE_ISSUER => {
+                require_issuer_role_available(&env, &candidate);
+                if env
+                    .storage()
+                    .persistent()
+                    .get::<_, Address>(&DataKey::PendingAdmin)
+                    .as_ref()
+                    == Some(&candidate)
+                {
+                    panic_with_error!(&env, RegistryError::RoleConflict);
+                }
+                env.storage().persistent().set(
+                    &DataKey::Issuer(candidate.clone()),
+                    &IssuerRecord {
+                        metadata_hash: invitation.metadata_hash.clone(),
+                        active: true,
+                    },
+                );
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::IssuerRotation(candidate.clone()));
+                IssuerAdded {
+                    issuer: candidate.clone(),
+                    metadata_hash: invitation.metadata_hash,
+                }
+                .publish(&env);
+            }
+            INVITE_ROLE_GUARDIAN => {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Guardian, &candidate);
+                GuardianSet {
+                    guardian: candidate.clone(),
+                }
+                .publish(&env);
+            }
+            INVITE_ROLE_SEAL_SIGNER => {
+                let mut policy: SealPolicy = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SealPolicy(invitation.policy_version))
+                    .unwrap_or_else(|| panic_with_error!(&env, RegistryError::SealPolicyCancelled));
+                if policy.status != STATUS_POLICY_ACTIVE
+                    || (policy.expires_at > 0 && now > policy.expires_at)
+                {
+                    panic_with_error!(&env, RegistryError::SealPolicyCancelled);
+                }
+                let issuer_rec = get_issuer_record(&env, &candidate);
+                if !issuer_rec.active {
+                    panic_with_error!(&env, RegistryError::UnknownIssuer);
+                }
+                require_issuer_role_available(&env, &candidate);
+                let mut already_present = false;
+                for existing in policy.signers.iter() {
+                    if existing == candidate {
+                        already_present = true;
+                        break;
+                    }
+                }
+                if !already_present {
+                    if policy.signers.len() >= policy.max_signers {
+                        panic_with_error!(&env, RegistryError::SealSignerSetTooLarge);
+                    }
+                    policy.signers.push_back(candidate.clone());
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::SealPolicy(invitation.policy_version), &policy);
+                }
+            }
+            _ => panic_with_error!(&env, RegistryError::InvalidProposalAction),
+        }
+
+        env.storage().persistent().remove(&key);
+        ApprovalInvitationAccepted {
+            role_kind: invitation.role_kind,
+            candidate,
+            accepted_at: now,
+        }
+        .publish(&env);
+    }
+
+    /// Cancel a pending institutional approval invitation (#1187).
+    pub fn cancel_approval_invitation(
+        env: Env,
+        admin: Address,
+        role_kind: u32,
+        candidate: Address,
+    ) {
+        require_admin(&env, &admin);
+        let key = DataKey::ApprovalInvitation(role_kind, candidate.clone());
+        if !env.storage().persistent().has(&key) {
+            panic_with_error!(&env, RegistryError::InvitationNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        ApprovalInvitationCancelled {
+            role_kind,
+            candidate,
+            cancelled_by: admin,
+        }
+        .publish(&env);
+    }
+
+    /// Read a pending institutional approval invitation, if any (#1187).
+    pub fn get_approval_invitation(
+        env: Env,
+        role_kind: u32,
+        candidate: Address,
+    ) -> Option<ApprovalInvitation> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ApprovalInvitation(role_kind, candidate))
+    }
+
+    // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
 
@@ -9079,6 +9394,8 @@ mod test_deployment_fixture;
 mod test_dispute;
 #[cfg(test)]
 mod test_error_abi;
+#[cfg(test)]
+mod test_expiring_invitations;
 #[cfg(test)]
 mod test_expiry;
 #[cfg(test)]
