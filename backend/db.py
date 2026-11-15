@@ -1024,6 +1024,24 @@ def list_proof_history_events(
             )
             return [dict(row) for row in cursor.fetchall()]
 
+def count_pending_registration_txs() -> int:
+    """Return total pending registration rows awaiting on-chain reconciliation."""
+    if not database_url():
+        return 0
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select count(*) as pending_count
+                from proof_events
+                where tx_hash is not null
+                  and tx_status = 'pending';
+                """
+            )
+            row = cursor.fetchone()
+            return int(row["pending_count"]) if row else 0
+
+
 def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
     """Return pending registration rows that still need on-chain reconciliation."""
     if not database_url():

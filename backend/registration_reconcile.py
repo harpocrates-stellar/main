@@ -17,7 +17,11 @@ import logging
 import os
 from typing import Any
 
-from db import list_pending_registration_txs, update_tx_status
+from db import (
+    count_pending_registration_txs,
+    list_pending_registration_txs,
+    update_tx_status,
+)
 from tx_verification import (
     TERMINAL_STATUSES,
     TxVerificationResult,
@@ -55,16 +59,25 @@ def _short_hash(tx_hash: str) -> str:
     return tx_hash[:8]
 
 
-def clamp_reconcile_limit(limit: object) -> int:
+def parse_reconcile_limit(limit: object) -> tuple[int, int, bool]:
+    """Validate a reconcile batch limit and return ``(requested, effective, clamped)``."""
     if limit is None:
-        return MAX_RECONCILE_BATCH
+        return MAX_RECONCILE_BATCH, MAX_RECONCILE_BATCH, False
+    if isinstance(limit, bool):
+        raise ValueError("limit must be a positive integer")
     try:
         parsed = int(limit)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         raise ValueError("limit must be a positive integer") from None
     if parsed < 1:
         raise ValueError("limit must be a positive integer")
-    return min(parsed, MAX_RECONCILE_BATCH)
+    effective = min(parsed, MAX_RECONCILE_BATCH)
+    return parsed, effective, parsed > MAX_RECONCILE_BATCH
+
+
+def clamp_reconcile_limit(limit: object) -> int:
+    _requested, effective, _clamped = parse_reconcile_limit(limit)
+    return effective
 
 
 def _result_payload(
@@ -193,11 +206,12 @@ def reconcile_registration(
 
 def reconcile_pending_registrations(
     *,
-    limit: int = MAX_RECONCILE_BATCH,
+    limit: object = MAX_RECONCILE_BATCH,
     min_confirmations: int | None = None,
+    max_processed: int | None = None,
 ) -> dict[str, Any]:
-    """Reconcile up to ``limit`` pending registration rows."""
-    page_size = clamp_reconcile_limit(limit)
+    """Reconcile up to ``limit`` pending registration rows and report batch limits."""
+    requested_limit, page_size, limit_clamped = parse_reconcile_limit(limit)
     min_conf = (
         default_min_confirmations()
         if min_confirmations is None
@@ -205,11 +219,19 @@ def reconcile_pending_registrations(
     )
     if min_conf < 1:
         raise ValueError("minConfirmations must be >= 1")
+    if max_processed is not None and (isinstance(max_processed, bool) or int(max_processed) < 0):
+        raise ValueError("max_processed must be a non-negative integer")
 
     pending = list_pending_registration_txs(limit=page_size)
+    selected_count = len(pending)
+    total_pending = max(selected_count, int(count_pending_registration_txs()))
+
     results: list[dict[str, Any]] = []
     summary = {
         "scanned": 0,
+        "selected": selected_count,
+        "processed": 0,
+        "deferred": 0,
         "confirmed": 0,
         "failed": 0,
         "missing": 0,
@@ -218,8 +240,11 @@ def reconcile_pending_registrations(
         "updated": 0,
     }
 
-    for row in pending:
+    process_budget = selected_count if max_processed is None else min(selected_count, int(max_processed))
+
+    for row in pending[:process_budget]:
         summary["scanned"] += 1
+        summary["processed"] += 1
         item = reconcile_registration(
             row.get("tx_hash"),
             previous_status=row.get("tx_status") or "pending",
@@ -237,9 +262,48 @@ def reconcile_pending_registrations(
         if item.get("updated"):
             summary["updated"] += 1
 
+    processed_count = summary["processed"]
+    unselected_count = max(0, total_pending - selected_count)
+    unprocessed_selected_count = max(0, selected_count - processed_count)
+    deferred_count = unselected_count + unprocessed_selected_count
+    summary["deferred"] = deferred_count
+
+    remaining_pending = deferred_count + summary["pending"] + summary["error"]
+    batch_complete = processed_count == selected_count
+    backlog_complete = (
+        batch_complete
+        and deferred_count == 0
+        and summary["pending"] == 0
+        and summary["error"] == 0
+    )
+    if backlog_complete:
+        completion_state = "backlog_complete"
+    elif batch_complete:
+        completion_state = "batch_complete"
+    else:
+        completion_state = "batch_incomplete"
+
+    batch_info = {
+        "requestedLimit": requested_limit,
+        "effectiveLimit": page_size,
+        "maxLimit": MAX_RECONCILE_BATCH,
+        "limitClamped": limit_clamped,
+        "totalPending": total_pending,
+        "selected": selected_count,
+        "processed": processed_count,
+        "deferred": deferred_count,
+        "remainingPending": remaining_pending,
+        "batchComplete": batch_complete,
+        "backlogComplete": backlog_complete,
+        "completionState": completion_state,
+    }
+
     return {
         "ok": True,
         "summary": summary,
+        "batch": batch_info,
+        "batchComplete": batch_complete,
+        "backlogComplete": backlog_complete,
         "minConfirmations": min_conf,
         "results": results,
     }

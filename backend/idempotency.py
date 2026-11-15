@@ -120,6 +120,88 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+MAX_IDEMPOTENCY_BATCH = 50
+
+
+def cleanup_expired_idempotency_records(*, limit: object = MAX_IDEMPOTENCY_BATCH) -> dict[str, Any]:
+    """Delete up to ``limit`` expired idempotency records with bounded batch accounting."""
+    if limit is None:
+        requested_limit = MAX_IDEMPOTENCY_BATCH
+    elif isinstance(limit, bool):
+        raise ValueError("limit must be a positive integer")
+    else:
+        try:
+            requested_limit = int(limit)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a positive integer") from None
+        if requested_limit < 1:
+            raise ValueError("limit must be a positive integer")
+
+    effective_limit = min(requested_limit, MAX_IDEMPOTENCY_BATCH)
+    limit_clamped = requested_limit > MAX_IDEMPOTENCY_BATCH
+
+    if not _db_available():
+        return {
+            "ok": True,
+            "selected": 0,
+            "processed": 0,
+            "deferred": 0,
+            "requestedLimit": requested_limit,
+            "effectiveLimit": effective_limit,
+            "maxLimit": MAX_IDEMPOTENCY_BATCH,
+            "limitClamped": limit_clamped,
+            "batchComplete": True,
+            "backlogComplete": True,
+        }
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) AS expired_count FROM idempotency_records WHERE expires_at <= now();"
+            )
+            count_row = cur.fetchone()
+            total_expired = int(count_row["expired_count"]) if count_row else 0
+
+            cur.execute(
+                """
+                WITH target AS (
+                    SELECT id
+                    FROM idempotency_records
+                    WHERE expires_at <= now()
+                    ORDER BY id ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                DELETE FROM idempotency_records
+                USING target
+                WHERE idempotency_records.id = target.id
+                RETURNING idempotency_records.id;
+                """,
+                (effective_limit,),
+            )
+            deleted_rows = cur.fetchall()
+            conn.commit()
+
+    processed = len(deleted_rows)
+    selected = processed
+    total_before = max(selected, total_expired)
+    deferred = max(0, total_before - processed)
+    batch_complete = True
+    backlog_complete = deferred == 0
+    return {
+        "ok": True,
+        "selected": selected,
+        "processed": processed,
+        "deferred": deferred,
+        "requestedLimit": requested_limit,
+        "effectiveLimit": effective_limit,
+        "maxLimit": MAX_IDEMPOTENCY_BATCH,
+        "limitClamped": limit_clamped,
+        "batchComplete": batch_complete,
+        "backlogComplete": backlog_complete,
+    }
+
+
 def _canonical_digest() -> str:
     """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
     method = request.method.encode()

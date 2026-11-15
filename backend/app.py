@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1617,14 +1617,15 @@ def create_app() -> Flask:
                 }), 503
             return jsonify({"ok": True, "result": result})
 
+        raw_limit = payload.get("limit")
         try:
-            limit = clamp_reconcile_limit(payload.get("limit", 50))
+            clamp_reconcile_limit(raw_limit)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
         try:
             report = reconcile_pending_registrations(
-                limit=limit,
+                limit=raw_limit,
                 min_confirmations=min_confirmations,
             )
         except ValueError as exc:

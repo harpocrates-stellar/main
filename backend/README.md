@@ -342,6 +342,22 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Registration Reconciliation Batch Limits
+
+Administrative batch responses from `POST /api/proofs/reconcile` (when `txHash`
+is omitted) and `reconcile_pending_registrations()` include explicit batch-limit
+accounting under `summary` and `batch`:
+
+- `selected`, `processed`, and `deferred` row counts alongside `requestedLimit`,
+  `effectiveLimit` (clamped to `MAX_RECONCILE_BATCH = 50`), `maxLimit`, and
+  `limitClamped`.
+- `batchComplete` (`true` when every row selected into the bounded batch was
+  evaluated) versus `backlogComplete` (`true` only when `batchComplete` is
+  `true`, `deferred == 0`, and zero rows remain in `pending` or `error` state).
+- `cleanup_expired_idempotency_records()` in `idempotency.py` reports the same
+  bounded `selected`, `processed`, `deferred`, `batchComplete`, and
+  `backlogComplete` fields for administrative idempotency maintenance.
+
 ## Test
 
 ```powershell
