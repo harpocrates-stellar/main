@@ -29,6 +29,107 @@ export interface LineageFetcher {
   getProofStatus(proofId: string): Promise<ProofStatus>
 }
 
+export type LineageFixture = {
+  lineages: Record<string, LineageRecord>
+  proofs: Record<string, ProofStatus>
+}
+
+const VALID_PROOF_STATUSES: ReadonlySet<string> = new Set([
+  'valid',
+  'revoked',
+  'expired',
+  'disputed',
+  'missing',
+])
+
+/**
+ * Parse and validate a synthetic lineage fixture JSON payload for offline or
+ * cross-implementation CLI reproduction without live RPC endpoints.
+ */
+export function parseLineageFixture(json: string): LineageFixture {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    throw new Error('lineage fixture is not valid JSON')
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('lineage fixture must be a JSON object')
+  }
+
+  const raw = parsed as Record<string, unknown>
+  const allowedTopKeys = new Set(['lineages', 'proofs'])
+  if (Object.keys(raw).some((k) => !allowedTopKeys.has(k))) {
+    throw new Error('lineage fixture contains unsupported fields')
+  }
+
+  if (!raw.lineages || typeof raw.lineages !== 'object' || Array.isArray(raw.lineages)) {
+    throw new Error('lineage fixture lineages must be an object')
+  }
+  if (!raw.proofs || typeof raw.proofs !== 'object' || Array.isArray(raw.proofs)) {
+    throw new Error('lineage fixture proofs must be an object')
+  }
+
+  const lineages: Record<string, LineageRecord> = {}
+  for (const [key, entry] of Object.entries(raw.lineages as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`lineage fixture entry "${key}" must be an object`)
+    }
+    const rec = entry as Record<string, unknown>
+    if (!Array.isArray(rec.parentProofIds) || rec.parentProofIds.some((id) => typeof id !== 'string' || !id)) {
+      throw new Error(`lineage fixture entry "${key}" has invalid parentProofIds`)
+    }
+    const parentCommitments = Array.isArray(rec.parentCommitments)
+      ? rec.parentCommitments.map((c) => {
+          if (typeof c !== 'string') throw new Error(`lineage fixture entry "${key}" has invalid parentCommitments`)
+          return c
+        })
+      : []
+    if (typeof rec.operationType !== 'string' || !rec.operationType) {
+      throw new Error(`lineage fixture entry "${key}" must specify operationType`)
+    }
+    const outputDigest = typeof rec.outputDigest === 'string' && rec.outputDigest ? rec.outputDigest : key
+    const manifestDigest = typeof rec.manifestDigest === 'string' ? rec.manifestDigest : ''
+    const actor = typeof rec.actor === 'string' ? rec.actor : ''
+    const depth = typeof rec.depth === 'number' && Number.isSafeInteger(rec.depth) && rec.depth >= 0 ? rec.depth : 1
+
+    lineages[key.toLowerCase()] = {
+      parentProofIds: rec.parentProofIds as string[],
+      parentCommitments,
+      manifestDigest,
+      actor,
+      operationType: rec.operationType,
+      outputDigest: outputDigest.toLowerCase(),
+      depth,
+    }
+  }
+
+  const proofs: Record<string, ProofStatus> = {}
+  for (const [key, value] of Object.entries(raw.proofs as Record<string, unknown>)) {
+    if (typeof value !== 'string' || !VALID_PROOF_STATUSES.has(value)) {
+      throw new Error(`lineage fixture proof "${key}" has invalid status`)
+    }
+    proofs[key.toLowerCase()] = value as ProofStatus
+  }
+
+  return { lineages, proofs }
+}
+
+/**
+ * Create an in-memory LineageFetcher backed by a validated synthetic fixture.
+ */
+export function createFixtureLineageFetcher(fixture: LineageFixture): LineageFetcher {
+  return {
+    async getLineage(outputDigest: string): Promise<LineageRecord | null> {
+      return fixture.lineages[outputDigest.toLowerCase()] ?? null
+    },
+    async getProofStatus(proofId: string): Promise<ProofStatus> {
+      return fixture.proofs[proofId.toLowerCase()] ?? 'missing'
+    },
+  }
+}
+
 /**
  * Recursively verify a derivative's full lineage back to registered originals.
  */

@@ -31,17 +31,26 @@ import {
   serializeC2paExport,
   type C2paExport,
 } from './c2pa.js'
-import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
+import {
+  verifyLineageTree,
+  formatLineageTree,
+  parseLineageFixture,
+  createFixtureLineageFetcher,
+  type LineageFetcher,
+} from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -116,8 +125,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -442,6 +452,7 @@ async function handleVerifyLineage(
   const rpcUrl = flags['rpc-url'] || flags.rpcUrl
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
   const network = resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE)
+  const fixturePath = flags.fixture
   const outputFormat = flags.output || flags.o || 'text'
 
   if (!outputDigest) {
@@ -452,8 +463,32 @@ async function handleVerifyLineage(
     exit(8, 'a valid --contract-id is required for verification')
   }
 
-  if (!sourceAddress) {
-    exit(8, 'a source address is required for simulation. Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS')
+  let fetcher: LineageFetcher
+  if (fixturePath) {
+    try {
+      const parsedFixture = parseLineageFixture(await readText(fixturePath))
+      fetcher = createFixtureLineageFetcher(parsedFixture)
+    } catch {
+      exit(8, 'invalid or unreadable lineage fixture')
+    }
+  } else {
+    if (!sourceAddress) {
+      exit(8, 'a source address is required for simulation. Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS')
+    }
+    fetcher = {
+      getLineage: (digest: string) =>
+        getLineage(contractId, digest, {
+          rpcUrl,
+          networkPassphrase: network,
+          sourceAddress,
+        }),
+      getProofStatus: (proofId: string) =>
+        getProofStatus(contractId, proofId, {
+          rpcUrl,
+          networkPassphrase: network,
+          sourceAddress,
+        }),
+    }
   }
 
   debugLog({
@@ -461,22 +496,8 @@ async function handleVerifyLineage(
     outputDigest,
     contractId,
     network,
+    offlineFixture: Boolean(fixturePath),
   })
-
-  const fetcher = {
-    getLineage: (digest: string) =>
-      getLineage(contractId, digest, {
-        rpcUrl,
-        networkPassphrase: network,
-        sourceAddress,
-      }),
-    getProofStatus: (proofId: string) =>
-      getProofStatus(contractId, proofId, {
-        rpcUrl,
-        networkPassphrase: network,
-        sourceAddress,
-      }),
-  }
 
   const result = await verifyLineageTree(outputDigest, fetcher)
 
@@ -634,6 +655,7 @@ Lineage verification options:
   --rpc-url        Stellar RPC URL (default: testnet).
   --source-address Source address for simulation.
   --network        Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
+  --fixture        Optional synthetic lineage fixture JSON for offline verification.
   --output, -o     Output format: "text" (default) or "json".
 
 C2PA export options:

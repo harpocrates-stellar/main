@@ -1,0 +1,287 @@
+{
+  "protocol": "harpocrates-cli-transcripts",
+  "schemaVersion": 1,
+  "description": "Reproducible headless CLI command and lineage-verification transcripts using synthetic inputs without production endpoints or private media.",
+  "cases": [
+    {
+      "id": "hash-stdin-json",
+      "description": "Compute SHA-256 digest and byte count for synthetic stdin bytes in JSON format",
+      "argv": [
+        "hash",
+        "--file",
+        "-",
+        "--output",
+        "json"
+      ],
+      "stdin": "synthetic-evidence-frame-payload-v1\n",
+      "expected": {
+        "exitCode": 0,
+        "stdout": "{\n  \"algorithm\": \"sha256\",\n  \"digest\": \"96295d42765994ca9feec7a23b2d87a3e80230077fa80a951abff4755e76e3ce\",\n  \"bytes\": 36\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "manifest-from-metadata",
+      "description": "Build deterministic canonical v2 proof manifest from synthetic metadata via stdin",
+      "argv": [
+        "manifest",
+        "--input",
+        "-",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--tx-hash",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--video-hash",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "--format",
+        "text"
+      ],
+      "stdin": "{\"protocol\":\"harpocrates\",\"version\":1,\"tier\":\"silent\",\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"timestamp\":\"2026-07-24T12:00:00.000Z\"}",
+      "expected": {
+        "exitCode": 0,
+        "stdout": "{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"epoch\":0,\"metadataHash\":\"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":\"harpocrates\",\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tier\":\"silent\",\"timestamp\":\"2026-07-24T12:00:00.000Z\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "verify-offline-pending",
+      "description": "Offline manifest verification validates deployment bindings and returns exit 6 (pending)",
+      "argv": [
+        "verify",
+        "--manifest",
+        "-",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--offline",
+        "--output",
+        "json"
+      ],
+      "stdin": "{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"epoch\":0,\"metadataHash\":\"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":\"harpocrates\",\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tier\":\"silent\",\"timestamp\":\"2026-07-24T12:00:00.000Z\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"}",
+      "normalizeDynamicTimestamps": true,
+      "expected": {
+        "exitCode": 6,
+        "stdout": "{\n  \"version\": 1,\n  \"verifiedAt\": \"<ISO-8601>\",\n  \"manifest\": {\n    \"contractId\": \"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\n    \"epoch\": 0,\n    \"metadataHash\": \"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\n    \"network\": \"Test SDF Network ; September 2015\",\n    \"proofId\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n    \"protocol\": \"harpocrates\",\n    \"sourceHash\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"tier\": \"silent\",\n    \"timestamp\": \"2026-07-24T12:00:00.000Z\",\n    \"transactionRef\": \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n    \"verifierScope\": \"0\",\n    \"version\": 2,\n    \"videoHash\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"\n  },\n  \"transaction\": {\n    \"status\": \"pending\",\n    \"txHash\": \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n  },\n  \"chainRecord\": null,\n  \"result\": \"pending\"\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "verify-network-mismatch",
+      "description": "Fail closed with exit 4 when manifest network disagrees with selected --network",
+      "argv": [
+        "verify",
+        "--manifest",
+        "-",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--network",
+        "mainnet",
+        "--offline"
+      ],
+      "stdin": "{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"epoch\":0,\"metadataHash\":\"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":\"harpocrates\",\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tier\":\"silent\",\"timestamp\":\"2026-07-24T12:00:00.000Z\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"}",
+      "expected": {
+        "exitCode": 4,
+        "stdout": "",
+        "stderr": "harpocrates: network_mismatch\n"
+      }
+    },
+    {
+      "id": "verify-contract-mismatch",
+      "description": "Fail closed with exit 5 when manifest contractId disagrees with selected --contract-id",
+      "argv": [
+        "verify",
+        "--manifest",
+        "-",
+        "--contract-id",
+        "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "--offline"
+      ],
+      "stdin": "{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"epoch\":0,\"metadataHash\":\"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":\"harpocrates\",\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tier\":\"silent\",\"timestamp\":\"2026-07-24T12:00:00.000Z\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"}",
+      "expected": {
+        "exitCode": 5,
+        "stdout": "",
+        "stderr": "harpocrates: contract_mismatch\n"
+      }
+    },
+    {
+      "id": "verify-malformed-manifest",
+      "description": "Reject malformed manifest JSON on stdin with exit 8 and privacy-safe stderr",
+      "argv": [
+        "verify",
+        "--manifest",
+        "-",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--offline"
+      ],
+      "stdin": "{\"protocol\":\"harpocrates\",\"broken\":",
+      "expected": {
+        "exitCode": 8,
+        "stdout": "",
+        "stderr": "harpocrates: invalid or unreadable manifest\n"
+      }
+    },
+    {
+      "id": "c2pa-export-unsigned",
+      "description": "Export deterministic unsigned C2PA authenticity assertions from canonical manifest",
+      "argv": [
+        "c2pa",
+        "--manifest",
+        "-"
+      ],
+      "stdin": "{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"epoch\":0,\"metadataHash\":\"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":\"harpocrates\",\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tier\":\"silent\",\"timestamp\":\"2026-07-24T12:00:00.000Z\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"verifierScope\":\"0\",\"version\":2,\"videoHash\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"}",
+      "expected": {
+        "exitCode": 0,
+        "stdout": "{\"assertions\":[{\"data\":{\"actions\":[{\"action\":\"harpocrates.registered\",\"parameters\":{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tier\":\"silent\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},\"softwareAgent\":{\"name\":\"Harpocrates Protocol\"},\"when\":\"2026-07-24T12:00:00.000Z\"}],\"allActionsIncluded\":true},\"label\":\"c2pa.actions.v2\"},{\"data\":{\"alg\":\"sha256\",\"hash\":\"/ty6mHZUMhD+3LqYdlQyEP7cuph2VDIQ/ty6mHZUMhA=\",\"name\":\"video\",\"pad\":\" \"},\"label\":\"c2pa.hash.data\"},{\"data\":{\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\"epoch\":0,\"manifestHash\":\"7cc496f8fcdea0f47e195227cbc009df4d0ea95a7ff838cbd2ce5b0b81bc4d97\",\"manifestVersion\":2,\"metadataHash\":\"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\"network\":\"Test SDF Network ; September 2015\",\"proofId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":\"harpocrates\",\"schemaVersion\":1,\"sourceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tier\":\"silent\",\"timestamp\":\"2026-07-24T12:00:00.000Z\",\"transactionRef\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"verifierScope\":\"0\",\"videoHash\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"},\"label\":\"harpocrates.registry.v1\"},{\"data\":{\"exporter\":{\"name\":\"Harpocrates C2PA authenticity assertion exporter\",\"version\":\"1.0.0\"},\"input\":{\"manifestHash\":\"7cc496f8fcdea0f47e195227cbc009df4d0ea95a7ff838cbd2ce5b0b81bc4d97\",\"manifestVersion\":2,\"receiptVersion\":null},\"privacy\":\"public manifest and registry fields only; no media, secrets, witnesses, or keys\",\"schemaVersion\":1,\"unsigned\":true},\"label\":\"harpocrates.export.v1\"}],\"claim_generator\":\"harpocrates-cli/c2pa\",\"claim_generator_info\":[{\"name\":\"Harpocrates C2PA authenticity assertion exporter\",\"version\":\"1.0.0\"}],\"format\":\"application/json\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "verify-receipt-valid",
+      "description": "Offline verification of a signed verification receipt with a trusted public JWK",
+      "argv": [
+        "verify-receipt",
+        "--receipt",
+        "{{dir}}/receipt.json",
+        "--keys",
+        "{{dir}}/keys.json",
+        "--output",
+        "json"
+      ],
+      "files": [
+        {
+          "name": "receipt.json",
+          "content": "{\n  \"result\": \"verified\",\n  \"verifiedAt\": \"2026-07-24T13:00:00.000Z\",\n  \"proofId\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"videoHash\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n  \"metadataHash\": \"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\n  \"tier\": \"silent\",\n  \"networkPassphrase\": \"Test SDF Network ; September 2015\",\n  \"contractId\": \"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\n  \"ledgerSequence\": 123456,\n  \"transactionHash\": \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n  \"circuitVersion\": \"2.0.0\",\n  \"verifierVersion\": \"1.0.0\",\n  \"protocol\": \"harpocrates-verification-receipt\",\n  \"version\": 1,\n  \"signer\": {\n    \"keyId\": \"synthetic-verifier-key-1\",\n    \"algorithm\": \"ECDSA_P256_SHA256\"\n  },\n  \"signature\": \"h2aTSYFT6l-r7HgXTWs5cy8bLHl28JDJguj-7fOCqSPgNYG9JDXSKlhuK6u7N7c60tMiM4BNxW_GbdtXY_DoXw\"\n}"
+        },
+        {
+          "name": "keys.json",
+          "content": "{\n  \"synthetic-verifier-key-1\": {\n    \"key_ops\": [\n      \"verify\"\n    ],\n    \"ext\": true,\n    \"kty\": \"EC\",\n    \"x\": \"nqhfgJIemwJYdk6vTMnq-MWoGz7vluCfIWrmeaXdhJU\",\n    \"y\": \"B0asYFcDT8JEeUPnhlfFyFQfSGejSVSEDPDYJYnUHF4\",\n    \"crv\": \"P-256\"\n  }\n}"
+        }
+      ],
+      "expected": {
+        "exitCode": 0,
+        "stdout": "{\n  \"valid\": true,\n  \"receipt\": {\n    \"result\": \"verified\",\n    \"verifiedAt\": \"2026-07-24T13:00:00.000Z\",\n    \"proofId\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n    \"videoHash\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n    \"metadataHash\": \"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\n    \"tier\": \"silent\",\n    \"networkPassphrase\": \"Test SDF Network ; September 2015\",\n    \"contractId\": \"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\n    \"ledgerSequence\": 123456,\n    \"transactionHash\": \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n    \"circuitVersion\": \"2.0.0\",\n    \"verifierVersion\": \"1.0.0\",\n    \"protocol\": \"harpocrates-verification-receipt\",\n    \"version\": 1,\n    \"signer\": {\n      \"keyId\": \"synthetic-verifier-key-1\",\n      \"algorithm\": \"ECDSA_P256_SHA256\"\n    },\n    \"signature\": \"h2aTSYFT6l-r7HgXTWs5cy8bLHl28JDJguj-7fOCqSPgNYG9JDXSKlhuK6u7N7c60tMiM4BNxW_GbdtXY_DoXw\"\n  }\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "verify-receipt-unknown-signer",
+      "description": "Fail closed with exit 8 when signed receipt signer keyId is absent from trusted key set",
+      "argv": [
+        "verify-receipt",
+        "--receipt",
+        "{{dir}}/receipt.json",
+        "--keys",
+        "{{dir}}/keys.json",
+        "--output",
+        "json"
+      ],
+      "files": [
+        {
+          "name": "receipt.json",
+          "content": "{\n  \"result\": \"verified\",\n  \"verifiedAt\": \"2026-07-24T13:00:00.000Z\",\n  \"proofId\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"videoHash\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n  \"metadataHash\": \"5fe555f982b37a0efda1c29a98dd9f8479dc014e9272641ebc2d6ee8f455a0c3\",\n  \"tier\": \"silent\",\n  \"networkPassphrase\": \"Test SDF Network ; September 2015\",\n  \"contractId\": \"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4\",\n  \"ledgerSequence\": 123456,\n  \"transactionHash\": \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n  \"circuitVersion\": \"2.0.0\",\n  \"verifierVersion\": \"1.0.0\",\n  \"protocol\": \"harpocrates-verification-receipt\",\n  \"version\": 1,\n  \"signer\": {\n    \"keyId\": \"synthetic-verifier-key-1\",\n    \"algorithm\": \"ECDSA_P256_SHA256\"\n  },\n  \"signature\": \"h2aTSYFT6l-r7HgXTWs5cy8bLHl28JDJguj-7fOCqSPgNYG9JDXSKlhuK6u7N7c60tMiM4BNxW_GbdtXY_DoXw\"\n}"
+        },
+        {
+          "name": "keys.json",
+          "content": "{}"
+        }
+      ],
+      "expected": {
+        "exitCode": 8,
+        "stdout": "{\n  \"valid\": false,\n  \"reason\": \"signer key is unknown\"\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "status-invalid-proof-id",
+      "description": "Reject malformed --proof-id with exit 2 immediately without network requests",
+      "argv": [
+        "status",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--proof-id",
+        "invalid-non-hex"
+      ],
+      "expected": {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "harpocrates: invalid --proof-id: must be a 32-byte hex string\n"
+      }
+    },
+    {
+      "id": "verify-lineage-valid",
+      "description": "Verify derivative lineage back to registered originals from a synthetic fixture (exit 0)",
+      "argv": [
+        "verify-lineage",
+        "--output-digest",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--fixture",
+        "{{dir}}/lineage.json",
+        "--output",
+        "json"
+      ],
+      "files": [
+        {
+          "name": "lineage.json",
+          "content": "{\n  \"lineages\": {\n    \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\": {\n      \"parentProofIds\": [\n        \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n        \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n      ],\n      \"parentCommitments\": [\n        \"1111111111111111111111111111111111111111111111111111111111111111\",\n        \"2222222222222222222222222222222222222222222222222222222222222222\"\n      ],\n      \"manifestDigest\": \"3333333333333333333333333333333333333333333333333333333333333333\",\n      \"actor\": \"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\",\n      \"operationType\": \"crop\",\n      \"outputDigest\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n      \"depth\": 1\n    }\n  },\n  \"proofs\": {\n    \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\": \"valid\",\n    \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": \"valid\"\n  }\n}"
+        }
+      ],
+      "expected": {
+        "exitCode": 0,
+        "stdout": "{\n  \"root\": {\n    \"digest\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n    \"type\": \"derivative\",\n    \"operationType\": \"crop\",\n    \"depth\": 0,\n    \"parents\": [\n      {\n        \"digest\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n        \"type\": \"original\",\n        \"status\": \"valid\",\n        \"depth\": 1,\n        \"parents\": []\n      },\n      {\n        \"digest\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"type\": \"original\",\n        \"status\": \"valid\",\n        \"depth\": 1,\n        \"parents\": []\n      }\n    ]\n  },\n  \"success\": true,\n  \"revokedCount\": 0,\n  \"expiredCount\": 0,\n  \"disputedCount\": 0,\n  \"missingCount\": 0,\n  \"cycleDetected\": false\n}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "verify-lineage-revoked-ancestor",
+      "description": "Fail closed with exit 2 when an ancestor original proof is revoked in lineage traversal",
+      "argv": [
+        "verify-lineage",
+        "--output-digest",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--fixture",
+        "{{dir}}/lineage.json"
+      ],
+      "files": [
+        {
+          "name": "lineage.json",
+          "content": "{\n  \"lineages\": {\n    \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\": {\n      \"parentProofIds\": [\n        \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n      ],\n      \"parentCommitments\": [\n        \"1111111111111111111111111111111111111111111111111111111111111111\"\n      ],\n      \"manifestDigest\": \"3333333333333333333333333333333333333333333333333333333333333333\",\n      \"actor\": \"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\",\n      \"operationType\": \"redact\",\n      \"outputDigest\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n      \"depth\": 1\n    }\n  },\n  \"proofs\": {\n    \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\": \"revoked\"\n  }\n}"
+        }
+      ],
+      "expected": {
+        "exitCode": 2,
+        "stdout": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 (derivative: redact)\n└── bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (original: revoked)\n\nVerification failed: 1 ancestor(s) revoked\n",
+        "stderr": "harpocrates: an ancestor is revoked\n"
+      }
+    },
+    {
+      "id": "verify-lineage-cycle-detected",
+      "description": "Fail closed with exit 8 when a cycle is detected in the derivative lineage graph",
+      "argv": [
+        "verify-lineage",
+        "--output-digest",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "--contract-id",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        "--fixture",
+        "{{dir}}/lineage.json",
+        "--output",
+        "json"
+      ],
+      "files": [
+        {
+          "name": "lineage.json",
+          "content": "{\n  \"lineages\": {\n    \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\": {\n      \"parentProofIds\": [\n        \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n      ],\n      \"parentCommitments\": [\n        \"1111111111111111111111111111111111111111111111111111111111111111\"\n      ],\n      \"manifestDigest\": \"3333333333333333333333333333333333333333333333333333333333333333\",\n      \"actor\": \"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\",\n      \"operationType\": \"compose\",\n      \"outputDigest\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n      \"depth\": 1\n    },\n    \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\": {\n      \"parentProofIds\": [\n        \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\"\n      ],\n      \"parentCommitments\": [\n        \"2222222222222222222222222222222222222222222222222222222222222222\"\n      ],\n      \"manifestDigest\": \"4444444444444444444444444444444444444444444444444444444444444444\",\n      \"actor\": \"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\",\n      \"operationType\": \"transcode\",\n      \"outputDigest\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"depth\": 2\n    }\n  },\n  \"proofs\": {}\n}"
+        }
+      ],
+      "expected": {
+        "exitCode": 8,
+        "stdout": "{\n  \"root\": {\n    \"digest\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n    \"type\": \"derivative\",\n    \"operationType\": \"compose\",\n    \"depth\": 0,\n    \"parents\": [\n      {\n        \"digest\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n        \"type\": \"derivative\",\n        \"operationType\": \"transcode\",\n        \"depth\": 1,\n        \"parents\": [\n          {\n            \"digest\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\n            \"type\": \"derivative\",\n            \"depth\": 2,\n            \"parents\": [],\n            \"error\": \"cycle detected\"\n          }\n        ]\n      }\n    ]\n  },\n  \"success\": false,\n  \"failureReason\": \"cycle detected in lineage graph\",\n  \"revokedCount\": 0,\n  \"expiredCount\": 0,\n  \"disputedCount\": 0,\n  \"missingCount\": 0,\n  \"cycleDetected\": true\n}\n",
+        "stderr": "harpocrates: cycle detected in lineage graph\n"
+      }
+    }
+  ]
+}

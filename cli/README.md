@@ -72,6 +72,12 @@ For reproducible, network-free manifest and status fixtures, run from `cli/`:
 npm test -- --run test/manifest.test.ts test/normalize.test.ts test/status.test.ts
 ```
 
+For cross-implementation CLI conformance, synthetic command inputs, outputs, and exit codes (including offline `verify-lineage --fixture` traversal) are published in [`../devx/fixtures/cli-transcripts/transcripts.json`](../devx/fixtures/cli-transcripts/transcripts.json) (documented in [`../devx/fixtures/cli-transcripts/README.md`](../devx/fixtures/cli-transcripts/README.md)) and replayed without network endpoints via:
+
+```sh
+npm test -- --run test/transcripts.test.ts
+```
+
 ### Exit codes
 
 Script authors and CI integrations can rely on the following exit codes to determine the outcome of a command.

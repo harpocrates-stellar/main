@@ -74,8 +74,28 @@ export type { LineageRecord, ProofStatus } from './stellar-lookup.js'
 export {
   verifyLineageTree,
   formatLineageTree,
+  parseLineageFixture,
+  createFixtureLineageFetcher,
   MAX_LINEAGE_DEPTH,
   MAX_LINEAGE_FANOUT,
 } from './verify-lineage.js'
-export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
+export type { LineageNode, LineageTreeResult, LineageFetcher, LineageFixture } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  TRANSCRIPT_PROTOCOL,
+  TRANSCRIPT_SCHEMA_VERSION,
+  DYNAMIC_ISO_PLACEHOLDER,
+  parseTranscriptSuite,
+  normalizeTranscriptOutput,
+  verifyTranscriptCase,
+  verifyTranscriptSuite,
+} from './transcripts.js'
+export type {
+  CliTranscriptFileInput,
+  CliTranscriptCase,
+  CliTranscriptSuite,
+  CliExecutionResult,
+  CliTranscriptRunner,
+  TranscriptCaseVerification,
+  TranscriptSuiteVerification,
+} from './transcripts.js'
