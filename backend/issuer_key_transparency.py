@@ -647,3 +647,289 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+# ── Issuer directory import preview ────────────────────────────────────────
+
+DIRECTORY_IMPORT_PREVIEW_SCHEMA = "harpocrates-issuer-directory-import-preview/v1"
+
+
+@dataclass(frozen=True)
+class KeyLifecycleDiffEntry:
+    """Proposed key lifecycle change reported by directory import preview."""
+
+    key_id: str
+    change_type: str
+    previous_status: str | None
+    proposed_status: str
+    public_key_hash: str
+    valid_from: int
+    valid_until: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "changeType": self.change_type,
+            "keyId": self.key_id,
+            "previousStatus": self.previous_status,
+            "proposedStatus": self.proposed_status,
+            "publicKeyHash": self.public_key_hash,
+            "validFrom": self.valid_from,
+            "validUntil": self.valid_until,
+        }
+        return d
+
+
+@dataclass(frozen=True)
+class CheckpointLineageReport:
+    """Checkpoint and manifest lineage comparison between active and proposed state."""
+
+    previous_event_count: int
+    proposed_event_count: int
+    appended_event_count: int
+    previous_tree_head_hash: str
+    proposed_tree_head_hash: str
+    previous_manifest_hash: str | None
+    proposed_manifest_hash: str | None
+    extends_previous_log: bool
+    manifest_lineage_valid: bool
+    candidate_checkpoint_consistent: bool
+    rollback_errors: tuple[str, ...] = ()
+    consistency_errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "appendedEventCount": self.appended_event_count,
+            "candidateCheckpointConsistent": self.candidate_checkpoint_consistent,
+            "consistencyErrors": list(self.consistency_errors),
+            "extendsPreviousLog": self.extends_previous_log,
+            "manifestLineageValid": self.manifest_lineage_valid,
+            "previousEventCount": self.previous_event_count,
+            "previousManifestHash": self.previous_manifest_hash,
+            "previousTreeHeadHash": self.previous_tree_head_hash,
+            "proposedEventCount": self.proposed_event_count,
+            "proposedManifestHash": self.proposed_manifest_hash,
+            "proposedTreeHeadHash": self.proposed_tree_head_hash,
+            "rollbackErrors": list(self.rollback_errors),
+        }
+
+
+@dataclass(frozen=True)
+class DirectoryImportPreview:
+    """Immutable import preview produced without mutating active trust state."""
+
+    organization_identity_hash: str
+    accepted_ready: bool
+    errors: tuple[str, ...]
+    key_lifecycle_changes: tuple[KeyLifecycleDiffEntry, ...]
+    checkpoint_lineage: CheckpointLineageReport
+    preview_digest: str
+    _staged_events: tuple[DirectoryEvent, ...] = field(default=(), repr=False)
+    _staged_manifests: tuple[IssuerManifest, ...] = field(default=(), repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "acceptedReady": self.accepted_ready,
+            "checkpointLineage": self.checkpoint_lineage.to_dict(),
+            "errors": list(self.errors),
+            "keyLifecycleChanges": [c.to_dict() for c in self.key_lifecycle_changes],
+            "organizationIdentityHash": self.organization_identity_hash,
+            "previewDigest": self.preview_digest,
+            "schema": DIRECTORY_IMPORT_PREVIEW_SCHEMA,
+        }
+
+
+def _compute_key_lifecycle_diffs(
+    previous_keys: dict[str, IssuerKey],
+    proposed_keys: dict[str, IssuerKey],
+) -> tuple[KeyLifecycleDiffEntry, ...]:
+    diffs: list[KeyLifecycleDiffEntry] = []
+    for key_id in sorted(proposed_keys.keys()):
+        prop = proposed_keys[key_id]
+        prev = previous_keys.get(key_id)
+        if prev is None:
+            diffs.append(
+                KeyLifecycleDiffEntry(
+                    key_id=key_id,
+                    change_type="added",
+                    previous_status=None,
+                    proposed_status=prop.status.value,
+                    public_key_hash=prop.public_key_hash,
+                    valid_from=prop.valid_from,
+                    valid_until=prop.valid_until,
+                )
+            )
+            continue
+        if prev == prop:
+            continue
+        if prop.status == KeyStatus.ROTATED and prev.status != KeyStatus.ROTATED:
+            change_type = "rotated"
+        elif prop.status == KeyStatus.COMPROMISED and prev.status != KeyStatus.COMPROMISED:
+            change_type = "compromised"
+        elif prop.status == KeyStatus.RETIRED and prev.status != KeyStatus.RETIRED:
+            change_type = "retired"
+        else:
+            change_type = "updated"
+        diffs.append(
+            KeyLifecycleDiffEntry(
+                key_id=key_id,
+                change_type=change_type,
+                previous_status=prev.status.value,
+                proposed_status=prop.status.value,
+                public_key_hash=prop.public_key_hash,
+                valid_from=prop.valid_from,
+                valid_until=prop.valid_until,
+            )
+        )
+    return tuple(diffs)
+
+
+def preview_directory_import(
+    current_directory: IssuerDirectory,
+    proposed_events: list[DirectoryEvent],
+    proposed_manifests: list[IssuerManifest] | None = None,
+    *,
+    previously_seen_checkpoint: DirectoryCheckpoint | None = None,
+    candidate_checkpoint: DirectoryCheckpoint | None = None,
+) -> DirectoryImportPreview:
+    """Preview an issuer directory import without mutating ``current_directory``."""
+    org = _require_hex("organizationIdentityHash", current_directory.organization_identity_hash)
+    prev_count = len(current_directory.events)
+    prev_head = current_directory.tree_head()
+    prev_mh = (
+        manifest_hash(current_directory.current_manifest)
+        if current_directory.current_manifest is not None
+        else None
+    )
+
+    errors: list[str] = []
+    rollback_errors: list[str] = []
+    consistency_errors: list[str] = []
+
+    manifests_list = list(proposed_manifests) if proposed_manifests is not None else []
+    events_list = list(proposed_events)
+
+    extends_previous = len(events_list) >= prev_count
+    if not extends_previous:
+        errors.append("proposed event log shrinks active directory history (rollback)")
+    else:
+        for idx in range(prev_count):
+            if event_hash(events_list[idx]) != event_hash(current_directory.events[idx]):
+                extends_previous = False
+                errors.append(f"proposed event at sequence {idx} diverges from active directory")
+                break
+
+    sandbox_dir: IssuerDirectory | None = None
+    manifest_lineage_valid = True
+    try:
+        sandbox_dir = rebuild_directory(org, events_list, manifests_list)
+    except TransparencyError as exc:
+        errors.append(str(exc))
+
+    if sandbox_dir is not None and prev_mh is not None:
+        if prev_mh not in sandbox_dir.manifests_by_hash:
+            manifest_lineage_valid = False
+            errors.append("proposed manifest chain omits current active manifest")
+
+    if previously_seen_checkpoint is not None and candidate_checkpoint is not None:
+        rollback_errors.extend(detect_rollback(previously_seen_checkpoint, candidate_checkpoint))
+        errors.extend(rollback_errors)
+
+    candidate_consistent = True
+    if candidate_checkpoint is not None:
+        if sandbox_dir is None:
+            candidate_consistent = False
+        else:
+            consistency_errors.extend(
+                verify_checkpoint_consistency(sandbox_dir, candidate_checkpoint)
+            )
+            if consistency_errors:
+                candidate_consistent = False
+                errors.extend(consistency_errors)
+
+    prop_head = sandbox_dir.tree_head() if sandbox_dir is not None else compute_tree_head([])
+    prop_mh = (
+        manifest_hash(sandbox_dir.current_manifest)
+        if sandbox_dir is not None and sandbox_dir.current_manifest is not None
+        else None
+    )
+    key_diffs = (
+        _compute_key_lifecycle_diffs(current_directory.keys, sandbox_dir.keys)
+        if sandbox_dir is not None
+        else ()
+    )
+    appended_count = max(0, len(events_list) - prev_count) if extends_previous else 0
+
+    lineage = CheckpointLineageReport(
+        previous_event_count=prev_count,
+        proposed_event_count=len(events_list),
+        appended_event_count=appended_count,
+        previous_tree_head_hash=prev_head,
+        proposed_tree_head_hash=prop_head,
+        previous_manifest_hash=prev_mh,
+        proposed_manifest_hash=prop_mh,
+        extends_previous_log=extends_previous,
+        manifest_lineage_valid=manifest_lineage_valid,
+        candidate_checkpoint_consistent=candidate_consistent,
+        rollback_errors=tuple(rollback_errors),
+        consistency_errors=tuple(consistency_errors),
+    )
+
+    digest_input = {
+        "checkpointLineage": lineage.to_dict(),
+        "errors": errors,
+        "keyLifecycleChanges": [d.to_dict() for d in key_diffs],
+        "organizationIdentityHash": org,
+        "schema": DIRECTORY_IMPORT_PREVIEW_SCHEMA,
+    }
+    digest = _sha256_hex(_canonical_json(digest_input))
+
+    return DirectoryImportPreview(
+        organization_identity_hash=org,
+        accepted_ready=len(errors) == 0,
+        errors=tuple(errors),
+        key_lifecycle_changes=key_diffs,
+        checkpoint_lineage=lineage,
+        preview_digest=digest,
+        _staged_events=tuple(events_list) if len(errors) == 0 else (),
+        _staged_manifests=tuple(manifests_list) if len(errors) == 0 else (),
+    )
+
+
+def accept_directory_import(
+    current_directory: IssuerDirectory,
+    preview: DirectoryImportPreview,
+) -> IssuerDirectory:
+    """Install a previously verified ``DirectoryImportPreview`` into ``current_directory``."""
+    if not isinstance(preview, DirectoryImportPreview):
+        raise TransparencyError("preview must be a DirectoryImportPreview")
+    if not preview.accepted_ready or preview.errors:
+        raise TransparencyError(
+            "cannot accept rejected directory import preview: " + "; ".join(preview.errors)
+        )
+    if current_directory.organization_identity_hash != preview.organization_identity_hash:
+        raise TransparencyError("directory organizationIdentityHash mismatch against preview")
+    current_mh = (
+        manifest_hash(current_directory.current_manifest)
+        if current_directory.current_manifest is not None
+        else None
+    )
+    if (
+        len(current_directory.events) != preview.checkpoint_lineage.previous_event_count
+        or current_directory.tree_head() != preview.checkpoint_lineage.previous_tree_head_hash
+        or current_mh != preview.checkpoint_lineage.previous_manifest_hash
+    ):
+        raise TransparencyError(
+            "active directory state changed after preview was generated; re-run preview"
+        )
+
+    validated = rebuild_directory(
+        preview.organization_identity_hash,
+        list(preview._staged_events),
+        list(preview._staged_manifests),
+    )
+    current_directory.events = list(validated.events)
+    current_directory.keys = dict(validated.keys)
+    current_directory.manifests_by_hash = dict(validated.manifests_by_hash)
+    current_directory.current_manifest = validated.current_manifest
+    return current_directory
+

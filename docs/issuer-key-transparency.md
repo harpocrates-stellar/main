@@ -112,3 +112,12 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Directory import preview
+
+Before installing new lifecycle events or manifests into an active `IssuerDirectory`, operators can run `preview_directory_import(current_directory, proposed_events, proposed_manifests, previously_seen_checkpoint=..., candidate_checkpoint=...)`:
+
+- **Zero trust-state mutation during preview:** Rebuilds and validates the candidate directory inside an isolated sandbox, leaving `current_directory` completely unchanged.
+- **Lifecycle diff & checkpoint lineage:** Reports per-key transitions (`added`, `rotated`, `compromised`, `retired`, `updated`), prefix extension continuity, manifest predecessor lineage, and checkpoint rollback/consistency results (`schema: harpocrates-issuer-directory-import-preview/v1`).
+- **Explicit acceptance gate:** `accept_directory_import(current_directory, preview)` installs the staged state only when `preview.accepted_ready` is `True` and `current_directory` still matches the previewed baseline head.
+
