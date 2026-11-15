@@ -601,6 +601,37 @@ def key_was_compromised_at(directory: IssuerDirectory, key_id: str, at: int) -> 
     return key.valid_until is not None and at >= key.valid_until
 
 
+def evaluate_issuer_signing_standing(
+    directory: IssuerDirectory,
+    key_id: str,
+    signature_timestamp: int,
+    *,
+    directory_cache: DirectoryCache | None = None,
+    high_assurance: bool = False,
+    reject_compromised: bool = True,
+    now: int | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Read-only issuer key & checkpoint freshness evaluation without mutating state."""
+    reasons: list[str] = []
+    if not key_valid_for_historical_signature(directory, key_id, signature_timestamp):
+        reasons.append("invalid_issuer_key_at_signature_time")
+    key = directory.keys.get(key_id)
+    if reject_compromised and key is not None and key.status == KeyStatus.COMPROMISED:
+        reasons.append("compromised_issuer_key")
+    if directory_cache is not None:
+        try:
+            require_fresh_checkpoint(
+                directory_cache,
+                high_assurance=high_assurance,
+                now=now,
+            )
+        except FreshnessError:
+            reasons.append("stale_directory_checkpoint")
+    elif high_assurance:
+        reasons.append("missing_directory_checkpoint_cache")
+    return (len(reasons) == 0, tuple(reasons))
+
+
 def create_activation_event(
     organization_identity_hash: str,
     key_id: str,

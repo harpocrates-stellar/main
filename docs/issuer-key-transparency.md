@@ -112,3 +112,12 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Trust-policy simulation for captured evidence
+
+Operators can preview the effect of proposed capture-attestation and issuer-key policy changes before rolling them out using `EvidenceTrustPolicy`, `ActiveTrustPolicyRegistry`, `SyntheticEvidenceSample`, and `simulate_trust_policy_transition` (`backend/capture_attestation.py`, backed by read-only `evaluate_issuer_signing_standing` in `backend/issuer_key_transparency.py`):
+
+- **Side-effect-free evaluation:** Simulations compare a baseline policy version and a candidate policy version across up to `MAX_SIMULATION_SAMPLES` (`256`) synthetic samples while leaving `ActiveTrustPolicyRegistry.active_policy`, `IssuerDirectory`, and `DirectoryCache` untouched (`activePolicyMutated: false`).
+- **Explicit outcome transitions:** Each sample reports `unchanged_accepted`, `unchanged_rejected`, `newly_accepted`, `newly_rejected`, or `rejection_reasons_changed` along with `addedReasons` and `removedReasons`.
+- **Privacy boundary:** Serialized reports (`harpocrates-trust-policy-simulation/v1`) emit only `sampleId`, `attestationHash`, policy hashes/versions, and reason codes — never raw capture nonces, device commitments, build fingerprints, or media payloads.
+
