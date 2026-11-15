@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Redaction-Policy Comparison Tool
+
+`compare_redaction_policies()` (and `ExportManager.compare_redaction_policies()`)
+evaluates two `RedactionPolicySpec` revisions against runtime-validated synthetic
+analytics records (`_synthetic=True` or `dataset_origin="synthetic"`). Production
+or unmarked records, binary payloads, secret seeds, PEM keys, and database DSNs
+are rejected fail-closed with `SyntheticFixtureError`. Comparison reports list
+`newly_removed_fields` and `newly_exposed_fields` (field paths and transitions
+only, never raw field values), and `ConsentManager.requires_reconsent_for_policy_diff()`
+flags any candidate policy with `has_exposure_regression == True`.
+
 ## Test
 
 ```powershell

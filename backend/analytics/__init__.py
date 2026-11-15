@@ -127,6 +127,13 @@ try:
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        FieldPolicyTransition,
+        RedactionPolicyComparisonReport,
+        RedactionPolicySpec,
+        SyntheticFixtureError,
+        build_default_synthetic_analytics_records,
+        compare_redaction_policies,
+        validate_synthetic_analytics_record,
     )
 except Exception:
     pass
@@ -226,6 +233,13 @@ __all__ = [
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "FieldPolicyTransition",
+    "RedactionPolicyComparisonReport",
+    "RedactionPolicySpec",
+    "SyntheticFixtureError",
+    "build_default_synthetic_analytics_records",
+    "compare_redaction_policies",
+    "validate_synthetic_analytics_record",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",

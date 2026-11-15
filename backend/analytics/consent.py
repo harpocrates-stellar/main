@@ -261,3 +261,12 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def requires_reconsent_for_policy_diff(self, comparison_report: object) -> bool:
+        """Return True when a candidate redaction policy newly exposes any field."""
+        newly_exposed = getattr(comparison_report, "newly_exposed_fields", None)
+        if newly_exposed is None and isinstance(comparison_report, dict):
+            newly_exposed = comparison_report.get("newly_exposed_fields")
+        if newly_exposed is None:
+            raise ValueError("invalid redaction policy comparison report")
+        return len(list(newly_exposed)) > 0
