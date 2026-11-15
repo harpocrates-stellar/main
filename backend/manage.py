@@ -168,6 +168,24 @@ def _cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     }
 
 
+def _cmd_evidence_consistency(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    import evidence_storage
+
+    report = evidence_storage.generate_consistency_report(
+        storage_dir=args.storage_dir,
+        max_samples=args.max_samples,
+    )
+    ok = bool(report["consistent"])
+    return (EXIT_OK if ok else EXIT_PROBLEMS), {
+        "command": "evidence-consistency",
+        "ok": ok,
+        "consistent": ok,
+        "counts": report["counts"],
+        "anomalies": report["anomalies"],
+        "samples_truncated": report["samples_truncated"],
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="manage.py",
@@ -207,6 +225,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum pending rows to reconcile (capped at 50)",
     )
     reconcile.set_defaults(handler=_cmd_reconcile)
+
+    consistency = sub.add_parser(
+        "evidence-consistency",
+        help="compare blob metadata, tenant references, and physical files without modifying state",
+    )
+    consistency.add_argument(
+        "--storage-dir",
+        default=None,
+        help="storage directory to inspect (default: HARPOCRATES_STORAGE_DIR)",
+    )
+    consistency.add_argument(
+        "--max-samples",
+        type=_positive_int,
+        default=50,
+        help="maximum redacted anomaly tags per category (capped at 500)",
+    )
+    consistency.set_defaults(handler=_cmd_evidence_consistency)
 
     return parser
 

@@ -182,4 +182,43 @@ def sweep_job_files(
     return purged_count
 
 
+def inspect_storage_files_readonly(
+    storage_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Read-only scan of physical files under `storage_dir` without creating or mutating paths.
+
+    Returns resolved path mappings internally for `evidence_storage` reconciliation
+    without exposing paths in public report payloads.
+    """
+    raw_dir = (
+        Path(os.getenv("HARPOCRATES_STORAGE_DIR", default_storage_dir))
+        if storage_dir is None
+        else Path(storage_dir)
+    )
+    if not raw_dir.exists() or not raw_dir.is_dir():
+        return {
+            "directory_exists": False,
+            "files": {},
+        }
+
+    files: dict[str, int] = {}
+    for root, _dirs, filenames in os.walk(raw_dir, followlinks=False):
+        root_path = Path(root)
+        for name in filenames:
+            candidate = root_path / name
+            try:
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                stat_res = candidate.stat()
+                normalized = os.path.normcase(os.path.abspath(str(candidate)))
+                files[normalized] = int(stat_res.st_size)
+            except OSError:
+                continue
+
+    return {
+        "directory_exists": True,
+        "files": files,
+    }
+
+
 purge_stale_job_files = sweep_job_files
