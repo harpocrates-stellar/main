@@ -192,8 +192,18 @@ python manage.py retention --dry-run        # count expired, non-held proof even
 python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
 python manage.py retention --run --batch-size 500
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py rebuild-dry-run --events-file events.json --contract-id <CONTRACT_ID>
 python manage.py --json drift               # machine-readable JSON output
 ```
+
+`rebuild-dry-run` reconstructs an isolated temporary projection from synthetic or
+replayed Soroban contract events (`reconstruct_temporary_projection` /
+`dry_run_index_rebuild` in `chain_indexer.py`), computes a domain-separated
+SHA-256 fingerprint (`harpocrates:indexer-projection:v1`) over canonically
+ordered `(tx_hash, event_index)` entries, and reports `missing_in_live`,
+`extra_in_live`, and `mismatched` records without modifying `proof_events`,
+`indexer_state`, metrics, or webhook queues. It exits `0` when `in_sync` is
+`true` and `1` when projection differences are detected.
 
 Exit codes:
 

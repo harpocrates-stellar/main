@@ -6,6 +6,7 @@ Usage (run from ``backend/`` with ``DATABASE_URL`` set)::
     python manage.py [--json] drift
     python manage.py [--json] retention (--dry-run | --run) [--batch-size N]
     python manage.py [--json] reconcile [--limit N]
+    python manage.py [--json] rebuild-dry-run --events-file PATH [--contract-id ID]
 
 Exit codes:
 
@@ -168,6 +169,29 @@ def _cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     }
 
 
+def _cmd_rebuild_dry_run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    import chain_indexer
+
+    with open(args.events_file, "r", encoding="utf-8") as handle:
+        loaded = json.load(handle)
+
+    if isinstance(loaded, dict) and "events" in loaded:
+        events = loaded["events"]
+    else:
+        events = loaded
+
+    report = chain_indexer.dry_run_index_rebuild(
+        events,
+        contract_id=args.contract_id,
+    )
+    in_sync = bool(report.get("in_sync", False))
+    return (EXIT_OK if in_sync else EXIT_PROBLEMS), {
+        "command": "rebuild-dry-run",
+        "ok": in_sync,
+        **report,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="manage.py",
@@ -207,6 +231,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum pending rows to reconcile (capped at 50)",
     )
     reconcile.set_defaults(handler=_cmd_reconcile)
+
+    rebuild_dry_run = sub.add_parser(
+        "rebuild-dry-run",
+        help="reconstruct temporary event projection and diff against live index without mutating state",
+    )
+    rebuild_dry_run.add_argument(
+        "--events-file",
+        required=True,
+        help="path to JSON file containing synthetic or replayed Soroban events",
+    )
+    rebuild_dry_run.add_argument(
+        "--contract-id",
+        default=None,
+        help="optional contract ID filter and default event contract ID",
+    )
+    rebuild_dry_run.set_defaults(handler=_cmd_rebuild_dry_run)
 
     return parser
 

@@ -17,6 +17,7 @@ bounds page size, and backs off exponentially on RPC errors.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ from typing import Any
 from db import (
     get_indexer_cursor,
     insert_indexed_proof_event,
+    list_indexed_proof_events_snapshot,
     save_indexer_cursor,
 )
 from fetch_external import safe_urlopen
@@ -54,6 +56,8 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+INDEXER_MAX_DRY_RUN_EVENTS = 10000
+PROJECTION_FINGERPRINT_DOMAIN = "harpocrates:indexer-projection:v1"
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +403,277 @@ def process_events_batch(
             summary["duplicates"] += 1
 
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Index Rebuild Dry-Run & Deterministic Projection Fingerprints
+# ---------------------------------------------------------------------------
+
+_PROJECTION_COMPARE_FIELDS = (
+    "event_type",
+    "proof_id",
+    "contract_id",
+    "tx_status",
+    "metadata",
+)
+
+
+def _canonicalize_json_value(value: Any) -> Any:
+    """Normalize nested dicts/lists into deterministic JSON-compatible structures."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return value.hex().lower()
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(k): _canonicalize_json_value(v)
+            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    return str(value)
+
+
+def canonical_projection_entry(record: dict[str, Any]) -> dict[str, Any]:
+    """Extract canonical, insertion-order-independent projection attributes."""
+    if not isinstance(record, dict):
+        raise ValueError("projection record must be a mapping")
+
+    raw_tx_hash = record.get("tx_hash")
+    if not raw_tx_hash or not isinstance(raw_tx_hash, str):
+        raise ValueError("projection record requires a non-empty tx_hash string")
+    tx_hash = _normalize_hex(raw_tx_hash) or raw_tx_hash.strip().lower()
+
+    raw_event_index = record.get("event_index")
+    if raw_event_index is None or isinstance(raw_event_index, bool):
+        raise ValueError("projection record requires an integer event_index")
+    try:
+        event_index = int(raw_event_index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("projection record requires an integer event_index") from exc
+    if event_index < 0:
+        raise ValueError("projection record event_index must be non-negative")
+
+    raw_proof_id = record.get("proof_id")
+    proof_id = _normalize_hex(raw_proof_id) if raw_proof_id is not None else None
+
+    raw_contract_id = record.get("contract_id")
+    contract_id = str(raw_contract_id).strip() if raw_contract_id else None
+
+    raw_metadata = record.get("metadata")
+    metadata = (
+        _canonicalize_json_value(raw_metadata)
+        if isinstance(raw_metadata, dict)
+        else None
+    )
+
+    return {
+        "tx_hash": tx_hash,
+        "event_index": event_index,
+        "event_type": str(record.get("event_type") or ""),
+        "proof_id": proof_id,
+        "contract_id": contract_id,
+        "tx_status": str(record.get("tx_status") or "confirmed"),
+        "metadata": metadata,
+    }
+
+
+def compute_projection_fingerprint(records: list[dict[str, Any]]) -> str:
+    """Compute a deterministic domain-separated SHA-256 fingerprint for a projection.
+
+    Entries are deduplicated on ``(tx_hash, event_index)`` (first-seen wins,
+    matching idempotent live ingestion) and sorted canonically by
+    ``(tx_hash, event_index)``. Volatile database fields such as ``id`` and
+    ``created_at`` are excluded.
+    """
+    if not isinstance(records, (list, tuple)):
+        raise ValueError("records must be a sequence of mappings")
+
+    by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    for record in records:
+        entry = canonical_projection_entry(record)
+        key = (entry["tx_hash"], entry["event_index"])
+        if key not in by_key:
+            by_key[key] = entry
+
+    ordered = [by_key[key] for key in sorted(by_key.keys())]
+    serialized = json.dumps(
+        ordered,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    material = f"{PROJECTION_FINGERPRINT_DOMAIN}\x00{serialized}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def reconstruct_temporary_projection(
+    events: list[dict[str, Any]],
+    *,
+    contract_id: str | None = None,
+) -> dict[str, Any]:
+    """Reconstruct an isolated temporary projection from synthetic or replayed events.
+
+    Performs zero database writes, zero cursor updates, zero metrics mutations,
+    and zero webhook queueing.
+    """
+    if not isinstance(events, (list, tuple)):
+        raise ValueError("events must be a list of Soroban event objects")
+    if len(events) > INDEXER_MAX_DRY_RUN_EVENTS:
+        raise ValueError(
+            f"events exceeds maximum dry-run batch size ({INDEXER_MAX_DRY_RUN_EVENTS})"
+        )
+
+    temp_by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    summary = {
+        "scanned": 0,
+        "projected": 0,
+        "skipped": 0,
+        "duplicates": 0,
+    }
+
+    for raw in events:
+        summary["scanned"] += 1
+        decoded = classify_and_decode_event(raw, default_contract_id=contract_id)
+        if decoded is None:
+            summary["skipped"] += 1
+            continue
+
+        entry = canonical_projection_entry(
+            {
+                "event_type": decoded.event_type,
+                "proof_id": decoded.proof_id,
+                "tx_hash": decoded.tx_hash,
+                "event_index": decoded.event_index,
+                "contract_id": decoded.contract_id,
+                "tx_status": decoded.tx_status,
+                "metadata": decoded.metadata,
+            }
+        )
+        key = (entry["tx_hash"], entry["event_index"])
+        if key in temp_by_key:
+            summary["duplicates"] += 1
+            continue
+
+        temp_by_key[key] = entry
+        summary["projected"] += 1
+
+    ordered_records = [temp_by_key[key] for key in sorted(temp_by_key.keys())]
+    return {
+        "summary": summary,
+        "records": ordered_records,
+        "fingerprint": compute_projection_fingerprint(ordered_records),
+    }
+
+
+def dry_run_index_rebuild(
+    events: list[dict[str, Any]],
+    *,
+    live_records: list[dict[str, Any]] | None = None,
+    contract_id: str | None = None,
+) -> dict[str, Any]:
+    """Rebuild a temporary projection from *events* and diff against the live index.
+
+    Never mutates ``proof_events``, ``indexer_state``, metrics, or webhook queues.
+    """
+    rebuilt = reconstruct_temporary_projection(events, contract_id=contract_id)
+    rebuilt_records: list[dict[str, Any]] = rebuilt["records"]
+    rebuilt_fingerprint: str = rebuilt["fingerprint"]
+
+    snapshot = (
+        list_indexed_proof_events_snapshot(
+            contract_id=contract_id,
+            limit=INDEXER_MAX_DRY_RUN_EVENTS,
+        )
+        if live_records is None
+        else live_records
+    )
+    if not isinstance(snapshot, (list, tuple)):
+        raise ValueError("live_records must be a list of proof-event mappings")
+
+    live_by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in snapshot:
+        entry = canonical_projection_entry(row)
+        key = (entry["tx_hash"], entry["event_index"])
+        if key not in live_by_key:
+            live_by_key[key] = entry
+
+    rebuilt_by_key = {
+        (entry["tx_hash"], entry["event_index"]): entry for entry in rebuilt_records
+    }
+    live_ordered = [live_by_key[key] for key in sorted(live_by_key.keys())]
+    live_fingerprint = compute_projection_fingerprint(live_ordered)
+
+    all_keys = sorted(set(rebuilt_by_key.keys()) | set(live_by_key.keys()))
+    missing_in_live: list[dict[str, Any]] = []
+    extra_in_live: list[dict[str, Any]] = []
+    mismatched: list[dict[str, Any]] = []
+
+    for key in all_keys:
+        in_rebuilt = key in rebuilt_by_key
+        in_live = key in live_by_key
+        if in_rebuilt and not in_live:
+            missing_in_live.append(
+                {
+                    "tx_hash": key[0],
+                    "event_index": key[1],
+                    "rebuilt": rebuilt_by_key[key],
+                }
+            )
+        elif in_live and not in_rebuilt:
+            extra_in_live.append(
+                {
+                    "tx_hash": key[0],
+                    "event_index": key[1],
+                    "live": live_by_key[key],
+                }
+            )
+        else:
+            rebuilt_entry = rebuilt_by_key[key]
+            live_entry = live_by_key[key]
+            differing_fields = [
+                field
+                for field in _PROJECTION_COMPARE_FIELDS
+                if rebuilt_entry.get(field) != live_entry.get(field)
+            ]
+            if differing_fields:
+                mismatched.append(
+                    {
+                        "tx_hash": key[0],
+                        "event_index": key[1],
+                        "differing_fields": differing_fields,
+                        "live": live_entry,
+                        "rebuilt": rebuilt_entry,
+                    }
+                )
+
+    in_sync = (
+        rebuilt_fingerprint == live_fingerprint
+        and not missing_in_live
+        and not extra_in_live
+        and not mismatched
+    )
+
+    return {
+        "dry_run": True,
+        "in_sync": in_sync,
+        "domain": PROJECTION_FINGERPRINT_DOMAIN,
+        "rebuilt_fingerprint": rebuilt_fingerprint,
+        "live_fingerprint": live_fingerprint,
+        "summary": {
+            **rebuilt["summary"],
+            "live_count": len(live_by_key),
+            "rebuilt_count": len(rebuilt_by_key),
+            "missing_in_live_count": len(missing_in_live),
+            "extra_in_live_count": len(extra_in_live),
+            "mismatched_count": len(mismatched),
+        },
+        "differences": {
+            "missing_in_live": missing_in_live,
+            "extra_in_live": extra_in_live,
+            "mismatched": mismatched,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
