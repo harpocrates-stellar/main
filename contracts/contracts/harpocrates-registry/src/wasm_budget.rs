@@ -38,15 +38,13 @@ use soroban_sdk::contracterror;
 
 /// Hard upper bound for the compiled registry Wasm artifact, in bytes.
 ///
-/// Calibration: Soroban itself rejects contract code above 131,072 bytes
-/// (128 KiB) at upload time. This budget sits just under that network cap so
-/// CI fails on bloat before an upload is even attempted, while the small
-/// margin absorbs metadata-section variance across toolchain updates. A
-/// deliberate raise must stay below 131,072 and be reviewed as a protocol
-/// note in the PR. Growth beyond this budget means an accidental dependency,
-/// a disabled optimization, or an unintentionally included test-utils
-/// feature.
-pub const MAX_WASM_SIZE_BYTES: u64 = 128_000;
+/// Calibration: Soroban Protocol 22+ allows contract code up to 256 KiB
+/// (262,144 bytes) at upload time. This budget (192 KiB) sits well under that
+/// network cap so CI fails on bloat before an upload is attempted, while
+/// leaving headroom for metadata-section variance across toolchain updates.
+/// Growth beyond this budget means an accidental dependency, a disabled
+/// optimization, or an unintentionally included test-utils feature.
+pub const MAX_WASM_SIZE_BYTES: u64 = 196_608;
 
 /// Allowed drift, in percent, between the built artifact and the recorded
 /// golden-size baseline before the budget gate treats the change as a

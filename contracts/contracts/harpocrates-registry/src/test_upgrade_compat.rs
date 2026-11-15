@@ -125,7 +125,7 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
     // Getter remains compatible (treats missing as V1).
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V2 as u32
+        SchemaVersion::V1 as u32
     );
 
     let before = schema_upgrade_event_count(&env, &contract_id);
@@ -220,7 +220,8 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
     client.upgrade_storage(&admin);
     let end = schema_upgrade_event_count(&env, &contract_id);
 
-    assert_eq!(end, mid);
+    assert_eq!(mid, 1);
+    assert_eq!(end, 0);
     assert_eq!(
         client.get_storage_schema_version(),
         SchemaVersion::V2 as u32
@@ -228,14 +229,11 @@ fn upgrade_compat_repeated_legacy_stamp_stays_idempotent() {
 }
 
 const SECOND_WASM: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7e,
-    0x03, 0x02, 0x01, 0x00,
-    0x07, 0x08, 0x01, 0x04, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x00,
-    0x0a, 0x08, 0x01, 0x06, 0x00, 0x42, 0x8e, 0xdc, 0x2d, 0x0b,
-    0x00, 0x1e, 0x11, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x61, 0x63, 0x74, 0x65,
-    0x6e, 0x76, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7e, 0x03,
+    0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x00, 0x0a, 0x08, 0x01,
+    0x06, 0x00, 0x42, 0x8e, 0xdc, 0x2d, 0x0b, 0x00, 0x1e, 0x11, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x61,
+    0x63, 0x74, 0x65, 0x6e, 0x76, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00,
 ];
 
 fn advance_time(env: &Env, secs: u64) {
@@ -276,13 +274,19 @@ fn upgrade_compat_wasm_upgrade_preserves_state() {
     let premature_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.execute_timelocked_proposal(&outsider, &proposal_id);
     }));
-    assert!(premature_result.is_err(), "cannot execute upgrade before timelock delay");
+    assert!(
+        premature_result.is_err(),
+        "cannot execute upgrade before timelock delay"
+    );
 
     // Acceptance criterion: Disallow emergency_execute_timelock for upgrades
     let emergency_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.emergency_execute_timelock(&admin, &proposal_id);
     }));
-    assert!(emergency_result.is_err(), "emergency execution of UpgradeWasm must panic");
+    assert!(
+        emergency_result.is_err(),
+        "emergency execution of UpgradeWasm must panic"
+    );
 
     // Advance time past minimum delay
     advance_time(&env, DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
@@ -290,38 +294,52 @@ fn upgrade_compat_wasm_upgrade_preserves_state() {
     // Execute proposal after timelock delay
     client.execute_timelocked_proposal(&outsider, &proposal_id);
 
-    let proposal = client.get_timelock_proposal(&proposal_id).expect("proposal must exist");
-    assert!(proposal.executed);
-
-    // Verify upgrade event emitted
+    // Verify upgrade event emitted before subsequent calls clear per-invocation events
     assert!(
         event_test_utils::has_event(&env, &["contract", "upgrade"]),
         "ContractUpgraded event must be emitted"
     );
 
-    // Verify current wasm hash stored
-    assert_eq!(client.get_current_wasm_hash(), Some(new_wasm_hash));
+    // SECOND_WASM is a minimal stub bytecode (exports only `call`), so verify
+    // surviving persistent contract state directly in the contract storage namespace.
+    env.as_contract(&contract_id, || {
+        let proposal: TimelockProposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal must exist");
+        assert!(proposal.executed);
 
-    // Acceptance criterion: Storage survives the upgrade in test_upgrade_compat.rs
-    let after_proof = client
-        .get_proof(&proof_id)
-        .expect("proof must survive wasm upgrade");
-    assert_eq!(after_proof.video_hash, video);
-    assert_eq!(after_proof.metadata_hash, meta);
-    assert_eq!(after_proof.tier, TIER_CONSISTENT_SOURCE);
-    assert_eq!(after_proof.status, STATUS_REGISTERED);
+        let stored_wasm_hash: Option<BytesN<32>> =
+            env.storage().persistent().get(&DataKey::WasmHash);
+        assert_eq!(stored_wasm_hash, Some(new_wasm_hash));
 
-    assert_eq!(
-        client.get_verifier(),
-        Some(verifier_id),
-        "verifier pointer must survive wasm upgrade"
-    );
-    assert_eq!(
-        client.get_storage_schema_version(),
-        SchemaVersion::V2 as u32,
-        "schema version must survive wasm upgrade"
-    );
-    assert!(client.is_admin(&admin), "admin must survive wasm upgrade");
+        // Acceptance criterion: Storage survives the upgrade in test_upgrade_compat.rs
+        let after_proof: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proof(proof_id))
+            .expect("proof must survive wasm upgrade");
+        assert_eq!(after_proof.video_hash, video);
+        assert_eq!(after_proof.metadata_hash, meta);
+        assert_eq!(after_proof.tier, TIER_CONSISTENT_SOURCE);
+        assert_eq!(after_proof.status, STATUS_REGISTERED);
+
+        let stored_verifier: Option<Address> = env.storage().persistent().get(&DataKey::Verifier);
+        assert_eq!(
+            stored_verifier,
+            Some(verifier_id),
+            "verifier pointer must survive wasm upgrade"
+        );
+        let stored_schema: Option<u32> = env.storage().persistent().get(&DataKey::SchemaVersion);
+        assert_eq!(
+            stored_schema,
+            Some(SchemaVersion::V2 as u32),
+            "schema version must survive wasm upgrade"
+        );
+        let stored_admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        assert_eq!(stored_admin, Some(admin), "admin must survive wasm upgrade");
+    });
 }
 
 #[test]
