@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { xdrToScVal, scValToNative, nativeToScVal } from '@stellar/stellar-sdk'
+import { Account, StrKey, xdrToScVal, scValToNative, nativeToScVal } from '@stellar/stellar-sdk'
 
 const simulateTransaction = vi.fn()
 const getAccount = vi.fn()
@@ -28,8 +28,8 @@ vi.mock('@stellar/freighter-api', async () => {
 
 const { getDispute, getOpenDisputeCount, requireReadSource } = await import('./harpocratesRegistry')
 
-const CONTRACT_ID = 'CCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-const SOURCE = 'GBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+const CONTRACT_ID = StrKey.encodeContract(new Uint8Array(32))
+const SOURCE = StrKey.encodeEd25519PublicKey(new Uint8Array(32))
 const DISPUTE_ID = '01'.repeat(32)
 const PROOF_ID = '02'.repeat(32)
 
@@ -44,10 +44,7 @@ function success(retval: unknown) {
 beforeEach(() => {
   simulateTransaction.mockReset()
   getAccount.mockReset()
-  getAccount.mockResolvedValue({
-    accountId: () => SOURCE,
-    sequenceNumber: () => '0',
-  })
+  getAccount.mockResolvedValue(new Account(SOURCE, '0'))
 })
 
 describe('getDispute', () => {

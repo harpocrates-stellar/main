@@ -1,5 +1,6 @@
 import schema from '../../zk/noir/circuit_input_schema_v1.json'
 import type { CompiledCircuit } from '@noir-lang/types'
+import type { ProofStage } from './proofStage'
 
 export const CIRCUIT_INPUT_SCHEMA_VERSION = 1
 export const BN254_FIELD_MODULUS = BigInt(schema.field_modulus)
@@ -11,6 +12,7 @@ export type SilentWitnessInput = {
   inputSchemaVersion?: number
   verifierScope?: string
   epoch?: number
+  onStage?: (stage: ProofStage) => void
 }
 
 export type CircuitInputErrorCode =
