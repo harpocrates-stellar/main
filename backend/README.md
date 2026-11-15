@@ -301,6 +301,7 @@ DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
 VERIFIER_CACHE_NEGATIVE_TTL_SECONDS=300.0
+EVIDENCE_EXPORT_MANIFEST_MAX_BLOBS=100
 ```
 
 Production notes:
@@ -341,6 +342,25 @@ Bump `CACHE_KEY_DOMAIN_TAG` (e.g. to `...:v2`) whenever the key field layout
 changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
+
+## Read-Only Encrypted Evidence Export Manifest
+
+`evidence_storage.build_encrypted_evidence_export_manifest()` produces a
+deterministic, strictly read-only export manifest (`harpocrates.encrypted-evidence-export.v1`)
+scoped to a single authorized tenant reference:
+
+- Each entry includes `contentDigest`, streamed `ciphertextSha256`, `ciphertextBytes`,
+  framing-derived `envelopeVersion` (`fernet-v1`, `fernet-v1-legacy-keywrap`,
+  `legacy-v0`, or `legacy-unversioned`), a one-way `wrappedKeyCommitment`, and
+  `authorizedReferences` (`tenantRefDigest`, `refCount`).
+- `storage.verify_export_manifest_digest()` verifies the domain-separated SHA-256
+  `manifestDigest` (`harpocrates:evidence-export-manifest:v1:`).
+- `EVIDENCE_EXPORT_MANIFEST_MAX_BLOBS` configures the default batch size (default
+  `100`, clamped to `1..1000`).
+- Manifest generation uses a non-locking `SELECT`-only cursor guard, rolls back
+  its read transaction on exit, never unwraps data encryption keys, and excludes
+  raw wrapped DEKs, master keys, filesystem paths, cross-tenant references, and
+  sensitive capture metadata.
 
 ## Test
 

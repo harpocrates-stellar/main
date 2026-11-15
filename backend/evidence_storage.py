@@ -1,11 +1,34 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import hashlib
 import logging
 import os
-import hashlib
-from typing import Tuple
+import re
+from typing import Any, Mapping, Sequence, Tuple
+
 from cryptography.fernet import Fernet
 import db
+from storage import (
+    EXPORT_MANIFEST_SCHEMA,
+    EXPORT_MAX_LIMIT_CAP,
+    EXPORT_MAX_LIMIT_DEFAULT,
+    ExportManifestEntry,
+    clamp_export_manifest_limit,
+    compute_export_manifest_digest,
+    compute_tenant_export_ref_digest,
+    detect_encryption_envelope_version,
+    read_only_ciphertext_summary,
+    verify_export_manifest_digest,
+)
 
 logger = logging.getLogger("harpocrates.evidence_storage")
+
+_WRAPPED_DEK_COMMITMENT_DOMAIN = "harpocrates:wrapped-dek-commitment:v1:"
+_FORBIDDEN_EXPORT_SQL_RE = re.compile(
+    r"\b(?:insert|update|delete|alter|drop|truncate|create|grant|revoke)\b"
+    r"|\bfor\s+(?:update|share|no\s+key\s+update|key\s+share)\b"
+)
 
 
 def generate_dek() -> Tuple[bytes, bytes]:
@@ -175,3 +198,212 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+
+class _ReadOnlyCursorGuard:
+    """Cursor wrapper enforcing non-locking ``SELECT`` queries for export manifests."""
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> "_ReadOnlyCursorGuard":
+        entered = self._cursor.__enter__() if hasattr(self._cursor, "__enter__") else self._cursor
+        return _ReadOnlyCursorGuard(entered)
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        if hasattr(self._cursor, "__exit__"):
+            return self._cursor.__exit__(exc_type, exc_val, exc_tb)
+        return None
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        normalized = " ".join(str(sql).lower().split())
+        if not normalized.startswith("select ") or _FORBIDDEN_EXPORT_SQL_RE.search(normalized):
+            raise RuntimeError("export manifest cursor is strictly read-only")
+        return self._cursor.execute(sql, params)
+
+    def fetchone(self) -> Any:
+        return self._cursor.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        return list(self._cursor.fetchall())
+
+
+def _compute_wrapped_dek_commitment(wrapped_dek_raw: str | bytes | None) -> str | None:
+    if wrapped_dek_raw is None:
+        return None
+    raw_bytes = (
+        wrapped_dek_raw.encode("utf-8")
+        if isinstance(wrapped_dek_raw, str)
+        else bytes(wrapped_dek_raw)
+    )
+    if not raw_bytes:
+        return None
+    return hashlib.sha256(
+        _WRAPPED_DEK_COMMITMENT_DOMAIN.encode("utf-8") + raw_bytes
+    ).hexdigest()
+
+
+def build_encrypted_evidence_export_manifest(
+    authorized_tenant_id: str,
+    *,
+    content_hashes: Sequence[str] | None = None,
+    limit: object = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a strictly read-only encrypted evidence export manifest for one tenant.
+
+    Includes content digests, ciphertext SHA-256 digests and sizes, encryption
+    envelope versions, wrapped-key commitments, and privacy-safe authorized
+    reference counts. Strictly excludes unwrapped DEKs, raw wrapped DEKs, master
+    keys, filesystem paths, filenames, cross-tenant references, and sensitive
+    media metadata.
+    """
+    tenant_ref_digest = compute_tenant_export_ref_digest(authorized_tenant_id)
+    cleaned_tenant_id = authorized_tenant_id.strip()
+    clamped_limit = clamp_export_manifest_limit(limit)
+
+    requested_hashes: list[str] | None = None
+    if content_hashes is not None:
+        if isinstance(content_hashes, (str, bytes)):
+            raise ValueError("content_hashes must be a sequence of digest strings")
+        deduped: set[str] = set()
+        for item in content_hashes:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("content_hashes entries must be non-empty digest strings")
+            deduped.add(item.strip())
+        requested_hashes = sorted(deduped)
+
+    ts = now if now is not None else datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    generated_at = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    if requested_hashes is not None and len(requested_hashes) == 0:
+        manifest_digest = compute_export_manifest_digest(
+            schema_version=EXPORT_MANIFEST_SCHEMA,
+            tenant_ref_digest=tenant_ref_digest,
+            entries=[],
+        )
+        return {
+            "ok": True,
+            "readOnly": True,
+            "schema": EXPORT_MANIFEST_SCHEMA,
+            "generatedAt": generated_at,
+            "tenantRefDigest": tenant_ref_digest,
+            "entryCount": 0,
+            "limitApplied": clamped_limit,
+            "entries": [],
+            "manifestDigest": manifest_digest,
+        }
+
+    with db.get_connection() as conn:
+        try:
+            with _ReadOnlyCursorGuard(conn.cursor()) as cursor:
+                if requested_hashes is None:
+                    cursor.execute(
+                        """
+                        select b.content_hash, b.encrypted_dek, b.size_bytes, b.storage_path, r.ref_count
+                        from blobs b
+                        join tenant_blob_refs r on r.content_hash = b.content_hash
+                        where r.tenant_id = %s and r.ref_count > 0
+                        order by b.content_hash asc
+                        limit %s
+                        """,
+                        (cleaned_tenant_id, clamped_limit),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        select b.content_hash, b.encrypted_dek, b.size_bytes, b.storage_path, r.ref_count
+                        from blobs b
+                        join tenant_blob_refs r on r.content_hash = b.content_hash
+                        where r.tenant_id = %s and r.ref_count > 0 and b.content_hash = any(%s)
+                        order by b.content_hash asc
+                        limit %s
+                        """,
+                        (cleaned_tenant_id, requested_hashes, clamped_limit),
+                    )
+                rows = cursor.fetchall()
+        finally:
+            if hasattr(conn, "rollback"):
+                conn.rollback()
+
+    manifest_entries: list[ExportManifestEntry] = []
+    for row in rows:
+        explicit_envelope_version: str | None = None
+        if isinstance(row, Mapping):
+            if "tenant_id" in row and str(row["tenant_id"]) != cleaned_tenant_id:
+                continue
+            content_digest = str(row["content_hash"])
+            encrypted_dek_raw = row.get("encrypted_dek")
+            storage_path = row.get("storage_path")
+            ref_count = int(row["ref_count"])
+            if isinstance(row.get("envelope_version"), str):
+                explicit_envelope_version = row["envelope_version"]
+        else:
+            content_digest = str(row[0])
+            encrypted_dek_raw = row[1]
+            storage_path = row[3]
+            ref_count = int(row[4])
+            if len(row) > 5 and isinstance(row[5], str):
+                explicit_envelope_version = row[5]
+
+        if ref_count <= 0:
+            continue
+        if not isinstance(storage_path, str) or not storage_path.strip():
+            raise FileNotFoundError("encrypted evidence blob path is missing")
+
+        try:
+            ciphertext_sha256, ciphertext_bytes, ciphertext_prefix = (
+                read_only_ciphertext_summary(storage_path)
+            )
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                "encrypted evidence blob is missing on disk"
+            ) from None
+        except OSError:
+            raise OSError(
+                "encrypted evidence blob could not be read"
+            ) from None
+
+        if ciphertext_bytes <= 0:
+            raise ValueError("encrypted evidence blob is empty or truncated")
+
+        envelope_version = detect_encryption_envelope_version(
+            ciphertext_prefix,
+            encrypted_dek_raw,
+            explicit_envelope_version,
+        )
+        wrapped_dek_digest = _compute_wrapped_dek_commitment(encrypted_dek_raw)
+        manifest_entries.append(
+            ExportManifestEntry(
+                content_digest=content_digest,
+                ciphertext_sha256=ciphertext_sha256,
+                ciphertext_bytes=ciphertext_bytes,
+                envelope_version=envelope_version,
+                wrapped_dek_digest=wrapped_dek_digest,
+                tenant_ref_digest=tenant_ref_digest,
+                ref_count=ref_count,
+            )
+        )
+
+    entries_dicts = [
+        entry.to_dict()
+        for entry in sorted(manifest_entries, key=lambda item: item.content_digest)
+    ]
+    manifest_digest = compute_export_manifest_digest(
+        schema_version=EXPORT_MANIFEST_SCHEMA,
+        tenant_ref_digest=tenant_ref_digest,
+        entries=entries_dicts,
+    )
+    return {
+        "ok": True,
+        "readOnly": True,
+        "schema": EXPORT_MANIFEST_SCHEMA,
+        "generatedAt": generated_at,
+        "tenantRefDigest": tenant_ref_digest,
+        "entryCount": len(entries_dicts),
+        "limitApplied": clamped_limit,
+        "entries": entries_dicts,
+        "manifestDigest": manifest_digest,
+    }

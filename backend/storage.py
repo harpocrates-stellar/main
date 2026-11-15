@@ -1,10 +1,16 @@
+import base64
+import binascii
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import hmac
+import json
 import logging
 import os
+from pathlib import Path
 import re
 import stat
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 LOGGER = logging.getLogger(__name__)
 
@@ -183,3 +189,172 @@ def sweep_job_files(
 
 
 purge_stale_job_files = sweep_job_files
+
+
+EXPORT_MANIFEST_SCHEMA = "harpocrates.encrypted-evidence-export.v1"
+EXPORT_MANIFEST_DOMAIN = "harpocrates:evidence-export-manifest:v1:"
+EXPORT_TENANT_REF_DOMAIN = "harpocrates:export-tenant-ref:v1:"
+EXPORT_MAX_LIMIT_DEFAULT = 100
+EXPORT_MAX_LIMIT_CAP = 1000
+_STREAM_HASH_CHUNK_BYTES = 65_536
+
+
+def clamp_export_manifest_limit(limit: object = None) -> int:
+    """Validate and clamp export manifest batch limit into ``1..1000``."""
+    if limit is None:
+        raw = os.getenv("EVIDENCE_EXPORT_MANIFEST_MAX_BLOBS")
+        if raw is None or not raw.strip():
+            return EXPORT_MAX_LIMIT_DEFAULT
+        limit = raw.strip()
+    if isinstance(limit, bool):
+        raise ValueError("limit must be a positive integer")
+    try:
+        parsed = int(limit)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("limit must be a positive integer")
+    return min(parsed, EXPORT_MAX_LIMIT_CAP)
+
+
+def compute_tenant_export_ref_digest(tenant_id: str) -> str:
+    """Derive a privacy-safe SHA-256 reference digest for an authorized tenant."""
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        raise ValueError("authorized_tenant_id must be a non-empty string")
+    return hashlib.sha256(
+        (EXPORT_TENANT_REF_DOMAIN + tenant_id.strip()).encode("utf-8")
+    ).hexdigest()
+
+
+def read_only_ciphertext_summary(path: Path | str) -> tuple[str, int, bytes]:
+    """Read ciphertext in bounded chunks without mutating filesystem state.
+
+    Returns ``(sha256_hex, byte_length, prefix_bytes)``.
+    """
+    target = Path(path)
+    hasher = hashlib.sha256()
+    total_bytes = 0
+    prefix = bytearray()
+    with target.open("rb") as handle:
+        while True:
+            chunk = handle.read(_STREAM_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            if len(prefix) < 128:
+                need = 128 - len(prefix)
+                prefix.extend(chunk[:need])
+            hasher.update(chunk)
+            total_bytes += len(chunk)
+    return hasher.hexdigest(), total_bytes, bytes(prefix)
+
+
+def _has_fernet_v1_prefix(raw_b64: bytes) -> bool:
+    if len(raw_b64) < 4:
+        return False
+    # Decode first 4 base64url chars (3 raw bytes) to inspect version byte 0x80 safely
+    head = raw_b64[:4]
+    try:
+        decoded = base64.urlsafe_b64decode(head)
+    except (binascii.Error, ValueError):
+        return False
+    return len(decoded) >= 1 and decoded[0] == 0x80
+
+
+def detect_encryption_envelope_version(
+    ciphertext_prefix: bytes,
+    wrapped_dek_raw: str | bytes | None,
+    explicit_version: str | None = None,
+) -> str:
+    """Determine encryption envelope version from public framing headers only."""
+    if isinstance(explicit_version, str) and explicit_version.strip():
+        cleaned = explicit_version.strip()
+        if len(cleaned) <= 64 and re.match(r"^[A-Za-z0-9_.-]+$", cleaned):
+            return cleaned
+
+    if wrapped_dek_raw is None or (
+        isinstance(wrapped_dek_raw, (str, bytes)) and len(wrapped_dek_raw) == 0
+    ):
+        return "legacy-unversioned"
+
+    dek_bytes = (
+        wrapped_dek_raw.encode("utf-8")
+        if isinstance(wrapped_dek_raw, str)
+        else bytes(wrapped_dek_raw)
+    )
+    ct_v1 = _has_fernet_v1_prefix(ciphertext_prefix)
+    dek_v1 = _has_fernet_v1_prefix(dek_bytes)
+    if ct_v1 and dek_v1:
+        return "fernet-v1"
+    if ct_v1:
+        return "fernet-v1-legacy-keywrap"
+    return "legacy-v0"
+
+
+@dataclass(frozen=True)
+class ExportManifestEntry:
+    """Allow-listed read-only export manifest entry excluding keys and media metadata."""
+
+    content_digest: str
+    ciphertext_sha256: str
+    ciphertext_bytes: int
+    envelope_version: str
+    wrapped_dek_digest: str | None
+    tenant_ref_digest: str
+    ref_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contentDigest": self.content_digest,
+            "ciphertextSha256": self.ciphertext_sha256,
+            "ciphertextBytes": self.ciphertext_bytes,
+            "envelopeVersion": self.envelope_version,
+            "wrappedKeyCommitment": self.wrapped_dek_digest,
+            "authorizedReferences": [
+                {
+                    "tenantRefDigest": self.tenant_ref_digest,
+                    "refCount": self.ref_count,
+                }
+            ],
+        }
+
+
+def compute_export_manifest_digest(
+    *,
+    schema_version: str,
+    tenant_ref_digest: str,
+    entries: list[dict[str, Any]],
+) -> str:
+    canonical = json.dumps(
+        {
+            "entries": entries,
+            "schema": schema_version,
+            "tenantRefDigest": tenant_ref_digest,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(EXPORT_MANIFEST_DOMAIN.encode("utf-8") + canonical).hexdigest()
+
+
+def verify_export_manifest_digest(manifest: Mapping[str, Any]) -> bool:
+    """Verify the deterministic SHA-256 commitment of a read-only export manifest."""
+    if not isinstance(manifest, Mapping) or manifest.get("readOnly") is not True:
+        return False
+    schema_version = str(manifest.get("schema") or "")
+    tenant_ref_digest = str(manifest.get("tenantRefDigest") or "")
+    entries = manifest.get("entries")
+    recorded = str(manifest.get("manifestDigest") or "")
+    if (
+        schema_version != EXPORT_MANIFEST_SCHEMA
+        or not tenant_ref_digest
+        or not isinstance(entries, list)
+        or len(recorded) != 64
+    ):
+        return False
+    expected = compute_export_manifest_digest(
+        schema_version=schema_version,
+        tenant_ref_digest=tenant_ref_digest,
+        entries=entries,
+    )
+    return hmac.compare_digest(recorded, expected)
