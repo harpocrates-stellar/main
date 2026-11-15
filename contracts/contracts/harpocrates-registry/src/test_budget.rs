@@ -60,7 +60,11 @@
 #[cfg(test)]
 use super::*;
 #[cfg(test)]
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Bytes, Env};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{Address as _, Ledger as _},
+    Address, Bytes, Env,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -199,7 +203,6 @@ const MAX_MEM_REGISTER_SOURCE_BATCH: u64 = 1_000_000;
 
 const MAX_CPU_VERIFY_SOURCE_BATCH_MAX_PROOF: u64 = 1_500_000;
 const MAX_MEM_VERIFY_SOURCE_BATCH_MAX_PROOF: u64 = 1_000_000;
-
 
 // ---------------------------------------------------------------------------
 // Budget baseline tests (measurement)
@@ -591,12 +594,7 @@ fn budget_get_statuses_by_video_baseline() {
     for i in 0..10u8 {
         let proof_id = b32(&env, 0xA0 + i);
         let video_hash = b32(&env, 0xB0 + i);
-        client.register_source(
-            &source,
-            &video_hash,
-            &b32(&env, 0xC0 + i),
-            &proof_id,
-        );
+        client.register_source(&source, &video_hash, &b32(&env, 0xC0 + i), &proof_id);
         video_hashes.push_back(video_hash);
     }
 
@@ -837,29 +835,26 @@ fn budget_list_lineage_children_full_page_baseline() {
     client.init(&admin);
     client.register_source(&actor, &b32(&env, 0x11), &b32(&env, 0x12), &parent);
 
-    // Register MAX_LINEAGE_CHILDREN_PAGE (50) children
+    // Seed MAX_LINEAGE_CHILDREN_PAGE (50) indexed children directly so we can
+    // benchmark full-page pagination independent of MAX_LINEAGE_FANOUT (4).
     let mut expected_children = SorobanVec::new(&env);
-    for i in 0..MAX_LINEAGE_CHILDREN_PAGE {
-        let mut child_arr = [0x20u8; 32];
-        child_arr[0] = (i & 0xFF) as u8;
-        child_arr[1] = ((i >> 8) & 0xFF) as u8;
-        let child = BytesN::from_array(&env, &child_arr);
+    env.as_contract(&contract_id, || {
+        for i in 0..MAX_LINEAGE_CHILDREN_PAGE {
+            let mut child_arr = [0x20u8; 32];
+            child_arr[0] = (i & 0xFF) as u8;
+            child_arr[1] = ((i >> 8) & 0xFF) as u8;
+            let child = BytesN::from_array(&env, &child_arr);
 
-        let mut manifest_arr = [0x30u8; 32];
-        manifest_arr[0] = (i & 0xFF) as u8;
-        manifest_arr[1] = ((i >> 8) & 0xFF) as u8;
-        let manifest = BytesN::from_array(&env, &manifest_arr);
-
-        client.register_lineage(
-            &actor,
-            &SorobanVec::from_array(&env, [parent.clone()]),
-            &manifest,
-            &Symbol::new(&env, "crop"),
-            &child,
-            &1,
+            env.storage()
+                .persistent()
+                .set(&DataKey::LineageChild(parent.clone(), i + 1), &child);
+            expected_children.push_back(child);
+        }
+        env.storage().persistent().set(
+            &DataKey::LineageChildSeq(parent.clone()),
+            &MAX_LINEAGE_CHILDREN_PAGE,
         );
-        expected_children.push_back(child);
-    }
+    });
 
     assert_eq!(
         client.get_lineage_children_count(&parent),
@@ -1241,7 +1236,12 @@ fn budget_supersede_dispute_worst_case() {
     client.register_source(&source, &b32(&env, 0x62), &b32(&env, 0x63), &spid);
 
     let correcting_proof = b32(&env, 0x64);
-    client.register_source(&source, &b32(&env, 0x65), &b32(&env, 0x66), &correcting_proof);
+    client.register_source(
+        &source,
+        &b32(&env, 0x65),
+        &b32(&env, 0x66),
+        &correcting_proof,
+    );
 
     let target_dispute_id = b32(&env, 0x6D);
 
@@ -1463,9 +1463,7 @@ fn budget_list_lineage_children_baseline() {
 
     assert_eq!(client.get_lineage_children_count(&parent), 1);
 
-    let (cpu, mem, page) = measure(&env, || {
-        client.list_lineage_children(&parent, &0, &1)
-    });
+    let (cpu, mem, page) = measure(&env, || client.list_lineage_children(&parent, &0, &1));
 
     assert_eq!(page.total, 1);
     assert_eq!(page.next_offset, 1);
@@ -1480,4 +1478,3 @@ fn budget_list_lineage_children_baseline() {
         "list_lineage_children baseline",
     );
 }
-
