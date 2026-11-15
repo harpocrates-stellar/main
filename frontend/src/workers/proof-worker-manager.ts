@@ -1,6 +1,31 @@
 import type { ProofWorkerMessage, ProofWorkerResponse, WorkerStatus } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
 import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import {
+  DEFAULT_DIAGNOSTIC_MAX_BYTES,
+  boundProofWorkerDiagnostic,
+  redactWitnessShapedDiagnosticText,
+  type BoundedProofWorkerDiagnostic,
+  type BoundedProofWorkerDiagnosticPayload,
+  type DiagnosticErrorCode,
+  type DiagnosticStageId,
+  type ProofWorkerDiagnosticInput,
+} from '../proofWorkerMemory';
+
+export {
+  DEFAULT_DIAGNOSTIC_MAX_BYTES,
+  boundProofWorkerDiagnostic,
+  redactWitnessShapedDiagnosticText,
+  type BoundedProofWorkerDiagnostic,
+  type BoundedProofWorkerDiagnosticPayload,
+  type DiagnosticErrorCode,
+  type DiagnosticStageId,
+  type ProofWorkerDiagnosticInput,
+};
+
+export type ProofWorkerTelemetrySink = (
+  diagnostic: BoundedProofWorkerDiagnosticPayload
+) => void;
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -71,8 +96,7 @@ export class ProofWorkerManager {
       };
 
       logger.info('Sending verify message', { id: messageId });
-      // In a real implementation, this would post to the actual worker
-      // this.worker?.postMessage(message);
+      void message;
     });
   }
 
@@ -89,8 +113,7 @@ export class ProofWorkerManager {
     };
 
     logger.info('Sending cancel message', { id: messageId });
-    // In a real implementation, this would post to the actual worker
-    // this.worker?.postMessage(message);
+    void message;
   }
 
   getStatus(): WorkerStatus {
@@ -103,6 +126,20 @@ export class ProofWorkerManager {
 
   getCSPHeaders(): Record<string, string> {
     return createCSPHeaders(this.cspConfig);
+  }
+
+  forwardDiagnosticToTelemetry(
+    diagnostic: ProofWorkerDiagnosticInput,
+    options?: {
+      maxBytes?: number;
+      sink?: ProofWorkerTelemetrySink;
+    }
+  ): BoundedProofWorkerDiagnostic {
+    const bounded = boundProofWorkerDiagnostic(diagnostic, {
+      maxBytes: options?.maxBytes,
+    });
+    options?.sink?.(bounded.payload);
+    return bounded;
   }
 
   destroy(): void {

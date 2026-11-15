@@ -9,7 +9,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
@@ -89,6 +88,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
+          htmlFor="studio-evidence-input"
           className="dropzone"
           role="button"
           tabIndex={0}
@@ -102,16 +102,18 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         >
           <Upload size={20} aria-hidden="true" />
-          <span aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</span>
-          <input
-            ref={studioInputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
-          />
+          <output aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</output>
         </label>
+        <input
+          id="studio-evidence-input"
+          ref={studioInputRef}
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ display: 'none' }}
+          onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+        />
 
         {stage === 'hashing' && hashProgress ? (
           <div className="hash-progress">
@@ -260,7 +262,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             Register proof
           </button>
 
-          {isProving ? (
+          {isProving && !isCancellable ? (
             <button
               className="secondary-action"
               type="button"

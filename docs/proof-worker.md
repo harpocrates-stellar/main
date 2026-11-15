@@ -211,3 +211,21 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Bounded telemetry diagnostics
+
+`boundProofWorkerDiagnostic` (in `src/proofWorkerMemory.ts`, exposed via
+`ProofWorkerManager.forwardDiagnosticToTelemetry()`) sanitizes and caps worker
+diagnostic events before they cross into any telemetry sink:
+
+- **Witness-shaped redaction:** strips inline witness assignments, hex field
+  elements, BN254 decimal field elements, and base64 blobs alongside nested
+  sensitive context keys (`scrubTelemetryFields`).
+- **Payload byte cap:** enforces a strict UTF-8 byte ceiling
+  (`DEFAULT_DIAGNOSTIC_MAX_BYTES = 512`, configurable within `192..4096`),
+  dropping optional context first and truncating message text on UTF-8
+  code-point boundaries when needed (`truncated: true`).
+- **Stable identifiers retained:** `stage` (`STABLE_DIAGNOSTIC_STAGES`) and
+  `errorCode` (`STABLE_DIAGNOSTIC_ERROR_CODES`) are normalized against fixed
+  allowlists and never truncated away.
+
+
