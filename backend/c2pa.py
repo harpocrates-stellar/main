@@ -241,6 +241,46 @@ class C2paHashCorroboration:
     mismatches: tuple[str, ...] = ()
 
 
+_ALLOWED_INGREDIENT_RELATIONSHIPS: frozenset[str] = frozenset(
+    {"parentOf", "componentOf", "inputTo"}
+)
+
+_INGREDIENT_HASH_KEYS: tuple[str, ...] = (
+    "proof_id",
+    "proofId",
+    "video_hash",
+    "videoHash",
+    "output_digest",
+    "outputDigest",
+    "parent_proof_id",
+    "parentProofId",
+    "hash",
+)
+
+
+@dataclass(frozen=True)
+class C2paIngredientDependency:
+    """
+    Privacy-safe summary of an upstream ingredient declared in a C2PA manifest.
+
+    ``dependency_id`` is populated only when the ingredient carries a valid
+    32-byte hex Harpocrates-compatible digest; external or opaque C2PA
+    ingredients carry ``dependency_id=None`` so callers still know upstream
+    provenance was claimed without echoing titles, filenames, or URIs.
+    """
+
+    dependency_id: str | None
+    label: str
+    relationship: str = "unspecified"
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "dependency_id": self.dependency_id,
+            "label": self.label,
+            "relationship": self.relationship,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -557,6 +597,84 @@ def corroborate_binding(
     )
 
 
+def extract_c2pa_ingredient_dependencies(
+    manifest: C2paParsedManifest | bytes | str | dict[str, Any],
+) -> tuple[C2paIngredientDependency, ...]:
+    """
+    Extract privacy-safe upstream ingredient dependencies from a C2PA manifest.
+
+    Accepts a pre-parsed ``C2paParsedManifest``, raw UTF-8 JSON bytes/str, or a
+    JSON-compatible dict (validated through ``parse_c2pa_manifest`` first so all
+    size, depth, and embedded-binding consistency checks are enforced).
+
+    Recognises:
+    - ``c2pa.ingredient`` and ``c2pa.ingredient.*`` assertions
+    - ``harpocrates.lineage/v1`` assertions carrying ``parentProofIds``
+    - Top-level ``ingredients`` arrays when raw JSON / dict input is supplied
+
+    Never echoes titles, filenames, URIs, or malformed hash values.
+    """
+    _, deps = parse_c2pa_with_dependencies(manifest)
+    return deps
+
+
+def parse_c2pa_with_dependencies(
+    manifest: C2paParsedManifest | bytes | str | dict[str, Any],
+) -> tuple[C2paParsedManifest, tuple[C2paIngredientDependency, ...]]:
+    """
+    Validate a C2PA manifest and return both the parsed manifest and any
+    declared upstream ingredient dependencies in deterministic order.
+    """
+    top_level_ingredients: list[Any] = []
+    if isinstance(manifest, C2paParsedManifest):
+        parsed = manifest
+    elif isinstance(manifest, dict):
+        try:
+            raw_bytes = _canonical_json(manifest)
+        except (TypeError, ValueError):
+            raise C2paParseError(_Reason.NOT_JSON)
+        parsed = parse_c2pa_manifest(raw_bytes)
+        if "ingredients" in manifest:
+            raw_ing = manifest["ingredients"]
+            if not isinstance(raw_ing, list):
+                raise C2paParseError(_Reason.INVALID_TYPE, "ingredients")
+            if len(raw_ing) > _MAX_ASSERTION_COUNT:
+                raise C2paParseError(_Reason.ASSERTION_COUNT_EXCEEDED, "ingredients")
+            top_level_ingredients = raw_ing
+    elif isinstance(manifest, (bytes, str)):
+        parsed = parse_c2pa_manifest(manifest)
+        raw_bytes = manifest.encode("utf-8") if isinstance(manifest, str) else manifest
+        data = json.loads(raw_bytes.decode("utf-8"))
+        if isinstance(data, dict) and "ingredients" in data:
+            raw_ing = data["ingredients"]
+            if not isinstance(raw_ing, list):
+                raise C2paParseError(_Reason.INVALID_TYPE, "ingredients")
+            if len(raw_ing) > _MAX_ASSERTION_COUNT:
+                raise C2paParseError(_Reason.ASSERTION_COUNT_EXCEEDED, "ingredients")
+            top_level_ingredients = raw_ing
+    else:
+        raise C2paParseError(_Reason.INVALID_TYPE, "manifest")
+
+    found: list[C2paIngredientDependency] = []
+
+    for ua in parsed.unknown_assertions:
+        if ua.label == "c2pa.ingredient" or ua.label.startswith("c2pa.ingredient."):
+            found.extend(_extract_ingredient_entry_deps(ua.data, label=ua.label))
+        elif ua.label == "harpocrates.lineage/v1":
+            found.extend(_extract_lineage_assertion_deps(ua.data, label=ua.label))
+
+    for idx, entry in enumerate(top_level_ingredients):
+        if not isinstance(entry, dict):
+            raise C2paParseError(_Reason.INVALID_TYPE, f"ingredients[{idx}]")
+        found.extend(_extract_ingredient_entry_deps(entry, label=f"ingredients[{idx}]"))
+
+    deduped = sorted(
+        set(found),
+        key=lambda d: (d.dependency_id or "~", d.label, d.relationship),
+    )
+    return parsed, tuple(deduped)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -657,3 +775,93 @@ def _check_depth(obj: Any, limit: int, _current: int = 0) -> None:
     elif isinstance(obj, list):
         for item in obj:
             _check_depth(item, limit, _current + 1)
+
+
+def _normalize_ingredient_relationship(raw_rel: Any) -> str:
+    if isinstance(raw_rel, str):
+        cleaned = raw_rel.strip()
+        if cleaned in _ALLOWED_INGREDIENT_RELATIONSHIPS:
+            return cleaned
+    return "unspecified"
+
+
+def _extract_ingredient_entry_deps(
+    data: Any, *, label: str
+) -> list[C2paIngredientDependency]:
+    if not isinstance(data, dict):
+        return [
+            C2paIngredientDependency(
+                dependency_id=None,
+                label=label,
+                relationship="unspecified",
+            )
+        ]
+
+    relationship = _normalize_ingredient_relationship(data.get("relationship"))
+    candidate_hex: str | None = None
+
+    for key in _INGREDIENT_HASH_KEYS:
+        val = data.get(key)
+        if isinstance(val, str) and _HEX32_RE.match(val.lower()):
+            candidate_hex = val.lower()
+            break
+
+    if candidate_hex is None:
+        nested_binding = data.get("harpocrates_binding")
+        if isinstance(nested_binding, dict):
+            for key in ("proof_id", "video_hash"):
+                val = nested_binding.get(key)
+                if isinstance(val, str) and _HEX32_RE.match(val.lower()):
+                    candidate_hex = val.lower()
+                    break
+
+    return [
+        C2paIngredientDependency(
+            dependency_id=candidate_hex,
+            label=label,
+            relationship=relationship,
+        )
+    ]
+
+
+def _extract_lineage_assertion_deps(
+    data: Any, *, label: str
+) -> list[C2paIngredientDependency]:
+    if not isinstance(data, dict):
+        return [
+            C2paIngredientDependency(
+                dependency_id=None,
+                label=label,
+                relationship="parentOf",
+            )
+        ]
+
+    parents = data.get("parentProofIds") or data.get("parent_proof_ids")
+    if not isinstance(parents, list) or not parents:
+        return [
+            C2paIngredientDependency(
+                dependency_id=None,
+                label=label,
+                relationship="parentOf",
+            )
+        ]
+
+    deps: list[C2paIngredientDependency] = []
+    for item in parents[:_MAX_ASSERTION_COUNT]:
+        if isinstance(item, str) and _HEX32_RE.match(item.lower()):
+            deps.append(
+                C2paIngredientDependency(
+                    dependency_id=item.lower(),
+                    label=label,
+                    relationship="parentOf",
+                )
+            )
+        else:
+            deps.append(
+                C2paIngredientDependency(
+                    dependency_id=None,
+                    label=label,
+                    relationship="parentOf",
+                )
+            )
+    return deps

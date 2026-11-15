@@ -352,6 +352,24 @@ binding and should not be acted upon by callers.
 This allows consuming existing C2PA manifests that carry standard C2PA
 assertions (e.g., `c2pa.actions`, `c2pa.thumbnail`) without rejecting them.
 
+### Ingredient dependency extraction and incomplete lineage (#1095)
+
+`extract_c2pa_ingredient_dependencies()` and `parse_c2pa_with_dependencies()`
+inspect `c2pa.ingredient*` assertions, `harpocrates.lineage/v1` assertions, and
+optional top-level `ingredients` lists to return privacy-safe
+`C2paIngredientDependency` summaries (validated 32-byte lowercase hex
+`dependency_id` or `None` for external ingredients without a Harpocrates
+digest, never echoing titles, filenames, or URIs).
+
+When passed to `lineage.verify_lineage_completeness(..., c2pa_manifest=...)` or
+`POST /api/lineage/verify`, any declared C2PA ingredient not backed by a
+canonically verified Harpocrates lineage edge transitions the verification
+status to `incomplete_lineage` (`is_verified: false`, `is_original: false`)
+with explicit `missing_dependencies` (`missing_lineage_edge` or
+`unverified_c2pa_ingredient`), ensuring an incomplete derivative graph is never
+mistaken for `verified_original` while keeping `c2pa_trust_status` strictly
+separate from on-chain verification.
+
 ---
 
 ## Rollback

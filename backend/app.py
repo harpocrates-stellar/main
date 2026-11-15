@@ -93,6 +93,7 @@ from lineage import (
     canonical_lineage_manifest,
     lineage_manifest_digest,
     validate_lineage_graph,
+    verify_lineage_completeness,
 )
 from storage import get_job_output_path
 from retention import init_retention_worker
@@ -112,7 +113,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1222,6 +1223,71 @@ def create_app() -> Flask:
             )
 
         return jsonify({"ok": True, "events": find_lineage_by_actor(validated_actor_address, parsed_limit)})
+
+    def _lookup_proof_for_lineage(digest: str):
+        events = find_proof_events_by_proof_id(digest)
+        if events:
+            return events
+        by_video, _ = find_proof_events_by_video(digest)
+        return by_video
+
+    @app.get("/api/lineage/<output_digest>/verify")
+    def verify_lineage_endpoint(output_digest: str):
+        if not is_hex_32(output_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="output_digest must be a 32-byte hex string",
+                status=400,
+            )
+
+        result = verify_lineage_completeness(
+            output_digest,
+            get_lineage_fn=find_lineage_by_output_digest,
+            get_proof_fn=_lookup_proof_for_lineage,
+        )
+        return ok_response({"verification": result.to_dict()})
+
+    @app.post("/api/lineage/verify")
+    def verify_lineage_post_endpoint():
+        if _enforce_json_size() > config.max_json_bytes:
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+
+        target_digest = payload.get("targetDigest")
+        if target_digest is None:
+            target_digest = payload.get("outputDigest")
+        if not is_hex_32(target_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="targetDigest must be a 32-byte hex string",
+                status=400,
+            )
+
+        c2pa_manifest = payload.get("c2paManifest")
+        if c2pa_manifest is not None and not isinstance(c2pa_manifest, (dict, str)):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="c2paManifest must be a JSON object or string",
+                status=400,
+            )
+
+        result = verify_lineage_completeness(
+            target_digest,
+            get_lineage_fn=find_lineage_by_output_digest,
+            get_proof_fn=_lookup_proof_for_lineage,
+            c2pa_manifest=c2pa_manifest,
+        )
+        return ok_response({"verification": result.to_dict()})
 
     @app.get("/api/lineage/<output_digest>")
     def lineage_by_output_digest(output_digest: str):

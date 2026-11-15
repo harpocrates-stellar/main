@@ -91,6 +91,26 @@ Response: 200 OK
 }
 ```
 
+#### Verify Lineage Completeness (#1095)
+```
+GET /api/lineage/<output_digest>/verify
+POST /api/lineage/verify
+Content-Type: application/json
+
+{
+  "targetDigest": "<32-byte-hex>",
+  "c2paManifest": { /* optional C2PA manifest object or JSON string */ }
+}
+```
+
+`verify_lineage_completeness()` returns a `LineageVerificationResult` with an explicit `status` enum (`LineageVerificationStatus`):
+
+- `verified_original`: Verified root proof with zero lineage transformation records and zero uncovered upstream C2PA ingredient claims (`is_verified: true`, `is_original: true`, `is_complete: true`).
+- `verified_derivative`: Bounded transformation graph where every edge and leaf root proof is canonically verified (`is_verified: true`, `is_original: false`, `is_complete: true`).
+- `incomplete_lineage`: Partially resolved provenance graph or uncovered C2PA/metadata ingredient claim (`is_verified: false`, `is_original: false`, `is_complete: false`). Preserves all `verified_edges` whose endpoints resolved alongside explicit `missing_dependencies` (`missing_parent_proof`, `unconfirmed_parent_proof`, `missing_lineage_edge`, `unverified_c2pa_ingredient`), preventing an incomplete derivative graph from ever being presented as a verified original.
+- `unverified`: Target digest has no lineage records, no upstream ingredient claims, and no confirmed root proof (`is_verified: false`, `is_original: false`).
+- `invalid_lineage`: Fail-closed rejection on malformed digests, canonical digest tampering, cycles, fan-out/depth breaches, revoked proofs, or malformed/mismatched C2PA bindings (`is_verified: false`, `is_original: false`).
+
 ### Database Schema
 
 #### lineage_events table
