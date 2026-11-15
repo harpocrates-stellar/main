@@ -1541,6 +1541,72 @@ def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:
             return row["cursor"] if row else None
 
 
+def list_indexed_proof_events_for_reconcile(
+    *,
+    contract_id: str | None = None,
+    limit: int = 10000,
+) -> list[dict[str, Any]]:
+    """Read-only query returning indexed proof-event rows for projection reconciliation.
+
+    Performs ``SELECT`` only; never writes to ``proof_events`` or ``indexer_state``.
+    """
+    bounded_limit = max(1, min(int(limit), 10000))
+    if not database_url():
+        rows = [
+            dict(row)
+            for row in _INDEXED_EVENTS.values()
+            if contract_id is None or row.get("contract_id") == contract_id
+        ]
+        rows.sort(key=lambda r: (str(r.get("tx_hash") or ""), int(r.get("event_index") or 0)))
+        return rows[:bounded_limit]
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            if contract_id is None:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        proof_id,
+                        tx_hash,
+                        tx_status,
+                        contract_id,
+                        event_index,
+                        metadata,
+                        created_at
+                    from proof_events
+                    where tx_hash is not null and event_index is not null
+                    order by tx_hash asc, event_index asc
+                    limit %s;
+                    """,
+                    (bounded_limit,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        proof_id,
+                        tx_hash,
+                        tx_status,
+                        contract_id,
+                        event_index,
+                        metadata,
+                        created_at
+                    from proof_events
+                    where tx_hash is not null
+                      and event_index is not null
+                      and contract_id = %s
+                    order by tx_hash asc, event_index asc
+                    limit %s;
+                    """,
+                    (contract_id, bounded_limit),
+                )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def save_indexer_cursor(
     indexer_id: str = "soroban_events",
     cursor: str = "",

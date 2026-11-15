@@ -192,8 +192,18 @@ python manage.py retention --dry-run        # count expired, non-held proof even
 python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
 python manage.py retention --run --batch-size 500
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py reconcile-projection --start-ledger 1000 --end-ledger 1100 --contract-id <CONTRACT_ID>
 python manage.py --json drift               # machine-readable JSON output
 ```
+
+`reconcile-projection` performs a strictly read-only comparison of a bounded
+Soroban ledger range (`end_ledger - start_ledger + 1 <= 1000`) against indexed
+`proof_events` rows (`reconcile_projection_range` in `chain_indexer.py`). It
+distinguishes `missing_events` (on-chain lifecycle events absent from the index)
+from `conflicting_state` (`field_mismatch`, `unanchored_indexed_event`, and
+optional `--verify-tx` `tx_verification_conflict`) without writing to
+`proof_events` or `indexer_state`. It exits `0` when the range is in sync and
+`1` when missing or conflicting records are detected.
 
 Exit codes:
 

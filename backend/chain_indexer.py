@@ -31,6 +31,7 @@ from typing import Any
 from db import (
     get_indexer_cursor,
     insert_indexed_proof_event,
+    list_indexed_proof_events_for_reconcile,
     save_indexer_cursor,
 )
 from fetch_external import safe_urlopen
@@ -40,6 +41,7 @@ from strkey import (
     _VERSION_BYTE_ED25519_PUBLIC,
     make_strkey,
 )
+from tx_verification import verify_transaction
 from webhook import queue_webhook_deliveries
 
 LOGGER = logging.getLogger("harpocrates.chain_indexer")
@@ -54,6 +56,8 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+MAX_RECONCILE_LEDGER_SPAN = 1000
+MAX_RECONCILE_PAGES = 50
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +483,391 @@ def fetch_contract_events(
     if "error" in data:
         raise RuntimeError(f"Soroban RPC error: {data['error']}")
     return data.get("result") or {}
+
+
+# ---------------------------------------------------------------------------
+# Read-Only Bounded Projection Reconciliation
+# ---------------------------------------------------------------------------
+
+_RECONCILE_COMPARE_FIELDS = (
+    "event_type",
+    "proof_id",
+    "contract_id",
+    "tx_status",
+    "metadata",
+)
+
+
+def _extract_event_ledger(event: dict[str, Any]) -> int | None:
+    """Resolve integer ledger sequence from explicit field or paging token prefix."""
+    raw_ledger = event.get("ledger")
+    if raw_ledger is not None and not isinstance(raw_ledger, bool):
+        try:
+            parsed = int(raw_ledger)
+            if parsed >= 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+
+    token = str(event.get("id") or event.get("pagingToken") or "").strip()
+    if "-" in token:
+        prefix = token.split("-", 1)[0]
+        try:
+            parsed_prefix = int(prefix, 10)
+            if parsed_prefix >= 0:
+                return parsed_prefix
+        except ValueError:
+            pass
+    return None
+
+
+def _extract_record_ledger(row: dict[str, Any]) -> int | None:
+    """Resolve optional ledger recorded on an indexed proof_events row."""
+    raw_ledger = row.get("ledger")
+    if raw_ledger is None and isinstance(row.get("metadata"), dict):
+        meta = row["metadata"]
+        raw_ledger = meta.get("ledger")
+        if raw_ledger is None and isinstance(meta.get("canonical_order"), dict):
+            raw_ledger = meta["canonical_order"].get("ledger")
+    if raw_ledger is not None and not isinstance(raw_ledger, bool):
+        try:
+            parsed = int(raw_ledger)
+            if parsed >= 0:
+                return parsed
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def validate_reconcile_ledger_range(
+    start_ledger: Any,
+    end_ledger: Any,
+    *,
+    max_span: int = MAX_RECONCILE_LEDGER_SPAN,
+) -> tuple[int, int]:
+    """Validate an inclusive bounded ``[start_ledger, end_ledger]`` range."""
+    if isinstance(start_ledger, bool) or isinstance(end_ledger, bool):
+        raise ValueError("start_ledger and end_ledger must be positive integers")
+    try:
+        start = int(start_ledger)
+        end = int(end_ledger)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("start_ledger and end_ledger must be positive integers") from exc
+
+    if start < 1 or end < 1:
+        raise ValueError("start_ledger and end_ledger must be >= 1")
+    if end < start:
+        raise ValueError("end_ledger must be >= start_ledger")
+
+    bounded_max = max(1, min(int(max_span), 10000))
+    span = end - start + 1
+    if span > bounded_max:
+        raise ValueError(
+            f"ledger range span ({span}) exceeds maximum allowed span ({bounded_max})"
+        )
+    return start, end
+
+
+def fetch_contract_events_in_range(
+    *,
+    rpc_url: str,
+    contract_id: str,
+    start_ledger: int,
+    end_ledger: int,
+    page_limit: int = INDEXER_DEFAULT_PAGE_SIZE,
+    timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    max_pages: int = MAX_RECONCILE_PAGES,
+) -> list[dict[str, Any]]:
+    """Read-only bounded scan of Soroban contract events within ``[start_ledger, end_ledger]``."""
+    start, end = validate_reconcile_ledger_range(start_ledger, end_ledger)
+    collected: list[dict[str, Any]] = []
+    cursor: str | None = None
+    pages_fetched = 0
+
+    while True:
+        if pages_fetched >= max_pages:
+            raise RuntimeError(
+                f"reconciliation scan exceeded maximum page budget ({max_pages})"
+            )
+        pages_fetched += 1
+        rpc_result = fetch_contract_events(
+            rpc_url=rpc_url,
+            contract_id=contract_id,
+            start_ledger=start if cursor is None else None,
+            cursor=cursor,
+            limit=page_limit,
+            timeout=timeout,
+        )
+        page_events = rpc_result.get("events") or []
+        if not page_events:
+            break
+
+        reached_past_end = False
+        for ev in page_events:
+            if not isinstance(ev, dict):
+                continue
+            ev_ledger = _extract_event_ledger(ev)
+            if ev_ledger is not None and ev_ledger > end:
+                reached_past_end = True
+                break
+            if ev_ledger is None or ev_ledger >= start:
+                collected.append(ev)
+
+        if reached_past_end:
+            break
+
+        next_cursor = rpc_result.get("cursor")
+        if not next_cursor:
+            last_id = page_events[-1].get("id") or page_events[-1].get("pagingToken")
+            next_cursor = str(last_id) if last_id else None
+
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = str(next_cursor)
+
+    return collected
+
+
+def _normalize_Comparable_record(
+    *,
+    event_type: Any,
+    proof_id: Any,
+    contract_id: Any,
+    tx_status: Any,
+    metadata: Any,
+) -> dict[str, Any]:
+    norm_meta = dict(metadata) if isinstance(metadata, dict) else None
+    if isinstance(norm_meta, dict):
+        norm_meta.pop("canonical_order", None)
+    return {
+        "event_type": str(event_type or ""),
+        "proof_id": _normalize_hex(proof_id) if proof_id is not None else None,
+        "contract_id": str(contract_id).strip() if contract_id else None,
+        "tx_status": str(tx_status or "confirmed"),
+        "metadata": norm_meta,
+    }
+
+
+def reconcile_projection_range(
+    *,
+    start_ledger: int,
+    end_ledger: int,
+    contract_id: str | None = None,
+    rpc_url: str | None = None,
+    chain_events: list[dict[str, Any]] | None = None,
+    indexed_records: list[dict[str, Any]] | None = None,
+    verify_tx: bool = False,
+    max_span: int = MAX_RECONCILE_LEDGER_SPAN,
+    page_limit: int = INDEXER_DEFAULT_PAGE_SIZE,
+    timeout: float = INDEXER_DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
+    """Compare a bounded chain ledger range against indexed proof records (read-only).
+
+    Distinguishes ``missing_events`` (present on-chain in ``[start_ledger, end_ledger]``
+    but absent from the indexed projection) from ``conflicting_state`` (present in
+    both with mismatched projection attributes, unanchored indexed rows claiming a
+    ledger in ``[start_ledger, end_ledger]``, or Horizon transaction verification
+    conflicts). Never mutates ``proof_events`` or ``indexer_state``.
+    """
+    start, end = validate_reconcile_ledger_range(
+        start_ledger,
+        end_ledger,
+        max_span=max_span,
+    )
+    active_contract_id = (
+        contract_id
+        or os.getenv("HARPOCRATES_REGISTRY_CONTRACT_ID")
+        or os.getenv("CONTRACT_ID")
+    )
+    if chain_events is None and not active_contract_id:
+        raise ValueError("contract_id is required when fetching chain events from RPC")
+
+    active_rpc_url = (
+        rpc_url
+        or os.getenv("SOROBAN_RPC_URL")
+        or os.getenv("STELLAR_RPC_URL")
+        or DEFAULT_SOROBAN_RPC_URL
+    )
+
+    raw_events = (
+        fetch_contract_events_in_range(
+            rpc_url=active_rpc_url,
+            contract_id=str(active_contract_id),
+            start_ledger=start,
+            end_ledger=end,
+            page_limit=page_limit,
+            timeout=timeout,
+        )
+        if chain_events is None
+        else list(chain_events)
+    )
+
+    on_chain_by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    scanned_chain_events = 0
+    skipped_unknown_events = 0
+
+    for raw in raw_events:
+        if not isinstance(raw, dict):
+            continue
+        ev_ledger = _extract_event_ledger(raw)
+        if ev_ledger is not None and (ev_ledger < start or ev_ledger > end):
+            continue
+        scanned_chain_events += 1
+        decoded = classify_and_decode_event(raw, default_contract_id=active_contract_id)
+        if decoded is None:
+            skipped_unknown_events += 1
+            continue
+
+        key = (decoded.tx_hash, int(decoded.event_index))
+        if key not in on_chain_by_key:
+            on_chain_by_key[key] = {
+                "ledger": ev_ledger if ev_ledger is not None else decoded.ledger,
+                "tx_hash": decoded.tx_hash,
+                "event_index": int(decoded.event_index),
+                "state": _normalize_Comparable_record(
+                    event_type=decoded.event_type,
+                    proof_id=decoded.proof_id,
+                    contract_id=decoded.contract_id,
+                    tx_status=decoded.tx_status,
+                    metadata=decoded.metadata,
+                ),
+            }
+
+    db_rows = (
+        list_indexed_proof_events_for_reconcile(contract_id=active_contract_id)
+        if indexed_records is None
+        else list(indexed_records)
+    )
+    indexed_by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in db_rows:
+        if not isinstance(row, dict):
+            continue
+        raw_tx = row.get("tx_hash")
+        raw_idx = row.get("event_index")
+        if not raw_tx or raw_idx is None or isinstance(raw_idx, bool):
+            continue
+        norm_tx = _normalize_hex(raw_tx) or str(raw_tx).strip().lower()
+        norm_idx = int(raw_idx)
+        key = (norm_tx, norm_idx)
+        row_ledger = _extract_record_ledger(row)
+
+        # Include row if it matches an on-chain key in [start, end] OR declares a ledger in [start, end].
+        if key in on_chain_by_key or (row_ledger is not None and start <= row_ledger <= end):
+            if key not in indexed_by_key:
+                indexed_by_key[key] = {
+                    "ledger": row_ledger,
+                    "tx_hash": norm_tx,
+                    "event_index": norm_idx,
+                    "state": _normalize_Comparable_record(
+                        event_type=row.get("event_type"),
+                        proof_id=row.get("proof_id"),
+                        contract_id=row.get("contract_id"),
+                        tx_status=row.get("tx_status"),
+                        metadata=row.get("metadata"),
+                    ),
+                }
+
+    missing_events: list[dict[str, Any]] = []
+    conflicting_state: list[dict[str, Any]] = []
+    matched_count = 0
+    tx_verification_cache: dict[str, Any] = {}
+
+    for key in sorted(on_chain_by_key.keys()):
+        expected_item = on_chain_by_key[key]
+        if key not in indexed_by_key:
+            missing_events.append(
+                {
+                    "category": "missing_event",
+                    "ledger": expected_item["ledger"],
+                    "tx_hash": key[0],
+                    "event_index": key[1],
+                    "expected": expected_item["state"],
+                }
+            )
+            continue
+
+        indexed_item = indexed_by_key[key]
+        mismatched_fields = [
+            field
+            for field in _RECONCILE_COMPARE_FIELDS
+            if expected_item["state"].get(field) != indexed_item["state"].get(field)
+        ]
+        if mismatched_fields:
+            conflicting_state.append(
+                {
+                    "category": "conflicting_state",
+                    "reason": "field_mismatch",
+                    "ledger": expected_item["ledger"],
+                    "tx_hash": key[0],
+                    "event_index": key[1],
+                    "mismatched_fields": mismatched_fields,
+                    "expected": expected_item["state"],
+                    "indexed": indexed_item["state"],
+                }
+            )
+            continue
+
+        if verify_tx:
+            tx_hash = key[0]
+            if tx_hash not in tx_verification_cache:
+                tx_verification_cache[tx_hash] = verify_transaction(tx_hash)
+            tx_res = tx_verification_cache[tx_hash]
+            if tx_res.status in {"failed", "missing"} and indexed_item["state"]["tx_status"] in {
+                "confirmed",
+                "revoked",
+            }:
+                conflicting_state.append(
+                    {
+                        "category": "conflicting_state",
+                        "reason": "tx_verification_conflict",
+                        "ledger": expected_item["ledger"],
+                        "tx_hash": tx_hash,
+                        "event_index": key[1],
+                        "horizon_status": tx_res.status,
+                        "horizon_reason": tx_res.reason,
+                        "indexed": indexed_item["state"],
+                    }
+                )
+                continue
+
+        matched_count += 1
+
+    # Detect indexed records claiming a ledger inside [start, end] that do not exist on-chain.
+    for key in sorted(indexed_by_key.keys()):
+        if key not in on_chain_by_key:
+            indexed_item = indexed_by_key[key]
+            conflicting_state.append(
+                {
+                    "category": "conflicting_state",
+                    "reason": "unanchored_indexed_event",
+                    "ledger": indexed_item["ledger"],
+                    "tx_hash": key[0],
+                    "event_index": key[1],
+                    "indexed": indexed_item["state"],
+                }
+            )
+
+    in_sync = not missing_events and not conflicting_state
+    return {
+        "ok": in_sync,
+        "read_only": True,
+        "contract_id": active_contract_id,
+        "range": {
+            "start_ledger": start,
+            "end_ledger": end,
+            "span": end - start + 1,
+        },
+        "summary": {
+            "scanned_chain_events": scanned_chain_events,
+            "lifecycle_chain_events": len(on_chain_by_key),
+            "skipped_unknown_events": skipped_unknown_events,
+            "matched": matched_count,
+            "missing_count": len(missing_events),
+            "conflicting_count": len(conflicting_state),
+        },
+        "missing_events": missing_events,
+        "conflicting_state": conflicting_state,
+    }
 
 
 # ---------------------------------------------------------------------------

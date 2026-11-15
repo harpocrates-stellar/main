@@ -6,6 +6,7 @@ Usage (run from ``backend/`` with ``DATABASE_URL`` set)::
     python manage.py [--json] drift
     python manage.py [--json] retention (--dry-run | --run) [--batch-size N]
     python manage.py [--json] reconcile [--limit N]
+    python manage.py [--json] reconcile-projection --start-ledger N --end-ledger M [--contract-id ID] [--rpc-url URL] [--verify-tx]
 
 Exit codes:
 
@@ -168,6 +169,33 @@ def _cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     }
 
 
+def _cmd_reconcile_projection(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    import chain_indexer
+
+    try:
+        report = chain_indexer.reconcile_projection_range(
+            start_ledger=args.start_ledger,
+            end_ledger=args.end_ledger,
+            contract_id=args.contract_id,
+            rpc_url=args.rpc_url,
+            verify_tx=bool(args.verify_tx),
+        )
+    except ValueError as exc:
+        return EXIT_USAGE, {
+            "command": "reconcile-projection",
+            "ok": False,
+            "read_only": True,
+            "error": "ValueError",
+            "detail": str(exc),
+        }
+
+    ok = bool(report.get("ok", False))
+    return (EXIT_OK if ok else EXIT_PROBLEMS), {
+        "command": "reconcile-projection",
+        **report,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="manage.py",
@@ -207,6 +235,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum pending rows to reconcile (capped at 50)",
     )
     reconcile.set_defaults(handler=_cmd_reconcile)
+
+    reconcile_proj = sub.add_parser(
+        "reconcile-projection",
+        help="read-only comparison of a bounded chain ledger range against indexed proof records",
+    )
+    reconcile_proj.add_argument(
+        "--start-ledger",
+        type=_positive_int,
+        required=True,
+        help="inclusive start ledger sequence (>= 1)",
+    )
+    reconcile_proj.add_argument(
+        "--end-ledger",
+        type=_positive_int,
+        required=True,
+        help="inclusive end ledger sequence (>= start-ledger, bounded span <= 1000)",
+    )
+    reconcile_proj.add_argument(
+        "--contract-id",
+        default=None,
+        help="Soroban registry contract ID (defaults to HARPOCRATES_REGISTRY_CONTRACT_ID)",
+    )
+    reconcile_proj.add_argument(
+        "--rpc-url",
+        default=None,
+        help="optional Soroban RPC URL override",
+    )
+    reconcile_proj.add_argument(
+        "--verify-tx",
+        action="store_true",
+        help="also verify matched transaction hashes against Horizon status",
+    )
+    reconcile_proj.set_defaults(handler=_cmd_reconcile_projection)
 
     return parser
 
