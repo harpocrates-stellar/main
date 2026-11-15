@@ -2,7 +2,7 @@
 
 import type { ProofWorkerMessage, ProofWorkerResponse } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
-import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import { validateCSPPolicy } from './csp-policy';
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -54,7 +54,6 @@ function validateInput(payload: ProofWorkerMessage['payload']): void {
 async function verifyProof(payload: ProofWorkerMessage['payload']): Promise<ProofWorkerResponse> {
   validateInput(payload);
 
-  const timeout = payload?.timeout ?? cspConfig?.maxExecutionTimeMs ?? 30000;
   const evidence = payload?.evidence ?? '';
   const proof = payload?.proof ?? '';
   const contract = payload?.contract ?? '';
@@ -175,6 +174,11 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
   }
 };
 
-self.onerror = (event: ErrorEvent) => {
-  logger.error('Worker global error', { error: event.message, filename: event.filename, lineno: event.lineno });
+self.onerror = (event) => {
+  const errEvent = typeof event === 'object' && event !== null && 'message' in event ? (event as ErrorEvent) : null;
+  logger.error('Worker global error', {
+    error: errEvent?.message ?? String(event),
+    filename: errEvent?.filename,
+    lineno: errEvent?.lineno,
+  });
 };

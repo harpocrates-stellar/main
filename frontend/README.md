@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Offline portable bundle entry point
+
+`OfflinePortableBundlePanel` (`src/components/OfflinePortableBundlePanel.tsx`)
+and `inspectPortableOfflineBundle` (`src/services/verificationFlow.ts`) provide
+a dedicated air-gapped verification entry point that accepts bounded portable
+bundles (`<= 128 KB`), validates digest commitments and public-only boundaries
+locally, and explicitly lists skipped online checks (including Soroban
+revocation, expiry, issuer standing, and NeonDB corroboration) as
+`unavailable-offline` rather than `passed` or `confirmed`.
