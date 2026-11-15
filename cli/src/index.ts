@@ -79,3 +79,22 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  BATCH_VERIFY_PROTOCOL,
+  BATCH_VERIFY_VERSION,
+  DEFAULT_MAX_BATCH_ITEMS,
+  ABSOLUTE_MAX_BATCH_ITEMS,
+  MAX_BATCH_INPUT_BYTES,
+  BatchBoundError,
+  computeDeterministicItemId,
+  resolveBatchManifestSelection,
+  runBatchVerification,
+  serializeBatchJsonLine,
+} from './batch-verify.js'
+export type {
+  BatchProgressEvent,
+  BatchVerificationResultRecord,
+  BatchChainVerifier,
+  RunBatchVerificationOptions,
+  BatchVerificationRunSummary,
+} from './batch-verify.js'

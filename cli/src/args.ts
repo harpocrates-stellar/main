@@ -2,12 +2,14 @@ import { parseArgs } from 'node:util'
 
 export type Command =
   | 'verify'
+  | 'verify-batch'
   | 'status'
   | 'manifest'
   | 'hash'
   | 'verify-receipt'
   | 'c2pa'
   | 'verify-lineage'
+  | 'version'
   | 'help'
 
 export interface ParsedArgs {
@@ -44,6 +46,26 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
   verify: {
     ...ON_CHAIN,
     manifest: alias('m'),
+    batch: alias('b'),
+    'max-items': text,
+    maxItems: text,
+    'rpc-url': text,
+    rpcUrl: text,
+    'source-address': text,
+    sourceAddress: text,
+    network: text,
+    output: alias('o'),
+    offline: toggle,
+    debug: toggle,
+    timeout: text,
+  },
+  'verify-batch': {
+    'contract-id': text,
+    contractId: text,
+    input: alias('i'),
+    batch: alias('b'),
+    'max-items': text,
+    maxItems: text,
     'rpc-url': text,
     rpcUrl: text,
     'source-address': text,
@@ -111,12 +133,19 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  version: {
+    debug: toggle,
+  },
 }
 
 // Environment variable defaults for flags that are otherwise required on every call.
 // Explicit flags always take precedence over these values.
 const ENV_DEFAULTS: Partial<Record<Exclude<Command, 'help'>, { keys: string[]; env: string }>> = {
   verify: {
+    keys: ['rpc-url', 'rpcUrl'],
+    env: 'HARPOCRATES_RPC_URL',
+  },
+  'verify-batch': {
     keys: ['rpc-url', 'rpcUrl'],
     env: 'HARPOCRATES_RPC_URL',
   },
@@ -170,6 +199,9 @@ function describeUsageError(command: string, err: unknown): string {
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv
+  if (command === '--version' || command === '-v') {
+    return { command: 'version', flags: {} }
+  }
   if (command === undefined || !Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
     return { command: 'help', flags: {} }
   }

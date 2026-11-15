@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { parseManifest, serializeManifest, createProofManifest, type ProofManifest } from '../src/manifest.js'
 import { createReceipt, type VerificationReceipt } from '../src/receipt.js'
 import {
@@ -260,7 +261,7 @@ describe('privacy regression', () => {
 
 describe('committed interop fixture regression', () => {
   function fixturePath(name: string): string {
-    return new URL(`../../devx/fixtures/c2pa/${name}`, import.meta.url).pathname
+    return fileURLToPath(new URL(`../../devx/fixtures/c2pa/${name}`, import.meta.url))
   }
 
   it('still matches the committed expected export byte-for-byte', () => {

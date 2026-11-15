@@ -30,6 +30,27 @@ node dist/cli.js verify --manifest proof.json \
   --source-address G... --timeout 5000 --output json
 ```
 
+To verify a bounded batch of manifests (up to 64 items per run) with JSONL
+progress on `stderr` and deterministic JSONL result records on `stdout`:
+
+```sh
+node dist/cli.js verify-batch --input ./manifests \
+  --contract-id C... --network testnet --max-items 32
+# or: node dist/cli.js verify --batch ./manifests --contract-id C...
+```
+
+`verify-batch` (or `verify --batch`) accepts either a directory of `.json`
+manifests (ordered lexicographically by filename) or a JSON array file listing
+manifest paths. Each item receives a deterministic, privacy-safe `itemId`
+(`manifest:<sha256>` from canonical manifest bytes, `raw:<sha256>` for malformed
+files, or `unreadable:<index>`) so local filesystem paths are never leaked to
+`stdout` or `stderr`. Result records (`"type":"result"`) are emitted exclusively
+on `stdout` as one canonical JSON object per line; progress events
+(`"type":"progress"`, phases `start`, `item`, `complete`) and `--debug`
+diagnostics are written exclusively to `stderr`. Batch selections that are empty
+or exceed `--max-items` (1–64, default 64) fail closed with exit code `8` and
+leave `stdout` empty.
+
 To check the on-chain lifecycle status of a proof directly by its 32-byte proof ID:
 
 ```sh
@@ -78,15 +99,15 @@ Script authors and CI integrations can rely on the following exit codes to deter
 
 | Code | Meaning | Emitted by |
 | :--- | :--- | :--- |
-| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
-| `1` | `expired` | `verify`, `status`, `verify-lineage` |
-| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
-| `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
-| `4` | `network_mismatch` | `verify` |
-| `5` | `contract_mismatch` | `verify` |
-| `6` | `pending` (offline verification) | `verify` |
-| `7` | `failed` transaction | `verify` |
-| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `0` | `valid` / `registered` / success | `verify`, `verify-batch`, `status`, `verify-receipt`, `verify-lineage` |
+| `1` | `expired` | `verify`, `verify-batch`, `status`, `verify-lineage` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `verify-batch`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `3` | `not_found` / `missing` / `unknown` | `verify`, `verify-batch`, `status`, `verify-lineage` |
+| `4` | `network_mismatch` | `verify`, `verify-batch` |
+| `5` | `contract_mismatch` | `verify`, `verify-batch` |
+| `6` | `pending` (offline verification) | `verify`, `verify-batch` |
+| `7` | `failed` transaction | `verify`, `verify-batch` |
+| `8` | `error` (malformed input, bound exceeded, dependency failure, invalid receipt, etc.) | `verify`, `verify-batch`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
 
 An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
 

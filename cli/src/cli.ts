@@ -35,13 +35,24 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  ABSOLUTE_MAX_BATCH_ITEMS,
+  BatchBoundError,
+  DEFAULT_MAX_BATCH_ITEMS,
+  resolveBatchManifestSelection,
+  runBatchVerification,
+  serializeBatchJsonLine,
+} from './batch-verify.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -104,6 +115,8 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   switch (command) {
     case 'verify':
       return await handleVerify(flags, debugLog)
+    case 'verify-batch':
+      return await handleVerifyBatch(flags, debugLog)
     case 'status':
       return await handleStatus(flags, debugLog)
     case 'manifest':
@@ -116,8 +129,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -126,6 +140,16 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 }
 
 async function handleVerify(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
+  if (flags.batch || flags.b) {
+    if (flags.manifest || flags.m) {
+      exit(2, 'cannot specify both --manifest and --batch')
+    }
+    if (flags['tx-hash'] || flags.txHash) {
+      exit(2, 'cannot specify --tx-hash with --batch')
+    }
+    return await handleVerifyBatch(flags, debugLog)
+  }
+
   const contractId = flags['contract-id'] || flags.contractId
   const manifestPath = flags.manifest || flags.m
   const txHash = flags['tx-hash'] || flags.txHash
@@ -206,6 +230,94 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
     error: 8,
   }
   exit(exitCodes[receipt.result] ?? 8)
+}
+
+function parseMaxItems(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_MAX_BATCH_ITEMS
+  if (!/^[0-9]+$/.test(raw)) {
+    exit(2, `--max-items must be an integer between 1 and ${ABSOLUTE_MAX_BATCH_ITEMS}`)
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 1 || value > ABSOLUTE_MAX_BATCH_ITEMS) {
+    exit(2, `--max-items must be an integer between 1 and ${ABSOLUTE_MAX_BATCH_ITEMS}`)
+  }
+  return value
+}
+
+async function handleVerifyBatch(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const selectionPath = flags.batch || flags.b || flags.input || flags.i
+  const outputFormat = flags.output || flags.o
+
+  if (!selectionPath) {
+    exit(2, '--input (or --batch) is required for batch verification')
+  }
+  if (outputFormat !== undefined && outputFormat !== 'jsonl') {
+    exit(2, 'invalid --output for batch verification: expected "jsonl"')
+  }
+
+  const maxItems = parseMaxItems(flags['max-items'] || flags.maxItems)
+  const timeoutMs = parseTimeout(flags.timeout)
+  const contractId = resolveContractId(flags['contract-id'] || flags.contractId)
+
+  if (!contractId || !StrKey.isValidContract(contractId)) {
+    exit(8, 'a valid --contract-id is required for verification')
+  }
+
+  const network = resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE)
+  const offline = flags.offline === 'true'
+  const rpcUrl = flags['rpc-url'] || flags.rpcUrl
+  const sourceAddress =
+    flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
+
+  let manifestPaths: string[]
+  try {
+    manifestPaths = await resolveBatchManifestSelection(selectionPath, maxItems)
+  } catch (err) {
+    if (err instanceof BatchBoundError) {
+      exit(8, err.message)
+    }
+    exit(8, 'invalid or unreadable batch selection')
+  }
+
+  debugLog({
+    event: 'verify-batch.start',
+    count: manifestPaths.length,
+    maxItems,
+    contractId,
+    network,
+    offline,
+  })
+
+  const summary = await runBatchVerification({
+    manifestPaths,
+    contractId,
+    network,
+    offline,
+    maxItems,
+    rpcUrl,
+    sourceAddress,
+    timeoutMs,
+    onProgress: (event) => {
+      process.stderr.write(serializeBatchJsonLine(event) + '\n')
+    },
+    onResult: (record) => {
+      process.stdout.write(serializeBatchJsonLine(record) + '\n')
+    },
+  })
+
+  debugLog({
+    event: 'verify-batch.complete',
+    total: summary.total,
+    validCount: summary.validCount,
+    pendingCount: summary.pendingCount,
+    failedCount: summary.failedCount,
+    exitCode: summary.exitCode,
+  })
+
+  exit(summary.exitCode)
 }
 
 function parseTimeout(raw: string | undefined): number {
@@ -595,6 +707,7 @@ Usage:
 
 Commands:
   verify         Verify a proof against the Stellar network.
+  verify-batch   Verify a bounded batch of manifests with JSONL progress on stderr.
   status         Report the on-chain lifecycle status of a proof by proof ID.
   verify-lineage Verify a derivative's full lineage back to registered originals.
   register       Register a source or seal proof using a local signing key.
@@ -656,13 +769,28 @@ Verify Receipt options:
 Verify options:
   --contract-id     Contract ID on Stellar (required).
   --manifest        Path to a proof manifest JSON file (use "-" for stdin).
+  --batch, -b       Directory of manifest JSON files or JSON array list for batch mode.
+  --max-items       Maximum manifests to verify in batch mode (1-64, default: 64).
   --tx-hash         Transaction hash to verify on-chain.
   --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --rpc-url         Stellar RPC URL (default: testnet).
   --source-address  Source address for simulation.
-  --output, -o      Output format: "text" (default) or "json".
+  --output, -o      Output format: "text" (default) or "json" ("jsonl" in batch mode).
   --offline         Skip on-chain lookup; validate locally only.
   --timeout         RPC request timeout in milliseconds (default: 15000).
+
+Verify Batch options:
+  --input, -i       Directory of manifest JSON files or JSON array file path (required).
+  --batch, -b       Alias for --input.
+  --contract-id     Contract ID on Stellar (required).
+  --max-items       Maximum manifests to verify (1-64, default: 64).
+  --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
+  --rpc-url         Stellar RPC URL (default: testnet).
+  --source-address  Source address for simulation.
+  --output, -o      Output format: "jsonl" (default).
+  --offline         Skip on-chain lookup; validate locally only.
+  --timeout         RPC request timeout in milliseconds (default: 15000).
+  Result records are written as JSONL to stdout; progress and diagnostics go only to stderr.
 
 Manifest options:
   --input, -i       Path to metadata JSON file (use "-" for stdin; required).
