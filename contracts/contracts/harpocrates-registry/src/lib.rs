@@ -613,6 +613,41 @@ pub enum ProofVerificationStatus {
     NotFound,
 }
 
+/// Recorded ledger anchor captured when a proof first transitions to
+/// `STATUS_REVOKED` (#1200).
+///
+/// Stored at the additive key `DataKey::ProofRevocation(proof_id)` so
+/// `ProofRecord` keeps its byte-identical layout across upgrades and never
+/// mutates immutable statement identity.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRevocationRecord {
+    /// Ledger sequence at which revocation took effect.
+    pub effective_ledger: u32,
+    /// Ledger timestamp (epoch seconds) at which revocation took effect.
+    pub revoked_at: u64,
+}
+
+/// Revocation-aware status snapshot returned by
+/// [`HarpocratesRegistry::get_revoked_proof_status`] (#1200).
+///
+/// Keeps `effective_ledger` (when revocation took effect) strictly distinct
+/// from `query_ledger` (the ledger at which the status was read) while
+/// surfacing immutable statement identity (`video_hash`, `metadata_hash`, `tier`).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevokedProofStatus {
+    pub proof_id: BytesN<32>,
+    pub status: ProofVerificationStatus,
+    pub is_revoked: bool,
+    pub effective_ledger: Option<u32>,
+    pub revoked_at: Option<u64>,
+    pub query_ledger: u32,
+    pub video_hash: Option<BytesN<32>>,
+    pub metadata_hash: Option<BytesN<32>>,
+    pub tier: u32,
+}
+
 /// Comprehensive proof assurance view combining status, tier, timestamp assurance,
 /// dispute count, envelope version, and issuer verifiability in a single call.
 #[contracttype]
@@ -1963,6 +1998,8 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Effective ledger and timestamp recorded when a proof first becomes revoked (#1200).
+    ProofRevocation(BytesN<32>),
 }
 
 #[contracterror]
@@ -4500,6 +4537,16 @@ impl HarpocratesRegistry {
 
     fn revoke_proof_internal(env: &Env, admin: &Address, proof_id: &BytesN<32>, reason_code: u32) {
         let mut record = get_proof_record(env, proof_id);
+        let revocation_key = DataKey::ProofRevocation(proof_id.clone());
+        if record.status != STATUS_REVOKED && !env.storage().persistent().has(&revocation_key) {
+            env.storage().persistent().set(
+                &revocation_key,
+                &ProofRevocationRecord {
+                    effective_ledger: env.ledger().sequence(),
+                    revoked_at: env.ledger().timestamp(),
+                },
+            );
+        }
         record.status = STATUS_REVOKED;
         env.storage()
             .persistent()
@@ -6969,6 +7016,74 @@ impl HarpocratesRegistry {
         };
         collect_valid_seal_signers(&env, &policy, &proof_id, None).len()
     }
+
+    /// Return the recorded revocation ledger anchor for `proof_id`, if one was
+    /// captured at revocation time (#1200).
+    pub fn get_proof_revocation(env: Env, proof_id: BytesN<32>) -> Option<ProofRevocationRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofRevocation(proof_id))
+    }
+
+    /// Return proof verification status together with the recorded revocation
+    /// effective ledger (distinct from `query_ledger`) and immutable statement
+    /// identity (#1200).
+    ///
+    /// - Unknown proofs return `NotFound` with `is_revoked = false` and `None`
+    ///   revocation/identity fields.
+    /// - Active or expired proofs return `is_revoked = false` with
+    ///   `effective_ledger = None` and preserved statement identity.
+    /// - Revoked proofs return `is_revoked = true` with the `effective_ledger`
+    ///   and `revoked_at` recorded when revocation first took effect (or `None`
+    ///   for pre-#1200 legacy revoked rows, never fabricating `query_ledger`).
+    pub fn get_revoked_proof_status(env: Env, proof_id: BytesN<32>) -> RevokedProofStatus {
+        let query_ledger = env.ledger().sequence();
+        let record_opt: Option<ProofRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proof(proof_id.clone()));
+
+        let Some(record) = record_opt else {
+            return RevokedProofStatus {
+                proof_id,
+                status: ProofVerificationStatus::NotFound,
+                is_revoked: false,
+                effective_ledger: None,
+                revoked_at: None,
+                query_ledger,
+                video_hash: None,
+                metadata_hash: None,
+                tier: 0,
+            };
+        };
+
+        let status = Self::get_proof_status(env.clone(), proof_id.clone());
+        let is_revoked = status == ProofVerificationStatus::Revoked;
+        let (effective_ledger, revoked_at) = if is_revoked {
+            match env
+                .storage()
+                .persistent()
+                .get::<DataKey, ProofRevocationRecord>(&DataKey::ProofRevocation(proof_id.clone()))
+            {
+                Some(rev) => (Some(rev.effective_ledger), Some(rev.revoked_at)),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        RevokedProofStatus {
+            proof_id,
+            status,
+            is_revoked,
+            effective_ledger,
+            revoked_at,
+            query_ledger,
+            video_hash: Some(record.video_hash),
+            metadata_hash: Some(record.metadata_hash),
+            tier: record.tier,
+        }
+    }
 }
 
 pub fn version(env: Env) -> soroban_sdk::String {
@@ -9107,6 +9222,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_revoked_status_ledger;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]

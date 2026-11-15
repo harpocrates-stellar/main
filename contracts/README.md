@@ -548,6 +548,30 @@ returned in chronological order.
 
 All registration functions and `revoke_proof` automatically record history.
 
+### Revoked Proof Status And Effective Ledger (#1200)
+
+Consumers that need to distinguish *when* a statement became revoked from the
+current query ledger can call:
+
+```text
+get_revoked_proof_status(proof_id: BytesN<32>) -> RevokedProofStatus
+get_proof_revocation(proof_id: BytesN<32>) -> Option<ProofRevocationRecord>
+```
+
+- When `revoke_proof` or `revoke_proofs` first transitions a proof to
+  `STATUS_REVOKED`, the contract stores an additive `ProofRevocationRecord`
+  (`effective_ledger`, `revoked_at`) under `DataKey::ProofRevocation(proof_id)`
+  without altering `ProofRecord` layout or mutating immutable statement
+  identity (`video_hash`, `metadata_hash`, `tier`, `created_at`, `source`,
+  `issuer`, `nullifier`).
+- Repeated revocation calls on an already-revoked proof preserve the original
+  `effective_ledger` and `revoked_at`.
+- `RevokedProofStatus` reports `effective_ledger` alongside `query_ledger`
+  (`env.ledger().sequence()`). Unknown, valid, or expired proofs return
+  `is_revoked = false` and `effective_ledger = None`; pre-#1200 legacy revoked
+  rows without a stored `ProofRevocationRecord` return `is_revoked = true` with
+  `effective_ledger = None` rather than fabricating `query_ledger`.
+
 ### Privacy Properties
 
 - History entries contain no sensitive proof material.
