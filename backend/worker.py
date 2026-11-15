@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
 import logging
+import re
 import time
 import os
 from logging_utils import log_structured
@@ -7,9 +12,21 @@ import traceback
 from pathlib import Path
 
 from db import (
+    DEADLINE_KIND_EXECUTION_TIMEOUT,
+    DEADLINE_KIND_QUEUE_EXPIRED,
+    ProcessingDeadlinePolicy,
+    _JOBS,
+    _JOBS_LOCK,
+    active_job_writer,
+    expire_active_jobs,
+    expire_queued_jobs,
+    is_job_writer_active,
     lease_job,
     heartbeat_job,
+    load_processing_deadline_policy,
+    register_job_writer,
     report_job_progress,
+    unregister_job_writer,
     complete_job,
     fail_job,
     insert_proof_event,
@@ -21,12 +38,21 @@ from db import (
 from envelope import canonical_metadata_hash
 from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
+try:
+    from registration_reconcile import (
+        default_min_confirmations,
+        process_verify_tx_job,
+        reconcile_pending_registrations,
+    )
+except ImportError:
+    default_min_confirmations = None
+    process_verify_tx_job = None
+    reconcile_pending_registrations = None
 from tracing import traced_job
 from chain_indexer import run_indexer_loop
 
@@ -40,7 +66,14 @@ LOGGER.setLevel(logging.INFO)
 WORKER_ID = f"worker-{os.getpid()}"
 
 @traced_job("job.media.embed")
-def process_embed(job: dict) -> dict:
+def process_embed(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        message_path = job["message_path"]
+        output_path = job["output_path"]
+        message = Path(message_path).read_text()
+        meta = embed_metadata(input_path, message, output_path)
+        return {"output_path": output_path, "message": message, **(meta if isinstance(meta, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     metadata = payload["metadata"]
@@ -51,33 +84,34 @@ def process_embed(job: dict) -> dict:
     
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
-        
-    report_job_progress(job_id, "hashing_source")
-    source_hash = sha256_file(input_path)
 
-    def on_frame(frames_done: int, frames_total: int | None) -> None:
-        percent = (frames_done / frames_total * 100.0) if frames_total else None
-        report_job_progress(job_id, "embedding", percent)
+    with active_job_writer(job_id):
+        report_job_progress(job_id, "hashing_source")
+        source_hash = sha256_file(input_path)
 
-    embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
+        def on_frame(frames_done: int, frames_total: int | None) -> None:
+            percent = (frames_done / frames_total * 100.0) if frames_total else None
+            report_job_progress(job_id, "embedding", percent)
 
-    report_job_progress(job_id, "hashing_output")
-    embedded_hash = sha256_file(output_path)
-    metadata_hash = canonical_metadata_hash(metadata)
+        embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
 
-    report_job_progress(job_id, "recording")
-    db_event = insert_proof_event(
-        event_type="embed",
-        file_name=normalize_filename(filename),
-        video_hash=embedded_hash,
-        metadata_hash=metadata_hash,
-        proof_id=metadata.get("proofId"),
-        tier=metadata.get("tier"),
-        embedded_hash=embedded_hash,
-        metadata=redact_metadata(metadata),
-    )
-    
-    input_path.unlink(missing_ok=True)
+        report_job_progress(job_id, "hashing_output")
+        embedded_hash = sha256_file(output_path)
+        metadata_hash = canonical_metadata_hash(metadata)
+
+        report_job_progress(job_id, "recording")
+        db_event = insert_proof_event(
+            event_type="embed",
+            file_name=normalize_filename(filename),
+            video_hash=embedded_hash,
+            metadata_hash=metadata_hash,
+            proof_id=metadata.get("proofId"),
+            tier=metadata.get("tier"),
+            embedded_hash=embedded_hash,
+            metadata=redact_metadata(metadata),
+        )
+
+        input_path.unlink(missing_ok=True)
     
     return {
         "source_hash": source_hash,
@@ -87,7 +121,12 @@ def process_embed(job: dict) -> dict:
     }
 
 @traced_job("job.media.extract")
-def process_extract(job: dict) -> dict:
+def process_extract(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = extract_metadata(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     filename = payload["filename"]
@@ -96,22 +135,23 @@ def process_extract(job: dict) -> dict:
     
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
-        
-    metadata = extract_metadata(input_path)
-    video_hash = sha256_file(input_path)
-    metadata_hash = canonical_metadata_hash(metadata) if metadata else None
-    
-    db_event = insert_proof_event(
-        event_type="extract",
-        file_name=normalize_filename(filename),
-        video_hash=video_hash,
-        metadata_hash=metadata_hash,
-        proof_id=metadata.get("proofId") if metadata else None,
-        tier=metadata.get("tier") if metadata else None,
-        metadata=redact_metadata(metadata),
-    )
-    
-    input_path.unlink(missing_ok=True)
+
+    with active_job_writer(job_id):
+        metadata = extract_metadata(input_path)
+        video_hash = sha256_file(input_path)
+        metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+
+        db_event = insert_proof_event(
+            event_type="extract",
+            file_name=normalize_filename(filename),
+            video_hash=video_hash,
+            metadata_hash=metadata_hash,
+            proof_id=metadata.get("proofId") if metadata else None,
+            tier=metadata.get("tier") if metadata else None,
+            metadata=redact_metadata(metadata),
+        )
+
+        input_path.unlink(missing_ok=True)
     
     return {
         "video_hash": video_hash,
@@ -121,7 +161,12 @@ def process_extract(job: dict) -> dict:
     }
 
 @traced_job("job.proof.noir")
-def process_silent_witness(job: dict) -> dict:
+def process_silent_witness(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = generate_silent_witness(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
 
     video_hash = payload["video_hash"]
@@ -139,9 +184,112 @@ def process_silent_witness(job: dict) -> dict:
     
     return {"proof": proof}
 
-def process_verify_tx(job: dict) -> dict:
+def process_verify_tx(job: dict, storage: object | None = None) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
+    if storage is not None or ("input_path" in job and "payload" not in job):
+        import json
+        data = json.loads(Path(job["input_path"]).read_text())
+        status = verify_transaction_status(data["tx_id"])
+        output_path = job["output_path"]
+        Path(output_path).write_text(json.dumps(status))
+        return {"output_path": output_path, **(status if isinstance(status, dict) else {"status": status})}
     return process_verify_tx_job(job.get("payload") or {})
+
+
+@dataclass(frozen=True)
+class DeadlineSweepResult:
+    queue_expired_job_ids: tuple[int | str, ...]
+    execution_timed_out_job_ids: tuple[int | str, ...]
+    cleaned_artifact_count: int
+    deferred_cleanup_job_ids: tuple[int | str, ...]
+
+
+def cleanup_deadline_artifacts(
+    *,
+    storage_dir: Path | str | None = None,
+) -> tuple[int, tuple[int | str, ...]]:
+    """Delete artifacts of deadline-expired jobs ONLY after active writers have stopped."""
+    target_dir = (
+        Path(storage_dir)
+        if storage_dir is not None
+        else Path(os.getenv("HARPOCRATES_STORAGE_DIR", "/tmp/harpocrates_jobs"))
+    )
+
+    with _JOBS_LOCK:
+        candidate_jobs = [
+            (jid, dict(job))
+            for jid, job in _JOBS.items()
+            if job.get("deadline_kind")
+            in (DEADLINE_KIND_QUEUE_EXPIRED, DEADLINE_KIND_EXECUTION_TIMEOUT)
+            and job.get("cleanup_status") != "cleaned"
+        ]
+
+    cleaned_files = 0
+    deferred_ids: list[int | str] = []
+
+    for jid, job_snap in candidate_jobs:
+        if job_snap.get("status") in ("pending", "running") or is_job_writer_active(jid):
+            with _JOBS_LOCK:
+                live_job = _JOBS.get(jid)
+                if live_job is not None:
+                    live_job["cleanup_status"] = "deferred_active_writer"
+            deferred_ids.append(jid)
+            continue
+
+        if target_dir.exists() and target_dir.is_dir() and not target_dir.is_symlink():
+            resolved_root = target_dir.resolve()
+            pattern = re.compile(rf"^job_{re.escape(str(jid))}_(?:input|output)(?:[._-].*)?$")
+            for entry in list(target_dir.iterdir()):
+                if not pattern.match(entry.name):
+                    continue
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                try:
+                    entry.resolve().relative_to(resolved_root)
+                except (OSError, ValueError):
+                    continue
+                # Re-verify writer inactivity immediately before unlinking each file
+                if is_job_writer_active(jid):
+                    deferred_ids.append(jid)
+                    break
+                try:
+                    entry.unlink(missing_ok=True)
+                    cleaned_files += 1
+                except OSError:
+                    pass
+
+        if jid not in deferred_ids:
+            with _JOBS_LOCK:
+                live_job = _JOBS.get(jid)
+                if live_job is not None:
+                    live_job["cleanup_status"] = "cleaned"
+                    live_job["purged"] = True
+
+    return cleaned_files, tuple(deferred_ids)
+
+
+def enforce_processing_deadlines(
+    *,
+    storage_dir: Path | str | None = None,
+    now: datetime | float | None = None,
+    policy: ProcessingDeadlinePolicy | None = None,
+) -> DeadlineSweepResult:
+    """Enforce queue expiry, active execution timeout, and writer-gated artifact cleanup."""
+    eff_policy = policy if policy is not None else load_processing_deadline_policy()
+    q_expired = expire_queued_jobs(now=now, policy=eff_policy)
+    exec_timed_out = expire_active_jobs(now=now, policy=eff_policy)
+    cleaned_count, deferred_ids = cleanup_deadline_artifacts(storage_dir=storage_dir)
+    return DeadlineSweepResult(
+        queue_expired_job_ids=tuple(q_expired),
+        execution_timed_out_job_ids=tuple(exec_timed_out),
+        cleaned_artifact_count=cleaned_count,
+        deferred_cleanup_job_ids=deferred_ids,
+    )
+
+
+def is_fatal(job_type: str, err: BaseException) -> bool:
+    """Classify whether a job failure is non-retryable."""
+    return isinstance(err, ValueError) and job_type != "verify_tx"
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
@@ -269,12 +417,15 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
+            deadline_policy = load_processing_deadline_policy()
             if now_time - last_sweep_time >= 300:
                 last_sweep_time = now_time
                 try:
+                    enforce_processing_deadlines(policy=deadline_policy)
                     sweep_job_files()
                 except Exception as e:
                     LOGGER.error("Job file sweep failed: %s", type(e).__name__)
@@ -295,6 +446,7 @@ def run_worker(
             hb_stop_event = threading.Event()
             hb_thread = threading.Thread(target=heartbeat_loop, args=(job_id, hb_stop_event))
             hb_thread.start()
+            writer_token = f"{WORKER_ID}:{job_id}:{time.monotonic_ns()}"
 
             def _execute_job():
                 try:
@@ -318,15 +470,25 @@ def run_worker(
                         is_fatal = isinstance(err, ValueError)
                     fail_job(job_id, str(err), is_fatal=is_fatal)
                 finally:
+                    unregister_job_writer(job_id, writer_token)
                     hb_stop_event.set()
                     hb_thread.join()
 
             work_thread = threading.Thread(target=_execute_job)
             work_thread.daemon = True
+            register_job_writer(job_id, writer_token, is_alive=work_thread.is_alive)
+            exec_started_mono = time.monotonic()
             work_thread.start()
 
             while work_thread.is_alive():
                 work_thread.join(timeout=0.1)
+                if work_thread.is_alive() and (
+                    time.monotonic() - exec_started_mono >= deadline_policy.execution_timeout_seconds
+                ):
+                    LOGGER.warning("Job %s exceeded execution deadline; deferring cleanup until writer exits", job_id)
+                    hb_stop_event.set()
+                    expire_active_jobs(policy=deadline_policy)
+                    break
                 if stop_event.is_set() and work_thread.is_alive():
                     # Stop event received while processing job: give it until grace period expires
                     work_thread.join(timeout=grace_period_seconds)

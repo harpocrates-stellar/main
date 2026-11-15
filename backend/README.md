@@ -342,6 +342,27 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Worker Processing Deadline Policy
+
+`db.py` and `worker.py` enforce separate deadlines for queued vs. active work via
+`ProcessingDeadlinePolicy` (`JOB_QUEUE_TTL_SECONDS`, default `900`, and
+`JOB_EXECUTION_TIMEOUT_SECONDS`, default `600`):
+
+- **Queue expiry (`queue_expired`):** `pending` jobs exceeding `queue_deadline_at`
+  expire before execution (`expire_queued_jobs` and `lease_job`), transitioning
+  to `status="expired"` and `error="queue_deadline_exceeded"`. Queue waiting time
+  never reduces the execution budget once a job is leased.
+- **Execution timeout (`execution_timeout`):** Leased `running` jobs receive a
+  fresh `execution_deadline_at = leased_at + execution_timeout_seconds`.
+  Exceeding this bound transitions the job via `expire_active_jobs` to
+  `status="failed"`, `deadline_kind="execution_timeout"`, and
+  `error="execution_deadline_exceeded"`.
+- **Writer-gated artifact cleanup:** `register_job_writer`, `active_job_writer`,
+  and `cleanup_deadline_artifacts` defer unlinking `job_<id>_input` /
+  `job_<id>_output` (`cleanup_status="deferred_active_writer"`) while the worker
+  thread/process is still writing, cleaning artifacts only after the active
+  writer has exited.
+
 ## Test
 
 ```powershell

@@ -5,10 +5,13 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
+import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Iterator
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterator
 
 import psycopg
 from psycopg.rows import dict_row
@@ -1170,58 +1173,278 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
     return receipts
 
 
-_JOBS: dict[int, dict[str, Any]] = {}
+_JOBS: dict[int | str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
+_ACTIVE_JOB_WRITERS: dict[int | str, dict[str, Callable[[], bool] | None]] = {}
 _next_job_id = 1
 
+DEFAULT_JOB_QUEUE_TTL_SECONDS = 900.0
+DEFAULT_JOB_EXECUTION_TIMEOUT_SECONDS = 600.0
 
-def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
-    """Enqueue a background job and return its job id."""
+DEADLINE_KIND_QUEUE_EXPIRED = "queue_expired"
+DEADLINE_KIND_EXECUTION_TIMEOUT = "execution_timeout"
+
+
+@dataclass(frozen=True)
+class ProcessingDeadlinePolicy:
+    """Separate deadlines for pending queue residence vs. active worker execution."""
+
+    queue_ttl_seconds: float = DEFAULT_JOB_QUEUE_TTL_SECONDS
+    execution_timeout_seconds: float = DEFAULT_JOB_EXECUTION_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.queue_ttl_seconds, bool)
+            or not isinstance(self.queue_ttl_seconds, (int, float))
+            or float(self.queue_ttl_seconds) <= 0.0
+        ):
+            raise ValueError("queue_ttl_seconds must be a positive number")
+        if (
+            isinstance(self.execution_timeout_seconds, bool)
+            or not isinstance(self.execution_timeout_seconds, (int, float))
+            or float(self.execution_timeout_seconds) <= 0.0
+        ):
+            raise ValueError("execution_timeout_seconds must be a positive number")
+
+
+def load_processing_deadline_policy() -> ProcessingDeadlinePolicy:
+    """Load queue expiry and execution timeout bounds from environment variables."""
+    q_ttl = _positive_float_env("JOB_QUEUE_TTL_SECONDS", DEFAULT_JOB_QUEUE_TTL_SECONDS)
+    exec_timeout = _positive_float_env(
+        "JOB_EXECUTION_TIMEOUT_SECONDS",
+        DEFAULT_JOB_EXECUTION_TIMEOUT_SECONDS,
+    )
+    return ProcessingDeadlinePolicy(
+        queue_ttl_seconds=q_ttl,
+        execution_timeout_seconds=exec_timeout,
+    )
+
+
+def _coerce_deadline_utc(val: datetime | float | int | str | None) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(float(val), tz=timezone.utc)
+    if isinstance(val, str) and val.strip():
+        try:
+            parsed = datetime.fromisoformat(val.strip().replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def register_job_writer(
+    job_id: int | str,
+    writer_token: str,
+    *,
+    is_alive: Callable[[], bool] | None = None,
+) -> None:
+    """Register an active writer process/thread holding open artifact handles for ``job_id``."""
+    if not isinstance(writer_token, str) or not writer_token.strip():
+        raise ValueError("writer_token must be a non-empty string")
+    with _JOBS_LOCK:
+        writers = _ACTIVE_JOB_WRITERS.setdefault(job_id, {})
+        writers[writer_token] = is_alive
+
+
+def unregister_job_writer(job_id: int | str, writer_token: str) -> None:
+    """Release an active writer token once the worker process/thread has stopped writing."""
+    with _JOBS_LOCK:
+        writers = _ACTIVE_JOB_WRITERS.get(job_id)
+        if not writers:
+            return
+        writers.pop(writer_token, None)
+        if not writers:
+            _ACTIVE_JOB_WRITERS.pop(job_id, None)
+
+
+@contextmanager
+def active_job_writer(
+    job_id: int | str,
+    writer_token: str | None = None,
+    *,
+    is_alive: Callable[[], bool] | None = None,
+) -> Iterator[str]:
+    """Context manager tracking an active job artifact writer until exit."""
+    token = writer_token or f"writer-{uuid.uuid4().hex[:12]}"
+    register_job_writer(job_id, token, is_alive=is_alive)
+    try:
+        yield token
+    finally:
+        unregister_job_writer(job_id, token)
+
+
+def is_job_writer_active(job_id: int | str) -> bool:
+    """Return True if any registered process/thread is still actively writing artifacts for ``job_id``."""
+    with _JOBS_LOCK:
+        writers = _ACTIVE_JOB_WRITERS.get(job_id)
+        if not writers:
+            return False
+        dead_tokens: list[str] = []
+        any_live = False
+        for tok, probe in list(writers.items()):
+            if probe is None:
+                any_live = True
+            else:
+                try:
+                    alive = bool(probe())
+                except Exception:
+                    alive = True
+                if alive:
+                    any_live = True
+                else:
+                    dead_tokens.append(tok)
+        for tok in dead_tokens:
+            writers.pop(tok, None)
+        if not writers:
+            _ACTIVE_JOB_WRITERS.pop(job_id, None)
+        return any_live
+
+
+def enqueue_job(
+    job_type: str,
+    payload: dict[str, Any],
+    *,
+    now: datetime | float | None = None,
+    policy: ProcessingDeadlinePolicy | None = None,
+) -> int:
+    """Enqueue a background job with a queue-expiry deadline and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    eff_policy = policy if policy is not None else load_processing_deadline_policy()
+    now_dt = _coerce_deadline_utc(now) or datetime.now(timezone.utc)
+    queue_deadline_dt = now_dt + timedelta(seconds=float(eff_policy.queue_ttl_seconds))
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "created_at": now_dt.isoformat(),
+            "queue_deadline_at": queue_deadline_dt.isoformat(),
+            "execution_deadline_at": None,
+        }
+        return job_id
 
 
-def get_job(job_id: int) -> dict[str, Any] | None:
+def get_job(job_id: int | str) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
-def cancel_job(job_id: int) -> bool:
+def cancel_job(job_id: int | str) -> bool:
     """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
-        return True
-    return False
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job["status"] == "pending":
+            job["status"] = "cancelled"
+            return True
+        return False
+
+
+def expire_queued_jobs(
+    *,
+    now: datetime | float | None = None,
+    policy: ProcessingDeadlinePolicy | None = None,
+) -> list[int | str]:
+    """Expire ``pending`` jobs that exceeded ``queue_deadline_at`` before execution started.
+
+    Running jobs are never affected by queue expiry once leased.
+    """
+    eff_policy = policy if policy is not None else load_processing_deadline_policy()
+    now_dt = _coerce_deadline_utc(now) or datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    expired_ids: list[int | str] = []
+    with _JOBS_LOCK:
+        for jid, job in _JOBS.items():
+            if job.get("status") != "pending":
+                continue
+            q_deadline = _coerce_deadline_utc(job.get("queue_deadline_at"))
+            if q_deadline is None:
+                created_dt = _coerce_deadline_utc(job.get("created_at"))
+                if created_dt is not None:
+                    q_deadline = created_dt + timedelta(seconds=float(eff_policy.queue_ttl_seconds))
+            if q_deadline is not None and now_dt >= q_deadline:
+                job["status"] = "expired"
+                job["deadline_kind"] = DEADLINE_KIND_QUEUE_EXPIRED
+                job["error"] = "queue_deadline_exceeded"
+                job["expired_at"] = now_iso
+                job["cleanup_status"] = "pending_cleanup"
+                expired_ids.append(jid)
+    return expired_ids
+
+
+def expire_active_jobs(
+    *,
+    now: datetime | float | None = None,
+    policy: ProcessingDeadlinePolicy | None = None,
+) -> list[int | str]:
+    """Time out ``running`` jobs that exceeded ``execution_deadline_at`` independently of queue wait."""
+    eff_policy = policy if policy is not None else load_processing_deadline_policy()
+    now_dt = _coerce_deadline_utc(now) or datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    timed_out_ids: list[int | str] = []
+    with _JOBS_LOCK:
+        for jid, job in _JOBS.items():
+            if job.get("status") != "running":
+                continue
+            exec_deadline = _coerce_deadline_utc(job.get("execution_deadline_at"))
+            if exec_deadline is None:
+                leased_dt = _coerce_deadline_utc(job.get("leased_at"))
+                if leased_dt is not None:
+                    exec_deadline = leased_dt + timedelta(
+                        seconds=float(eff_policy.execution_timeout_seconds)
+                    )
+            if exec_deadline is not None and now_dt >= exec_deadline:
+                job["status"] = "failed"
+                job["deadline_kind"] = DEADLINE_KIND_EXECUTION_TIMEOUT
+                job["error"] = "execution_deadline_exceeded"
+                job["failed_at"] = now_iso
+                job["timed_out_at"] = now_iso
+                job["cleanup_status"] = (
+                    "deferred_active_writer"
+                    if is_job_writer_active(jid)
+                    else "pending_cleanup"
+                )
+                timed_out_ids.append(jid)
+    return timed_out_ids
 
 
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: datetime | float | None = None,
+    policy: ProcessingDeadlinePolicy | None = None,
 ) -> dict[str, Any] | None:
-    """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
+    """Expire stale queued work first, then lease the next valid ``pending`` job with a fresh execution deadline."""
+    eff_policy = policy if policy is not None else load_processing_deadline_policy()
+    now_dt = _coerce_deadline_utc(now) or datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    exec_deadline_dt = now_dt + timedelta(seconds=float(eff_policy.execution_timeout_seconds))
+    with _JOBS_LOCK:
+        expire_queued_jobs(now=now_dt, policy=eff_policy)
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                job["leased_at"] = now_iso
+                job["execution_deadline_at"] = exec_deadline_dt.isoformat()
+                job["_lease_duration"] = int(lease_duration)
+                return dict(job)
     return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(job_id: int | str, progress: float | None = None, lease_duration: int = 300) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
@@ -1229,9 +1452,10 @@ def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: in
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
     del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running":
+            job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1278,28 +1502,40 @@ def report_job_progress(
     return True
 
 
-def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+def complete_job(job_id: int | str, result: Any = None) -> None:
+    """Mark an in-memory job completed unless it already expired or timed out."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        if job.get("deadline_kind") in (
+            DEADLINE_KIND_QUEUE_EXPIRED,
+            DEADLINE_KIND_EXECUTION_TIMEOUT,
+        ):
+            return
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
+def fail_job(job_id: int | str, error: str, *, is_fatal: bool = False) -> None:
     """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        if job.get("deadline_kind") in (
+            DEADLINE_KIND_QUEUE_EXPIRED,
+            DEADLINE_KIND_EXECUTION_TIMEOUT,
+        ):
+            return
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
 
 
 def get_job_queue_metrics() -> dict[str, Any]:
