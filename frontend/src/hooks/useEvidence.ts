@@ -60,6 +60,61 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   cancelled: 'Request cancelled.',
 }
 
+export type EvidenceIntentSnapshot = {
+  proofId: string
+  sourceHash: string
+  videoHash: string
+  metadataHash: string
+  tier: IdentityTier
+  wallet: string
+}
+
+export type StudioNetworkRecoveryState = {
+  requiredNetwork: string
+  requiredPassphrase: string
+  walletNetwork: string
+  walletPassphrase: string | null
+  reason: string
+  remediation: string
+  blockedIntent: EvidenceIntentSnapshot | null
+  canResume: boolean
+  validationError: string | null
+  isRevalidating: boolean
+}
+
+const HEX_64_RE = /^[0-9a-fA-F]{64}$/
+
+function snapshotEvidenceIntent(
+  proof: ProofPackage | null,
+  tier: IdentityTier,
+  wallet: string,
+): EvidenceIntentSnapshot | null {
+  if (!proof) return null
+  return {
+    proofId: proof.proofId,
+    sourceHash: proof.sourceHash,
+    videoHash: proof.videoHash,
+    metadataHash: proof.metadataHash,
+    tier,
+    wallet: wallet.trim(),
+  }
+}
+
+function intentsMatch(
+  a: EvidenceIntentSnapshot | null,
+  b: EvidenceIntentSnapshot | null,
+): boolean {
+  if (!a || !b) return false
+  return (
+    a.proofId === b.proofId &&
+    a.sourceHash === b.sourceHash &&
+    a.videoHash === b.videoHash &&
+    a.metadataHash === b.metadataHash &&
+    a.tier === b.tier &&
+    a.wallet === b.wallet
+  )
+}
+
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
   setSelectedTier: (tier: IdentityTier) => void
@@ -77,9 +132,12 @@ export type UseEvidenceReturn = {
   message: string
   registration: RegisterProofResult | null
   networkMismatch: string | null
+  networkRecovery?: StudioNetworkRecoveryState | null
   isCancellable: boolean
   handleEvidence: (nextFile: File | null) => Promise<void>
   registerProof: (wallet: string) => Promise<void>
+  revalidateNetworkRecovery?: (wallet: string) => Promise<boolean>
+  resumeAfterNetworkRecovery?: (wallet: string) => Promise<void>
   cancelEvidence: () => void
   /** Cancel an in-flight Silent Witness proof generation (no-op if idle). */
   cancelProving: () => void
@@ -93,7 +151,7 @@ type PendingRegistration = {
 }
 
 export function useEvidence(): UseEvidenceReturn {
-  const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
+  const [selectedTier, setSelectedTierState] = useState<IdentityTier>('silent')
   const [stage, setStage] = useState<Stage>('idle')
   const [hashProgress, setHashProgress] = useState<HashProgress | null>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -104,10 +162,31 @@ export function useEvidence(): UseEvidenceReturn {
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+  const [networkRecovery, setNetworkRecovery] = useState<StudioNetworkRecoveryState | null>(null)
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
   const registrationInFlightedRef = useRef<boolean>(false)
   const completedRegistrationRef = useRef<string | null>(null)
   const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
+  const networkRecoveryRef = useRef<StudioNetworkRecoveryState | null>(null)
+  const validatedIntentRef = useRef<EvidenceIntentSnapshot | null>(null)
+
+  function updateNetworkRecovery(next: StudioNetworkRecoveryState | null) {
+    networkRecoveryRef.current = next
+    setNetworkRecovery(next)
+  }
+
+  function setSelectedTier(nextTier: IdentityTier) {
+    setSelectedTierState(nextTier)
+    if (networkRecoveryRef.current) {
+      validatedIntentRef.current = null
+      updateNetworkRecovery({
+        ...networkRecoveryRef.current,
+        canResume: false,
+        validationError:
+          'Selected identity tier changed. Re-validate network and evidence intent before resuming.',
+      })
+    }
+  }
 
   // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber a
   // newer flow or a reset caused by cancellation.
@@ -191,6 +270,16 @@ export function useEvidence(): UseEvidenceReturn {
     evidenceFlowAbortRef.current = controller
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
+
+    if (networkRecoveryRef.current) {
+      validatedIntentRef.current = null
+      updateNetworkRecovery({
+        ...networkRecoveryRef.current,
+        canResume: false,
+        validationError:
+          'Selected evidence file changed. Re-validate network and evidence intent before resuming.',
+      })
+    }
 
     setFile(nextFile)
 
@@ -289,10 +378,160 @@ export function useEvidence(): UseEvidenceReturn {
     }
   }
 
+  async function revalidateNetworkRecovery(wallet: string): Promise<boolean> {
+    if (!proof || !wallet.trim()) {
+      validatedIntentRef.current = null
+      if (networkRecoveryRef.current) {
+        updateNetworkRecovery({
+          ...networkRecoveryRef.current,
+          canResume: false,
+          validationError:
+            'Select an evidence package and connect Freighter before validating recovery.',
+        })
+      }
+      setMessage('Select an evidence package and connect Freighter before validating recovery.')
+      return false
+    }
+
+    if (networkRecoveryRef.current) {
+      updateNetworkRecovery({
+        ...networkRecoveryRef.current,
+        isRevalidating: true,
+        validationError: null,
+      })
+    }
+
+    try {
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('../stellar')
+      const { checkNetworkMatch, networkName } = await import('../networkGuard')
+      const walletPassphrase = await getWalletNetwork()
+      const trimmedWallet = (walletPassphrase ?? '').trim()
+      const requiredLabel = networkName(CONTRACT_NETWORK_PASSPHRASE)
+      const walletLabel = trimmedWallet ? networkName(trimmedWallet) : 'Unavailable / Locked'
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+
+      if (!check.ok) {
+        validatedIntentRef.current = null
+        setNetworkMismatch(`${check.reason} ${check.remediation}`)
+        updateNetworkRecovery({
+          requiredNetwork: requiredLabel,
+          requiredPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+          walletNetwork: walletLabel,
+          walletPassphrase: trimmedWallet || null,
+          reason: check.reason,
+          remediation: check.remediation,
+          blockedIntent: snapshotEvidenceIntent(proof, selectedTier, wallet),
+          canResume: false,
+          validationError: check.reason,
+          isRevalidating: false,
+        })
+        setMessage(check.reason)
+        return false
+      }
+
+      if (
+        !HEX_64_RE.test(proof.sourceHash) ||
+        !HEX_64_RE.test(proof.videoHash) ||
+        !HEX_64_RE.test(proof.metadataHash) ||
+        !HEX_64_RE.test(proof.proofId)
+      ) {
+        validatedIntentRef.current = null
+        const malformedMsg =
+          'Prepared evidence digests are missing or invalid. Re-process the file before resuming.'
+        updateNetworkRecovery({
+          requiredNetwork: requiredLabel,
+          requiredPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+          walletNetwork: walletLabel,
+          walletPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+          reason: malformedMsg,
+          remediation: 'Choose and embed the video file again.',
+          blockedIntent: null,
+          canResume: false,
+          validationError: malformedMsg,
+          isRevalidating: false,
+        })
+        setMessage(malformedMsg)
+        return false
+      }
+
+      if (proof.tier !== selectedTier) {
+        validatedIntentRef.current = null
+        const tierMsg = `Selected identity tier (${selectedTier}) differs from the embedded package tier (${proof.tier}). Re-process the file before resuming.`
+        updateNetworkRecovery({
+          requiredNetwork: requiredLabel,
+          requiredPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+          walletNetwork: walletLabel,
+          walletPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+          reason: tierMsg,
+          remediation: 'Re-upload the video under the selected tier or switch back to the embedded tier.',
+          blockedIntent: snapshotEvidenceIntent(proof, selectedTier, wallet),
+          canResume: false,
+          validationError: tierMsg,
+          isRevalidating: false,
+        })
+        setMessage(tierMsg)
+        return false
+      }
+
+      const freshIntent = snapshotEvidenceIntent(proof, selectedTier, wallet)
+      validatedIntentRef.current = freshIntent
+      setNetworkMismatch(null)
+      updateNetworkRecovery({
+        requiredNetwork: requiredLabel,
+        requiredPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+        walletNetwork: requiredLabel,
+        walletPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+        reason: `Wallet connected to ${requiredLabel}.`,
+        remediation: 'Evidence intent validated. You may now resume registration.',
+        blockedIntent: freshIntent,
+        canResume: true,
+        validationError: null,
+        isRevalidating: false,
+      })
+      setMessage(
+        'Wallet network verified and selected evidence intent validated. Ready to resume registration.',
+      )
+      return true
+    } catch {
+      validatedIntentRef.current = null
+      const errMsg =
+        'Could not verify wallet network before resuming. Reconnect Freighter and try again.'
+      if (networkRecoveryRef.current) {
+        updateNetworkRecovery({
+          ...networkRecoveryRef.current,
+          canResume: false,
+          validationError: errMsg,
+          isRevalidating: false,
+        })
+      }
+      setMessage(errMsg)
+      return false
+    }
+  }
+
+  async function resumeAfterNetworkRecovery(wallet: string): Promise<void> {
+    const currentIntent = snapshotEvidenceIntent(proof, selectedTier, wallet)
+    if (!networkRecoveryRef.current || !intentsMatch(validatedIntentRef.current, currentIntent)) {
+      const msg =
+        'Selected evidence intent must be freshly validated before resuming registration.'
+      if (networkRecoveryRef.current) {
+        updateNetworkRecovery({
+          ...networkRecoveryRef.current,
+          canResume: false,
+          validationError: msg,
+        })
+      }
+      setMessage(msg)
+      return
+    }
+    await registerProof(wallet)
+  }
+
   async function registerProof(wallet: string) {
     if (!proof) return
 
-    if (!CONTRACT_ID) {
+    const activeContractId = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID || CONTRACT_ID
+    if (!activeContractId) {
       setMessage('Set VITE_HARPOCRATES_REGISTRY_ID after deploying the Soroban contract.')
       return
     }
@@ -302,18 +541,50 @@ export function useEvidence(): UseEvidenceReturn {
       return
     }
 
+    if (networkRecoveryRef.current) {
+      const currentIntent = snapshotEvidenceIntent(proof, selectedTier, wallet)
+      if (!intentsMatch(validatedIntentRef.current, currentIntent)) {
+        const msg =
+          'Selected evidence intent must be freshly validated before resuming registration.'
+        updateNetworkRecovery({
+          ...networkRecoveryRef.current,
+          canResume: false,
+          validationError: msg,
+        })
+        setMessage(msg)
+        return
+      }
+    }
+
     try {
       const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('../stellar')
-      const { checkNetworkMatch } = await import('../networkGuard')
+      const { checkNetworkMatch, networkName } = await import('../networkGuard')
       const walletPassphrase = await getWalletNetwork()
+      const trimmedWallet = (walletPassphrase ?? '').trim()
+      const requiredLabel = networkName(CONTRACT_NETWORK_PASSPHRASE)
+      const walletLabel = trimmedWallet ? networkName(trimmedWallet) : 'Unavailable / Locked'
       const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
+        validatedIntentRef.current = null
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
+        updateNetworkRecovery({
+          requiredNetwork: requiredLabel,
+          requiredPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+          walletNetwork: walletLabel,
+          walletPassphrase: trimmedWallet || null,
+          reason: check.reason,
+          remediation: check.remediation,
+          blockedIntent: snapshotEvidenceIntent(proof, selectedTier, wallet),
+          canResume: false,
+          validationError: null,
+          isRevalidating: false,
+        })
         setMessage(check.reason)
         return
       }
       setNetworkMismatch(null)
     } catch {
+      validatedIntentRef.current = null
       setMessage('Could not verify wallet network before submitting. Reconnect Freighter and try again.')
       return
     }
@@ -340,6 +611,8 @@ export function useEvidence(): UseEvidenceReturn {
         await persistRegistration(pendingPersistence.proof, pendingPersistence.result, wallet)
         pendingPersistenceRef.current = null
         completedRegistrationRef.current = registrationKey
+        validatedIntentRef.current = null
+        updateNetworkRecovery(null)
         setRegistration(pendingPersistence.result)
         setStage('registered')
         setMessage(`Registration submitted with Stellar status: ${pendingPersistence.result.status}.`)
@@ -369,7 +642,7 @@ export function useEvidence(): UseEvidenceReturn {
 
       const { registerProofOnStellar } = await import('../stellar')
       const result = await registerProofOnStellar({
-        contractId: CONTRACT_ID,
+        contractId: activeContractId,
         publicKey: wallet,
         tier: proofForRegistration.tier,
         videoHash: proofForRegistration.videoHash,
@@ -392,6 +665,8 @@ export function useEvidence(): UseEvidenceReturn {
       await persistRegistration(proofForRegistration, result, wallet)
       pendingPersistenceRef.current = null
       completedRegistrationRef.current = registrationKey
+      validatedIntentRef.current = null
+      updateNetworkRecovery(null)
       setRegistration(result)
       setStage('registered')
       setMessage(`Registration submitted with Stellar status: ${result.status}.`)
@@ -444,7 +719,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -489,9 +764,12 @@ export function useEvidence(): UseEvidenceReturn {
     message,
     registration,
     networkMismatch,
+    networkRecovery,
     isCancellable,
     handleEvidence,
     registerProof,
+    revalidateNetworkRecovery,
+    resumeAfterNetworkRecovery,
     cancelEvidence,
     cancelProving,
   }

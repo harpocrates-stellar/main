@@ -2,9 +2,18 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useEvidence } from './useEvidence'
 
-const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
+const {
+  hashFileInWorkerMock,
+  embedVideoMock,
+  persistRegistrationMock,
+  getWalletNetworkMock,
+  registerProofOnStellarMock,
+} = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
   embedVideoMock: vi.fn(),
+  persistRegistrationMock: vi.fn(),
+  getWalletNetworkMock: vi.fn(),
+  registerProofOnStellarMock: vi.fn(),
 }))
 
 vi.mock('../workers/fileHashWorkerClient', () => ({
@@ -13,6 +22,13 @@ vi.mock('../workers/fileHashWorkerClient', () => ({
 
 vi.mock('../services/evidenceService', () => ({
   embedVideo: embedVideoMock,
+  persistRegistration: persistRegistrationMock,
+}))
+
+vi.mock('../stellar', () => ({
+  CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  getWalletNetwork: getWalletNetworkMock,
+  registerProofOnStellar: registerProofOnStellarMock,
 }))
 
 describe('useEvidence hashing progress', () => {
@@ -230,6 +246,94 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('captures network mismatch recovery details and resumes only after fresh validation of evidence intent', async () => {
+    vi.stubEnv('VITE_HARPOCRATES_REGISTRY_ID', 'CTESTREGISTRYID')
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    persistRegistrationMock.mockResolvedValue(undefined)
+    registerProofOnStellarMock.mockResolvedValue({ hash: 'f'.repeat(64), status: 'SUCCESS' })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    act(() => {
+      result.current.setSelectedTier('source')
+    })
+
+    await act(async () => {
+      await result.current.handleEvidence(new File(['video'], 'clip.mp4'))
+    })
+
+    // 1. Wallet initially on Mainnet while contract requires Testnet
+    getWalletNetworkMock.mockResolvedValueOnce('Public Global Stellar Network ; September 2015')
+    await act(async () => {
+      await result.current.registerProof('GSOURCEWALLET')
+    })
+
+    expect(registerProofOnStellarMock).not.toHaveBeenCalled()
+    expect(result.current.networkRecovery).toMatchObject({
+      requiredNetwork: 'Testnet',
+      walletNetwork: 'Mainnet',
+      canResume: false,
+    })
+
+    // 2. Attempting resume without fresh validation is blocked even if wallet switched behind the scenes
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Network ; September 2015')
+    await act(async () => {
+      await result.current.resumeAfterNetworkRecovery?.('GSOURCEWALLET')
+    })
+    expect(registerProofOnStellarMock).not.toHaveBeenCalled()
+    expect(result.current.networkRecovery?.canResume).toBe(false)
+
+    // 3. Fresh validation succeeds on Testnet with matching selected intent
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Network ; September 2015')
+    let valid = false
+    await act(async () => {
+      valid = (await result.current.revalidateNetworkRecovery?.('GSOURCEWALLET')) ?? false
+    })
+    expect(valid).toBe(true)
+    expect(result.current.networkRecovery?.canResume).toBe(true)
+    expect(result.current.networkRecovery?.walletNetwork).toBe('Testnet')
+
+    // 4. Changing selected tier invalidates validated intent fail-closed until revalidated
+    act(() => {
+      result.current.setSelectedTier('seal')
+    })
+    expect(result.current.networkRecovery?.canResume).toBe(false)
+
+    await act(async () => {
+      valid = (await result.current.revalidateNetworkRecovery?.('GSOURCEWALLET')) ?? true
+    })
+    expect(valid).toBe(false)
+    expect(result.current.networkRecovery?.validationError).toContain('differs from the embedded package tier')
+
+    // 5. Switch back to the embedded 'source' tier, revalidate freshly, and resume registration
+    act(() => {
+      result.current.setSelectedTier('source')
+    })
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Network ; September 2015')
+    await act(async () => {
+      valid = (await result.current.revalidateNetworkRecovery?.('GSOURCEWALLET')) ?? false
+    })
+    expect(valid).toBe(true)
+
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Network ; September 2015')
+    await act(async () => {
+      await result.current.resumeAfterNetworkRecovery?.('GSOURCEWALLET')
+    })
+
+    expect(registerProofOnStellarMock).toHaveBeenCalledOnce()
+    expect(result.current.stage).toBe('registered')
+    expect(result.current.networkRecovery).toBeNull()
+    vi.unstubAllEnvs()
   })
 })
 
