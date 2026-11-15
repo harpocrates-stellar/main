@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import datetime
 import functools
 import hashlib
-from typing import Any, Optional, Tuple
+import json
+import threading
+from typing import Any, Mapping, Optional, Tuple
 
 from flask import Response, jsonify, request
 
@@ -120,13 +123,263 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+ALLOWED_IDENTITY_TIERS = frozenset({"silent", "source", "seal"})
+CANONICAL_BINDING_DOMAIN = b"harpocrates:registration-idempotency-binding:v1"
+CLIENT_KEY_HASH_DOMAIN = b"harpocrates:client-idempotency-key:v1"
+MAX_CLIENT_IDEMPOTENCY_KEY_LEN = 128
+MAX_TRACKED_KEY_BINDINGS = 4096
+
+
+class RegistrationKeyConflictError(Exception):
+    """Raised when a registration key or Idempotency-Key is reused with changed tier or fields."""
+
+    def __init__(self, *, field: str, code: str = "IDEMPOTENCY_CONFLICT") -> None:
+        super().__init__(f"idempotency key reused with conflicting value for '{field}'")
+        self.field = field
+        self.code = code
+
+
+def normalize_identity_tier(tier: object) -> str:
+    """Validate and canonicalize an identity tier (`silent`, `source`, or `seal`)."""
+    if not isinstance(tier, str):
+        raise ValueError("tier must be one of: silent, source, seal")
+    normalized = tier.strip().lower()
+    if normalized not in ALLOWED_IDENTITY_TIERS:
+        raise ValueError("tier must be one of: silent, source, seal")
+    return normalized
+
+
+def normalize_client_idempotency_key(raw_key: object) -> str | None:
+    """Validate optional client ``Idempotency-Key`` header and return its SHA-256 digest."""
+    if raw_key is None:
+        return None
+    if not isinstance(raw_key, str):
+        raise ValueError("Idempotency-Key must be a printable ASCII string")
+    cleaned = raw_key.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_CLIENT_IDEMPOTENCY_KEY_LEN:
+        raise ValueError(f"Idempotency-Key exceeds {MAX_CLIENT_IDEMPOTENCY_KEY_LEN} characters")
+    if not all(33 <= ord(ch) <= 126 or ch == " " for ch in cleaned):
+        raise ValueError("Idempotency-Key contains invalid control or non-ASCII characters")
+    hasher = hashlib.sha256()
+    hasher.update(CLIENT_KEY_HASH_DOMAIN)
+    encoded = cleaned.encode("ascii")
+    hasher.update(len(encoded).to_bytes(4, "big"))
+    hasher.update(encoded)
+    return hasher.hexdigest()
+
+
+def canonical_registration_idempotency_binding(
+    *,
+    video_hash: str | None,
+    metadata_hash: str | None,
+    proof_id: str | None,
+    tier: str,
+    tx_hash: str | None = None,
+    source_address: str | None = None,
+    contract_id: str | None = None,
+) -> str:
+    """Compute canonical domain-separated idempotency binding digest including ``tier``."""
+    canonical_tier = normalize_identity_tier(tier)
+    fields = (
+        (video_hash or "").strip().lower(),
+        (metadata_hash or "").strip().lower(),
+        (proof_id or "").strip().lower(),
+        canonical_tier,
+        (tx_hash or "").strip().lower(),
+        (source_address or "").strip().upper(),
+        (contract_id or "").strip().upper(),
+    )
+    hasher = hashlib.sha256()
+    hasher.update(CANONICAL_BINDING_DOMAIN)
+    for part in fields:
+        raw = part.encode("utf-8")
+        hasher.update(len(raw).to_bytes(4, "big"))
+        hasher.update(raw)
+    return hasher.hexdigest()
+
+
+class RegistrationKeyBindingRegistry:
+    """Bounded in-process registry enforcing tier-bound registration key reuse."""
+
+    def __init__(self, max_entries: int = MAX_TRACKED_KEY_BINDINGS) -> None:
+        self._lock = threading.Lock()
+        self._max_entries = max(1, int(max_entries))
+        self._bindings: OrderedDict[str, dict[str, str]] = OrderedDict()
+
+    def _evict_if_needed(self) -> None:
+        while len(self._bindings) > self._max_entries:
+            self._bindings.popitem(last=False)
+
+    @staticmethod
+    def _compare(existing: Mapping[str, str], incoming: Mapping[str, str]) -> None:
+        if existing["tier"] != incoming["tier"]:
+            raise RegistrationKeyConflictError(
+                field="tier",
+                code="REGISTRATION_TIER_CONFLICT",
+            )
+        for field in (
+            "proof_id",
+            "video_hash",
+            "metadata_hash",
+            "tx_hash",
+            "source_address",
+            "contract_id",
+            "binding_digest",
+        ):
+            if existing.get(field, "") != incoming.get(field, ""):
+                raise RegistrationKeyConflictError(field=field)
+
+    def check_only(
+        self,
+        *,
+        slot_keys: tuple[str, ...],
+        tier: str,
+        statement: Mapping[str, str | None],
+    ) -> bool:
+        canonical_tier = normalize_identity_tier(tier)
+        binding_digest = canonical_registration_idempotency_binding(
+            video_hash=statement.get("video_hash"),
+            metadata_hash=statement.get("metadata_hash"),
+            proof_id=statement.get("proof_id"),
+            tier=canonical_tier,
+            tx_hash=statement.get("tx_hash"),
+            source_address=statement.get("source_address"),
+            contract_id=statement.get("contract_id"),
+        )
+        incoming = {
+            "tier": canonical_tier,
+            "proof_id": (statement.get("proof_id") or "").strip().lower(),
+            "video_hash": (statement.get("video_hash") or "").strip().lower(),
+            "metadata_hash": (statement.get("metadata_hash") or "").strip().lower(),
+            "tx_hash": (statement.get("tx_hash") or "").strip().lower(),
+            "source_address": (statement.get("source_address") or "").strip().upper(),
+            "contract_id": (statement.get("contract_id") or "").strip().upper(),
+            "binding_digest": binding_digest,
+        }
+        found_exact = False
+        with self._lock:
+            for slot in slot_keys:
+                existing = self._bindings.get(slot)
+                if existing is not None:
+                    self._compare(existing, incoming)
+                    found_exact = True
+        return found_exact
+
+    def bind(
+        self,
+        *,
+        slot_keys: tuple[str, ...],
+        tier: str,
+        statement: Mapping[str, str | None],
+    ) -> tuple[str, bool]:
+        """Validate or record canonical binding across ``slot_keys``.
+
+        Returns ``(binding_digest, already_bound)``. Raises
+        :class:`RegistrationKeyConflictError` when any slot key is reused with a
+        different ``tier`` or conflicting canonical statement field.
+        """
+        canonical_tier = normalize_identity_tier(tier)
+        binding_digest = canonical_registration_idempotency_binding(
+            video_hash=statement.get("video_hash"),
+            metadata_hash=statement.get("metadata_hash"),
+            proof_id=statement.get("proof_id"),
+            tier=canonical_tier,
+            tx_hash=statement.get("tx_hash"),
+            source_address=statement.get("source_address"),
+            contract_id=statement.get("contract_id"),
+        )
+        incoming = {
+            "tier": canonical_tier,
+            "proof_id": (statement.get("proof_id") or "").strip().lower(),
+            "video_hash": (statement.get("video_hash") or "").strip().lower(),
+            "metadata_hash": (statement.get("metadata_hash") or "").strip().lower(),
+            "tx_hash": (statement.get("tx_hash") or "").strip().lower(),
+            "source_address": (statement.get("source_address") or "").strip().upper(),
+            "contract_id": (statement.get("contract_id") or "").strip().upper(),
+            "binding_digest": binding_digest,
+        }
+        with self._lock:
+            already_bound = False
+            for slot in slot_keys:
+                existing = self._bindings.get(slot)
+                if existing is not None:
+                    self._compare(existing, incoming)
+                    already_bound = True
+            for slot in slot_keys:
+                self._bindings[slot] = dict(incoming)
+                self._bindings.move_to_end(slot)
+            self._evict_if_needed()
+            return binding_digest, already_bound
+
+    def clear(self) -> None:
+        with self._lock:
+            self._bindings.clear()
+
+
+_KEY_BINDING_REGISTRY = RegistrationKeyBindingRegistry()
+
+
+def check_registration_key_binding(
+    *,
+    registration_key: str,
+    client_key_digest: str | None = None,
+    tier: str,
+    statement: Mapping[str, str | None],
+) -> bool:
+    slots = [f"reg:{registration_key}"]
+    if client_key_digest:
+        slots.append(f"hdr:{client_key_digest}")
+    return _KEY_BINDING_REGISTRY.check_only(
+        slot_keys=tuple(slots),
+        tier=tier,
+        statement=statement,
+    )
+
+
+def record_registration_key_binding(
+    *,
+    registration_key: str,
+    client_key_digest: str | None = None,
+    tier: str,
+    statement: Mapping[str, str | None],
+) -> tuple[str, bool]:
+    slots = [f"reg:{registration_key}"]
+    if client_key_digest:
+        slots.append(f"hdr:{client_key_digest}")
+    return _KEY_BINDING_REGISTRY.bind(
+        slot_keys=tuple(slots),
+        tier=tier,
+        statement=statement,
+    )
+
+
+def reset_registration_key_bindings_for_tests() -> None:
+    _KEY_BINDING_REGISTRY.clear()
+
+
 def _canonical_digest() -> str:
-    """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
+    """SHA-256 of method, path, query string, identity tier, client key digest, and raw body."""
     method = request.method.encode()
     path = request.path.encode()
     query = request.query_string  # already bytes
     body = request.get_data() or b""
-    data = b"|".join([method, path, query, body])
+    tier_bytes = b""
+    if body:
+        parsed = request.get_json(silent=True)
+        if isinstance(parsed, dict) and isinstance(parsed.get("tier"), str):
+            tier_bytes = parsed["tier"].strip().lower().encode("utf-8")
+    raw_hdr_key = request.headers.get("Idempotency-Key")
+    hdr_digest = b""
+    if isinstance(raw_hdr_key, str) and raw_hdr_key.strip():
+        try:
+            normalized_hdr = normalize_client_idempotency_key(raw_hdr_key)
+            if normalized_hdr:
+                hdr_digest = normalized_hdr.encode("ascii")
+        except ValueError:
+            hdr_digest = b"invalid"
+    data = b"|".join([method, path, query, tier_bytes, hdr_digest, body])
     return hashlib.sha256(data).hexdigest()
 
 

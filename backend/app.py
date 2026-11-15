@@ -87,7 +87,14 @@ except ImportError:
     default_min_confirmations = None
     reconcile_pending_registrations = None
     reconcile_registration = None
-from idempotency import idempotent
+from idempotency import (
+    RegistrationKeyConflictError,
+    canonical_registration_idempotency_binding,
+    check_registration_key_binding,
+    idempotent,
+    normalize_client_idempotency_key,
+    record_registration_key_binding,
+)
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
@@ -112,7 +119,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1492,7 +1499,42 @@ def create_app() -> Flask:
                     cli_code=classify_cli_error(str(exc)),
                 )
 
+        try:
+            client_idempotency_digest = normalize_client_idempotency_key(
+                request.headers.get("Idempotency-Key")
+            )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+                field="Idempotency-Key",
+            )
+
         idempotency_key = make_idempotency_key(video_hash, proof_id, normalized_tx_hash)
+        statement_fields = {
+            "video_hash": video_hash,
+            "metadata_hash": metadata_hash,
+            "proof_id": proof_id,
+            "tx_hash": normalized_tx_hash,
+            "source_address": validated_source_address,
+            "contract_id": validated_contract_id,
+        }
+
+        try:
+            already_bound = check_registration_key_binding(
+                registration_key=idempotency_key,
+                client_key_digest=client_idempotency_digest,
+                tier=tier,
+                statement=statement_fields,
+            )
+        except RegistrationKeyConflictError as exc:
+            return jsonify({
+                "ok": False,
+                "error": "idempotency key reused with conflicting payload",
+                "code": exc.code,
+                "conflict_field": exc.field,
+            }), 409
 
         retention_class = payload.get("retentionClass", "default")
         if retention_class not in config.retention_classes:
@@ -1527,9 +1569,26 @@ def create_app() -> Flask:
             )
         except ConflictError as exc:
             return jsonify({
+                "ok": False,
                 "error": "idempotency key reused with conflicting payload",
+                "code": (
+                    "REGISTRATION_TIER_CONFLICT"
+                    if exc.field == "tier"
+                    else "IDEMPOTENCY_CONFLICT"
+                ),
                 "conflict_field": exc.field,
             }), 409
+
+        binding_digest, was_bound = record_registration_key_binding(
+            registration_key=idempotency_key,
+            client_key_digest=client_idempotency_digest,
+            tier=tier,
+            statement=statement_fields,
+        )
+        if already_bound or was_bound:
+            created = False
+        if isinstance(db_event, dict):
+            db_event["idempotency_binding"] = binding_digest
 
         if db_event and db_event.get("id") and created:
             # A newly registered proof can change the on-chain verification
@@ -1538,7 +1597,15 @@ def create_app() -> Flask:
             app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
+                enqueue_job(
+                    "verify_tx",
+                    {
+                        "proof_id": proof_id,
+                        "tx_hash": normalized_tx_hash,
+                        "contract_id": validated_contract_id,
+                        "tier": tier,
+                    },
+                )
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status

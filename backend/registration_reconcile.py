@@ -13,11 +13,14 @@ transaction hash prefixes.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import logging
 import os
+import threading
 from typing import Any
 
 from db import list_pending_registration_txs, update_tx_status
+from idempotency import RegistrationKeyConflictError, normalize_identity_tier
 from tx_verification import (
     TERMINAL_STATUSES,
     TxVerificationResult,
@@ -34,6 +37,39 @@ LOGGER.setLevel(logging.INFO)
 
 MAX_RECONCILE_BATCH = 50
 DEFAULT_MIN_CONFIRMATIONS = 1
+_RECONCILE_TIER_LOCK = threading.Lock()
+_RECONCILE_TIER_BINDINGS: OrderedDict[str, str] = OrderedDict()
+
+
+def verify_reconcile_tier_binding(
+    tx_hash: object,
+    *,
+    tier: str | None = None,
+    proof_id: str | None = None,
+) -> str | None:
+    """Ensure reconciliation keys never switch identity ``tier`` across attempts."""
+    if tier is None:
+        return None
+    normalized_tx = normalize_tx_hash(tx_hash)
+    canonical_tier = normalize_identity_tier(tier)
+    slot = f"{(proof_id or '').strip().lower()}:{normalized_tx}"
+    with _RECONCILE_TIER_LOCK:
+        existing = _RECONCILE_TIER_BINDINGS.get(slot)
+        if existing is not None and existing != canonical_tier:
+            raise RegistrationKeyConflictError(
+                field="tier",
+                code="REGISTRATION_TIER_CONFLICT",
+            )
+        _RECONCILE_TIER_BINDINGS[slot] = canonical_tier
+        _RECONCILE_TIER_BINDINGS.move_to_end(slot)
+        while len(_RECONCILE_TIER_BINDINGS) > 4096:
+            _RECONCILE_TIER_BINDINGS.popitem(last=False)
+    return canonical_tier
+
+
+def reset_reconcile_tier_bindings_for_tests() -> None:
+    with _RECONCILE_TIER_LOCK:
+        _RECONCILE_TIER_BINDINGS.clear()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -251,6 +287,13 @@ def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("verify_tx payload must be an object")
     tx_hash = payload.get("tx_hash") or payload.get("txHash")
     proof_id = payload.get("proof_id") or payload.get("proofId")
+    tier = payload.get("tier")
+    if tier is not None:
+        verify_reconcile_tier_binding(
+            tx_hash,
+            tier=str(tier),
+            proof_id=proof_id if isinstance(proof_id, str) else None,
+        )
     min_confirmations = payload.get("min_confirmations") or payload.get("minConfirmations")
     result = reconcile_registration(
         tx_hash,

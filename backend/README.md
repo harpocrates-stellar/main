@@ -342,6 +342,23 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Identity Tier Idempotency Binding
+
+Proof registration binds identity `tier` (`silent`, `source`, `seal`) into the
+canonical domain-separated idempotency digest
+(`harpocrates:registration-idempotency-binding:v1`) across both semantic
+registration keys (`videoHash:proofId:txHash`) and optional client
+`Idempotency-Key` headers:
+
+- Exact retries with the same registration key and identical `tier` replay
+  cleanly (`200`, `created: false`) without creating duplicate `verify_tx` jobs.
+- Reusing a semantic registration key or `Idempotency-Key` header with a changed
+  `tier` fails closed with `409 Conflict` (`code: "REGISTRATION_TIER_CONFLICT"`,
+  `conflict_field: "tier"`) before mutating persistence or enqueuing another
+  `verify_tx` registration job.
+- `process_verify_tx_job()` enforces the same `(proof_id, tx_hash) -> tier`
+  binding across background reconciliation jobs.
+
 ## Test
 
 ```powershell
