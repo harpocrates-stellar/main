@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Deletion Preview
+
+`ExportManager.preview_tenant_deletion()` computes a read-only, privacy-safe
+deletion preview strictly isolated to `authorized_tenant_tag` (constant-time
+verified against any `requested_tenant_tag`, raising `TenantIsolationError` on
+mismatch, wildcard, or unverified calls). Counts are grouped by data class
+(`consent_records`, `operational_logs`, `export_artifacts`) and retention policy
+(`active_log_ttl`, `expired_log_ttl`, `withdrawn_immediate_purge`, etc.), capped
+at `max_count_per_bucket` with explicit `capped` flags and a domain-separated
+`tenant_tag_digest` instead of raw tenant or event identifiers.
+
 ## Test
 
 ```powershell

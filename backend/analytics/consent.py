@@ -261,3 +261,30 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def classify_tenant_consent_retention(
+        self,
+        authorized_tenant_tag: str,
+        *,
+        now_epoch_seconds: float | None = None,
+    ) -> Tuple[Optional[str], bool]:
+        """Inspect only authorized_tenant_tag's consent state without mutating state.
+
+        Returns `(retention_policy_bucket_or_None, is_withdrawn)`.
+        """
+        if not isinstance(authorized_tenant_tag, str) or not authorized_tenant_tag.strip():
+            raise ValueError("authorized_tenant_tag must be a non-empty string")
+        now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+        with self._lock:
+            state = self._consent_states.get(authorized_tenant_tag)
+            if state is None:
+                return None, False
+            effective_status = state.status
+            if state.status == ConsentStatus.GRANTED and state.expires_at_epoch_seconds > 0:
+                if now > state.expires_at_epoch_seconds:
+                    effective_status = ConsentStatus.EXPIRED
+            if effective_status == ConsentStatus.WITHDRAWN:
+                return "withdrawn_consent_grace", True
+            if effective_status in {ConsentStatus.EXPIRED, ConsentStatus.INVALID, ConsentStatus.DENIED}:
+                return "expired_consent_grace", False
+            return "active_consent_revocation", False

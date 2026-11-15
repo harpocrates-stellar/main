@@ -122,11 +122,18 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        AnalyticsDataClass,
+        DEFAULT_PREVIEW_BUCKET_CAP,
+        DELETION_PREVIEW_SCHEMA_VERSION,
+        DELETION_PREVIEW_TENANT_DOMAIN_TAG,
+        DeletionPreviewBucket,
+        DeletionPreviewReport,
         EXPORT_FORMAT_VERSION,
         ExportArtifact,
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        TenantIsolationError,
     )
 except Exception:
     pass
@@ -221,11 +228,18 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "AnalyticsDataClass",
+    "DEFAULT_PREVIEW_BUCKET_CAP",
+    "DELETION_PREVIEW_SCHEMA_VERSION",
+    "DELETION_PREVIEW_TENANT_DOMAIN_TAG",
+    "DeletionPreviewBucket",
+    "DeletionPreviewReport",
     "EXPORT_FORMAT_VERSION",
     "ExportArtifact",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "TenantIsolationError",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",
