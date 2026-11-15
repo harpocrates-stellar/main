@@ -10,6 +10,27 @@ const VIEWS = new Set(['landing', 'studio', 'verify'])
 const TIERS = new Set(['silent', 'source', 'seal'])
 
 /**
+ * Maximum UTF-8 byte length accepted for a serialized `VaultEnvelope` before
+ * JSON parsing, hex decoding, or PBKDF2 key derivation runs.
+ */
+export const MAX_SAFE_VAULT_ENVELOPE_BYTES = 16 * 1024
+
+/**
+ * Measures the UTF-8 byte length of `input` with an O(1) upper-bound short
+ * circuit when the UTF-16 code-unit length already exceeds `shortCircuitAboveBytes`,
+ * avoiding multi-megabyte buffer allocations on hostile inputs.
+ */
+export function measureBoundedUtf8Bytes(
+  input: string,
+  shortCircuitAboveBytes = MAX_SAFE_VAULT_ENVELOPE_BYTES,
+): number {
+  if (input.length > shortCircuitAboveBytes) {
+    return input.length
+  }
+  return new TextEncoder().encode(input).byteLength
+}
+
+/**
  * The only application data permitted in browser storage is:
  * - currentView: the active public navigation view
  * - selectedTier: the active public identity-tier selection

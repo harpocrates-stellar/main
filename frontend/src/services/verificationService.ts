@@ -15,6 +15,7 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 export type ExtractResult = {
   hasHarpocratesMetadata: boolean
+  metadataHash?: string
 }
 
 /** Ask the Flask service to extract steganographic metadata from a video. */
@@ -33,6 +34,7 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
   const data = await response.json()
   return {
     hasHarpocratesMetadata: data.metadata?.protocol === 'harpocrates',
+    metadataHash: typeof data.metadata?.metadataHash === 'string' ? data.metadata.metadataHash : undefined,
   }
 }
 
@@ -71,3 +73,15 @@ export const VERIFICATION_LIMITS = {
   maxFileSizeBytes: 100 * 1024 * 1024,
   supportedTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/avi'],
 } as const
+
+export async function getMetadataEnvelopeRaw(_proofId: string): Promise<Record<string, unknown> | null> {
+  return null
+}
+
+export async function getTimestampClaimRaw(_proofId: string): Promise<Record<string, unknown> | null> {
+  return null
+}
+
+export async function getIndependentTimestampAnchorRaw(_proofId: string): Promise<boolean | null> {
+  return null
+}

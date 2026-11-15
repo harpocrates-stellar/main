@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Bounded Vault Envelope Import
+
+Encrypted `CredentialVault` envelopes (`src/credentialVault.ts` and `src/safeStorage.ts`)
+enforce strict input bounds before allocating binary buffers or running PBKDF2
+key derivation:
+
+- `MAX_VAULT_ENVELOPE_BYTES` (`16,384` UTF-8 bytes) caps raw serialized JSON input.
+- `MAX_VAULT_CIPHERTEXT_BYTES` (`4,096` decoded bytes) caps hexadecimal ciphertext before `hexToBuf` or `crypto.subtle.deriveKey`.
+- `CredentialVault.importEnvelope()` validates envelope bounds (and optional passphrase decryption) before modifying `localStorage`, preserving any existing encrypted vault and unlocked in-memory state on failure.
