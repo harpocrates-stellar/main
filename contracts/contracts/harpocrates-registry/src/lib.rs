@@ -1343,6 +1343,59 @@ pub struct SchemaRecord {
     pub created_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Bounded role capability introspection (#1185)
+// ---------------------------------------------------------------------------
+
+pub const ROLE_BIT_ADMIN: u32 = 1 << 0;
+pub const ROLE_BIT_PENDING_ADMIN: u32 = 1 << 1;
+pub const ROLE_BIT_ACTIVE_ISSUER: u32 = 1 << 2;
+pub const ROLE_BIT_GUARDIAN: u32 = 1 << 3;
+pub const ROLE_BIT_COUNCIL_MEMBER: u32 = 1 << 4;
+pub const ROLE_BIT_SEAL_SIGNER: u32 = 1 << 5;
+
+pub const CAP_ADD_ISSUER: u32 = 1 << 0;
+pub const CAP_REVOKE_ISSUER: u32 = 1 << 1;
+pub const CAP_MANAGE_ROOTS: u32 = 1 << 2;
+pub const CAP_SET_VERIFIER: u32 = 1 << 3;
+pub const CAP_SET_REVOCATION_ROOT: u32 = 1 << 4;
+pub const CAP_UPGRADE_STORAGE: u32 = 1 << 5;
+pub const CAP_PROPOSE_TIMELOCK: u32 = 1 << 6;
+pub const CAP_PAUSE_REGISTRY: u32 = 1 << 7;
+pub const CAP_UNPAUSE_REGISTRY: u32 = 1 << 8;
+pub const CAP_ACCEPT_ADMIN: u32 = 1 << 9;
+pub const CAP_REGISTER_SEAL: u32 = 1 << 10;
+pub const CAP_GRANT_DELEGATION: u32 = 1 << 11;
+pub const CAP_APPROVE_SEAL: u32 = 1 << 12;
+pub const CAP_VOTE_COUNCIL: u32 = 1 << 13;
+
+/// Institutional role archetype for bounded capability introspection (#1185).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum InstitutionalRole {
+    Admin = 1,
+    PendingAdmin = 2,
+    ActiveIssuer = 3,
+    Guardian = 4,
+    CouncilMember = 5,
+    SealPolicySigner = 6,
+}
+
+/// Bounded read-only summary of operations a role or actor can authorize (#1185).
+///
+/// Advisory introspection only: write-side authorization gates remain the sole
+/// source of enforcement.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleCapabilities {
+    pub role_mask: u32,
+    pub capability_mask: u32,
+    pub council_gated_mask: u32,
+    pub paused_domains: u32,
+    pub max_pause_secs: u64,
+}
+
 #[contractevent(topics = ["schema", "add"])]
 pub struct SchemaAdded {
     #[topic]
@@ -6309,6 +6362,183 @@ impl HarpocratesRegistry {
             .unwrap_or(false)
     }
 
+    /// Return which existing operations `role` can authorize under the live
+    /// governance, pause, and threshold-policy configuration (#1185).
+    ///
+    /// Bounded `O(1)` read-only introspection; write-side authorization remains
+    /// the authoritative enforcement boundary.
+    pub fn get_role_capabilities(env: Env, role: InstitutionalRole) -> RoleCapabilities {
+        let paused_domains = current_paused_domains(&env);
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return RoleCapabilities {
+                role_mask: 0,
+                capability_mask: 0,
+                council_gated_mask: 0,
+                paused_domains,
+                max_pause_secs: 0,
+            };
+        }
+
+        let council_active = is_council_active(&env);
+        let tier3_paused = (paused_domains & PAUSE_DOMAIN_TIER3_REGISTRATION) != 0;
+        let has_seal_policy = Self::get_active_seal_policy(env).is_some();
+
+        compute_archetype_capabilities(
+            role,
+            council_active,
+            tier3_paused,
+            has_seal_policy,
+            paused_domains,
+        )
+    }
+
+    /// Return the bounded effective role and capability masks currently held by `actor` (#1185).
+    ///
+    /// Evaluates bounded institutional role memberships (`<= MAX_SIGNERS` where applicable)
+    /// without replacing write-side authorization checks.
+    pub fn get_actor_capabilities(env: Env, actor: Address) -> RoleCapabilities {
+        let paused_domains = current_paused_domains(&env);
+        let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        else {
+            return RoleCapabilities {
+                role_mask: 0,
+                capability_mask: 0,
+                council_gated_mask: 0,
+                paused_domains,
+                max_pause_secs: 0,
+            };
+        };
+
+        let council_opt = Self::get_admin_council(env.clone());
+        let council_active = council_opt.is_some();
+        let tier3_paused = (paused_domains & PAUSE_DOMAIN_TIER3_REGISTRATION) != 0;
+        let policy_opt = Self::get_active_seal_policy(env.clone());
+
+        let mut role_mask = 0u32;
+        let mut capability_mask = 0u32;
+        let mut council_gated_mask = 0u32;
+        let mut max_pause_secs = 0u64;
+
+        let is_admin = actor == admin;
+        let is_active_issuer = !is_admin
+            && env
+                .storage()
+                .persistent()
+                .get::<DataKey, IssuerRecord>(&DataKey::Issuer(actor.clone()))
+                .map(|r| r.active)
+                .unwrap_or(false);
+
+        if is_admin {
+            let c = compute_archetype_capabilities(
+                InstitutionalRole::Admin,
+                council_active,
+                tier3_paused,
+                policy_opt.is_some(),
+                paused_domains,
+            );
+            role_mask |= c.role_mask;
+            capability_mask |= c.capability_mask;
+            council_gated_mask |= c.council_gated_mask;
+            max_pause_secs = max_pause_secs.max(c.max_pause_secs);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::PendingAdmin)
+            .as_ref()
+            == Some(&actor)
+            && !is_admin
+            && !is_active_issuer
+        {
+            let c = compute_archetype_capabilities(
+                InstitutionalRole::PendingAdmin,
+                council_active,
+                tier3_paused,
+                policy_opt.is_some(),
+                paused_domains,
+            );
+            role_mask |= c.role_mask;
+            capability_mask |= c.capability_mask;
+        }
+
+        if is_active_issuer {
+            let c = compute_archetype_capabilities(
+                InstitutionalRole::ActiveIssuer,
+                council_active,
+                tier3_paused,
+                policy_opt.is_some(),
+                paused_domains,
+            );
+            role_mask |= c.role_mask;
+            capability_mask |= c.capability_mask;
+
+            if let Some(policy) = &policy_opt {
+                for signer in policy.signers.iter() {
+                    if signer == actor {
+                        let sc = compute_archetype_capabilities(
+                            InstitutionalRole::SealPolicySigner,
+                            council_active,
+                            tier3_paused,
+                            true,
+                            paused_domains,
+                        );
+                        role_mask |= sc.role_mask;
+                        capability_mask |= sc.capability_mask;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::Guardian)
+            .as_ref()
+            == Some(&actor)
+        {
+            let c = compute_archetype_capabilities(
+                InstitutionalRole::Guardian,
+                council_active,
+                tier3_paused,
+                policy_opt.is_some(),
+                paused_domains,
+            );
+            role_mask |= c.role_mask;
+            capability_mask |= c.capability_mask;
+            max_pause_secs = max_pause_secs.max(c.max_pause_secs);
+        }
+
+        if let Some(council) = &council_opt {
+            for member in council.members.iter() {
+                if member == actor {
+                    let c = compute_archetype_capabilities(
+                        InstitutionalRole::CouncilMember,
+                        true,
+                        tier3_paused,
+                        policy_opt.is_some(),
+                        paused_domains,
+                    );
+                    role_mask |= c.role_mask;
+                    capability_mask |= c.capability_mask;
+                    break;
+                }
+            }
+        }
+
+        RoleCapabilities {
+            role_mask,
+            capability_mask,
+            council_gated_mask,
+            paused_domains,
+            max_pause_secs,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
@@ -8574,6 +8804,94 @@ fn count_pending_proposals(env: &Env) -> u32 {
     pending
 }
 
+fn current_paused_domains(env: &Env) -> u32 {
+    let now = env.ledger().timestamp();
+    let mut paused = 0u32;
+    for bit in PAUSE_DOMAIN_SINGLE_BITS {
+        if domain_is_paused(env, bit, now) {
+            paused |= bit;
+        }
+    }
+    paused
+}
+
+fn compute_archetype_capabilities(
+    role: InstitutionalRole,
+    council_active: bool,
+    tier3_paused: bool,
+    has_seal_policy: bool,
+    paused_domains: u32,
+) -> RoleCapabilities {
+    let council_gated_ops =
+        CAP_REVOKE_ISSUER | CAP_SET_VERIFIER | CAP_SET_REVOCATION_ROOT | CAP_UPGRADE_STORAGE;
+    match role {
+        InstitutionalRole::Admin => {
+            let base = CAP_ADD_ISSUER
+                | CAP_MANAGE_ROOTS
+                | CAP_PROPOSE_TIMELOCK
+                | CAP_PAUSE_REGISTRY
+                | CAP_UNPAUSE_REGISTRY;
+            let (capability_mask, council_gated_mask) = if council_active {
+                (base, council_gated_ops)
+            } else {
+                (base | council_gated_ops, 0)
+            };
+            RoleCapabilities {
+                role_mask: ROLE_BIT_ADMIN,
+                capability_mask,
+                council_gated_mask,
+                paused_domains,
+                max_pause_secs: MAX_PAUSE_DURATION_SECS,
+            }
+        }
+        InstitutionalRole::PendingAdmin => RoleCapabilities {
+            role_mask: ROLE_BIT_PENDING_ADMIN,
+            capability_mask: CAP_ACCEPT_ADMIN,
+            council_gated_mask: 0,
+            paused_domains,
+            max_pause_secs: 0,
+        },
+        InstitutionalRole::ActiveIssuer => {
+            let mut caps = CAP_GRANT_DELEGATION;
+            if !tier3_paused {
+                caps |= CAP_REGISTER_SEAL;
+            }
+            RoleCapabilities {
+                role_mask: ROLE_BIT_ACTIVE_ISSUER,
+                capability_mask: caps,
+                council_gated_mask: 0,
+                paused_domains,
+                max_pause_secs: 0,
+            }
+        }
+        InstitutionalRole::Guardian => RoleCapabilities {
+            role_mask: ROLE_BIT_GUARDIAN,
+            capability_mask: CAP_PAUSE_REGISTRY,
+            council_gated_mask: 0,
+            paused_domains,
+            max_pause_secs: MAX_GUARDIAN_PAUSE_DURATION_SECS,
+        },
+        InstitutionalRole::CouncilMember => RoleCapabilities {
+            role_mask: ROLE_BIT_COUNCIL_MEMBER,
+            capability_mask: if council_active { CAP_VOTE_COUNCIL } else { 0 },
+            council_gated_mask: 0,
+            paused_domains,
+            max_pause_secs: 0,
+        },
+        InstitutionalRole::SealPolicySigner => RoleCapabilities {
+            role_mask: ROLE_BIT_SEAL_SIGNER,
+            capability_mask: if has_seal_policy && !tier3_paused {
+                CAP_APPROVE_SEAL
+            } else {
+                0
+            },
+            council_gated_mask: 0,
+            paused_domains,
+            max_pause_secs: 0,
+        },
+    }
+}
+
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
     match proposal.action {
         1 => {
@@ -9107,6 +9425,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_role_capabilities;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]

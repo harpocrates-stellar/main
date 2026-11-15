@@ -809,6 +809,21 @@ version: u32;
 }
 
 
+/**
+ * Bounded read-only summary of operations a role or actor can authorize (#1185).
+ * 
+ * Advisory introspection only: write-side authorization gates remain the sole
+ * source of enforcement.
+ */
+export interface RoleCapabilities {
+  capability_mask: u32;
+  council_gated_mask: u32;
+  max_pause_secs: u64;
+  paused_domains: u32;
+  role_mask: u32;
+}
+
+
 export interface TimelockProposal {
   action: u32;
   cancelled: boolean;
@@ -823,6 +838,18 @@ export interface TimelockProposal {
 
 
 
+
+/**
+ * Institutional role archetype for bounded capability introspection (#1185).
+ */
+export enum InstitutionalRole {
+  Admin = 1,
+  PendingAdmin = 2,
+  ActiveIssuer = 3,
+  Guardian = 4,
+  CouncilMember = 5,
+  SealPolicySigner = 6,
+}
 
 
 /**
@@ -1821,6 +1848,16 @@ export interface Client {
   get_metadata_envelope: ({proof_id}: {proof_id: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Option<MetadataEnvelope>>>
 
   /**
+   * Construct and simulate a get_role_capabilities transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return which existing operations `role` can authorize under the live
+   * governance, pause, and threshold-policy configuration (#1185).
+   * 
+   * Bounded `O(1)` read-only introspection; write-side authorization remains
+   * the authoritative enforcement boundary.
+   */
+  get_role_capabilities: ({role}: {role: InstitutionalRole}, options?: MethodOptions) => Promise<AssembledTransaction<RoleCapabilities>>
+
+  /**
    * Construct and simulate a get_statuses_by_video transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Return the verification status of multiple videos in a single batch query,
    * resolving video hashes to their underlying proof verification statuses.
@@ -1944,6 +1981,15 @@ export interface Client {
    * Return the currently active, unexpired threshold seal policy (#124).
    */
   get_active_seal_policy: (options?: MethodOptions) => Promise<AssembledTransaction<Option<SealPolicy>>>
+
+  /**
+   * Construct and simulate a get_actor_capabilities transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the bounded effective role and capability masks currently held by `actor` (#1185).
+   * 
+   * Evaluates bounded institutional role memberships (`<= MAX_SIGNERS` where applicable)
+   * without replacing write-side authorization checks.
+   */
+  get_actor_capabilities: ({actor}: {actor: string}, options?: MethodOptions) => Promise<AssembledTransaction<RoleCapabilities>>
 
   /**
    * Construct and simulate a get_issuer_quota_usage transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -2413,11 +2459,13 @@ export class Client extends ContractClient {
         "AAAAAQAAADtBIG5hcnJvd2x5IHNjb3BlZCwgZXhwaXJpbmcgYXV0aG9yaXR5IHRvIGFjdCBmb3IgYGdyYW50b3JgLgAAAAAAAAAAEERlbGVnYXRpb25SZWNvcmQAAAAFAAAAAAAAAAhkZWxlZ2F0ZQAAABMAAAA+RXBvY2ggc2Vjb25kcyBhZnRlciB3aGljaCB0aGUgZGVsZWdhdGlvbiBpcyBpbmVydC4gTmV2ZXIgemVyby4AAAAAAApleHBpcmVzX2F0AAAAAAAGAAAAAAAAAApncmFudGVkX2F0AAAAAAAGAAAAAAAAAAdncmFudG9yAAAAABMAAAAjQml0d2lzZS1PUiBvZiBgREVMRUdBVElPTl9TQ09QRV8qYC4AAAAABXNjb3BlAAAAAAAABA==",
         "AAAAAQAAARxPbmUgc21hbGwgdXNhZ2UgcmVjb3JkIHBlciBrZXllZCBhZGRyZXNzOiB0aGUgY3VycmVudCBsZWRnZXItdGltZSB3aW5kb3cKYnVja2V0IGFuZCBob3cgbWFueSByZWdpc3RyYXRpb25zIGhhdmUgYmVlbiBjaGFyZ2VkIGluc2lkZSBpdCAoIzgwNikuCkEgc3RvcmVkIGBidWNrZXRgIGJlaGluZCB0aGUgY3VycmVudCBvbmUgaXMgdHJlYXRlZCBhcyBlbXB0eSwgc28gY291bnRzCm5lZWQgbm8gZXhwbGljaXQgcmVzZXQgYW5kIHRoZSBzdG9yYWdlIHN0YXlzIGEgc2luZ2xlIGNvbXBhY3QgcmVjb3JkLgAAAAAAAAAQSXNzdWVyUXVvdGFVc2FnZQAAAAIAAABAYGxlZGdlciB0aW1lc3RhbXAgLyB3aW5kb3dfc2Vjc2AgYXQgdGhlIHRpbWUgb2YgdGhlIGxhc3QgY2hhcmdlLgAAAAZidWNrZXQAAAAAAAYAAAAmUmVnaXN0cmF0aW9ucyBjaGFyZ2VkIGluc2lkZSBgYnVja2V0YC4AAAAAAAVjb3VudAAAAAAAAAQ=",
         "AAAAAQAAAMdWZXJzaW9uZWQgb24tY2hhaW4gbWV0YWRhdGEgZW52ZWxvcGUgYmluZGluZyAoIzMxNykuCgpTdG9yZXMgb25seSBgKHZlcnNpb24sIG1ldGFkYXRhX2hhc2gpYCBjb21taXRtZW50cyDigJQgbmV2ZXIgcmF3IGVudmVsb3BlCmJ5dGVzLCBtZWRpYSwgd2l0bmVzc2VzLCBvciBzZWNyZXRzLiBBbGlnbnMgd2l0aCBiYWNrZW5kIGBlbnZlbG9wZS5weWAuAAAAAAAAAAAQTWV0YWRhdGFFbnZlbG9wZQAAAAQAAAA4TGVkZ2VyIHRpbWVzdGFtcCB3aGVuIHRoaXMgZW52ZWxvcGUgYmluZGluZyB3YXMgd3JpdHRlbi4AAAAIYm91bmRfYXQAAAAGAAAAPUNhbm9uaWNhbCBtZXRhZGF0YSBoYXNoIChzYW1lIHZhbHVlIHN0b3JlZCBvbiBgUHJvb2ZSZWNvcmRgKS4AAAAAAAANbWV0YWRhdGFfaGFzaAAAAAAAA+4AAAAgAAAAIFByb29mIHRoaXMgZW52ZWxvcGUgaXMgYm91bmQgdG8uAAAACHByb29mX2lkAAAD7gAAACAAAAA4RW52ZWxvcGUgc2NoZW1hIHZlcnNpb24gKGBNRVRBREFUQV9FTlZFTE9QRV9WMWAgLyBgVjJgKS4AAAAHdmVyc2lvbgAAAAAE",
+        "AAAAAQAAALJCb3VuZGVkIHJlYWQtb25seSBzdW1tYXJ5IG9mIG9wZXJhdGlvbnMgYSByb2xlIG9yIGFjdG9yIGNhbiBhdXRob3JpemUgKCMxMTg1KS4KCkFkdmlzb3J5IGludHJvc3BlY3Rpb24gb25seTogd3JpdGUtc2lkZSBhdXRob3JpemF0aW9uIGdhdGVzIHJlbWFpbiB0aGUgc29sZQpzb3VyY2Ugb2YgZW5mb3JjZW1lbnQuAAAAAAAAAAAAEFJvbGVDYXBhYmlsaXRpZXMAAAAFAAAAAAAAAA9jYXBhYmlsaXR5X21hc2sAAAAABAAAAAAAAAASY291bmNpbF9nYXRlZF9tYXNrAAAAAAAEAAAAAAAAAA5tYXhfcGF1c2Vfc2VjcwAAAAAABgAAAAAAAAAOcGF1c2VkX2RvbWFpbnMAAAAAAAQAAAAAAAAACXJvbGVfbWFzawAAAAAAAAQ=",
         "AAAAAQAAAAAAAAAAAAAAEFRpbWVsb2NrUHJvcG9zYWwAAAAIAAAAAAAAAAZhY3Rpb24AAAAAAAQAAAAAAAAACWNhbmNlbGxlZAAAAAAAAAEAAAAAAAAACmNyZWF0ZWRfYXQAAAAAAAYAAAAAAAAACGV4ZWN1dGVkAAAAAQAAAAAAAAAQbWluX2V4ZWN1dGlvbl9hdAAAAAYAAAAAAAAAB3BheWxvYWQAAAAD7gAAACAAAAAAAAAACHByb3Bvc2VyAAAAEwAAAAAAAAAGdGFyZ2V0AAAAAAAT",
         "AAAABQAAAAAAAAAAAAAAEENvbnRyYWN0VXBncmFkZWQAAAACAAAACGNvbnRyYWN0AAAAB3VwZ3JhZGUAAAAAAgAAAAAAAAANb2xkX3dhc21faGFzaAAAAAAAA+4AAAAgAAAAAAAAAAAAAAANbmV3X3dhc21faGFzaAAAAAAAA+4AAAAgAAAAAAAAAAI=",
         "AAAABQAAAAAAAAAAAAAAEERpc3B1dGVEaXNtaXNzZWQAAAACAAAAB2Rpc3B1dGUAAAAAB2Rpc21pc3MAAAAAAwAAAAAAAAAKZGlzcHV0ZV9pZAAAAAAD7gAAACAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAAAAAAAALcmVzb2x2ZWRfYXQAAAAABgAAAAAAAAAC",
         "AAAABQAAAAAAAAAAAAAAEERpc3B1dGVSZXNwb25kZWQAAAACAAAAB2Rpc3B1dGUAAAAAB3Jlc3BvbmQAAAAABAAAAAAAAAAKZGlzcHV0ZV9pZAAAAAAD7gAAACAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAAAAAAAATcmVzcG9uc2VfY29tbWl0bWVudAAAAAPuAAAAIAAAAAAAAAAAAAAAEHJlc29sdmVfZGVhZGxpbmUAAAAGAAAAAAAAAAI=",
         "AAAABQAAAAAAAAAAAAAAEFNjaGVtYURlcHJlY2F0ZWQAAAACAAAABnNjaGVtYQAAAAAACWRlcHJlY2F0ZQAAAAAAAAEAAAAAAAAAC3NjaGVtYV9oYXNoAAAAA+4AAAAgAAAAAQAAAAI=",
+        "AAAAAwAAAEpJbnN0aXR1dGlvbmFsIHJvbGUgYXJjaGV0eXBlIGZvciBib3VuZGVkIGNhcGFiaWxpdHkgaW50cm9zcGVjdGlvbiAoIzExODUpLgAAAAAAAAAAABFJbnN0aXR1dGlvbmFsUm9sZQAAAAAAAAYAAAAAAAAABUFkbWluAAAAAAAAAQAAAAAAAAAMUGVuZGluZ0FkbWluAAAAAgAAAAAAAAAMQWN0aXZlSXNzdWVyAAAAAwAAAAAAAAAIR3VhcmRpYW4AAAAEAAAAAAAAAA1Db3VuY2lsTWVtYmVyAAAAAAAABQAAAAAAAAAQU2VhbFBvbGljeVNpZ25lcgAAAAY=",
         "AAAAAQAAAMlBZG1pbi1zZXQgcmVnaXN0cmF0aW9uIHF1b3RhIGZvciBvbmUga2V5LCBtZWFzdXJlZCBpbiBsZWRnZXItdGltZSB3aW5kb3cKYnVja2V0cyAoIzgwNikuIEFic2VuY2Ugb2YgYSByZWNvcmQgbWVhbnMgdW5saW1pdGVkLCBzbyBkZXBsb3ltZW50cyB0aGF0Cm5ldmVyIGNhbGwgYHNldF9pc3N1ZXJfcXVvdGFgIGJlaGF2ZSBleGFjdGx5IGFzIGJlZm9yZS4AAAAAAAAAAAAAEUlzc3VlclF1b3RhUmVjb3JkAAAAAAAAAgAAAGtSZWdpc3RyYXRpb25zIGFsbG93ZWQgcGVyIGtleSBwZXIgd2luZG93IGJ1Y2tldC4gTmV2ZXIgemVybyB3aGlsZSB0aGUKcmVjb3JkIGV4aXN0czsgemVybyBjbGVhcnMgdGhlIHF1b3RhLgAAAAARbWF4X3JlZ2lzdHJhdGlvbnMAAAAAAAAEAAAAf1dpbmRvdy1idWNrZXQgd2lkdGggaW4gc2Vjb25kcy4gQnVja2V0IGluZGV4IGlzIGB0aW1lc3RhbXAgLwp3aW5kb3dfc2Vjc2AsIHNvIGEgcm9sbG92ZXIgaW50byB0aGUgbmV4dCBidWNrZXQgcmVzZXRzIHRoZSBjb3VudC4AAAAAC3dpbmRvd19zZWNzAAAAAAY=",
         "AAAAAQAAAAAAAAAAAAAAEVByb29mSGlzdG9yeUVudHJ5AAAAAAAABAAAAAAAAAAGYWN0aW9uAAAAAAAEAAAAAAAAAAVhY3RvcgAAAAAAA+gAAAATAAAAAAAAAAtyZWFzb25fY29kZQAAAAAEAAAAAAAAAAl0aW1lc3RhbXAAAAAAAAAG",
         "AAAABQAAAAAAAAAAAAAAEURlbGVnYXRpb25HcmFudGVkAAAAAAAAAgAAAAVkZWxlZwAAAAAAAAVncmFudAAAAAAAAAUAAAAAAAAAB2dyYW50b3IAAAAAEwAAAAEAAAAAAAAACGRlbGVnYXRlAAAAEwAAAAEAAAAAAAAABXNjb3BlAAAAAAAABAAAAAAAAAAAAAAACmdyYW50ZWRfYXQAAAAAAAYAAAAAAAAAAAAAAApleHBpcmVzX2F0AAAAAAAGAAAAAAAAAAI=",
@@ -2562,6 +2610,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAH9BbmNob3IgYSBzaWduZWQgdmVyaWZpY2F0aW9uIHJlY2VpcHQgZGlnZXN0IGZvciBgcHJvb2ZfaWRgLgoKSWRlbXBvdGVudCB3aGVuIHJldHJpZWQgd2l0aCB0aGUgZXhhY3QgY29tbWl0dGVkIGByZWNlaXB0X2RpZ2VzdGAuAAAAABVjb21taXRfcmVjZWlwdF9kaWdlc3QAAAAAAAAFAAAAAAAAAAZjYWxsZXIAAAAAABMAAAAAAAAACHByb29mX2lkAAAD7gAAACAAAAAAAAAADnJlY2VpcHRfZGlnZXN0AAAAAAPuAAAAIAAAAAAAAAAKcHVibGljX2tleQAAAAAD7gAAAEEAAAAAAAAACXNpZ25hdHVyZQAAAAAAA+4AAABAAAAAAQAAB9AAAAAXUmVjZWlwdENvbW1pdG1lbnRSZWNvcmQA",
         "AAAAAAAAAAAAAAAVZ2V0X2N1cnJlbnRfd2FzbV9oYXNoAAAAAAAAAAAAAAEAAAPoAAAD7gAAACA=",
         "AAAAAAAAAEFSZXR1cm4gdGhlIHZlcnNpb25lZCBtZXRhZGF0YSBlbnZlbG9wZSBmb3IgYHByb29mX2lkYCwgaWYgc3RvcmVkLgAAAAAAABVnZXRfbWV0YWRhdGFfZW52ZWxvcGUAAAAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAA+gAAAfQAAAAEE1ldGFkYXRhRW52ZWxvcGU=",
+        "AAAAAAAAAPVSZXR1cm4gd2hpY2ggZXhpc3Rpbmcgb3BlcmF0aW9ucyBgcm9sZWAgY2FuIGF1dGhvcml6ZSB1bmRlciB0aGUgbGl2ZQpnb3Zlcm5hbmNlLCBwYXVzZSwgYW5kIHRocmVzaG9sZC1wb2xpY3kgY29uZmlndXJhdGlvbiAoIzExODUpLgoKQm91bmRlZCBgTygxKWAgcmVhZC1vbmx5IGludHJvc3BlY3Rpb247IHdyaXRlLXNpZGUgYXV0aG9yaXphdGlvbiByZW1haW5zCnRoZSBhdXRob3JpdGF0aXZlIGVuZm9yY2VtZW50IGJvdW5kYXJ5LgAAAAAAABVnZXRfcm9sZV9jYXBhYmlsaXRpZXMAAAAAAAABAAAAAAAAAARyb2xlAAAH0AAAABFJbnN0aXR1dGlvbmFsUm9sZQAAAAAAAAEAAAfQAAAAEFJvbGVDYXBhYmlsaXRpZXM=",
         "AAAAAAAAAVZSZXR1cm4gdGhlIHZlcmlmaWNhdGlvbiBzdGF0dXMgb2YgbXVsdGlwbGUgdmlkZW9zIGluIGEgc2luZ2xlIGJhdGNoIHF1ZXJ5LApyZXNvbHZpbmcgdmlkZW8gaGFzaGVzIHRvIHRoZWlyIHVuZGVybHlpbmcgcHJvb2YgdmVyaWZpY2F0aW9uIHN0YXR1c2VzLgoKVW5rbm93biB2aWRlbyBoYXNoZXMgcmV0dXJuIGBQcm9vZlZlcmlmaWNhdGlvblN0YXR1czo6Tm90Rm91bmRgIGluc3RlYWQgb2YgZmFpbGluZyB0aGUgYmF0Y2guClRoZSBtYXhpbXVtIG51bWJlciBvZiB2aWRlbyBoYXNoZXMgaW4gYSBzaW5nbGUgYmF0Y2ggaXMgYm91bmRlZCAoMTAwKSB0byBtYXRjaCBgZ2V0X3Byb29mX3N0YXR1c2VzYC4AAAAAABVnZXRfc3RhdHVzZXNfYnlfdmlkZW8AAAAAAAABAAAAAAAAAAx2aWRlb19oYXNoZXMAAAPqAAAD7gAAACAAAAABAAAD6gAAB9AAAAAXUHJvb2ZWZXJpZmljYXRpb25TdGF0dXMA",
         "AAAAAAAAAAAAAAAVZ2V0X3RpbWVsb2NrX3Byb3Bvc2FsAAAAAAAAAQAAAAAAAAALcHJvcG9zYWxfaWQAAAAABAAAAAEAAAPoAAAH0AAAABBUaW1lbG9ja1Byb3Bvc2Fs",
         "AAAAAAAAAbpFbnVtZXJhdGUgY3JlZGVudGlhbCByb290cyBhbmQgdGhlaXIgY3VycmVudCBzdGF0dXNlcyBhY3Jvc3Mgc2VxdWVudGlhbCBJRHMgKCM3MzEpLgoKLSBgY3Vyc29yYDogSUQgb2Zmc2V0IHRvIHN0YXJ0IHNjYW5uaW5nIGZyb20gKDEtYmFzZWQgc2VxdWVudGlhbCBJRHMpLgpJZiBgY3Vyc29yID09IDBgLCBzY2FubmluZyBiZWdpbnMgYXQgSUQgMS4KLSBgbGltaXRgOiBtYXhpbXVtIG51bWJlciBvZiByb290cyB0byByZXR1cm47IGNhcHBlZCBhdCBgTUFYX0NSRURFTlRJQUxfUk9PVFNfUEFHRWAuCklmIDAgb3IgZXhjZWVkaW5nIHRoZSBjYXAsIGBsaW1pdGAgaXMgY2xhbXBlZCB0byBgTUFYX0NSRURFTlRJQUxfUk9PVFNfUEFHRWAuCi0gTm9uLWV4aXN0ZW50L2RlbGV0ZWQgZW50cmllcyBhcmUgc2tpcHBlZC4KLSBSZWFkLW9ubHkgcXVlcnk7IG5vIGF1dGggcmVxdWlyZWQuAAAAAAAVbGlzdF9jcmVkZW50aWFsX3Jvb3RzAAAAAAAAAgAAAAAAAAAGY3Vyc29yAAAAAAAEAAAAAAAAAAVsaW1pdAAAAAAAAAQAAAABAAAH0AAAABJDcmVkZW50aWFsUm9vdFBhZ2UAAA==",
@@ -2574,6 +2623,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAWZXhwaXJlX2NyZWRlbnRpYWxfcm9vdAAAAAAAAgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAA9jcmVkZW50aWFsX3Jvb3QAAAAD7gAAACAAAAAA",
         "AAAAAAAAAEZFeHRlbmQgcGVyc2lzdGVudCBzdG9yYWdlIFRUTHMgZm9yIGEgYm91bmRlZCBiYXRjaCAoYDEuLj01MGApIG9mIGtleXMuAAAAAAAWZXh0ZW5kX3BlcnNpc3RlbnRfdHRscwAAAAAAAQAAAAAAAAAEa2V5cwAAA+oAAAfQAAAAB0RhdGFLZXkAAAAAAA==",
         "AAAAAAAAAERSZXR1cm4gdGhlIGN1cnJlbnRseSBhY3RpdmUsIHVuZXhwaXJlZCB0aHJlc2hvbGQgc2VhbCBwb2xpY3kgKCMxMjQpLgAAABZnZXRfYWN0aXZlX3NlYWxfcG9saWN5AAAAAAAAAAAAAQAAA+gAAAfQAAAAClNlYWxQb2xpY3kAAA==",
+        "AAAAAAAAAOJSZXR1cm4gdGhlIGJvdW5kZWQgZWZmZWN0aXZlIHJvbGUgYW5kIGNhcGFiaWxpdHkgbWFza3MgY3VycmVudGx5IGhlbGQgYnkgYGFjdG9yYCAoIzExODUpLgoKRXZhbHVhdGVzIGJvdW5kZWQgaW5zdGl0dXRpb25hbCByb2xlIG1lbWJlcnNoaXBzIChgPD0gTUFYX1NJR05FUlNgIHdoZXJlIGFwcGxpY2FibGUpCndpdGhvdXQgcmVwbGFjaW5nIHdyaXRlLXNpZGUgYXV0aG9yaXphdGlvbiBjaGVja3MuAAAAAAAWZ2V0X2FjdG9yX2NhcGFiaWxpdGllcwAAAAAAAQAAAAAAAAAFYWN0b3IAAAAAAAATAAAAAQAAB9AAAAAQUm9sZUNhcGFiaWxpdGllcw==",
         "AAAAAAAAAMVSZXR1cm4gdGhlIGN1cnJlbnQgd2luZG93LWJ1Y2tldCB1c2FnZSBmb3IgYGlzc3VlcmAuCgpBdXRvbWF0aWNhbGx5IHJlc29sdmVzIGxlZGdlci10aW1lIHdpbmRvdyByb2xsb3ZlciBzbyBjYWxsZXJzIHNlZSBgY291bnQgPT0gMGAKZm9yIGEgZnJlc2ggYnVja2V0IHdpdGhvdXQgcmVxdWlyaW5nIGFuIGFkbWluIHJlc2V0IHRyYW5zYWN0aW9uLgAAAAAAABZnZXRfaXNzdWVyX3F1b3RhX3VzYWdlAAAAAAABAAAAAAAAAAZpc3N1ZXIAAAAAABMAAAABAAAH0AAAABBJc3N1ZXJRdW90YVVzYWdl",
         "AAAAAAAAAD9SZXR1cm4gdGhlIG51bWJlciBvZiBjdXJyZW50bHkgT3BlbiBkaXNwdXRlcyBmb3IgYSBnaXZlbiBwcm9vZi4AAAAAFmdldF9vcGVuX2Rpc3B1dGVfY291bnQAAAAAAAEAAAAAAAAACHByb29mX2lkAAAD7gAAACAAAAABAAAABA==",
         "AAAAAAAAAEJSZXR1cm4gdGhlIGNvbW1pdHRlZCByZWNlaXB0IGRpZ2VzdCByZWNvcmQgZm9yIGBwcm9vZl9pZGAsIGlmIGFueS4AAAAAABZnZXRfcmVjZWlwdF9jb21taXRtZW50AAAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAA+gAAAfQAAAAF1JlY2VpcHRDb21taXRtZW50UmVjb3JkAA==",
@@ -2719,6 +2769,7 @@ export class Client extends ContractClient {
         commit_receipt_digest: this.txFromJSON<ReceiptCommitmentRecord>,
         get_current_wasm_hash: this.txFromJSON<Option<Buffer>>,
         get_metadata_envelope: this.txFromJSON<Option<MetadataEnvelope>>,
+        get_role_capabilities: this.txFromJSON<RoleCapabilities>,
         get_statuses_by_video: this.txFromJSON<Array<ProofVerificationStatus>>,
         get_timelock_proposal: this.txFromJSON<Option<TimelockProposal>>,
         list_credential_roots: this.txFromJSON<CredentialRootPage>,
@@ -2731,6 +2782,7 @@ export class Client extends ContractClient {
         expire_credential_root: this.txFromJSON<null>,
         extend_persistent_ttls: this.txFromJSON<null>,
         get_active_seal_policy: this.txFromJSON<Option<SealPolicy>>,
+        get_actor_capabilities: this.txFromJSON<RoleCapabilities>,
         get_issuer_quota_usage: this.txFromJSON<IssuerQuotaUsage>,
         get_open_dispute_count: this.txFromJSON<u32>,
         get_receipt_commitment: this.txFromJSON<Option<ReceiptCommitmentRecord>>,
