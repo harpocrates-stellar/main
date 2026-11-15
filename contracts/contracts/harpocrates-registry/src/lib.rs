@@ -1343,6 +1343,16 @@ pub struct SchemaRecord {
     pub created_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// On-chain role-change intent digest for privileged transitions (#1184)
+// ---------------------------------------------------------------------------
+
+pub const ROLE_INTENT_DOMAIN: [u8; 26] = *b"harpocrates:role-intent:v1";
+pub const INTENT_QUEUE_ADMIN_TRANSFER: u32 = 1;
+pub const INTENT_QUEUE_TIMELOCK: u32 = 2;
+pub const INTENT_QUEUE_COUNCIL: u32 = 3;
+pub const INTENT_ROLE_ADMIN: u32 = 1;
+
 #[contractevent(topics = ["schema", "add"])]
 pub struct SchemaAdded {
     #[topic]
@@ -1963,6 +1973,14 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Bound role-change intent digest for `PendingAdmin` (#1184).
+    AdminIntentDigest,
+    /// `(proposer, created_at)` metadata bound into `AdminIntentDigest` (#1184).
+    AdminIntentMeta,
+    /// Bound role-change intent digest for `Proposal(proposal_id)` (#1184).
+    TimelockIntentDigest(u32),
+    /// Bound role-change intent digest for `CouncilProposal(proposal_id)` (#1184).
+    CouncilIntentDigest(u32),
 }
 
 #[contracterror]
@@ -2157,6 +2175,8 @@ pub enum RegistryError {
     SealSignerSetTooLarge = 111,
     /// The threshold seal for this proof has already been finalized (#124).
     SealAlreadyFinalized = 112,
+    /// Privileged transition parameters or target role failed intent digest verification (#1184).
+    RoleIntentDigestMismatch = 113,
 }
 
 #[contract]
@@ -2323,9 +2343,27 @@ impl HarpocratesRegistry {
         require_admin(&env, &admin);
         require_admin_role_available(&env, &pending_admin);
 
+        let now = env.ledger().timestamp();
+        let zero = BytesN::from_array(&env, &[0u8; 32]);
+        let intent_digest = build_role_intent_digest(
+            &env,
+            INTENT_QUEUE_ADMIN_TRANSFER,
+            0,
+            INTENT_ROLE_ADMIN,
+            &admin,
+            &pending_admin,
+            &zero,
+            now,
+        );
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminIntentDigest, &intent_digest);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminIntentMeta, &(admin.clone(), now));
         AdminProposed {
             pending_admin,
             current_admin: admin,
@@ -2352,6 +2390,10 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AdminIntentDigest);
+        env.storage().persistent().remove(&DataKey::AdminIntentMeta);
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2360,32 +2402,18 @@ impl HarpocratesRegistry {
     }
 
     pub fn accept_admin(env: Env, pending_admin: Address) {
-        let proposed_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PendingAdmin)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
+        accept_admin_inner(&env, pending_admin, None);
+    }
 
-        pending_admin.require_auth();
-        if proposed_admin != pending_admin {
-            panic_with_error!(&env, RegistryError::Unauthorized);
-        }
-        require_admin_role_available(&env, &pending_admin);
-
-        let previous_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
-        env.storage()
-            .persistent()
-            .set(&DataKey::Admin, &pending_admin);
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
-        AdminAccepted {
-            new_admin: pending_admin,
-            previous_admin,
-        }
-        .publish(&env);
+    /// Accept a pending admin transfer while explicitly binding the expected
+    /// target role and on-chain intent digest (#1184).
+    pub fn accept_admin_with_intent(
+        env: Env,
+        pending_admin: Address,
+        expected_role: u32,
+        expected_digest: BytesN<32>,
+    ) {
+        accept_admin_inner(&env, pending_admin, Some((expected_role, expected_digest)));
     }
 
     pub fn add_issuer(env: Env, admin: Address, issuer: Address, metadata_hash: BytesN<32>) {
@@ -3064,6 +3092,19 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+        let intent_digest = build_role_intent_digest(
+            &env,
+            INTENT_QUEUE_TIMELOCK,
+            proposal_id,
+            action,
+            &admin,
+            &proposal.target,
+            &proposal.payload,
+            now,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::TimelockIntentDigest(proposal_id), &intent_digest);
         TimelockProposalCreated {
             proposal_id,
             action,
@@ -3099,34 +3140,25 @@ impl HarpocratesRegistry {
     }
 
     pub fn execute_timelocked_proposal(env: Env, caller: Address, proposal_id: u32) {
-        let proposal = get_timelock_proposal_or_panic(&env, proposal_id);
-        if proposal.executed {
-            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
-        }
-        if proposal.cancelled {
-            panic_with_error!(&env, RegistryError::ProposalCancelled);
-        }
-        let now = env.ledger().timestamp();
-        if now < proposal.min_execution_at {
-            panic_with_error!(&env, RegistryError::ProposalNotReady);
-        }
-        if is_council_active(&env) && (proposal.action == 1 || proposal.action == 2) {
-            panic_with_error!(&env, RegistryError::InsufficientApprovals);
-        }
-        let mut mutable_proposal = proposal.clone();
-        mutable_proposal.executed = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proposal(proposal_id), &mutable_proposal);
-        caller.require_auth();
-        dispatch_timelocked_action(&env, &proposal);
-        TimelockProposalExecuted {
+        execute_timelock_inner(&env, caller, proposal_id, None);
+    }
+
+    /// Execute a matured timelock proposal while verifying the caller's expected
+    /// target role, target address, and bound intent digest (#1184).
+    pub fn exec_timelock_with_intent(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+        expected_role: u32,
+        expected_target: Address,
+        expected_digest: BytesN<32>,
+    ) {
+        execute_timelock_inner(
+            &env,
+            caller,
             proposal_id,
-            action: proposal.action,
-            executed_by: caller,
-            executed_at: now,
-        }
-        .publish(&env);
+            Some((expected_role, expected_target, expected_digest)),
+        );
     }
 
     pub fn emergency_execute_timelock(env: Env, admin: Address, proposal_id: u32) {
@@ -3141,6 +3173,7 @@ impl HarpocratesRegistry {
         if proposal.action == ProposalAction::UpgradeWasm as u32 {
             panic_with_error!(&env, RegistryError::InvalidProposalAction);
         }
+        verify_timelock_intent_digest(&env, proposal_id, &proposal, None);
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -3381,6 +3414,20 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::CouncilProposal(proposal_id), &proposal);
 
+        let intent_digest = build_role_intent_digest(
+            &env,
+            INTENT_QUEUE_COUNCIL,
+            proposal_id,
+            action,
+            &proposer,
+            &target,
+            &proposal.payload,
+            now,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilIntentDigest(proposal_id), &intent_digest);
+
         CouncilProposalCreated {
             proposal_id,
             action,
@@ -3450,41 +3497,25 @@ impl HarpocratesRegistry {
 
     /// Execute a council proposal once threshold distinct member approvals are gathered.
     pub fn execute_council_proposal(env: Env, caller: Address, proposal_id: u32) {
-        let council = Self::get_admin_council(env.clone())
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
+        execute_council_inner(&env, caller, proposal_id, None);
+    }
 
-        caller.require_auth();
-
-        let mut proposal = get_council_proposal_or_panic(&env, proposal_id);
-        if proposal.executed {
-            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
-        }
-        if proposal.cancelled {
-            panic_with_error!(&env, RegistryError::ProposalCancelled);
-        }
-        if env.ledger().timestamp() > proposal.expires_at {
-            panic_with_error!(&env, RegistryError::AlreadyExpired);
-        }
-
-        // Threshold enforcement
-        if proposal.approvals.len() < council.threshold {
-            panic_with_error!(&env, RegistryError::InsufficientApprovals);
-        }
-
-        proposal.executed = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::CouncilProposal(proposal_id), &proposal);
-
-        dispatch_council_action(&env, &proposal);
-
-        CouncilProposalExecuted {
+    /// Execute a council proposal while explicitly verifying the expected target
+    /// role, target address, and bound intent digest (#1184).
+    pub fn exec_council_with_intent(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+        expected_role: u32,
+        expected_target: Address,
+        expected_digest: BytesN<32>,
+    ) {
+        execute_council_inner(
+            &env,
+            caller,
             proposal_id,
-            action: proposal.action,
-            executed_by: caller,
-            executed_at: env.ledger().timestamp(),
-        }
-        .publish(&env);
+            Some((expected_role, expected_target, expected_digest)),
+        );
     }
 
     /// Cancel a council proposal.
@@ -6309,6 +6340,48 @@ impl HarpocratesRegistry {
             .unwrap_or(false)
     }
 
+    /// Deterministically compute the canonical domain-separated role-change intent digest (#1184).
+    pub fn compute_role_intent_digest(
+        env: Env,
+        queue_domain: u32,
+        proposal_id: u32,
+        target_role: u32,
+        proposer: Address,
+        target: Address,
+        payload: BytesN<32>,
+        created_at: u64,
+    ) -> BytesN<32> {
+        build_role_intent_digest(
+            &env,
+            queue_domain,
+            proposal_id,
+            target_role,
+            &proposer,
+            &target,
+            &payload,
+            created_at,
+        )
+    }
+
+    /// Return the bound role-change intent digest for the pending admin transfer, if any (#1184).
+    pub fn get_admin_intent_digest(env: Env) -> Option<BytesN<32>> {
+        env.storage().persistent().get(&DataKey::AdminIntentDigest)
+    }
+
+    /// Return the bound role-change intent digest for `proposal_id` in the timelock queue (#1184).
+    pub fn get_timelock_intent_digest(env: Env, proposal_id: u32) -> Option<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TimelockIntentDigest(proposal_id))
+    }
+
+    /// Return the bound role-change intent digest for `proposal_id` in the council queue (#1184).
+    pub fn get_council_intent_digest(env: Env, proposal_id: u32) -> Option<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CouncilIntentDigest(proposal_id))
+    }
+
     // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
@@ -8574,6 +8647,265 @@ fn count_pending_proposals(env: &Env) -> u32 {
     pending
 }
 
+fn build_role_intent_digest(
+    env: &Env,
+    queue_domain: u32,
+    proposal_id: u32,
+    target_role: u32,
+    proposer: &Address,
+    target: &Address,
+    payload: &BytesN<32>,
+    created_at: u64,
+) -> BytesN<32> {
+    let mut preimage = Bytes::new(env);
+    preimage.extend_from_slice(&ROLE_INTENT_DOMAIN);
+
+    let contract_xdr = env.current_contract_address().to_xdr(env);
+    preimage.extend_from_slice(&contract_xdr.len().to_be_bytes());
+    preimage.append(&contract_xdr);
+
+    preimage.extend_from_slice(&queue_domain.to_be_bytes());
+    preimage.extend_from_slice(&proposal_id.to_be_bytes());
+    preimage.extend_from_slice(&target_role.to_be_bytes());
+
+    let proposer_xdr = proposer.to_xdr(env);
+    preimage.extend_from_slice(&proposer_xdr.len().to_be_bytes());
+    preimage.append(&proposer_xdr);
+
+    let target_xdr = target.to_xdr(env);
+    preimage.extend_from_slice(&target_xdr.len().to_be_bytes());
+    preimage.append(&target_xdr);
+
+    preimage.extend_from_slice(&payload.to_array());
+    preimage.extend_from_slice(&created_at.to_be_bytes());
+
+    env.crypto().sha256(&preimage).to_bytes()
+}
+
+fn accept_admin_inner(
+    env: &Env,
+    pending_admin: Address,
+    explicit_intent: Option<(u32, BytesN<32>)>,
+) {
+    let proposed_admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingAdmin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NoPendingAdmin));
+
+    pending_admin.require_auth();
+    if proposed_admin != pending_admin {
+        panic_with_error!(env, RegistryError::Unauthorized);
+    }
+
+    let stored_digest: Option<BytesN<32>> =
+        env.storage().persistent().get(&DataKey::AdminIntentDigest);
+    let stored_meta: Option<(Address, u64)> =
+        env.storage().persistent().get(&DataKey::AdminIntentMeta);
+
+    if let Some((expected_role, expected_digest)) = explicit_intent {
+        if expected_role != INTENT_ROLE_ADMIN {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+        let Some(bound) = &stored_digest else {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        };
+        if bound != &expected_digest {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+    }
+
+    if let (Some(bound), Some((proposer, created_at))) = (stored_digest, stored_meta) {
+        let zero = BytesN::from_array(env, &[0u8; 32]);
+        let recomputed = build_role_intent_digest(
+            env,
+            INTENT_QUEUE_ADMIN_TRANSFER,
+            0,
+            INTENT_ROLE_ADMIN,
+            &proposer,
+            &proposed_admin,
+            &zero,
+            created_at,
+        );
+        if recomputed != bound {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+    }
+
+    require_admin_role_available(env, &pending_admin);
+
+    let previous_admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NotInitialized));
+    env.storage()
+        .persistent()
+        .set(&DataKey::Admin, &pending_admin);
+    env.storage().persistent().remove(&DataKey::PendingAdmin);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::AdminIntentDigest);
+    env.storage().persistent().remove(&DataKey::AdminIntentMeta);
+    AdminAccepted {
+        new_admin: pending_admin,
+        previous_admin,
+    }
+    .publish(env);
+}
+
+fn verify_timelock_intent_digest(
+    env: &Env,
+    proposal_id: u32,
+    proposal: &TimelockProposal,
+    explicit_intent: Option<(u32, Address, BytesN<32>)>,
+) {
+    let stored_digest: Option<BytesN<32>> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TimelockIntentDigest(proposal_id));
+
+    if let Some((expected_role, expected_target, expected_digest)) = explicit_intent {
+        if proposal.action != expected_role || proposal.target != expected_target {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+        let Some(bound) = &stored_digest else {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        };
+        if bound != &expected_digest {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+    }
+
+    if let Some(bound) = stored_digest {
+        let recomputed = build_role_intent_digest(
+            env,
+            INTENT_QUEUE_TIMELOCK,
+            proposal_id,
+            proposal.action,
+            &proposal.proposer,
+            &proposal.target,
+            &proposal.payload,
+            proposal.created_at,
+        );
+        if recomputed != bound {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+    }
+}
+
+fn execute_timelock_inner(
+    env: &Env,
+    caller: Address,
+    proposal_id: u32,
+    explicit_intent: Option<(u32, Address, BytesN<32>)>,
+) {
+    let proposal = get_timelock_proposal_or_panic(env, proposal_id);
+    if proposal.executed {
+        panic_with_error!(env, RegistryError::ProposalAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        panic_with_error!(env, RegistryError::ProposalCancelled);
+    }
+    let now = env.ledger().timestamp();
+    if now < proposal.min_execution_at {
+        panic_with_error!(env, RegistryError::ProposalNotReady);
+    }
+    if is_council_active(env) && (proposal.action == 1 || proposal.action == 2) {
+        panic_with_error!(env, RegistryError::InsufficientApprovals);
+    }
+    caller.require_auth();
+    verify_timelock_intent_digest(env, proposal_id, &proposal, explicit_intent);
+
+    let mut mutable_proposal = proposal.clone();
+    mutable_proposal.executed = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Proposal(proposal_id), &mutable_proposal);
+    dispatch_timelocked_action(env, &proposal);
+    TimelockProposalExecuted {
+        proposal_id,
+        action: proposal.action,
+        executed_by: caller,
+        executed_at: now,
+    }
+    .publish(env);
+}
+
+fn execute_council_inner(
+    env: &Env,
+    caller: Address,
+    proposal_id: u32,
+    explicit_intent: Option<(u32, Address, BytesN<32>)>,
+) {
+    let council = HarpocratesRegistry::get_admin_council(env.clone())
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::Unauthorized));
+
+    caller.require_auth();
+
+    let mut proposal = get_council_proposal_or_panic(env, proposal_id);
+    if proposal.executed {
+        panic_with_error!(env, RegistryError::ProposalAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        panic_with_error!(env, RegistryError::ProposalCancelled);
+    }
+    if env.ledger().timestamp() > proposal.expires_at {
+        panic_with_error!(env, RegistryError::AlreadyExpired);
+    }
+    if proposal.approvals.len() < council.threshold {
+        panic_with_error!(env, RegistryError::InsufficientApprovals);
+    }
+
+    let stored_digest: Option<BytesN<32>> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::CouncilIntentDigest(proposal_id));
+
+    if let Some((expected_role, expected_target, expected_digest)) = explicit_intent {
+        if proposal.action != expected_role || proposal.target != expected_target {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+        let Some(bound) = &stored_digest else {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        };
+        if bound != &expected_digest {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+    }
+
+    if let Some(bound) = stored_digest {
+        let recomputed = build_role_intent_digest(
+            env,
+            INTENT_QUEUE_COUNCIL,
+            proposal_id,
+            proposal.action,
+            &proposal.proposer,
+            &proposal.target,
+            &proposal.payload,
+            proposal.created_at,
+        );
+        if recomputed != bound {
+            panic_with_error!(env, RegistryError::RoleIntentDigestMismatch);
+        }
+    }
+
+    proposal.executed = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::CouncilProposal(proposal_id), &proposal);
+
+    dispatch_council_action(env, &proposal);
+
+    CouncilProposalExecuted {
+        proposal_id,
+        action: proposal.action,
+        executed_by: caller,
+        executed_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
     match proposal.action {
         1 => {
@@ -9107,6 +9439,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_role_intent_digest;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]

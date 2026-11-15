@@ -267,6 +267,13 @@ upgrade_storage
 propose_admin
 cancel_admin_transfer
 accept_admin
+accept_admin_with_intent
+exec_timelock_with_intent
+exec_council_with_intent
+compute_role_intent_digest
+get_admin_intent_digest
+get_timelock_intent_digest
+get_council_intent_digest
 get_admin
 get_pending_admin
 get_schema_version
@@ -579,6 +586,24 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## On-Chain Role-Change Intent Digest (#1184)
+
+Queued privileged transitions (`propose_admin`, `propose_timelocked_action`, and
+`propose_council_action`) compute and persist a canonical domain-separated SHA-256
+intent digest (`ROLE_INTENT_DOMAIN = "harpocrates:role-intent:v1"`) over the
+contract address, queue domain, proposal ID, target role/action, proposer,
+target address, 32-byte payload, and creation timestamp:
+
+- Callers can inspect and pre-compute digests via `compute_role_intent_digest`,
+  `get_admin_intent_digest`, `get_timelock_intent_digest`, and
+  `get_council_intent_digest`.
+- Both standard execution paths (`accept_admin`, `execute_timelocked_proposal`,
+  `emergency_execute_timelock`, `execute_council_proposal`) and explicit
+  intent-asserting paths (`accept_admin_with_intent`, `exec_timelock_with_intent`,
+  `exec_council_with_intent`) recompute the digest at execution time and reject
+  any substituted target role, target address, or tampered payload with
+  `RoleIntentDigestMismatch` (`#113`).
 
 ## Contract Error ABI (#344)
 

@@ -162,6 +162,7 @@ call can succeed.
 | 110 | `InvalidSealThreshold` | malformed | no | `required_approvals` is zero or exceeds `max_signers`. |
 | 111 | `SealSignerSetTooLarge` | oversized | no | `max_signers` or the signer set exceeds the configured limit. |
 | 112 | `SealAlreadyFinalized` | conflict | no | The threshold seal for this proof has already been finalized. |
+| 113 | `RoleIntentDigestMismatch` | conflict | no | The privileged transition parameters or target role do not match the bound role-change intent digest. |
 
 ## Privacy Rules
 
