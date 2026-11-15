@@ -853,6 +853,31 @@ pub struct ProofHistoryEntry {
     pub reason_code: u32,
 }
 
+/// Bounded proof-lifecycle history page carrying explicit completeness,
+/// truncation, and predecessor metadata (#1203).
+///
+/// Returned by [`HarpocratesRegistry::get_proof_history`] and
+/// [`HarpocratesRegistry::get_proof_history_page`] so callers never mistake a
+/// partial window for a complete evidence lifecycle history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofHistoryPage {
+    pub entries: Vec<ProofHistoryEntry>,
+    pub total_entries: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub is_complete: bool,
+    pub truncated: bool,
+    pub has_older_entries: bool,
+    pub has_newer_entries: bool,
+    pub predecessor_seq: Option<u32>,
+    pub predecessor_action: Option<u32>,
+    pub predecessor_timestamp: Option<u64>,
+    pub predecessor_actor: Option<Address>,
+    pub predecessor_reason_code: Option<u32>,
+    pub next_offset: Option<u32>,
+}
+
 #[contractevent(topics = ["proof", "reg"])]
 pub struct ProofRegistered {
     #[topic]
@@ -4636,6 +4661,24 @@ impl HarpocratesRegistry {
         );
     }
 
+    pub fn get_proof_history(
+        env: Env,
+        proof_id: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> ProofHistoryPage {
+        query_proof_history_page(&env, &proof_id, offset, limit)
+    }
+
+    pub fn get_proof_history_page(
+        env: Env,
+        proof_id: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> ProofHistoryPage {
+        query_proof_history_page(&env, &proof_id, offset, limit)
+    }
+
     pub fn get_proof_history_at(
         env: Env,
         proof_id: BytesN<32>,
@@ -7649,6 +7692,97 @@ fn record_proof_history(
     .publish(env);
 }
 
+/// Bounded proof-lifecycle history query with explicit completeness, truncation,
+/// and immediate-predecessor metadata (#1203).
+///
+/// Enforces `limit <= MAX_HISTORY_LIMIT` (`HistoryLimitExceeded`), fails closed
+/// with `HistoryCorruption` if any indexed entry or required predecessor slot is
+/// missing beneath `ProofHistorySeq`, and guarantees `is_complete` is never
+/// `true` when any older or newer entry is omitted from the returned slice.
+fn query_proof_history_page(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    offset: u32,
+    limit: u32,
+) -> ProofHistoryPage {
+    if limit > MAX_HISTORY_LIMIT {
+        panic_with_error!(env, RegistryError::HistoryLimitExceeded);
+    }
+
+    let total_entries: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+        .unwrap_or(0);
+
+    let start_idx = offset.min(total_entries);
+    let end_idx = start_idx.saturating_add(limit).min(total_entries);
+
+    let mut entries = Vec::new(env);
+    let mut seq = start_idx + 1;
+    while seq <= end_idx {
+        let entry: ProofHistoryEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistoryEntry(proof_id.clone(), seq))
+            .unwrap_or_else(|| panic_with_error!(env, RegistryError::HistoryCorruption));
+        entries.push_back(entry);
+        seq += 1;
+    }
+
+    let has_older_entries = offset > 0 && total_entries > 0;
+    let has_newer_entries = end_idx < total_entries;
+    let truncated = has_older_entries || has_newer_entries;
+    let is_complete = offset == 0 && entries.len() == total_entries && !truncated;
+
+    let (
+        predecessor_seq,
+        predecessor_action,
+        predecessor_timestamp,
+        predecessor_actor,
+        predecessor_reason_code,
+    ) = if has_older_entries {
+        let pred_seq = offset.min(total_entries);
+        let pred: ProofHistoryEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistoryEntry(proof_id.clone(), pred_seq))
+            .unwrap_or_else(|| panic_with_error!(env, RegistryError::HistoryCorruption));
+        (
+            Some(pred_seq),
+            Some(pred.action),
+            Some(pred.timestamp),
+            pred.actor,
+            Some(pred.reason_code),
+        )
+    } else {
+        (None, None, None, None, None)
+    };
+
+    let next_offset = if has_newer_entries {
+        Some(end_idx)
+    } else {
+        None
+    };
+
+    ProofHistoryPage {
+        entries,
+        total_entries,
+        offset,
+        limit,
+        is_complete,
+        truncated,
+        has_older_entries,
+        has_newer_entries,
+        predecessor_seq,
+        predecessor_action,
+        predecessor_timestamp,
+        predecessor_actor,
+        predecessor_reason_code,
+        next_offset,
+    }
+}
+
 fn require_timestamp_claim_actor(env: &Env, actor: &Address, proof: &ProofRecord) {
     actor.require_auth();
 
@@ -9083,6 +9217,8 @@ mod test_error_abi;
 mod test_expiry;
 #[cfg(test)]
 mod test_fuzz;
+#[cfg(test)]
+mod test_history_completeness;
 #[cfg(test)]
 mod test_identity_tier_properties;
 #[cfg(test)]
