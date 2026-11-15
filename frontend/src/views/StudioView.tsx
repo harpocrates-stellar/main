@@ -51,6 +51,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
 
   const { statusLabel, isBusy } = useA11yStage(stage)
+  const resolvedLiveAnnouncement =
+    evidence.liveAnnouncement !== undefined ? evidence.liveAnnouncement : statusLabel
   const isProving = stage === 'proving'
   const revocationProofId =
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
@@ -75,8 +77,16 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
       <div className="studio">
         <header className="page-header">
           <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
-          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
-          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
+          <p>{message}</p>
+          <div
+            className="sr-only"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            data-testid="studio-live-region"
+          >
+            {resolvedLiveAnnouncement}
+          </div>
         </header>
 
         {networkMismatch ? (

@@ -20,3 +20,8 @@ Verify the application compiles and bundles successfully for production:
 npm run build
 ```
 (This performs TypeScript type-checking and Vite compilation. It will fail if there are any TypeScript or bundling errors).
+
+## 4. Evidence Studio Progress Announcements
+`useEvidence` and `StudioView` decouple continuous visual byte progress (`message`) from the polite ARIA live region (`liveAnnouncement` / `data-testid="studio-live-region"`):
+- Hashing progress announcements are bucketed via `computeBoundedProgressMilestone` (`PROGRESS_ANNOUNCEMENT_STEP_PERCENT = 25`, i.e., `0%`, `25%`, `50%`, `75%`, `100%`) and suppress repeated updates when percentage values are unchanged.
+- Terminal outcomes (`ready` / `registered` success, `cancelled`, and `error` failure) are sanitized and emitted exactly once per operation.

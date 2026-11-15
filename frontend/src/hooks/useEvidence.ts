@@ -47,6 +47,32 @@ export const TIERS = [
 
 const CONTRACT_ID = appConfig.harpocratesRegistryId
 
+/** Bounded percentage interval for screen-reader live-region progress milestones. */
+export const PROGRESS_ANNOUNCEMENT_STEP_PERCENT = 25
+
+/**
+ * Normalizes a progress percentage to `[0, 100]` and buckets it down to the
+ * nearest bounded milestone (default: 0, 25, 50, 75, 100).
+ */
+export function computeBoundedProgressMilestone(
+  percentage: number,
+  stepPercent: number = PROGRESS_ANNOUNCEMENT_STEP_PERCENT,
+): number {
+  const safeStep = Number.isFinite(stepPercent) && stepPercent > 0 ? Math.floor(stepPercent) : 25
+  const clamped = Number.isFinite(percentage) ? Math.max(0, Math.min(100, Math.floor(percentage))) : 0
+  if (clamped >= 100) return 100
+  return Math.floor(clamped / safeStep) * safeStep
+}
+
+function sanitizeStudioAnnouncement(raw: string): string {
+  return raw
+    .replace(/\b[GC][A-Z2-7]{55}\b/g, '[address]')
+    .replace(/\b[0-9a-f]{9,}\b/gi, '[redacted]')
+    .replace(/(\/[\w.-]+){2,}/g, '[path]')
+    .replace(/[A-Za-z]:\\[\S]+/g, '[path]')
+    .trim()
+}
+
 // Privacy-safe stable copy — never includes file names, hashes, or secrets.
 const CANCELLED_MESSAGES: Record<Stage, string> = {
   idle: 'Request cancelled.',
@@ -59,6 +85,8 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   error: 'Request cancelled.',
   cancelled: 'Request cancelled.',
 }
+
+export type TerminalAnnouncementKind = 'success' | 'cancelled' | 'failure'
 
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
@@ -75,6 +103,10 @@ export type UseEvidenceReturn = {
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
   message: string
+  /** Bounded, deduplicated, privacy-safe message for ARIA live regions. */
+  liveAnnouncement?: string
+  /** Ordered log of emitted live-region announcements within the active operation. */
+  announcementHistory?: ReadonlyArray<string>
   registration: RegisterProofResult | null
   networkMismatch: string | null
   isCancellable: boolean
@@ -102,6 +134,8 @@ export function useEvidence(): UseEvidenceReturn {
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
+  const [liveAnnouncement, setLiveAnnouncement] = useState<string>('')
+  const [announcementHistory, setAnnouncementHistory] = useState<string[]>([])
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
@@ -118,6 +152,17 @@ export function useEvidence(): UseEvidenceReturn {
   const stageRef = useRef<Stage>('idle')
   const proveAbortRef = useRef<AbortController | null>(null)
   const evidenceFlowAbortRef = useRef<AbortController | null>(null)
+  const liveAnnouncementRef = useRef<string>('')
+  const announcementHistoryRef = useRef<string[]>([])
+  const announcementTrackerRef = useRef<{
+    lastPercentage: number | null
+    lastMilestone: number | null
+    terminalOutcome: TerminalAnnouncementKind | null
+  }>({
+    lastPercentage: null,
+    lastMilestone: null,
+    terminalOutcome: null,
+  })
   const cachedFileHashRef = useRef<{
     file: File
     name: string
@@ -125,6 +170,38 @@ export function useEvidence(): UseEvidenceReturn {
     lastModified: number
     digest: string
   } | null>(null)
+
+  function updateStage(next: Stage) {
+    stageRef.current = next
+    setStage(next)
+  }
+
+  function resetOperationAnnouncements() {
+    announcementTrackerRef.current = {
+      lastPercentage: null,
+      lastMilestone: null,
+      terminalOutcome: null,
+    }
+    announcementHistoryRef.current = []
+    setAnnouncementHistory([])
+  }
+
+  function emitAnnouncement(raw: string, terminal?: TerminalAnnouncementKind) {
+    const tracker = announcementTrackerRef.current
+    if (terminal !== undefined) {
+      if (tracker.terminalOutcome !== null) return
+      tracker.terminalOutcome = terminal
+    } else if (tracker.terminalOutcome !== null) {
+      return
+    }
+    const sanitized = sanitizeStudioAnnouncement(raw)
+    if (!sanitized || sanitized === liveAnnouncementRef.current) return
+    liveAnnouncementRef.current = sanitized
+    setLiveAnnouncement(sanitized)
+    const nextHistory = [...announcementHistoryRef.current, sanitized].slice(-24)
+    announcementHistoryRef.current = nextHistory
+    setAnnouncementHistory(nextHistory)
+  }
 
   useEffect(() => {
     stageRef.current = stage
@@ -192,6 +269,7 @@ export function useEvidence(): UseEvidenceReturn {
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
+    resetOperationAnnouncements()
     setFile(nextFile)
 
     const cached = cachedFileHashRef.current
@@ -204,13 +282,17 @@ export function useEvidence(): UseEvidenceReturn {
 
     if (!isCacheHit) {
       cachedFileHashRef.current = null
+      const initialPct = nextFile.size === 0 ? 100 : 0
       setHashProgress({
         processedBytes: 0,
         totalBytes: nextFile.size,
-        percentage: nextFile.size === 0 ? 100 : 0,
+        percentage: initialPct,
       })
-      setStage('hashing')
+      updateStage('hashing')
       setMessage('Hashing video locally in the browser: 0%.')
+      announcementTrackerRef.current.lastPercentage = initialPct
+      announcementTrackerRef.current.lastMilestone = computeBoundedProgressMilestone(initialPct)
+      emitAnnouncement(`Hashing video: ${announcementTrackerRef.current.lastMilestone}% complete.`)
     } else {
       setHashProgress({
         processedBytes: nextFile.size,
@@ -232,6 +314,17 @@ export function useEvidence(): UseEvidenceReturn {
             setMessage(
               `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString('en-US')} / ${progress.totalBytes.toLocaleString('en-US')} bytes).`,
             )
+            const clampedPct = Number.isFinite(progress.percentage)
+              ? Math.max(0, Math.min(100, Math.floor(progress.percentage)))
+              : 0
+            const tracker = announcementTrackerRef.current
+            if (clampedPct === tracker.lastPercentage) return
+            tracker.lastPercentage = clampedPct
+            const milestone = computeBoundedProgressMilestone(clampedPct)
+            if (milestone > (tracker.lastMilestone ?? -1)) {
+              tracker.lastMilestone = milestone
+              emitAnnouncement(`Hashing video: ${milestone}% complete.`)
+            }
           },
           controller.signal,
         )
@@ -250,8 +343,9 @@ export function useEvidence(): UseEvidenceReturn {
       const timestamp = new Date().toISOString()
       if (!isCurrentFlow()) return
 
-      setStage('embedding')
+      updateStage('embedding')
       setMessage('Embedding portable Harpocrates metadata into the video.')
+      emitAnnouncement('Embedding portable Harpocrates metadata into the video.')
 
       const { embedVideo } = await import('../services/evidenceService')
       if (!isCurrentFlow()) return
@@ -276,12 +370,16 @@ export function useEvidence(): UseEvidenceReturn {
         timestamp,
         tier: selectedTier,
       })
-      setStage('ready')
-      setMessage('Embedded evidence package is ready for Stellar registration.')
+      updateStage('ready')
+      const readyMsg = 'Embedded evidence package is ready for Stellar registration.'
+      setMessage(readyMsg)
+      emitAnnouncement(readyMsg, 'success')
     } catch (error) {
       if (!isCurrentFlow()) return
-      setStage('error')
-      setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
+      updateStage('error')
+      const errMsg = error instanceof Error ? error.message : 'Evidence processing failed.'
+      setMessage(errMsg)
+      emitAnnouncement(errMsg, 'failure')
     } finally {
       if (evidenceFlowAbortRef.current === controller) {
         evidenceFlowAbortRef.current = null
@@ -334,18 +432,26 @@ export function useEvidence(): UseEvidenceReturn {
         return
       }
       registrationInFlightedRef.current = true
-      setMessage('Saving the completed Stellar registration.')
+      resetOperationAnnouncements()
+      updateStage('registering')
+      const savingMsg = 'Saving the completed Stellar registration.'
+      setMessage(savingMsg)
+      emitAnnouncement(savingMsg)
       try {
         const { persistRegistration } = await import('../services/evidenceService')
         await persistRegistration(pendingPersistence.proof, pendingPersistence.result, wallet)
         pendingPersistenceRef.current = null
         completedRegistrationRef.current = registrationKey
         setRegistration(pendingPersistence.result)
-        setStage('registered')
-        setMessage(`Registration submitted with Stellar status: ${pendingPersistence.result.status}.`)
+        updateStage('registered')
+        const regMsg = `Registration submitted with Stellar status: ${pendingPersistence.result.status}.`
+        setMessage(regMsg)
+        emitAnnouncement(regMsg, 'success')
       } catch (error) {
-        setStage('error')
-        setMessage(error instanceof Error ? error.message : 'Could not save the Stellar registration.')
+        updateStage('error')
+        const errMsg = error instanceof Error ? error.message : 'Could not save the Stellar registration.'
+        setMessage(errMsg)
+        emitAnnouncement(errMsg, 'failure')
       } finally {
         registrationInFlightedRef.current = false
       }
@@ -356,8 +462,11 @@ export function useEvidence(): UseEvidenceReturn {
       return
     }
     registrationInFlightedRef.current = true
+    resetOperationAnnouncements()
 
-    setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
+    const submitMsg = `Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`
+    setMessage(submitMsg)
+    emitAnnouncement(submitMsg)
 
     const currentSeq = seqRef.current
     try {
@@ -367,6 +476,7 @@ export function useEvidence(): UseEvidenceReturn {
           : proof
       if (seqRef.current !== currentSeq) return
 
+      updateStage('registering')
       const { registerProofOnStellar } = await import('../stellar')
       const result = await registerProofOnStellar({
         contractId: CONTRACT_ID,
@@ -393,11 +503,16 @@ export function useEvidence(): UseEvidenceReturn {
       pendingPersistenceRef.current = null
       completedRegistrationRef.current = registrationKey
       setRegistration(result)
-      setStage('registered')
-      setMessage(`Registration submitted with Stellar status: ${result.status}.`)
+      updateStage('registered')
+      const regMsg = `Registration submitted with Stellar status: ${result.status}.`
+      setMessage(regMsg)
+      emitAnnouncement(regMsg, 'success')
     } catch (error) {
-      setStage('error')
-      setMessage(error instanceof Error ? error.message : 'Stellar registration failed.')
+      if (seqRef.current !== currentSeq || stageRef.current === 'cancelled') return
+      updateStage('error')
+      const errMsg = error instanceof Error ? error.message : 'Stellar registration failed.'
+      setMessage(errMsg)
+      emitAnnouncement(errMsg, 'failure')
     } finally {
       registrationInFlightedRef.current = false
     }
@@ -418,8 +533,10 @@ export function useEvidence(): UseEvidenceReturn {
         signal.addEventListener('abort', () => controller.abort(), { once: true })
       }
     }
-    setStage('proving')
-    setMessage('Generating Silent Witness ZK proof locally.')
+    updateStage('proving')
+    const proveMsg = 'Generating Silent Witness ZK proof locally.'
+    setMessage(proveMsg)
+    emitAnnouncement(proveMsg)
 
     let activeRequestId = ''
     try {
@@ -444,7 +561,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -469,8 +586,10 @@ export function useEvidence(): UseEvidenceReturn {
     }
     resetFlow()
     setHashProgress(null)
-    setStage('cancelled')
-    setMessage(CANCELLED_MESSAGES[currentStage])
+    updateStage('cancelled')
+    const cancelledMsg = CANCELLED_MESSAGES[currentStage]
+    setMessage(cancelledMsg)
+    emitAnnouncement(cancelledMsg, 'cancelled')
   }
 
   return {
@@ -487,6 +606,8 @@ export function useEvidence(): UseEvidenceReturn {
     nullifierSeed,
     setNullifierSeed,
     message,
+    liveAnnouncement,
+    announcementHistory,
     registration,
     networkMismatch,
     isCancellable,
