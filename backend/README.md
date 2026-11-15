@@ -301,6 +301,7 @@ DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
 VERIFIER_CACHE_NEGATIVE_TTL_SECONDS=300.0
+INDEXER_MAX_QUARANTINE_ENTRIES=256
 ```
 
 Production notes:
@@ -341,6 +342,22 @@ Bump `CACHE_KEY_DOMAIN_TAG` (e.g. to `...:v2`) whenever the key field layout
 changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
+
+## Unsupported Contract Event Version Quarantine
+
+`chain_indexer.py` inspects Soroban contract event schema versions before
+projecting lifecycle rows (`SUPPORTED_CONTRACT_EVENT_VERSIONS = {1}`):
+
+- **Bounded Quarantine Without Halting:** Events carrying unsupported or
+  malformed version markers (`proof_v2`, `v2`, `eventVersion`, `schema_version`)
+  are isolated in `UnsupportedEventQuarantine` (bounded by
+  `INDEXER_MAX_QUARANTINE_ENTRIES`, default `256`, FIFO-evicted when full) with
+  privacy-safe references (`tx_hash`, `event_index`, `ledger`, `paging_token`,
+  `observed_version`, `reason`) while supported v1 events in the same scan
+  continue indexing normally.
+- **Cursor & Gap Semantics:** Polling advances the stored RPC cursor past mixed
+  pages without stalling and exposes `version_gaps` / `known_version_gaps` so
+  operators and read paths retain visibility into unprojected ledger slots.
 
 ## Test
 

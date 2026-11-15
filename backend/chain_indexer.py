@@ -24,8 +24,10 @@ import struct
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from db import (
@@ -54,6 +56,20 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+SUPPORTED_CONTRACT_EVENT_VERSIONS = frozenset({1})
+INDEXER_DEFAULT_MAX_QUARANTINE_ENTRIES = 256
+
+_VERSION_TAG_RE = re.compile(r"^(?:(proof|dispute)_)?v([0-9]+|[a-z0-9_.-]+)$")
+
+
+def _max_quarantine_entries() -> int:
+    raw = os.getenv("INDEXER_MAX_QUARANTINE_ENTRIES")
+    if raw and raw.strip():
+        try:
+            return max(1, int(raw.strip()))
+        except ValueError:
+            pass
+    return INDEXER_DEFAULT_MAX_QUARANTINE_ENTRIES
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +88,99 @@ class DecodedLifecycleEvent:
     metadata: dict[str, Any] | None = None
     ledger: int | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class QuarantinedEventVersion:
+    tx_hash: str
+    event_index: int
+    paging_token: str | None
+    ledger: int | None
+    contract_id: str | None
+    topic_family: str
+    observed_version: str
+    supported_versions: tuple[int, ...]
+    reason: str
+    recorded_at: str
+
+
+class UnsupportedEventQuarantine:
+    """Bounded FIFO quarantine for unsupported contract event versions and ledger gaps."""
+
+    def __init__(self, max_entries: int | None = None) -> None:
+        self._max_entries = max(1, int(max_entries if max_entries is not None else _max_quarantine_entries()))
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple[str, int], QuarantinedEventVersion] = OrderedDict()
+        self._evicted_count = 0
+
+    @property
+    def max_entries(self) -> int:
+        return self._max_entries
+
+    @property
+    def evicted_count(self) -> int:
+        with self._lock:
+            return self._evicted_count
+
+    def record(self, item: QuarantinedEventVersion) -> bool:
+        """Record a quarantined event idempotently. Returns True if newly added."""
+        key = (item.tx_hash, item.event_index)
+        with self._lock:
+            if key in self._entries:
+                return False
+            while len(self._entries) >= self._max_entries:
+                self._entries.popitem(last=False)
+                self._evicted_count += 1
+            self._entries[key] = item
+            return True
+
+    def list_entries(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    **asdict(entry),
+                    "supported_versions": list(entry.supported_versions),
+                }
+                for entry in self._entries.values()
+            ]
+
+    def list_gaps(self) -> list[dict[str, Any]]:
+        """Return ordered ledger-gap markers caused by unprojected unsupported versions."""
+        with self._lock:
+            gaps: list[dict[str, Any]] = []
+            for entry in self._entries.values():
+                gaps.append(
+                    {
+                        "ledger": entry.ledger,
+                        "paging_token": entry.paging_token,
+                        "tx_hash": entry.tx_hash,
+                        "event_index": entry.event_index,
+                        "topic_family": entry.topic_family,
+                        "observed_version": entry.observed_version,
+                        "reason": entry.reason,
+                    }
+                )
+            return gaps
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._evicted_count = 0
+
+
+_DEFAULT_VERSION_QUARANTINE = UnsupportedEventQuarantine()
+
+
+def get_quarantined_event_versions() -> list[dict[str, Any]]:
+    return _DEFAULT_VERSION_QUARANTINE.list_entries()
+
+
+def get_indexer_version_gaps() -> list[dict[str, Any]]:
+    return _DEFAULT_VERSION_QUARANTINE.list_gaps()
+
+
+def clear_quarantined_event_versions() -> None:
+    _DEFAULT_VERSION_QUARANTINE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -145,15 +254,158 @@ def _normalize_hex(val: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _parse_version_token(raw_ver: Any) -> tuple[int | None, str, bool]:
+    """Return ``(parsed_int, display_str, is_malformed)`` for a raw version marker."""
+    if isinstance(raw_ver, bool):
+        return None, str(raw_ver), True
+    if isinstance(raw_ver, int):
+        return raw_ver, str(raw_ver), False
+    if isinstance(raw_ver, str):
+        cleaned = raw_ver.strip()
+        if not cleaned:
+            return None, "", True
+        lower = cleaned.lower()
+        if lower.startswith("v"):
+            suffix = lower[1:]
+            if suffix.isdigit():
+                return int(suffix), str(int(suffix)), False
+            return None, cleaned, True
+        if lower.lstrip("-").isdigit():
+            return int(lower), str(int(lower)), False
+        return None, cleaned, True
+    return None, str(raw_ver), True
+
+
+def _extract_event_envelope_fields(
+    event: dict[str, Any],
+    default_contract_id: str | None = None,
+) -> tuple[str | None, int, str | None, int | None, str | None]:
+    tx_hash = event.get("txHash") or event.get("transactionHash") or event.get("tx_hash")
+    norm_tx = _normalize_hex(tx_hash) if isinstance(tx_hash, str) and tx_hash.strip() else None
+
+    paging_token_raw = event.get("id") or event.get("pagingToken")
+    paging_token = str(paging_token_raw).strip() if paging_token_raw is not None else None
+
+    event_index = event.get("eventIndex")
+    if event_index is None:
+        event_index = event.get("event_index")
+    if event_index is None:
+        token = paging_token or ""
+        if "-" in token:
+            try:
+                event_index = int(token.split("-")[-1])
+            except (ValueError, TypeError):
+                event_index = 0
+        else:
+            event_index = 0
+    else:
+        try:
+            event_index = int(event_index)
+        except (ValueError, TypeError):
+            event_index = 0
+
+    contract_id = event.get("contractId") or event.get("contract_id") or default_contract_id
+    ledger_raw = event.get("ledger")
+    ledger = ledger_raw if isinstance(ledger_raw, int) and not isinstance(ledger_raw, bool) else None
+    return norm_tx, event_index, contract_id, ledger, paging_token
+
+
+def inspect_event_version(
+    event: dict[str, Any],
+    default_contract_id: str | None = None,
+) -> QuarantinedEventVersion | None:
+    """Return a quarantine descriptor when *event* carries an unsupported contract event version."""
+    if not isinstance(event, dict):
+        return None
+
+    tx_hash, event_index, contract_id, ledger, paging_token = _extract_event_envelope_fields(
+        event, default_contract_id=default_contract_id
+    )
+    if not tx_hash:
+        return None
+
+    raw_topics = event.get("topic") or event.get("topics") or []
+    topics = [decode_scval(t) for t in raw_topics] if isinstance(raw_topics, list) else []
+    str_topics = [str(t).strip().lower() for t in topics]
+
+    val = decode_scval(event.get("value"))
+
+    topic_family = "contract"
+    if str_topics:
+        if str_topics[0].startswith("proof") or (len(str_topics) > 1 and str_topics[1] == "proof"):
+            topic_family = "proof"
+        elif str_topics[0].startswith("dispute") or (len(str_topics) > 1 and str_topics[1] == "dispute"):
+            topic_family = "dispute"
+
+    raw_version: Any = None
+    has_version_marker = False
+
+    for env_key in ("eventVersion", "schemaVersion", "version"):
+        if env_key in event and event[env_key] is not None:
+            raw_version = event[env_key]
+            has_version_marker = True
+            break
+
+    if not has_version_marker and isinstance(val, dict):
+        for val_key in ("event_version", "schema_version", "version"):
+            if val_key in val and val[val_key] is not None:
+                raw_version = val[val_key]
+                has_version_marker = True
+                break
+
+    if not has_version_marker and str_topics:
+        m0 = _VERSION_TAG_RE.match(str_topics[0])
+        if m0 and (m0.group(1) in ("proof", "dispute") or (len(str_topics) > 1 and str_topics[1] in ("proof", "dispute"))):
+            raw_version = f"v{m0.group(2)}"
+            has_version_marker = True
+            if m0.group(1):
+                topic_family = m0.group(1)
+        elif str_topics[0] in ("proof", "dispute") and len(str_topics) >= 3:
+            m2 = _VERSION_TAG_RE.match(str_topics[2])
+            # Avoid misclassifying 64-char hex proof_id/dispute_id starting with 'v' (hex is 0-9a-f, never 'v')
+            if m2 and m2.group(1) is None:
+                raw_version = f"v{m2.group(2)}"
+                has_version_marker = True
+
+    if not has_version_marker:
+        return None
+
+    parsed_ver, display_ver, malformed = _parse_version_token(raw_version)
+    if not malformed and parsed_ver in SUPPORTED_CONTRACT_EVENT_VERSIONS:
+        return None
+
+    reason = (
+        f"malformed_event_version:{display_ver or 'empty'}"
+        if malformed
+        else f"unsupported_event_version:{display_ver}"
+    )
+    return QuarantinedEventVersion(
+        tx_hash=tx_hash,
+        event_index=event_index,
+        paging_token=paging_token,
+        ledger=ledger,
+        contract_id=contract_id,
+        topic_family=topic_family,
+        observed_version=display_ver or "unknown",
+        supported_versions=tuple(sorted(SUPPORTED_CONTRACT_EVENT_VERSIONS)),
+        reason=reason,
+        recorded_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+
+
 def classify_and_decode_event(
     event: dict[str, Any],
     default_contract_id: str | None = None,
 ) -> DecodedLifecycleEvent | None:
     """Parse a Soroban RPC event and decode it if it matches a known lifecycle topic.
 
-    Returns DecodedLifecycleEvent if recognized, or None if unknown/unhandled.
+    Returns DecodedLifecycleEvent if recognized and supported, or None if unknown
+    or carrying an unsupported schema version.
     """
     if not isinstance(event, dict):
+        return None
+
+    if inspect_event_version(event, default_contract_id=default_contract_id) is not None:
         return None
 
     # Resolve tx_hash
@@ -199,6 +451,14 @@ def classify_and_decode_event(
         return None
 
     topics = [decode_scval(t) for t in raw_topics]
+    # Normalize optional explicit v1 version markers into canonical topic positions
+    if len(topics) >= 2 and str(topics[0]).strip().lower() == "v1":
+        topics = topics[1:]
+    elif len(topics) >= 1 and str(topics[0]).strip().lower() in ("proof_v1", "dispute_v1"):
+        topics = [str(topics[0]).strip().lower().split("_", 1)[0], *topics[1:]]
+    if len(topics) >= 4 and str(topics[0]).strip().lower() in ("proof", "dispute") and str(topics[2]).strip().lower() == "v1":
+        topics = [topics[0], topics[1], *topics[3:]]
+
     first = str(topics[0]).lower() if len(topics) > 0 else ""
     second = str(topics[1]).lower() if len(topics) > 1 else ""
 
@@ -354,21 +614,56 @@ def classify_and_decode_event(
 def process_events_batch(
     events: list[dict[str, Any]],
     contract_id: str | None = None,
+    *,
+    quarantine: UnsupportedEventQuarantine | None = None,
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
-    Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    Decodes supported lifecycle events, quarantines unsupported contract event
+    versions without halting unrelated indexing, inserts valid rows idempotently
+    into proof_events, queues webhooks, and tracks unknown topics and gaps.
     """
-    summary = {
+    active_quarantine = quarantine or _DEFAULT_VERSION_QUARANTINE
+    summary: dict[str, Any] = {
         "scanned": 0,
         "indexed": 0,
         "skipped": 0,
         "duplicates": 0,
+        "unsupported_versions": 0,
+        "quarantined_references": [],
+        "version_gaps": [],
     }
 
     for raw in events:
         summary["scanned"] += 1
+
+        quarantined = inspect_event_version(raw, default_contract_id=contract_id)
+        if quarantined is not None:
+            newly_added = active_quarantine.record(quarantined)
+            summary["unsupported_versions"] += 1
+            ref = {
+                "tx_hash": quarantined.tx_hash,
+                "event_index": quarantined.event_index,
+                "paging_token": quarantined.paging_token,
+                "ledger": quarantined.ledger,
+                "topic_family": quarantined.topic_family,
+                "observed_version": quarantined.observed_version,
+                "supported_versions": list(quarantined.supported_versions),
+                "reason": quarantined.reason,
+                "newly_quarantined": newly_added,
+            }
+            summary["quarantined_references"].append(ref)
+            summary["version_gaps"].append(
+                {
+                    "ledger": quarantined.ledger,
+                    "paging_token": quarantined.paging_token,
+                    "tx_hash": quarantined.tx_hash,
+                    "event_index": quarantined.event_index,
+                    "reason": quarantined.reason,
+                }
+            )
+            continue
+
         decoded = classify_and_decode_event(raw, default_contract_id=contract_id)
 
         if decoded is None:
@@ -491,12 +786,15 @@ def poll_indexer_once(
     rpc_url: str | None = None,
     limit: int = INDEXER_DEFAULT_PAGE_SIZE,
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    *,
+    quarantine: UnsupportedEventQuarantine | None = None,
 ) -> dict[str, Any]:
-    """Execute one indexing cycle: fetch, ingest, and persist cursor."""
+    """Execute one indexing cycle: fetch, ingest supported events, quarantine unsupported versions, and persist cursor."""
     active_contract_id = contract_id or os.getenv("HARPOCRATES_REGISTRY_CONTRACT_ID") or os.getenv("CONTRACT_ID")
     if not active_contract_id:
         return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0, "reason": "no_contract_id"}
 
+    active_quarantine = quarantine or _DEFAULT_VERSION_QUARANTINE
     active_rpc_url = rpc_url or os.getenv("SOROBAN_RPC_URL") or os.getenv("STELLAR_RPC_URL") or DEFAULT_SOROBAN_RPC_URL
 
     cursor = get_indexer_cursor()
@@ -519,7 +817,13 @@ def poll_indexer_once(
     )
 
     events = rpc_result.get("events") or []
-    summary = process_events_batch(events, contract_id=active_contract_id)
+    summary = process_events_batch(
+        events,
+        contract_id=active_contract_id,
+        quarantine=active_quarantine,
+    )
+    summary["known_version_gaps"] = active_quarantine.list_gaps()
+    summary["quarantine_evicted"] = active_quarantine.evicted_count
 
     new_cursor = rpc_result.get("cursor")
     latest_ledger = rpc_result.get("latestLedger")
