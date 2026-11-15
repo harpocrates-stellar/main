@@ -23,7 +23,15 @@ destination artifact is retained.
 | `UPLOAD_CHUNK_BYTES` | `65536` | Bounded read/write size for stream hashing |
 | `UPLOAD_STREAM_THRESHOLD_BYTES` | `1048576` | Content-Length above which embed/extract wrap uploads |
 | `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream size ceiling |
-| `UPLOAD_TEMP_DIR` | OS temp | Optional temp directory for stream scratch files |
+| `UPLOAD_TEMP_DIR` | OS temp | Optional temp directory for stream scratch files and session directories |
+
+## Offline Upload Integrity Report for Failed Sessions
+
+Failed upload sessions persist a sanitized integrity summary (`hpx-failed-upload-integrity-report/1`) inside the session directory (`build_failed_session_integrity_report(session_root)` and `GET /api/stego/upload-sessions/integrity-report`):
+
+- **Session expectations:** `POST /api/stego/upload-session` optionally accepts `expectedBytes` (`X-Upload-Expected-Bytes`) and `expectedSha256` (`X-Upload-Expected-SHA256`).
+- **Recorded integrity fields:** `session_id`, `failure_reason`, `expected_bytes`, `observed_bytes`, `byte_delta`, `chunk_count`, `digest_status` (`matched`, `mismatch`, `unverified`, or `empty`), and `recorded_at`.
+- **Privacy exclusions:** Uploaded media bytes, private filenames, raw content digests, and server filesystem paths are strictly excluded from persisted failure records and report payloads.
 
 ## Trust boundary, privacy, migration, rollback
 
