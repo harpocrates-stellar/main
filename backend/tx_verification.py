@@ -25,6 +25,22 @@ def normalize_tx_hash(value: object) -> str:
     return normalized
 
 
+def compute_ledger_lag(
+    last_trusted_ledger: int | None,
+    latest_chain_ledger: int | None,
+) -> int | None:
+    """Compute non-negative ledger lag between ``last_trusted_ledger`` and ``latest_chain_ledger``."""
+    if last_trusted_ledger is None or latest_chain_ledger is None:
+        return None
+    if isinstance(last_trusted_ledger, bool) or isinstance(latest_chain_ledger, bool):
+        raise ValueError("ledger numbers must be integers, not booleans")
+    trusted = int(last_trusted_ledger)
+    head = int(latest_chain_ledger)
+    if trusted < 0 or head < 0:
+        raise ValueError("ledger numbers must be non-negative")
+    return max(0, head - trusted)
+
+
 import json
 import logging
 import os

@@ -351,3 +351,23 @@ python -m unittest test_app.py test_stego.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+## Proof Read Index Freshness and Coverage
+
+Proof read endpoints (`GET /api/proofs`, `GET /api/proofs/by-video/<video_hash>`,
+`GET /api/proofs/history/<proof_id>`, and `POST /api/proofs/verify-batch`)
+attach an `indexFreshness` envelope (`get_index_freshness_and_coverage` in
+`chain_indexer.py`) containing:
+
+- `lastTrustedLedger`, `latestObservedChainLedger`, and `ledgerLag`
+- `status` (`fresh`, `stale`, `gapped`, or `uninitialized`), `stale`, `ageSeconds`, and `coverageComplete`
+- `knownGaps` (`[{startLedger, endLedger, span, reason}]`)
+- `authoritativeForInvalidity: false`, `impliesInvalidOnChainProof: false`, and `onChainVerificationRequired`
+
+Configurable thresholds: `INDEXER_MAX_STALE_SECONDS` (default `120.0`) and
+`INDEXER_MAX_LEDGER_LAG` (default `25`). When the read index is uninitialized,
+stale, or gapped, proof lookups (`readOutcome` / `evaluate_proof_read_outcome`)
+explicitly mark misses as indeterminate (`impliesInvalidOnChainProof: false`,
+`onChainVerificationRequired: true`) so a lagging off-chain index never implies
+an invalid on-chain Soroban proof.
+
+

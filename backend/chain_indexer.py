@@ -30,7 +30,10 @@ from typing import Any
 
 from db import (
     get_indexer_cursor,
+    get_indexer_state_snapshot,
     insert_indexed_proof_event,
+    list_indexer_coverage_gaps,
+    record_indexer_coverage_gap,
     save_indexer_cursor,
 )
 from fetch_external import safe_urlopen
@@ -40,6 +43,7 @@ from strkey import (
     _VERSION_BYTE_ED25519_PUBLIC,
     make_strkey,
 )
+from tx_verification import compute_ledger_lag
 from webhook import queue_webhook_deliveries
 
 LOGGER = logging.getLogger("harpocrates.chain_indexer")
@@ -54,6 +58,10 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+INDEXER_DEFAULT_MAX_STALE_SECONDS = 120.0
+INDEXER_DEFAULT_MAX_LEDGER_LAG = 25
+
+_LAST_OBSERVED_CHAIN_LEDGER: dict[str, int] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +434,11 @@ def fetch_latest_ledger(rpc_url: str, timeout: float = INDEXER_DEFAULT_TIMEOUT) 
         data = json.loads(res.body.decode("utf-8"))
         result = data.get("result") or {}
         sequence = result.get("sequence") or result.get("latestLedger")
-        return int(sequence) if sequence is not None else None
+        if sequence is not None:
+            parsed_seq = int(sequence)
+            observe_chain_head_ledger(parsed_seq)
+            return parsed_seq
+        return None
     except Exception as exc:
         LOGGER.warning("fetch_latest_ledger_failed rpc=%s exc=%s", rpc_url, exc)
         return None
@@ -523,6 +535,11 @@ def poll_indexer_once(
 
     new_cursor = rpc_result.get("cursor")
     latest_ledger = rpc_result.get("latestLedger")
+    if latest_ledger is not None and not isinstance(latest_ledger, bool):
+        try:
+            observe_chain_head_ledger(int(latest_ledger))
+        except (TypeError, ValueError):
+            pass
 
     if new_cursor and new_cursor != cursor:
         save_indexer_cursor(cursor=new_cursor, ledger=latest_ledger)
@@ -535,6 +552,224 @@ def poll_indexer_once(
             summary["new_cursor"] = str(last_id)
 
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Index Freshness, Ledger Coverage & Non-Authoritative Read Guardrails
+# ---------------------------------------------------------------------------
+
+
+def observe_chain_head_ledger(ledger: int, *, indexer_id: str = "soroban_events") -> None:
+    """Record the highest chain head ledger observed by the backend."""
+    if isinstance(ledger, bool):
+        raise ValueError("ledger must be an integer, not boolean")
+    parsed = int(ledger)
+    if parsed < 1:
+        raise ValueError("ledger must be >= 1")
+    prev = _LAST_OBSERVED_CHAIN_LEDGER.get(indexer_id)
+    if prev is None or parsed > prev:
+        _LAST_OBSERVED_CHAIN_LEDGER[indexer_id] = parsed
+
+
+def reset_observed_chain_head(indexer_id: str = "soroban_events") -> None:
+    """Clear observed chain head ledger for *indexer_id* (used in tests)."""
+    _LAST_OBSERVED_CHAIN_LEDGER.pop(indexer_id, None)
+
+
+def _resolve_positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    val = float(raw.strip())
+    if val <= 0:
+        raise ValueError(f"{name} must be positive")
+    return val
+
+
+def _resolve_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    val = int(raw.strip())
+    if val < 1:
+        raise ValueError(f"{name} must be >= 1")
+    return val
+
+
+def get_index_freshness_and_coverage(
+    *,
+    indexer_id: str = "soroban_events",
+    now: datetime | None = None,
+    observed_chain_ledger: int | None = None,
+    max_stale_seconds: float | None = None,
+    max_ledger_lag: int | None = None,
+) -> dict[str, Any]:
+    """Build index freshness and ledger coverage metadata for proof read responses.
+
+    Explicitly reports ``lastTrustedLedger``, ``knownGaps``, staleness state, and
+    non-authoritative absence guardrails so a stale or gapped read index can
+    never be misinterpreted as implying an invalid on-chain proof.
+    """
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+
+    stale_threshold = (
+        _resolve_positive_float_env("INDEXER_MAX_STALE_SECONDS", INDEXER_DEFAULT_MAX_STALE_SECONDS)
+        if max_stale_seconds is None
+        else float(max_stale_seconds)
+    )
+    if stale_threshold <= 0:
+        raise ValueError("max_stale_seconds must be positive")
+
+    lag_threshold = (
+        _resolve_positive_int_env("INDEXER_MAX_LEDGER_LAG", INDEXER_DEFAULT_MAX_LEDGER_LAG)
+        if max_ledger_lag is None
+        else int(max_ledger_lag)
+    )
+    if lag_threshold < 1:
+        raise ValueError("max_ledger_lag must be >= 1")
+
+    snapshot = get_indexer_state_snapshot(indexer_id)
+    known_gaps = list_indexer_coverage_gaps(indexer_id)
+
+    last_trusted_ledger: int | None = None
+    updated_at_iso: str | None = None
+    age_seconds: float | None = None
+    cursor_present = False
+
+    if snapshot:
+        cursor_val = snapshot.get("cursor")
+        cursor_present = bool(cursor_val)
+        raw_ledger = snapshot.get("ledger")
+        if raw_ledger is not None and not isinstance(raw_ledger, bool):
+            try:
+                parsed_ledger = int(raw_ledger)
+                if parsed_ledger >= 1:
+                    last_trusted_ledger = parsed_ledger
+            except (TypeError, ValueError):
+                last_trusted_ledger = None
+
+        raw_updated = snapshot.get("updated_at")
+        if isinstance(raw_updated, datetime):
+            ts = (
+                raw_updated
+                if raw_updated.tzinfo is not None
+                else raw_updated.replace(tzinfo=timezone.utc)
+            )
+            updated_at_iso = ts.astimezone(timezone.utc).isoformat()
+            age_seconds = round(max(0.0, (current_time - ts).total_seconds()), 3)
+        elif isinstance(raw_updated, str) and raw_updated.strip():
+            try:
+                parsed_ts = datetime.fromisoformat(raw_updated.strip().replace("Z", "+00:00"))
+                if parsed_ts.tzinfo is None:
+                    parsed_ts = parsed_ts.replace(tzinfo=timezone.utc)
+                updated_at_iso = parsed_ts.astimezone(timezone.utc).isoformat()
+                age_seconds = round(max(0.0, (current_time - parsed_ts).total_seconds()), 3)
+            except ValueError:
+                updated_at_iso = None
+
+    head_ledger = (
+        observed_chain_ledger
+        if observed_chain_ledger is not None
+        else _LAST_OBSERVED_CHAIN_LEDGER.get(indexer_id)
+    )
+    ledger_lag = compute_ledger_lag(last_trusted_ledger, head_ledger)
+
+    uninitialized = last_trusted_ledger is None and not cursor_present
+    age_stale = age_seconds is not None and age_seconds > stale_threshold
+    lag_stale = ledger_lag is not None and ledger_lag > lag_threshold
+    has_gaps = len(known_gaps) > 0
+
+    is_stale = bool(uninitialized or age_stale or lag_stale)
+    if uninitialized:
+        status = "uninitialized"
+    elif is_stale:
+        status = "stale"
+    elif has_gaps:
+        status = "gapped"
+    else:
+        status = "fresh"
+
+    coverage_complete = bool(
+        last_trusted_ledger is not None and not is_stale and not has_gaps
+    )
+
+    if status in {"uninitialized", "stale", "gapped"}:
+        advisory = (
+            "Read index is not fully caught up or contains ledger coverage gaps; "
+            "missing or outdated records here NEVER imply an invalid on-chain proof. "
+            "Verify proof state directly against the Soroban registry contract."
+        )
+    else:
+        advisory = (
+            "Read index is current through lastTrustedLedger with no recorded gaps; "
+            "absence in the off-chain read index still does not invalidate an "
+            "on-chain Soroban proof."
+        )
+
+    return {
+        "indexerId": indexer_id,
+        "status": status,
+        "stale": is_stale,
+        "coverageComplete": coverage_complete,
+        "lastTrustedLedger": last_trusted_ledger,
+        "latestObservedChainLedger": head_ledger,
+        "ledgerLag": ledger_lag,
+        "lastUpdatedAt": updated_at_iso,
+        "ageSeconds": age_seconds,
+        "knownGaps": known_gaps,
+        "authoritativeForInvalidity": False,
+        "impliesInvalidOnChainProof": False,
+        "onChainVerificationRequired": bool(not coverage_complete),
+        "advisory": advisory,
+    }
+
+
+def evaluate_proof_read_outcome(
+    events: list[dict[str, Any]],
+    freshness: dict[str, Any],
+) -> dict[str, Any]:
+    """Interpret proof read events alongside index freshness so stale misses fail safe.
+
+    A missing or unconfirmed record in a stale, uninitialized, or gapped read
+    index never implies that an on-chain proof is invalid.
+    """
+    has_revoked = any(
+        isinstance(e, dict)
+        and (e.get("tx_status") == "revoked" or e.get("event_type") == "revoke")
+        for e in events
+    )
+    coverage_complete = bool(freshness.get("coverageComplete", False))
+    status = str(freshness.get("status") or "uninitialized")
+
+    if has_revoked:
+        return {
+            "readVerdict": "revoked",
+            "impliesInvalidOnChainProof": True,
+            "onChainVerificationRequired": False,
+            "lifecycleMayBeOutdated": False,
+        }
+
+    if not events:
+        verdict = (
+            "unindexed_verify_on_chain"
+            if coverage_complete
+            else f"indeterminate_{status}_index"
+        )
+        return {
+            "readVerdict": verdict,
+            "impliesInvalidOnChainProof": False,
+            "onChainVerificationRequired": True,
+            "lifecycleMayBeOutdated": not coverage_complete,
+        }
+
+    return {
+        "readVerdict": "indexed_records_present",
+        "impliesInvalidOnChainProof": False,
+        "onChainVerificationRequired": not coverage_complete,
+        "lifecycleMayBeOutdated": not coverage_complete,
+    }
 
 
 def run_indexer_loop(

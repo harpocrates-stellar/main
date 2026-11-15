@@ -112,7 +112,11 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from chain_indexer import (
+    evaluate_proof_read_outcome,
+    get_index_freshness_and_coverage,
+)
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1151,7 +1155,15 @@ def create_app() -> Flask:
                 return jsonify({"error": "invalid cursor"}), 400
 
         events, next_cursor = list_proof_events(parsed_limit, cursor_id=cursor_id)
-        return jsonify({"ok": True, "events": events, "nextCursor": next_cursor})
+        freshness = get_index_freshness_and_coverage()
+        return jsonify(
+            {
+                "ok": True,
+                "events": events,
+                "nextCursor": next_cursor,
+                "indexFreshness": freshness,
+            }
+        )
 
     @app.get("/api/proofs/lineage")
     def lineage_events():
@@ -1196,7 +1208,15 @@ def create_app() -> Flask:
         events, next_cursor = find_proof_events_by_video(
             video_hash, parsed_limit, cursor_id=cursor_id
         )
-        return ok_response({"events": events, "nextCursor": next_cursor})
+        freshness = get_index_freshness_and_coverage()
+        return ok_response(
+            {
+                "events": events,
+                "nextCursor": next_cursor,
+                "indexFreshness": freshness,
+                "readOutcome": evaluate_proof_read_outcome(events, freshness),
+            }
+        )
 
     @app.get("/api/lineage/by-actor/<actor_address>")
     def lineage_by_actor(actor_address: str):
@@ -1303,9 +1323,11 @@ def create_app() -> Flask:
             return jsonify({"error": "JSON body with a 'proofs' array is required"}), 400
 
         proofs = payload["proofs"]
-        if len(proofs) > config.max_batch_size:
-            return jsonify({"error": f"batch size exceeds limit of {config.max_batch_size}"}), 413
+        max_batch_size = int(getattr(config, "max_batch_size", 100))
+        if len(proofs) > max_batch_size:
+            return jsonify({"error": f"batch size exceeds limit of {max_batch_size}"}), 413
 
+        freshness = get_index_freshness_and_coverage()
         results = []
         for idx, item in enumerate(proofs):
             if not isinstance(item, dict):
@@ -1334,8 +1356,19 @@ def create_app() -> Flask:
                 else:
                     events = find_proof_events_by_proof_id(proof_id)
                 
+                outcome = evaluate_proof_read_outcome(events, freshness)
                 if not events:
-                    results.append({"videoHash": video_hash, "proofId": proof_id, "status": "not_found", "events": [], "index": idx})
+                    results.append(
+                        {
+                            "videoHash": video_hash,
+                            "proofId": proof_id,
+                            "status": "not_found",
+                            "events": [],
+                            "index": idx,
+                            "readOutcome": outcome,
+                            "impliesInvalidOnChainProof": False,
+                        }
+                    )
                 else:
                     # Determine status from db events.
                     # Since on-chain revocation isn't visible here, we use tx_status if available.
@@ -1355,12 +1388,22 @@ def create_app() -> Flask:
                     else:
                         status = "pending"
                         
-                    results.append({"videoHash": video_hash, "proofId": proof_id, "status": status, "events": events, "index": idx})
+                    results.append(
+                        {
+                            "videoHash": video_hash,
+                            "proofId": proof_id,
+                            "status": status,
+                            "events": events,
+                            "index": idx,
+                            "readOutcome": outcome,
+                            "impliesInvalidOnChainProof": outcome["impliesInvalidOnChainProof"],
+                        }
+                    )
             except Exception as e:
                 # Catch dependency failure (e.g. database down) gracefully for the batch item
                 results.append({"videoHash": video_hash, "proofId": proof_id, "status": "dependency_failure", "error": str(e), "index": idx})
 
-        return jsonify({"ok": True, "results": results})
+        return jsonify({"ok": True, "results": results, "indexFreshness": freshness})
 
     @app.post("/api/proofs/register")
     @limiter.limit(config.ratelimit_register)
@@ -1780,8 +1823,14 @@ def create_app() -> Flask:
         except ValueError:
             return jsonify({"error": "limit and offset must be integers"}), 400
 
+        history_events = list_proof_history_events(proof_id, parsed_limit, parsed_offset)
+        freshness = get_index_freshness_and_coverage()
         return jsonify(
-            {"ok": True, "events": list_proof_history_events(proof_id, parsed_limit, parsed_offset)}
+            {
+                "ok": True,
+                "events": history_events,
+                "indexFreshness": freshness,
+            }
         )
 
     @app.post("/api/proofs/history")

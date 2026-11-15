@@ -1381,6 +1381,8 @@ get_job_metrics = get_job_queue_metrics
 
 _INDEXED_EVENTS: dict[tuple[str, int], dict[str, Any]] = {}
 _INDEXER_STATE: dict[str, dict[str, Any]] = {}
+_INDEXER_COVERAGE_GAPS: dict[str, list[dict[str, Any]]] = {}
+MAX_RECORDED_COVERAGE_GAPS = 256
 _mock_indexed_id = 100000
 
 
@@ -1539,6 +1541,96 @@ def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:
             )
             row = cursor.fetchone()
             return row["cursor"] if row else None
+
+
+def get_indexer_state_snapshot(indexer_id: str = "soroban_events") -> dict[str, Any] | None:
+    """Return ``{"cursor", "ledger", "updated_at"}`` for *indexer_id* without mutating state."""
+    if not database_url():
+        entry = _INDEXER_STATE.get(indexer_id)
+        if not entry:
+            return None
+        return {
+            "id": indexer_id,
+            "cursor": entry.get("cursor") or None,
+            "ledger": entry.get("ledger"),
+            "updated_at": entry.get("updated_at"),
+        }
+
+    try:
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "select id, cursor, ledger, updated_at from indexer_state where id = %s;",
+                    (indexer_id,),
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+    except Exception as exc:
+        logger.warning("Failed to query indexer_state snapshot for %s: %s", indexer_id, type(exc).__name__)
+        return None
+
+
+def record_indexer_coverage_gap(
+    start_ledger: int,
+    end_ledger: int,
+    *,
+    reason: str = "unindexed_range",
+    indexer_id: str = "soroban_events",
+) -> dict[str, Any]:
+    """Record a known ledger range ``[start_ledger, end_ledger]`` missed by the read index."""
+    if isinstance(start_ledger, bool) or isinstance(end_ledger, bool):
+        raise ValueError("gap ledger bounds must be positive integers")
+    start = int(start_ledger)
+    end = int(end_ledger)
+    if start < 1 or end < 1:
+        raise ValueError("gap ledger bounds must be >= 1")
+    if end < start:
+        raise ValueError("end_ledger must be >= start_ledger")
+
+    clean_reason = (str(reason).strip() or "unindexed_range")[:128]
+    existing = list(_INDEXER_COVERAGE_GAPS.get(indexer_id, []))
+    existing.append(
+        {
+            "startLedger": start,
+            "endLedger": end,
+            "span": end - start + 1,
+            "reason": clean_reason,
+        }
+    )
+    existing.sort(key=lambda item: (item["startLedger"], item["endLedger"]))
+
+    merged: list[dict[str, Any]] = []
+    for gap in existing:
+        if not merged:
+            merged.append(dict(gap))
+            continue
+        prev = merged[-1]
+        if gap["startLedger"] <= prev["endLedger"] + 1 and gap["reason"] == prev["reason"]:
+            prev["endLedger"] = max(prev["endLedger"], gap["endLedger"])
+            prev["span"] = prev["endLedger"] - prev["startLedger"] + 1
+        else:
+            merged.append(dict(gap))
+
+    if len(merged) > MAX_RECORDED_COVERAGE_GAPS:
+        merged = merged[-MAX_RECORDED_COVERAGE_GAPS:]
+
+    _INDEXER_COVERAGE_GAPS[indexer_id] = merged
+    return {
+        "startLedger": start,
+        "endLedger": end,
+        "span": end - start + 1,
+        "reason": clean_reason,
+    }
+
+
+def list_indexer_coverage_gaps(indexer_id: str = "soroban_events") -> list[dict[str, Any]]:
+    """Return canonically ordered known coverage gaps for *indexer_id*."""
+    return [dict(item) for item in _INDEXER_COVERAGE_GAPS.get(indexer_id, [])]
+
+
+def clear_indexer_coverage_gaps(indexer_id: str = "soroban_events") -> None:
+    """Clear recorded coverage gaps for *indexer_id* (used after backfill or in tests)."""
+    _INDEXER_COVERAGE_GAPS.pop(indexer_id, None)
 
 
 def save_indexer_cursor(
