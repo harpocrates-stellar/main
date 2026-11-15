@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 try:
     from rfc3161_chain import (
@@ -639,3 +641,244 @@ def _validate_time_attestation_obj(obj: dict[str, Any]) -> None:
     
     if not _is_valid_hex(obj["evidenceDigest"], 64):
         raise ValueError("evidenceDigest must be 64-character hex string")
+
+
+# ── Private incident export & TSA URL redaction ────────────────────────────
+
+INCIDENT_EXPORT_SCHEMA = "harpocrates-time-attestation-incident-export/v1"
+MAX_TSA_URL_LENGTH = 2_048
+
+_SAFE_QUERY_KEYS = frozenset({"alg", "format", "hash", "mode", "policy", "profile", "version"})
+_SAFE_QUERY_VAL_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_HIGH_ENTROPY_SEGMENT_RE = re.compile(r"^[A-Fa-f0-9]{24,}$|^[A-Za-z0-9_-]{24,}$")
+_SENSITIVE_PARAM_TOKENS = (
+    "key",
+    "token",
+    "secret",
+    "pass",
+    "pwd",
+    "auth",
+    "sig",
+    "cred",
+    "bearer",
+    "jwt",
+    "session",
+    "ticket",
+    "code",
+    "nonce",
+)
+
+TSAErrorCategory = Literal[
+    "none",
+    "unverified_no_chain",
+    "dependency_unavailable",
+    "malformed_certificate_or_chain",
+    "unsupported_algorithm",
+    "certificate_expired_or_not_yet_valid",
+    "certificate_revoked",
+    "untrusted_root",
+    "signature_invalid",
+    "malformed_tsa_url",
+    "verification_failed",
+]
+
+
+@dataclass(frozen=True)
+class RedactedTSAUrl:
+    """Sanitized TSA endpoint metadata safe for private incident exports."""
+
+    provider_identity: str | None
+    redacted_url: str
+    redacted_credentials: bool
+    redacted_query_keys: tuple[str, ...]
+    redacted_fragment: bool
+    url_valid: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "providerIdentity": self.provider_identity,
+            "redactedCredentials": self.redacted_credentials,
+            "redactedFragment": self.redacted_fragment,
+            "redactedQueryKeys": list(self.redacted_query_keys),
+            "redactedUrl": self.redacted_url,
+            "urlValid": self.url_valid,
+        }
+
+
+def _is_sensitive_query_pair(key: str, value: str) -> bool:
+    lowered = key.lower().replace("-", "").replace("_", "")
+    if any(tok in lowered for tok in _SENSITIVE_PARAM_TOKENS):
+        return True
+    if key.lower() not in _SAFE_QUERY_KEYS:
+        return True
+    return not bool(_SAFE_QUERY_VAL_RE.match(value))
+
+
+def _sanitize_tsa_path(raw_path: str) -> str:
+    if not raw_path or raw_path == "/":
+        return raw_path
+    leading_slash = raw_path.startswith("/")
+    segments = [seg for seg in raw_path.split("/") if seg]
+    cleaned: list[str] = []
+    for seg in segments[:8]:
+        lowered = seg.lower()
+        if (
+            "=" in seg
+            or ":" in seg
+            or "@" in seg
+            or any(tok in lowered for tok in ("token", "secret", "apikey", "api_key", "password", "bearer"))
+            or _HIGH_ENTROPY_SEGMENT_RE.match(seg)
+            or not _SAFE_PATH_SEGMENT_RE.match(seg)
+        ):
+            cleaned.append("_redacted_")
+        else:
+            cleaned.append(seg)
+    prefix = "/" if leading_slash else ""
+    return prefix + "/".join(cleaned)
+
+
+def redact_tsa_url(raw_url: str) -> RedactedTSAUrl:
+    """Strip credentials, fragments, and sensitive query/path values from a TSA URL."""
+    if (
+        not isinstance(raw_url, str)
+        or not raw_url.strip()
+        or len(raw_url) > MAX_TSA_URL_LENGTH
+        or any(ord(ch) < 33 for ch in raw_url.strip())
+    ):
+        return RedactedTSAUrl(
+            provider_identity=None,
+            redacted_url="[redacted-invalid-tsa-url]",
+            redacted_credentials=False,
+            redacted_query_keys=(),
+            redacted_fragment=False,
+            url_valid=False,
+        )
+
+    try:
+        parts = urlsplit(raw_url.strip())
+        port = parts.port
+    except ValueError:
+        return RedactedTSAUrl(
+            provider_identity=None,
+            redacted_url="[redacted-invalid-tsa-url]",
+            redacted_credentials=False,
+            redacted_query_keys=(),
+            redacted_fragment=False,
+            url_valid=False,
+        )
+
+    scheme = parts.scheme.lower()
+    host = parts.hostname.lower() if parts.hostname else None
+    if scheme not in ("http", "https") or not host:
+        return RedactedTSAUrl(
+            provider_identity=None,
+            redacted_url="[redacted-invalid-tsa-url]",
+            redacted_credentials=bool(parts.username is not None or parts.password is not None),
+            redacted_query_keys=(),
+            redacted_fragment=bool(parts.fragment),
+            url_valid=False,
+        )
+
+    host_bracketed = f"[{host}]" if ":" in host else host
+    provider_identity = (
+        f"{scheme}://{host_bracketed}:{port}" if port is not None else f"{scheme}://{host_bracketed}"
+    )
+    had_credentials = bool(parts.username is not None or parts.password is not None)
+    had_fragment = bool(parts.fragment)
+
+    retained_pairs: list[tuple[str, str]] = []
+    redacted_keys: list[str] = []
+    for k, v in parse_qsl(parts.query, keep_blank_values=True):
+        if _is_sensitive_query_pair(k, v):
+            if k not in redacted_keys:
+                redacted_keys.append(k)
+        else:
+            retained_pairs.append((k, v))
+
+    safe_path = _sanitize_tsa_path(parts.path)
+    safe_query = urlencode(retained_pairs)
+    redacted_url = provider_identity + safe_path
+    if safe_query:
+        redacted_url = f"{redacted_url}?{safe_query}"
+
+    return RedactedTSAUrl(
+        provider_identity=provider_identity,
+        redacted_url=redacted_url,
+        redacted_credentials=had_credentials,
+        redacted_query_keys=tuple(sorted(redacted_keys)),
+        redacted_fragment=had_fragment,
+        url_valid=True,
+    )
+
+
+def classify_tsa_error_category(
+    verification_status: VerificationStatus,
+    verification_error: str | None,
+    *,
+    url_valid: bool = True,
+) -> TSAErrorCategory:
+    """Map TSA verification state to a stable, secret-free error category."""
+    if not url_valid:
+        return "malformed_tsa_url"
+    if verification_status == "valid" and not verification_error:
+        return "none"
+
+    code = (verification_error or "").strip().lower()
+    if code in ("", "certificate chain not provided") and verification_status == "unverified":
+        return "unverified_no_chain"
+    if code == "dependency_failure":
+        return "dependency_unavailable"
+    if code in ("empty_chain", "oversized_chain", "malformed_certificate", "chain_order_invalid"):
+        return "malformed_certificate_or_chain"
+    if code == "unsupported_algorithm":
+        return "unsupported_algorithm"
+    if code in ("expired_certificate", "not_yet_valid") or verification_status == "expired":
+        return "certificate_expired_or_not_yet_valid"
+    if code == "revoked_certificate":
+        return "certificate_revoked"
+    if code == "untrusted_root" or verification_status == "untrusted":
+        return "untrusted_root"
+    if code == "signature_invalid":
+        return "signature_invalid"
+    return "verification_failed"
+
+
+def export_time_attestation_for_incident(attestation: TimeAttestation) -> dict[str, Any]:
+    """Export a privacy-safe incident bundle with redacted external TSA URLs."""
+    base = encode_time_attestation(attestation)
+    base.pop("rfc3161Anchors", None)
+
+    sanitized_rfc3161: list[dict[str, Any]] = []
+    for anchor in attestation.rfc3161_anchors:
+        redacted = redact_tsa_url(anchor.tsa_url)
+        category = classify_tsa_error_category(
+            anchor.verification_status,
+            anchor.verification_error,
+            url_valid=redacted.url_valid,
+        )
+        sanitized_rfc3161.append(
+            {
+                "certFingerprint": anchor.cert_fingerprint,
+                "certificateChainLength": len(anchor.certificate_chain) if anchor.certificate_chain else 0,
+                "errorCategory": category,
+                "genTime": anchor.gen_time,
+                "policyOid": anchor.policy_oid,
+                "providerIdentity": redacted.provider_identity,
+                "redactedCredentials": redacted.redacted_credentials,
+                "redactedFragment": redacted.redacted_fragment,
+                "redactedQueryKeys": list(redacted.redacted_query_keys),
+                "tsaUrl": redacted.redacted_url,
+                "tokenSha256": hashlib.sha256(anchor.token_bytes.encode("utf-8")).hexdigest(),
+                "verificationStatus": anchor.verification_status,
+            }
+        )
+
+    export_doc: dict[str, Any] = {
+        "schema": INCIDENT_EXPORT_SCHEMA,
+        **base,
+    }
+    if sanitized_rfc3161:
+        export_doc["rfc3161Anchors"] = sanitized_rfc3161
+    return export_doc
+
