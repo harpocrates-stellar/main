@@ -120,6 +120,25 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+def quarantine_idempotency_conflict(
+    *,
+    idempotency_key: str,
+    conflict_field: str,
+    expected_statement: dict[str, Any] | None,
+    observed_statement: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Quarantine a registration idempotency conflict using sanitized statement digests only."""
+    from registration_reconcile import record_registration_conflict
+
+    return record_registration_conflict(
+        conflict_kind="idempotency_statement_mismatch",
+        conflict_field=conflict_field,
+        expected_statement=expected_statement,
+        observed_statement=observed_statement,
+        idempotency_key=idempotency_key,
+    )
+
+
 def _canonical_digest() -> str:
     """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
     method = request.method.encode()

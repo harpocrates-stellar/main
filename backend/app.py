@@ -79,15 +79,17 @@ try:
     from registration_reconcile import (
         clamp_reconcile_limit,
         default_min_confirmations,
+        inspect_registration_conflicts,
         reconcile_pending_registrations,
         reconcile_registration,
     )
 except ImportError:
     clamp_reconcile_limit = None
     default_min_confirmations = None
+    inspect_registration_conflicts = None
     reconcile_pending_registrations = None
     reconcile_registration = None
-from idempotency import idempotent
+from idempotency import idempotent, quarantine_idempotency_conflict
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
@@ -112,7 +114,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1526,9 +1528,24 @@ def create_app() -> Flask:
                 claimed_capture_time=claimed_capture_time,
             )
         except ConflictError as exc:
+            quarantined_entry = quarantine_idempotency_conflict(
+                idempotency_key=exc.idempotency_key,
+                conflict_field=exc.field,
+                expected_statement=exc.existing_statement,
+                observed_statement={
+                    "proof_id": proof_id,
+                    "video_hash": video_hash,
+                    "metadata_hash": metadata_hash,
+                    "tier": tier,
+                    "contract_id": validated_contract_id,
+                    "tx_hash": normalized_tx_hash,
+                },
+            )
             return jsonify({
                 "error": "idempotency key reused with conflicting payload",
                 "conflict_field": exc.field,
+                "quarantined": True,
+                "quarantineId": quarantined_entry["quarantineId"],
             }), 409
 
         if db_event and db_event.get("id") and created:
@@ -1630,7 +1647,26 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        if bool(payload.get("includeConflicts", False)) and inspect_registration_conflicts is not None:
+            report["conflictQuarantine"] = inspect_registration_conflicts(limit=limit)
+
         return jsonify(report)
+
+    @app.get("/api/proofs/reconcile/conflicts")
+    def get_reconcile_conflict_quarantine():
+        """Return bounded, privacy-safe registration conflict quarantine diagnostics."""
+        raw_limit = request.args.get("limit")
+        proof_filter = request.args.get("proofId")
+        try:
+            limit = clamp_reconcile_limit(raw_limit) if raw_limit is not None else 50
+            snapshot = inspect_registration_conflicts(limit=limit, proof_id=proof_filter)
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+        return jsonify({"ok": True, "quarantine": snapshot})
 
     @app.post("/api/time-attestation/create")
     def create_time_attestation_endpoint():

@@ -342,6 +342,26 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Bounded Registration Conflict Quarantine
+
+Contradictory registration statement bindings and transaction references
+detected during idempotent registration (`409` `ConflictError`) or chain
+reconciliation (`reconcile_registration`) are retained in a bounded ring buffer
+(`RegistrationConflictQuarantine`, configured via
+`REGISTRATION_CONFLICT_QUARANTINE_MAX_ENTRIES`, default `256`, maximum `4096`)
+and surfaced via `GET /api/proofs/reconcile/conflicts` (or
+`includeConflicts: true` on `POST /api/proofs/reconcile`).
+
+Privacy invariants:
+
+- Entries store only domain-separated statement digests
+  (`harpocrates:registration-statement:v1`), normalized 32-byte transaction
+  hashes, protocol tier enums (`silent`, `source`, `seal`), truncated
+  8-character idempotency-key prefixes, and bounded conflict reason codes.
+- Private evidence metadata (`metadata`, `fileName`, `timeAttestation`,
+  `claimed_capture_time`, witness inputs, bearer credentials, and raw request
+  bodies) are stripped by construction and never persisted or returned.
+
 ## Test
 
 ```powershell

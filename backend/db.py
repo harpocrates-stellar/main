@@ -924,6 +924,14 @@ def upsert_register_event(
                 field=field,
                 existing_value=existing_row.get(field),
                 incoming_value=incoming.get(field),
+                existing_statement={
+                    "proof_id": existing_row.get("proof_id"),
+                    "video_hash": existing_row.get("video_hash"),
+                    "metadata_hash": existing_row.get("metadata_hash"),
+                    "tier": existing_row.get("tier"),
+                    "contract_id": existing_row.get("contract_id"),
+                    "tx_hash": existing_row.get("tx_hash"),
+                },
             )
 
     return existing_row, False
@@ -939,6 +947,7 @@ class ConflictError(Exception):
         field: str,
         existing_value: object,
         incoming_value: object,
+        existing_statement: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             f"idempotency key reused with conflicting value for '{field}'"
@@ -947,6 +956,7 @@ class ConflictError(Exception):
         self.field = field
         self.existing_value = existing_value
         self.incoming_value = incoming_value
+        self.existing_statement = existing_statement
 
 
 def insert_proof_history_event(
