@@ -1843,6 +1843,23 @@ pub struct SealFinalized {
     pub approval_count: u32,
 }
 
+/// Queued role transition intent kinds (#1190).
+pub const ROLE_INTENT_ADMIN_TRANSFER: u32 = 1;
+pub const ROLE_INTENT_ADD_ISSUER: u32 = 2;
+pub const ROLE_INTENT_REVOKE_ISSUER: u32 = 3;
+
+/// Revision-bound queued institutional role transition record (#1190).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueuedRoleTransition {
+    pub revision: u64,
+    pub intent_kind: u32,
+    pub subject: Address,
+    pub payload: BytesN<32>,
+    pub proposal_id: u32,
+    pub queued_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -1963,6 +1980,12 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Monotonic institutional authority revision counter (#1190).
+    AuthorityRevision,
+    /// Queued revision-checked admin transfer intent (#1190).
+    QueuedAdminIntent,
+    /// Queued revision-checked per-subject role transition intent (#1190).
+    QueuedRoleIntent(Address),
 }
 
 #[contracterror]
@@ -2157,6 +2180,10 @@ pub enum RegistryError {
     SealSignerSetTooLarge = 111,
     /// The threshold seal for this proof has already been finalized (#124).
     SealAlreadyFinalized = 112,
+    /// Expected authority revision did not match the live authority revision (#1190).
+    AuthorityRevisionMismatch = 113,
+    /// A conflicting role transition is already queued for this authority revision (#1190).
+    ConflictingQueuedTransition = 114,
 }
 
 #[contract]
@@ -2174,6 +2201,9 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion, &(SchemaVersion::V2 as u32));
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorityRevision, &1u64);
     }
 
     /// Return the persistent storage schema version.
@@ -2352,6 +2382,9 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QueuedAdminIntent);
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2381,11 +2414,213 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QueuedAdminIntent);
+        bump_authority_revision(&env);
         AdminAccepted {
             new_admin: pending_admin,
             previous_admin,
         }
         .publish(&env);
+    }
+
+    /// Return the current monotonic institutional authority revision (#1190).
+    ///
+    /// Returns `0` before `init` and `>= 1` once initialized (including pre-#1190
+    /// initialized storage where `AuthorityRevision` was not yet persisted).
+    pub fn get_authority_revision(env: Env) -> u64 {
+        current_authority_revision(&env)
+    }
+
+    /// Return the revision-bound queued admin transfer intent, if one is active (#1190).
+    pub fn get_queued_admin_transition(env: Env) -> Option<QueuedRoleTransition> {
+        if !env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return None;
+        }
+        env.storage().persistent().get(&DataKey::QueuedAdminIntent)
+    }
+
+    /// Return the revision-bound queued role transition for `subject`, if live (#1190).
+    pub fn get_queued_role_transition(env: Env, subject: Address) -> Option<QueuedRoleTransition> {
+        live_queued_role_intent(&env, &subject)
+    }
+
+    /// Queue a two-step admin transfer anchored to `expected_revision` (#1190).
+    ///
+    /// - Rejects stale or future `expected_revision` with `AuthorityRevisionMismatch`
+    ///   before mutating any queued state.
+    /// - Rejects a conflicting `pending_admin` target or conflicting queued
+    ///   issuer addition on `pending_admin` at the same revision with
+    ///   `ConflictingQueuedTransition`, preserving the already-queued transition.
+    /// - Preserves and returns an already-queued compatible transfer for the same
+    ///   `pending_admin` at the same revision.
+    pub fn queue_admin_transfer(
+        env: Env,
+        admin: Address,
+        pending_admin: Address,
+        expected_revision: u64,
+    ) -> QueuedRoleTransition {
+        require_admin(&env, &admin);
+        let rev = current_authority_revision(&env);
+        if expected_revision != rev {
+            panic_with_error!(&env, RegistryError::AuthorityRevisionMismatch);
+        }
+        require_admin_role_available(&env, &pending_admin);
+
+        if let Some(intent) = live_queued_role_intent(&env, &pending_admin) {
+            if intent.intent_kind == ROLE_INTENT_ADD_ISSUER {
+                panic_with_error!(&env, RegistryError::ConflictingQueuedTransition);
+            }
+        }
+
+        if let Some(existing_pending) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::PendingAdmin)
+        {
+            if existing_pending != pending_admin {
+                panic_with_error!(&env, RegistryError::ConflictingQueuedTransition);
+            }
+            if let Some(existing_intent) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, QueuedRoleTransition>(&DataKey::QueuedAdminIntent)
+            {
+                if existing_intent.revision == rev && existing_intent.subject == pending_admin {
+                    return existing_intent;
+                }
+            }
+            let stamped = QueuedRoleTransition {
+                revision: rev,
+                intent_kind: ROLE_INTENT_ADMIN_TRANSFER,
+                subject: pending_admin,
+                payload: BytesN::from_array(&env, &[0u8; 32]),
+                proposal_id: 0,
+                queued_at: env.ledger().timestamp(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::QueuedAdminIntent, &stamped);
+            return stamped;
+        }
+
+        let now = env.ledger().timestamp();
+        let record = QueuedRoleTransition {
+            revision: rev,
+            intent_kind: ROLE_INTENT_ADMIN_TRANSFER,
+            subject: pending_admin.clone(),
+            payload: BytesN::from_array(&env, &[0u8; 32]),
+            proposal_id: 0,
+            queued_at: now,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::QueuedAdminIntent, &record);
+        AdminProposed {
+            pending_admin,
+            current_admin: admin,
+        }
+        .publish(&env);
+        record
+    }
+
+    /// Queue an issuer role transition (`ROLE_INTENT_ADD_ISSUER` or
+    /// `ROLE_INTENT_REVOKE_ISSUER`) bound to `expected_revision` (#1190).
+    ///
+    /// Rejects mismatched authority revisions (`AuthorityRevisionMismatch`) and
+    /// conflicting transitions targeting the same `subject` at the same revision
+    /// (`ConflictingQueuedTransition`) while preserving any already-queued
+    /// compatible transitions intact.
+    pub fn queue_role_transition(
+        env: Env,
+        admin: Address,
+        subject: Address,
+        intent_kind: u32,
+        payload: BytesN<32>,
+        expected_revision: u64,
+    ) -> QueuedRoleTransition {
+        require_admin(&env, &admin);
+        if intent_kind != ROLE_INTENT_ADD_ISSUER && intent_kind != ROLE_INTENT_REVOKE_ISSUER {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
+        let rev = current_authority_revision(&env);
+        if expected_revision != rev {
+            panic_with_error!(&env, RegistryError::AuthorityRevisionMismatch);
+        }
+
+        if intent_kind == ROLE_INTENT_ADD_ISSUER {
+            require_issuer_role_available(&env, &subject);
+            if env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::PendingAdmin)
+                .as_ref()
+                == Some(&subject)
+            {
+                panic_with_error!(&env, RegistryError::ConflictingQueuedTransition);
+            }
+        }
+
+        if let Some(existing) = live_queued_role_intent(&env, &subject) {
+            if existing.revision == rev
+                && existing.intent_kind == intent_kind
+                && existing.payload == payload
+            {
+                return existing;
+            }
+            panic_with_error!(&env, RegistryError::ConflictingQueuedTransition);
+        }
+
+        let proposal_id = if intent_kind == ROLE_INTENT_REVOKE_ISSUER {
+            if count_pending_proposals(&env) >= MAX_PENDING_TIMELOCK_PROPOSALS {
+                panic_with_error!(&env, RegistryError::ProposalsSaturated);
+            }
+            let now = env.ledger().timestamp();
+            let min_delay = get_timelock_min_delay(&env);
+            let pid = next_proposal_id(&env);
+            let proposal = TimelockProposal {
+                action: 2u32,
+                proposer: admin.clone(),
+                target: subject.clone(),
+                payload: payload.clone(),
+                created_at: now,
+                min_execution_at: now.saturating_add(min_delay),
+                executed: false,
+                cancelled: false,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Proposal(pid), &proposal);
+            TimelockProposalCreated {
+                proposal_id: pid,
+                action: 2u32,
+                proposer: admin,
+                target: subject.clone(),
+                created_at: now,
+                min_execution_at: proposal.min_execution_at,
+            }
+            .publish(&env);
+            pid
+        } else {
+            0u32
+        };
+
+        let record = QueuedRoleTransition {
+            revision: rev,
+            intent_kind,
+            subject: subject.clone(),
+            payload,
+            proposal_id,
+            queued_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::QueuedRoleIntent(subject), &record);
+        record
     }
 
     pub fn add_issuer(env: Env, admin: Address, issuer: Address, metadata_hash: BytesN<32>) {
@@ -2414,6 +2649,10 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QueuedRoleIntent(issuer.clone()));
+        bump_authority_revision(&env);
         IssuerAdded {
             issuer,
             metadata_hash,
@@ -2801,6 +3040,10 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QueuedRoleIntent(issuer.clone()));
+        bump_authority_revision(&env);
         IssuerRevoked { issuer }.publish(&env);
     }
 
@@ -3089,6 +3332,21 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+        if proposal.action == 2 {
+            if let Some(intent) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, QueuedRoleTransition>(&DataKey::QueuedRoleIntent(
+                    proposal.target.clone(),
+                ))
+            {
+                if intent.proposal_id == proposal_id {
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::QueuedRoleIntent(proposal.target.clone()));
+                }
+            }
+        }
         TimelockProposalCancelled {
             proposal_id,
             action: proposal.action,
@@ -7048,6 +7306,43 @@ fn finalize_threshold_seal(
     stored
 }
 
+fn current_authority_revision(env: &Env) -> u64 {
+    if !env.storage().persistent().has(&DataKey::Admin) {
+        return 0;
+    }
+    env.storage()
+        .persistent()
+        .get(&DataKey::AuthorityRevision)
+        .unwrap_or(1u64)
+}
+
+fn bump_authority_revision(env: &Env) -> u64 {
+    let next = current_authority_revision(env).saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::AuthorityRevision, &next);
+    next
+}
+
+fn live_queued_role_intent(env: &Env, subject: &Address) -> Option<QueuedRoleTransition> {
+    let intent: QueuedRoleTransition = env
+        .storage()
+        .persistent()
+        .get(&DataKey::QueuedRoleIntent(subject.clone()))?;
+    if intent.proposal_id != 0 {
+        if let Some(prop) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, TimelockProposal>(&DataKey::Proposal(intent.proposal_id))
+        {
+            if prop.executed || prop.cancelled {
+                return None;
+            }
+        }
+    }
+    Some(intent)
+}
+
 fn require_initialized(env: &Env) {
     if !env.storage().persistent().has(&DataKey::Admin) {
         panic_with_error!(env, RegistryError::NotInitialized);
@@ -8597,6 +8892,10 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
             env.storage()
                 .persistent()
                 .remove(&DataKey::IssuerRotation(proposal.target.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::QueuedRoleIntent(proposal.target.clone()));
+            bump_authority_revision(env);
             IssuerRevoked {
                 issuer: proposal.target.clone(),
             }
@@ -9107,6 +9406,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_role_revision_queue;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]

@@ -172,6 +172,8 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::InvalidSealThreshold => "InvalidSealThreshold",
         RegistryError::SealSignerSetTooLarge => "SealSignerSetTooLarge",
         RegistryError::SealAlreadyFinalized => "SealAlreadyFinalized",
+        RegistryError::AuthorityRevisionMismatch => "AuthorityRevisionMismatch",
+        RegistryError::ConflictingQueuedTransition => "ConflictingQueuedTransition",
     }
 }
 
@@ -291,6 +293,8 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::InvalidSealThreshold,
     RegistryError::SealSignerSetTooLarge,
     RegistryError::SealAlreadyFinalized,
+    RegistryError::AuthorityRevisionMismatch,
+    RegistryError::ConflictingQueuedTransition,
 ];
 
 #[cfg(test)]

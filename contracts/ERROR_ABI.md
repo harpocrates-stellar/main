@@ -162,6 +162,8 @@ call can succeed.
 | 110 | `InvalidSealThreshold` | malformed | no | `required_approvals` is zero or exceeds `max_signers`. |
 | 111 | `SealSignerSetTooLarge` | oversized | no | `max_signers` or the signer set exceeds the configured limit. |
 | 112 | `SealAlreadyFinalized` | conflict | no | The threshold seal for this proof has already been finalized. |
+| 113 | `AuthorityRevisionMismatch` | conflict | no | The expected authority revision did not match the live authority revision. |
+| 114 | `ConflictingQueuedTransition` | conflict | no | A conflicting role transition is already queued for this authority revision. |
 
 ## Privacy Rules
 

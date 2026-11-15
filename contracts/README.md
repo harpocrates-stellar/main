@@ -265,6 +265,11 @@ init
 get_storage_schema_version
 upgrade_storage
 propose_admin
+queue_admin_transfer
+queue_role_transition
+get_authority_revision
+get_queued_admin_transition
+get_queued_role_transition
 cancel_admin_transfer
 accept_admin
 get_admin
@@ -362,6 +367,25 @@ Admin control uses a two-step transfer:
 The current admin may call `cancel_admin_transfer` before acceptance. Proposals,
 cancellations, and acceptances emit `["admin", "propose"]`,
 `["admin", "cancel"]`, and `["admin", "accept"]` lifecycle events.
+
+### Revision-checked role transition queuing (`#1190`)
+
+`get_authority_revision()` exposes the monotonic institutional authority revision
+counter (`1` after `init`, incremented whenever an effective authority change
+commits). Callers that coordinate concurrent institutional changes can anchor
+intent to a known revision via `queue_admin_transfer(admin, pending_admin, expected_revision)`
+and `queue_role_transition(admin, subject, intent_kind, payload, expected_revision)`:
+
+- Stale or future `expected_revision` values fail closed with
+  `AuthorityRevisionMismatch` (`#113`) without touching already-queued state.
+- Conflicting intents queued for the same revision (a different `pending_admin`
+  candidate, or conflicting `ROLE_INTENT_ADD_ISSUER` / `ROLE_INTENT_REVOKE_ISSUER`
+  actions or payloads on the same `subject`) revert with
+  `ConflictingQueuedTransition` (`#114`) while preserving the existing queued
+  transition intact.
+- Retrying an identical compatible transition at the same revision returns the
+  already-queued `QueuedRoleTransition`, and queuing a non-overlapping transition
+  for a distinct subject preserves existing compatible queued transitions.
 
 ### Storage compatibility
 
