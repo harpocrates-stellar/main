@@ -79,12 +79,14 @@ try:
     from registration_reconcile import (
         clamp_reconcile_limit,
         default_min_confirmations,
+        preview_registration_repair,
         reconcile_pending_registrations,
         reconcile_registration,
     )
 except ImportError:
     clamp_reconcile_limit = None
     default_min_confirmations = None
+    preview_registration_repair = None
     reconcile_pending_registrations = None
     reconcile_registration = None
 from idempotency import idempotent
@@ -112,7 +114,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1591,8 +1593,34 @@ def create_app() -> Flask:
                     status=400,
                 )
 
+        preview = bool(payload.get("preview", False))
         tx_hash = payload.get("txHash")
         if tx_hash is not None:
+            if preview:
+                try:
+                    preview_report = preview_registration_repair(
+                        tx_hash,
+                        min_confirmations=min_confirmations,
+                        request_digest=(
+                            payload.get("requestDigest")
+                            if isinstance(payload.get("requestDigest"), str)
+                            else None
+                        ),
+                    )
+                except ValueError:
+                    return error_response(
+                        code=VALIDATION_ERROR,
+                        message="txHash must be a 32-byte hex string",
+                        status=400,
+                    )
+                if preview_report["chainEvidence"]["status"] == "error":
+                    return jsonify({
+                        "ok": False,
+                        "error": "horizon_dependency_failure",
+                        "preview": preview_report,
+                    }), 503
+                return jsonify(preview_report)
+
             try:
                 result = reconcile_registration(
                     tx_hash,
@@ -1630,6 +1658,59 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        return jsonify(report)
+
+    @app.post("/api/proofs/reconcile/preview")
+    def preview_registration_repair_endpoint():
+        """Read-only operator preview of proposed registration repair updates."""
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body must be an object",
+                status=400,
+            )
+        if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
+            return jsonify({"error": "preview payload is too large"}), 413
+
+        min_confirmations = payload.get("minConfirmations")
+        if min_confirmations is not None:
+            try:
+                min_confirmations = int(min_confirmations)
+                if min_confirmations < 1:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="minConfirmations must be an integer >= 1",
+                    status=400,
+                )
+
+        try:
+            report = preview_registration_repair(
+                payload.get("txHash"),
+                min_confirmations=min_confirmations,
+                request_digest=(
+                    payload.get("requestDigest")
+                    if isinstance(payload.get("requestDigest"), str)
+                    else None
+                ),
+            )
+        except ValueError:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="txHash must be a 32-byte hex string",
+                status=400,
+            )
+
+        if report["chainEvidence"]["status"] == "error":
+            return jsonify({
+                "ok": False,
+                "error": "horizon_dependency_failure",
+                "preview": report,
+            }), 503
         return jsonify(report)
 
     @app.post("/api/time-attestation/create")

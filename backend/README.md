@@ -342,6 +342,22 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Operator Registration Repair Preview
+
+Operators can inspect proposed reconciliation updates without mutating durable
+state via `preview_registration_repair()`, `POST /api/proofs/reconcile/preview`,
+or `{"txHash": "...", "preview": true}` on `POST /api/proofs/reconcile`:
+
+- Returns `proposedUpdates` (per-row `tx_status` transitions, `requiresForce`,
+  and domain-separated `expectedRevision` digests under
+  `harpocrates:registration-row-revision:v1`), `chainEvidence` (ledger,
+  confirmations, source, status), and optional `idempotencyPreview`
+  (`preview_idempotency_repair()`).
+- Contradictory records (such as terminal database rows whose status disagrees
+  with verified on-chain state or divergent multi-row records) are flagged via
+  `contradictory: true` and `contradictionReasons` while guaranteeing
+  `writesApplied: false` and zero database writes.
+
 ## Test
 
 ```powershell

@@ -109,6 +109,59 @@ def store_error(record_id: int, error: dict) -> None:
             conn.commit()
 
 
+IDEMPOTENCY_REVISION_DOMAIN = b"harpocrates:idempotency-record-revision:v1"
+
+
+def compute_idempotency_revision(record: dict[str, Any]) -> str:
+    """Compute a deterministic revision digest for optimistic repair previews."""
+    hasher = hashlib.sha256()
+    hasher.update(IDEMPOTENCY_REVISION_DOMAIN)
+    parts = (
+        str(record.get("id") or ""),
+        str(record.get("request_digest") or ""),
+        str(record.get("request_type") or ""),
+        str(record.get("status") or ""),
+    )
+    for part in parts:
+        raw = part.encode("utf-8")
+        hasher.update(len(raw).to_bytes(4, "big"))
+        hasher.update(raw)
+    return hasher.hexdigest()
+
+
+def preview_idempotency_repair(
+    request_digest: str,
+    request_type: str = "register",
+) -> dict[str, Any]:
+    """Read-only preview of idempotency record repair without applying database writes."""
+    if not _db_available():
+        return {
+            "found": False,
+            "writesApplied": False,
+            "proposedAction": "noop",
+            "expectedRevision": None,
+        }
+    record = get_idempotency_record(request_digest, request_type)
+    if record is None:
+        return {
+            "found": False,
+            "writesApplied": False,
+            "proposedAction": "noop",
+            "expectedRevision": None,
+        }
+    status = str(record.get("status") or "")
+    revision = compute_idempotency_revision(record)
+    action = "clear_pending" if status == "PENDING" else ("review_failed" if status == "FAILED" else "noop")
+    return {
+        "found": True,
+        "recordId": record.get("id"),
+        "currentStatus": status,
+        "expectedRevision": revision,
+        "proposedAction": action,
+        "writesApplied": False,
+    }
+
+
 def clear_idempotency_record(record_id: int) -> None:
     """Remove a PENDING record so a later retry can re-acquire the lock."""
     with get_connection() as conn:

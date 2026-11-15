@@ -1024,6 +1024,36 @@ def list_proof_history_events(
             )
             return [dict(row) for row in cursor.fetchall()]
 
+def find_registration_events_by_tx_hash(tx_hash: str) -> list[dict[str, Any]]:
+    """Read-only lookup of registration rows keyed by ``tx_hash`` (excludes private metadata)."""
+    if not database_url():
+        return []
+    if not isinstance(tx_hash, str) or not tx_hash.strip():
+        return []
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    id,
+                    proof_id,
+                    video_hash,
+                    metadata_hash,
+                    tier,
+                    tx_hash,
+                    tx_status,
+                    contract_id,
+                    idempotency_key,
+                    created_at
+                from proof_events
+                where tx_hash = %s
+                order by id asc;
+                """,
+                (tx_hash.strip().lower(),),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def list_pending_registration_txs(limit: int = 50) -> list[dict[str, Any]]:
     """Return pending registration rows that still need on-chain reconciliation."""
     if not database_url():
