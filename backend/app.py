@@ -77,16 +77,22 @@ from db import (
 )
 try:
     from registration_reconcile import (
+        CheckpointConfigMismatchError,
         clamp_reconcile_limit,
         default_min_confirmations,
+        load_reconciliation_checkpoint,
         reconcile_pending_registrations,
         reconcile_registration,
+        resolve_deployment_network_identity,
     )
 except ImportError:
+    CheckpointConfigMismatchError = ValueError
     clamp_reconcile_limit = None
     default_min_confirmations = None
+    load_reconciliation_checkpoint = None
     reconcile_pending_registrations = None
     reconcile_registration = None
+    resolve_deployment_network_identity = None
 from idempotency import idempotent
 from lineage import (
     LineageValidationError,
@@ -112,7 +118,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1627,10 +1633,43 @@ def create_app() -> Flask:
                 limit=limit,
                 min_confirmations=min_confirmations,
             )
+        except CheckpointConfigMismatchError as exc:
+            return jsonify({
+                "ok": False,
+                "error": "reconciliation_checkpoint_network_mismatch",
+                "field": exc.field,
+                "detail": exc.reason,
+            }), 409
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
         return jsonify(report)
+
+    @app.get("/api/proofs/reconcile/checkpoint")
+    def get_reconcile_checkpoint():
+        """Inspect the active network identity and persisted reconciliation checkpoint."""
+        try:
+            network = resolve_deployment_network_identity()
+            checkpoint = load_reconciliation_checkpoint(expected_network=network)
+        except CheckpointConfigMismatchError as exc:
+            return jsonify({
+                "ok": False,
+                "error": "reconciliation_checkpoint_network_mismatch",
+                "field": exc.field,
+                "detail": exc.reason,
+            }), 409
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return jsonify({
+            "ok": True,
+            "network": network.to_dict(),
+            "checkpoint": checkpoint.to_dict() if checkpoint is not None else None,
+        })
 
     @app.post("/api/time-attestation/create")
     def create_time_attestation_endpoint():

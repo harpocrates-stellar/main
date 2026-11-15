@@ -342,6 +342,25 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Network-Bound Registration Reconciliation Checkpoint
+
+When `RECONCILE_CHECKPOINT_PATH` is configured (or `checkpoint_path` is passed
+to `reconcile_pending_registrations()`), the reconciler atomically persists the
+highest confirmed ledger (`lastTrustedLedger`) alongside a domain-separated
+deployment identity (`harpocrates:reconcile-checkpoint-network:v1`) derived from
+`HARPOCRATES_RELEASE_NETWORK`, `STELLAR_NETWORK_PASSPHRASE`, and
+`PROOF_REGISTRY_CONTRACT_ID`.
+
+- Before reconciling any pending rows, `load_reconciliation_checkpoint()`
+  validates both internal digest integrity and exact agreement with the active
+  deployment configuration.
+- Checkpoints created under a different network, passphrase, or registry
+  contract ID are refused fail-closed (`CheckpointConfigMismatchError`, HTTP
+  `409 reconciliation_checkpoint_network_mismatch`) without mutating database
+  rows or overwriting the checkpoint file.
+- `GET /api/proofs/reconcile/checkpoint` exposes the active network identity and
+  persisted checkpoint state without any private evidence metadata.
+
 ## Test
 
 ```powershell

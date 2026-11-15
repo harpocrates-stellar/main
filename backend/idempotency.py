@@ -120,6 +120,28 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+def verify_checkpoint_network_binding(
+    checkpoint_payload: dict[str, Any],
+    *,
+    expected_identity_digest: str | None = None,
+) -> bool:
+    """Verify that a serialized checkpoint matches the active deployment identity."""
+    from registration_reconcile import (
+        CheckpointConfigMismatchError,
+        resolve_deployment_network_identity,
+        validate_checkpoint_payload,
+    )
+
+    active = resolve_deployment_network_identity()
+    if expected_identity_digest is not None and active.identity_digest != expected_identity_digest:
+        raise CheckpointConfigMismatchError(
+            "expected_identity_digest does not match active deployment",
+            field="networkIdentityDigest",
+        )
+    validate_checkpoint_payload(checkpoint_payload, expected_network=active)
+    return True
+
+
 def _canonical_digest() -> str:
     """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
     method = request.method.encode()
