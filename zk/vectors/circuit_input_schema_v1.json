@@ -3,6 +3,12 @@
   "version": 1,
   "schema": "silent_witness/input-v1",
   "description": "Synthetic values only; no real media or credentials.",
+  "error_categories": [
+    "unsupported_input_version",
+    "malformed_input",
+    "unsatisfied_constraint",
+    "prover_execution_failed"
+  ],
   "cases": [
     {
       "id": "default-unscoped",
@@ -33,7 +39,30 @@
         "nullifierSecret": "67890",
         "inputSchemaVersion": 2
       },
-      "reject_code": "unsupported_input_schema"
+      "reject_code": "unsupported_input_schema",
+      "error_category": "unsupported_input_version"
+    },
+    {
+      "id": "zero-input-version",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890",
+        "inputSchemaVersion": 0
+      },
+      "reject_code": "unsupported_input_schema",
+      "error_category": "unsupported_input_version"
+    },
+    {
+      "id": "negative-input-version",
+      "input": {
+        "videoHash": "1111111111111111111111111111111122222222222222222222222222222222",
+        "credentialSecret": "12345",
+        "nullifierSecret": "67890",
+        "inputSchemaVersion": -1
+      },
+      "reject_code": "unsupported_input_schema",
+      "error_category": "unsupported_input_version"
     },
     {
       "id": "bad-hash",
@@ -42,7 +71,8 @@
         "credentialSecret": "12345",
         "nullifierSecret": "67890"
       },
-      "reject_code": "invalid_input"
+      "reject_code": "invalid_input",
+      "error_category": "malformed_input"
     },
     {
       "id": "noncanonical-secret",
@@ -51,7 +81,8 @@
         "credentialSecret": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
         "nullifierSecret": "67890"
       },
-      "reject_code": "invalid_input"
+      "reject_code": "invalid_input",
+      "error_category": "malformed_input"
     },
     {
       "id": "invalid-scope",
@@ -61,7 +92,8 @@
         "nullifierSecret": "67890",
         "verifierScope": "-1"
       },
-      "reject_code": "invalid_input"
+      "reject_code": "invalid_input",
+      "error_category": "malformed_input"
     },
     {
       "id": "invalid-epoch",
@@ -71,7 +103,8 @@
         "nullifierSecret": "67890",
         "epoch": -1
       },
-      "reject_code": "invalid_input"
+      "reject_code": "invalid_input",
+      "error_category": "malformed_input"
     }
   ]
 }

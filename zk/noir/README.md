@@ -220,7 +220,10 @@ python zk/tools/build_circuits.py build <circuit> --prove  # build, execute witn
 python zk/tools/build_circuits.py generate <circuit> [args...] # generate proof with dynamic secrets
 python zk/tools/build_circuits.py export <circuit>    # export proof, public inputs, and VK as hex JSON
 python zk/tools/build_circuits.py prepare-soroban <circuit> # prepare VK for Soroban contract verifier
+python zk/tools/validate_prover_inputs.py <Prover.toml> [--json] # preflight input/circuit versions before proving
 ```
+
+Before invoking `nargo` or `bb`, `validate_prover_inputs.py` and `build_circuits.py` classify input-envelope and `circuit_version` mismatches under the stable `unsupported_input_version` category (exit code `4`), distinct from `malformed_input` (exit code `1`) and `unsatisfied_constraint` (exit code `5`); see [docs/zk-circuit-input-schema.md](../../docs/zk-circuit-input-schema.md).
 
 The scripts in `zk/noir/scripts/` (`reproducible-build.sh`, `build-silent-witness.sh`, `generate-silent-witness*.sh`, `export-silent-witness-artifacts.ps1`, `prepare-soroban-verifier-artifacts.ps1`, etc.) are thin wrappers around `zk/tools/build_circuits.py`.
 

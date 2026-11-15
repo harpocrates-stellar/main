@@ -24,9 +24,25 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from validate_prover_inputs import (
+    EXIT_UNSATISFIED_CONSTRAINT,
+    EXIT_UNSUPPORTED_VERSION,
+    ProverErrorCategory,
+    ProverInputValidationError,
+    classify_prover_execution_error,
+    load_schema,
+    parse_prover_toml,
+    validate_input_versions,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -66,9 +82,18 @@ HERMETIC_ENV = {
 class BuildError(RuntimeError):
     """Fatal build error; carries no private material."""
 
-    def __init__(self, message: str, exit_code: int = EXIT_FATAL) -> None:
+    def __init__(
+        self,
+        message: str,
+        exit_code: int = EXIT_FATAL,
+        *,
+        category: str = ProverErrorCategory.PROVER_EXECUTION_FAILED.value,
+        code: str = "build_error",
+    ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
+        self.category = category
+        self.code = code
 
 
 def signal(event: str, detail: str = "", **fields: Any) -> None:
@@ -106,7 +131,7 @@ def load_toolchain_lock(lock_path: Path) -> dict[str, Any]:
         raise BuildError(f"toolchain lock missing: {lock_path}")
     try:
         return json.loads(lock_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise BuildError(f"unreadable toolchain lock: {exc}") from exc
 
 
@@ -216,6 +241,113 @@ def normalize_vk_layout(target_dir: Path) -> None:
             tmp_file.rename(dir_path)
 
 
+def preflight_circuit_input_versions(
+    circuit: str,
+    repo_root: Path = REPO_ROOT,
+    *,
+    input_schema_version: Any = None,
+    circuit_version: Any = None,
+) -> None:
+    """Validate input-envelope and circuit versions before invoking nargo/bb."""
+    circuit_dir = repo_root / "zk" / "noir" / circuit
+    prover_toml = circuit_dir / "Prover.toml"
+    prover_data: dict[str, Any] = {}
+
+    if prover_toml.is_file():
+        try:
+            prover_data = dict(parse_prover_toml(prover_toml.read_text(encoding="utf-8")))
+        except (ProverInputValidationError, OSError) as exc:
+            category = (
+                exc.category.value
+                if isinstance(exc, ProverInputValidationError)
+                else ProverErrorCategory.MALFORMED_INPUT.value
+            )
+            code = exc.code if isinstance(exc, ProverInputValidationError) else "file_read_failed"
+            signal("input.preflight.failed", category=category, code=code, circuit=circuit)
+            raise BuildError(
+                f"{category}: {code}",
+                exit_code=EXIT_USAGE,
+                category=category,
+                code=code,
+            ) from exc
+
+    if circuit_version is not None:
+        prover_data["circuit_version"] = circuit_version
+
+    if not prover_data and input_schema_version is None:
+        return
+
+    candidate_schema = repo_root / "zk" / "noir" / "circuit_input_schema_v1.json"
+    schema = load_schema(candidate_schema if candidate_schema.is_file() else None)
+
+    try:
+        validate_input_versions(
+            prover_data,
+            schema=schema,
+            circuit=circuit,
+            input_schema_version=input_schema_version,
+        )
+    except ProverInputValidationError as exc:
+        extra = {"field": exc.field} if exc.field else {}
+        signal(
+            "input.version.rejected",
+            category=exc.category.value,
+            code=exc.code,
+            circuit=circuit,
+            **extra,
+        )
+        raise BuildError(
+            f"{exc.category.value}: {exc.code}",
+            exit_code=exc.exit_code,
+            category=exc.category.value,
+            code=exc.code,
+        ) from exc
+
+
+def run_witness_command(
+    cmd: Sequence[str],
+    cwd: Path,
+    circuit: str,
+    err_msg: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    """Execute nargo witness solving and classify constraint vs version errors."""
+    try:
+        proc = runner(
+            list(cmd),
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=get_hermetic_env(),
+        )
+    except FileNotFoundError as exc:
+        raise BuildError(f"{err_msg}: command {cmd[0]} not found") from exc
+
+    if proc.returncode != 0:
+        diag = f"{proc.stderr or ''}\n{proc.stdout or ''}".strip()
+        category, code = classify_prover_execution_error(diag)
+        if category == ProverErrorCategory.UNSUPPORTED_INPUT_VERSION:
+            exit_code = EXIT_UNSUPPORTED_VERSION
+        elif category == ProverErrorCategory.UNSATISFIED_CONSTRAINT:
+            exit_code = EXIT_UNSATISFIED_CONSTRAINT
+        else:
+            exit_code = EXIT_FATAL
+        signal(
+            "circuit.witness.failed",
+            category=category.value,
+            code=code,
+            circuit=circuit,
+        )
+        raise BuildError(
+            f"{err_msg}: {category.value} ({code})",
+            exit_code=exit_code,
+            category=category.value,
+            code=code,
+        )
+    return proc
+
+
 def compile_circuit(
     circuit: str,
     toolchain: ToolchainInfo,
@@ -224,11 +356,21 @@ def compile_circuit(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     write_vk_flag: bool | None = None,
     prove: bool = False,
+    input_schema_version: Any = None,
+    circuit_version: Any = None,
 ) -> None:
     circuit_dir = repo_root / "zk" / "noir" / circuit
     if not circuit_dir.is_dir():
         signal("circuit.skipped", detail=circuit)
         return
+
+    if prove or input_schema_version is not None or circuit_version is not None:
+        preflight_circuit_input_versions(
+            circuit,
+            repo_root=repo_root,
+            input_schema_version=input_schema_version,
+            circuit_version=circuit_version,
+        )
 
     target_dir = circuit_dir / "target"
     if clean and target_dir.exists():
@@ -269,9 +411,10 @@ def compile_circuit(
         signal("vk.written", detail=circuit)
 
     if prove:
-        run_command(
+        run_witness_command(
             ["nargo", "execute", "witness"],
             circuit_dir,
+            circuit,
             f"nargo execute witness failed for {circuit}",
             runner=runner,
         )
@@ -368,6 +511,17 @@ def cmd_build(
         if cov_status != 0:
             raise BuildError("circuit coverage check failed; see drift.finding above", exit_code=cov_status)
 
+    # For single-circuit prove builds, validate input versions before invoking toolchain/prover
+    input_schema_version = getattr(args, "input_schema_version", None)
+    circuit_version = getattr(args, "circuit_version", None)
+    if circuit != "all" and (args.prove or input_schema_version is not None or circuit_version is not None):
+        preflight_circuit_input_versions(
+            circuit,
+            repo_root=repo_root,
+            input_schema_version=input_schema_version,
+            circuit_version=circuit_version,
+        )
+
     toolchain = check_toolchain(lock_path=lock_path, runner=runner)
 
     if circuit != "all":
@@ -379,6 +533,8 @@ def cmd_build(
             runner=runner,
             write_vk_flag=args.vk if args.vk else None,
             prove=args.prove,
+            input_schema_version=input_schema_version,
+            circuit_version=circuit_version,
         )
         signal("circuit.done", detail=circuit)
         return EXIT_OK
@@ -581,7 +737,7 @@ def _generate_silent_witness(
         )
 
         run_command(["nargo", "check"], circuit_dir, "nargo check failed", runner=runner)
-        run_command(["nargo", "execute", "witness"], circuit_dir, "witness execution failed", runner=runner)
+        run_witness_command(["nargo", "execute", "witness"], circuit_dir, "silent_witness", "witness execution failed", runner=runner)
         run_command(
             [
                 "bb",
@@ -760,7 +916,7 @@ def _generate_aggregator(
         circuit_toml.write_text("\n".join(circuit_content) + "\n", encoding="utf-8")
 
         run_command(["nargo", "check"], circuit_dir, "nargo check failed", runner=runner)
-        run_command(["nargo", "execute", "witness"], circuit_dir, "witness execution failed", runner=runner)
+        run_witness_command(["nargo", "execute", "witness"], circuit_dir, "silent_witness_aggregator", "witness execution failed", runner=runner)
         run_command(
             [
                 "bb",
@@ -837,7 +993,7 @@ def _generate_aggregator(
         }
         print(json.dumps(manifest))
         return EXIT_OK
-    except Exception as exc:
+    except (BuildError, OSError, ValueError) as exc:
         err = {
             "protocol": "harpocrates",
             "version": 1,
@@ -865,8 +1021,10 @@ def _generate_generic_circuit(
     if not circuit_dir.is_dir():
         raise BuildError(f"Circuit directory does not exist: {circuit_dir}")
 
+    preflight_circuit_input_versions(circuit, repo_root=repo_root)
+
     run_command(["nargo", "check"], circuit_dir, f"nargo check failed for {circuit}", runner=runner)
-    run_command(["nargo", "execute", "witness"], circuit_dir, f"witness execution failed for {circuit}", runner=runner)
+    run_witness_command(["nargo", "execute", "witness"], circuit_dir, circuit, f"witness execution failed for {circuit}", runner=runner)
     run_command(
         [
             "bb",
@@ -923,8 +1081,18 @@ def cmd_generate(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> int:
     apply_umask()
-    toolchain = check_toolchain(runner=runner)
     circuit = args.circuit
+    input_schema_version = getattr(args, "input_schema_version", None)
+    circuit_version = getattr(args, "circuit_version", None)
+
+    preflight_circuit_input_versions(
+        circuit,
+        repo_root=repo_root,
+        input_schema_version=input_schema_version,
+        circuit_version=circuit_version,
+    )
+
+    toolchain = check_toolchain(runner=runner)
 
     # Dissect positional args and optional flags
     pos_args: list[str] = list(args.args or [])
@@ -1051,6 +1219,8 @@ def create_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--clean", action="store_true", default=True, help="Clean target before build")
     p_build.add_argument("--manifest", default=None, help="Path to manifest file")
     p_build.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_build.add_argument("--input-schema-version", default=None, help="Input envelope schema version to validate before proving")
+    p_build.add_argument("--circuit-version", default=None, help="Circuit version to validate before proving")
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate proof and public inputs for a circuit")
@@ -1063,6 +1233,8 @@ def create_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--output-dir", default=None, help="Output directory for generated artifacts")
     p_gen.add_argument("--verifier-scope", default="0", help="Verifier scope (optional)")
     p_gen.add_argument("--epoch", type=int, default=0, help="Epoch (optional)")
+    p_gen.add_argument("--input-schema-version", default=None, help="Input envelope schema version to validate before proving")
+    p_gen.add_argument("--circuit-version", default=None, help="Circuit version to validate before proving")
 
     # --- export ---
     p_exp = subparsers.add_parser("export", help="Export proof, public inputs, and VK as hex JSON")
@@ -1114,7 +1286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return EXIT_USAGE
     except BuildError as exc:
-        signal("build.error", detail=str(exc))
+        signal("build.error", detail=str(exc), category=exc.category, code=exc.code)
         return exc.exit_code
 
 

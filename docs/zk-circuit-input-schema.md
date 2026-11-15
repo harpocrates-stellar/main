@@ -19,6 +19,22 @@ Scope and epoch are accepted by the input envelope, but nonzero values are
 rejected before execution when the loaded artifact cannot bind them. They are
 passed to a scoped circuit only when that circuit's ABI is present.
 
+## Stable error categories and pre-prover version checks
+
+Prover input tooling (`zk/tools/validate_prover_inputs.py` and
+`zk/tools/build_circuits.py`) validates `input_schema_version` /
+`inputSchemaVersion` and `circuit_version` against `supported_versions` in
+[`zk/noir/circuit_input_schema_v1.json`](../zk/noir/circuit_input_schema_v1.json)
+**before** invoking `nargo` or `bb`. Failures map to four stable, privacy-safe
+categories that never echo witness or input values:
+
+| Category | Exit code | Meaning |
+| --- | --- | --- |
+| `unsupported_input_version` | `4` | Input schema version (`< 1` or `> 1`) or `circuit_version` mismatch (`silent_witness` expects `2`; `selective_disclosure` expects `1`), or non-canonical version encoding (negative, boolean, non-integer, or `> u32::MAX`). Rejected before invoking the prover. |
+| `malformed_input` | `1` | Missing required fields, invalid TOML/JSON syntax, or non-canonical BN254 field elements. |
+| `unsatisfied_constraint` | `5` | Version preflight passed, but witness generation failed an in-circuit constraint (`malformed`, `revoked`, `oversized`, or unsatisfied assertion). |
+| `prover_execution_failed` | `3` | Toolchain or proving backend runtime error unrelated to input version or constraint satisfaction. |
+
 The checked-in browser artifacts produce a four-field frame
 (`video_hash_hi`, `video_hash_lo`, `credential_root`, `nullifier`) and a helper
 with two return fields. The schema records that as `browser_v1` and pins the
