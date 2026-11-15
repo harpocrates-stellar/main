@@ -199,7 +199,10 @@ fn auth_add_credential_root_admin_succeeds() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let root = bytes32(&env, 0xDD);
     client.add_credential_root(&admin, &root, &bytes32(&env, 0xEE));
-    assert!(client.get_credential_root(&root).unwrap().active);
+    assert_eq!(
+        client.get_credential_root(&root).unwrap().status,
+        STATUS_REGISTERED
+    );
 }
 
 #[test]
@@ -228,7 +231,10 @@ fn auth_revoke_credential_root_admin_succeeds() {
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let root = bytes32(&env, 0xBB);
     client.revoke_credential_root(&admin, &root);
-    assert!(!client.get_credential_root(&root).unwrap().active);
+    assert_eq!(
+        client.get_credential_root(&root).unwrap().status,
+        STATUS_REVOKED
+    );
 }
 
 #[test]

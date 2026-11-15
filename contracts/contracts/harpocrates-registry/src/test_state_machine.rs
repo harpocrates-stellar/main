@@ -282,7 +282,8 @@ struct Model {
     now: u64,
     schema_version: u32,
     proofs: StdVec<ModelProof>,
-    nullifiers: StdVec<u8>,
+    global_nullifiers: StdVec<u8>,
+    verifier_nullifiers: [StdVec<u8>; 2],
 }
 
 impl Model {
@@ -314,7 +315,8 @@ impl Model {
             now: START_TIMESTAMP,
             schema_version: 2,
             proofs: StdVec::new(),
-            nullifiers: StdVec::new(),
+            global_nullifiers: StdVec::new(),
+            verifier_nullifiers: [StdVec::new(), StdVec::new()],
         }
     }
 
@@ -369,9 +371,11 @@ impl Model {
     }
 
     fn nullifier_exists(&self, nullifier: u8) -> bool {
-        self.nullifiers
-            .iter()
-            .any(|stored| *stored == slot(nullifier))
+        let s = slot(nullifier);
+        self.global_nullifiers.contains(&s)
+            || self
+                .verifier
+                .map_or(false, |v| self.verifier_nullifiers[v as usize].contains(&s))
     }
 
     fn find_proof(&self, proof: u8) -> Option<&ModelProof> {
@@ -842,24 +846,28 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             video,
             metadata,
         } => {
-            let expected = model.require_unique(proof, video).and_then(|_| {
-                if model.issuers[issuer.index()] == IssuerState::Active {
-                    Ok(expected_record(
-                        model,
-                        ExpectedRecordSpec {
-                            proof,
-                            video,
-                            metadata,
-                            tier: TIER_PUBLIC_SEAL,
-                            source: None,
-                            issuer: Some(issuer),
-                            nullifier: None,
-                        },
-                    ))
-                } else {
-                    Err(RegistryError::UnknownIssuer)
-                }
-            });
+            let expected = if issuer == model.admin {
+                Err(RegistryError::RoleConflict)
+            } else {
+                model.require_unique(proof, video).and_then(|_| {
+                    if model.issuers[issuer.index()] == IssuerState::Active {
+                        Ok(expected_record(
+                            model,
+                            ExpectedRecordSpec {
+                                proof,
+                                video,
+                                metadata,
+                                tier: TIER_PUBLIC_SEAL,
+                                source: None,
+                                issuer: Some(issuer),
+                                nullifier: None,
+                            },
+                        ))
+                    } else {
+                        Err(RegistryError::UnknownIssuer)
+                    }
+                })
+            };
 
             let mut call_args = args(fixture);
             call_args.push_back(fixture.actor(issuer).into_val(&fixture.env));
@@ -942,7 +950,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 fixture,
                 "register_anonymous",
             )? {
-                model.nullifiers.push(slot(nullifier));
+                model.global_nullifiers.push(slot(nullifier));
                 model.proofs.push(record);
                 3
             } else {
@@ -1017,7 +1025,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 fixture,
                 "register_anonymous_verified",
             )? {
-                model.nullifiers.push(slot(nullifier));
+                model.verifier_nullifiers[model.verifier.unwrap() as usize].push(slot(nullifier));
                 model.proofs.push(record);
                 3
             } else {
@@ -1211,15 +1219,15 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
             admin,
             pending_admin,
         } => {
-            let expected = model
-                .require_admin(admin)
-                .and_then(|_| {
-                    if model.issuers[pending_admin.index()] == IssuerState::Active {
-                        Err(RegistryError::RoleConflict)
-                    } else {
-                        Ok(())
-                    }
-                });
+            let expected = model.require_admin(admin).and_then(|_| {
+                if pending_admin == model.admin
+                    || model.issuers[pending_admin.index()] == IssuerState::Active
+                {
+                    Err(RegistryError::RoleConflict)
+                } else {
+                    Ok(())
+                }
+            });
 
             let mut call_args = args(fixture);
             call_args.push_back(fixture.actor(admin).into_val(&fixture.env));
@@ -1377,7 +1385,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "check_non_revocation",
             )?;
             if expected.is_ok() {
-                model.nullifiers.push(slot(nullifier));
+                model.verifier_nullifiers[model.verifier.unwrap() as usize].push(slot(nullifier));
                 1
             } else {
                 0
@@ -1524,7 +1532,13 @@ fn assert_storage_matches_model(fixture: &Fixture, model: &Model) -> CheckResult
     }
 
     for nullifier in 0..KEY_POOL {
-        let actual = client.has_nullifier(&client.get_verifier().unwrap(), &key(&fixture.env, HashDomain::Nullifier, nullifier));
+        let verifier_addr = client
+            .get_verifier()
+            .unwrap_or_else(|| fixture.contract_id.clone());
+        let actual = client.has_nullifier(
+            &verifier_addr,
+            &key(&fixture.env, HashDomain::Nullifier, nullifier),
+        );
         let expected = model.nullifier_exists(nullifier);
         if actual != expected {
             return Err(format!(
@@ -1538,10 +1552,10 @@ fn assert_storage_matches_model(fixture: &Fixture, model: &Model) -> CheckResult
             client.get_credential_root(&key(&fixture.env, HashDomain::CredentialRoot, root));
         match (actual, model.credential_roots[root as usize]) {
             (None, RootState::Missing) => {}
-            (Some(record), RootState::Active) if record.active => {
+            (Some(record), RootState::Active) if record.status == STATUS_REGISTERED => {
                 assert_credential_root_record_matches(fixture, model, root, &record)?;
             }
-            (Some(record), RootState::Revoked) if !record.active => {
+            (Some(record), RootState::Revoked) if record.status == STATUS_REVOKED => {
                 assert_credential_root_record_matches(fixture, model, root, &record)?;
             }
             (None, expected) => {
@@ -1551,8 +1565,8 @@ fn assert_storage_matches_model(fixture: &Fixture, model: &Model) -> CheckResult
             }
             (Some(record), expected) => {
                 return Err(format!(
-                    "credential root slot {root} active={} model={expected:?}",
-                    record.active
+                    "credential root slot {root} status={} model={expected:?}",
+                    record.status
                 ));
             }
         }

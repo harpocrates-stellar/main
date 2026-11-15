@@ -1,0 +1,1647 @@
+{
+  "format": "harpocrates.lifecycle-events",
+  "version": 1,
+  "codec": "hpx-ev/1",
+  "description": "Canonical lifecycle event interoperability corpus for HarpocratesRegistry. Publishes expected Soroban event topics, typed ScVal payloads, and RFC-4506 XDR wire vectors across existing transitions, plus fail-closed negative cases.",
+  "reject_codes": [
+    "malformed_xdr",
+    "trailing_xdr_bytes",
+    "non_canonical_padding",
+    "unknown_event_topic",
+    "topic_arity_mismatch",
+    "topic_type_mismatch",
+    "payload_schema_mismatch",
+    "non_canonical_map_order"
+  ],
+  "event_schemas": {
+    "CredentialRootAdded": {
+      "topic_prefix": [
+        "credroot",
+        "add"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "issued_at": "u64",
+        "metadata_hash": "bytes32"
+      },
+      "optional_fields": {}
+    },
+    "CredentialRootRevoked": {
+      "topic_prefix": [
+        "credroot",
+        "revoke"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {},
+      "optional_fields": {}
+    },
+    "IssuerAdded": {
+      "topic_prefix": [
+        "issuer",
+        "add"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "address_ed25519"
+      ],
+      "required_fields": {
+        "metadata_hash": "bytes32"
+      },
+      "optional_fields": {}
+    },
+    "IssuerRevoked": {
+      "topic_prefix": [
+        "issuer",
+        "revoke"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "address_ed25519"
+      ],
+      "required_fields": {},
+      "optional_fields": {}
+    },
+    "ProofRegistered": {
+      "topic_prefix": [
+        "proof",
+        "reg"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "batch_size": "u32",
+        "status": "u32",
+        "tier": "u32",
+        "video_hash": "bytes32"
+      },
+      "optional_fields": {}
+    },
+    "ProofHistoryEvent": {
+      "topic_prefix": [
+        "proof",
+        "history"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "action": "u32",
+        "reason_code": "u32",
+        "timestamp": "u64"
+      },
+      "optional_fields": {
+        "actor": "address_ed25519"
+      }
+    },
+    "ProofRevoked": {
+      "topic_prefix": [
+        "proof",
+        "revoke"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "status": "u32"
+      },
+      "optional_fields": {}
+    },
+    "MetadataEnvelopeBound": {
+      "topic_prefix": [
+        "metadata",
+        "envelope",
+        "bound"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "bound_at": "u64",
+        "metadata_hash": "bytes32",
+        "version": "u32"
+      },
+      "optional_fields": {}
+    },
+    "MetadataEnvelopeUpgraded": {
+      "topic_prefix": [
+        "metadata",
+        "envelope",
+        "upgraded"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "current": "u32",
+        "metadata_hash": "bytes32",
+        "previous": "u32"
+      },
+      "optional_fields": {}
+    },
+    "TimestampClaimAnchored": {
+      "topic_prefix": [
+        "timestamp",
+        "anchor"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "anchored_at": "u64",
+        "assurance": "u32",
+        "attestation_digest": "bytes32",
+        "ledger_sequence": "u32",
+        "sources": "u32"
+      },
+      "optional_fields": {}
+    },
+    "LineageRegistered": {
+      "topic_prefix": [
+        "lineage",
+        "reg"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "actor": "address_ed25519",
+        "depth": "u32",
+        "manifest_digest": "bytes32",
+        "operation_type": "symbol",
+        "parent_commitments": "vec"
+      },
+      "optional_fields": {}
+    },
+    "DisputeOpened": {
+      "topic_prefix": [
+        "dispute",
+        "open"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32",
+        "bytes32"
+      ],
+      "required_fields": {
+        "commitment_hash": "bytes32",
+        "reason": "u32",
+        "reporter_hash": "bytes32",
+        "respond_deadline": "u64"
+      },
+      "optional_fields": {}
+    },
+    "DisputeResponded": {
+      "topic_prefix": [
+        "dispute",
+        "respond"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32",
+        "bytes32"
+      ],
+      "required_fields": {
+        "resolve_deadline": "u64",
+        "response_commitment": "bytes32"
+      },
+      "optional_fields": {}
+    },
+    "DisputeResolved": {
+      "topic_prefix": [
+        "dispute",
+        "resolve"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32",
+        "bytes32"
+      ],
+      "required_fields": {
+        "resolved_at": "u64"
+      },
+      "optional_fields": {}
+    },
+    "DisputeDismissed": {
+      "topic_prefix": [
+        "dispute",
+        "dismiss"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32",
+        "bytes32"
+      ],
+      "required_fields": {
+        "resolved_at": "u64"
+      },
+      "optional_fields": {}
+    },
+    "DisputeSuperseded": {
+      "topic_prefix": [
+        "dispute",
+        "supersede"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32",
+        "bytes32"
+      ],
+      "required_fields": {
+        "resolved_at": "u64",
+        "superseded_by": "bytes32"
+      },
+      "optional_fields": {}
+    },
+    "SourceBatchRootRegistered": {
+      "topic_prefix": [
+        "batch",
+        "root"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32",
+        "address_ed25519"
+      ],
+      "required_fields": {
+        "count": "u32",
+        "metadata_hash": "bytes32",
+        "registered_at": "u64"
+      },
+      "optional_fields": {}
+    },
+    "SchemaAdded": {
+      "topic_prefix": [
+        "schema",
+        "add"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {
+        "attribute_count": "u32",
+        "issuer_namespace": "bytes32",
+        "version": "u32"
+      },
+      "optional_fields": {}
+    },
+    "SchemaDeprecated": {
+      "topic_prefix": [
+        "schema",
+        "deprecate"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {},
+      "optional_fields": {}
+    },
+    "SchemaReactivated": {
+      "topic_prefix": [
+        "schema",
+        "reactivate"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {},
+      "optional_fields": {}
+    },
+    "RevocationRootSet": {
+      "topic_prefix": [
+        "revroot",
+        "set"
+      ],
+      "topic_types": [
+        "symbol",
+        "symbol",
+        "bytes32"
+      ],
+      "required_fields": {},
+      "optional_fields": {}
+    }
+  },
+  "cases": [
+    {
+      "id": "ev-001-credroot-added",
+      "event_name": "CredentialRootAdded",
+      "entrypoint": "add_credential_root",
+      "description": "Register an active Tier 1 credential Merkle root.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "credroot"
+        },
+        {
+          "type": "symbol",
+          "value": "add"
+        },
+        {
+          "type": "bytes32",
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "payload": [
+        {
+          "field": "issued_at",
+          "type": "u64",
+          "value": 1700000000
+        },
+        {
+          "field": "metadata_hash",
+          "type": "bytes32",
+          "value": "1212121212121212121212121212121212121212121212121212121212121212"
+        }
+      ],
+      "topics_canonical": "symbol:credroot|symbol:add|bytes32:1111111111111111111111111111111111111111111111111111111111111111",
+      "payload_canonical": "issued_at=u64:1700000000;metadata_hash=bytes32:1212121212121212121212121212121212121212121212121212121212121212",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000863726564726f6f740000000f00000003616464000000000d000000201111111111111111111111111111111111111111111111111111111111111111",
+      "data_xdr_hex": "0000001100000001000000020000000f000000096973737565645f617400000000000005000000006553f1000000000f0000000d6d657461646174615f686173680000000000000d000000201212121212121212121212121212121212121212121212121212121212121212",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-002-issuer-added",
+      "event_name": "IssuerAdded",
+      "entrypoint": "add_issuer",
+      "description": "Approve a Tier 3 institutional issuer.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "issuer"
+        },
+        {
+          "type": "symbol",
+          "value": "add"
+        },
+        {
+          "type": "address_ed25519",
+          "value": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        }
+      ],
+      "payload": [
+        {
+          "field": "metadata_hash",
+          "type": "bytes32",
+          "value": "1313131313131313131313131313131313131313131313131313131313131313"
+        }
+      ],
+      "topics_canonical": "symbol:issuer|symbol:add|address_ed25519:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "payload_canonical": "metadata_hash=bytes32:1313131313131313131313131313131313131313131313131313131313131313",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000669737375657200000000000f0000000361646400000000120000000000000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "data_xdr_hex": "0000001100000001000000010000000f0000000d6d657461646174615f686173680000000000000d000000201313131313131313131313131313131313131313131313131313131313131313",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-003-tier1-proof-registered",
+      "event_name": "ProofRegistered",
+      "entrypoint": "register_anonymous",
+      "description": "Tier 1 Silent Witness registration emits ProofRegistered.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "reg"
+        },
+        {
+          "type": "bytes32",
+          "value": "2121212121212121212121212121212121212121212121212121212121212121"
+        }
+      ],
+      "payload": [
+        {
+          "field": "batch_size",
+          "type": "u32",
+          "value": 0
+        },
+        {
+          "field": "status",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "tier",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "video_hash",
+          "type": "bytes32",
+          "value": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:reg|bytes32:2121212121212121212121212121212121212121212121212121212121212121",
+      "payload_canonical": "batch_size=u32:0;status=u32:1;tier=u32:1;video_hash=bytes32:2222222222222222222222222222222222222222222222222222222222222222",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000010000000f0000000a766964656f5f6861736800000000000d000000202222222222222222222222222222222222222222222222222222222222222222",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-004-tier1-history-registered-anon",
+      "event_name": "ProofHistoryEvent",
+      "entrypoint": "register_anonymous",
+      "description": "Tier 1 registration records anonymous ProofHistoryEvent (actor omitted).",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "history"
+        },
+        {
+          "type": "bytes32",
+          "value": "2121212121212121212121212121212121212121212121212121212121212121"
+        }
+      ],
+      "payload": [
+        {
+          "field": "action",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "reason_code",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "timestamp",
+          "type": "u64",
+          "value": 1700000100
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:history|bytes32:2121212121212121212121212121212121212121212121212121212121212121",
+      "payload_canonical": "action=u32:1;reason_code=u32:1;timestamp=u64:1700000100",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000007686973746f7279000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000030000000f00000006616374696f6e000000000003000000010000000f0000000b726561736f6e5f636f64650000000003000000010000000f0000000974696d657374616d7000000000000005000000006553f164",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-005-tier1-metadata-bound-v1",
+      "event_name": "MetadataEnvelopeBound",
+      "entrypoint": "register_anonymous",
+      "description": "Tier 1 registration stamps MetadataEnvelopeBound V1.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "metadata"
+        },
+        {
+          "type": "symbol",
+          "value": "envelope"
+        },
+        {
+          "type": "symbol",
+          "value": "bound"
+        },
+        {
+          "type": "bytes32",
+          "value": "2121212121212121212121212121212121212121212121212121212121212121"
+        }
+      ],
+      "payload": [
+        {
+          "field": "bound_at",
+          "type": "u64",
+          "value": 1700000100
+        },
+        {
+          "field": "metadata_hash",
+          "type": "bytes32",
+          "value": "2323232323232323232323232323232323232323232323232323232323232323"
+        },
+        {
+          "field": "version",
+          "type": "u32",
+          "value": 1
+        }
+      ],
+      "topics_canonical": "symbol:metadata|symbol:envelope|symbol:bound|bytes32:2121212121212121212121212121212121212121212121212121212121212121",
+      "payload_canonical": "bound_at=u64:1700000100;metadata_hash=bytes32:2323232323232323232323232323232323232323232323232323232323232323;version=u32:1",
+      "topics_xdr_hex": "0000001000000001000000040000000f000000086d657461646174610000000f00000008656e76656c6f70650000000f00000005626f756e640000000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000030000000f00000008626f756e645f617400000005000000006553f1640000000f0000000d6d657461646174615f686173680000000000000d0000002023232323232323232323232323232323232323232323232323232323232323230000000f0000000776657273696f6e000000000300000001",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-006-tier2-proof-registered",
+      "event_name": "ProofRegistered",
+      "entrypoint": "register_source",
+      "description": "Tier 2 Consistent Source registration emits ProofRegistered.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "reg"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "batch_size",
+          "type": "u32",
+          "value": 0
+        },
+        {
+          "field": "status",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "tier",
+          "type": "u32",
+          "value": 2
+        },
+        {
+          "field": "video_hash",
+          "type": "bytes32",
+          "value": "3232323232323232323232323232323232323232323232323232323232323232"
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:reg|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "batch_size=u32:0;status=u32:1;tier=u32:2;video_hash=bytes32:3232323232323232323232323232323232323232323232323232323232323232",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000020000000f0000000a766964656f5f6861736800000000000d000000203232323232323232323232323232323232323232323232323232323232323232",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-007-tier2-history-registered-source",
+      "event_name": "ProofHistoryEvent",
+      "entrypoint": "register_source",
+      "description": "Tier 2 registration records ProofHistoryEvent with source actor.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "history"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "action",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "actor",
+          "type": "address_ed25519",
+          "value": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        },
+        {
+          "field": "reason_code",
+          "type": "u32",
+          "value": 2
+        },
+        {
+          "field": "timestamp",
+          "type": "u64",
+          "value": 1700000200
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:history|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "action=u32:1;actor=address_ed25519:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2;reason_code=u32:2;timestamp=u64:1700000200",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000007686973746f7279000000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000040000000f00000006616374696f6e000000000003000000010000000f000000056163746f72000000000000120000000000000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20000000f0000000b726561736f6e5f636f64650000000003000000020000000f0000000974696d657374616d7000000000000005000000006553f1c8",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-008-tier3-proof-registered",
+      "event_name": "ProofRegistered",
+      "entrypoint": "register_seal",
+      "description": "Tier 3 Public Seal registration emits ProofRegistered.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "reg"
+        },
+        {
+          "type": "bytes32",
+          "value": "4141414141414141414141414141414141414141414141414141414141414141"
+        }
+      ],
+      "payload": [
+        {
+          "field": "batch_size",
+          "type": "u32",
+          "value": 0
+        },
+        {
+          "field": "status",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "tier",
+          "type": "u32",
+          "value": 3
+        },
+        {
+          "field": "video_hash",
+          "type": "bytes32",
+          "value": "4242424242424242424242424242424242424242424242424242424242424242"
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:reg|bytes32:4141414141414141414141414141414141414141414141414141414141414141",
+      "payload_canonical": "batch_size=u32:0;status=u32:1;tier=u32:3;video_hash=bytes32:4242424242424242424242424242424242424242424242424242424242424242",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d000000204141414141414141414141414141414141414141414141414141414141414141",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000030000000f0000000a766964656f5f6861736800000000000d000000204242424242424242424242424242424242424242424242424242424242424242",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-009-history-verified",
+      "event_name": "ProofHistoryEvent",
+      "entrypoint": "verify_proof",
+      "description": "Administrative verification appends ProofHistoryEvent (Verified = 2).",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "history"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "action",
+          "type": "u32",
+          "value": 2
+        },
+        {
+          "field": "actor",
+          "type": "address_ed25519",
+          "value": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "field": "reason_code",
+          "type": "u32",
+          "value": 7
+        },
+        {
+          "field": "timestamp",
+          "type": "u64",
+          "value": 1700000400
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:history|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "action=u32:2;actor=address_ed25519:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1;reason_code=u32:7;timestamp=u64:1700000400",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000007686973746f7279000000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000040000000f00000006616374696f6e000000000003000000020000000f000000056163746f72000000000000120000000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000f0000000b726561736f6e5f636f64650000000003000000070000000f0000000974696d657374616d7000000000000005000000006553f290",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-010-metadata-envelope-upgraded-v2",
+      "event_name": "MetadataEnvelopeUpgraded",
+      "entrypoint": "bind_metadata_envelope",
+      "description": "Upgrading metadata envelope from V1 to V2 emits MetadataEnvelopeUpgraded.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "metadata"
+        },
+        {
+          "type": "symbol",
+          "value": "envelope"
+        },
+        {
+          "type": "symbol",
+          "value": "upgraded"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "current",
+          "type": "u32",
+          "value": 2
+        },
+        {
+          "field": "metadata_hash",
+          "type": "bytes32",
+          "value": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        {
+          "field": "previous",
+          "type": "u32",
+          "value": 1
+        }
+      ],
+      "topics_canonical": "symbol:metadata|symbol:envelope|symbol:upgraded|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "current=u32:2;metadata_hash=bytes32:3333333333333333333333333333333333333333333333333333333333333333;previous=u32:1",
+      "topics_xdr_hex": "0000001000000001000000040000000f000000086d657461646174610000000f00000008656e76656c6f70650000000f0000000875706772616465640000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000030000000f0000000763757272656e740000000003000000020000000f0000000d6d657461646174615f686173680000000000000d0000002033333333333333333333333333333333333333333333333333333333333333330000000f0000000870726576696f75730000000300000001",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-011-history-corrected",
+      "event_name": "ProofHistoryEvent",
+      "entrypoint": "correct_proof",
+      "description": "Metadata hash correction appends ProofHistoryEvent (Corrected = 5).",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "history"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "action",
+          "type": "u32",
+          "value": 5
+        },
+        {
+          "field": "actor",
+          "type": "address_ed25519",
+          "value": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "field": "reason_code",
+          "type": "u32",
+          "value": 12
+        },
+        {
+          "field": "timestamp",
+          "type": "u64",
+          "value": 1700000600
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:history|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "action=u32:5;actor=address_ed25519:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1;reason_code=u32:12;timestamp=u64:1700000600",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000007686973746f7279000000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000040000000f00000006616374696f6e000000000003000000050000000f000000056163746f72000000000000120000000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000f0000000b726561736f6e5f636f646500000000030000000c0000000f0000000974696d657374616d7000000000000005000000006553f358",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-012-timestamp-claim-anchored",
+      "event_name": "TimestampClaimAnchored",
+      "entrypoint": "anchor_timestamp_claim",
+      "description": "Anchoring Stellar + claimed + RFC3161 timestamp claim emits TimestampClaimAnchored.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "timestamp"
+        },
+        {
+          "type": "symbol",
+          "value": "anchor"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "anchored_at",
+          "type": "u64",
+          "value": 1700000700
+        },
+        {
+          "field": "assurance",
+          "type": "u32",
+          "value": 3
+        },
+        {
+          "field": "attestation_digest",
+          "type": "bytes32",
+          "value": "5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        {
+          "field": "ledger_sequence",
+          "type": "u32",
+          "value": 250
+        },
+        {
+          "field": "sources",
+          "type": "u32",
+          "value": 7
+        }
+      ],
+      "topics_canonical": "symbol:timestamp|symbol:anchor|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "anchored_at=u64:1700000700;assurance=u32:3;attestation_digest=bytes32:5151515151515151515151515151515151515151515151515151515151515151;ledger_sequence=u32:250;sources=u32:7",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000974696d657374616d700000000000000f00000006616e63686f7200000000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000050000000f0000000b616e63686f7265645f61740000000005000000006553f3bc0000000f000000096173737572616e636500000000000003000000030000000f000000126174746573746174696f6e5f64696765737400000000000d0000002051515151515151515151515151515151515151515151515151515151515151510000000f0000000f6c65646765725f73657175656e63650000000003000000fa0000000f00000007736f7572636573000000000300000007",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-013-lineage-registered",
+      "event_name": "LineageRegistered",
+      "entrypoint": "register_lineage",
+      "description": "Derivative evidence registration emits LineageRegistered with opaque parent commitments.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "lineage"
+        },
+        {
+          "type": "symbol",
+          "value": "reg"
+        },
+        {
+          "type": "bytes32",
+          "value": "6262626262626262626262626262626262626262626262626262626262626262"
+        }
+      ],
+      "payload": [
+        {
+          "field": "actor",
+          "type": "address_ed25519",
+          "value": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        },
+        {
+          "field": "depth",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "manifest_digest",
+          "type": "bytes32",
+          "value": "6161616161616161616161616161616161616161616161616161616161616161"
+        },
+        {
+          "field": "operation_type",
+          "type": "symbol",
+          "value": "trim"
+        },
+        {
+          "field": "parent_commitments",
+          "type": "vec",
+          "value": [
+            {
+              "type": "bytes32",
+              "value": "7ae038f3e68c3a028ef3312a1d59e9be2a6ee0b055433a78559d853f04b2bb84"
+            }
+          ]
+        }
+      ],
+      "topics_canonical": "symbol:lineage|symbol:reg|bytes32:6262626262626262626262626262626262626262626262626262626262626262",
+      "payload_canonical": "actor=address_ed25519:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2;depth=u32:1;manifest_digest=bytes32:6161616161616161616161616161616161616161616161616161616161616161;operation_type=symbol:trim;parent_commitments=vec[bytes32:7ae038f3e68c3a028ef3312a1d59e9be2a6ee0b055433a78559d853f04b2bb84]",
+      "topics_xdr_hex": "0000001000000001000000030000000f000000076c696e65616765000000000f00000003726567000000000d000000206262626262626262626262626262626262626262626262626262626262626262",
+      "data_xdr_hex": "0000001100000001000000050000000f000000056163746f72000000000000120000000000000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20000000f00000005646570746800000000000003000000010000000f0000000f6d616e69666573745f646967657374000000000d0000002061616161616161616161616161616161616161616161616161616161616161610000000f0000000e6f7065726174696f6e5f7479706500000000000f000000047472696d0000000f00000012706172656e745f636f6d6d69746d656e747300000000001000000001000000010000000d000000207ae038f3e68c3a028ef3312a1d59e9be2a6ee0b055433a78559d853f04b2bb84",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-014-dispute-opened",
+      "event_name": "DisputeOpened",
+      "entrypoint": "open_dispute",
+      "description": "Opening a dispute emits DisputeOpened with commitment hashes and deadline.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "dispute"
+        },
+        {
+          "type": "symbol",
+          "value": "open"
+        },
+        {
+          "type": "bytes32",
+          "value": "7171717171717171717171717171717171717171717171717171717171717171"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "commitment_hash",
+          "type": "bytes32",
+          "value": "7373737373737373737373737373737373737373737373737373737373737373"
+        },
+        {
+          "field": "reason",
+          "type": "u32",
+          "value": 2
+        },
+        {
+          "field": "reporter_hash",
+          "type": "bytes32",
+          "value": "7272727272727272727272727272727272727272727272727272727272727272"
+        },
+        {
+          "field": "respond_deadline",
+          "type": "u64",
+          "value": 1700605700
+        }
+      ],
+      "topics_canonical": "symbol:dispute|symbol:open|bytes32:7171717171717171717171717171717171717171717171717171717171717171|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "commitment_hash=bytes32:7373737373737373737373737373737373737373737373737373737373737373;reason=u32:2;reporter_hash=bytes32:7272727272727272727272727272727272727272727272727272727272727272;respond_deadline=u64:1700605700",
+      "topics_xdr_hex": "0000001000000001000000040000000f0000000764697370757465000000000f000000046f70656e0000000d0000002071717171717171717171717171717171717171717171717171717171717171710000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000f636f6d6d69746d656e745f68617368000000000d0000002073737373737373737373737373737373737373737373737373737373737373730000000f00000006726561736f6e000000000003000000020000000f0000000d7265706f727465725f686173680000000000000d0000002072727272727272727272727272727272727272727272727272727272727272720000000f00000010726573706f6e645f646561646c696e650000000500000000655d2f04",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-015-dispute-responded",
+      "event_name": "DisputeResponded",
+      "entrypoint": "respond_dispute",
+      "description": "Source response to an open dispute emits DisputeResponded.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "dispute"
+        },
+        {
+          "type": "symbol",
+          "value": "respond"
+        },
+        {
+          "type": "bytes32",
+          "value": "7171717171717171717171717171717171717171717171717171717171717171"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "resolve_deadline",
+          "type": "u64",
+          "value": 1701210600
+        },
+        {
+          "field": "response_commitment",
+          "type": "bytes32",
+          "value": "7474747474747474747474747474747474747474747474747474747474747474"
+        }
+      ],
+      "topics_canonical": "symbol:dispute|symbol:respond|bytes32:7171717171717171717171717171717171717171717171717171717171717171|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "resolve_deadline=u64:1701210600;response_commitment=bytes32:7474747474747474747474747474747474747474747474747474747474747474",
+      "topics_xdr_hex": "0000001000000001000000040000000f0000000764697370757465000000000f00000007726573706f6e64000000000d0000002071717171717171717171717171717171717171717171717171717171717171710000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000020000000f000000107265736f6c76655f646561646c696e650000000500000000656669e80000000f00000013726573706f6e73655f636f6d6d69746d656e74000000000d000000207474747474747474747474747474747474747474747474747474747474747474",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-016-dispute-resolved",
+      "event_name": "DisputeResolved",
+      "entrypoint": "resolve_dispute",
+      "description": "Admin resolution of a responded dispute emits DisputeResolved.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "dispute"
+        },
+        {
+          "type": "symbol",
+          "value": "resolve"
+        },
+        {
+          "type": "bytes32",
+          "value": "7171717171717171717171717171717171717171717171717171717171717171"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "resolved_at",
+          "type": "u64",
+          "value": 1700001100
+        }
+      ],
+      "topics_canonical": "symbol:dispute|symbol:resolve|bytes32:7171717171717171717171717171717171717171717171717171717171717171|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "resolved_at=u64:1700001100",
+      "topics_xdr_hex": "0000001000000001000000040000000f0000000764697370757465000000000f000000077265736f6c7665000000000d0000002071717171717171717171717171717171717171717171717171717171717171710000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000010000000f0000000b7265736f6c7665645f61740000000005000000006553f54c",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-017-dispute-dismissed",
+      "event_name": "DisputeDismissed",
+      "entrypoint": "dismiss_dispute",
+      "description": "Admin dismissal of an open dispute emits DisputeDismissed.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "dispute"
+        },
+        {
+          "type": "symbol",
+          "value": "dismiss"
+        },
+        {
+          "type": "bytes32",
+          "value": "7575757575757575757575757575757575757575757575757575757575757575"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "resolved_at",
+          "type": "u64",
+          "value": 1700100100
+        }
+      ],
+      "topics_canonical": "symbol:dispute|symbol:dismiss|bytes32:7575757575757575757575757575757575757575757575757575757575757575|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "resolved_at=u64:1700100100",
+      "topics_xdr_hex": "0000001000000001000000040000000f0000000764697370757465000000000f000000076469736d697373000000000d0000002075757575757575757575757575757575757575757575757575757575757575750000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000010000000f0000000b7265736f6c7665645f617400000000050000000065557804",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-018-dispute-superseded",
+      "event_name": "DisputeSuperseded",
+      "entrypoint": "supersede_dispute",
+      "description": "Superseding a disputed proof with a replacement proof emits DisputeSuperseded.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "dispute"
+        },
+        {
+          "type": "symbol",
+          "value": "supersede"
+        },
+        {
+          "type": "bytes32",
+          "value": "7878787878787878787878787878787878787878787878787878787878787878"
+        },
+        {
+          "type": "bytes32",
+          "value": "3131313131313131313131313131313131313131313131313131313131313131"
+        }
+      ],
+      "payload": [
+        {
+          "field": "resolved_at",
+          "type": "u64",
+          "value": 1700200100
+        },
+        {
+          "field": "superseded_by",
+          "type": "bytes32",
+          "value": "4141414141414141414141414141414141414141414141414141414141414141"
+        }
+      ],
+      "topics_canonical": "symbol:dispute|symbol:supersede|bytes32:7878787878787878787878787878787878787878787878787878787878787878|bytes32:3131313131313131313131313131313131313131313131313131313131313131",
+      "payload_canonical": "resolved_at=u64:1700200100;superseded_by=bytes32:4141414141414141414141414141414141414141414141414141414141414141",
+      "topics_xdr_hex": "0000001000000001000000040000000f0000000764697370757465000000000f000000097375706572736564650000000000000d0000002078787878787878787878787878787878787878787878787878787878787878780000000d000000203131313131313131313131313131313131313131313131313131313131313131",
+      "data_xdr_hex": "0000001100000001000000020000000f0000000b7265736f6c7665645f61740000000005000000006556fea40000000f0000000d737570657273656465645f62790000000000000d000000204141414141414141414141414141414141414141414141414141414141414141",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-019-history-expired",
+      "event_name": "ProofHistoryEvent",
+      "entrypoint": "expire_proof",
+      "description": "Explicit proof expiration emits ProofHistoryEvent (Expired = 4).",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "history"
+        },
+        {
+          "type": "bytes32",
+          "value": "2121212121212121212121212121212121212121212121212121212121212121"
+        }
+      ],
+      "payload": [
+        {
+          "field": "action",
+          "type": "u32",
+          "value": 4
+        },
+        {
+          "field": "actor",
+          "type": "address_ed25519",
+          "value": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "field": "reason_code",
+          "type": "u32",
+          "value": 9
+        },
+        {
+          "field": "timestamp",
+          "type": "u64",
+          "value": 1700200200
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:history|bytes32:2121212121212121212121212121212121212121212121212121212121212121",
+      "payload_canonical": "action=u32:4;actor=address_ed25519:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1;reason_code=u32:9;timestamp=u64:1700200200",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000007686973746f7279000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000040000000f00000006616374696f6e000000000003000000040000000f000000056163746f72000000000000120000000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000f0000000b726561736f6e5f636f64650000000003000000090000000f0000000974696d657374616d7000000000000005000000006556ff08",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-020-proof-revoked",
+      "event_name": "ProofRevoked",
+      "entrypoint": "revoke_proof",
+      "description": "Revoking a proof emits ProofRevoked with STATUS_REVOKED (2).",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "revoke"
+        },
+        {
+          "type": "bytes32",
+          "value": "4141414141414141414141414141414141414141414141414141414141414141"
+        }
+      ],
+      "payload": [
+        {
+          "field": "status",
+          "type": "u32",
+          "value": 2
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:revoke|bytes32:4141414141414141414141414141414141414141414141414141414141414141",
+      "payload_canonical": "status=u32:2",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f000000067265766f6b6500000000000d000000204141414141414141414141414141414141414141414141414141414141414141",
+      "data_xdr_hex": "0000001100000001000000010000000f0000000673746174757300000000000300000002",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-021-history-revoked",
+      "event_name": "ProofHistoryEvent",
+      "entrypoint": "revoke_proof",
+      "description": "Revoking a proof appends ProofHistoryEvent (Revoked = 3).",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "proof"
+        },
+        {
+          "type": "symbol",
+          "value": "history"
+        },
+        {
+          "type": "bytes32",
+          "value": "4141414141414141414141414141414141414141414141414141414141414141"
+        }
+      ],
+      "payload": [
+        {
+          "field": "action",
+          "type": "u32",
+          "value": 3
+        },
+        {
+          "field": "actor",
+          "type": "address_ed25519",
+          "value": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "field": "reason_code",
+          "type": "u32",
+          "value": 1
+        },
+        {
+          "field": "timestamp",
+          "type": "u64",
+          "value": 1700200300
+        }
+      ],
+      "topics_canonical": "symbol:proof|symbol:history|bytes32:4141414141414141414141414141414141414141414141414141414141414141",
+      "payload_canonical": "action=u32:3;actor=address_ed25519:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1;reason_code=u32:1;timestamp=u64:1700200300",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000007686973746f7279000000000d000000204141414141414141414141414141414141414141414141414141414141414141",
+      "data_xdr_hex": "0000001100000001000000040000000f00000006616374696f6e000000000003000000030000000f000000056163746f72000000000000120000000000000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000f0000000b726561736f6e5f636f64650000000003000000010000000f0000000974696d657374616d7000000000000005000000006556ff6c",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-022-source-batch-root-registered",
+      "event_name": "SourceBatchRootRegistered",
+      "entrypoint": "register_source_batch_root",
+      "description": "Tier 2 Merkle batch root registration emits SourceBatchRootRegistered.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "batch"
+        },
+        {
+          "type": "symbol",
+          "value": "root"
+        },
+        {
+          "type": "bytes32",
+          "value": "8181818181818181818181818181818181818181818181818181818181818181"
+        },
+        {
+          "type": "address_ed25519",
+          "value": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        }
+      ],
+      "payload": [
+        {
+          "field": "count",
+          "type": "u32",
+          "value": 4
+        },
+        {
+          "field": "metadata_hash",
+          "type": "bytes32",
+          "value": "8282828282828282828282828282828282828282828282828282828282828282"
+        },
+        {
+          "field": "registered_at",
+          "type": "u64",
+          "value": 1700200400
+        }
+      ],
+      "topics_canonical": "symbol:batch|symbol:root|bytes32:8181818181818181818181818181818181818181818181818181818181818181|address_ed25519:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "payload_canonical": "count=u32:4;metadata_hash=bytes32:8282828282828282828282828282828282828282828282828282828282828282;registered_at=u64:1700200400",
+      "topics_xdr_hex": "0000001000000001000000040000000f0000000562617463680000000000000f00000004726f6f740000000d000000208181818181818181818181818181818181818181818181818181818181818181000000120000000000000000b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "data_xdr_hex": "0000001100000001000000030000000f00000005636f756e7400000000000003000000040000000f0000000d6d657461646174615f686173680000000000000d0000002082828282828282828282828282828282828282828282828282828282828282820000000f0000000d726567697374657265645f617400000000000005000000006556ffd0",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-023-schema-added",
+      "event_name": "SchemaAdded",
+      "entrypoint": "add_schema",
+      "description": "Attribute schema registration emits SchemaAdded.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "schema"
+        },
+        {
+          "type": "symbol",
+          "value": "add"
+        },
+        {
+          "type": "bytes32",
+          "value": "9191919191919191919191919191919191919191919191919191919191919191"
+        }
+      ],
+      "payload": [
+        {
+          "field": "attribute_count",
+          "type": "u32",
+          "value": 3
+        },
+        {
+          "field": "issuer_namespace",
+          "type": "bytes32",
+          "value": "9292929292929292929292929292929292929292929292929292929292929292"
+        },
+        {
+          "field": "version",
+          "type": "u32",
+          "value": 1
+        }
+      ],
+      "topics_canonical": "symbol:schema|symbol:add|bytes32:9191919191919191919191919191919191919191919191919191919191919191",
+      "payload_canonical": "attribute_count=u32:3;issuer_namespace=bytes32:9292929292929292929292929292929292929292929292929292929292929292;version=u32:1",
+      "topics_xdr_hex": "0000001000000001000000030000000f00000006736368656d6100000000000f00000003616464000000000d000000209191919191919191919191919191919191919191919191919191919191919191",
+      "data_xdr_hex": "0000001100000001000000030000000f0000000f6174747269627574655f636f756e740000000003000000030000000f000000106973737565725f6e616d6573706163650000000d0000002092929292929292929292929292929292929292929292929292929292929292920000000f0000000776657273696f6e000000000300000001",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-024-schema-deprecated",
+      "event_name": "SchemaDeprecated",
+      "entrypoint": "deprecate_schema",
+      "description": "Deprecating an active schema emits SchemaDeprecated.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "schema"
+        },
+        {
+          "type": "symbol",
+          "value": "deprecate"
+        },
+        {
+          "type": "bytes32",
+          "value": "9191919191919191919191919191919191919191919191919191919191919191"
+        }
+      ],
+      "payload": [],
+      "topics_canonical": "symbol:schema|symbol:deprecate|bytes32:9191919191919191919191919191919191919191919191919191919191919191",
+      "payload_canonical": "empty_map",
+      "topics_xdr_hex": "0000001000000001000000030000000f00000006736368656d6100000000000f000000096465707265636174650000000000000d000000209191919191919191919191919191919191919191919191919191919191919191",
+      "data_xdr_hex": "000000110000000100000000",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-025-schema-reactivated",
+      "event_name": "SchemaReactivated",
+      "entrypoint": "reactivate_schema",
+      "description": "Reactivating a deprecated schema emits SchemaReactivated.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "schema"
+        },
+        {
+          "type": "symbol",
+          "value": "reactivate"
+        },
+        {
+          "type": "bytes32",
+          "value": "9191919191919191919191919191919191919191919191919191919191919191"
+        }
+      ],
+      "payload": [],
+      "topics_canonical": "symbol:schema|symbol:reactivate|bytes32:9191919191919191919191919191919191919191919191919191919191919191",
+      "payload_canonical": "empty_map",
+      "topics_xdr_hex": "0000001000000001000000030000000f00000006736368656d6100000000000f0000000a7265616374697661746500000000000d000000209191919191919191919191919191919191919191919191919191919191919191",
+      "data_xdr_hex": "000000110000000100000000",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-026-revocation-root-set",
+      "event_name": "RevocationRootSet",
+      "entrypoint": "set_revocation_root",
+      "description": "Updating the active revocation tree root emits RevocationRootSet.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "revroot"
+        },
+        {
+          "type": "symbol",
+          "value": "set"
+        },
+        {
+          "type": "bytes32",
+          "value": "9595959595959595959595959595959595959595959595959595959595959595"
+        }
+      ],
+      "payload": [],
+      "topics_canonical": "symbol:revroot|symbol:set|bytes32:9595959595959595959595959595959595959595959595959595959595959595",
+      "payload_canonical": "empty_map",
+      "topics_xdr_hex": "0000001000000001000000030000000f00000007726576726f6f74000000000f00000003736574000000000d000000209595959595959595959595959595959595959595959595959595959595959595",
+      "data_xdr_hex": "000000110000000100000000",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-027-credroot-revoked",
+      "event_name": "CredentialRootRevoked",
+      "entrypoint": "revoke_credential_root",
+      "description": "Revoking a Tier 1 credential root emits CredentialRootRevoked.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "credroot"
+        },
+        {
+          "type": "symbol",
+          "value": "revoke"
+        },
+        {
+          "type": "bytes32",
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "payload": [],
+      "topics_canonical": "symbol:credroot|symbol:revoke|bytes32:1111111111111111111111111111111111111111111111111111111111111111",
+      "payload_canonical": "empty_map",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000863726564726f6f740000000f000000067265766f6b6500000000000d000000201111111111111111111111111111111111111111111111111111111111111111",
+      "data_xdr_hex": "000000110000000100000000",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "ev-028-issuer-revoked",
+      "event_name": "IssuerRevoked",
+      "entrypoint": "revoke_issuer",
+      "description": "Revoking a Tier 3 institutional issuer emits IssuerRevoked.",
+      "topics": [
+        {
+          "type": "symbol",
+          "value": "issuer"
+        },
+        {
+          "type": "symbol",
+          "value": "revoke"
+        },
+        {
+          "type": "address_ed25519",
+          "value": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        }
+      ],
+      "payload": [],
+      "topics_canonical": "symbol:issuer|symbol:revoke|address_ed25519:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "payload_canonical": "empty_map",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000669737375657200000000000f000000067265766f6b650000000000120000000000000000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "data_xdr_hex": "000000110000000100000000",
+      "accept": true,
+      "reject_code": null
+    },
+    {
+      "id": "neg-001-truncated-topic-xdr",
+      "event_name": "ProofRegistered",
+      "entrypoint": "negative_fixture",
+      "description": "Truncated ScVal topic vector XDR fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d000000202121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000010000000f0000000a766964656f5f6861736800000000000d000000202222222222222222222222222222222222222222222222222222222222222222",
+      "accept": false,
+      "reject_code": "malformed_xdr"
+    },
+    {
+      "id": "neg-002-trailing-bytes-data-xdr",
+      "event_name": "ProofRegistered",
+      "entrypoint": "negative_fixture",
+      "description": "Trailing unconsumed bytes after ScVal payload fail closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000010000000f0000000a766964656f5f6861736800000000000d00000020222222222222222222222222222222222222222222222222222222222222222200000000",
+      "accept": false,
+      "reject_code": "trailing_xdr_bytes"
+    },
+    {
+      "id": "neg-003-non-canonical-xdr-padding",
+      "event_name": "ProofRegistered",
+      "entrypoint": "negative_fixture",
+      "description": "Non-zero RFC-4506 4-byte padding in variable-length XDR bytes fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d00000003aaaaaaff",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000010000000f0000000a766964656f5f6861736800000000000d000000202222222222222222222222222222222222222222222222222222222222222222",
+      "accept": false,
+      "reject_code": "non_canonical_padding"
+    },
+    {
+      "id": "neg-004-unknown-topic-prefix",
+      "event_name": "",
+      "entrypoint": "negative_fixture",
+      "description": "Unrecognized lifecycle event topic prefix fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000005626f6775730000000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "000000110000000100000000",
+      "accept": false,
+      "reject_code": "unknown_event_topic"
+    },
+    {
+      "id": "neg-005-wrong-topic-arity",
+      "event_name": "ProofRegistered",
+      "entrypoint": "negative_fixture",
+      "description": "ProofRegistered topic vector missing trailing proof_id fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000020000000f0000000570726f6f660000000000000f0000000372656700",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000010000000f0000000a766964656f5f6861736800000000000d000000202222222222222222222222222222222222222222222222222222222222222222",
+      "accept": false,
+      "reject_code": "topic_arity_mismatch"
+    },
+    {
+      "id": "neg-006-wrong-topic-type",
+      "event_name": "ProofRegistered",
+      "entrypoint": "negative_fixture",
+      "description": "ProofRegistered topic carrying u32 instead of 32-byte proof_id fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000300000007",
+      "data_xdr_hex": "0000001100000001000000040000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f000000047469657200000003000000010000000f0000000a766964656f5f6861736800000000000d000000202222222222222222222222222222222222222222222222222222222222222222",
+      "accept": false,
+      "reject_code": "topic_type_mismatch"
+    },
+    {
+      "id": "neg-007-missing-payload-field",
+      "event_name": "ProofRegistered",
+      "entrypoint": "negative_fixture",
+      "description": "ProofRegistered payload omitting required tier field fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f00000003726567000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000030000000f0000000a62617463685f73697a65000000000003000000000000000f00000006737461747573000000000003000000010000000f0000000a766964656f5f6861736800000000000d000000202222222222222222222222222222222222222222222222222222222222222222",
+      "accept": false,
+      "reject_code": "payload_schema_mismatch"
+    },
+    {
+      "id": "neg-008-non-canonical-map-key-order",
+      "event_name": "ProofRevoked",
+      "entrypoint": "negative_fixture",
+      "description": "ScMap with out-of-order or duplicate symbol keys fails closed.",
+      "topics": [],
+      "payload": [],
+      "topics_canonical": "",
+      "payload_canonical": "",
+      "topics_xdr_hex": "0000001000000001000000030000000f0000000570726f6f660000000000000f000000067265766f6b6500000000000d000000202121212121212121212121212121212121212121212121212121212121212121",
+      "data_xdr_hex": "0000001100000001000000020000000f000000047a65746100000003000000010000000f0000000673746174757300000000000300000002",
+      "accept": false,
+      "reject_code": "non_canonical_map_order"
+    }
+  ]
+}

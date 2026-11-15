@@ -504,6 +504,11 @@ corresponding `proof/history` event. Batch registration emits that same pair
 for each derived proof in input order. Rejected registrations emit neither
 event, so indexers can treat the ordered pair as the registration boundary.
 
+See [LIFECYCLE_EVENT_CORPUS.md](LIFECYCLE_EVENT_CORPUS.md) and
+[`vectors/lifecycle_events_v1.json`](vectors/lifecycle_events_v1.json) for the
+canonical `hpx-ev/1` XDR topic/payload interoperability corpus verified across
+the Soroban contract, Python backend, and TypeScript browser decoders (`#1201`).
+
 ## Lifecycle History (#90)
 
 Every proof carries an append-only history of lifecycle transitions. History
