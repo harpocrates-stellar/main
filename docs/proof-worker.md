@@ -211,3 +211,21 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Explicit worker teardown acknowledgement
+
+`coordinateBoundedWorkerTeardown`, `ProofWorkerManager.cancelAndTeardown()`,
+and `ProofWorkerClient.cancelWithTeardownAck()` add a bounded resource-cleanup
+handshake after cancellation:
+
+- **Bounded wait window:** waits between `MIN_WORKER_TEARDOWN_TIMEOUT_MS`
+  (`10ms`) and `MAX_WORKER_TEARDOWN_TIMEOUT_MS` (`5000ms`, default `250ms`) for
+  a matching `teardown_ack` / `TEARDOWN_ACK` message confirming buffers and task
+  state were cleared.
+- **Confirmed vs forced distinction:** returns `WorkerTeardownResult` with
+  `outcome: 'acknowledged'` (`cleanupConfirmed: true`,
+  `forcedTermination: false`) when the worker confirms cleanup before the
+  deadline, or `outcome: 'forced_termination'` (`cleanupConfirmed: false`,
+  `forcedTermination: true`) when a blocked WASM loop times out and is killed via
+  `worker.terminate()`.
+
+

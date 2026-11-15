@@ -15,8 +15,9 @@ function bufToStr(buf: ArrayBuffer): string {
   return new TextDecoder().decode(buf)
 }
 
-function zero(buf: ArrayBuffer) {
-  new Uint8Array(buf).fill(0)
+function zeroInput(input: TransferableProofInput) {
+  new Uint8Array(input.credentialSecret).fill(0)
+  new Uint8Array(input.nullifierSecret).fill(0)
 }
 
 async function handleGenerate(requestId: string, input: TransferableProofInput) {
@@ -90,9 +91,19 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data
   if (msg.type === 'GENERATE_PROOF') {
     void handleGenerate(msg.requestId, msg.input)
+    return
   }
-  // CANCEL is handled by the main thread terminating this worker outright —
-  // no in-worker cancel logic needed since generateProof can't be interrupted mid-flight.
+  if (msg.type === 'TEARDOWN') {
+    if (activeRequestId !== null) {
+      cancelRequestedFor = activeRequestId
+      activeRequestId = null
+    }
+    post({
+      type: 'TEARDOWN_ACK',
+      teardownId: msg.teardownId,
+      resourcesCleaned: true,
+    })
+  }
 }
 
 post({ type: 'READY' })

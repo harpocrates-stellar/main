@@ -228,3 +228,159 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+export const DEFAULT_WORKER_TEARDOWN_TIMEOUT_MS = 250
+export const MIN_WORKER_TEARDOWN_TIMEOUT_MS = 10
+export const MAX_WORKER_TEARDOWN_TIMEOUT_MS = 5_000
+
+export type WorkerTeardownOutcome = 'acknowledged' | 'forced_termination' | 'no_active_worker'
+
+export type WorkerTeardownResult = {
+  readonly teardownId: string
+  readonly outcome: WorkerTeardownOutcome
+  readonly cleanupConfirmed: boolean
+  readonly forcedTermination: boolean
+  readonly terminated: boolean
+  readonly timeoutMs: number
+  readonly elapsedMs: number
+}
+
+export type BoundedTeardownWorkerLike = {
+  postMessage: (message: unknown) => void
+  terminate: () => void
+  addEventListener?: (type: string, listener: EventListener) => void
+  removeEventListener?: (type: string, listener: EventListener) => void
+  onmessage?: ((event: MessageEvent) => void) | null
+}
+
+function defaultTeardownAckMatcher(payload: unknown, teardownId: string): boolean {
+  if (!payload || typeof payload !== 'object') return false
+  const record = payload as Record<string, unknown>
+  if (record.type === 'teardown_ack' && record.id === teardownId) {
+    const data = record.data as { resourcesCleaned?: unknown } | undefined
+    return data?.resourcesCleaned === true
+  }
+  if (record.type === 'TEARDOWN_ACK' && record.teardownId === teardownId) {
+    return record.resourcesCleaned === true
+  }
+  return false
+}
+
+export function validateTeardownTimeoutMs(timeoutMs?: number): number {
+  const resolved = timeoutMs ?? DEFAULT_WORKER_TEARDOWN_TIMEOUT_MS
+  if (
+    !Number.isSafeInteger(resolved) ||
+    resolved < MIN_WORKER_TEARDOWN_TIMEOUT_MS ||
+    resolved > MAX_WORKER_TEARDOWN_TIMEOUT_MS
+  ) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return resolved
+}
+
+/**
+ * Send a teardown handshake to a proof worker, wait a strictly bounded
+ * interval for an explicit cleanup acknowledgement, and terminate the worker
+ * while distinguishing confirmed cleanup from forced timeout termination.
+ */
+export function coordinateBoundedWorkerTeardown(
+  worker: BoundedTeardownWorkerLike | null,
+  options?: {
+    teardownId?: string
+    timeoutMs?: number
+    buildRequest?: (teardownId: string) => unknown
+    isMatchingAck?: (payload: unknown, teardownId: string) => boolean
+  },
+): Promise<WorkerTeardownResult> {
+  const timeoutMs = validateTeardownTimeoutMs(options?.timeoutMs)
+  const teardownId = options?.teardownId ?? `teardown_${Date.now()}`
+
+  if (!worker) {
+    return Promise.resolve(
+      Object.freeze({
+        teardownId,
+        outcome: 'no_active_worker' as const,
+        cleanupConfirmed: true,
+        forcedTermination: false,
+        terminated: true,
+        timeoutMs,
+        elapsedMs: 0,
+      }),
+    )
+  }
+
+  const startedAt = Date.now()
+  const matchAck = options?.isMatchingAck ?? defaultTeardownAckMatcher
+  const requestPayload = options?.buildRequest
+    ? options.buildRequest(teardownId)
+    : { type: 'teardown', id: teardownId }
+
+  return new Promise<WorkerTeardownResult>((resolve) => {
+    let settled = false
+    const previousOnMessage = worker.onmessage ?? null
+    const useEventTarget =
+      typeof worker.addEventListener === 'function' &&
+      typeof worker.removeEventListener === 'function'
+
+    const finish = (cleanupConfirmed: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (useEventTarget) {
+        worker.removeEventListener!('message', eventListener)
+      } else if (worker.onmessage === chainedOnMessage) {
+        worker.onmessage = previousOnMessage
+      }
+      try {
+        worker.terminate()
+      } catch {
+        // ignore termination error on dead worker
+      }
+      const elapsedMs = Math.max(0, Date.now() - startedAt)
+      resolve(
+        Object.freeze({
+          teardownId,
+          outcome: cleanupConfirmed ? ('acknowledged' as const) : ('forced_termination' as const),
+          cleanupConfirmed,
+          forcedTermination: !cleanupConfirmed,
+          terminated: true,
+          timeoutMs,
+          elapsedMs,
+        }),
+      )
+    }
+
+    const inspectEvent = (event: MessageEvent) => {
+      if (matchAck(event.data, teardownId)) {
+        finish(true)
+      }
+    }
+
+    const eventListener: EventListener = (evt: Event) => {
+      inspectEvent(evt as MessageEvent)
+    }
+
+    const chainedOnMessage = (evt: MessageEvent) => {
+      inspectEvent(evt)
+      if (!settled && previousOnMessage) {
+        previousOnMessage(evt)
+      }
+    }
+
+    if (useEventTarget) {
+      worker.addEventListener!('message', eventListener)
+    } else {
+      worker.onmessage = chainedOnMessage
+    }
+
+    const timer = setTimeout(() => {
+      finish(false)
+    }, timeoutMs)
+
+    try {
+      worker.postMessage(requestPayload)
+    } catch {
+      finish(false)
+    }
+  })
+}

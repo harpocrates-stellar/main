@@ -6,6 +6,11 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './proofWorker.types'
+import {
+  coordinateBoundedWorkerTeardown,
+  validateTeardownTimeoutMs,
+  type WorkerTeardownResult,
+} from '../proofWorkerMemory'
 import { assessWorkerSupport } from './multiBrowserWorkerSupport'
 
 const PROOF_TIMEOUT_MS = 60_000
@@ -53,6 +58,48 @@ type PendingJob = {
   generation: number
 }
 
+export type FallbackLimits = {
+  timeoutMs: number
+  maxSecretBytes: number
+}
+
+export type FallbackProver = (input: GenerateSilentWitnessInput) => Promise<SilentWitnessProof>
+
+type FallbackPendingJob = {
+  requestId: string
+  reject: (err: ProofWorkerError) => void
+}
+
+export type ProofWorkerClientOptions = {
+  runtime?: 'auto' | 'worker' | 'main'
+  enableFallback?: boolean
+  timeoutMs?: number
+  maxSecretBytes?: number
+  prover?: FallbackProver
+  workerFactory?: () => Worker | null
+}
+
+export const DEFAULT_FALLBACK_LIMITS: FallbackLimits = Object.freeze({
+  timeoutMs: PROOF_TIMEOUT_MS,
+  maxSecretBytes: MAX_SECRET_BYTES,
+})
+
+function toFallbackError(err: unknown): ProofWorkerError {
+  if (err instanceof ProofWorkerError) return err
+  const codeField = (err as { code?: unknown })?.code
+  if (codeField === 'invalid_input') return new ProofWorkerError('INVALID_INPUT', 'invalid_input')
+  if (codeField === 'unsupported_input_schema') {
+    return new ProofWorkerError('UNSUPPORTED_INPUT_SCHEMA', 'unsupported_input_schema')
+  }
+  if (codeField === 'artifact_mismatch') return new ProofWorkerError('ARTIFACT_MISMATCH', 'artifact_mismatch')
+  if (codeField === 'invalid_proof_output') return new ProofWorkerError('INVALID_PROOF_OUTPUT', 'invalid_proof_output')
+  if (codeField === 'circuit_load_failed') return new ProofWorkerError('CIRCUIT_LOAD_FAILED', 'circuit_load_failed')
+  if (codeField === 'proof_worker_memory_exceeded') {
+    return new ProofWorkerError('MEMORY_LIMIT_EXCEEDED', 'proof_worker_memory_exceeded')
+  }
+  return new ProofWorkerError('PROOF_GENERATION_FAILED', 'proof_generation_failed')
+}
+
 /**
  * Main-thread client for cancellable Silent Witness proving.
  *
@@ -74,6 +121,8 @@ export class ProofWorkerClient {
   private pending: Map<string, PendingJob> = new Map()
   private fallbackPending: FallbackPendingJob | null = null
   private fallbackActive = false
+  private generation = 0
+  private destroyed = false
   private readonly allowFallback: boolean
   private readonly fallbackLimits: FallbackLimits
   private readonly prover: FallbackProver
@@ -103,6 +152,16 @@ export class ProofWorkerClient {
       this.reason = 'runtime_forced_main'
       return
     }
+    const workerAvailable = typeof Worker === 'function'
+    if (!workerAvailable && !options.workerFactory) {
+      if (this.allowFallback) {
+        this.runtimeMode = 'main-thread'
+        this.reason = 'worker_api_unavailable'
+        return
+      }
+      this.runtimeMode = 'unavailable'
+      return
+    }
     const worker = this.spawnWorker()
     if (worker) {
       this.worker = worker
@@ -118,26 +177,31 @@ export class ProofWorkerClient {
     this.runtimeMode = 'unavailable'
   }
 
-  private spawn(): Worker {
-    const worker = new Worker(new URL('./proofWorker.ts', import.meta.url), { type: 'module' })
-    const generation = this.generation
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      if (generation !== this.generation) return
-      this.handleMessage(event.data)
+  private spawnWorker(): Worker | null {
+    try {
+      const worker = this.workerFactory()
+      if (!worker) return null
+      const generation = this.generation
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        if (generation !== this.generation) return
+        this.handleMessage(event.data)
+      }
+      worker.onerror = () => {
+        if (generation !== this.generation) return
+        this.handleCrash()
+      }
+      worker.onmessageerror = () => {
+        if (generation !== this.generation) return
+        this.handleCrash()
+      }
+      return worker
+    } catch {
+      return null
     }
-    worker.onerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    worker.onmessageerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    return worker
   }
 
   private handleMessage(msg: WorkerResponse) {
-    if (msg.type === 'READY') return
+    if (msg.type === 'READY' || msg.type === 'TEARDOWN_ACK') return
     const job = this.pending.get('requestId' in msg ? msg.requestId : '')
     if (!job) return
     if (msg.type === 'PROGRESS') {
@@ -173,12 +237,12 @@ export class ProofWorkerClient {
   private respawnWorker() {
     this.generation += 1
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }
     if (!this.destroyed) {
-      this.worker = this.spawn()
+      this.worker = this.spawnWorker()
     }
   }
 
@@ -375,12 +439,19 @@ export class ProofWorkerClient {
    * 3. Terminate + respawn so UltraHonk cannot keep running with witness data
    */
   cancel(requestId: string) {
+    if (this.fallbackPending && this.fallbackPending.requestId === requestId) {
+      const fb = this.fallbackPending
+      this.fallbackPending = null
+      this.fallbackActive = false
+      fb.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+      return
+    }
     const job = this.pending.get(requestId)
     if (!job) return
 
     try {
       const msg: WorkerRequest = { type: 'CANCEL', requestId }
-      this.worker.postMessage(msg)
+      this.worker?.postMessage(msg)
     } catch {
       // Worker may already be dead; terminate path below still settles.
     }
@@ -391,14 +462,48 @@ export class ProofWorkerClient {
     this.respawnWorker()
   }
 
+  /**
+   * Cancel an in-flight operation, wait a bounded interval for an explicit
+   * `TEARDOWN_ACK` cleanup confirmation, terminate the old worker, and respawn
+   * a fresh worker while distinguishing confirmed cleanup from forced timeout.
+   */
+  async cancelWithTeardownAck(
+    requestId: string,
+    timeoutMs?: number,
+  ): Promise<WorkerTeardownResult> {
+    const resolvedTimeout = validateTeardownTimeoutMs(timeoutMs)
+    const job = this.pending.get(requestId)
+    if (job) {
+      this.pending.delete(requestId)
+      clearTimeout(job.timeoutId)
+      job.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+    }
+
+    const oldWorker = this.worker
+    this.generation += 1
+    this.worker = this.destroyed ? null : this.spawnWorker()
+
+    return coordinateBoundedWorkerTeardown(oldWorker, {
+      timeoutMs: resolvedTimeout,
+      teardownId: `teardown_${requestId || 'idle'}`,
+      buildRequest: (teardownId): WorkerRequest => ({ type: 'TEARDOWN', teardownId }),
+    })
+  }
+
   /** Tear down the worker and reject any in-flight job as CANCELLED. */
   destroy() {
     if (this.destroyed) return
     this.destroyed = true
+    if (this.fallbackPending) {
+      const fb = this.fallbackPending
+      this.fallbackPending = null
+      this.fallbackActive = false
+      fb.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+    }
     this.rejectAll('CANCELLED', 'Proof generation was cancelled.')
     this.generation += 1
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }

@@ -58,6 +58,7 @@ export type SilentWitnessProof = {
 export type WorkerRequest =
   | { type: 'GENERATE_PROOF'; requestId: string; input: TransferableProofInput }
   | { type: 'CANCEL'; requestId: string }
+  | { type: 'TEARDOWN'; teardownId: string }
 
 export type WorkerResponse =
   | { type: 'READY' }
@@ -65,3 +66,4 @@ export type WorkerResponse =
   | { type: 'RESULT'; requestId: string; proof: SilentWitnessProof }
   | { type: 'ERROR'; requestId: string; code: ProofErrorCode; message: string }
   | { type: 'CANCELLED'; requestId: string }
+  | { type: 'TEARDOWN_ACK'; teardownId: string; resourcesCleaned: boolean }

@@ -133,6 +133,7 @@ function capString(value: string, cap: number, tracker: Tracker): string {
 
 function looksLikeSecretBlob(value: string): boolean {
   if (value.length < 48) return false
+  if (new Set(value).size <= 1) return false
   // Long hex / base64-ish blobs that often carry proofs, seeds, or media
   if (/^(0x)?[0-9a-fA-F]{64,}$/.test(value)) return true
   if (/^[A-Za-z0-9+/_-]{80,}={0,2}$/.test(value)) return true

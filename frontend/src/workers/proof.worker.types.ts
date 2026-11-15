@@ -1,5 +1,5 @@
 export interface ProofWorkerMessage {
-  type: 'init' | 'verify' | 'cancel' | 'status';
+  type: 'init' | 'verify' | 'cancel' | 'status' | 'teardown';
   payload?: {
     evidence?: string;
     proof?: string;
@@ -11,12 +11,13 @@ export interface ProofWorkerMessage {
 }
 
 export interface ProofWorkerResponse {
-  type: 'success' | 'error' | 'status';
+  type: 'success' | 'error' | 'status' | 'teardown_ack';
   id?: string;
   data?: {
     valid?: boolean;
     result?: unknown;
     message?: string;
+    resourcesCleaned?: boolean;
   };
   error?: {
     code: string;

@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 // Constants for boundary enforcement
 const MAX_ARTIFACT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 const MAX_METADATA_LENGTH = 4096;
