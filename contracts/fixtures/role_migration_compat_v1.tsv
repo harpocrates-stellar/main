@@ -1,0 +1,32 @@
+# Harpocrates Role Migration Compatibility Fixture Set (v1)
+# Schema: hpx-role-migration-fixture/v1
+# Synthetic actors and deterministic role transitions replayed across simulated contract upgrades.
+# No real keys, credentials, witnesses, or media hashes appear in this file.
+#
+# Columns (tab-separated):
+# scenario	phase	actor	can_admin	can_issue_seal	is_verifiable_issuer	can_guardian_pause	can_delegate_seal	can_delegate_source	can_approve_seal	can_accept_admin	can_propose_council
+version	1
+v1_conflict_disjoint_migration	post_upgrade	admin_a	1	0	0	1	0	0	0	0	0
+v1_conflict_disjoint_migration	post_upgrade	issuer_active	0	1	1	0	0	0	0	0	0
+v1_conflict_disjoint_migration	post_upgrade	guardian	0	0	0	1	0	0	0	0	0
+v1_conflict_disjoint_migration	post_upgrade	outsider	0	0	0	0	0	0	0	0	0
+pending_admin_transfer_across_upgrade	post_upgrade_pre_accept	admin_a	1	0	0	1	0	0	0	0	0
+pending_admin_transfer_across_upgrade	post_upgrade_pre_accept	admin_b	0	0	0	0	0	0	0	1	0
+pending_admin_transfer_across_upgrade	post_upgrade_accepted	admin_a	0	1	1	0	0	0	0	0	0
+pending_admin_transfer_across_upgrade	post_upgrade_accepted	admin_b	1	0	0	1	0	0	0	0	0
+pending_admin_transfer_across_upgrade	post_upgrade_accepted	outsider	0	0	0	0	0	0	0	0	0
+issuer_rotation_and_delegation_across_upgrade	post_upgrade_in_grace	admin_a	1	0	0	1	0	0	0	0	0
+issuer_rotation_and_delegation_across_upgrade	post_upgrade_in_grace	issuer_retired	0	0	1	0	0	0	0	0	0
+issuer_rotation_and_delegation_across_upgrade	post_upgrade_in_grace	issuer_active	0	1	1	0	0	0	0	0	0
+issuer_rotation_and_delegation_across_upgrade	post_upgrade_in_grace	delegate_seal	0	0	0	0	0	0	0	0	0
+issuer_rotation_and_delegation_across_upgrade	post_upgrade_in_grace	delegate_source	0	0	0	0	0	1	0	0	0
+issuer_rotation_and_delegation_across_upgrade	post_upgrade_grace_settled	issuer_retired	0	0	0	0	0	0	0	0	0
+threshold_seal_and_revoked_signer_across_upgrade	post_upgrade	admin_a	1	0	0	1	0	0	0	0	0
+threshold_seal_and_revoked_signer_across_upgrade	post_upgrade	issuer_active	0	1	1	0	0	0	1	0	0
+threshold_seal_and_revoked_signer_across_upgrade	post_upgrade	issuer_revoked	0	0	0	0	0	0	0	0	0
+threshold_seal_and_revoked_signer_across_upgrade	post_upgrade	outsider	0	0	0	0	0	0	0	0	0
+council_governed_upgrade_boundaries	post_upgrade	admin_a	1	0	0	1	0	0	0	0	0
+council_governed_upgrade_boundaries	post_upgrade	issuer_active	0	1	1	0	0	0	0	0	0
+council_governed_upgrade_boundaries	post_upgrade	council_m1	0	0	0	0	0	0	0	0	1
+council_governed_upgrade_boundaries	post_upgrade	council_m2	0	0	0	0	0	0	0	0	1
+council_governed_upgrade_boundaries	post_upgrade	outsider	0	0	0	0	0	0	0	0	0
