@@ -79,3 +79,12 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Storage Availability vs. Passphrase Diagnostics
+
+`CredentialVault` (`src/credentialVault.ts`) and `src/safeStorage.ts` separate
+browser storage errors from AES-GCM authentication failures:
+
+- Blocked or unavailable storage throws `VaultAccessError` (or returns structured `VaultUnlockOutcome` from `unlockWithDiagnostics`) with `STORAGE_PERMISSION_DENIED`, `STORAGE_QUOTA_EXCEEDED`, or `STORAGE_UNAVAILABLE` plus explicit recovery guidance.
+- Decryption tag failures set `code: 'INCORRECT_PASSPHRASE'` with passphrase-specific recovery guidance while `unlock()` continues returning `false` for backward compatibility.
+- Storage read, write, or permission failures never call `removeItem` on `harpocrates:credential-vault`, preserving any stored encrypted envelope until storage permissions are restored.

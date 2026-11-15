@@ -42,7 +42,7 @@ export function validatePresence<T>(value: T, fieldName: string): ValidationResu
  * Validates artifact size to prevent DoS via oversized inputs.
  * Privacy-safe: logs size, not content.
  */
-export function validateArtifactSize(data: Uint8Array | string, fieldName: string): ValidationResult {
+export function validateArtifactSize(data: Uint8Array | string, _fieldName: string): ValidationResult {
   const size = typeof data === 'string' ? new TextEncoder().encode(data).length : data.length;
   if (size > MAX_ARTIFACT_SIZE) {
     return {

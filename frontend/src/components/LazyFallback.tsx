@@ -19,7 +19,7 @@ export function LazyFallback({ label = 'Loading workspace' }: LazyFallbackProps)
       aria-live="polite"
       aria-busy="true"
       aria-label={label}
-      tabPolinter="-1"
+      tabIndex={-1}
       style={{
         display: 'flex',
         alignItems: 'center',
