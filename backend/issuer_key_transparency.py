@@ -155,7 +155,7 @@ class IssuerManifest:
         if int(obj.get("version", 0)) not in SUPPORTED_VERSIONS:
             raise TransparencyError("unsupported issuer transparency version")
         keys = [IssuerKey.from_dict(k) for k in obj.get("activeKeys", [])]
-        return IssuerManifest(
+        manifest = IssuerManifest(
             organization_identity_hash=_require_hex(
                 "organizationIdentityHash", str(obj["organizationIdentityHash"])
             ),
@@ -182,20 +182,114 @@ class IssuerManifest:
             version=int(obj["version"]),
             protocol=str(obj["protocol"]),
         )
+        validate_issuer_manifest(manifest)
+        return manifest
+
+
+def _conflicting_key_fields(first: IssuerKey, second: IssuerKey) -> list[str]:
+    conflicts: list[str] = []
+    if first.public_key_hash.lower() != second.public_key_hash.lower():
+        conflicts.append("publicKeyHash")
+    if first.algorithm != second.algorithm:
+        conflicts.append("algorithm")
+    if first.valid_from != second.valid_from:
+        conflicts.append("validFrom")
+    if first.valid_until != second.valid_until:
+        conflicts.append("validUntil")
+    if first.status != second.status:
+        conflicts.append("status")
+    return conflicts
+
+
+def validate_issuer_manifest(
+    manifest: IssuerManifest,
+    *,
+    existing_keys: dict[str, IssuerKey] | None = None,
+) -> None:
+    """Validate an entire ``IssuerManifest`` before hashing or directory installation."""
+    violations: list[str] = []
+    if manifest.protocol != PROTOCOL:
+        violations.append("unsupported issuer transparency protocol")
+    if (
+        isinstance(manifest.version, bool)
+        or manifest.version not in SUPPORTED_VERSIONS
+    ):
+        violations.append("unsupported issuer transparency version")
+    if not _is_hex(manifest.organization_identity_hash):
+        violations.append("organizationIdentityHash must be a 64-char hex digest")
+    if not isinstance(manifest.issuer_address, str) or not manifest.issuer_address.strip():
+        violations.append("issuerAddress is required")
+    if not _is_hex(manifest.policy_hash):
+        violations.append("policyHash must be a 64-char hex digest")
+    if (
+        manifest.valid_until is not None
+        and manifest.valid_until <= manifest.valid_from
+    ):
+        violations.append("manifest validUntil must exceed validFrom")
+    if len(manifest.active_keys) > MAX_ACTIVE_KEYS:
+        violations.append("active key count exceeds bound")
+
+    seen_keys: dict[str, IssuerKey] = {}
+    for idx, key in enumerate(manifest.active_keys):
+        if not isinstance(key.key_id, str) or not key.key_id.strip():
+            violations.append(f"activeKeys[{idx}].keyId must be non-empty")
+            continue
+        if not isinstance(key.algorithm, str) or not key.algorithm.strip():
+            violations.append(f"activeKeys[{idx}].algorithm must be non-empty")
+        if not _is_hex(key.public_key_hash):
+            violations.append(
+                f"activeKeys[{idx}].publicKeyHash must be a 64-char hex digest"
+            )
+        if key.valid_until is not None and key.valid_until <= key.valid_from:
+            violations.append(
+                f"activeKeys[{idx}] ('{key.key_id}') validUntil must exceed validFrom"
+            )
+
+        prior = seen_keys.get(key.key_id)
+        if prior is not None:
+            diff_fields = _conflicting_key_fields(prior, key)
+            if diff_fields:
+                violations.append(
+                    f"repeated keyId '{key.key_id}' with conflicting attributes: "
+                    + ", ".join(diff_fields)
+                )
+            else:
+                violations.append(
+                    f"repeated keyId '{key.key_id}' in manifest activeKeys"
+                )
+        else:
+            seen_keys[key.key_id] = key
+
+        if existing_keys is not None and key.key_id in existing_keys:
+            recorded = existing_keys[key.key_id]
+            attr_conflicts: list[str] = []
+            if key.public_key_hash.lower() != recorded.public_key_hash.lower():
+                attr_conflicts.append("publicKeyHash")
+            if key.algorithm != recorded.algorithm:
+                attr_conflicts.append("algorithm")
+            if key.valid_from != recorded.valid_from:
+                attr_conflicts.append("validFrom")
+            if recorded.status == KeyStatus.COMPROMISED and key.status == KeyStatus.ACTIVE:
+                attr_conflicts.append("status(compromised->active)")
+            if attr_conflicts:
+                violations.append(
+                    f"manifest key '{key.key_id}' conflicts with directory key history: "
+                    + ", ".join(attr_conflicts)
+                )
+
+    if violations:
+        raise TransparencyError("; ".join(violations))
 
 
 def canonicalize_manifest(manifest: IssuerManifest) -> str:
     """Deterministic JSON encoding used for hashing and signatures."""
+    validate_issuer_manifest(manifest)
     payload = manifest.to_dict()
     # Signature is over the unsigned body — exclude signatureHash from digest input.
     payload.pop("signatureHash", None)
     encoded = _canonical_json(payload)
     if len(encoded) > MAX_MANIFEST_BYTES:
         raise TransparencyError("issuer manifest exceeds size bound")
-    if len(manifest.active_keys) > MAX_ACTIVE_KEYS:
-        raise TransparencyError("active key count exceeds bound")
-    if not manifest.issuer_address:
-        raise TransparencyError("issuerAddress is required")
     return encoded.decode("utf-8")
 
 
@@ -434,6 +528,7 @@ class IssuerDirectory:
     def publish_manifest(self, manifest: IssuerManifest) -> str:
         if manifest.organization_identity_hash != self.organization_identity_hash:
             raise TransparencyError("manifest organizationIdentityHash mismatch")
+        validate_issuer_manifest(manifest, existing_keys=self.keys)
         h = manifest_hash(manifest)
         if self.current_manifest is not None:
             prev_h = manifest_hash(self.current_manifest)
@@ -457,6 +552,26 @@ class IssuerDirectory:
         self.manifests_by_hash[h] = manifest
         self.current_manifest = manifest
         return h
+
+    def install_manifests(self, manifests: list[IssuerManifest]) -> list[str]:
+        """Atomically validate and install a sequence of manifests.
+
+        Retains the previous trusted directory state unchanged if any manifest in
+        the sequence fails validation or predecessor linkage.
+        """
+        staged = IssuerDirectory(
+            organization_identity_hash=self.organization_identity_hash,
+            events=list(self.events),
+            keys=dict(self.keys),
+            current_manifest=self.current_manifest,
+            manifests_by_hash=dict(self.manifests_by_hash),
+        )
+        installed_hashes: list[str] = []
+        for candidate in manifests:
+            installed_hashes.append(staged.publish_manifest(candidate))
+        self.manifests_by_hash = dict(staged.manifests_by_hash)
+        self.current_manifest = staged.current_manifest
+        return installed_hashes
 
     def tree_head(self) -> str:
         return compute_tree_head(self.events)

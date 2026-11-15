@@ -29,6 +29,12 @@ Each issuer publishes a versioned manifest (`protocol: harpocrates-issuer-key-tr
 
 Canonical encoding is deterministic JSON (`sort_keys`, compact separators). Digest = SHA-256 of the unsigned body.
 
+`validate_issuer_manifest` validates the complete manifest before canonicalization, parsing (`IssuerManifest.from_dict`), or directory installation (`IssuerDirectory.publish_manifest` and `IssuerDirectory.install_manifests`):
+
+- Rejects repeated `keyId` entries in `activeKeys`, explicitly enumerating any conflicting key attributes (`publicKeyHash`, `algorithm`, `validFrom`, `validUntil`, `status`).
+- Rejects manifest keys that conflict with recorded directory key history (for example, changing an existing key's `publicKeyHash`, `algorithm`, or `validFrom`, or re-advertising a `compromised` key as `active`).
+- Retains the previously trusted `current_manifest` and `manifests_by_hash` completely unchanged when a candidate manifest or manifest batch fails validation.
+
 ## Append-only lifecycle events
 
 Event types: `activation`, `rotation`, `compromise`, `retirement`, `checkpoint`.
