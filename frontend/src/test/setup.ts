@@ -63,15 +63,17 @@ Object.defineProperty(globalThis, "crypto", {
   value: testCrypto,
 });
 
-Object.defineProperty(window, "crypto", {
-  configurable: true,
-  value: testCrypto,
-});
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "crypto", {
+    configurable: true,
+    value: testCrypto,
+  });
 
-Object.defineProperty(window, "scrollTo", {
-  configurable: true,
-  value: vi.fn(),
-});
+  Object.defineProperty(window, "scrollTo", {
+    configurable: true,
+    value: vi.fn(),
+  });
+}
 
 afterEach(() => {
   cleanup();
@@ -99,14 +101,16 @@ class MockStorage implements Storage {
   }
 }
 
-Object.defineProperty(window, "localStorage", {
-  value: new MockStorage(),
-  configurable: true,
-  writable: true,
-});
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "localStorage", {
+    value: new MockStorage(),
+    configurable: true,
+    writable: true,
+  });
 
-Object.defineProperty(window, "sessionStorage", {
-  value: new MockStorage(),
-  configurable: true,
-  writable: true,
-});
+  Object.defineProperty(window, "sessionStorage", {
+    value: new MockStorage(),
+    configurable: true,
+    writable: true,
+  });
+}

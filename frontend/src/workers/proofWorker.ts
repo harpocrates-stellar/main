@@ -15,13 +15,29 @@ function bufToStr(buf: ArrayBuffer): string {
   return new TextDecoder().decode(buf)
 }
 
-function zero(buf: ArrayBuffer) {
-  new Uint8Array(buf).fill(0)
+function zeroInput(input: TransferableProofInput) {
+  new Uint8Array(input.credentialSecret).fill(0)
+  new Uint8Array(input.nullifierSecret).fill(0)
 }
 
-async function handleGenerate(requestId: string, input: TransferableProofInput) {
+async function handleGenerate(
+  requestId: string,
+  input: TransferableProofInput,
+  workerEpoch?: number,
+  operationGeneration?: number,
+) {
+  const stamp = {
+    ...(workerEpoch !== undefined ? { workerEpoch } : {}),
+    ...(operationGeneration !== undefined ? { operationGeneration } : {}),
+  }
   if (activeRequestId !== null) {
-    post({ type: 'ERROR', requestId, code: 'BUSY', message: 'A proof is already being generated.' })
+    post({
+      type: 'ERROR',
+      requestId,
+      code: 'BUSY',
+      message: 'A proof is already being generated.',
+      ...stamp,
+    })
     return
   }
   activeRequestId = requestId
@@ -35,14 +51,14 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
     zeroInput(input)
 
     if (cancelRequestedFor === requestId) {
-      post({ type: 'CANCELLED', requestId })
+      post({ type: 'CANCELLED', requestId, ...stamp })
       return
     }
 
-    post({ type: 'PROGRESS', requestId, stage: 'loading_circuits' })
-    post({ type: 'PROGRESS', requestId, stage: 'executing_helper' })
-    post({ type: 'PROGRESS', requestId, stage: 'executing_main' })
-    post({ type: 'PROGRESS', requestId, stage: 'generating_proof' })
+    post({ type: 'PROGRESS', requestId, stage: 'loading_circuits', ...stamp })
+    post({ type: 'PROGRESS', requestId, stage: 'executing_helper', ...stamp })
+    post({ type: 'PROGRESS', requestId, stage: 'executing_main', ...stamp })
+    post({ type: 'PROGRESS', requestId, stage: 'generating_proof', ...stamp })
 
     const proof = await generateSilentWitnessProof({
       videoHash: input.videoHash,
@@ -52,10 +68,10 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       verifierScope: input.verifierScope,
       epoch: input.epoch,
     }, { threadCount: resolveThreadCount() })
-    post({ type: 'RESULT', requestId, proof })
+    post({ type: 'RESULT', requestId, proof, ...stamp })
   } catch (err) {
     if (cancelRequestedFor === requestId) {
-      post({ type: 'CANCELLED', requestId })
+      post({ type: 'CANCELLED', requestId, ...stamp })
       return
     }
     const code = err instanceof CircuitInputError
@@ -74,6 +90,7 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       requestId,
       code,
       message: err instanceof CircuitInputError ? err.code : 'proof_generation_failed',
+      ...stamp,
     })
   } finally {
     zeroInput(input)
@@ -89,10 +106,10 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data
   if (msg.type === 'GENERATE_PROOF') {
-    void handleGenerate(msg.requestId, msg.input)
+    void handleGenerate(msg.requestId, msg.input, msg.workerEpoch, msg.operationGeneration)
+  } else if (msg.type === 'CANCEL') {
+    cancelRequestedFor = msg.requestId
   }
-  // CANCEL is handled by the main thread terminating this worker outright —
-  // no in-worker cancel logic needed since generateProof can't be interrupted mid-flight.
 }
 
 post({ type: 'READY' })

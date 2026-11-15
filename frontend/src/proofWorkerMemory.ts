@@ -228,3 +228,322 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+export type WorkerOwnershipErrorCode =
+  | 'WORKER_OWNERSHIP_CONFLICT'
+  | 'UNOWNED_WORKER_OPERATION'
+  | 'STALE_WORKER_GENERATION'
+
+export class ProofWorkerOwnershipError extends Error {
+  readonly code: WorkerOwnershipErrorCode
+
+  constructor(code: WorkerOwnershipErrorCode, message: string) {
+    super(message)
+    this.name = 'ProofWorkerOwnershipError'
+    this.code = code
+  }
+}
+
+export type WorkerOwnershipLease = {
+  readonly leaseId: string
+  readonly ownerId: string
+  readonly acquiredAtEpoch: number
+}
+
+export type OwnedOperationStamp = {
+  readonly ownerId: string
+  readonly leaseId: string
+  readonly operationId: string
+  readonly workerEpoch: number
+  readonly operationGeneration: number
+}
+
+export type WorkerReplacementReason =
+  | 'cancel_restart'
+  | 'timeout_restart'
+  | 'crash_restart'
+  | 'manual_restart'
+  | 'destroy'
+
+export type StaleWorkerMessageKind = 'progress' | 'proof' | 'error' | 'cancelled'
+
+export type StaleMessageRejectionReason =
+  | 'no_active_operation'
+  | 'owner_mismatch'
+  | 'lease_mismatch'
+  | 'stale_worker_epoch'
+  | 'stale_operation_generation'
+  | 'operation_id_mismatch'
+  | 'malformed_stamp'
+
+export type WorkerEnvelopeStampInput = {
+  readonly kind: StaleWorkerMessageKind
+  readonly operationId?: unknown
+  readonly workerEpoch?: unknown
+  readonly operationGeneration?: unknown
+  readonly ownerId?: unknown
+  readonly leaseId?: unknown
+}
+
+export type WorkerEnvelopeOwnershipVerdict =
+  | { readonly accepted: true; readonly stamp: OwnedOperationStamp }
+  | {
+      readonly accepted: false
+      readonly reason: StaleMessageRejectionReason
+      readonly kind: StaleWorkerMessageKind
+    }
+
+export type WorkerOwnershipSnapshot = {
+  readonly activeLease: WorkerOwnershipLease | null
+  readonly activeOperation: OwnedOperationStamp | null
+  readonly workerEpoch: number
+  readonly operationGeneration: number
+  readonly rejectedStaleProgressCount: number
+  readonly rejectedStaleProofCount: number
+  readonly rejectedStaleOtherCount: number
+}
+
+function assertNonEmptyIdentifier(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new CircuitInputError('invalid_input')
+  }
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || trimmed.length > 128) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return trimmed
+}
+
+/**
+ * Single-ownership and monotonic generation coordinator for browser proving
+ * workers. Tracks `workerEpoch` and `operationGeneration` across worker
+ * replacements and rejects stale progress/proof messages after cancellation or
+ * restart without inspecting secret witness material.
+ */
+export class ProofWorkerOwnershipProtocol {
+  private workerEpoch = 1
+  private operationGeneration = 0
+  private leaseSequence = 0
+  private activeLease: WorkerOwnershipLease | null = null
+  private ephemeralLease = false
+  private activeOperation: OwnedOperationStamp | null = null
+  private rejectedStaleProgressCount = 0
+  private rejectedStaleProofCount = 0
+  private rejectedStaleOtherCount = 0
+
+  claimOwnership(ownerId: string): WorkerOwnershipLease {
+    const normalizedOwner = assertNonEmptyIdentifier(ownerId)
+    if (this.activeLease !== null) {
+      if (this.activeLease.ownerId !== normalizedOwner) {
+        throw new ProofWorkerOwnershipError(
+          'WORKER_OWNERSHIP_CONFLICT',
+          'Browser proof worker is already owned by another caller.',
+        )
+      }
+      if (this.ephemeralLease) {
+        this.ephemeralLease = false
+      }
+      return this.activeLease
+    }
+
+    this.leaseSequence += 1
+    const lease: WorkerOwnershipLease = Object.freeze({
+      leaseId: `lease_${this.leaseSequence}`,
+      ownerId: normalizedOwner,
+      acquiredAtEpoch: this.workerEpoch,
+    })
+    this.activeLease = lease
+    this.ephemeralLease = false
+    return lease
+  }
+
+  releaseOwnership(ownerId: string, leaseId?: string): void {
+    const normalizedOwner = assertNonEmptyIdentifier(ownerId)
+    if (this.activeLease === null) return
+    if (
+      this.activeLease.ownerId !== normalizedOwner ||
+      (leaseId !== undefined && this.activeLease.leaseId !== leaseId)
+    ) {
+      throw new ProofWorkerOwnershipError(
+        'WORKER_OWNERSHIP_CONFLICT',
+        'Cannot release browser proof worker owned by another caller.',
+      )
+    }
+    if (this.activeOperation !== null) {
+      this.operationGeneration += 1
+      this.activeOperation = null
+    }
+    this.activeLease = null
+    this.ephemeralLease = false
+  }
+
+  startOperation(params: { operationId: string; ownerId?: string }): OwnedOperationStamp {
+    const operationId = assertNonEmptyIdentifier(params.operationId)
+    if (this.activeOperation !== null) {
+      throw new ProofWorkerOwnershipError(
+        'WORKER_OWNERSHIP_CONFLICT',
+        'Browser proof worker already has an active owned operation.',
+      )
+    }
+
+    if (this.activeLease !== null) {
+      if (params.ownerId === undefined) {
+        throw new ProofWorkerOwnershipError(
+          'UNOWNED_WORKER_OPERATION',
+          'Browser proof worker requires the active owner identifier.',
+        )
+      }
+      const callerOwner = assertNonEmptyIdentifier(params.ownerId)
+      if (callerOwner !== this.activeLease.ownerId) {
+        throw new ProofWorkerOwnershipError(
+          'WORKER_OWNERSHIP_CONFLICT',
+          'Browser proof worker is already owned by another caller.',
+        )
+      }
+    } else {
+      const resolvedOwner =
+        params.ownerId !== undefined
+          ? assertNonEmptyIdentifier(params.ownerId)
+          : 'implicit-default-owner'
+      this.leaseSequence += 1
+      this.activeLease = Object.freeze({
+        leaseId: `lease_${this.leaseSequence}`,
+        ownerId: resolvedOwner,
+        acquiredAtEpoch: this.workerEpoch,
+      })
+      this.ephemeralLease = true
+    }
+
+    this.operationGeneration += 1
+    const stamp: OwnedOperationStamp = Object.freeze({
+      ownerId: this.activeLease.ownerId,
+      leaseId: this.activeLease.leaseId,
+      operationId,
+      workerEpoch: this.workerEpoch,
+      operationGeneration: this.operationGeneration,
+    })
+    this.activeOperation = stamp
+    return stamp
+  }
+
+  completeOperation(operationId: string): boolean {
+    if (this.activeOperation === null || this.activeOperation.operationId !== operationId) {
+      return false
+    }
+    this.activeOperation = null
+    if (this.ephemeralLease) {
+      this.activeLease = null
+      this.ephemeralLease = false
+    }
+    return true
+  }
+
+  invalidateForCancel(operationId?: string): { workerEpoch: number; operationGeneration: number } {
+    if (
+      operationId !== undefined &&
+      this.activeOperation !== null &&
+      this.activeOperation.operationId !== operationId
+    ) {
+      return {
+        workerEpoch: this.workerEpoch,
+        operationGeneration: this.operationGeneration,
+      }
+    }
+    this.operationGeneration += 1
+    this.activeOperation = null
+    if (this.ephemeralLease) {
+      this.activeLease = null
+      this.ephemeralLease = false
+    }
+    return {
+      workerEpoch: this.workerEpoch,
+      operationGeneration: this.operationGeneration,
+    }
+  }
+
+  recordWorkerReplacement(
+    reason: WorkerReplacementReason = 'manual_restart',
+  ): { workerEpoch: number; operationGeneration: number } {
+    this.workerEpoch += 1
+    this.operationGeneration += 1
+    this.activeOperation = null
+    if (this.ephemeralLease || reason === 'destroy') {
+      this.activeLease = null
+      this.ephemeralLease = false
+    }
+    return {
+      workerEpoch: this.workerEpoch,
+      operationGeneration: this.operationGeneration,
+    }
+  }
+
+  private recordStaleRejection(
+    kind: StaleWorkerMessageKind,
+    reason: StaleMessageRejectionReason,
+  ): WorkerEnvelopeOwnershipVerdict {
+    if (kind === 'progress') {
+      this.rejectedStaleProgressCount += 1
+    } else if (kind === 'proof') {
+      this.rejectedStaleProofCount += 1
+    } else {
+      this.rejectedStaleOtherCount += 1
+    }
+    return Object.freeze({
+      accepted: false as const,
+      reason,
+      kind,
+    })
+  }
+
+  validateIncomingMessage(envelope: WorkerEnvelopeStampInput): WorkerEnvelopeOwnershipVerdict {
+    const validOperationId =
+      typeof envelope.operationId === 'string' && envelope.operationId.trim().length > 0
+    const validWorkerEpoch =
+      typeof envelope.workerEpoch === 'number' &&
+      Number.isSafeInteger(envelope.workerEpoch) &&
+      envelope.workerEpoch >= 1
+    const validGeneration =
+      typeof envelope.operationGeneration === 'number' &&
+      Number.isSafeInteger(envelope.operationGeneration) &&
+      envelope.operationGeneration >= 1
+
+    if (!validOperationId || !validWorkerEpoch || !validGeneration) {
+      return this.recordStaleRejection(envelope.kind, 'malformed_stamp')
+    }
+    if (this.activeOperation === null) {
+      return this.recordStaleRejection(envelope.kind, 'no_active_operation')
+    }
+    if (envelope.workerEpoch !== this.activeOperation.workerEpoch) {
+      return this.recordStaleRejection(envelope.kind, 'stale_worker_epoch')
+    }
+    if (envelope.operationGeneration !== this.activeOperation.operationGeneration) {
+      return this.recordStaleRejection(envelope.kind, 'stale_operation_generation')
+    }
+    if (envelope.operationId !== this.activeOperation.operationId) {
+      return this.recordStaleRejection(envelope.kind, 'operation_id_mismatch')
+    }
+    if (envelope.ownerId !== undefined && envelope.ownerId !== this.activeOperation.ownerId) {
+      return this.recordStaleRejection(envelope.kind, 'owner_mismatch')
+    }
+    if (envelope.leaseId !== undefined && envelope.leaseId !== this.activeOperation.leaseId) {
+      return this.recordStaleRejection(envelope.kind, 'lease_mismatch')
+    }
+
+    return Object.freeze({
+      accepted: true as const,
+      stamp: this.activeOperation,
+    })
+  }
+
+  getSnapshot(): WorkerOwnershipSnapshot {
+    return Object.freeze({
+      activeLease: this.activeLease,
+      activeOperation: this.activeOperation,
+      workerEpoch: this.workerEpoch,
+      operationGeneration: this.operationGeneration,
+      rejectedStaleProgressCount: this.rejectedStaleProgressCount,
+      rejectedStaleProofCount: this.rejectedStaleProofCount,
+      rejectedStaleOtherCount: this.rejectedStaleOtherCount,
+    })
+  }
+}

@@ -7,6 +7,14 @@ import type {
   WorkerResponse,
 } from './proofWorker.types'
 import { assessWorkerSupport } from './multiBrowserWorkerSupport'
+import {
+  ProofWorkerOwnershipError,
+  ProofWorkerOwnershipProtocol,
+  type OwnedOperationStamp,
+  type WorkerOwnershipLease,
+  type WorkerOwnershipSnapshot,
+  type WorkerReplacementReason,
+} from '../proofWorkerMemory'
 
 const PROOF_TIMEOUT_MS = 60_000
 const HEX64 = /^[0-9a-fA-F]{64}$/
@@ -50,7 +58,49 @@ type PendingJob = {
   reject: (err: ProofWorkerError) => void
   onProgress?: (stage: string) => void
   timeoutId: ReturnType<typeof setTimeout>
-  generation: number
+  stamp: OwnedOperationStamp
+}
+
+export type FallbackLimits = {
+  timeoutMs: number
+  maxSecretBytes: number
+}
+
+export type FallbackProver = (input: GenerateSilentWitnessInput) => Promise<SilentWitnessProof>
+
+type FallbackPendingJob = {
+  requestId: string
+  reject: (err: ProofWorkerError) => void
+}
+
+export type ProofWorkerClientOptions = {
+  runtime?: 'auto' | 'worker' | 'main'
+  enableFallback?: boolean
+  timeoutMs?: number
+  maxSecretBytes?: number
+  prover?: FallbackProver
+  workerFactory?: () => Worker | null
+}
+
+export const DEFAULT_FALLBACK_LIMITS: FallbackLimits = Object.freeze({
+  timeoutMs: PROOF_TIMEOUT_MS,
+  maxSecretBytes: MAX_SECRET_BYTES,
+})
+
+function toFallbackError(err: unknown): ProofWorkerError {
+  if (err instanceof ProofWorkerError) return err
+  const codeField = (err as { code?: unknown })?.code
+  if (codeField === 'invalid_input') return new ProofWorkerError('INVALID_INPUT', 'invalid_input')
+  if (codeField === 'unsupported_input_schema') {
+    return new ProofWorkerError('UNSUPPORTED_INPUT_SCHEMA', 'unsupported_input_schema')
+  }
+  if (codeField === 'artifact_mismatch') return new ProofWorkerError('ARTIFACT_MISMATCH', 'artifact_mismatch')
+  if (codeField === 'invalid_proof_output') return new ProofWorkerError('INVALID_PROOF_OUTPUT', 'invalid_proof_output')
+  if (codeField === 'circuit_load_failed') return new ProofWorkerError('CIRCUIT_LOAD_FAILED', 'circuit_load_failed')
+  if (codeField === 'proof_worker_memory_exceeded') {
+    return new ProofWorkerError('MEMORY_LIMIT_EXCEEDED', 'proof_worker_memory_exceeded')
+  }
+  return new ProofWorkerError('PROOF_GENERATION_FAILED', 'proof_generation_failed')
 }
 
 /**
@@ -67,6 +117,8 @@ export type ProofWorkerClientResult = {
   mode: RuntimeMode
   /** Why the main thread is used; null when the worker handled it. */
   fallbackReason: FallbackReason | null
+  workerEpoch?: number
+  operationGeneration?: number
 }
 
 export class ProofWorkerClient {
@@ -74,6 +126,8 @@ export class ProofWorkerClient {
   private pending: Map<string, PendingJob> = new Map()
   private fallbackPending: FallbackPendingJob | null = null
   private fallbackActive = false
+  private readonly ownership = new ProofWorkerOwnershipProtocol()
+  private destroyed = false
   private readonly allowFallback: boolean
   private readonly fallbackLimits: FallbackLimits
   private readonly prover: FallbackProver
@@ -103,6 +157,16 @@ export class ProofWorkerClient {
       this.reason = 'runtime_forced_main'
       return
     }
+    const workerAvailable = typeof Worker === 'function'
+    if (!workerAvailable && !options.workerFactory) {
+      if (this.allowFallback) {
+        this.runtimeMode = 'main-thread'
+        this.reason = 'worker_api_unavailable'
+        return
+      }
+      this.runtimeMode = 'unavailable'
+      return
+    }
     const worker = this.spawnWorker()
     if (worker) {
       this.worker = worker
@@ -118,27 +182,83 @@ export class ProofWorkerClient {
     this.runtimeMode = 'unavailable'
   }
 
-  private spawn(): Worker {
-    const worker = new Worker(new URL('./proofWorker.ts', import.meta.url), { type: 'module' })
-    const generation = this.generation
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      if (generation !== this.generation) return
-      this.handleMessage(event.data)
-    }
-    worker.onerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    worker.onmessageerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    return worker
+  claimOwnership(ownerId: string): WorkerOwnershipLease {
+    return this.ownership.claimOwnership(ownerId)
   }
 
-  private handleMessage(msg: WorkerResponse) {
+  releaseOwnership(ownerId: string, leaseId?: string): void {
+    this.ownership.releaseOwnership(ownerId, leaseId)
+  }
+
+  getOwnershipSnapshot(): WorkerOwnershipSnapshot {
+    return this.ownership.getSnapshot()
+  }
+
+  private tryStartOwnedOperation(
+    requestId: string,
+    ownerId?: string,
+  ): OwnedOperationStamp | ProofWorkerError {
+    try {
+      return this.ownership.startOperation({ operationId: requestId, ownerId })
+    } catch (err) {
+      if (err instanceof ProofWorkerOwnershipError) {
+        return new ProofWorkerError('BUSY', err.message)
+      }
+      return new ProofWorkerError('INVALID_INPUT', 'Invalid worker ownership identifier.')
+    }
+  }
+
+  private spawnWorker(): Worker | null {
+    try {
+      const worker = this.workerFactory()
+      if (!worker) return null
+      const spawnedWorkerEpoch = this.ownership.getSnapshot().workerEpoch
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        this.handleMessage(event.data, spawnedWorkerEpoch)
+      }
+      worker.onerror = () => {
+        if (spawnedWorkerEpoch !== this.ownership.getSnapshot().workerEpoch) return
+        this.handleCrash()
+      }
+      worker.onmessageerror = () => {
+        if (spawnedWorkerEpoch !== this.ownership.getSnapshot().workerEpoch) return
+        this.handleCrash()
+      }
+      return worker
+    } catch {
+      return null
+    }
+  }
+
+  private handleMessage(msg: WorkerResponse, spawnedWorkerEpoch: number) {
     if (msg.type === 'READY') return
-    const job = this.pending.get('requestId' in msg ? msg.requestId : '')
+    const kind =
+      msg.type === 'PROGRESS'
+        ? 'progress'
+        : msg.type === 'RESULT'
+          ? 'proof'
+          : msg.type === 'CANCELLED'
+            ? 'cancelled'
+            : 'error'
+    const effectiveWorkerEpoch = msg.workerEpoch ?? spawnedWorkerEpoch
+    const activeOp = this.ownership.getSnapshot().activeOperation
+    const effectiveGeneration =
+      msg.operationGeneration ??
+      (activeOp !== null &&
+      activeOp.operationId === msg.requestId &&
+      activeOp.workerEpoch === effectiveWorkerEpoch
+        ? activeOp.operationGeneration
+        : 1)
+
+    const verdict = this.ownership.validateIncomingMessage({
+      kind,
+      operationId: msg.requestId,
+      workerEpoch: effectiveWorkerEpoch,
+      operationGeneration: effectiveGeneration,
+    })
+    if (!verdict.accepted) return
+
+    const job = this.pending.get(msg.requestId)
     if (!job) return
     if (msg.type === 'PROGRESS') {
       job.onProgress?.(msg.stage)
@@ -158,6 +278,7 @@ export class ProofWorkerClient {
     if (!job) return
     this.pending.delete(requestId)
     clearTimeout(job.timeoutId)
+    this.ownership.completeOperation(requestId)
     apply(job)
   }
 
@@ -170,21 +291,21 @@ export class ProofWorkerClient {
     }
   }
 
-  private respawnWorker() {
-    this.generation += 1
+  private respawnWorker(reason: WorkerReplacementReason = 'manual_restart') {
+    this.ownership.recordWorkerReplacement(reason)
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }
     if (!this.destroyed) {
-      this.worker = this.spawn()
+      this.worker = this.spawnWorker()
     }
   }
 
   private handleCrash() {
     this.rejectAll('CRASHED', 'The proof worker crashed unexpectedly.')
-    this.respawnWorker()
+    this.respawnWorker('crash_restart')
   }
 
   private timeoutJob(requestId: string) {
@@ -193,7 +314,7 @@ export class ProofWorkerClient {
     this.pending.delete(requestId)
     clearTimeout(job.timeoutId)
     job.reject(new ProofWorkerError('TIMEOUT', 'Proof generation timed out.'))
-    this.respawnWorker()
+    this.respawnWorker('timeout_restart')
   }
 
   /**
@@ -204,12 +325,13 @@ export class ProofWorkerClient {
     input: GenerateSilentWitnessInput,
     onProgress?: (stage: string) => void,
     signal?: AbortSignal,
-  ): { requestId: string; result: Promise<SilentWitnessProof> } {
+    options?: { ownerId?: string },
+  ): ProofWorkerClientResult {
     if (this.destroyed) {
-      return {
-        requestId: '',
-        result: Promise.reject(new ProofWorkerError('CANCELLED', 'Proof worker has been destroyed.')),
-      }
+      return this.requestResult(
+        '',
+        Promise.reject(new ProofWorkerError('CANCELLED', 'Proof worker has been destroyed.')),
+      )
     }
 
     const validationError = validateInput(input)
@@ -217,7 +339,7 @@ export class ProofWorkerClient {
       return this.requestResult('', Promise.reject(validationError))
     }
     if (this.runtimeMode === 'main-thread') {
-      return this.generateViaFallback(input, onProgress)
+      return this.generateViaFallback(input, onProgress, options?.ownerId)
     }
     if (this.runtimeMode === 'unavailable') {
       return this.requestResult(
@@ -232,36 +354,36 @@ export class ProofWorkerClient {
     // multi-browser capability floor is not met.
     const support = assessWorkerSupport()
     if (!support.ok) {
-      return {
-        requestId: '',
-        result: Promise.reject(
-          new ProofWorkerError('UNSUPPORTED_ENVIRONMENT', support.reason),
-        ),
-      }
+      return this.requestResult(
+        '',
+        Promise.reject(new ProofWorkerError('UNSUPPORTED_ENVIRONMENT', support.reason)),
+      )
     }
 
     // Reject concurrent work on the client without posting another message
     // (matches the documented BUSY contract).
     if (this.pending.size > 0) {
-      return {
-        requestId: '',
-        result: Promise.reject(
-          new ProofWorkerError('BUSY', 'A proof is already being generated.'),
-        ),
-      }
+      return this.requestResult(
+        '',
+        Promise.reject(new ProofWorkerError('BUSY', 'A proof is already being generated.')),
+      )
     }
 
     if (signal?.aborted) {
-      return {
-        requestId: '',
-        result: Promise.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.')),
-      }
+      return this.requestResult(
+        '',
+        Promise.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.')),
+      )
     }
 
     const requestId = crypto.randomUUID()
+    const stampOrError = this.tryStartOwnedOperation(requestId, options?.ownerId)
+    if (stampOrError instanceof ProofWorkerError) {
+      return this.requestResult('', Promise.reject(stampOrError))
+    }
+    const stamp = stampOrError
     const credentialSecret = new TextEncoder().encode(input.credentialSecret).buffer
     const nullifierSecret = new TextEncoder().encode(input.nullifierSecret).buffer
-    const generation = this.generation
 
     const result = new Promise<SilentWitnessProof>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
@@ -286,12 +408,14 @@ export class ProofWorkerClient {
         },
         onProgress,
         timeoutId,
-        generation,
+        stamp,
       })
 
       const msg: WorkerRequest = {
         type: 'GENERATE_PROOF',
         requestId,
+        workerEpoch: stamp.workerEpoch,
+        operationGeneration: stamp.operationGeneration,
         input: {
           videoHash: input.videoHash,
           credentialSecret,
@@ -304,12 +428,17 @@ export class ProofWorkerClient {
       this.worker!.postMessage(msg, [credentialSecret, nullifierSecret])
     })
 
-    return this.requestResult(requestId, result)
+    return {
+      ...this.requestResult(requestId, result),
+      workerEpoch: stamp.workerEpoch,
+      operationGeneration: stamp.operationGeneration,
+    }
   }
 
   private generateViaFallback(
     input: GenerateSilentWitnessInput,
     onProgress?: (stage: string) => void,
+    ownerId?: string,
   ): ProofWorkerClientResult {
     const requestId = crypto.randomUUID()
 
@@ -329,21 +458,59 @@ export class ProofWorkerClient {
       )
     }
 
+    const stampOrError = this.tryStartOwnedOperation(requestId, ownerId)
+    if (stampOrError instanceof ProofWorkerError) {
+      return this.requestResult('', Promise.reject(stampOrError))
+    }
+    const stamp = stampOrError
+
     this.fallbackActive = true
     let rejectJob: (err: ProofWorkerError) => void = () => {}
 
     const result = new Promise<SilentWitnessProof>((resolve, reject) => {
       rejectJob = reject
-      onProgress?.('loading_circuits')
-      onProgress?.('executing_helper')
+      const emitStage = (stage: string) => {
+        const verdict = this.ownership.validateIncomingMessage({
+          kind: 'progress',
+          operationId: requestId,
+          workerEpoch: stamp.workerEpoch,
+          operationGeneration: stamp.operationGeneration,
+        })
+        if (verdict.accepted) {
+          onProgress?.(stage)
+        }
+      }
+      emitStage('loading_circuits')
+      emitStage('executing_helper')
       const timeoutId = setTimeout(() => {
         if (this.fallbackPending?.requestId !== requestId) return
         this.fallbackPending = null
+        this.ownership.invalidateForCancel(requestId)
         reject(new ProofWorkerError('TIMEOUT', 'Proof generation timed out in the main-thread fallback.'))
       }, this.fallbackLimits.timeoutMs)
       this.prover(input)
-        .then(resolve)
-        .catch((err) => reject(toFallbackError(err)))
+        .then((proof) => {
+          const verdict = this.ownership.validateIncomingMessage({
+            kind: 'proof',
+            operationId: requestId,
+            workerEpoch: stamp.workerEpoch,
+            operationGeneration: stamp.operationGeneration,
+          })
+          if (!verdict.accepted) return
+          this.ownership.completeOperation(requestId)
+          resolve(proof)
+        })
+        .catch((err) => {
+          const verdict = this.ownership.validateIncomingMessage({
+            kind: 'error',
+            operationId: requestId,
+            workerEpoch: stamp.workerEpoch,
+            operationGeneration: stamp.operationGeneration,
+          })
+          if (!verdict.accepted) return
+          this.ownership.completeOperation(requestId)
+          reject(toFallbackError(err))
+        })
         .finally(() => {
           this.fallbackActive = false
           clearTimeout(timeoutId)
@@ -352,7 +519,11 @@ export class ProofWorkerClient {
     })
 
     this.fallbackPending = { requestId, reject: rejectJob }
-    return this.requestResult(requestId, result)
+    return {
+      ...this.requestResult(requestId, result),
+      workerEpoch: stamp.workerEpoch,
+      operationGeneration: stamp.operationGeneration,
+    }
   }
 
   private withinFallbackLimits(input: GenerateSilentWitnessInput): boolean {
@@ -375,12 +546,25 @@ export class ProofWorkerClient {
    * 3. Terminate + respawn so UltraHonk cannot keep running with witness data
    */
   cancel(requestId: string) {
+    if (this.fallbackPending && this.fallbackPending.requestId === requestId) {
+      const fb = this.fallbackPending
+      this.fallbackPending = null
+      this.fallbackActive = false
+      this.ownership.invalidateForCancel(requestId)
+      fb.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+      return
+    }
     const job = this.pending.get(requestId)
     if (!job) return
 
     try {
-      const msg: WorkerRequest = { type: 'CANCEL', requestId }
-      this.worker.postMessage(msg)
+      const msg: WorkerRequest = {
+        type: 'CANCEL',
+        requestId,
+        workerEpoch: job.stamp.workerEpoch,
+        operationGeneration: job.stamp.operationGeneration,
+      }
+      this.worker?.postMessage(msg)
     } catch {
       // Worker may already be dead; terminate path below still settles.
     }
@@ -388,17 +572,23 @@ export class ProofWorkerClient {
     this.pending.delete(requestId)
     clearTimeout(job.timeoutId)
     job.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
-    this.respawnWorker()
+    this.respawnWorker('cancel_restart')
   }
 
   /** Tear down the worker and reject any in-flight job as CANCELLED. */
   destroy() {
     if (this.destroyed) return
     this.destroyed = true
+    if (this.fallbackPending) {
+      const fb = this.fallbackPending
+      this.fallbackPending = null
+      this.fallbackActive = false
+      fb.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+    }
     this.rejectAll('CANCELLED', 'Proof generation was cancelled.')
-    this.generation += 1
+    this.ownership.recordWorkerReplacement('destroy')
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }

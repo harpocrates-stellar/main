@@ -211,3 +211,34 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Single ownership protocol and generation tracking
+
+Browser proving workers enforce an exclusive single-owner lease and monotonic
+generation stamps via `ProofWorkerOwnershipProtocol` in
+`src/proofWorkerMemory.ts` (wired through both `ProofWorkerManager` and
+`ProofWorkerClient`):
+
+- **Single-owner lease (`claimOwnership` / `releaseOwnership`)** — A caller can
+  claim exclusive ownership of the worker (`claimOwnership(ownerId)`). Competing
+  callers attempting to claim ownership or start an operation under a different
+  or missing `ownerId` fail closed immediately (`WORKER_OWNERSHIP_CONFLICT` /
+  `UNOWNED_WORKER_OPERATION`, mapped to `BUSY` in `ProofWorkerClient` before any
+  secret `ArrayBuffer` is transferred). Callers that do not explicitly claim a
+  lease receive an ephemeral single-operation lease so existing behavior remains
+  100% compatible.
+- **Monotonic `workerEpoch` and `operationGeneration`** — Every operation binds
+  `{ ownerId, leaseId, operationId, workerEpoch, operationGeneration }`.
+  `operationGeneration` increments on every operation start, cancellation, and
+  restart; `workerEpoch` increments alongside `operationGeneration` whenever a
+  worker is replaced (cancel respawn, timeout respawn, crash recovery, manual
+  replacement, or teardown). Neither counter resets across worker replacement.
+- **Stale progress and proof rejection** — Incoming `PROGRESS`, `RESULT`
+  (proof), `ERROR`, and `CANCELLED` messages are checked against the active
+  owned stamp (`validateIncomingMessage` / `acceptOwnedWorkerMessage`). Late
+  progress callbacks or proof payloads arriving after cancellation, restart, or
+  worker replacement are deterministically dropped without invoking progress
+  listeners, resolving newer promises, or logging witness/proof material, while
+  incrementing `rejectedStaleProgressCount` and `rejectedStaleProofCount` in
+  `getOwnershipSnapshot()`.
+
+

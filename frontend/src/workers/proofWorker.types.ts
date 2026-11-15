@@ -56,12 +56,47 @@ export type SilentWitnessProof = {
 }
 
 export type WorkerRequest =
-  | { type: 'GENERATE_PROOF'; requestId: string; input: TransferableProofInput }
-  | { type: 'CANCEL'; requestId: string }
+  | {
+      type: 'GENERATE_PROOF'
+      requestId: string
+      input: TransferableProofInput
+      workerEpoch?: number
+      operationGeneration?: number
+    }
+  | {
+      type: 'CANCEL'
+      requestId: string
+      workerEpoch?: number
+      operationGeneration?: number
+    }
 
 export type WorkerResponse =
   | { type: 'READY' }
-  | { type: 'PROGRESS'; requestId: string; stage: ProofStage }
-  | { type: 'RESULT'; requestId: string; proof: SilentWitnessProof }
-  | { type: 'ERROR'; requestId: string; code: ProofErrorCode; message: string }
-  | { type: 'CANCELLED'; requestId: string }
+  | {
+      type: 'PROGRESS'
+      requestId: string
+      stage: ProofStage
+      workerEpoch?: number
+      operationGeneration?: number
+    }
+  | {
+      type: 'RESULT'
+      requestId: string
+      proof: SilentWitnessProof
+      workerEpoch?: number
+      operationGeneration?: number
+    }
+  | {
+      type: 'ERROR'
+      requestId: string
+      code: ProofErrorCode
+      message: string
+      workerEpoch?: number
+      operationGeneration?: number
+    }
+  | {
+      type: 'CANCELLED'
+      requestId: string
+      workerEpoch?: number
+      operationGeneration?: number
+    }
