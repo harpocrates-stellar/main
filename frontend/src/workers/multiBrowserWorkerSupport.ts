@@ -97,13 +97,14 @@ export function detectWorkerCapabilities(
   globalObj: typeof globalThis = globalThis,
 ): WorkerCapabilitySnapshot {
   const cryptoObj = (globalObj as { crypto?: { subtle?: unknown } }).crypto
+  const wasmObj = (globalObj as Record<string, unknown>).WebAssembly
   return Object.freeze({
     Worker: hasConstructor(globalObj, 'Worker'),
     // Module workers are part of the documented floor; we cannot fully
     // construct one during a sync probe, so we require Worker + documented
     // matrix capability "module Web Workers".
     moduleWorkerType: hasConstructor(globalObj, 'Worker'),
-    WebAssembly: hasConstructor(globalObj, 'WebAssembly'),
+    WebAssembly: Boolean(typeof wasmObj === 'object' && wasmObj !== null) || typeof wasmObj === 'function',
     SubtleCrypto: Boolean(cryptoObj && typeof cryptoObj.subtle === 'object' && cryptoObj.subtle !== null),
     BigInt: typeof (globalObj as { BigInt?: unknown }).BigInt === 'function',
     ArrayBuffer: hasConstructor(globalObj, 'ArrayBuffer'),

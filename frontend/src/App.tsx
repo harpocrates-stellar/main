@@ -3,6 +3,7 @@ import { Wallet, X } from "lucide-react";
 import EvilEye from "./components/EvilEye";
 import { LazyFallback } from "./components/LazyFallback";
 import { LandingView } from "./views/LandingView";
+import { StudioView } from "./views/StudioView";
 import { VerifyView } from "./views/VerifyView";
 import { useWallet } from "./hooks/useWallet";
 import { useEvidence } from "./hooks/useEvidence";
@@ -29,11 +30,6 @@ const API_BASE = appConfig.apiBase;
 const CONTRACT_ID = appConfig.harpocratesRegistryId;
 const RPC_URL = appConfig.stellarRpcUrl;
 
-const StudioView = lazy(() =>
-  import("./views/StudioView").then(({ StudioView }) => ({
-    default: StudioView,
-  })),
-);
 const BatchVerificationWorkspace = lazy(() =>
   import("./components/BatchVerificationWorkspace").then(
     ({ default: BatchVerificationWorkspace }) => ({

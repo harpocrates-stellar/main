@@ -24,7 +24,14 @@ import {
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  exportBatchCSV,
+  exportBatchComparisonJSON,
+  exportBatchJSON,
+  exportReceiptCollection,
+  parseBatchReportManifest,
+  type BatchReportManifest,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -55,6 +62,9 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
 
   // Ref for programmatic keyboard-triggered file picker
   const batchInputRef = useRef<HTMLInputElement | null>(null)
+  const baselineReportInputRef = useRef<HTMLInputElement | null>(null)
+  const [baselineManifest, setBaselineManifest] = useState<BatchReportManifest | null>(null)
+  const [comparisonError, setComparisonError] = useState<string | null>(null)
 
   const handleFilesAdded = (files: FileList | File[]) => {
     const fileArray = Array.from(files)
@@ -215,6 +225,31 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+
+  const handleBaselineReportUpload = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      const text = await file.text()
+      const parsed = parseBatchReportManifest(text)
+      setBaselineManifest(parsed)
+      setComparisonError(null)
+    } catch (err) {
+      setBaselineManifest(null)
+      setComparisonError(err instanceof Error ? err.message : 'Invalid baseline report manifest.')
+    }
+  }
+
+  const exportComparison = () => {
+    if (!baselineManifest) return
+    try {
+      const currentReport = exportBatchJSON(items)
+      const diffJson = exportBatchComparisonJSON(baselineManifest, currentReport)
+      setComparisonError(null)
+      triggerDownload(diffJson, 'harpocrates-batch-comparison.json', 'application/json')
+    } catch (err) {
+      setComparisonError(err instanceof Error ? err.message : 'Failed to export batch comparison.')
+    }
+  }
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
@@ -399,7 +434,46 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 <FileCheck size={16} aria-hidden="true" />
                 <span>Receipts</span>
               </button>
+              <input
+                ref={baselineReportInputRef}
+                id="batch-baseline-report-input"
+                type="file"
+                accept=".json,application/json"
+                aria-label="Load baseline batch report manifest for comparison"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  void handleBaselineReportUpload(e.target.files?.[0])
+                  e.target.value = ''
+                }}
+              />
+              <button
+                className="icon-button secondary"
+                type="button"
+                onClick={() => baselineReportInputRef.current?.click()}
+                disabled={isRunning}
+                title="Load Baseline Batch Report JSON"
+              >
+                <Upload size={16} aria-hidden="true" />
+                <span>{baselineManifest ? 'Baseline Loaded' : 'Load Baseline'}</span>
+              </button>
+              {baselineManifest ? (
+                <button
+                  className="icon-button secondary"
+                  type="button"
+                  onClick={exportComparison}
+                  disabled={items.length === 0 || isRunning}
+                  title="Export Deterministic Batch Comparison JSON"
+                >
+                  <Download size={16} aria-hidden="true" />
+                  <span>Compare Diff</span>
+                </button>
+              ) : null}
             </div>
+            {comparisonError ? (
+              <p role="alert" className="batch-error-banner">
+                {comparisonError}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </section>
