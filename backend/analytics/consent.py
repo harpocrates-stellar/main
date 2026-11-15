@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
 CONSENT_SCHEMA_VERSION = "1.0.0"
@@ -261,3 +261,25 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def validate_consented_dimensions(
+        self,
+        account_tag: Optional[str],
+        scope: Optional[str],
+        dimensions: Mapping[str, Any],
+        *,
+        now_epoch_seconds: float | None = None,
+    ) -> Tuple[bool, Dict[str, str]]:
+        """Validate allowed dimension vocabulary and reject evidence labels before consent check."""
+        try:
+            from analytics.export_manager import validate_analytics_dimensions
+        except Exception:
+            from backend.analytics.export_manager import validate_analytics_dimensions
+
+        clean_dims = validate_analytics_dimensions(dimensions)
+        allowed, _state = self.check_consent(
+            account_tag=account_tag,
+            scope=scope,
+            now_epoch_seconds=now_epoch_seconds,
+        )
+        return allowed, clean_dims

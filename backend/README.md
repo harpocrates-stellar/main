@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Dimension Vocabulary Validation
+
+`validate_analytics_dimensions()`, `ExportManager.aggregate_by_dimensions()`,
+`ConsentManager.validate_consented_dimensions()`, and
+`AnalyticsOperationalMetrics.record_dimensioned_counter()` enforce
+`ALLOWED_ANALYTICS_DIMENSIONS` **before** counter aggregation. Dimension keys
+outside the allowlist (`video_hash`, `metadata_hash`, `filename`, `cid`, etc.)
+and dimension values resembling cryptographic hashes, CIDs, UUIDs, Stellar keys,
+or raw filenames/paths (`*.mp4`, `*.wav`, `*.png`, `*.wtns`, unparameterized
+paths) raise `EvidenceDimensionError` without echoing the offending value.
+
 ## Test
 
 ```powershell

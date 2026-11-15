@@ -122,11 +122,17 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        ALLOWED_ANALYTICS_DIMENSIONS,
         EXPORT_FORMAT_VERSION,
+        EvidenceDimensionError,
         ExportArtifact,
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        entry_has_evidence_identifying_labels,
+        validate_analytics_dimensions,
+        validate_dimension_value,
+        validate_dimension_vocabulary,
     )
 except Exception:
     pass
@@ -221,11 +227,17 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "ALLOWED_ANALYTICS_DIMENSIONS",
     "EXPORT_FORMAT_VERSION",
+    "EvidenceDimensionError",
     "ExportArtifact",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "entry_has_evidence_identifying_labels",
+    "validate_analytics_dimensions",
+    "validate_dimension_value",
+    "validate_dimension_vocabulary",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",

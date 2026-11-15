@@ -160,6 +160,35 @@ class AnalyticsOperationalMetrics:
         self._progress_tick_total: int = 0
         self._last_recovery_epoch: float = 0.0
         self._last_saturation_epoch: float = 0.0
+        self._dimensioned_counters: Dict[str, int] = {}
+
+    def record_dimensioned_counter(
+        self,
+        domain: str,
+        name: str,
+        dimensions: Dict[str, Any],
+        value: int = 1,
+    ) -> int:
+        """Validate allowed dimensions (rejecting hashes/filenames) before incrementing."""
+        try:
+            from analytics.export_manager import validate_analytics_dimensions
+        except Exception:
+            from backend.analytics.export_manager import validate_analytics_dimensions
+
+        validated_dims = validate_analytics_dimensions(dimensions)
+        valid_domain = _validate_domain(domain)
+        valid_name = _validate_name(name)
+        dim_suffix = ",".join(f"{k}={validated_dims[k]}" for k in sorted(validated_dims.keys()))
+        series_key = f"{valid_domain}:{valid_name}" + (f"{{{dim_suffix}}}" if dim_suffix else "")
+        try:
+            v = int(value)
+        except Exception:
+            v = 0
+        clamped = _clamp_int(v, 0, 1_000_000)
+        with self._lock:
+            new_val = self._dimensioned_counters.get(series_key, 0) + clamped
+            self._dimensioned_counters[series_key] = new_val
+            return new_val
 
     def increment_counter(self, domain: str, name: str, value: int = 1) -> int:
         valid_domain = _validate_domain(domain)
@@ -253,11 +282,13 @@ class AnalyticsOperationalMetrics:
             self._progress_tick_total = 0
             self._last_recovery_epoch = 0.0
             self._last_saturation_epoch = 0.0
+            self._dimensioned_counters.clear()
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return {
                 "counters": dict(self._counters),
+                "dimensioned_counters": _top_n(self._dimensioned_counters, 64),
                 "gauges": dict(self._gauges),
                 "event_counts": _top_n(self._events_seen, 64),
                 "saturation_signals": _top_n(self._saturation_signals, 64),
