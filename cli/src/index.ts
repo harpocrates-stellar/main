@@ -79,3 +79,18 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  compareReceipts,
+  serializeReceiptComparison,
+  formatReceiptComparison,
+  RECEIPT_COMPARISON_PROTOCOL,
+  RECEIPT_COMPARISON_VERSION,
+} from './compare-receipts.js'
+export type {
+  ReceiptFormatKind,
+  ReceiptFieldDifference,
+  CanonicalStatementSummary,
+  CanonicalTrustSummary,
+  ReceiptComparisonReport,
+  CompareReceiptsOptions,
+} from './compare-receipts.js'

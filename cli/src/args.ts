@@ -6,8 +6,10 @@ export type Command =
   | 'manifest'
   | 'hash'
   | 'verify-receipt'
+  | 'compare-receipts'
   | 'c2pa'
   | 'verify-lineage'
+  | 'version'
   | 'help'
 
 export interface ParsedArgs {
@@ -91,6 +93,13 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  'compare-receipts': {
+    left: alias('a'),
+    right: alias('b'),
+    keys: alias('k'),
+    output: alias('o'),
+    debug: toggle,
+  },
   c2pa: {
     manifest: alias('m'),
     receipt: alias('r'),
@@ -109,6 +118,9 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     sourceAddress: text,
     network: text,
     output: alias('o'),
+    debug: toggle,
+  },
+  version: {
     debug: toggle,
   },
 }
@@ -170,6 +182,9 @@ function describeUsageError(command: string, err: unknown): string {
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv
+  if (command === '--version' || command === '-v') {
+    return { command: 'version', flags: {} }
+  }
   if (command === undefined || !Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
     return { command: 'help', flags: {} }
   }

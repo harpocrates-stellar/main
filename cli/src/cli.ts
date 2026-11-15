@@ -35,13 +35,21 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  compareReceipts,
+  serializeReceiptComparison,
+  formatReceiptComparison,
+} from './compare-receipts.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -112,12 +120,15 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleHash(flags)
     case 'verify-receipt':
       return await handleVerifyReceipt(flags, debugLog)
+    case 'compare-receipts':
+      return await handleCompareReceipts(flags, debugLog)
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -384,6 +395,62 @@ async function handleVerifyReceipt(flags: Record<string, string>, debugLog: (eve
   }
 }
 
+async function handleCompareReceipts(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const leftPath = flags.left || flags.a
+  const rightPath = flags.right || flags.b
+  const keysPath = flags.keys || flags.k
+  const outputFormat = flags.output || flags.o || 'text'
+
+  if (!leftPath) exit(2, '--left is required for receipt comparison')
+  if (!rightPath) exit(2, '--right is required for receipt comparison')
+  if (outputFormat !== 'text' && outputFormat !== 'json') {
+    exit(2, 'invalid --output: expected "text" or "json"')
+  }
+
+  const stdinCount = [leftPath, rightPath, keysPath].filter((p) => p === '-').length
+  if (stdinCount > 1) {
+    exit(2, 'cannot read multiple inputs from stdin')
+  }
+
+  let keys: Record<string, JsonWebKey> | undefined
+  if (keysPath) {
+    try {
+      const parsedKeys: unknown = JSON.parse(await readText(keysPath))
+      if (!parsedKeys || typeof parsedKeys !== 'object' || Array.isArray(parsedKeys)) {
+        throw new Error('keys must be an object')
+      }
+      keys = parsedKeys as Record<string, JsonWebKey>
+    } catch {
+      exit(8, 'invalid or unreadable keys file')
+    }
+  }
+
+  let report: Awaited<ReturnType<typeof compareReceipts>>
+  try {
+    const rawLeft = await readText(leftPath)
+    const rawRight = await readText(rightPath)
+    report = await compareReceipts(rawLeft, rawRight, keys ? { keys } : {})
+  } catch {
+    exit(8, 'invalid or unreadable receipt')
+  }
+
+  debugLog({
+    event: 'compare-receipts.report',
+    report: redactSensitive(report),
+  })
+
+  if (outputFormat === 'json') {
+    printText(serializeReceiptComparison(report))
+  } else {
+    printText(formatReceiptComparison(report))
+  }
+
+  exit(report.equivalent ? 0 : 1)
+}
+
 async function handleC2pa(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
   const inputPath = flags.manifest || flags.m
   const receiptPath = flags.receipt || flags.r
@@ -601,6 +668,7 @@ Commands:
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
   verify-receipt Verify an offline signed receipt.
+  compare-receipts Compare canonical statement and trust context across two receipts offline.
   c2pa           Export C2PA authenticity assertions from a proof manifest.
   version        Print the CLI version.
   help           Show this help message.
@@ -652,6 +720,13 @@ Verify Receipt options:
   --network         Optional expected network: testnet, mainnet/public, futurenet, or a full passphrase.
   --proof-id        Optional expected proof ID.
   --output, -o      Output format: "text" (default) or "json".
+
+Compare Receipts options:
+  --left, -a        Path to the first receipt JSON or QR payload (use "-" for stdin; required).
+  --right, -b       Path to the second receipt JSON or QR payload (use "-" for stdin; required).
+  --keys, -k        Optional JWK trust store JSON file to verify signed receipt signatures offline.
+  --output, -o      Output format: "text" (default) or "json".
+  Runs strictly offline with no live network access. Exits 0 when equivalent, 1 when differences exist.
 
 Verify options:
   --contract-id     Contract ID on Stellar (required).
