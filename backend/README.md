@@ -192,6 +192,7 @@ python manage.py retention --dry-run        # count expired, non-held proof even
 python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
 python manage.py retention --run --batch-size 500
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py evidence-consistency       # read-only blob/ref/file consistency report
 python manage.py --json drift               # machine-readable JSON output
 ```
 
@@ -324,6 +325,14 @@ GET /health   liveness only
 GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
+
+## Evidence Storage Consistency Report
+
+`evidence_storage.generate_consistency_report()` and `python manage.py evidence-consistency` compare `blobs` metadata, `tenant_blob_refs` rows, and physical files under `HARPOCRATES_STORAGE_DIR`:
+
+- Reports `missing_physical_files` (distinguishing `referenced_missing_physical_files`), `dangling_tenant_references`, `stale_non_positive_references`, `unreferenced_blob_records`, and `orphaned_physical_files` (`orphaned_physical_bytes`).
+- Strictly read-only: never modifies database rows, encrypted artifacts, or directory permissions.
+- Privacy-safe: identifies anomalous entries only through domain-separated `v1:<16-hex>` tags (`hpx-evidence-consistency/1`), omitting content hashes, tenant addresses, DEKs, and filesystem paths.
 
 ## Verifier Proof Cache
 
