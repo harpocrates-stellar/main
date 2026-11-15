@@ -443,10 +443,24 @@ MIGRATIONS: list[Migration] = [
         CREATE UNIQUE INDEX IF NOT EXISTS proof_events_tx_hash_event_index_idx
             ON proof_events (tx_hash, event_index)
             WHERE tx_hash IS NOT NULL AND event_index IS NOT NULL;
-        CREATE TABLE IF NOT EXISTS indexer_state (
-            id TEXT PRIMARY KEY,
-            cursor TEXT NOT NULL,
-            ledger BIGINT,
+            CREATE TABLE IF NOT EXISTS indexer_state (
+                id TEXT PRIMARY KEY,
+                cursor TEXT NOT NULL,
+                ledger BIGINT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """,
+    ),
+    Migration(
+        id=13,
+        name="create job_claim_fences table",
+        sql="""
+        CREATE TABLE IF NOT EXISTS job_claim_fences (
+            job_id BIGINT PRIMARY KEY,
+            claim_generation BIGINT NOT NULL DEFAULT 0,
+            committed_generation BIGINT,
+            worker_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
         """,
@@ -624,6 +638,14 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "id", "type": "text"},
         {"column": "cursor", "type": "text"},
         {"column": "ledger", "type": "bigint"},
+        {"column": "updated_at", "type": "timestamp with time zone"},
+    ],
+    "job_claim_fences": [
+        {"column": "job_id", "type": "bigint"},
+        {"column": "claim_generation", "type": "bigint"},
+        {"column": "committed_generation", "type": "bigint"},
+        {"column": "worker_id", "type": "text"},
+        {"column": "status", "type": "text"},
         {"column": "updated_at", "type": "timestamp with time zone"},
     ],
 }

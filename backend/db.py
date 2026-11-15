@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterator
 
 import psycopg
@@ -1171,67 +1174,436 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
+_DURABLE_GENERATIONS: dict[str, dict[str, Any]] = {}
 _next_job_id = 1
+
+
+class StaleClaimGenerationError(RuntimeError):
+    """Raised when a replaced worker attempts to write output with a stale generation."""
+
+    def __init__(
+        self,
+        *,
+        job_id: int | str,
+        attempted_generation: int | None,
+        current_generation: int | None,
+    ) -> None:
+        super().__init__(
+            f"stale claim generation for job {job_id}: "
+            f"attempted={attempted_generation} current={current_generation}"
+        )
+        self.job_id = job_id
+        self.attempted_generation = attempted_generation
+        self.current_generation = current_generation
+
+
+def _fence_ledger_path() -> Path | None:
+    explicit = os.getenv("HARPOCRATES_CLAIM_FENCE_PATH")
+    if explicit and explicit.strip():
+        p = Path(explicit.strip())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+    if os.getenv("HARPOCRATES_STORAGE_DIR"):
+        from storage import get_claim_fence_ledger_path
+
+        return get_claim_fence_ledger_path()
+    return None
+
+
+def _load_file_fence_ledger_locked() -> dict[str, dict[str, Any]]:
+    path = _fence_ledger_path()
+    if path is None or not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return {
+                str(k): dict(v)
+                for k, v in raw.items()
+                if isinstance(v, dict)
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _save_file_fence_ledger_locked(ledger: dict[str, dict[str, Any]]) -> None:
+    path = _fence_ledger_path()
+    if path is None:
+        return
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps(ledger, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def reset_claim_fences() -> None:
+    """Clear in-memory and test-configured file claim fences."""
+    with _JOBS_LOCK:
+        _DURABLE_GENERATIONS.clear()
+        path = _fence_ledger_path()
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+
+def advance_durable_claim_generation(job_id: int | str, worker_id: str) -> int:
+    """Atomically increment and persist the durable claim generation for ``job_id``."""
+    if database_url() and isinstance(job_id, int):
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO job_claim_fences (
+                        job_id, claim_generation, worker_id, status, updated_at
+                    )
+                    VALUES (%s, 1, %s, 'running', now())
+                    ON CONFLICT (job_id) DO UPDATE
+                    SET claim_generation = job_claim_fences.claim_generation + 1,
+                        worker_id = EXCLUDED.worker_id,
+                        status = 'running',
+                        updated_at = now()
+                    RETURNING claim_generation;
+                    """,
+                    (job_id, worker_id),
+                )
+                row = cursor.fetchone()
+            connection.commit()
+        if not row:
+            raise RuntimeError(f"failed to advance claim generation for job {job_id}")
+        return int(row["claim_generation"])
+
+    key = str(job_id)
+    with _JOBS_LOCK:
+        ledger = _load_file_fence_ledger_locked()
+        disk_entry = ledger.get(key) or {}
+        mem_entry = _DURABLE_GENERATIONS.get(key) or {}
+        job_entry = _JOBS.get(job_id) if isinstance(job_id, int) else None
+        prior = max(
+            int(disk_entry.get("claim_generation") or 0),
+            int(mem_entry.get("claim_generation") or 0),
+            int((job_entry or {}).get("claim_generation") or 0),
+        )
+        next_gen = prior + 1
+        updated = {
+            "claim_generation": next_gen,
+            "committed_generation": disk_entry.get("committed_generation")
+            if disk_entry.get("committed_generation") is not None
+            else mem_entry.get("committed_generation"),
+            "worker_id": worker_id,
+            "status": "running",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _DURABLE_GENERATIONS[key] = dict(updated)
+        ledger[key] = dict(updated)
+        _save_file_fence_ledger_locked(ledger)
+        return next_gen
+
+
+def get_durable_claim_generation(job_id: int | str) -> int:
+    """Return the latest durable ``claim_generation`` recorded for ``job_id``."""
+    if database_url() and isinstance(job_id, int):
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT claim_generation FROM job_claim_fences WHERE job_id = %s;",
+                    (job_id,),
+                )
+                row = cursor.fetchone()
+        return int(row["claim_generation"]) if row else 0
+
+    key = str(job_id)
+    with _JOBS_LOCK:
+        ledger = _load_file_fence_ledger_locked()
+        disk_gen = int((ledger.get(key) or {}).get("claim_generation") or 0)
+        mem_gen = int((_DURABLE_GENERATIONS.get(key) or {}).get("claim_generation") or 0)
+        job_gen = (
+            int((_JOBS.get(job_id) or {}).get("claim_generation") or 0)
+            if isinstance(job_id, int)
+            else 0
+        )
+        return max(disk_gen, mem_gen, job_gen)
+
+
+def _commit_durable_fence_status(
+    job_id: int | str,
+    claim_generation: int,
+    status: str,
+) -> bool:
+    """Verify ``claim_generation`` against durable fence storage and record ``status``."""
+    if database_url() and isinstance(job_id, int):
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                if status == "completed":
+                    cursor.execute(
+                        """
+                        UPDATE job_claim_fences
+                        SET status = %s,
+                            committed_generation = %s,
+                            updated_at = now()
+                        WHERE job_id = %s
+                          AND claim_generation = %s
+                          AND (committed_generation IS NULL OR committed_generation < %s)
+                        RETURNING claim_generation;
+                        """,
+                        (status, claim_generation, job_id, claim_generation, claim_generation),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE job_claim_fences
+                        SET status = %s,
+                            updated_at = now()
+                        WHERE job_id = %s
+                          AND claim_generation = %s
+                          AND committed_generation IS NULL
+                        RETURNING claim_generation;
+                        """,
+                        (status, job_id, claim_generation),
+                    )
+                row = cursor.fetchone()
+            if row:
+                connection.commit()
+                return True
+            connection.rollback()
+            return False
+
+    key = str(job_id)
+    with _JOBS_LOCK:
+        ledger = _load_file_fence_ledger_locked()
+        disk_entry = ledger.get(key) or {}
+        mem_entry = _DURABLE_GENERATIONS.get(key) or {}
+        current_gen = max(
+            int(disk_entry.get("claim_generation") or 0),
+            int(mem_entry.get("claim_generation") or 0),
+        )
+        committed_gen = (
+            disk_entry.get("committed_generation")
+            if disk_entry.get("committed_generation") is not None
+            else mem_entry.get("committed_generation")
+        )
+        if current_gen > 0 and int(claim_generation) != current_gen:
+            return False
+        if committed_gen is not None and status != "completed":
+            return False
+        if committed_gen is not None and int(claim_generation) <= int(committed_gen):
+            return False
+        updated = {
+            "claim_generation": max(current_gen, int(claim_generation)),
+            "committed_generation": int(claim_generation)
+            if status == "completed"
+            else committed_gen,
+            "worker_id": mem_entry.get("worker_id") or disk_entry.get("worker_id"),
+            "status": status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _DURABLE_GENERATIONS[key] = dict(updated)
+        ledger[key] = dict(updated)
+        _save_file_fence_ledger_locked(ledger)
+        return True
+
+
+def is_current_claim_generation(
+    job_id: int | str,
+    claim_generation: int | None,
+) -> bool:
+    """Return True when ``claim_generation`` is the active unreplaced generation."""
+    if claim_generation is None:
+        with _JOBS_LOCK:
+            job = _JOBS.get(job_id) if isinstance(job_id, int) else None
+            if job is None:
+                return True
+            return int(job.get("claim_generation") or 0) == 0 and job.get("status") == "running"
+
+    durable_gen = get_durable_claim_generation(job_id)
+    if durable_gen != int(claim_generation):
+        return False
+    if isinstance(job_id, int):
+        with _JOBS_LOCK:
+            job = _JOBS.get(job_id)
+            if job is not None:
+                if int(job.get("claim_generation") or 0) != int(claim_generation):
+                    return False
+                if job.get("status") != "running":
+                    return False
+    return True
+
+
+def require_current_claim_generation(
+    job_id: int | str,
+    claim_generation: int | None,
+) -> None:
+    """Raise :class:`StaleClaimGenerationError` when ``claim_generation`` is stale."""
+    if claim_generation is None:
+        return
+    if not is_current_claim_generation(job_id, claim_generation):
+        raise StaleClaimGenerationError(
+            job_id=job_id,
+            attempted_generation=claim_generation,
+            current_generation=get_durable_claim_generation(job_id),
+        )
+
+
+def commit_fenced_job_output(
+    job_id: int | str,
+    claim_generation: int | None,
+    staged_path: Path | str,
+    final_path: Path | str,
+) -> None:
+    """Atomically publish ``staged_path`` to ``final_path`` iff ``claim_generation`` is current."""
+    staged = Path(staged_path)
+    final = Path(final_path)
+    with _JOBS_LOCK:
+        if claim_generation is not None and not is_current_claim_generation(job_id, claim_generation):
+            staged.unlink(missing_ok=True)
+            raise StaleClaimGenerationError(
+                job_id=job_id,
+                attempted_generation=claim_generation,
+                current_generation=get_durable_claim_generation(job_id),
+            )
+        if staged.exists() and staged != final:
+            final.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged, final)
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "claim_generation": 0,
+            "committed_generation": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
 def get_job(job_id: int) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
 def cancel_job(job_id: int) -> bool:
     """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
-        return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job["status"] == "pending":
+            job["status"] = "cancelled"
+            return True
+        return False
+
+
+def _is_lease_expired(
+    job: dict[str, Any],
+    *,
+    now: float | None = None,
+    now_dt: datetime | None = None,
+) -> bool:
+    if now is not None and job.get("_lease_expires_monotonic") is not None:
+        return float(now) >= float(job["_lease_expires_monotonic"])
+    lease_dt = job.get("_lease_expires_at")
+    if isinstance(lease_dt, datetime):
+        ref_dt = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        return ref_dt >= lease_dt
     return False
+
+
+def _claim_job_locked(
+    job: dict[str, Any],
+    worker_id: str,
+    lease_duration: int,
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
+    now_dt = datetime.now(timezone.utc)
+    gen = advance_durable_claim_generation(job["id"], worker_id)
+    job["status"] = "running"
+    job["worker_id"] = worker_id
+    job["claim_generation"] = gen
+    job["_lease_expires_at"] = now_dt + timedelta(seconds=max(0, int(lease_duration)))
+    if now is not None:
+        job["_lease_expires_monotonic"] = float(now) + max(0.0, float(lease_duration))
+    return dict(job)
+
+
+def reclaim_job_lease(
+    job_id: int,
+    worker_id: str,
+    *,
+    lease_duration: int = 300,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Reclaim a running or pending job under a fresh durable ``claim_generation``."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") not in {"pending", "running"}:
+            return None
+        return _claim_job_locked(job, worker_id, lease_duration, now=now)
 
 
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: float | None = None,
 ) -> dict[str, Any] | None:
-    """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
-    return None
+    """Lease the next pending or lease-expired job with a durable claim generation."""
+    now_dt = datetime.now(timezone.utc)
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("type") not in job_types:
+                continue
+            status = job.get("status")
+            if status == "pending" or (
+                status == "running" and _is_lease_expired(job, now=now, now_dt=now_dt)
+            ):
+                return _claim_job_locked(job, worker_id, lease_duration, now=now)
+        return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
-    """Record a heartbeat against an in-memory job lease.
+def heartbeat_job(
+    job_id: int,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    claim_generation: int | None = None,
+    now: float | None = None,
+) -> bool:
+    """Record a fenced heartbeat against an in-memory job lease.
 
-    The heartbeat only extends the lease. Progress is reported separately via
+    The heartbeat only extends the lease when ``claim_generation`` matches the
+    active generation. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    del progress
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        active_gen = int(job.get("claim_generation") or 0)
+        if active_gen > 0 and claim_generation != active_gen:
+            if claim_generation is not None:
+                return False
+        now_dt = datetime.now(timezone.utc)
+        job["heartbeat_at"] = now_dt.isoformat()
+        job["_lease_expires_at"] = now_dt + timedelta(seconds=max(0, int(lease_duration)))
+        if now is not None:
+            job["_lease_expires_monotonic"] = float(now) + max(0.0, float(lease_duration))
+        return True
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1246,60 +1618,104 @@ def report_job_progress(
     percent: float | None = None,
     *,
     now: float | None = None,
+    claim_generation: int | None = None,
 ) -> bool:
-    """Record ``{"phase", "percent"}`` progress for a running job.
-
-    ``phase`` is a short machine-readable step name (for example
-    ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
-    measurable fraction. Updates are throttled to at most one per
-    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
-    updated. Returns True when the update was stored.
-    """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
-
-
-def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+    """Record ``{"phase", "percent"}`` progress for the active claim generation."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        active_gen = int(job.get("claim_generation") or 0)
+        if active_gen > 0 and claim_generation is not None and int(claim_generation) != active_gen:
+            return False
+        if claim_generation is not None and get_durable_claim_generation(job_id) != int(claim_generation):
+            return False
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("progress phase must be a non-empty string")
+        phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        current = time.monotonic() if now is None else now
+        last = job.get("_progress_at")
+        if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+            return False
+        job["_progress_at"] = current
+        job["progress"] = {"phase": phase, "percent": percent}
+        return True
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+def complete_job(
+    job_id: int,
+    result: Any = None,
+    *,
+    claim_generation: int | None = None,
+) -> bool:
+    """Commit ``result`` iff ``claim_generation`` matches the active job generation."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            if claim_generation is not None:
+                return _commit_durable_fence_status(job_id, int(claim_generation), "completed")
+            return False
+        active_gen = int(job.get("claim_generation") or 0)
+        committed_gen = job.get("committed_generation")
+        if job.get("status") in {"completed", "cancelled"}:
+            return False
+        if active_gen > 0:
+            if claim_generation is None or int(claim_generation) != active_gen:
+                return False
+            if committed_gen is not None and int(claim_generation) <= int(committed_gen):
+                return False
+            if not _commit_durable_fence_status(job_id, int(claim_generation), "completed"):
+                return False
+        elif claim_generation is not None:
+            if not _commit_durable_fence_status(job_id, int(claim_generation), "completed"):
+                return False
+        job["status"] = "completed"
+        job["result"] = result
+        if claim_generation is not None:
+            job["committed_generation"] = int(claim_generation)
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
+        return True
+
+
+def fail_job(
+    job_id: int,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    claim_generation: int | None = None,
+) -> bool:
+    """Mark a job failed or pending for retry iff ``claim_generation`` is current."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        if job.get("status") in {"completed", "cancelled"}:
+            return False
+        active_gen = int(job.get("claim_generation") or 0)
+        if active_gen > 0:
+            if claim_generation is None or int(claim_generation) != active_gen:
+                return False
+            next_state = "failed" if is_fatal else "pending"
+            if not _commit_durable_fence_status(job_id, int(claim_generation), next_state):
+                return False
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+            job.pop("_lease_expires_at", None)
+            job.pop("_lease_expires_monotonic", None)
+        return True
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

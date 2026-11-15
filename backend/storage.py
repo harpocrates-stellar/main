@@ -60,6 +60,15 @@ def get_job_output_path(job_id: int | str) -> Path:
     return get_storage_dir() / f"job_{job_id}_output"
 
 
+def get_staged_job_output_path(job_id: int | str, claim_generation: int) -> Path:
+    return get_storage_dir() / f"job_{job_id}_output.gen_{int(claim_generation)}.tmp"
+
+
+def get_claim_fence_ledger_path(storage_dir: Path | str | None = None) -> Path:
+    base = Path(storage_dir) if storage_dir is not None else get_storage_dir()
+    return base / ".claim_generations.json"
+
+
 def _parse_timestamp(val: Any) -> datetime:
     if isinstance(val, datetime):
         return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
@@ -117,7 +126,7 @@ def sweep_job_files(
     purged_count = 0
 
     for entry in list(target_dir.iterdir()):
-        if not entry.is_file():
+        if not entry.is_file() or entry.name.startswith("."):
             continue
 
         # Extract job_id from filename pattern: job_<id>_input, job_<id>_output, etc.

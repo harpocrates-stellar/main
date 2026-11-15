@@ -38,6 +38,21 @@ like; the value is stored at most once per second per job
 (`JOB_PROGRESS_MIN_INTERVAL_SECONDS`), and only while the job is `running`.
 Heartbeats extend the lease only and never overwrite progress.
 
+## Durable claim generations and stale-worker fencing
+
+- Every `db.lease_job` or `db.reclaim_job_lease` claim atomically increments a
+  durable `claim_generation` counter (persisted in PostgreSQL `job_claim_fences`
+  when `DATABASE_URL` is configured and in an atomic local fence ledger under
+  `HARPOCRATES_STORAGE_DIR` / `HARPOCRATES_CLAIM_FENCE_PATH` otherwise).
+- Workers stage output artifacts under generation-scoped temporary files
+  (`job_<id>_output.gen_<n>.tmp`) and publish them via
+  `db.commit_fenced_job_output`, which verifies `claim_generation` still matches
+  the active claim before replacing the canonical output path.
+- `complete_job`, `fail_job`, `report_job_progress`, and `heartbeat_job` require
+  the active `claim_generation` and record `committed_generation` on completion,
+  preventing a slow or replaced worker from overwriting a newer worker's result,
+  progress, lease, or output file.
+
 ## What the response never contains
 
 The job's request `payload` (filenames, metadata, proof secrets) and internal
