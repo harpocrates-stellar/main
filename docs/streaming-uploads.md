@@ -15,6 +15,7 @@ destination artifact is retained.
 | Size limit | Enforced mid-stream; raises `RequestEntityTooLarge` without logging payload bytes |
 | Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`) |
 | Streaming trigger | Multipart bodies larger than `UPLOAD_STREAM_THRESHOLD_BYTES` (default 1 MiB) wrap `FileStorage` |
+| Admission decision schema | Upload overload responses and `GET /api/stego/upload-admission` emit `hpx-upload-admission/1`, distinguishing `admitted`, `identity_quota` (`429`), `queue_saturation` (`503`), and `processing_capacity` (`503`) with bounded `1..300s` retry guidance and zero cross-user disclosure |
 
 ## Configuration
 

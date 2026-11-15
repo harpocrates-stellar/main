@@ -148,7 +148,12 @@ from tracing import (
 )
 from readiness import ReadinessManager
 from verifier_cache import VerifierCache
-from admission import AdmissionController, require_capacity
+from admission import (
+    ADMISSION_DECISION_SCHEMA,
+    AdmissionController,
+    _get_client_identity,
+    require_capacity,
+)
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
@@ -404,6 +409,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -428,6 +435,7 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    app.extensions["admission_controller"] = admission_controller
 
     @app.before_request
     def start_request_context():
@@ -925,6 +933,24 @@ def create_app() -> Flask:
             response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
                 json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
+        return response
+
+    @app.get("/api/stego/upload-admission")
+    @limiter.limit(config.ratelimit_upload_session)
+    def get_upload_admission_decision():
+        decision = admission_controller.preview_decision(_get_client_identity())
+        payload = decision.to_api_dict()
+        response = jsonify(
+            {
+                "ok": True,
+                "schema": ADMISSION_DECISION_SCHEMA,
+                "admission": payload,
+            }
+        )
+        response.headers["X-Upload-Admission-Schema"] = decision.schema
+        response.headers["X-Upload-Admission-Category"] = decision.category
+        if not decision.admitted:
+            response.headers["Retry-After"] = str(decision.retry_after_seconds)
         return response
 
     @app.post("/api/stego/upload-session")
