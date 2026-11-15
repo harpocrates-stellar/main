@@ -38,6 +38,7 @@ The backend provides:
   - Fan-out limit: Maximum 4 parents per derivative
   - Cycle detection: Prevents self-referential and transitive cycles
   - Actor validation: Requires non-empty actor address
+- **Deterministic graph comparison**: `compare_lineage_graphs()` - identifies `added_assertions`, `removed_assertions`, and `changed_assertions` by canonical SHA-256 digest while separating true provenance mutations (`provenance_changed`) from pure sequence permutations (`ordering_differences` across `graph_nodes`, `parent_proof_ids`, and `c2pa_assertions`)
 
 See [`contracts/LINEAGE.md`](contracts/LINEAGE.md) for the on-chain enforcement
 of the same bounds: the registry bounds both directions of the edge, derives the

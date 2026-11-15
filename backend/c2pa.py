@@ -557,6 +557,63 @@ def corroborate_binding(
     )
 
 
+def canonical_c2pa_assertion_digests(
+    raw: bytes | str | dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Extract ordered canonical assertion digests from a validated C2PA manifest.
+
+    Returns privacy-safe records containing ``assertion_id`` (label or indexed
+    label), ``label``, ``index``, and ``canonical_digest`` (SHA-256 of canonical
+    assertion JSON), never raw assertion data values.
+    """
+    if isinstance(raw, dict):
+        encoded_bytes = _canonical_json(raw)
+        manifest_obj = raw
+    else:
+        encoded_bytes = raw.encode("utf-8") if isinstance(raw, str) else raw
+        parse_c2pa_manifest(encoded_bytes)
+        manifest_obj = json.loads(encoded_bytes.decode("utf-8"))
+
+    # Validate structural, size, depth, algorithm, and dual-binding invariants.
+    parse_c2pa_manifest(encoded_bytes)
+
+    assertions_raw = manifest_obj.get("assertions", [])
+    label_counts: dict[str, int] = {}
+    for item in assertions_raw:
+        lbl = item.get("label", "")
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
+    seen_per_label: dict[str, int] = {}
+    entries: list[dict[str, Any]] = []
+    for idx, assertion in enumerate(assertions_raw):
+        label = assertion["label"]
+        occ = seen_per_label.get(label, 0)
+        seen_per_label[label] = occ + 1
+        assertion_id = label if label_counts[label] == 1 else f"{label}#{occ}"
+        canonical_bytes = _canonical_json({"label": label, "data": assertion.get("data")})
+        digest = hashlib.sha256(canonical_bytes).hexdigest()
+        data_obj = assertion.get("data")
+        field_digests: dict[str, str] = {}
+        if isinstance(data_obj, dict):
+            for k in sorted(data_obj.keys()):
+                if isinstance(k, str):
+                    field_digests[k] = hashlib.sha256(_canonical_json(data_obj[k])).hexdigest()
+        else:
+            field_digests["data"] = hashlib.sha256(_canonical_json(data_obj)).hexdigest()
+
+        entries.append(
+            {
+                "assertion_id": assertion_id,
+                "assertion_type": "c2pa_assertion",
+                "index": idx,
+                "canonical_digest": digest,
+                "wire_digest": digest,
+                "field_digests": field_digests,
+            }
+        )
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

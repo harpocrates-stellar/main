@@ -351,6 +351,9 @@ binding and should not be acted upon by callers.
 
 This allows consuming existing C2PA manifests that carry standard C2PA
 assertions (e.g., `c2pa.actions`, `c2pa.thumbnail`) without rejecting them.
+`canonical_c2pa_assertion_digests()` and `lineage.compare_lineage_graphs()`
+compare assertions by canonical SHA-256 digest so reordered assertion arrays are
+reported as `ordering_differences` rather than provenance mutations.
 
 ---
 
