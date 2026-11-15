@@ -8,9 +8,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StudioView } from './StudioView'
-import type { UseEvidenceReturn } from '../hooks/useEvidence'
+import { computeReviewedFileIdentity, type UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
+import { expectNoA11yViolations, runAxe } from '../test/axeA11y'
 
 function makeVerification(): UseVerificationReturn {
   return {
@@ -41,6 +42,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
       description: 'Noir ZK proof.',
     },
     stage: 'idle',
+    hashProgress: null,
     file: null,
     proof: null,
     processedVideoUrl: '',
@@ -48,13 +50,18 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     setCredentialSeed: vi.fn(),
     nullifierSeed: '',
     setNullifierSeed: vi.fn(),
+    evidenceNotes: '',
+    setEvidenceNotes: vi.fn(),
+    recoverableFailure: null,
     message: 'Upload evidence to begin.',
     registration: null,
     networkMismatch: null,
     isCancellable: false,
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
+    retryRecoverableEvidence: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +128,36 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps user-entered evidence notes visible after a recoverable API failure and binds retry to the reviewed file', async () => {
+    const user = userEvent.setup()
+    const retryRecoverableEvidence = vi.fn().mockResolvedValue(undefined)
+    const testFile = new File(['abc'], 'field-clip.mp4', {
+      type: 'video/mp4',
+      lastModified: 1700000000000,
+    })
+
+    const { container } = renderStudio(
+      makeEvidence({
+        stage: 'error',
+        file: testFile,
+        evidenceNotes: 'Preserved witness context notes.',
+        recoverableFailure: {
+          operation: 'embed',
+          message: 'A temporary server error occurred. Retry in a moment.',
+          reviewedFileIdentity: computeReviewedFileIdentity(testFile),
+        },
+        retryRecoverableEvidence,
+      }),
+    )
+
+    expect(screen.getByLabelText(/evidence notes/i)).toHaveValue('Preserved witness context notes.')
+    expect(screen.getByTestId('retry-bound-file')).toHaveTextContent('field-clip.mp4')
+
+    const retryBtn = screen.getByRole('button', { name: /retry processing for field-clip\.mp4/i })
+    await user.click(retryBtn)
+    expect(retryRecoverableEvidence).toHaveBeenCalledWith('GSOURCEGAUTH')
+    expectNoA11yViolations(await runAxe(container), 'studio preserved evidence notes and retry')
   })
 })
