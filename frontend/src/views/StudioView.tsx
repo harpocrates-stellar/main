@@ -1,7 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
-import { TIERS } from '../hooks/useEvidence'
+import { TIERS, buildRegistrationReviewSummary } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
@@ -38,6 +38,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    registrationReview,
+    openRegistrationReview,
+    closeRegistrationReview,
+    confirmRegistrationReview,
     message,
     registration,
     networkMismatch,
@@ -56,6 +60,61 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const [fallbackReviewOpen, setFallbackReviewOpen] = useState<boolean>(true)
+  const [fallbackConfirmedFingerprint, setFallbackConfirmedFingerprint] = useState<string | null>(
+    null,
+  )
+
+  const effectiveReview = useMemo(
+    () =>
+      registrationReview !== undefined
+        ? registrationReview
+        : buildRegistrationReviewSummary({
+            proof,
+            file,
+            selectedTier,
+            credentialSeed,
+            nullifierSeed,
+            networkPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+            isOpen: fallbackReviewOpen,
+            confirmedFingerprint: fallbackConfirmedFingerprint,
+          }),
+    [
+      registrationReview,
+      proof,
+      file,
+      selectedTier,
+      credentialSeed,
+      nullifierSeed,
+      fallbackReviewOpen,
+      fallbackConfirmedFingerprint,
+    ],
+  )
+
+  function handleOpenReview() {
+    if (openRegistrationReview) {
+      openRegistrationReview()
+    } else {
+      setFallbackReviewOpen(true)
+    }
+  }
+
+  function handleCloseReview() {
+    if (closeRegistrationReview) {
+      closeRegistrationReview()
+    } else {
+      setFallbackReviewOpen(false)
+    }
+  }
+
+  function handleConfirmReview() {
+    if (!effectiveReview) return
+    if (confirmRegistrationReview) {
+      confirmRegistrationReview()
+    } else {
+      setFallbackConfirmedFingerprint(effectiveReview.reviewFingerprint)
+    }
+  }
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -246,11 +305,93 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </a>
         ) : null}
 
+        {effectiveReview ? (
+          effectiveReview.isOpen ? (
+            <div
+              className="rail-block"
+              role="region"
+              aria-labelledby="registration-review-heading"
+              data-review-confirmed={effectiveReview.isConfirmed ? 'true' : 'false'}
+              data-review-invalidated={effectiveReview.isInvalidated ? 'true' : 'false'}
+            >
+              <h3 id="registration-review-heading">Evidence-processing review before registration</h3>
+              <p>
+                Confirm the selected identity tier, public statement digest, and target network
+                before submitting this proof to Stellar.
+              </p>
+              <dl className="data-list" aria-label="Pre-registration review details">
+                <div>
+                  <dt>Selected Identity Tier</dt>
+                  <dd>
+                    {effectiveReview.tierTitle} ({effectiveReview.tierLabel})
+                  </dd>
+                </div>
+                <div>
+                  <dt>Statement Digest</dt>
+                  <dd>
+                    <code>{effectiveReview.statementDigest}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Target Network</dt>
+                  <dd>{effectiveReview.networkLabel}</dd>
+                </div>
+              </dl>
+              {effectiveReview.isInvalidated ? (
+                <p role="status">
+                  Registration review was invalidated because the source file or proof parameters
+                  changed. Confirm the updated review before registering.
+                </p>
+              ) : effectiveReview.isConfirmed ? (
+                <p role="status">
+                  Registration review confirmed for statement digest{' '}
+                  {shortHash(effectiveReview.statementDigest)}.
+                </p>
+              ) : null}
+              <div
+                className="verify-actions"
+                role="group"
+                aria-label="Registration review actions"
+              >
+                <button
+                  type="button"
+                  className="hero-secondary verify-action-btn"
+                  disabled={isBusy || effectiveReview.isConfirmed}
+                  onClick={handleConfirmReview}
+                >
+                  {effectiveReview.isConfirmed
+                    ? 'Review confirmed'
+                    : 'Confirm registration review'}
+                </button>
+                <button
+                  type="button"
+                  className="hero-secondary verify-action-btn"
+                  disabled={isBusy}
+                  onClick={handleCloseReview}
+                >
+                  Hide review
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="verify-actions" role="group" aria-label="Registration review toggle">
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                disabled={isBusy}
+                onClick={handleOpenReview}
+              >
+                Review before registration
+              </button>
+            </div>
+          )
+        ) : null}
+
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || !!networkMismatch || isBusy}
+            disabled={!proof || !effectiveReview?.isConfirmed || !!networkMismatch || isBusy}
             aria-busy={isBusy || undefined}
             onClick={() => void registerProof(wallet)}
           >

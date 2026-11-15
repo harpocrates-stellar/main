@@ -19,6 +19,8 @@ import {
   ProofWorkerError,
 } from '../workers/proofWorkerClient'
 import { hashFileInWorker } from '../workers/fileHashWorkerClient'
+import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
+import { networkName } from '../networkGuard'
 import { appConfig } from '../config'
 
 export const TIERS = [
@@ -60,6 +62,132 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   cancelled: 'Request cancelled.',
 }
 
+function hashLane32(input: string, seed: number): string {
+  let h = seed >>> 0
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+    h = ((h << 13) | (h >>> 19)) >>> 0
+  }
+  return h.toString(16).padStart(8, '0')
+}
+
+function digest256Hex(canonical: string): string {
+  const seeds = [
+    0x811c9dc5,
+    0x9e3779b9,
+    0x85ebca6b,
+    0xc2b2ae35,
+    0x27d4eb2f,
+    0x165667b1,
+    0xd3a2646c,
+    0xfd7046c5,
+  ]
+  return seeds.map((seed, idx) => hashLane32(`${idx}:${canonical}`, seed)).join('')
+}
+
+export function formatNetworkLabel(passphrase: string): string {
+  const trimmed = passphrase.trim()
+  if (!trimmed) return 'Unconfigured Stellar network'
+  const friendly = networkName(trimmed)
+  return friendly !== trimmed ? `Stellar ${friendly}` : friendly
+}
+
+export function computeRegistrationStatementDigest(params: {
+  tier: IdentityTier
+  networkPassphrase: string
+  proof: Pick<ProofPackage, 'proofId' | 'videoHash' | 'metadataHash' | 'sourceHash'>
+}): string {
+  const canonical = [
+    'harpocrates-registration-statement-v1',
+    `tier=${params.tier}`,
+    `network=${params.networkPassphrase}`,
+    `proofId=${params.proof.proofId}`,
+    `videoHash=${params.proof.videoHash}`,
+    `metadataHash=${params.proof.metadataHash}`,
+    `sourceHash=${params.proof.sourceHash}`,
+  ].join('|')
+  return digest256Hex(canonical)
+}
+
+export type RegistrationReviewSummary = {
+  tierId: IdentityTier
+  tierTitle: string
+  tierLabel: string
+  statementDigest: string
+  networkPassphrase: string
+  networkLabel: string
+  proofId: string
+  videoHash: string
+  metadataHash: string
+  sourceHash: string
+  reviewFingerprint: string
+  isOpen: boolean
+  isConfirmed: boolean
+  isInvalidated: boolean
+}
+
+export function buildRegistrationReviewSummary(params: {
+  proof: ProofPackage | null
+  file: File | null
+  selectedTier: IdentityTier
+  credentialSeed?: string
+  nullifierSeed?: string
+  networkPassphrase?: string
+  isOpen: boolean
+  confirmedFingerprint: string | null
+}): RegistrationReviewSummary | null {
+  const {
+    proof,
+    file,
+    selectedTier,
+    credentialSeed = '',
+    nullifierSeed = '',
+    networkPassphrase = CONTRACT_NETWORK_PASSPHRASE,
+    isOpen,
+    confirmedFingerprint,
+  } = params
+  if (!proof) return null
+
+  const tierMeta = TIERS.find((t) => t.id === selectedTier) ?? TIERS[0]
+  const statementDigest = computeRegistrationStatementDigest({
+    tier: selectedTier,
+    networkPassphrase,
+    proof,
+  })
+  const fileKey = file
+    ? `${file.name}:${file.size}:${file.lastModified}:${file.type}`
+    : `proof-file:${proof.fileName}`
+  const witnessParamKey =
+    selectedTier === 'silent'
+      ? `silent:${hashLane32(credentialSeed, 0x811c9dc5)}:${hashLane32(nullifierSeed, 0x9e3779b9)}:${proof.silentWitness?.nullifier ?? ''}:${proof.silentWitness?.credentialRoot ?? ''}`
+      : `non-silent:${selectedTier}`
+  const reviewFingerprint = digest256Hex(
+    `${statementDigest}|file=${fileKey}|proofTier=${proof.tier}|params=${witnessParamKey}`,
+  )
+
+  const isConfirmed = confirmedFingerprint === reviewFingerprint
+  const isInvalidated =
+    confirmedFingerprint !== null && confirmedFingerprint !== reviewFingerprint
+
+  return {
+    tierId: selectedTier,
+    tierTitle: tierMeta.title,
+    tierLabel: tierMeta.label,
+    statementDigest,
+    networkPassphrase,
+    networkLabel: formatNetworkLabel(networkPassphrase),
+    proofId: proof.proofId,
+    videoHash: proof.videoHash,
+    metadataHash: proof.metadataHash,
+    sourceHash: proof.sourceHash,
+    reviewFingerprint,
+    isOpen,
+    isConfirmed,
+    isInvalidated,
+  }
+}
+
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
   setSelectedTier: (tier: IdentityTier) => void
@@ -74,6 +202,10 @@ export type UseEvidenceReturn = {
   setCredentialSeed: (v: string) => void
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
+  registrationReview?: RegistrationReviewSummary | null
+  openRegistrationReview?: () => void
+  closeRegistrationReview?: () => void
+  confirmRegistrationReview?: () => void
   message: string
   registration: RegisterProofResult | null
   networkMismatch: string | null
@@ -101,6 +233,10 @@ export function useEvidence(): UseEvidenceReturn {
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
+  const [isReviewOpen, setIsReviewOpen] = useState<boolean>(false)
+  const [confirmedReviewFingerprint, setConfirmedReviewFingerprint] = useState<string | null>(
+    null,
+  )
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
@@ -148,6 +284,44 @@ export function useEvidence(): UseEvidenceReturn {
     [selectedTier],
   )
 
+  const registrationReview = useMemo(
+    () =>
+      buildRegistrationReviewSummary({
+        proof,
+        file,
+        selectedTier,
+        credentialSeed,
+        nullifierSeed,
+        networkPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+        isOpen: isReviewOpen,
+        confirmedFingerprint: confirmedReviewFingerprint,
+      }),
+    [
+      proof,
+      file,
+      selectedTier,
+      credentialSeed,
+      nullifierSeed,
+      isReviewOpen,
+      confirmedReviewFingerprint,
+    ],
+  )
+
+  function openRegistrationReview() {
+    if (!proof) return
+    setIsReviewOpen(true)
+  }
+
+  function closeRegistrationReview() {
+    setIsReviewOpen(false)
+  }
+
+  function confirmRegistrationReview() {
+    if (!registrationReview) return
+    setConfirmedReviewFingerprint(registrationReview.reviewFingerprint)
+    setMessage('Registration review confirmed. Ready to submit proof to Stellar.')
+  }
+
   const isCancellable = stage === 'hashing' || stage === 'embedding' || stage === 'proving'
 
   function resetFlow() {
@@ -164,6 +338,8 @@ export function useEvidence(): UseEvidenceReturn {
     setProcessedVideoUrl('')
     setProof(null)
     setFile(null)
+    setIsReviewOpen(false)
+    setConfirmedReviewFingerprint(null)
     setRegistration(null)
   }
 
@@ -204,6 +380,7 @@ export function useEvidence(): UseEvidenceReturn {
 
     if (!isCacheHit) {
       cachedFileHashRef.current = null
+      setIsReviewOpen(false)
       setHashProgress({
         processedBytes: 0,
         totalBytes: nextFile.size,
@@ -276,6 +453,7 @@ export function useEvidence(): UseEvidenceReturn {
         timestamp,
         tier: selectedTier,
       })
+      setIsReviewOpen(true)
       setStage('ready')
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
@@ -291,6 +469,12 @@ export function useEvidence(): UseEvidenceReturn {
 
   async function registerProof(wallet: string) {
     if (!proof) return
+
+    if (!registrationReview || !registrationReview.isConfirmed) {
+      setIsReviewOpen(true)
+      setMessage('Review and confirm the evidence-processing summary before registering on Stellar.')
+      return
+    }
 
     if (!CONTRACT_ID) {
       setMessage('Set VITE_HARPOCRATES_REGISTRY_ID after deploying the Soroban contract.')
@@ -444,7 +628,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -486,6 +670,10 @@ export function useEvidence(): UseEvidenceReturn {
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    registrationReview,
+    openRegistrationReview,
+    closeRegistrationReview,
+    confirmRegistrationReview,
     message,
     registration,
     networkMismatch,

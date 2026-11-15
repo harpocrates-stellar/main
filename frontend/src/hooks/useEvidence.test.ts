@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import { computeRegistrationStatementDigest, formatNetworkLabel, useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -232,4 +232,130 @@ describe('useEvidence hashing progress', () => {
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
   })
 })
+
+describe('useEvidence pre-registration review', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function stubEvidenceServices() {
+    hashFileInWorkerMock
+      .mockResolvedValueOnce('1'.repeat(64))
+      .mockResolvedValueOnce('2'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: '3'.repeat(64),
+      metadataHash: '4'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+  }
+
+  it('populates selected identity tier, statement digest, and network without leaking witness seeds', async () => {
+    stubEvidenceServices()
+    const { result } = renderHook(() => useEvidence())
+
+    act(() => {
+      result.current.setCredentialSeed('synthetic-cred-seed')
+      result.current.setNullifierSeed('synthetic-null-seed')
+    })
+
+    await act(async () => {
+      await result.current.handleEvidence(new File(['clip-a'], 'clip-a.mp4'))
+    })
+
+    const review = result.current.registrationReview
+    expect(review).not.toBeNull()
+    expect(review?.isOpen).toBe(true)
+    expect(review?.isConfirmed).toBe(false)
+    expect(review?.isInvalidated).toBe(false)
+    expect(review?.tierId).toBe('silent')
+    expect(review?.tierTitle).toBe('Silent Witness')
+    expect(review?.tierLabel).toBe('Anonymous Credential')
+    expect(review?.networkLabel).toBe('Stellar Testnet')
+    expect(review?.statementDigest).toMatch(/^[0-9a-f]{64}$/)
+    expect(review?.statementDigest).toBe(
+      computeRegistrationStatementDigest({
+        tier: 'silent',
+        networkPassphrase: review!.networkPassphrase,
+        proof: result.current.proof!,
+      }),
+    )
+    expect(JSON.stringify(review)).not.toContain('synthetic-cred-seed')
+    expect(JSON.stringify(review)).not.toContain('synthetic-null-seed')
+    expect(formatNetworkLabel('Public Global Stellar Network ; September 2015')).toBe(
+      'Stellar Mainnet',
+    )
+  })
+
+  it('blocks registerProof until confirmed and invalidates confirmation when file or proof parameters change', async () => {
+    stubEvidenceServices()
+    const { result } = renderHook(() => useEvidence())
+
+    await act(async () => {
+      await result.current.handleEvidence(new File(['clip-a'], 'clip-a.mp4'))
+    })
+
+    act(() => {
+      result.current.closeRegistrationReview?.()
+    })
+    expect(result.current.registrationReview?.isOpen).toBe(false)
+
+    // Calling registerProof before confirmation fails closed and reopens the review screen.
+    await act(async () => {
+      await result.current.registerProof('GTESTWALLET')
+    })
+    expect(result.current.registrationReview?.isOpen).toBe(true)
+    expect(result.current.registrationReview?.isConfirmed).toBe(false)
+    expect(result.current.message).toMatch(/review and confirm/i)
+
+    // Confirming locks in the current fingerprint.
+    act(() => {
+      result.current.confirmRegistrationReview?.()
+    })
+    expect(result.current.registrationReview?.isConfirmed).toBe(true)
+    expect(result.current.registrationReview?.isInvalidated).toBe(false)
+
+    // Changing Silent Witness proof parameter (credentialSeed) invalidates the review.
+    act(() => {
+      result.current.setCredentialSeed('rotated-synthetic-cred-seed')
+    })
+    expect(result.current.registrationReview?.isConfirmed).toBe(false)
+    expect(result.current.registrationReview?.isInvalidated).toBe(true)
+
+    // Re-confirming, then changing identity tier invalidates the review and updates statementDigest.
+    const silentDigest = result.current.registrationReview?.statementDigest
+    act(() => {
+      result.current.confirmRegistrationReview?.()
+    })
+    expect(result.current.registrationReview?.isConfirmed).toBe(true)
+
+    act(() => {
+      result.current.setSelectedTier('source')
+    })
+    expect(result.current.registrationReview?.tierTitle).toBe('Consistent Source')
+    expect(result.current.registrationReview?.statementDigest).not.toBe(silentDigest)
+    expect(result.current.registrationReview?.isConfirmed).toBe(false)
+    expect(result.current.registrationReview?.isInvalidated).toBe(true)
+
+    // Re-confirming, then replacing the source file invalidates the review.
+    act(() => {
+      result.current.confirmRegistrationReview?.()
+    })
+    expect(result.current.registrationReview?.isConfirmed).toBe(true)
+
+    await act(async () => {
+      await result.current.handleEvidence(new File(['clip-b'], 'clip-b.mp4'))
+    })
+    expect(result.current.registrationReview?.isConfirmed).toBe(false)
+    expect(result.current.registrationReview?.isInvalidated).toBe(true)
+  })
+})
+
 
