@@ -161,6 +161,7 @@ class _Reason:
     RECURSION_DETECTED = "recursion_detected"
     EMBEDDED_BINDING_MISMATCH = "embedded_binding_mismatch"
     EMBEDDED_BINDING_DUPLICATE = "embedded_binding_duplicate"
+    CONFLICTING_ANCESTRY_NODE = "conflicting_ancestry_node"
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +365,11 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
     if assertion_bindings:
         _require_consistent_embedded_binding(binding, assertion_bindings[0])
 
+    # 12. Optional ingredient ancestry conflict check (reject duplicate
+    #     identifiers carrying conflicting canonical Harpocrates bindings).
+    if "ingredients" in data:
+        validate_c2pa_ingredient_ancestry(data["ingredients"])
+
     return C2paParsedManifest(
         claim_generator=claim_generator.strip(),
         spec_version=spec_version,
@@ -555,6 +561,66 @@ def corroborate_binding(
         compared_fields=tuple(compared),
         mismatches=tuple(mismatches),
     )
+
+
+def validate_c2pa_ingredient_ancestry(
+    ingredients: Any,
+) -> list[C2paHarpocratesBinding]:
+    """Reject duplicate ingredient identifiers carrying conflicting canonical bindings.
+
+    Identical canonical repeats of the same ``proof_id`` / ``video_hash`` are
+    deduplicated cleanly; contradictory canonical bindings raise
+    ``C2paParseError("conflicting_ancestry_node", field=...)`` without echoing
+    manifest values.
+    """
+    if not isinstance(ingredients, list):
+        raise C2paParseError(_Reason.INVALID_TYPE, "ingredients")
+    if len(ingredients) > _MAX_ASSERTION_COUNT:
+        raise C2paParseError(_Reason.ASSERTION_COUNT_EXCEEDED, "ingredients")
+
+    by_proof_id: dict[str, C2paHarpocratesBinding] = {}
+    by_video_hash: dict[str, C2paHarpocratesBinding] = {}
+    deduped: list[C2paHarpocratesBinding] = []
+
+    for idx, entry in enumerate(ingredients):
+        if not isinstance(entry, dict):
+            raise C2paParseError(_Reason.INVALID_TYPE, f"ingredients[{idx}]")
+
+        source = entry.get("manifest") if isinstance(entry.get("manifest"), dict) else entry
+        if "harpocrates_binding" not in source:
+            continue
+
+        prefix = (
+            f"ingredients[{idx}].manifest.harpocrates_binding"
+            if "manifest" in entry and isinstance(entry.get("manifest"), dict)
+            else f"ingredients[{idx}].harpocrates_binding"
+        )
+        parsed_binding = _parse_binding(source["harpocrates_binding"], prefix=prefix)
+
+        existing = by_proof_id.get(parsed_binding.proof_id)
+        if existing is not None:
+            for field_name in ("mapping_version",) + _BINDING_HASH_FIELDS + _BINDING_TEXT_FIELDS:
+                if getattr(existing, field_name) != getattr(parsed_binding, field_name):
+                    raise C2paParseError(
+                        _Reason.CONFLICTING_ANCESTRY_NODE,
+                        f"ingredients[{idx}].{field_name}",
+                    )
+            continue
+
+        existing_video = by_video_hash.get(parsed_binding.video_hash)
+        if existing_video is not None and existing_video != parsed_binding:
+            for field_name in ("mapping_version",) + _BINDING_HASH_FIELDS + _BINDING_TEXT_FIELDS:
+                if getattr(existing_video, field_name) != getattr(parsed_binding, field_name):
+                    raise C2paParseError(
+                        _Reason.CONFLICTING_ANCESTRY_NODE,
+                        f"ingredients[{idx}].{field_name}",
+                    )
+
+        by_proof_id[parsed_binding.proof_id] = parsed_binding
+        by_video_hash[parsed_binding.video_hash] = parsed_binding
+        deduped.append(parsed_binding)
+
+    return deduped
 
 
 # ---------------------------------------------------------------------------

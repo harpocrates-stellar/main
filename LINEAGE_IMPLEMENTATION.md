@@ -153,6 +153,7 @@ it does not create a second protocol truth for manifests or operation codes.
 5. **Payload Size**: Maximum 4KB for manifest
 6. **Actor Requirement**: Every transformation must have an authorized actor address
 7. **Hex Validation**: All IDs must be valid 32-byte hex strings
+8. **Conflicting Duplicate Ancestry Rejection**: `detect_conflicting_ancestry_nodes()` and `build_lineage_graph_view()` accept exact canonical repeats idempotently while raising `LineageDuplicateConflictError` (listing `node_id`, canonical digests, and `differing_fields` only) whenever the same identifier carries conflicting canonical contents, before building a graph view
 
 ### Success Criteria
 - Lineage records survive database re-indexing from contract events

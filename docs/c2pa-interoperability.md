@@ -74,6 +74,7 @@ being resolved in favour of whichever copy a consumer happens to read:
 |---|---|
 | The copies disagree on `video_hash`, `metadata_hash`, `proof_id`, `tier`, `network`, `contract_id`, or `mapping_version` | `embedded_binding_mismatch` (field = the first disagreeing field) |
 | More than one `harpocrates.binding/v1` assertion | `embedded_binding_duplicate` |
+| Duplicate ingredient `proof_id` or `video_hash` carrying different canonical binding fields | `conflicting_ancestry_node` (field = `ingredients[i].<field>`) |
 | A copy that is not a complete, individually valid binding | `invalid_type` / `missing_key` / `invalid_value` / `mapping_version_mismatch`, with the copy's path in `field` (e.g. `assertions[0].data.proof_id`) |
 
 Copies are compared after normalisation (hex lower-cased, text stripped), so a
