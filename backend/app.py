@@ -50,6 +50,7 @@ from errors import (
     VALIDATION_ERROR,
     classify_cli_error,
     error_response,
+    ok_response,
 )
 from db import (
     check_db,
@@ -111,8 +112,14 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
-from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from verification_receipt import (
+    PrivateSigningKeyRejectedError,
+    build_public_receipt_signing_key_history,
+    build_verification_receipt,
+    clamp_signing_key_history_limit,
+    load_public_receipt_signing_keys_from_env,
+)
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2086,6 +2093,55 @@ def create_app() -> Flask:
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
         return jsonify(response)
+
+    @app.get("/api/receipts/signing-keys")
+    def list_public_receipt_signing_keys():
+        """Serve bounded read-only public receipt signing-key history and validity windows.
+
+        Frontend retains receipt signing ownership; private signing keys are
+        prohibited and never loaded into the backend.
+        """
+        raw_limit = request.args.get("limit")
+        try:
+            limit = clamp_signing_key_history_limit(raw_limit)
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        status_filter = request.args.get("status")
+        key_id_filter = request.args.get("keyId") or request.args.get("key_id")
+
+        try:
+            entries = load_public_receipt_signing_keys_from_env()
+            history = build_public_receipt_signing_key_history(
+                entries,
+                limit=limit,
+                status_filter=status_filter,
+                key_id_filter=key_id_filter,
+            )
+        except PrivateSigningKeyRejectedError:
+            return error_response(
+                code=INTERNAL_ERROR,
+                message="receipt signing-key configuration rejected private key material",
+                status=500,
+            )
+        except ValueError as exc:
+            if status_filter is not None or key_id_filter is not None:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message=str(exc),
+                    status=400,
+                )
+            return error_response(
+                code=INTERNAL_ERROR,
+                message="receipt signing-key directory configuration is invalid",
+                status=500,
+            )
+
+        return ok_response(dict(history))
 
     @app.post("/api/capture-attestation/verify")
     @limiter.limit(config.ratelimit_verify)

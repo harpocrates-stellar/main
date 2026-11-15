@@ -325,6 +325,14 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Public Receipt Signing-Key History
+
+`GET /api/receipts/signing-keys` serves bounded, read-only public ECDSA P-256 JWK history and validity windows (`notBefore`, `notAfter`) in the existing `harpocrates-verification-receipt` v1 protocol (`algorithm: "ECDSA_P256_SHA256"`, `signingOwnership: "frontend"`).
+
+- Configure public-only history via `RECEIPT_PUBLIC_SIGNING_KEYS_JSON` (up to `32` entries, max `32768` UTF-8 bytes).
+- Query filters: `limit` (clamped into `1..32`), `status` (`active`, `rotated`, `retired`, `revoked`), and `keyId` / `key_id`.
+- Frontend retains receipt signing ownership: private JWK fields (`d`, `privateKey`, `secretKey`, `seed`, `key_ops: ["sign"]`) and private-key environment variables (`RECEIPT_SIGNING_PRIVATE_KEY`, `RECEIPT_PRIVATE_KEY`, `RECEIPT_SIGNING_SEED`) are rejected fail-closed and never echoed in responses.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative
