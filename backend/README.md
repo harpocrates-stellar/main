@@ -325,6 +325,14 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Receipt Evidence and Derivative Statement Binding
+
+`verification_receipt.py` (`build_verification_receipt`, `validate_receipt_statement_binding`, and `compute_parent_child_statement_digest`) and `time_attestation.py` (`validate_attestation_evidence_binding`) reject conflicting evidence and derivative identifiers before emitting unsigned receipt inputs:
+
+- Rejects mismatches between `videoHash` and `evidenceDigest`, `outputDigest`, `derivativeVideoHash`, `lineageManifest.outputDigest`, or `timeAttestation.evidenceDigest`.
+- Rejects self-parenting (`proofId` appearing in `parentProofIds` or matching `parentStatement.proofId`), duplicate parent IDs, network mismatches, and tampered `lineageManifestDigest` or `parentChildStatementDigest` values.
+- Rejects backend-supplied signing or envelope-versioning fields (`protocol`, `version`, `signer`, `signature`, `privateKey`, `signingKey`), preserving frontend ownership of receipt signing and envelope versioning.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative

@@ -324,6 +324,46 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
     return errors
 
 
+def validate_attestation_evidence_binding(
+    attestation: TimeAttestation,
+    *,
+    video_hash: str,
+    output_digest: str | None = None,
+    transaction_hash: str | None = None,
+    network_passphrase: str | None = None,
+) -> None:
+    """Reject conflicting evidence, derivative output, or Stellar anchor bindings.
+
+    Raises ``ValueError`` before unsigned receipt input is emitted whenever the
+    time attestation's ``evidence_digest`` or Stellar anchors disagree with the
+    canonical evidence/derivative context.
+    """
+    normalized_video = video_hash.lower()
+    if attestation.evidence_digest.lower() != normalized_video:
+        raise ValueError(
+            "conflicting evidence identifiers: timeAttestation.evidenceDigest does not match videoHash"
+        )
+    if output_digest is not None and output_digest.lower() != normalized_video:
+        raise ValueError(
+            "conflicting evidence and derivative identifiers: outputDigest does not match videoHash"
+        )
+    for anchor in attestation.stellar_anchors:
+        if (
+            network_passphrase is not None
+            and anchor.network_passphrase != network_passphrase
+        ):
+            raise ValueError(
+                "conflicting networkPassphrase between receipt context and timeAttestation Stellar anchor"
+            )
+        if (
+            transaction_hash is not None
+            and anchor.transaction_hash.lower() != transaction_hash.lower()
+        ):
+            raise ValueError(
+                "conflicting transactionHash between receipt context and timeAttestation Stellar anchor"
+            )
+
+
 def check_backdating_risk(attestation: TimeAttestation) -> dict[str, Any]:
     """
     Analyze backdating risk based on available time sources.
