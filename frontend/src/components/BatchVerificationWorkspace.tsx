@@ -374,7 +374,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 type="button"
                 onClick={exportJSON}
                 disabled={items.length === 0 || isRunning}
-                title="Export JSON Report"
+                title="Export Machine-Readable JSON Report (exact unescaped strings)"
               >
                 <Download size={16} aria-hidden="true" />
                 <span>JSON</span>
@@ -384,7 +384,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 type="button"
                 onClick={exportCSV}
                 disabled={items.length === 0 || isRunning}
-                title="Export CSV Report"
+                title="Export Human-Oriented CSV Report (spreadsheet formulas neutralized)"
               >
                 <Download size={16} aria-hidden="true" />
                 <span>CSV</span>

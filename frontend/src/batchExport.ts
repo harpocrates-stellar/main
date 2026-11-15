@@ -24,6 +24,21 @@ export type ReceiptCollection = {
   receipts: ProofManifest[]
 }
 
+export const SPREADSHEET_FORMULA_TRIGGERS = ['=', '+', '-', '@', '\t', '\r', '\n'] as const
+
+export const BATCH_EXPORT_FORMAT_SEMANTICS = {
+  csv: {
+    audience: 'human-spreadsheet',
+    neutralizesFormulaPrefixes: true,
+    preservesExactDigestsAndAmounts: true,
+  },
+  json: {
+    audience: 'machine-readable',
+    neutralizesFormulaPrefixes: false,
+    preservesExactDigestsAndAmounts: true,
+  },
+} as const
+
 /**
  * Strips raw File handles and sensitive memory states, returning a clean,
  * privacy-safe serializable representation of batch verification results.
@@ -46,7 +61,9 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
 }
 
 /**
- * Export privacy-safe JSON representation of batch results.
+ * Export machine-readable, privacy-safe JSON representation of batch results.
+ * Unlike human-oriented CSV exports, JSON preserves exact unescaped string fields
+ * without spreadsheet formula-prefix neutralization.
  */
 export function exportBatchJSON(results: BatchItemResult[]): string {
   const clean = sanitizeBatchResults(results)
@@ -61,7 +78,60 @@ export function exportBatchJSON(results: BatchItemResult[]): string {
 }
 
 /**
- * Export privacy-safe CSV representation of batch results.
+ * Neutralizes spreadsheet formula injection prefixes (`=`, `+`, `-`, `@`,
+ * leading tabs/newlines, or whitespace-padded formula prefixes) for
+ * human-oriented CSV text cells by prepending a literal single quote (`'`).
+ */
+export function neutralizeSpreadsheetFormula(val: string): string {
+  if (!val) return ''
+  const firstChar = val[0]
+  if (
+    firstChar === '=' ||
+    firstChar === '+' ||
+    firstChar === '-' ||
+    firstChar === '@' ||
+    firstChar === '\t' ||
+    firstChar === '\r' ||
+    firstChar === '\n'
+  ) {
+    return `'${val}`
+  }
+  const trimmedLeading = val.replace(/^[ \t\r\n]+/, '')
+  if (
+    trimmedLeading.length > 0 &&
+    (trimmedLeading[0] === '=' ||
+      trimmedLeading[0] === '+' ||
+      trimmedLeading[0] === '-' ||
+      trimmedLeading[0] === '@')
+  ) {
+    return `'${val}`
+  }
+  return val
+}
+
+function formatExactDigestCell(digest: string | null): string {
+  if (!digest) return '""'
+  if (/^[0-9a-fA-F]+$/.test(digest)) {
+    return digest
+  }
+  return escapeHumanCSVCell(digest)
+}
+
+function formatExactNumericAmountCell(amount: number | null): string {
+  if (amount === null || !Number.isFinite(amount)) return ''
+  return String(amount)
+}
+
+function escapeHumanCSVCell(val: string): string {
+  if (!val) return '""'
+  return escapeCSV(neutralizeSpreadsheetFormula(val))
+}
+
+/**
+ * Export human-oriented, privacy-safe CSV representation of batch results.
+ * Risky spreadsheet formula prefixes in text columns are neutralized with a
+ * leading `'`, while canonical digest columns and numeric amount columns are
+ * emitted verbatim. Use `exportBatchJSON` for exact machine-readable strings.
  */
 export function exportBatchCSV(results: BatchItemResult[]): string {
   const clean = sanitizeBatchResults(results)
@@ -81,18 +151,18 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
   ]
 
   const rows = clean.map((item) => [
-    escapeCSV(item.fileName),
-    String(item.fileSizeBytes),
-    escapeCSV(item.status),
-    escapeCSV(item.videoHash ?? ''),
-    escapeCSV(item.metadataHash ?? ''),
-    escapeCSV(item.sourceHash ?? ''),
-    escapeCSV(item.tier ?? ''),
-    escapeCSV(item.chainStatus ?? ''),
-    escapeCSV(item.message),
-    escapeCSV(item.duplicateOf ?? ''),
-    escapeCSV(item.failureReason ?? ''),
-    item.durationMs !== null ? String(item.durationMs) : '',
+    escapeHumanCSVCell(item.fileName),
+    formatExactNumericAmountCell(item.fileSizeBytes),
+    escapeHumanCSVCell(item.status),
+    formatExactDigestCell(item.videoHash),
+    formatExactDigestCell(item.metadataHash),
+    formatExactDigestCell(item.sourceHash),
+    escapeHumanCSVCell(item.tier ?? ''),
+    escapeHumanCSVCell(item.chainStatus ?? ''),
+    escapeHumanCSVCell(item.message),
+    escapeHumanCSVCell(item.duplicateOf ?? ''),
+    escapeHumanCSVCell(item.failureReason ?? ''),
+    formatExactNumericAmountCell(item.durationMs),
   ])
 
   return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n')
@@ -139,7 +209,7 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
 
 function escapeCSV(val: string): string {
   if (!val) return '""'
-  const needsQuotes = val.includes(',') || val.includes('"') || val.includes('\n')
+  const needsQuotes = val.includes(',') || val.includes('"') || val.includes('\n') || val.includes('\r')
   const escaped = val.replace(/"/g, '""')
   return needsQuotes ? `"${escaped}"` : escaped
 }

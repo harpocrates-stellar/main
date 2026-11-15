@@ -20,3 +20,9 @@ Verify the application compiles and bundles successfully for production:
 npm run build
 ```
 (This performs TypeScript type-checking and Vite compilation. It will fail if there are any TypeScript or bundling errors).
+
+## 4. Batch Export Formats: Human-Oriented CSV vs. Machine-Readable JSON
+`frontend/src/batchExport.ts` distinguishes between human-oriented spreadsheet exports and machine-readable structured exports (`BATCH_EXPORT_FORMAT_SEMANTICS`):
+
+- **Human-oriented CSV (`exportBatchCSV`)**: Designed for spreadsheet tools (Excel, LibreOffice Calc, Google Sheets). Free-text columns (`File Name`, `Status`, `Tier`, `Chain Status`, `Message`, `Duplicate Of`, `Failure Reason`) pass through `neutralizeSpreadsheetFormula`, which prepends a literal single quote (`'`) whenever a cell starts with `=`, `+`, `-`, `@`, leading tabs/CR/LF, or whitespace-padded formula triggers, and RFC-4180 quotes commas, quotes, CR, and LF. Canonical hexadecimal digest columns (`Video Hash`, `Metadata Hash`, `Source Hash`) and numeric amount columns (`Size (Bytes)`, `Duration (ms)`) are emitted verbatim without prefixing.
+- **Machine-readable JSON (`exportBatchJSON`, `exportReceiptCollection`)**: Designed for automated verifiers, audit pipelines, and programmatic consumers. Preserves exact unescaped string values, digests, and numeric fields without `'=…` spreadsheet neutralization.
