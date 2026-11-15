@@ -322,6 +322,9 @@ get_schema
 deprecate_schema
 reactivate_schema
 verify_selective_disclosure
+get_statement_compatibility
+check_statement_compat
+assert_statement_compat
 version
 ```
 

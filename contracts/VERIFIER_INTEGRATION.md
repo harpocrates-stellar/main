@@ -28,6 +28,23 @@ video_hash = low_16_bytes(video_hash_hi) || low_16_bytes(video_hash_lo)
 
 The registry verifies that the reconstructed hash matches `video_hash`, checks the nullifier was not used, calls the configured verifier, then stores the proof record.
 
+### Statement Compatibility Descriptor (`#1195`)
+
+Callers can inspect accepted schema and verifier-input versions in a single
+bounded read call via `get_statement_compatibility()`, which returns
+`StatementCompatibilityDesc` covering:
+
+- Accepted verifier-input frame schemas (`silent_witness/v1`,
+  `revocation_witness/v1`, `silent_witness/v2`) with codec versions, circuit
+  versions, byte lengths, active-window status, and supported critical-field
+  masks (`formats`, capped at `MAX_STATEMENT_FORMAT_DESCS = 8`).
+- Wasm circuit-version bounds, active verifier circuit-version window, metadata
+  envelope version range, selective-disclosure and aggregation circuit versions,
+  and proof byte bounds.
+- `check_statement_compat` and `assert_statement_compat`, which evaluate
+  candidate statements and reject unsupported critical fields, unknown or
+  inactive schemas, and out-of-window versions strictly fail-closed.
+
 ## Current State
 
 Done:
