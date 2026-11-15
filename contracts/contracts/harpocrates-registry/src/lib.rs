@@ -1343,6 +1343,58 @@ pub struct SchemaRecord {
     pub created_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Bounded institutional authority history (#1189)
+// ---------------------------------------------------------------------------
+
+/// Maximum retained entries in the bounded institutional authority ring window.
+pub const MAX_AUTHORITY_HISTORY_ENTRIES: u32 = 256;
+/// Maximum entries returned in a single `list_authority_history` page.
+pub const MAX_AUTHORITY_HISTORY_PAGE: u32 = 50;
+
+pub const AUTH_HIST_INIT: u32 = 1;
+pub const AUTH_HIST_ADMIN_PROPOSED: u32 = 2;
+pub const AUTH_HIST_ADMIN_CANCELLED: u32 = 3;
+pub const AUTH_HIST_ADMIN_ACCEPTED: u32 = 4;
+pub const AUTH_HIST_ISSUER_ADDED: u32 = 5;
+pub const AUTH_HIST_ISSUER_REVOKED: u32 = 6;
+pub const AUTH_HIST_ISSUER_ROTATED: u32 = 7;
+pub const AUTH_HIST_ISSUER_GRACE_END: u32 = 8;
+pub const AUTH_HIST_GUARDIAN_SET: u32 = 9;
+pub const AUTH_HIST_GUARDIAN_CLEARED: u32 = 10;
+pub const AUTH_HIST_COUNCIL_SET: u32 = 11;
+pub const AUTH_HIST_COUNCIL_EXEC: u32 = 12;
+pub const AUTH_HIST_SEAL_POLICY_SET: u32 = 13;
+pub const AUTH_HIST_SEAL_POLICY_CANCEL: u32 = 14;
+pub const AUTH_HIST_SCHEMA_UPGRADE: u32 = 15;
+
+/// Fixed-size institutional authority transition record (#1189).
+///
+/// Pre-summarizes `proposal_ref` and `approver_count` at write time so history
+/// queries never iterate historical council approver lists or signer sets.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityHistoryEntry {
+    pub seq: u32,
+    pub action: u32,
+    pub subject: Address,
+    pub actor: Address,
+    pub timestamp: u64,
+    pub ledger_seq: u32,
+    pub proposal_ref: u32,
+    pub approver_count: u32,
+}
+
+/// Paginated slice of bounded institutional authority history (#1189).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityHistoryPage {
+    pub entries: Vec<AuthorityHistoryEntry>,
+    pub next_cursor: Option<u32>,
+    pub earliest_seq: u32,
+    pub latest_seq: u32,
+}
+
 #[contractevent(topics = ["schema", "add"])]
 pub struct SchemaAdded {
     #[topic]
@@ -1963,6 +2015,10 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Monotonic 1-based sequence counter for institutional authority history (#1189).
+    AuthorityHistorySeq,
+    /// Bounded ring-window authority transition entry indexed by `seq` (#1189).
+    AuthorityHistoryEntry(u32),
 }
 
 #[contracterror]
@@ -2174,6 +2230,7 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion, &(SchemaVersion::V2 as u32));
+        record_authority_history(&env, AUTH_HIST_INIT, &admin, &admin, 0, 1);
     }
 
     /// Return the persistent storage schema version.
@@ -2255,6 +2312,14 @@ impl HarpocratesRegistry {
             env.storage()
                 .persistent()
                 .set(&DataKey::SchemaVersion, &target_version);
+            record_authority_history(
+                &env,
+                AUTH_HIST_SCHEMA_UPGRADE,
+                &admin,
+                &admin,
+                target_version,
+                1,
+            );
 
             SchemaUpgraded {
                 previous: actual_current,
@@ -2326,6 +2391,7 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
+        record_authority_history(&env, AUTH_HIST_ADMIN_PROPOSED, &pending_admin, &admin, 0, 1);
         AdminProposed {
             pending_admin,
             current_admin: admin,
@@ -2352,6 +2418,14 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        record_authority_history(
+            &env,
+            AUTH_HIST_ADMIN_CANCELLED,
+            &pending_admin,
+            &admin,
+            0,
+            1,
+        );
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2381,6 +2455,14 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        record_authority_history(
+            &env,
+            AUTH_HIST_ADMIN_ACCEPTED,
+            &pending_admin,
+            &pending_admin,
+            0,
+            1,
+        );
         AdminAccepted {
             new_admin: pending_admin,
             previous_admin,
@@ -2414,6 +2496,7 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
+        record_authority_history(&env, AUTH_HIST_ISSUER_ADDED, &issuer, &admin, 0, 1);
         IssuerAdded {
             issuer,
             metadata_hash,
@@ -2801,6 +2884,7 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
+        record_authority_history(&env, AUTH_HIST_ISSUER_REVOKED, &issuer, &admin, 0, 1);
         IssuerRevoked { issuer }.publish(&env);
     }
 
@@ -2922,6 +3006,15 @@ impl HarpocratesRegistry {
             },
         );
 
+        record_authority_history(
+            &env,
+            AUTH_HIST_ISSUER_ROTATED,
+            &replacement_issuer,
+            &admin,
+            0,
+            1,
+        );
+
         IssuerRotated {
             previous_issuer,
             replacement_issuer,
@@ -2960,6 +3053,16 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
+
+        let contract_addr = env.current_contract_address();
+        record_authority_history(
+            &env,
+            AUTH_HIST_ISSUER_GRACE_END,
+            &issuer,
+            &contract_addr,
+            0,
+            0,
+        );
 
         IssuerRotationGraceExpired {
             issuer,
@@ -3120,6 +3223,16 @@ impl HarpocratesRegistry {
             .set(&DataKey::Proposal(proposal_id), &mutable_proposal);
         caller.require_auth();
         dispatch_timelocked_action(&env, &proposal);
+        if proposal.action == ProposalAction::RevokeIssuer as u32 {
+            record_authority_history(
+                &env,
+                AUTH_HIST_ISSUER_REVOKED,
+                &proposal.target,
+                &caller,
+                proposal_id,
+                1,
+            );
+        }
         TimelockProposalExecuted {
             proposal_id,
             action: proposal.action,
@@ -3147,6 +3260,16 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &mutable_proposal);
         dispatch_timelocked_action(&env, &proposal);
+        if proposal.action == ProposalAction::RevokeIssuer as u32 {
+            record_authority_history(
+                &env,
+                AUTH_HIST_ISSUER_REVOKED,
+                &proposal.target,
+                &admin,
+                proposal_id,
+                1,
+            );
+        }
         TimelockEmergencyExec {
             proposal_id,
             action: proposal.action,
@@ -3286,6 +3409,15 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::AdminCouncil, &council);
+
+        record_authority_history(
+            &env,
+            AUTH_HIST_COUNCIL_SET,
+            &admin,
+            &admin,
+            threshold,
+            members.len(),
+        );
 
         AdminCouncilSet {
             threshold,
@@ -3477,6 +3609,20 @@ impl HarpocratesRegistry {
             .set(&DataKey::CouncilProposal(proposal_id), &proposal);
 
         dispatch_council_action(&env, &proposal);
+
+        let hist_action = match proposal.action {
+            2 => AUTH_HIST_ISSUER_REVOKED,
+            3 => AUTH_HIST_SCHEMA_UPGRADE,
+            _ => AUTH_HIST_COUNCIL_EXEC,
+        };
+        record_authority_history(
+            &env,
+            hist_action,
+            &proposal.target,
+            &caller,
+            proposal_id,
+            proposal.approvals.len(),
+        );
 
         CouncilProposalExecuted {
             proposal_id,
@@ -5348,13 +5494,20 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Guardian, &guardian);
+        record_authority_history(&env, AUTH_HIST_GUARDIAN_SET, &guardian, &admin, 0, 1);
         GuardianSet { guardian }.publish(&env);
     }
 
     /// Remove the emergency-pause guardian role. Admin-only.
     pub fn clear_guardian(env: Env, admin: Address) {
         require_admin(&env, &admin);
+        let subject = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::Guardian)
+            .unwrap_or_else(|| admin.clone());
         env.storage().persistent().remove(&DataKey::Guardian);
+        record_authority_history(&env, AUTH_HIST_GUARDIAN_CLEARED, &subject, &admin, 0, 1);
         GuardianCleared {}.publish(&env);
     }
 
@@ -6309,6 +6462,109 @@ impl HarpocratesRegistry {
             .unwrap_or(false)
     }
 
+    /// Return a bounded page of institutional authority transitions (#1189).
+    ///
+    /// - `cursor == 0` starts at the oldest retained transition (`earliest_seq`).
+    /// - `cursor > 0` starts at `max(cursor, earliest_seq)`.
+    /// - `limit` must be in `1..=MAX_AUTHORITY_HISTORY_PAGE` (`ListLimitExceeded` otherwise).
+    /// - Reads direct fixed-size entries by sequence number; never iterates
+    ///   historical council approver vectors or signer lists.
+    pub fn list_authority_history(env: Env, cursor: u32, limit: u32) -> AuthorityHistoryPage {
+        if limit == 0 || limit > MAX_AUTHORITY_HISTORY_PAGE {
+            panic_with_error!(&env, RegistryError::ListLimitExceeded);
+        }
+        let latest_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistorySeq)
+            .unwrap_or(0u32);
+        if latest_seq == 0 {
+            return AuthorityHistoryPage {
+                entries: Vec::new(&env),
+                next_cursor: None,
+                earliest_seq: 0,
+                latest_seq: 0,
+            };
+        }
+
+        let earliest_seq = if latest_seq > MAX_AUTHORITY_HISTORY_ENTRIES {
+            latest_seq - MAX_AUTHORITY_HISTORY_ENTRIES + 1
+        } else {
+            1
+        };
+
+        let mut entries = Vec::new(&env);
+        if cursor > latest_seq {
+            return AuthorityHistoryPage {
+                entries,
+                next_cursor: None,
+                earliest_seq,
+                latest_seq,
+            };
+        }
+
+        let start_seq = if cursor < earliest_seq {
+            earliest_seq
+        } else {
+            cursor
+        };
+        let max_end = start_seq.saturating_add(limit - 1);
+        let end_seq = if max_end < latest_seq {
+            max_end
+        } else {
+            latest_seq
+        };
+
+        let mut seq = start_seq;
+        while seq <= end_seq {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AuthorityHistoryEntry>(&DataKey::AuthorityHistoryEntry(seq))
+            {
+                entries.push_back(entry);
+            }
+            seq += 1;
+        }
+
+        let next_cursor = if end_seq < latest_seq {
+            Some(end_seq + 1)
+        } else {
+            None
+        };
+
+        AuthorityHistoryPage {
+            entries,
+            next_cursor,
+            earliest_seq,
+            latest_seq,
+        }
+    }
+
+    /// Fetch a single retained institutional authority transition by stable `seq` (#1189).
+    pub fn get_authority_history_at(env: Env, seq: u32) -> Option<AuthorityHistoryEntry> {
+        if seq == 0 {
+            return None;
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistoryEntry(seq))
+    }
+
+    /// Return the number of currently retained institutional authority history entries (#1189).
+    pub fn get_authority_history_count(env: Env) -> u32 {
+        let latest_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistorySeq)
+            .unwrap_or(0u32);
+        if latest_seq > MAX_AUTHORITY_HISTORY_ENTRIES {
+            MAX_AUTHORITY_HISTORY_ENTRIES
+        } else {
+            latest_seq
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
@@ -6674,6 +6930,15 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::ActiveSealPolicyVersion, &version);
 
+        record_authority_history(
+            &env,
+            AUTH_HIST_SEAL_POLICY_SET,
+            &admin,
+            &admin,
+            version,
+            required_approvals,
+        );
+
         SealPolicyCreated {
             version,
             required_approvals,
@@ -6787,6 +7052,14 @@ impl HarpocratesRegistry {
                 .persistent()
                 .remove(&DataKey::ActiveSealPolicyVersion);
         }
+        record_authority_history(
+            &env,
+            AUTH_HIST_SEAL_POLICY_CANCEL,
+            &admin,
+            &admin,
+            version,
+            1,
+        );
         SealPolicyCancelledEvent { version }.publish(&env);
     }
 
@@ -8574,6 +8847,44 @@ fn count_pending_proposals(env: &Env) -> u32 {
     pending
 }
 
+fn record_authority_history(
+    env: &Env,
+    action: u32,
+    subject: &Address,
+    actor: &Address,
+    proposal_ref: u32,
+    approver_count: u32,
+) {
+    let latest: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AuthorityHistorySeq)
+        .unwrap_or(0u32);
+    let seq = latest.saturating_add(1);
+    if seq > MAX_AUTHORITY_HISTORY_ENTRIES {
+        let evicted = seq - MAX_AUTHORITY_HISTORY_ENTRIES;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AuthorityHistoryEntry(evicted));
+    }
+    let entry = AuthorityHistoryEntry {
+        seq,
+        action,
+        subject: subject.clone(),
+        actor: actor.clone(),
+        timestamp: env.ledger().timestamp(),
+        ledger_seq: env.ledger().sequence(),
+        proposal_ref,
+        approver_count,
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::AuthorityHistoryEntry(seq), &entry);
+    env.storage()
+        .persistent()
+        .set(&DataKey::AuthorityHistorySeq, &seq);
+}
+
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
     match proposal.action {
         1 => {
@@ -9067,6 +9378,8 @@ mod test;
 mod test_aggregation;
 #[cfg(test)]
 mod test_auth;
+#[cfg(test)]
+mod test_authority_history;
 #[cfg(test)]
 mod test_budget;
 #[cfg(test)]
