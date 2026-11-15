@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react'
-import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
+import { BadgeCheck, CheckCircle2, Loader2, RotateCcw, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
@@ -38,12 +38,16 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    evidenceNotes = '',
+    setEvidenceNotes,
+    recoverableFailure,
     message,
     registration,
     networkMismatch,
     isCancellable,
     handleEvidence,
     registerProof,
+    retryRecoverableEvidence,
     cancelEvidence,
     cancelProving,
   } = evidence
@@ -171,6 +175,52 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
               />
             </label>
           </div>
+        ) : null}
+
+        <div className="evidence-notes-field" style={{ marginTop: '0.75rem' }}>
+          <label htmlFor="studio-evidence-notes" style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            <span>Evidence Notes</span>
+            <textarea
+              id="studio-evidence-notes"
+              rows={3}
+              maxLength={1000}
+              value={evidenceNotes}
+              onChange={(event) => setEvidenceNotes?.(event.target.value)}
+              placeholder="Optional operator notes preserved locally across retries"
+            />
+          </label>
+        </div>
+
+        {recoverableFailure ? (
+          <section
+            className="network-mismatch-banner studio-recoverable-failure"
+            aria-label="Recoverable API error"
+            style={{ marginTop: '0.75rem' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+              <p role="alert" style={{ margin: 0 }}>
+                {recoverableFailure.message} Your evidence notes remain preserved locally.
+              </p>
+              <p className="muted" style={{ margin: 0, fontSize: '0.85rem' }}>
+                Bound file: <code data-testid="retry-bound-file">{recoverableFailure.reviewedFileIdentity.name}</code>{' '}
+                ({recoverableFailure.reviewedFileIdentity.size.toLocaleString('en-US')} bytes)
+              </p>
+              {retryRecoverableEvidence ? (
+                <div>
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    disabled={isBusy}
+                    aria-label={`Retry processing for ${recoverableFailure.reviewedFileIdentity.name}`}
+                    onClick={() => void retryRecoverableEvidence(wallet)}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" />
+                    Retry for {recoverableFailure.reviewedFileIdentity.name}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </section>
         ) : null}
 
         {isCancellable ? (

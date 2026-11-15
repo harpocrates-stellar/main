@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import { ApiClientError } from '../services/apiError'
+import { computeReviewedFileIdentity, useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -230,6 +231,118 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('preserves user-entered evidence notes after a recoverable API failure, ignores stale server notes, and ties retry to reviewed file identity', async () => {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockRejectedValueOnce(
+      new ApiClientError({
+        code: 'INTERNAL_ERROR',
+        message: 'A temporary server error occurred. Retry in a moment.',
+        detail: 'upstream timeout',
+        requestId: 'req-1',
+        action: 'retry',
+        retryable: true,
+        status: 503,
+      }),
+    )
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    const reviewedFile = new File(['video-bytes'], 'witness-clip.mp4', {
+      type: 'video/mp4',
+      lastModified: 1700000123000,
+    })
+
+    act(() => {
+      result.current.setEvidenceNotes?.('Original field observation notes.')
+    })
+
+    await act(async () => {
+      await result.current.handleEvidence(reviewedFile)
+    })
+
+    expect(result.current.stage).toBe('error')
+    expect(result.current.evidenceNotes).toBe('Original field observation notes.')
+    expect(result.current.recoverableFailure?.reviewedFileIdentity).toEqual(
+      computeReviewedFileIdentity(reviewedFile),
+    )
+
+    // User refines notes locally before retrying; server response with stale serverNotes must NOT overwrite local edits
+    let resolveRetry!: (val: {
+      embeddedBlob: Blob
+      embeddedHash: string
+      metadataHash: string
+      serverNotes: string
+    }) => void
+    embedVideoMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRetry = resolve
+        }),
+    )
+
+    let retryPromise!: Promise<void>
+    act(() => {
+      retryPromise = result.current.retryRecoverableEvidence?.() ?? Promise.resolve()
+    })
+
+    await vi.waitFor(() => expect(embedVideoMock).toHaveBeenCalledTimes(2))
+
+    act(() => {
+      result.current.setEvidenceNotes?.('Updated local notes during retry.')
+    })
+
+    await act(async () => {
+      resolveRetry({
+        embeddedBlob: new Blob(['embedded']),
+        embeddedHash: 'b'.repeat(64),
+        metadataHash: 'c'.repeat(64),
+        serverNotes: 'Stale server-normalized notes that must not clobber local edits.',
+      })
+      await retryPromise
+    })
+
+    expect(result.current.stage).toBe('ready')
+    expect(result.current.evidenceNotes).toBe('Updated local notes during retry.')
+    expect(result.current.recoverableFailure).toBeNull()
+  })
+
+  it('blocks retry fail-closed when the underlying file identity has mutated since review', async () => {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockRejectedValueOnce(
+      new ApiClientError({
+        code: 'INTERNAL_ERROR',
+        message: 'Temporary outage.',
+        detail: null,
+        requestId: null,
+        action: 'retry',
+        retryable: true,
+        status: 502,
+      }),
+    )
+
+    const { result } = renderHook(() => useEvidence())
+    const mutableFile = new File(['video-bytes'], 'clip.mp4', { lastModified: 1700000000000 })
+
+    await act(async () => {
+      await result.current.handleEvidence(mutableFile)
+    })
+    expect(result.current.recoverableFailure).not.toBeNull()
+
+    // Mutate file metadata in place to simulate an out-of-band file identity mismatch
+    Object.defineProperty(mutableFile, 'lastModified', { value: 1700000999000 })
+
+    await act(async () => {
+      await result.current.retryRecoverableEvidence?.()
+    })
+
+    expect(embedVideoMock).toHaveBeenCalledTimes(1)
+    expect(result.current.recoverableFailure).toBeNull()
+    expect(result.current.message).toContain('Reviewed file identity changed')
   })
 })
 

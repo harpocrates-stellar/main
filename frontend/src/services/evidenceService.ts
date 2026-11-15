@@ -18,6 +18,7 @@ export type EmbedResult = {
   embeddedBlob: Blob
   embeddedHash: string
   metadataHash: string
+  serverNotes?: string
 }
 
 /**
@@ -34,8 +35,9 @@ export async function embedVideo(
   proofId: string,
   timestamp: string,
   signal?: AbortSignal,
+  notes?: string,
 ): Promise<EmbedResult> {
-  const metadata = {
+  const metadata: Record<string, unknown> = {
     protocol: 'harpocrates',
     version: 1,
     tier,
@@ -43,6 +45,9 @@ export async function embedVideo(
     proofId,
     timestamp,
     fileName: file.name,
+  }
+  if (notes && notes.trim().length > 0) {
+    metadata.notes = notes.trim().slice(0, 1000)
   }
 
   const form = new FormData()
@@ -71,12 +76,15 @@ export async function embedVideo(
   const embeddedHash = await sha256(await embeddedBlob.arrayBuffer())
   const headerHash = response.headers.get('X-Harpocrates-Embedded-Hash')
   const metadataHash = response.headers.get('X-Harpocrates-Metadata-Hash')
+  const serverNotes = response.headers.get('X-Harpocrates-Evidence-Notes') ?? undefined
 
   if (!headerHash || headerHash !== embeddedHash || !metadataHash) {
     throw new Error('Steganography service returned an invalid evidence package.')
   }
 
-  return { embeddedBlob, embeddedHash, metadataHash }
+  return serverNotes !== undefined
+    ? { embeddedBlob, embeddedHash, metadataHash, serverNotes }
+    : { embeddedBlob, embeddedHash, metadataHash }
 }
 
 type RegistrationPayload = {
