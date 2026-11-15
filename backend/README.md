@@ -325,6 +325,14 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Staged Evidence Encryption-Key Rotation
+
+`evidence_storage.py` and `storage.py` support staged, fail-closed DEK rewrapping across master-key generations (`MASTER_ENCRYPTION_KEY_ID` and `MASTER_ENCRYPTION_KEY_RING="kek-v1=<key1>,kek-v2=<key2>"`):
+
+1. **Stage & Verify (`stage_key_rotation`)**: Unwraps candidate DEKs under `source_keys`, rewraps them with an explicit versioned `kid:<target_key_id>:<token>` identifier, re-unwraps under `target_master_key`, and verifies that every on-disk ciphertext file decrypts cleanly before writing a non-secret `hpx-key-rotation-journal/1` rollback record (`storage.write_key_rotation_journal`). Performs zero database updates if any ciphertext or DEK fails verification.
+2. **Conditional Commit (`commit_staged_key_rotation`)**: Re-checks live ciphertext SHA-256 digests and optimistic `encrypted_dek` concurrency preconditions before committing metadata updates.
+3. **Rollback (`rollback_key_rotation`)**: Restores `previous_encrypted_dek` values from the preserved rollback journal while verifying source-key readability.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative

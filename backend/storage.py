@@ -1,7 +1,9 @@
+import json
 import logging
 import os
 import re
 import stat
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 default_storage_dir = "/tmp/harpocrates_jobs"
+KEY_ROTATION_JOURNAL_SCHEMA = "hpx-key-rotation-journal/1"
 
 
 def _log_warning(message: str) -> None:
@@ -180,6 +183,50 @@ def sweep_job_files(
         LOGGER.info("Purged %d stale job files", purged_count)
 
     return purged_count
+
+
+def write_key_rotation_journal(
+    journal: dict[str, Any],
+    *,
+    journal_dir: Path | str | None = None,
+) -> Path:
+    """Persist non-secret key-rotation rollback evidence atomically on disk."""
+    if not isinstance(journal, dict) or journal.get("schema") != KEY_ROTATION_JOURNAL_SCHEMA:
+        raise ValueError("Invalid key rotation journal payload.")
+
+    serialized = json.dumps(journal, sort_keys=True)
+    # Fail-closed guard: never allow secret-bearing keys in rollback evidence.
+    for forbidden_key in ('"plaintext_dek"', '"master_key"', '"plaintext"', '"storage_path"'):
+        if forbidden_key in serialized:
+            raise ValueError("Key rotation journal must not contain secret or path fields.")
+
+    base_dir = (get_storage_dir() / "rotation_journals") if journal_dir is None else Path(journal_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    rotation_id = str(journal.get("rotation_id") or uuid.uuid4().hex)
+    if not re.fullmatch(r"^[A-Za-z0-9_-]{6,64}$", rotation_id):
+        raise ValueError("Invalid rotation_id format.")
+
+    final_path = base_dir / f"rotation_{rotation_id}.json"
+    temp_path = base_dir / f".rotation_{rotation_id}.{uuid.uuid4().hex[:8]}.tmp"
+    temp_path.write_text(serialized, encoding="utf-8")
+    if os.name == "posix":
+        try:
+            os.chmod(temp_path, 0o600)
+        except OSError:
+            pass
+    os.replace(temp_path, final_path)
+    return final_path
+
+
+def read_key_rotation_journal(journal_path: Path | str) -> dict[str, Any]:
+    """Load and validate a persisted key-rotation rollback journal."""
+    path = Path(journal_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema") != KEY_ROTATION_JOURNAL_SCHEMA:
+        raise ValueError("Unsupported or malformed key rotation journal.")
+    if not isinstance(payload.get("entries"), list):
+        raise ValueError("Key rotation journal is missing entries.")
+    return payload
 
 
 purge_stale_job_files = sweep_job_files
