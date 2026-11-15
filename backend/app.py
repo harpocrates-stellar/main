@@ -154,8 +154,13 @@ from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream,
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
+    active_upload_session_worker,
     create_streaming_file_storage,
     hash_paths_concat,
+    is_upload_session_expired,
+    preview_expired_upload_sessions,
+    register_upload_session,
+    touch_upload_session,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -932,8 +937,42 @@ def create_app() -> Flask:
     def create_upload_session():
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        return jsonify({"sessionId": session_id})
+        meta = register_upload_session(session_id, session_dir)
+        return jsonify({
+            "sessionId": session_id,
+            "ttlSeconds": meta["ttl_seconds"],
+            "expiresAt": datetime.fromtimestamp(meta["expires_at"], tz=timezone.utc).isoformat(),
+        })
+
+    @app.get("/api/stego/upload-sessions/retention-preview")
+    def upload_sessions_retention_preview():
+        if config.metrics_token:
+            auth_header = request.headers.get("Authorization", "")
+            token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+            custom_token = request.headers.get("X-Metrics-Token", "").strip()
+            import hmac as _hmac
+
+            expected_token = config.metrics_token.encode("utf-8")
+            bearer_ok = _hmac.compare_digest(token.encode("utf-8"), expected_token)
+            header_ok = _hmac.compare_digest(custom_token.encode("utf-8"), expected_token)
+            if not (bearer_ok or header_ok):
+                return jsonify({"error": "unauthorized operator preview access"}), 401
+
+        raw_ttl = request.args.get("ttlSeconds")
+        ttl_override: float | None = None
+        if raw_ttl is not None:
+            try:
+                ttl_override = float(raw_ttl)
+            except ValueError:
+                return jsonify({"error": "ttlSeconds must be a positive number"}), 400
+        try:
+            preview = preview_expired_upload_sessions(
+                ttl_seconds=ttl_override,
+                controller=admission_controller,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(preview), 200
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
@@ -941,6 +980,8 @@ def create_app() -> Flask:
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
+        if is_upload_session_expired(session_dir, controller=admission_controller):
+            return jsonify({"error": "upload session has expired"}), 410
         
         chunk = request.files.get("chunk")
         if chunk is None:
@@ -948,14 +989,16 @@ def create_app() -> Flask:
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
-        # Persist each session chunk with bounded-chunk hashing for integrity.
-        g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
-        chunk_path = session_dir / f"chunk-{chunk_index}"
-        try:
-            streaming_chunk.save(str(chunk_path))
-        except RequestEntityTooLarge:
-            return jsonify({"error": "chunk exceeds size limit"}), 413
+        with active_upload_session_worker(session_id, controller=admission_controller):
+            # Persist each session chunk with bounded-chunk hashing for integrity.
+            g.upload_config = config
+            streaming_chunk = create_streaming_file_storage(chunk)
+            chunk_path = session_dir / f"chunk-{chunk_index}"
+            try:
+                streaming_chunk.save(str(chunk_path))
+            except RequestEntityTooLarge:
+                return jsonify({"error": "chunk exceeds size limit"}), 413
+            touch_upload_session(session_dir)
         return jsonify({
             "ok": True,
             "bytes": streaming_chunk.bytes_written,
@@ -969,94 +1012,96 @@ def create_app() -> Flask:
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
+        if is_upload_session_expired(session_dir, controller=admission_controller):
+            return jsonify({"error": "upload session has expired"}), 410
 
-        metadata_raw = request.form.get("metadata")
-        if metadata_raw is None:
-            return jsonify({"error": "metadata is required"}), 400
+        with active_upload_session_worker(session_id, controller=admission_controller):
+            metadata_raw = request.form.get("metadata")
+            if metadata_raw is None:
+                return jsonify({"error": "metadata is required"}), 400
 
-        try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return metadata_error_response(
-                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                return metadata_error_response(
+                    MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+                )
+            try:
+                validate_embed_metadata(metadata)
+            except MetadataError as exc:
+                return metadata_error_response(exc)
+            except ValueError as exc:
+                return metadata_error_response(classify_validation_error(exc))
+
+            combined_path = session_dir / "combined.video"
+            chunk_files = sorted(
+                [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
+                key=lambda f: int(f.name.split("-")[1]),
             )
-        try:
-            validate_embed_metadata(metadata)
-        except MetadataError as exc:
-            return metadata_error_response(exc)
-        except ValueError as exc:
-            return metadata_error_response(classify_validation_error(exc))
+            if not chunk_files:
+                return jsonify({"error": "session has no chunks"}), 400
 
-        combined_path = session_dir / "combined.video"
-        chunk_files = sorted(
-            [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
-            key=lambda f: int(f.name.split("-")[1]),
-        )
-        if not chunk_files:
-            return jsonify({"error": "session has no chunks"}), 400
-
-        # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
-        source_hash, _written = hash_paths_concat(
-            chunk_files,
-            combined_path,
-            chunk_size=getattr(config, "upload_chunk_bytes", None),
-            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
-        )
-
-        # Sniff assembled file before handing it to ffmpeg.
-        try:
-            sniff_media_type_path(combined_path)
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
+            # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
+            source_hash, _written = hash_paths_concat(
+                chunk_files,
+                combined_path,
+                chunk_size=getattr(config, "upload_chunk_bytes", None),
+                max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
             )
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            embed_metadata(combined_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+            # Sniff assembled file before handing it to ffmpeg.
+            try:
+                sniff_media_type_path(combined_path)
+            except QuarantineError as exc:
+                return error_response(
+                    code=UNSUPPORTED_MEDIA_TYPE,
+                    message=str(exc),
+                    status=400,
+                )
 
-        retention_class = request.headers.get("X-Harpocrates-Retention-Class") or metadata.get("retentionClass", "default")
-        if retention_class not in config.retention_classes:
-            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
-        retention_days = config.retention_classes[retention_class]
-        expires_at = None
-        if retention_days >= 0:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+            with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+                output_path = Path(tmp_dir) / "embedded.mp4"
+                embed_metadata(combined_path, output_path, metadata)
+                output_bytes = output_path.read_bytes()
+                embedded_hash = sha256_file(output_path)
+                metadata_hash = canonical_metadata_hash(metadata)
 
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=normalize_filename(metadata.get("fileName", "unknown.mp4")),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            retention_class=retention_class,
-            expires_at=expires_at,
-            metadata=redact_metadata(metadata),
-        )
+            retention_class = request.headers.get("X-Harpocrates-Retention-Class") or metadata.get("retentionClass", "default")
+            if retention_class not in config.retention_classes:
+                return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+            retention_days = config.retention_classes[retention_class]
+            expires_at = None
+            if retention_days >= 0:
+                expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
 
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        response.headers["X-Harpocrates-Retention-Class"] = retention_class
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=normalize_filename(metadata.get("fileName", "unknown.mp4")),
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                retention_class=retention_class,
+                expires_at=expires_at,
+                metadata=redact_metadata(metadata),
+            )
 
-        import shutil
-        shutil.rmtree(session_dir, ignore_errors=True)
+            response = Response(output_bytes, mimetype="video/mp4")
+            response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+            response.headers["X-Harpocrates-Source-Hash"] = source_hash
+            response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+            response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+            response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+            response.headers["X-Harpocrates-Retention-Class"] = retention_class
+            if config.expose_metadata_header:
+                response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                ).decode("ascii")
 
-        return response
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+            return response
 
     @app.post("/api/stego/extract")
     @limiter.limit(config.ratelimit_extract)

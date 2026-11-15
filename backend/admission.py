@@ -1,6 +1,7 @@
+from contextlib import contextmanager
 import threading
 from functools import wraps
-from typing import Dict, Tuple
+from typing import Dict, Iterator, Tuple
 
 from flask import request, jsonify
 
@@ -25,7 +26,44 @@ class AdmissionController:
         self._lock = threading.Lock()
         self._current_queue = 0
         self._identity_counts: Dict[str, int] = {}
+        self._active_session_workers: Dict[str, int] = {}
         self._semaphore = threading.Semaphore(max_concurrent)
+
+    def acquire_session_worker(self, session_id: str) -> None:
+        """Record an active worker referencing `session_id` chunks."""
+        if not session_id:
+            return
+        with self._lock:
+            self._active_session_workers[session_id] = (
+                self._active_session_workers.get(session_id, 0) + 1
+            )
+
+    def release_session_worker(self, session_id: str) -> None:
+        """Release an active worker reference on `session_id`."""
+        if not session_id:
+            return
+        with self._lock:
+            current = self._active_session_workers.get(session_id, 0)
+            if current <= 1:
+                self._active_session_workers.pop(session_id, None)
+            else:
+                self._active_session_workers[session_id] = current - 1
+
+    def is_session_active(self, session_id: str) -> bool:
+        """Return True while at least one active worker references `session_id`."""
+        if not session_id:
+            return False
+        with self._lock:
+            return self._active_session_workers.get(session_id, 0) > 0
+
+    @contextmanager
+    def session_worker_lease(self, session_id: str) -> Iterator[None]:
+        """Context manager protecting `session_id` chunks from expiry sweeps."""
+        self.acquire_session_worker(session_id)
+        try:
+            yield
+        finally:
+            self.release_session_worker(session_id)
 
     def acquire(self, identity: str) -> Tuple[bool, str]:
         """
