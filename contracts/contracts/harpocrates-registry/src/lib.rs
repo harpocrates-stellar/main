@@ -1343,6 +1343,48 @@ pub struct SchemaRecord {
     pub created_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Non-mutating role invitation expiry inspection (#1188)
+// ---------------------------------------------------------------------------
+
+pub const INVITE_ROLE_ADMIN: u32 = 1;
+pub const INVITE_ROLE_ISSUER: u32 = 2;
+pub const INVITE_ROLE_GUARDIAN: u32 = 3;
+pub const MAX_ROLE_INVITATION_TTL_SECS: u64 = 2_592_000;
+
+/// Lifecycle state returned by pure role-invitation read queries (#1188).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RoleInvitationState {
+    Nonexistent = 0,
+    Active = 1,
+    Expired = 2,
+}
+
+/// Stored invitation record for institutional roles (#1188).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleInvitationRecord {
+    pub role_kind: u32,
+    pub candidate: Address,
+    pub inviter: Address,
+    pub invited_at: u64,
+    /// `0` denotes an unbounded legacy transfer; positive values denote a strict deadline.
+    pub expires_at: u64,
+}
+
+/// Read-only view of an institutional role invitation without cleanup side effects (#1188).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleInvitationView {
+    pub state: RoleInvitationState,
+    pub role_kind: u32,
+    pub candidate: Option<Address>,
+    pub invited_at: u64,
+    pub expires_at: u64,
+}
+
 #[contractevent(topics = ["schema", "add"])]
 pub struct SchemaAdded {
     #[topic]
@@ -1963,6 +2005,10 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Optional `(invited_at, expires_at)` window for `PendingAdmin` (#1188).
+    AdminInviteExpiry,
+    /// Pending role invitation record keyed by `(role_kind, candidate)` (#1188).
+    RoleInvite(u32, Address),
 }
 
 #[contracterror]
@@ -2157,6 +2203,8 @@ pub enum RegistryError {
     SealSignerSetTooLarge = 111,
     /// The threshold seal for this proof has already been finalized (#124).
     SealAlreadyFinalized = 112,
+    /// The requested role invitation duration is zero, above the cap, or overflows (#1188).
+    InvalidInvitationDuration = 113,
 }
 
 #[contract]
@@ -2323,9 +2371,37 @@ impl HarpocratesRegistry {
         require_admin(&env, &admin);
         require_admin_role_available(&env, &pending_admin);
 
+        let now = env.ledger().timestamp();
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminInviteExpiry, &(now, 0u64));
+        AdminProposed {
+            pending_admin,
+            current_admin: admin,
+        }
+        .publish(&env);
+    }
+
+    /// Propose an admin transfer bounded by an explicit acceptance TTL (#1188).
+    pub fn propose_admin_expiring(env: Env, admin: Address, pending_admin: Address, ttl_secs: u64) {
+        require_admin(&env, &admin);
+        require_admin_role_available(&env, &pending_admin);
+        if ttl_secs == 0 || ttl_secs > MAX_ROLE_INVITATION_TTL_SECS {
+            panic_with_error!(&env, RegistryError::InvalidInvitationDuration);
+        }
+        let now = env.ledger().timestamp();
+        let expires_at = now
+            .checked_add(ttl_secs)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvalidInvitationDuration));
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminInviteExpiry, &(now, expires_at));
         AdminProposed {
             pending_admin,
             current_admin: admin,
@@ -2352,6 +2428,9 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AdminInviteExpiry);
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2370,6 +2449,15 @@ impl HarpocratesRegistry {
         if proposed_admin != pending_admin {
             panic_with_error!(&env, RegistryError::Unauthorized);
         }
+        if let Some((_, expires_at)) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u64, u64)>(&DataKey::AdminInviteExpiry)
+        {
+            if expires_at > 0 && env.ledger().timestamp() >= expires_at {
+                panic_with_error!(&env, RegistryError::AlreadyExpired);
+            }
+        }
         require_admin_role_available(&env, &pending_admin);
 
         let previous_admin: Address = env
@@ -2381,6 +2469,9 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AdminInviteExpiry);
         AdminAccepted {
             new_admin: pending_admin,
             previous_admin,
@@ -6309,6 +6400,170 @@ impl HarpocratesRegistry {
             .unwrap_or(false)
     }
 
+    /// Record an expiring institutional role invitation for `candidate` (#1188).
+    pub fn invite_role_candidate(
+        env: Env,
+        admin: Address,
+        role_kind: u32,
+        candidate: Address,
+        ttl_secs: u64,
+    ) -> RoleInvitationRecord {
+        require_admin(&env, &admin);
+        if role_kind < INVITE_ROLE_ADMIN || role_kind > INVITE_ROLE_GUARDIAN {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
+        if ttl_secs == 0 || ttl_secs > MAX_ROLE_INVITATION_TTL_SECS {
+            panic_with_error!(&env, RegistryError::InvalidInvitationDuration);
+        }
+        if role_kind == INVITE_ROLE_ADMIN {
+            require_admin_role_available(&env, &candidate);
+        } else if role_kind == INVITE_ROLE_ISSUER {
+            require_issuer_role_available(&env, &candidate);
+        }
+
+        let now = env.ledger().timestamp();
+        let expires_at = now
+            .checked_add(ttl_secs)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvalidInvitationDuration));
+
+        let record = RoleInvitationRecord {
+            role_kind,
+            candidate: candidate.clone(),
+            inviter: admin.clone(),
+            invited_at: now,
+            expires_at,
+        };
+        if role_kind == INVITE_ROLE_ADMIN {
+            env.storage()
+                .persistent()
+                .set(&DataKey::PendingAdmin, &candidate);
+            env.storage()
+                .persistent()
+                .set(&DataKey::AdminInviteExpiry, &(now, expires_at));
+            AdminProposed {
+                pending_admin: candidate,
+                current_admin: admin,
+            }
+            .publish(&env);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::RoleInvite(role_kind, candidate), &record);
+        }
+        record
+    }
+
+    /// Explicitly remove a role invitation record (#1188).
+    pub fn clear_role_invitation(env: Env, admin: Address, role_kind: u32, candidate: Address) {
+        require_admin(&env, &admin);
+        if role_kind == INVITE_ROLE_ADMIN {
+            if env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::PendingAdmin)
+                .as_ref()
+                == Some(&candidate)
+            {
+                env.storage().persistent().remove(&DataKey::PendingAdmin);
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::AdminInviteExpiry);
+            }
+        } else {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::RoleInvite(role_kind, candidate));
+        }
+    }
+
+    /// Inspect pending admin invitation expiry without mutating contract state (#1188).
+    ///
+    /// Pure read: never deletes expired records, bumps TTLs, or emits events.
+    pub fn get_admin_invitation_status(env: Env) -> RoleInvitationView {
+        let Some(candidate) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::PendingAdmin)
+        else {
+            return RoleInvitationView {
+                state: RoleInvitationState::Nonexistent,
+                role_kind: INVITE_ROLE_ADMIN,
+                candidate: None,
+                invited_at: 0,
+                expires_at: 0,
+            };
+        };
+
+        let (invited_at, expires_at) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u64, u64)>(&DataKey::AdminInviteExpiry)
+            .unwrap_or((0u64, 0u64));
+        let state = if expires_at > 0 && env.ledger().timestamp() >= expires_at {
+            RoleInvitationState::Expired
+        } else {
+            RoleInvitationState::Active
+        };
+
+        RoleInvitationView {
+            state,
+            role_kind: INVITE_ROLE_ADMIN,
+            candidate: Some(candidate),
+            invited_at,
+            expires_at,
+        }
+    }
+
+    /// Inspect role invitation status (`Nonexistent`, `Active`, or `Expired`)
+    /// without mutating contract state or performing hidden cleanup (#1188).
+    pub fn get_role_invitation_status(
+        env: Env,
+        role_kind: u32,
+        candidate: Address,
+    ) -> RoleInvitationView {
+        if role_kind == INVITE_ROLE_ADMIN {
+            let admin_view = Self::get_admin_invitation_status(env);
+            if admin_view.candidate.as_ref() == Some(&candidate) {
+                return admin_view;
+            }
+            return RoleInvitationView {
+                state: RoleInvitationState::Nonexistent,
+                role_kind: INVITE_ROLE_ADMIN,
+                candidate: None,
+                invited_at: 0,
+                expires_at: 0,
+            };
+        }
+
+        let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, RoleInvitationRecord>(&DataKey::RoleInvite(role_kind, candidate))
+        else {
+            return RoleInvitationView {
+                state: RoleInvitationState::Nonexistent,
+                role_kind,
+                candidate: None,
+                invited_at: 0,
+                expires_at: 0,
+            };
+        };
+
+        let state = if record.expires_at > 0 && env.ledger().timestamp() >= record.expires_at {
+            RoleInvitationState::Expired
+        } else {
+            RoleInvitationState::Active
+        };
+
+        RoleInvitationView {
+            state,
+            role_kind: record.role_kind,
+            candidate: Some(record.candidate),
+            invited_at: record.invited_at,
+            expires_at: record.expires_at,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
@@ -9107,6 +9362,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_role_invitation_expiry_read;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]
