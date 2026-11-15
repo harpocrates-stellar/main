@@ -396,6 +396,25 @@ errors, so the on-chain error surface discloses nothing new.
   corpus parses as zero cases, which `corpus_is_non_empty_and_versioned`
   rejects.
 
+## Cross-circuit public-input compatibility
+
+While `hpx-vi/1` and `hpx-vi/2` pin wire conformance within each verifier schema,
+[`zk/tools/public_input_compatibility.py`](../zk/tools/public_input_compatibility.py)
+compares shared public-input encodings directly across the `silent_witness`,
+`redacted_ancestry`, and `selective_disclosure` circuits without silent
+normalization:
+
+- Exact 3-way and pairwise shared encodings (`nullifier`, `domain_tag`,
+  `credential_root`, `video_hash_hi`/`video_hash_lo`, `circuit_version`, and
+  `evidence_digest`) are extracted from `zk/noir/*/src/main.nr`,
+  `zk/noir/harpocrates_common/src/lib.nr`, and `backend/verifier_inputs.py`.
+- Any difference in exposure, declaration, slot index, wire padding, zero-field
+  policy, version constant type/value, or Pedersen derivation must match an
+  explicit `status: "reviewed"` record in
+  [`zk/noir/public_input_compatibility_v1.json`](../zk/noir/public_input_compatibility_v1.json).
+- Unreviewed differences, drifted observations, public frame reorders, or policy
+  flags attempting silent normalization fail closed (`python zk/tools/public_input_compatibility.py --check`).
+
 ## Protocol regression suite
 
 See `zk/regression/` for the protocol-level proof regression runner that reuses this corpus without introducing a second protocol truth.

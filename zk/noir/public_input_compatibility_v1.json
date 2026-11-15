@@ -1,0 +1,439 @@
+{
+  "format": "harpocrates.cross-circuit-public-input-compatibility",
+  "version": 1,
+  "normalization_policy": "forbid_silent_normalization",
+  "description": "Explicitly reviewed cross-circuit public-input layout, wire encoding, domain binding, and derivation differences across silent_witness, redacted_ancestry, and selective_disclosure. Any unreviewed or drifted difference fails closed.",
+  "circuit_frames": {
+    "silent_witness": {
+      "public_fields": [
+        "video_hash_hi",
+        "video_hash_lo",
+        "credential_root",
+        "nullifier",
+        "verifier_scope",
+        "epoch",
+        "domain_tag",
+        "circuit_version"
+      ]
+    },
+    "redacted_ancestry": {
+      "public_fields": [
+        "parent_commitment",
+        "derivative_digest",
+        "parameters_digest",
+        "operation_type",
+        "ancestry_root",
+        "nullifier",
+        "depth",
+        "domain_tag"
+      ]
+    },
+    "selective_disclosure": {
+      "public_fields": [
+        "schema_hash",
+        "issuer_namespace",
+        "schema_version",
+        "credential_root",
+        "nullifier",
+        "video_hash_hi",
+        "video_hash_lo",
+        "verifier_digest",
+        "circuit_version",
+        "evidence_digest",
+        "predicate_commitment"
+      ]
+    }
+  },
+  "reviewed_differences": [
+    {
+      "difference_id": "ccpi-diff-001-media-hash-hi-exposure",
+      "concept": "media_hash_hi",
+      "dimension": "exposure",
+      "observed": {
+        "redacted_ancestry": "private_blinded_in_parent_commitment",
+        "selective_disclosure": "public",
+        "silent_witness": "public"
+      },
+      "status": "reviewed",
+      "rationale": "redacted_ancestry keeps unredacted parent media hash limbs private and binds them inside parent_commitment with parent_blinding so observers cannot correlate redacted derivatives to raw parent hashes.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-002-media-hash-hi-declaration",
+      "concept": "media_hash_hi",
+      "dimension": "declaration",
+      "observed": {
+        "redacted_ancestry": "parent_hash_hi:Field(private)->parent_commitment:Field(pub)",
+        "selective_disclosure": "video_hash_hi:Field",
+        "silent_witness": "video_hash_hi:Field"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness and selective_disclosure expose video_hash_hi directly as pub Field, whereas redacted_ancestry names the private opening parent_hash_hi and exposes parent_commitment:Field.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-003-media-hash-hi-slot-index",
+      "concept": "media_hash_hi",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "private->slot_0(parent_commitment)",
+        "selective_disclosure": "5",
+        "silent_witness": "0"
+      },
+      "status": "reviewed",
+      "rationale": "selective_disclosure prepends schema_hash, issuer_namespace, schema_version, credential_root, and nullifier before video_hash_hi at slot 5; silent_witness places video_hash_hi at slot 0; redacted_ancestry commits parent_commitment at slot 0.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-004-media-hash-hi-wire-encoding",
+      "concept": "media_hash_hi",
+      "dimension": "wire_encoding",
+      "observed": {
+        "redacted_ancestry": "blinded_pedersen_commitment_be32",
+        "selective_disclosure": "bn254_field_be32_unpadded",
+        "silent_witness": "u128_be32_upper16_zero"
+      },
+      "status": "reviewed",
+      "rationale": "hpx-vi enforces 16 leading zero bytes on silent_witness video_hash_hi, whereas selective_disclosure accepts a canonical BN254 field element without an in-circuit 128-bit range check and redacted_ancestry emits a 32-byte Pedersen commitment.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-005-media-hash-lo-exposure",
+      "concept": "media_hash_lo",
+      "dimension": "exposure",
+      "observed": {
+        "redacted_ancestry": "private_blinded_in_parent_commitment",
+        "selective_disclosure": "public",
+        "silent_witness": "public"
+      },
+      "status": "reviewed",
+      "rationale": "redacted_ancestry keeps parent_hash_lo private inside parent_commitment to protect unredacted parent media digests, while silent_witness and selective_disclosure publish video_hash_lo.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-006-media-hash-lo-declaration",
+      "concept": "media_hash_lo",
+      "dimension": "declaration",
+      "observed": {
+        "redacted_ancestry": "parent_hash_lo:Field(private)->parent_commitment:Field(pub)",
+        "selective_disclosure": "video_hash_lo:Field",
+        "silent_witness": "video_hash_lo:Field"
+      },
+      "status": "reviewed",
+      "rationale": "redacted_ancestry separates private parent_hash_lo from public parent_commitment rather than aliasing it to video_hash_lo.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-007-media-hash-lo-slot-index",
+      "concept": "media_hash_lo",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "private->slot_0(parent_commitment)",
+        "selective_disclosure": "6",
+        "silent_witness": "1"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness places video_hash_lo at slot 1, selective_disclosure places it at slot 6 after schema and identity headers, and redacted_ancestry folds parent_hash_lo into slot 0 parent_commitment.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-008-media-hash-lo-wire-encoding",
+      "concept": "media_hash_lo",
+      "dimension": "wire_encoding",
+      "observed": {
+        "redacted_ancestry": "blinded_pedersen_commitment_be32",
+        "selective_disclosure": "bn254_field_be32_unpadded",
+        "silent_witness": "u128_be32_upper16_zero"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness enforces 16 high zero bytes on video_hash_lo in hpx-vi, selective_disclosure treats video_hash_lo as a general canonical BN254 field, and redacted_ancestry exposes only the blinded Pedersen commitment.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-009-credential-root-exposure",
+      "concept": "credential_root",
+      "dimension": "exposure",
+      "observed": {
+        "redacted_ancestry": "omitted_bound_via_nullifier",
+        "selective_disclosure": "public",
+        "silent_witness": "public"
+      },
+      "status": "reviewed",
+      "rationale": "redacted_ancestry intentionally omits a public credential_root and binds credential_secret only through its domain-separated nullifier so ancestry proofs remain unlinkable to static pseudonymous roots.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-010-credential-root-declaration",
+      "concept": "credential_root",
+      "dimension": "declaration",
+      "observed": {
+        "redacted_ancestry": "none",
+        "selective_disclosure": "credential_root:Field",
+        "silent_witness": "credential_root:Field"
+      },
+      "status": "reviewed",
+      "rationale": "credential_root is declared as pub Field in silent_witness and selective_disclosure and omitted from redacted_ancestry.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-011-credential-root-slot-index",
+      "concept": "credential_root",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "none",
+        "selective_disclosure": "3",
+        "silent_witness": "2"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness places credential_root after the two video hash limbs (slot 2), selective_disclosure places it after the three schema header fields (slot 3), and redacted_ancestry omits it.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-012-credential-root-derivation",
+      "concept": "credential_root",
+      "dimension": "derivation",
+      "observed": {
+        "redacted_ancestry": "none_credential_secret_in_nullifier_only",
+        "selective_disclosure": "pedersen_fold(attr_commitment(attr_values[i],attr_blindings[i]))",
+        "silent_witness": "pedersen([credential_secret])"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness commits a single credential_secret while selective_disclosure commits a left-folded chain of blinded issuer-certified attributes; roots from the two circuits are distinct credential namespaces and must never be treated as interchangeable.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-013-credential-root-zero-policy",
+      "concept": "credential_root",
+      "dimension": "zero_policy",
+      "observed": {
+        "redacted_ancestry": "not_exposed_secret_asserted_non_zero",
+        "selective_disclosure": "derived_pedersen_chain_no_explicit_zero_assert",
+        "silent_witness": "non_zero_on_wire_only"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness enforces non-zero credential_root in the hpx-vi wire codec while allowing zero credential_secret in-circuit; redacted_ancestry asserts credential_secret != 0 in-circuit; selective_disclosure derives credential_root via Pedersen folding.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-014-nullifier-slot-index",
+      "concept": "nullifier",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "5",
+        "selective_disclosure": "4",
+        "silent_witness": "3"
+      },
+      "status": "reviewed",
+      "rationale": "Each circuit's public frame orders statement-specific headers ahead of nullifier (slot 3 in silent_witness, slot 4 in selective_disclosure, slot 5 in redacted_ancestry); parsers dispatch by explicit schema rather than assuming a shared slot index.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-015-nullifier-derivation",
+      "concept": "nullifier",
+      "dimension": "derivation",
+      "observed": {
+        "redacted_ancestry": "pedersen([DOMAIN_NULLIFIER,credential_secret,nullifier_secret,ancestry_root])",
+        "selective_disclosure": "pedersen([credential_root,video_hash_hi,video_hash_lo,evidence_digest])",
+        "silent_witness": "pedersen([credential_secret,nullifier_secret,evidence_digest])"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness binds SCOPED_NULLIFIER_V1 via evidence_digest, redacted_ancestry binds HP_REDACT_NULLIFIER_V1 and ancestry_root, and selective_disclosure derives an deterministic per-evidence disclosure nullifier from credential_root, video hash limbs, and evidence_digest as documented in section 7.2 of the disclosure spec.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-016-nullifier-zero-policy",
+      "concept": "nullifier",
+      "dimension": "zero_policy",
+      "observed": {
+        "redacted_ancestry": "non_zero_in_circuit",
+        "selective_disclosure": "derived_pedersen_no_explicit_zero_assert",
+        "silent_witness": "non_zero_on_wire_only"
+      },
+      "status": "reviewed",
+      "rationale": "redacted_ancestry explicitly asserts nullifier != 0 in-circuit, silent_witness rejects zero nullifier at the hpx-vi wire boundary, and selective_disclosure constrains nullifier to a Pedersen output verified non-zero at registry ingestion.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-017-domain-separation-exposure",
+      "concept": "domain_separation",
+      "dimension": "exposure",
+      "observed": {
+        "redacted_ancestry": "public",
+        "selective_disclosure": "omitted_uses_schema_and_verifier_digest",
+        "silent_witness": "public"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness and redacted_ancestry expose domain_tag directly, whereas selective_disclosure binds context through public schema_hash, issuer_namespace, circuit_version, and non-zero verifier_digest.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-018-domain-separation-declaration",
+      "concept": "domain_separation",
+      "dimension": "declaration",
+      "observed": {
+        "redacted_ancestry": "domain_tag:Field",
+        "selective_disclosure": "none",
+        "silent_witness": "domain_tag:Field"
+      },
+      "status": "reviewed",
+      "rationale": "domain_tag is declared as pub Field in silent_witness and redacted_ancestry and omitted in selective_disclosure.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-019-domain-separation-slot-index",
+      "concept": "domain_separation",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "7",
+        "selective_disclosure": "none",
+        "silent_witness": "6"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness places domain_tag at slot 6 ahead of the trailing circuit_version slot 7, redacted_ancestry places domain_tag as its final slot 7, and selective_disclosure omits domain_tag.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-020-domain-separation-circuit-derivation",
+      "concept": "domain_separation",
+      "dimension": "circuit_derivation",
+      "observed": {
+        "redacted_ancestry": "pedersen([DOMAIN_PROTOCOL_FIELD,DOMAIN_VERSION_FIELD,DOMAIN_NETWORK_FIELD])",
+        "selective_disclosure": "pedersen([verifier_digest,schema_hash,circuit_version])",
+        "silent_witness": "pedersen([DOMAIN_PROTOCOL_FIELD,DOMAIN_VERSION_FIELD,DOMAIN_NETWORK_FIELD])"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness and redacted_ancestry share harpocrates_common::expected_domain_tag(), while selective_disclosure hashes verifier_digest, schema_hash, and circuit_version.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-021-domain-separation-wire-vs-circuit",
+      "concept": "domain_separation",
+      "dimension": "wire_vs_circuit_binding",
+      "observed": {
+        "redacted_ancestry": "circuit:pedersen([DOMAIN_PROTOCOL_FIELD,DOMAIN_VERSION_FIELD,DOMAIN_NETWORK_FIELD])",
+        "selective_disclosure": "verifier_digest_non_zero_in_circuit",
+        "silent_witness": "wire:sha256(DOMAIN_PROTOCOL_FIELD||DOMAIN_VERSION_FIELD||DOMAIN_NETWORK_FIELD);circuit:pedersen([DOMAIN_PROTOCOL_FIELD,DOMAIN_VERSION_FIELD,DOMAIN_NETWORK_FIELD]);matched_hpx_vi_v2_8_fields"
+      },
+      "status": "reviewed",
+      "rationale": "Tracks the documented transition between the SHA-256 wire domain tag in hpx-vi and the Pedersen expected_domain_tag() in Noir source alongside selective_disclosure's verifier_digest != 0 check.",
+      "reviewer_ref": "docs/zk-circuit-input-schema.md"
+    },
+    {
+      "difference_id": "ccpi-diff-022-circuit-version-exposure",
+      "concept": "circuit_version",
+      "dimension": "exposure",
+      "observed": {
+        "redacted_ancestry": "folded_into_ancestry_root",
+        "selective_disclosure": "public",
+        "silent_witness": "public"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness and selective_disclosure carry an explicit circuit_version public input slot, whereas redacted_ancestry binds CIRCUIT_VERSION inside the Pedersen preimage of public ancestry_root.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-023-circuit-version-declaration",
+      "concept": "circuit_version",
+      "dimension": "declaration",
+      "observed": {
+        "redacted_ancestry": "none",
+        "selective_disclosure": "circuit_version:Field",
+        "silent_witness": "circuit_version:Field"
+      },
+      "status": "reviewed",
+      "rationale": "redacted_ancestry folds CIRCUIT_VERSION into ancestry_root instead of declaring a standalone circuit_version: pub Field parameter.",
+      "reviewer_ref": "docs/zk-redacted-ancestry-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-024-circuit-version-slot-index",
+      "concept": "circuit_version",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "none",
+        "selective_disclosure": "8",
+        "silent_witness": "7"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness places circuit_version as its trailing 8th field (slot 7), selective_disclosure places circuit_version at slot 8 before evidence_digest and predicate_commitment, and redacted_ancestry omits the standalone slot.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-025-circuit-version-constant",
+      "concept": "circuit_version",
+      "dimension": "version_constant",
+      "observed": {
+        "redacted_ancestry": "CIRCUIT_VERSION:Field=1",
+        "selective_disclosure": "CURRENT_CIRCUIT_VERSION:u32=1",
+        "silent_witness": "CURRENT_CIRCUIT_VERSION:u32=2"
+      },
+      "status": "reviewed",
+      "rationale": "Each circuit evolves its own version counter independently (silent_witness at v2 u32, selective_disclosure at v1 u32, redacted_ancestry at v1 Field) without coercing constant names or Noir integer/Field types.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-026-circuit-version-wire-encoding",
+      "concept": "circuit_version",
+      "dimension": "wire_encoding",
+      "observed": {
+        "redacted_ancestry": "folded_in_ancestry_root_pedersen",
+        "selective_disclosure": "u32_be32_low4_label",
+        "silent_witness": "u32_be32_upper28_zero(expected=2)"
+      },
+      "status": "reviewed",
+      "rationale": "hpx-vi/2 rejects non-zero upper 28 bytes on silent_witness circuit_version (sw2-neg-024-dirty-upper), selective_disclosure parses low 4 bytes while asserting field equality in-circuit, and redacted_ancestry commits CIRCUIT_VERSION inside ancestry_root.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-027-circuit-version-in-circuit-enforcement",
+      "concept": "circuit_version",
+      "dimension": "in_circuit_enforcement",
+      "observed": {
+        "redacted_ancestry": "bound_in_ancestry_root_preimage",
+        "selective_disclosure": "assert_eq_in_main",
+        "silent_witness": "wire_enforced_missing_main_assert"
+      },
+      "status": "reviewed",
+      "rationale": "selective_disclosure asserts circuit_version == CURRENT_CIRCUIT_VERSION in main(), redacted_ancestry binds CIRCUIT_VERSION inside derive_ancestry_root(), and silent_witness currently enforces circuit_version == 2 at the hpx-vi/2 codec and registry boundary.",
+      "reviewer_ref": "docs/zk-conformance-vectors.md"
+    },
+    {
+      "difference_id": "ccpi-diff-028-evidence-digest-exposure",
+      "concept": "evidence_digest",
+      "dimension": "exposure",
+      "observed": {
+        "redacted_ancestry": "lineage_derivative_and_parameters_digests",
+        "selective_disclosure": "public",
+        "silent_witness": "internal_intermediate"
+      },
+      "status": "reviewed",
+      "rationale": "silent_witness derives evidence_digest internally from DIGEST_ALGORITHM_SHA256, video_hash limbs, and scope_hash; selective_disclosure takes evidence_digest as a public input slot; redacted_ancestry exposes derivative_digest and parameters_digest.",
+      "reviewer_ref": "docs/zk-silent-witness-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-029-evidence-digest-declaration",
+      "concept": "evidence_digest",
+      "dimension": "declaration",
+      "observed": {
+        "redacted_ancestry": "none",
+        "selective_disclosure": "evidence_digest:Field",
+        "silent_witness": "none"
+      },
+      "status": "reviewed",
+      "rationale": "Only selective_disclosure declares evidence_digest: pub Field directly on main().",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    },
+    {
+      "difference_id": "ccpi-diff-030-evidence-digest-slot-index",
+      "concept": "evidence_digest",
+      "dimension": "slot_index",
+      "observed": {
+        "redacted_ancestry": "none",
+        "selective_disclosure": "9",
+        "silent_witness": "none"
+      },
+      "status": "reviewed",
+      "rationale": "selective_disclosure places evidence_digest at slot 9, while silent_witness keeps evidence_digest internal and redacted_ancestry uses slots 1 and 2 for derivative_digest and parameters_digest.",
+      "reviewer_ref": "docs/zk-selective-disclosure-spec.md"
+    }
+  ]
+}

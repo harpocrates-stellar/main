@@ -260,6 +260,25 @@ pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_confor
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
+## Cross-circuit public-input compatibility report
+
+Shared public-input concepts (`video_hash_hi`, `video_hash_lo`, `credential_root`,
+`nullifier`, `domain_tag`, `circuit_version`, and `evidence_digest`) across
+`silent_witness`, `redacted_ancestry`, and `selective_disclosure` are audited by
+[`zk/tools/public_input_compatibility.py`](../tools/public_input_compatibility.py)
+against the reviewed difference policy in
+[`public_input_compatibility_v1.json`](public_input_compatibility_v1.json).
+
+Silent normalization (aliasing field names, coercing `u32` and `Field` constants,
+or ignoring slot index/padding differences) is forbidden; every cross-circuit
+difference must carry an explicit `status: "reviewed"` rationale and spec
+reference or `--check` fails closed:
+
+```bash
+python zk/tools/public_input_compatibility.py --check
+python zk/tools/public_input_compatibility.py --format markdown
+```
+
 ## Build
 
 For the full local build with the checked-in prover file:
