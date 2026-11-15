@@ -64,6 +64,25 @@ scoped frame a verifier will act on. The published four-field browser frame
 separate, older artifact, and the versioned envelope never replaces a frame
 already recorded on chain.
 
+### 2.1 Machine-Readable Statement Descriptor
+
+The canonical private/public input list, `silent_witness/v2` wire byte offsets,
+helper interface, domain constants, and reviewed artifact digests are published
+in [`zk/scoped_nullifier.statement.json`](../zk/scoped_nullifier.statement.json)
+and verified by [`zk/tools/statement_descriptor.py`](../zk/tools/statement_descriptor.py):
+
+```bash
+python zk/tools/statement_descriptor.py write
+python zk/tools/statement_descriptor.py verify
+```
+
+`descriptor_sha256` covers both the ordered private/public inputs and
+`artifact_bindings` (LF-normalized digests of `silent_witness`,
+`silent_witness_helper`, `harpocrates_common`, `circuit_input_schema_v1.json`,
+the pinned toolchain normalization policy, and the normalized published ACIR
+bundles in `zk/browser.artifacts.manifest.json`), failing closed (`exit 1`) on
+any signature or artifact drift.
+
 ## 3. Statement (as currently enforced)
 
 The circuit enforces exactly two constraints:

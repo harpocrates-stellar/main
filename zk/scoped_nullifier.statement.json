@@ -1,0 +1,289 @@
+{
+  "format": "harpocrates.zk-statement-descriptor",
+  "version": 1,
+  "statement_id": "silent_witness/scoped_nullifier_v1",
+  "circuit": "silent_witness",
+  "helper_circuit": "silent_witness_helper",
+  "circuit_version": 2,
+  "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "verifier_wire_frame": {
+    "codec": "hpx-vi/2",
+    "field_bytes": 32,
+    "frame_id": "silent_witness/v2",
+    "public_field_count": 8,
+    "total_bytes": 256
+  },
+  "domain_constants": {
+    "digest_algorithm_sha256": "0",
+    "domain_network_field": "0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f",
+    "domain_protocol_field": "0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201",
+    "domain_version_field": "0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623",
+    "scoped_nullifier_v1": "0x00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631"
+  },
+  "private_inputs": [
+    {
+      "abi_index": 0,
+      "canonical_encoding": "bn254_scalar_field",
+      "name": "credential_secret",
+      "noir_type": "Field",
+      "role": "identity_preimage",
+      "visibility": "private"
+    },
+    {
+      "abi_index": 1,
+      "canonical_encoding": "bn254_scalar_field",
+      "name": "nullifier_secret",
+      "noir_type": "Field",
+      "role": "nullifier_blinding_secret",
+      "visibility": "private"
+    }
+  ],
+  "public_inputs": [
+    {
+      "abi_index": 2,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "video_hash_hi",
+      "noir_type": "Field",
+      "public_index": 0,
+      "role": "evidence_sha256_hi_128",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 0
+    },
+    {
+      "abi_index": 3,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "video_hash_lo",
+      "noir_type": "Field",
+      "public_index": 1,
+      "role": "evidence_sha256_lo_128",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 32
+    },
+    {
+      "abi_index": 4,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "credential_root",
+      "noir_type": "Field",
+      "public_index": 2,
+      "role": "credential_commitment",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 64
+    },
+    {
+      "abi_index": 5,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "nullifier",
+      "noir_type": "Field",
+      "public_index": 3,
+      "role": "scoped_nullifier",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 96
+    },
+    {
+      "abi_index": 6,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "verifier_scope",
+      "noir_type": "Field",
+      "public_index": 4,
+      "role": "verifier_scope_field",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 128
+    },
+    {
+      "abi_index": 7,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "epoch",
+      "noir_type": "Field",
+      "public_index": 5,
+      "role": "scope_epoch",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 160
+    },
+    {
+      "abi_index": 8,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "domain_tag",
+      "noir_type": "Field",
+      "public_index": 6,
+      "role": "protocol_domain_tag",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 192
+    },
+    {
+      "abi_index": 9,
+      "canonical_encoding": "bn254_be_32_bytes",
+      "name": "circuit_version",
+      "noir_type": "Field",
+      "public_index": 7,
+      "role": "committed_circuit_version",
+      "visibility": "public",
+      "wire_byte_length": 32,
+      "wire_byte_offset": 224
+    }
+  ],
+  "helper_interface": {
+    "inputs": [
+      {
+        "abi_index": 0,
+        "canonical_encoding": "bn254_scalar_field",
+        "name": "credential_secret",
+        "noir_type": "Field",
+        "visibility": "private"
+      },
+      {
+        "abi_index": 1,
+        "canonical_encoding": "bn254_scalar_field",
+        "name": "nullifier_secret",
+        "noir_type": "Field",
+        "visibility": "private"
+      },
+      {
+        "abi_index": 2,
+        "canonical_encoding": "bn254_scalar_field",
+        "name": "video_hash_hi",
+        "noir_type": "Field",
+        "visibility": "private"
+      },
+      {
+        "abi_index": 3,
+        "canonical_encoding": "bn254_scalar_field",
+        "name": "video_hash_lo",
+        "noir_type": "Field",
+        "visibility": "private"
+      },
+      {
+        "abi_index": 4,
+        "canonical_encoding": "bn254_scalar_field",
+        "name": "verifier_scope",
+        "noir_type": "Field",
+        "visibility": "private"
+      },
+      {
+        "abi_index": 5,
+        "canonical_encoding": "bn254_scalar_field",
+        "name": "epoch",
+        "noir_type": "Field",
+        "visibility": "private"
+      }
+    ],
+    "public_outputs": [
+      {
+        "name": "credential_root",
+        "noir_type": "Field",
+        "tuple_index": 0,
+        "visibility": "public"
+      },
+      {
+        "name": "nullifier",
+        "noir_type": "Field",
+        "tuple_index": 1,
+        "visibility": "public"
+      },
+      {
+        "name": "domain_tag",
+        "noir_type": "Field",
+        "tuple_index": 2,
+        "visibility": "public"
+      }
+    ]
+  },
+  "artifact_bindings": {
+    "artifact_binding_sha256": "0dd9ef15dd46f43627f02cc323148952d10db64938ec2d3c09dd6e4c72f6f955",
+    "declared_target_artifacts": [
+      {
+        "kind": "json",
+        "path": "zk/noir/silent_witness/target/silent_witness.json",
+        "required_in_full_build": true,
+        "role": "acir"
+      },
+      {
+        "kind": "binary",
+        "path": "zk/noir/silent_witness/target/vk",
+        "required_in_full_build": true,
+        "role": "verification_key"
+      },
+      {
+        "kind": "json",
+        "path": "zk/noir/silent_witness/target/vk_fields.json",
+        "required_in_full_build": true,
+        "role": "verification_key_fields"
+      },
+      {
+        "kind": "json",
+        "path": "zk/noir/silent_witness_helper/target/silent_witness_helper.json",
+        "required_in_full_build": true,
+        "role": "acir"
+      }
+    ],
+    "reviewed_browser_artifacts": [
+      {
+        "abi_profile": "browser_v1",
+        "kind": "json",
+        "normalized_bytes": 2003,
+        "normalized_sha256": "465e556f5904e7bc5404cfb7557e5648949df36b504d7b7b0a218257cf83d509",
+        "path": "frontend/public/noir/silent_witness.json",
+        "role": "published_acir"
+      },
+      {
+        "abi_profile": "browser_v1",
+        "kind": "json",
+        "normalized_bytes": 1960,
+        "normalized_sha256": "a141350e3c2f83fb4d30c9c4c6ba81ff6ef0400a39e81b7a583bf36754719df8",
+        "path": "frontend/public/noir/silent_witness_helper.json",
+        "role": "published_acir"
+      }
+    ],
+    "reviewed_sources": [
+      {
+        "lf_bytes": 122,
+        "lf_sha256": "ce09e4e969a0167b10aa6efd47580f2b1e403c8cf0bb077550ade4f300acc882",
+        "path": "zk/noir/harpocrates_common/Nargo.toml"
+      },
+      {
+        "lf_bytes": 1377,
+        "lf_sha256": "8bd9d9ec34b80ede862d9659c138397840436e98ff64cc297a7fcbba0f4e0d04",
+        "path": "zk/noir/harpocrates_common/src/lib.nr"
+      },
+      {
+        "lf_bytes": 174,
+        "lf_sha256": "6c7e229512105da836add0a78c41396f5b243e7a1f7cdb2cf96f2a76d63fbd28",
+        "path": "zk/noir/silent_witness/Nargo.toml"
+      },
+      {
+        "lf_bytes": 21476,
+        "lf_sha256": "a418b2f1eea19a54901b019afb6a42fa96e1616ba608e4ede587a32c1b2c918c",
+        "path": "zk/noir/silent_witness/src/main.nr"
+      },
+      {
+        "lf_bytes": 181,
+        "lf_sha256": "bd79eb724c4533a42c7ebd9491e508a9045c213c7474eeaf99cc6358d250948b",
+        "path": "zk/noir/silent_witness_helper/Nargo.toml"
+      },
+      {
+        "lf_bytes": 9725,
+        "lf_sha256": "c0f781aadd239a6fef99192af191157418c6738511717d273ffa02c03d30d901",
+        "path": "zk/noir/silent_witness_helper/src/main.nr"
+      },
+      {
+        "lf_bytes": 2152,
+        "lf_sha256": "ab97641604deb2679ff7eea4717a0e620684dc30f3e7a7d397c8ce119a830bdd",
+        "path": "zk/noir/circuit_input_schema_v1.json"
+      }
+    ],
+    "toolchain": {
+      "barretenberg": "0.87.0",
+      "nargo": "1.0.0-beta.9",
+      "normalization_policy_sha256": "ab0d2c5df0ed8fa307d26a748fbbca0d6b671e1fa228e491a8149b5d305565b5",
+      "oracle_hash": "keccak",
+      "proving_scheme": "ultra_honk"
+    }
+  },
+  "descriptor_sha256": "778dd7cd156a37f7770ac88d9d6931051b344247c3cad6c9f7a83c5ef09c987e"
+}

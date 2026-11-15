@@ -15,6 +15,15 @@ The base circuit proves:
 
 The creator can register evidence without revealing the credential secret.
 
+Machine-readable scoped-nullifier statement descriptor (ordered private/public
+inputs, wire offsets, and reviewed circuit/artifact digest bindings):
+[`zk/scoped_nullifier.statement.json`](../scoped_nullifier.statement.json),
+maintained and verified via:
+
+```bash
+python zk/tools/statement_descriptor.py verify
+```
+
 ### `redacted_ancestry`
 
 Proves that a **redacted** derivative descends from a committed parent evidence
