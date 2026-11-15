@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Export Store Availability Statuses
+
+`ExportManager.export_with_status()` and `ExportManager.create_export()` return
+distinct machine-readable statuses via `ExportStatus`:
+- `completed`: healthy store, one or more export-safe records serialized.
+- `empty`: healthy store, zero matching export-safe records (`ExportArtifact.export_status == "empty"`).
+- `store_unavailable`: backing log processor, health check, or consent store is
+  unavailable (`artifact=None`, `retryable=True`) — never reported as a
+  zero-record `empty` export.
+- `export_token_required`: unauthenticated caller when shadow mode is disabled.
+
 ## Test
 
 ```powershell

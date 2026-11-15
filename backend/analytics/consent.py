@@ -12,6 +12,10 @@ CONSENT_SCHEMA_VERSION = "1.0.0"
 CONSENT_GRACE_PERIOD_SECONDS = 1800
 
 
+class ConsentStoreUnavailableError(RuntimeError):
+    """Raised when the backing consent state store cannot be reached."""
+
+
 class ConsentStatus:
     UNKNOWN = "unknown"
     GRANTED = "granted"
@@ -125,12 +129,27 @@ DEFAULT_CONSENT_STATE = ConsentState(
 class ConsentManager:
     _consent_states: Dict[str, ConsentState]
     _grace_period: float
+    _store_available: bool
     _lock: threading.Lock
 
-    def __init__(self, grace_period_seconds: float = CONSENT_GRACE_PERIOD_SECONDS) -> None:
+    def __init__(
+        self,
+        grace_period_seconds: float = CONSENT_GRACE_PERIOD_SECONDS,
+        *,
+        store_available: bool = True,
+    ) -> None:
         self._grace_period = float(grace_period_seconds)
+        self._store_available = bool(store_available)
         self._lock = threading.Lock()
         self._consent_states = {}
+
+    def is_store_available(self) -> bool:
+        with self._lock:
+            return self._store_available
+
+    def set_store_available(self, available: bool) -> None:
+        with self._lock:
+            self._store_available = bool(available)
 
     def check_consent(
         self,
@@ -138,6 +157,9 @@ class ConsentManager:
         scope: Optional[str],
         now_epoch_seconds: float | None = None,
     ) -> Tuple[bool, ConsentState]:
+        with self._lock:
+            if not self._store_available:
+                raise ConsentStoreUnavailableError("consent store unavailable")
         now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
         if account_tag is None:
             temp = ConsentState(

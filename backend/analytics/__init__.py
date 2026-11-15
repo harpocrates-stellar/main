@@ -44,6 +44,7 @@ try:
         ConsentSource,
         ConsentState,
         ConsentStatus,
+        ConsentStoreUnavailableError,
         DEFAULT_CONSENT_STATE,
     )
 except Exception:
@@ -122,11 +123,14 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        AnalyticsStoreUnavailableError,
         EXPORT_FORMAT_VERSION,
         ExportArtifact,
         ExportManager,
+        ExportOutcome,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        ExportStatus,
     )
 except Exception:
     pass
@@ -179,6 +183,7 @@ __all__ = [
     "ConsentSource",
     "ConsentState",
     "ConsentStatus",
+    "ConsentStoreUnavailableError",
     "DEFAULT_CONSENT_STATE",
     "MAX_REPLAY_WINDOW_SECONDS",
     "NONCE_TTL_SECONDS",
@@ -221,11 +226,14 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "AnalyticsStoreUnavailableError",
     "EXPORT_FORMAT_VERSION",
     "ExportArtifact",
     "ExportManager",
+    "ExportOutcome",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "ExportStatus",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",
