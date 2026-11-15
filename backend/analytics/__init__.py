@@ -38,6 +38,7 @@ except Exception:
 try:
     from analytics.consent import (
         CONSENT_GRACE_PERIOD_SECONDS,
+        CONSENT_POLICY_REVISION,
         CONSENT_SCHEMA_VERSION,
         ConsentDecision,
         ConsentManager,
@@ -45,6 +46,7 @@ try:
         ConsentState,
         ConsentStatus,
         DEFAULT_CONSENT_STATE,
+        normalize_consent_scopes,
     )
 except Exception:
     pass
@@ -122,11 +124,18 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        DEFAULT_EXPORT_SCOPE,
         EXPORT_FORMAT_VERSION,
+        EXPORT_POLICY_REVISION,
+        EXPORT_RECEIPT_DOMAIN,
         ExportArtifact,
+        ExportCompletionReceipt,
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        compute_output_digest,
+        validate_policy_revision,
+        validate_receipt_scopes,
     )
 except Exception:
     pass
@@ -173,6 +182,7 @@ __all__ = [
     "event_is_allowed",
     "transition_event_state",
     "CONSENT_GRACE_PERIOD_SECONDS",
+    "CONSENT_POLICY_REVISION",
     "CONSENT_SCHEMA_VERSION",
     "ConsentDecision",
     "ConsentManager",
@@ -180,6 +190,7 @@ __all__ = [
     "ConsentState",
     "ConsentStatus",
     "DEFAULT_CONSENT_STATE",
+    "normalize_consent_scopes",
     "MAX_REPLAY_WINDOW_SECONDS",
     "NONCE_TTL_SECONDS",
     "REPLAY_PROTECTION_VERSION",
@@ -221,11 +232,18 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "DEFAULT_EXPORT_SCOPE",
     "EXPORT_FORMAT_VERSION",
+    "EXPORT_POLICY_REVISION",
+    "EXPORT_RECEIPT_DOMAIN",
     "ExportArtifact",
+    "ExportCompletionReceipt",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "compute_output_digest",
+    "validate_policy_revision",
+    "validate_receipt_scopes",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",

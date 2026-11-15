@@ -351,3 +351,25 @@ python -m unittest test_app.py test_stego.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+## Analytics Export Completion Receipts
+
+`ExportManager.create_export_with_receipt` (and `ExportManager.create_export`, via
+`get_receipt` / `get_receipt_for_artifact`) emits an `ExportCompletionReceipt`
+whenever an analytics export finishes:
+
+- **Recorded metadata**: `receipt_id`, `artifact_id`, canonical sorted
+  `selected_scopes` (defaulting to `["analytics:export"]`), effective
+  `policy_revision`, full `output_digest` (`sha256:<hex>`), `entry_count`,
+  `payload_bytes`, `compress`, `rollout_phase`, `redaction_version`,
+  `safety_signature`, and domain-separated `receipt_digest`
+  (`harpocrates:analytics-export-receipt:v1`).
+- **Privacy boundary**: raw events, message summaries, labels, counters,
+  account/session/correlation tags, and export or consent tokens are never stored
+  in `ExportCompletionReceipt`. Scope and policy revision inputs are validated
+  against bounded token grammars and reject digest- or key-shaped strings before
+  any artifact or receipt is recorded.
+- **Verification**: `receipt.verify_output(serialized)` checks the SHA-256
+  digest and byte length of the exported payload in constant time, and
+  `receipt.verify_integrity()` verifies the receipt commitment digest.
+
+

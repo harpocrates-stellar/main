@@ -2,14 +2,42 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 CONSENT_SCHEMA_VERSION = "1.0.0"
+CONSENT_POLICY_REVISION = "consent-policy-v1"
 CONSENT_GRACE_PERIOD_SECONDS = 1800
+
+_POLICY_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
+_SCOPE_TOKEN_RE = re.compile(r"^(?:\*|[A-Za-z0-9][A-Za-z0-9_:*.-]{0,63})$")
+_HEX32_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
+_STELLAR_KEY_RE = re.compile(r"^[GSM][A-Z2-7]{55,68}$")
+
+
+def _validate_consent_policy_revision(revision: str) -> str:
+    if not isinstance(revision, str) or not _POLICY_REVISION_RE.match(revision):
+        raise ValueError("invalid consent policy revision")
+    if _HEX32_RE.match(revision) or _STELLAR_KEY_RE.match(revision):
+        raise ValueError("invalid consent policy revision")
+    return revision
+
+
+def normalize_consent_scopes(scopes: Optional[Iterable[str]]) -> List[str]:
+    if scopes is None:
+        return []
+    normalized = set()
+    for item in scopes:
+        if not isinstance(item, str) or not _SCOPE_TOKEN_RE.match(item):
+            raise ValueError("invalid consent scope")
+        if _HEX32_RE.match(item) or _STELLAR_KEY_RE.match(item):
+            raise ValueError("invalid consent scope")
+        normalized.add(item)
+    return sorted(normalized)
 
 
 class ConsentStatus:
@@ -66,12 +94,14 @@ class ConsentDecision:
     withdrawal_epoch_seconds: Optional[float] = None
     reason: Optional[str] = None
     stable_account_tag: Optional[str] = None
+    policy_revision: str = CONSENT_POLICY_REVISION
 
     def __post_init__(self) -> None:
         if self.status not in _VALID_STATUSES:
             raise ValueError(f"invalid consent status: {self.status}")
         if self.source not in _VALID_SOURCES:
             raise ValueError(f"invalid consent source: {self.source}")
+        _validate_consent_policy_revision(self.policy_revision)
 
 
 @dataclass
@@ -87,6 +117,7 @@ class ConsentState:
     consent_token: Optional[str] = None
     last_modified_epoch_seconds: float = 0.0
     version: str = CONSENT_SCHEMA_VERSION
+    policy_revision: str = CONSENT_POLICY_REVISION
 
     def is_active(self, now_epoch_seconds: float | None = None) -> bool:
         if self.status in {ConsentStatus.GRANTED, ConsentStatus.GRACE}:
@@ -110,6 +141,7 @@ class ConsentState:
             consent_token=self.consent_token,
             withdrawal_epoch_seconds=self.withdrawal_epoch_seconds,
             stable_account_tag=self.account_tag,
+            policy_revision=self.policy_revision,
         )
 
 
@@ -188,6 +220,7 @@ class ConsentManager:
                 consent_token=decision.consent_token,
                 last_modified_epoch_seconds=now,
                 version=decision.version,
+                policy_revision=decision.policy_revision,
             )
             if existing is not None:
                 same = (
@@ -197,6 +230,7 @@ class ConsentManager:
                     and existing.expires_at_epoch_seconds == new_state.expires_at_epoch_seconds
                     and existing.consent_token == new_state.consent_token
                     and existing.withdrawal_epoch_seconds == new_state.withdrawal_epoch_seconds
+                    and existing.policy_revision == new_state.policy_revision
                 )
                 if same:
                     existing.last_modified_epoch_seconds = now
