@@ -331,14 +331,19 @@ other algorithm (`md5`, `sha512`, etc.) are rejected with `unsupported_algorithm
 
 | Limit | Value |
 |---|---|
-| Maximum manifest size | 256 KiB |
+| Maximum single manifest size | 256 KiB |
+| Maximum cumulative expanded bytes (whole graph) | 256 KiB (`cumulative_bytes_exceeded`) |
+| Maximum cumulative graph nodes (whole graph) | 2048 (`cumulative_nodes_exceeded`) |
+| Maximum nested/graph manifest count | 32 (`cumulative_manifests_exceeded`) |
 | Maximum assertion count | 64 |
 | Maximum assertion label length | 256 chars |
 | Maximum assertion data size | 32 KiB |
 | Maximum JSON nesting depth | 16 |
 
-These limits are applied in order before any semantic validation, so malformed
-or adversarial manifests are rejected early without deep parsing.
+These limits are applied in order before any semantic validation, and a single
+shared `C2paExpansionBudget` is threaded across the root manifest and all nested
+`ingredients` (both inline objects and string-encoded nested manifests) so byte,
+node, depth, and manifest-count limits never reset per nested object.
 
 ---
 

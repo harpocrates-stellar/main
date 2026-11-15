@@ -153,3 +153,30 @@ def _contains_in_ancestry(
 
 def _is_hex_32(value: str) -> bool:
     return len(value) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in value)
+
+
+def validate_lineage_c2pa_graph_bounds(
+    manifests: list[bytes | str | dict[str, Any]],
+    *,
+    max_cumulative_bytes: int | None = None,
+    max_cumulative_nodes: int | None = None,
+) -> dict[str, int]:
+    """Validate cumulative C2PA expansion limits across a lineage manifest graph."""
+    from c2pa import C2paParseError, parse_c2pa_ingredient_graph
+
+    kwargs: dict[str, Any] = {}
+    if max_cumulative_bytes is not None:
+        kwargs["max_cumulative_bytes"] = max_cumulative_bytes
+    if max_cumulative_nodes is not None:
+        kwargs["max_cumulative_nodes"] = max_cumulative_nodes
+
+    try:
+        parsed_list = parse_c2pa_ingredient_graph(manifests, **kwargs)
+    except C2paParseError as exc:
+        raise LineageValidationError(
+            f"C2PA cumulative graph bound exceeded: {exc.reason}"
+        ) from exc
+
+    if not parsed_list:
+        return {"consumed_bytes": 0, "consumed_nodes": 0, "manifest_count": 0}
+    return dict(parsed_list[-1].expansion_stats)
