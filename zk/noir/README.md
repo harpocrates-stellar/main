@@ -260,6 +260,20 @@ pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_confor
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
+To evaluate linkability and replay boundaries across Silent Witness nullifier scope
+policies using strictly synthetic cohorts (no real credential secrets accepted):
+
+```bash
+python zk/tools/nullifier_migration.py \
+  --old-policy legacy_unscoped_v1 \
+  --new-policy verifier_scoped_v1 \
+  --fail-on-regression \
+  --json
+```
+
+See [zk/tools/nullifier_migration.py](../tools/nullifier_migration.py) and
+[docs/zk-silent-witness-spec.md](../../docs/zk-silent-witness-spec.md).
+
 ## Build
 
 For the full local build with the checked-in prover file:

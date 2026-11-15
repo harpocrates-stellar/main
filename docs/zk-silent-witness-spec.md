@@ -201,6 +201,28 @@ proof's expected recomputation — it should be versioned explicitly (e.g. a
 new `SCOPED_NULLIFIER_V2` domain separator) rather than silently changed, so
 that old and new derivations remain distinguishable.
 
+### 7.1 Synthetic Scope Policy Migration Analysis
+
+Before changing scope or epoch binding rules, evaluate candidate policy transitions
+with [`zk/tools/nullifier_migration.py`](../zk/tools/nullifier_migration.py):
+
+```bash
+python zk/tools/nullifier_migration.py \
+  --old-policy legacy_unscoped_v1 \
+  --new-policy verifier_scoped_v1 \
+  --fail-on-regression \
+  --json
+```
+
+The analyzer derives deterministic synthetic identity and video cohorts internally
+(`synthetic-*` labels only) and rejects `Prover.toml`, `.env`, Stellar secret seeds,
+or raw 32-byte secret inputs (`secret_import_forbidden`) without echoing values.
+It reports cross-scope and cross-epoch nullifier collision rates, cross-policy
+anchor overlaps (such as `(verifier_scope=0, epoch=0)` between `global_scoped_v1`
+and `verifier_scoped_v1`), persistent `credential_root` correlation, transition
+dual-registration risk, and isolation regressions (exit code `3` with
+`--fail-on-regression`).
+
 ## 8. Reference Vectors
 
 Cross-layer conformance corpus: [`zk/vectors/verifier_conformance_v1.json`](../zk/vectors/verifier_conformance_v1.json)
