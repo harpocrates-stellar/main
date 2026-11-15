@@ -96,7 +96,7 @@ fn browser_silent_public_inputs(
     credential_root.copy_into_slice(&mut credential_root_bytes);
 
     let mut nullifier_bytes = [0u8; 32];
-    nullifier.copy_from_slice(&mut nullifier_bytes);
+    nullifier.copy_into_slice(&mut nullifier_bytes);
 
     // 4 public inputs × 32 bytes = 128 bytes
     let mut bytes = [0u8; 128];
@@ -145,7 +145,7 @@ fn registers_all_identity_tiers() {
     );
     assert_eq!(anonymous.tier, TIER_SILENT_WITNESS);
     assert_eq!(anonymous.nullifier, Some(bytes32(&env, 4)));
-    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &bytes32(&env, 4)));
+    assert!(client.has_nullifier(&contract_id, &bytes32(&env, 4)));
 
     let pseudonymous = client.register_source(
         &source,
@@ -232,7 +232,10 @@ fn registers_silent_witness_through_external_verifier() {
     client.set_verifier(&admin, &verifier_id);
     client.add_credential_root(&admin, &credential_root, &bytes32(&env, 45));
     assert_eq!(client.get_verifier(), Some(verifier_id));
-    assert!(client.get_credential_root(&credential_root).unwrap().active);
+    assert_eq!(
+        client.get_credential_root(&credential_root).unwrap().status,
+        STATUS_REGISTERED
+    );
 
     let record = client.register_anonymous_verified(
         &video_hash,
@@ -474,14 +477,14 @@ fn transfers_admin_after_proposal_is_accepted() {
     assert_eq!(client.get_pending_admin(), None);
 
     client.propose_admin(&admin, &new_admin);
+    assert_eq!(env.events().all().events().len(), 1);
     assert_eq!(client.get_admin(), Some(admin.clone()));
     assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
-    assert_eq!(env.events().all().events().len(), 1);
 
     client.accept_admin(&new_admin);
+    assert_eq!(env.events().all().events().len(), 1);
     assert_eq!(client.get_admin(), Some(new_admin.clone()));
     assert_eq!(client.get_pending_admin(), None);
-    assert_eq!(env.events().all().events().len(), 1);
 
     client.add_issuer(&new_admin, &issuer, &bytes32(&env, 61));
     assert!(client.get_issuer(&issuer).unwrap().active);
@@ -507,9 +510,9 @@ fn cancelled_admin_transfer_cannot_be_accepted() {
     assert_eq!(client.get_pending_admin(), Some(pending_admin.clone()));
 
     client.cancel_admin_transfer(&admin);
+    assert_eq!(env.events().all().events().len(), 1);
     assert_eq!(client.get_admin(), Some(admin.clone()));
     assert_eq!(client.get_pending_admin(), None);
-    assert_eq!(env.events().all().events().len(), 1);
     client.accept_admin(&pending_admin);
 }
 
@@ -708,27 +711,51 @@ fn test_assurance_registered_seal_with_active_and_deactivated_issuer() {
     client.add_issuer(&admin, &issuer, &bytes32(&env, 0xAA));
 
     let proof_id = bytes32(&env, 0x01);
-    client.register_seal(&issuer, &bytes32(&env, 0x02), &bytes32(&env, 0x03), &proof_id);
+    client.register_seal(
+        &issuer,
+        &bytes32(&env, 0x02),
+        &bytes32(&env, 0x03),
+        &proof_id,
+    );
 
-    let assurance = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    let assurance = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance.status, ProofVerificationStatus::Valid);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
     assert_eq!(assurance.tier, TIER_PUBLIC_SEAL);
-    assert_eq!(assurance.timestamp_assurance_level, TIMESTAMP_ASSURANCE_NONE);
+    assert_eq!(
+        assurance.timestamp_assurance_level,
+        TIMESTAMP_ASSURANCE_NONE
+    );
     assert_eq!(assurance.timestamp_assurance(), TIMESTAMP_ASSURANCE_NONE);
     assert_eq!(assurance.open_dispute_count, 0);
-    assert_eq!(assurance.open_dispute_count, client.get_open_dispute_count(&proof_id));
-    assert_eq!(assurance.envelope_version, METADATA_ENVELOPE_VERSION_DEFAULT);
+    assert_eq!(
+        assurance.open_dispute_count,
+        client.get_open_dispute_count(&proof_id)
+    );
+    assert_eq!(
+        assurance.envelope_version,
+        METADATA_ENVELOPE_VERSION_DEFAULT
+    );
     assert_eq!(assurance.issuer_verifiable, true);
     assert_eq!(assurance.is_issuer_verifiable(), true);
-    assert_eq!(assurance.issuer_verifiable, client.is_issuer_verifiable(&issuer));
+    assert_eq!(
+        assurance.issuer_verifiable,
+        client.is_issuer_verifiable(&issuer)
+    );
 
     // Deactivate issuer -> issuer_verifiable becomes false
-    client.deactivate_issuer(&admin, &issuer);
-    let assurance_after = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    client.revoke_issuer(&admin, &issuer);
+    let assurance_after = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance_after.issuer_verifiable, false);
     assert_eq!(assurance_after.is_issuer_verifiable(), false);
-    assert_eq!(assurance_after.issuer_verifiable, client.is_issuer_verifiable(&issuer));
+    assert_eq!(
+        assurance_after.issuer_verifiable,
+        client.is_issuer_verifiable(&issuer)
+    );
 }
 
 #[test]
@@ -745,15 +772,28 @@ fn test_assurance_registered_source_no_issuer() {
     client.init(&admin);
 
     let proof_id = bytes32(&env, 0x04);
-    client.register_source(&source, &bytes32(&env, 0x05), &bytes32(&env, 0x06), &proof_id);
+    client.register_source(
+        &source,
+        &bytes32(&env, 0x05),
+        &bytes32(&env, 0x06),
+        &proof_id,
+    );
 
-    let assurance = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    let assurance = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance.status, ProofVerificationStatus::Valid);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
-    assert_eq!(assurance.tier, TIER_AUTHORITATIVE_SOURCE);
-    assert_eq!(assurance.timestamp_assurance_level, TIMESTAMP_ASSURANCE_NONE);
+    assert_eq!(assurance.tier, TIER_CONSISTENT_SOURCE);
+    assert_eq!(
+        assurance.timestamp_assurance_level,
+        TIMESTAMP_ASSURANCE_NONE
+    );
     assert_eq!(assurance.open_dispute_count, 0);
-    assert_eq!(assurance.envelope_version, METADATA_ENVELOPE_VERSION_DEFAULT);
+    assert_eq!(
+        assurance.envelope_version,
+        METADATA_ENVELOPE_VERSION_DEFAULT
+    );
     assert_eq!(assurance.issuer_verifiable, false);
 }
 
@@ -771,22 +811,35 @@ fn test_assurance_with_timestamp_claim_and_envelope() {
     client.init(&admin);
 
     let proof_id = bytes32(&env, 0x07);
-    client.register_source(&source, &bytes32(&env, 0x08), &bytes32(&env, 0x09), &proof_id);
+    let metadata_hash = bytes32(&env, 0x09);
+    client.register_source(&source, &bytes32(&env, 0x08), &metadata_hash, &proof_id);
 
     // Anchor timestamp claim
     let attestation_digest = bytes32(&env, 0x0A);
-    client.anchor_timestamp_claim(&source, &proof_id, &attestation_digest, &0u64, &bytes32(&env, 0x00));
+    client.anchor_timestamp_claim(
+        &source,
+        &proof_id,
+        &attestation_digest,
+        &0u64,
+        &bytes32(&env, 0x00),
+    );
 
-    // Store metadata envelope version 2
-    let envelope_hash = bytes32(&env, 0x0B);
-    client.store_metadata_envelope(&source, &proof_id, &2u32, &envelope_hash);
+    // Bind metadata envelope version 2
+    client.bind_metadata_envelope(&source, &proof_id, &2u32, &metadata_hash);
 
-    let assurance = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    let assurance = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance.status, ProofVerificationStatus::Valid);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
-    let claim = client.get_timestamp_claim(&proof_id).expect("timestamp claim");
+    let claim = client
+        .get_timestamp_claim(&proof_id)
+        .expect("timestamp claim");
     assert_eq!(assurance.timestamp_assurance_level, claim.assurance);
-    assert_eq!(assurance.timestamp_assurance_level, TIMESTAMP_ASSURANCE_INDEPENDENT);
+    assert_eq!(
+        assurance.timestamp_assurance_level,
+        TIMESTAMP_ASSURANCE_INDEPENDENT
+    );
     assert_eq!(assurance.envelope_version, 2);
 }
 
@@ -805,11 +858,18 @@ fn test_assurance_revoked_proof() {
     client.add_issuer(&admin, &issuer, &bytes32(&env, 0xAA));
 
     let proof_id = bytes32(&env, 0x0C);
-    client.register_seal(&issuer, &bytes32(&env, 0x0D), &bytes32(&env, 0x0E), &proof_id);
+    client.register_seal(
+        &issuer,
+        &bytes32(&env, 0x0D),
+        &bytes32(&env, 0x0E),
+        &proof_id,
+    );
 
     client.revoke_proof(&admin, &proof_id);
 
-    let assurance = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    let assurance = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance.status, ProofVerificationStatus::Revoked);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
 }
@@ -830,12 +890,19 @@ fn test_assurance_expired_proof() {
     client.set_proof_ttl(&admin, &100);
 
     let proof_id = bytes32(&env, 0x0F);
-    client.register_seal(&issuer, &bytes32(&env, 0x10), &bytes32(&env, 0x11), &proof_id);
+    client.register_seal(
+        &issuer,
+        &bytes32(&env, 0x10),
+        &bytes32(&env, 0x11),
+        &proof_id,
+    );
 
     // Advance ledger timestamp beyond TTL
     env.ledger().set_timestamp(1_000_000 + 200);
 
-    let assurance = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    let assurance = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance.status, ProofVerificationStatus::Expired);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
 }
@@ -855,30 +922,41 @@ fn test_assurance_disputed_proof() {
     client.add_issuer(&admin, &issuer, &bytes32(&env, 0xAA));
 
     let proof_id = bytes32(&env, 0x12);
-    client.register_seal(&issuer, &bytes32(&env, 0x13), &bytes32(&env, 0x14), &proof_id);
+    client.register_seal(
+        &issuer,
+        &bytes32(&env, 0x13),
+        &bytes32(&env, 0x14),
+        &proof_id,
+    );
 
     assert_eq!(client.get_open_dispute_count(&proof_id), 0);
 
     let reporter = Address::generate(&env);
     let reporter_hash = bytes32(&env, 0x15);
     let evidence_hash = bytes32(&env, 0x16);
+    let dispute_id = bytes32(&env, 0x17);
 
-    let dispute_id = client.open_dispute(
+    let dispute_rec = client.open_dispute(
         &reporter,
-        &proof_id,
         &reporter_hash,
+        &dispute_id,
+        &proof_id,
+        &DisputeReason::ContentError,
         &evidence_hash,
-        &DisputeReason::IntegrityViolation,
     );
-    assert_eq!(dispute_id, 1);
+    assert_eq!(dispute_rec.dispute_id, dispute_id);
 
-    let assurance = client.get_proof_assurance(&proof_id).expect("proof assurance");
+    let assurance = client
+        .get_proof_assurance(&proof_id)
+        .expect("proof assurance");
     assert_eq!(assurance.open_dispute_count, 1);
-    assert_eq!(assurance.open_dispute_count, client.get_open_dispute_count(&proof_id));
+    assert_eq!(
+        assurance.open_dispute_count,
+        client.get_open_dispute_count(&proof_id)
+    );
     assert_eq!(assurance.status, ProofVerificationStatus::Valid);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
 }
-
 
 #[test]
 fn test_get_statuses_by_video_mixed() {
@@ -907,6 +985,7 @@ fn test_get_statuses_by_video_mixed() {
     // 3. Expired proof (explicitly set expires_at or expired status)
     let v_expired = bytes32(&env, 0x13);
     let p_expired = bytes32(&env, 0x23);
+    client.set_proof_ttl(&admin, &2_592_000);
     client.register_source(&source, &v_expired, &bytes32(&env, 0x33), &p_expired);
     // Advance ledger timestamp beyond TTL (proof TTL is 30 days = 2_592_000s)
     env.ledger().set_timestamp(1_000_000 + 3_000_000);

@@ -265,10 +265,15 @@ init
 get_storage_schema_version
 upgrade_storage
 propose_admin
+propose_admin_expiring
 cancel_admin_transfer
 accept_admin
 get_admin
 get_pending_admin
+get_admin_invitation_status
+invite_role_candidate
+clear_role_invitation
+get_role_invitation_status
 get_schema_version
 is_admin
 is_issuer
@@ -579,6 +584,16 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## Non-Mutating Role Invitation Expiry Inspection (#1188)
+
+`get_admin_invitation_status()` and `get_role_invitation_status(role_kind, candidate)`
+report `RoleInvitationState::Nonexistent`, `Active`, or `Expired` alongside
+`invited_at` and `expires_at` (`0` for unbounded legacy `propose_admin` transfers,
+positive deadlines for `propose_admin_expiring` and `invite_role_candidate` bounded
+by `MAX_ROLE_INVITATION_TTL_SECS = 2_592_000` with `InvalidInvitationDuration` `#113`
+on invalid bounds). Both inspection methods are pure reads: they never delete
+expired storage entries, extend TTLs, or emit hidden cleanup events.
 
 ## Contract Error ABI (#344)
 

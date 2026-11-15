@@ -214,9 +214,8 @@ fn test_revocation_root_emits_event() {
 
     client.set_revocation_root(&admin, &b32(&env, 0xAB));
 
-    assert_ne!(
-        env.events().all(),
-        [].as_slice(),
+    assert!(
+        !env.events().all().events().is_empty(),
         "expected at least one event after setting revocation root"
     );
 }
@@ -571,9 +570,8 @@ fn test_check_non_revocation_emits_event() {
 
     // Verify an event was emitted by check_non_revocation.
     // The env.events().all() iterator returns all events for this test.
-    assert_ne!(
-        env.events().all(),
-        [].as_slice(),
+    assert!(
+        !env.events().all().events().is_empty(),
         "expected NonRevocationChecked event after check_non_revocation"
     );
 }
@@ -756,8 +754,7 @@ fn test_evicted_root_rejected_even_within_grace_window() {
     // At ledger 45, root1 (4th-most-recent) is still in the buffer and within grace window.
     env.ledger().set_sequence_number(45);
     let nf_ok = b32(&env, 0x31);
-    let pi_ok =
-        revocation_public_inputs(&env, &root1, &nf_ok, &domain_separator, &credential_root);
+    let pi_ok = revocation_public_inputs(&env, &root1, &nf_ok, &domain_separator, &credential_root);
     client.check_non_revocation(&pi_ok, &proof_bytes(&env));
 
     // At ledger 50, setting root5 evicts root1 from the 4-entry ring buffer.
@@ -767,8 +764,7 @@ fn test_evicted_root_rejected_even_within_grace_window() {
     // Proof against root2 (oldest remaining in buffer) still passes at ledger 55.
     env.ledger().set_sequence_number(55);
     let nf_r2 = b32(&env, 0x32);
-    let pi_r2 =
-        revocation_public_inputs(&env, &root2, &nf_r2, &domain_separator, &credential_root);
+    let pi_r2 = revocation_public_inputs(&env, &root2, &nf_r2, &domain_separator, &credential_root);
     client.check_non_revocation(&pi_r2, &proof_bytes(&env));
 
     // Proof against evicted root1 must now fail with InvalidPublicInputs (#10).
@@ -873,12 +869,7 @@ fn test_revoke_proofs_success_matches_single_revoke() {
 
     // Register a reference proof to revoke with single-revoke
     let ref_proof_id = b32(&env, 0x10);
-    client.register_source(
-        &source,
-        &b32(&env, 0x11),
-        &b32(&env, 0x12),
-        &ref_proof_id,
-    );
+    client.register_source(&source, &b32(&env, 0x11), &b32(&env, 0x12), &ref_proof_id);
     client.revoke_proof(&admin, &ref_proof_id);
 
     // Register 3 proofs to revoke via batch revoke_proofs
@@ -903,7 +894,10 @@ fn test_revoke_proofs_success_matches_single_revoke() {
         ProofVerificationStatus::Revoked
     );
     for pid in [proof1.clone(), proof2.clone(), proof3.clone()].iter() {
-        assert_eq!(client.get_proof_status(pid), ProofVerificationStatus::Revoked);
+        assert_eq!(
+            client.get_proof_status(pid),
+            ProofVerificationStatus::Revoked
+        );
         assert_eq!(client.get_proof_history_count(pid), 2);
 
         let ref_entry = client.get_proof_history_at(&ref_proof_id, &2).unwrap();
@@ -1004,7 +998,10 @@ fn test_revoke_proofs_atomic_failure_on_invalid_proof() {
     batch.push_back(invalid_proof);
 
     let res = client.try_revoke_proofs(&admin, &batch, &1);
-    assert!(res.is_err(), "expected batch revocation to fail on invalid proof");
+    assert!(
+        res.is_err(),
+        "expected batch revocation to fail on invalid proof"
+    );
 
     // Atomicity check: valid_proof must NOT have been revoked
     assert_eq!(
@@ -1029,12 +1026,7 @@ fn test_revoke_proofs_at_capacity() {
     let mut batch = SorobanVec::new(&env);
     for i in 0..MAX_REVOKE_PROOFS_BATCH_SIZE as u8 {
         let pid = b32(&env, 0x80 + i);
-        client.register_source(
-            &source,
-            &b32(&env, 0x10 + i),
-            &b32(&env, 0x20 + i),
-            &pid,
-        );
+        client.register_source(&source, &b32(&env, 0x10 + i), &b32(&env, 0x20 + i), &pid);
         batch.push_back(pid);
     }
 
@@ -1042,6 +1034,9 @@ fn test_revoke_proofs_at_capacity() {
 
     for i in 0..MAX_REVOKE_PROOFS_BATCH_SIZE as u8 {
         let pid = b32(&env, 0x80 + i);
-        assert_eq!(client.get_proof_status(&pid), ProofVerificationStatus::Revoked);
+        assert_eq!(
+            client.get_proof_status(&pid),
+            ProofVerificationStatus::Revoked
+        );
     }
 }
