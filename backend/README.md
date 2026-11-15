@@ -351,3 +351,14 @@ python -m unittest test_app.py test_stego.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+## Verified Indexer Checkpoint Manifest
+
+`chain_indexer.py` binds every committed Soroban event cursor to a versioned
+`IndexerCheckpointManifest` (`harpocrates:indexer-checkpoint:v1`) persisted
+atomically alongside `indexer_state`:
+
+- Bound fields: `network` and `networkPassphrase` (`resolve_stellar_network_binding` in `tx_verification.py`), `contractId`, `projectionSchema` (`INDEXER_PROJECTION_SCHEMA`, default `harpocrates-proof-events-projection/v1`), `cursor`, and `observedLedger`.
+- Integrity: length-prefixed domain-separated SHA-256 `manifestDigest` verified with constant-time comparison before any resume.
+- Fail-closed resume: `poll_indexer_once` verifies the stored manifest prior to RPC event ingestion or cursor updates (`IncompatibleCheckpointError`). Incompatible network, contract, schema, tampered digests, out-of-band cursor edits, or regressed chain `observedLedger` values are rejected without mutating `proof_events` or overwriting the trusted checkpoint. Set `INDEXER_REQUIRE_CHECKPOINT_MANIFEST=true` to reject legacy bare cursors that lack a companion manifest.
+
+

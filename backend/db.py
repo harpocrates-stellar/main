@@ -1381,6 +1381,7 @@ get_job_metrics = get_job_queue_metrics
 
 _INDEXED_EVENTS: dict[tuple[str, int], dict[str, Any]] = {}
 _INDEXER_STATE: dict[str, dict[str, Any]] = {}
+_INDEXER_CHECKPOINT_MANIFESTS: dict[str, str] = {}
 _mock_indexed_id = 100000
 
 
@@ -1552,8 +1553,11 @@ def save_indexer_cursor(
             "ledger": ledger,
             "updated_at": datetime.now(timezone.utc),
         }
+        if not cursor:
+            _INDEXER_CHECKPOINT_MANIFESTS.pop(indexer_id, None)
         return
 
+    manifest_row_id = f"{indexer_id}:checkpoint_manifest"
     with get_connection() as connection:
         with connection.cursor() as cursor_db:
             cursor_db.execute(
@@ -1566,5 +1570,71 @@ def save_indexer_cursor(
                     updated_at = excluded.updated_at;
                 """,
                 (indexer_id, cursor, ledger),
+            )
+            if not cursor:
+                cursor_db.execute(
+                    "delete from indexer_state where id = %s;",
+                    (manifest_row_id,),
+                )
+        connection.commit()
+
+
+def get_indexer_checkpoint_manifest_raw(indexer_id: str = "soroban_events") -> str | None:
+    """Return the raw serialized checkpoint manifest JSON for *indexer_id*, if stored."""
+    if not database_url():
+        return _INDEXER_CHECKPOINT_MANIFESTS.get(indexer_id)
+
+    manifest_row_id = f"{indexer_id}:checkpoint_manifest"
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select cursor from indexer_state where id = %s;",
+                (manifest_row_id,),
+            )
+            row = cursor.fetchone()
+            return row["cursor"] if row and row.get("cursor") else None
+
+
+def save_indexer_checkpoint_manifest_raw(
+    indexer_id: str,
+    *,
+    cursor: str,
+    observed_ledger: int,
+    manifest_json: str,
+) -> None:
+    """Atomically persist both the indexer cursor and its verified checkpoint manifest."""
+    if not database_url():
+        _INDEXER_STATE[indexer_id] = {
+            "cursor": cursor,
+            "ledger": observed_ledger,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        _INDEXER_CHECKPOINT_MANIFESTS[indexer_id] = manifest_json
+        return
+
+    manifest_row_id = f"{indexer_id}:checkpoint_manifest"
+    with get_connection() as connection:
+        with connection.cursor() as cursor_db:
+            cursor_db.execute(
+                """
+                insert into indexer_state (id, cursor, ledger, updated_at)
+                values (%s, %s, %s, now())
+                on conflict (id) do update
+                set cursor = excluded.cursor,
+                    ledger = excluded.ledger,
+                    updated_at = excluded.updated_at;
+                """,
+                (indexer_id, cursor, observed_ledger),
+            )
+            cursor_db.execute(
+                """
+                insert into indexer_state (id, cursor, ledger, updated_at)
+                values (%s, %s, %s, now())
+                on conflict (id) do update
+                set cursor = excluded.cursor,
+                    ledger = excluded.ledger,
+                    updated_at = excluded.updated_at;
+                """,
+                (manifest_row_id, manifest_json, observed_ledger),
             )
         connection.commit()

@@ -54,6 +54,64 @@ _DEFAULT_RPC_URLS = (
 TERMINAL_STATUSES = frozenset({"confirmed", "failed", "missing"})
 ALLOWED_STATUSES = frozenset({"pending", "confirmed", "failed", "missing", "error"})
 
+STELLAR_NETWORK_PASSPHRASES: dict[str, str] = {
+    "testnet": "Test SDF Network ; September 2015",
+    "mainnet": "Public Global Stellar Network ; September 2015",
+    "pubnet": "Public Global Stellar Network ; September 2015",
+    "futurenet": "Test SDF Future Network ; October 2022",
+    "local": "Standalone Network ; February 2017",
+    "standalone": "Standalone Network ; February 2017",
+}
+
+
+def resolve_stellar_network_binding(
+    network: str | None = None,
+    network_passphrase: str | None = None,
+) -> tuple[str, str]:
+    """Resolve canonical ``(network_name, network_passphrase)`` for checkpoint & tx binding."""
+    raw_net = (
+        network
+        if network is not None
+        else (
+            os.getenv("HARPOCRATES_RELEASE_NETWORK")
+            or os.getenv("STELLAR_NETWORK")
+            or "testnet"
+        )
+    )
+    if not isinstance(raw_net, str) or not raw_net.strip():
+        raise ValueError("network must be a non-empty string")
+    clean_net = raw_net.strip().lower()
+    if clean_net == "pubnet":
+        clean_net = "mainnet"
+    elif clean_net == "standalone":
+        clean_net = "local"
+
+    raw_passphrase = (
+        network_passphrase
+        if network_passphrase is not None
+        else os.getenv("STELLAR_NETWORK_PASSPHRASE")
+    )
+    if raw_passphrase is not None:
+        if not isinstance(raw_passphrase, str) or not raw_passphrase.strip():
+            raise ValueError("network_passphrase must be a non-empty string")
+        resolved_passphrase = raw_passphrase.strip()
+        expected_known = STELLAR_NETWORK_PASSPHRASES.get(clean_net)
+        if expected_known and network is None:
+            for candidate_net, candidate_pass in STELLAR_NETWORK_PASSPHRASES.items():
+                if candidate_pass == resolved_passphrase and candidate_net in {
+                    "testnet",
+                    "mainnet",
+                    "futurenet",
+                    "local",
+                }:
+                    clean_net = candidate_net
+                    break
+        return clean_net, resolved_passphrase
+
+    if clean_net not in STELLAR_NETWORK_PASSPHRASES:
+        raise ValueError(f"unsupported Stellar network '{clean_net}' without explicit passphrase")
+    return clean_net, STELLAR_NETWORK_PASSPHRASES[clean_net]
+
 
 def horizon_urls() -> tuple[str, ...]:
     urls = os.getenv("HORIZON_URLS")
