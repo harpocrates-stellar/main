@@ -325,6 +325,17 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Verification Receipt Time Bounds
+
+`verification_receipt.py` and `time_attestation.py` normalize explicit UTC timestamps (`Z` or explicit `±HH:MM` offsets, timezone-aware `datetime`, or non-negative numeric epochs) into canonical UTC ISO-8601 strings and epoch milliseconds, rejecting offset-free or naive timestamps fail-closed.
+
+Portable receipt exports (`export_verification_receipt`, `build_receipt_time_bounds`, and `evaluate_receipt_time_bounds`) attach explicit half-open validity bounds `{"semantics": "[inclusive, exclusive)", "validFromInclusive": ..., "validUntilExclusive": ...}`:
+
+- `at == validFromInclusive` is **valid** (inclusive lower bound).
+- `at == validUntilExclusive` is **expired** (exclusive upper bound).
+- Soroban `expires_at == 0` maps to `validUntilExclusive: null` (non-expiring).
+- `POST /api/verify/selective-disclosure` preserves the unsigned `verificationReceipt` payload and emits `receiptTimeBounds` + `receiptBoundEvaluation` whenever `receiptContext` supplies `validFromInclusive`, `validUntilExclusive`, `expiresAt`, or `includeTimeBounds`.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative

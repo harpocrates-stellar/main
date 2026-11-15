@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -242,11 +243,85 @@ def canonical_time_attestation_hash(attestation: TimeAttestation) -> str:
 
 # ── Validation ─────────────────────────────────────────────────────────────
 
-def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str) -> list[str]:
+def format_utc_iso8601_ms(unix_ms: int) -> str:
+    """Format an epoch millisecond value as canonical UTC ISO-8601 with ``Z`` suffix."""
+    if not isinstance(unix_ms, int) or isinstance(unix_ms, bool) or unix_ms < 0:
+        raise ValueError("unix_ms must be a non-negative integer")
+    seconds, millis = divmod(unix_ms, 1000)
+    dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    if millis == 0:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"{dt.strftime('%Y-%m-%dT%H:%M:%S')}.{millis:03d}Z"
+
+
+def normalize_timestamp_ms(
+    value: object,
+    *,
+    field: str = "timestamp",
+    numeric_unit: Literal["s", "ms"] = "ms",
+) -> tuple[int, str]:
+    """Normalize an explicit UTC timestamp across APIs and offline tools.
+
+    Accepts timezone-aware ``datetime``, ISO-8601 strings carrying an explicit
+    UTC offset (``Z`` or ``±HH:MM``), or non-negative numeric epoch values
+    (interpreted according to ``numeric_unit``). Naive datetimes, offset-free
+    strings, booleans, NaN/Inf, and negative epochs are rejected fail-closed.
+    """
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{field} must be a valid UTC timestamp")
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{field} datetime must include an explicit timezone offset")
+        utc_dt = value.astimezone(timezone.utc)
+        unix_ms = round(utc_dt.timestamp() * 1000)
+        if unix_ms < 0:
+            raise ValueError(f"{field} must be non-negative")
+        return unix_ms, format_utc_iso8601_ms(unix_ms)
+
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"{field} must be non-negative")
+        unix_ms = value * 1000 if numeric_unit == "s" else value
+        return unix_ms, format_utc_iso8601_ms(unix_ms)
+
+    if isinstance(value, float):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{field} must be a finite non-negative number")
+        unix_ms = round(value * 1000) if numeric_unit == "s" else round(value)
+        return unix_ms, format_utc_iso8601_ms(unix_ms)
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            raise ValueError(f"{field} must be a non-empty ISO-8601 timestamp")
+        normalized_iso = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+        try:
+            parsed = datetime.fromisoformat(normalized_iso)
+        except ValueError as exc:
+            raise ValueError(f"{field} must be a valid ISO-8601 timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError(f"{field} ISO-8601 timestamp must include a timezone offset")
+        unix_ms = round(parsed.astimezone(timezone.utc).timestamp() * 1000)
+        if unix_ms < 0:
+            raise ValueError(f"{field} must be non-negative")
+        return unix_ms, format_utc_iso8601_ms(unix_ms)
+
+    raise ValueError(f"{field} must be an ISO-8601 string, timezone-aware datetime, or epoch number")
+
+
+def validate_time_attestation(
+    attestation: TimeAttestation,
+    evidence_digest: str,
+    *,
+    now_ms: int | None = None,
+) -> list[str]:
     """
     Validate a time attestation envelope.
     
     Returns a list of validation errors. Empty list means valid.
+    ``now_ms`` pins the evaluation clock in epoch milliseconds for deterministic
+    offline and boundary verification; upper future-drift bound is inclusive.
     """
     errors: list[str] = []
     
@@ -257,7 +332,12 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
             f"got {attestation.evidence_digest}"
         )
     
-    current_time_ms = int(time.time() * 1000)
+    if now_ms is None:
+        current_time_ms = int(time.time() * 1000)
+    else:
+        if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms < 0:
+            raise ValueError("now_ms must be a non-negative integer")
+        current_time_ms = now_ms
     
     # Validate claimed time
     if attestation.claimed_time:
@@ -393,18 +473,26 @@ def create_time_attestation(
     claimed_time_ms: int | None = None,
     claimed_source_label: str = "device_clock",
     uncertainty_ms: int = 0,
+    *,
+    now_ms: int | None = None,
 ) -> TimeAttestation:
     """
     Create a new time attestation with observed time.
     
-    Automatically captures the current backend time as observed_time.
+    Automatically captures the current backend time as observed_time unless
+    ``now_ms`` is explicitly provided for deterministic fixed-clock evaluation.
     Stellar and RFC 3161 anchors should be added separately after
     transaction confirmation or TSA response.
     """
     if not _is_valid_hex(evidence_digest, 64):
         raise ValueError("evidence_digest must be 64-character hex string")
     
-    observed_ms = int(time.time() * 1000)
+    if now_ms is None:
+        observed_ms = int(time.time() * 1000)
+    else:
+        if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms < 0:
+            raise ValueError("now_ms must be a non-negative integer")
+        observed_ms = now_ms
     
     claimed_time = None
     if claimed_time_ms is not None:

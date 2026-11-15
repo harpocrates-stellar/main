@@ -111,8 +111,8 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
-from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from verification_receipt import build_verification_receipt, export_verification_receipt
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2081,8 +2081,28 @@ def create_app() -> Flask:
         if receipt_context is not None:
             if not isinstance(receipt_context, dict):
                 return jsonify({"error": "receiptContext must be a JSON object"}), 400
+            has_explicit_bounds = any(
+                key in receipt_context
+                for key in (
+                    "validFromInclusive",
+                    "validUntilExclusive",
+                    "expiresAt",
+                    "includeTimeBounds",
+                )
+            )
             try:
-                response["verificationReceipt"] = build_verification_receipt(receipt_context)
+                if has_explicit_bounds:
+                    exported = export_verification_receipt(
+                        receipt_context,
+                        now=receipt_context.get("now"),
+                    )
+                    response["verificationReceipt"] = exported["receipt"]
+                    response["receiptTimeBounds"] = exported["timeBounds"]
+                    response["receiptBoundEvaluation"] = exported["boundEvaluation"]
+                else:
+                    response["verificationReceipt"] = build_verification_receipt(
+                        receipt_context
+                    )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
         return jsonify(response)
