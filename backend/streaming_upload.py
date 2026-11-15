@@ -95,6 +95,13 @@ def resolve_temp_dir(explicit: str | Path | None = None) -> Optional[str]:
     return None
 
 
+def _active_budget_reservation():
+    try:
+        return getattr(g, "upload_budget_reservation", None)
+    except RuntimeError:
+        return None
+
+
 def hash_stream_to_path(
     source: BinaryIO,
     destination: Union[str, Path],
@@ -102,6 +109,7 @@ def hash_stream_to_path(
     chunk_size: int | None = None,
     max_size: int | None = None,
     temp_dir: str | Path | None = None,
+    budget_reservation=None,
 ) -> Tuple[str, int]:
     """Copy *source* to *destination* in bounded chunks while hashing SHA-256.
 
@@ -112,6 +120,7 @@ def hash_stream_to_path(
     """
     bounded = resolve_chunk_bytes(chunk_size)
     limit = resolve_max_bytes(max_size)
+    reservation = budget_reservation if budget_reservation is not None else _active_budget_reservation()
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -130,11 +139,14 @@ def hash_stream_to_path(
                 chunk = source.read(bounded)
                 if not chunk:
                     break
-                if limit > 0 and bytes_written + len(chunk) > limit:
+                next_total = bytes_written + len(chunk)
+                if limit > 0 and next_total > limit:
                     raise RequestEntityTooLarge("Upload exceeds size limit")
+                if reservation is not None and not getattr(reservation, "released", False):
+                    reservation.ensure_reserved(next_total)
                 tmp_file.write(chunk)
                 hasher.update(chunk)
-                bytes_written += len(chunk)
+                bytes_written = next_total
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
 
@@ -160,10 +172,12 @@ def hash_paths_concat(
     *,
     chunk_size: int | None = None,
     max_size: int | None = None,
+    budget_reservation=None,
 ) -> Tuple[str, int]:
     """Concatenate *paths* into *destination* with bounded-chunk SHA-256 hashing."""
     bounded = resolve_chunk_bytes(chunk_size)
     limit = resolve_max_bytes(max_size)
+    reservation = budget_reservation if budget_reservation is not None else _active_budget_reservation()
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -181,11 +195,14 @@ def hash_paths_concat(
                         chunk = handle.read(bounded)
                         if not chunk:
                             break
-                        if limit > 0 and bytes_written + len(chunk) > limit:
+                        next_total = bytes_written + len(chunk)
+                        if limit > 0 and next_total > limit:
                             raise RequestEntityTooLarge("Upload exceeds size limit")
+                        if reservation is not None and not getattr(reservation, "released", False):
+                            reservation.ensure_reserved(next_total)
                         out.write(chunk)
                         hasher.update(chunk)
-                        bytes_written += len(chunk)
+                        bytes_written = next_total
             out.flush()
             os.fsync(out.fileno())
         shutil.move(str(tmp_path), str(dest))
@@ -230,11 +247,13 @@ class StreamingFileStorage(FileStorage):
         max_size: int = 0,
         chunk_size: int | None = None,
         temp_dir: str | Path | None = None,
+        budget_reservation=None,
     ):
         super().__init__(stream, filename, content_type=content_type)
         self._max_size = max_size
         self._chunk_size = resolve_chunk_bytes(chunk_size)
         self._temp_dir = resolve_temp_dir(temp_dir)
+        self._budget_reservation = budget_reservation
         self._materialized_path: Optional[Path] = None
         self._bytes_written = 0
         self._hash_computed = False
@@ -271,6 +290,7 @@ class StreamingFileStorage(FileStorage):
             chunk_size=self._chunk_size,
             max_size=self._max_size,
             temp_dir=self._temp_dir,
+            budget_reservation=self._budget_reservation,
         )
         self._bytes_written = written
         self._digest = digest
@@ -308,4 +328,5 @@ def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileSt
         max_size=max_size,
         chunk_size=chunk_size,
         temp_dir=temp_dir,
+        budget_reservation=_active_budget_reservation(),
     )

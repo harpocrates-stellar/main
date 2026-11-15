@@ -45,6 +45,7 @@ from errors import (
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UPLOAD_TENANT_BUDGET_EXCEEDED,
     UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
@@ -148,7 +149,13 @@ from tracing import (
 )
 from readiness import ReadinessManager
 from verifier_cache import VerifierCache
-from admission import AdmissionController, require_capacity
+from admission import (
+    AdmissionController,
+    TenantUploadBudgetExceededError,
+    TenantUploadBudgetManager,
+    require_capacity,
+    resolve_upload_tenant_id,
+)
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
@@ -404,6 +411,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -428,6 +437,33 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    tenant_upload_budget = TenantUploadBudgetManager(
+        budget_bytes=config.upload_tenant_budget_bytes,
+    )
+    app.extensions["tenant_upload_budget"] = tenant_upload_budget
+
+    upload_budget_routes = {
+        "/api/stego/embed",
+        "/api/stego/extract",
+        "/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>",
+        "/api/stego/upload-session/<session_id>/commit",
+    }
+
+    def _release_request_upload_budget() -> None:
+        reservation = getattr(g, "upload_budget_reservation", None)
+        if reservation is not None:
+            reservation.release()
+
+    def _tenant_budget_exceeded_response():
+        endpoint = request.url_rule.rule if request.url_rule else request.path
+        metrics_collector.record_rejection("tenant_upload_budget", endpoint)
+        response, status = error_response(
+            code=UPLOAD_TENANT_BUDGET_EXCEEDED,
+            message="temporary upload storage budget exceeded",
+            status=429,
+        )
+        response.headers["Retry-After"] = "5"
+        return response, status
 
     @app.before_request
     def start_request_context():
@@ -503,8 +539,46 @@ def create_app() -> Flask:
             message="request origin is not allowed",
             status=403,
         )
+
+    @app.before_request
+    def reserve_tenant_upload_storage_budget():
+        """Reserve per-tenant temporary disk capacity before reading upload bodies."""
+        rule = request.url_rule.rule if request.url_rule else None
+        if rule not in upload_budget_routes:
+            return None
+        g.upload_config = config
+        tenant_id = resolve_upload_tenant_id(config)
+        g.upload_tenant_id = tenant_id
+        declared_bytes = max(0, int(request.content_length or 0))
+        header_declared = (request.headers.get("X-Upload-Declared-Size") or "").strip()
+        if header_declared:
+            try:
+                parsed_declared = int(header_declared)
+            except ValueError:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="X-Upload-Declared-Size must be a non-negative integer",
+                    status=400,
+                )
+            if parsed_declared < 0:
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="X-Upload-Declared-Size must be a non-negative integer",
+                    status=400,
+                )
+            declared_bytes = max(declared_bytes, parsed_declared)
+        try:
+            g.upload_budget_reservation = tenant_upload_budget.reserve(
+                tenant_id,
+                declared_bytes,
+            )
+        except TenantUploadBudgetExceededError:
+            return _tenant_budget_exceeded_response()
+        return None
+
     @app.after_request
     def process_response(response: Response):
+        _release_request_upload_budget()
         # X-Request-ID and the body-level request_id are applied by the
         # request-id propagation hook registered in create_app().
         trace = current_trace_fields()
@@ -562,6 +636,7 @@ def create_app() -> Flask:
 
     @app.teardown_request
     def finish_unhandled_request_span(error: BaseException | None):
+        _release_request_upload_budget()
         if getattr(g, "otel_request_span", None) is not None:
             finish_request_span(
                 g.otel_request_span,
@@ -689,6 +764,11 @@ def create_app() -> Flask:
             status=413,
             cli_code=OVERSIZED_INPUT,
         )
+
+    @app.errorhandler(TenantUploadBudgetExceededError)
+    def handle_tenant_upload_budget_exceeded(_error: TenantUploadBudgetExceededError):
+        _release_request_upload_budget()
+        return _tenant_budget_exceeded_response()
 
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
@@ -956,6 +1036,14 @@ def create_app() -> Flask:
             streaming_chunk.save(str(chunk_path))
         except RequestEntityTooLarge:
             return jsonify({"error": "chunk exceeds size limit"}), 413
+        tenant_upload_budget.record_session_chunk(
+            session_id,
+            getattr(g, "upload_tenant_id", None) or resolve_upload_tenant_id(config),
+            chunk_index,
+            streaming_chunk.bytes_written,
+            session_dir=str(session_dir),
+            request_reservation=getattr(g, "upload_budget_reservation", None),
+        )
         return jsonify({
             "ok": True,
             "bytes": streaming_chunk.bytes_written,
@@ -1055,6 +1143,7 @@ def create_app() -> Flask:
 
         import shutil
         shutil.rmtree(session_dir, ignore_errors=True)
+        tenant_upload_budget.release_session(session_id)
 
         return response
 

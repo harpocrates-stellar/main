@@ -78,6 +78,9 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
+UPLOAD_TENANT_BUDGET_EXCEEDED = "UPLOAD_TENANT_BUDGET_EXCEEDED"
+"""The tenant exceeded its configured temporary upload storage budget (429)."""
+
 FORBIDDEN = "FORBIDDEN"
 """The credential is valid but not authorized for this proof owner (403)."""
 

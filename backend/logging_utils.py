@@ -14,6 +14,7 @@ SENSITIVE_KEYS = {
     "proof",
     "publicinputs",
     "rawbytes",
+    "registerscopedkeys",
     "secret",
     "token",
     "witness",
@@ -37,6 +38,10 @@ def redact_sensitive(value: Any) -> Any:
         return [redact_sensitive(item) for item in value]
     if isinstance(value, tuple):
         return tuple(redact_sensitive(item) for item in value)
+    if isinstance(value, (bytes, bytearray)):
+        return REDACTED_VALUE
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        return value.isoformat()
     return value
 
 

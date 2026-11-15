@@ -15,6 +15,7 @@ destination artifact is retained.
 | Size limit | Enforced mid-stream; raises `RequestEntityTooLarge` without logging payload bytes |
 | Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`) |
 | Streaming trigger | Multipart bodies larger than `UPLOAD_STREAM_THRESHOLD_BYTES` (default 1 MiB) wrap `FileStorage` |
+| Per-tenant disk budget | Reserves temporary disk capacity before reading upload bodies and releases reservations on completion, rejection, or client disconnect (`429 UPLOAD_TENANT_BUDGET_EXCEEDED`) |
 
 ## Configuration
 
@@ -24,6 +25,7 @@ destination artifact is retained.
 | `UPLOAD_STREAM_THRESHOLD_BYTES` | `1048576` | Content-Length above which embed/extract wrap uploads |
 | `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream size ceiling |
 | `UPLOAD_TEMP_DIR` | OS temp | Optional temp directory for stream scratch files |
+| `UPLOAD_TENANT_BUDGET_BYTES` | `536870912` | Per-tenant temporary upload disk budget in bytes (`0` disables the per-tenant cap) |
 
 ## Trust boundary, privacy, migration, rollback
 
