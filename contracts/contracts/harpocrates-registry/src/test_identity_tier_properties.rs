@@ -321,8 +321,11 @@ fn check_lookups(client: &HarpocratesRegistryClient<'_>, model: &Model, env: &En
             "{label}: lookup video diverge"
         );
         if let Some(n) = p.nullifier {
+            let verifier_addr = client
+                .get_verifier()
+                .unwrap_or_else(|| client.address.clone());
             assert!(
-                client.has_nullifier(&client.get_verifier().unwrap(), &b32(env, slot_byte(0xD4, n))),
+                client.has_nullifier(&verifier_addr, &b32(env, slot_byte(0xD4, n))),
                 "{label}: missing nullifier slot={n}"
             );
         }

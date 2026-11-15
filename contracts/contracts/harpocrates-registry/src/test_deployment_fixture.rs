@@ -237,7 +237,7 @@ impl DeploymentFixture {
         }
     }
 
-    fn client(&self) -> HarpocratesRegistryClient {
+    fn client(&self) -> HarpocratesRegistryClient<'_> {
         HarpocratesRegistryClient::new(&self.env, &self.contract_id)
     }
 }
@@ -271,13 +271,16 @@ fn deployment_fixture_init_state_is_consistent() {
 
     // Credential root is active.
     let cred_rec = client.get_credential_root(&f.credential_root).unwrap();
-    assert!(cred_rec.active);
+    assert_eq!(cred_rec.status, STATUS_REGISTERED);
     assert_eq!(cred_rec.metadata_hash, f.cred_root_meta);
 
     // No proofs yet.
     let unknown_proof = slot(&f.env, domains::PROOF, 0xFF);
     assert!(client.get_proof(&unknown_proof).is_none());
-    assert!(!client.has_nullifier(&client.get_verifier().unwrap(), &slot(&f.env, domains::NULLIFIER, 0)));
+    assert!(!client.has_nullifier(
+        &client.get_verifier().unwrap(),
+        &slot(&f.env, domains::NULLIFIER, 0)
+    ));
 }
 
 #[test]
@@ -596,11 +599,12 @@ fn deployment_fixture_upgrade_storage_is_idempotent() {
 
     // All fixture state must be intact after repeated upgrades.
     assert!(client.get_issuer(&f.issuer).unwrap().active);
-    assert!(
+    assert_eq!(
         client
             .get_credential_root(&f.credential_root)
             .unwrap()
-            .active
+            .status,
+        STATUS_REGISTERED
     );
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
 }
@@ -657,28 +661,29 @@ fn deployment_fixture_legacy_upgrade_preserves_deployed_state() {
     );
 
     client.upgrade_storage(&f.admin);
+    assert_eq!(f.env.events().all().events().len(), 1);
 
     assert_eq!(
         client.get_storage_schema_version(),
-        SchemaVersion::V1 as u32
+        SchemaVersion::V2 as u32
     );
-    assert_eq!(f.env.events().all().events().len(), 0);
     assert_eq!(client.get_proof(&anonymous_id), Some(anonymous));
     assert_eq!(client.get_proof(&source_id), Some(source.clone()));
     assert_eq!(client.get_proof(&seal_id), Some(seal));
     assert_eq!(client.get_proof(&expired_id), Some(expired));
     assert_eq!(client.get_by_video(&source_video), Some(source));
-    assert!(client.has_nullifier(&anonymous_nullifier));
+    assert!(client.has_nullifier(&f.verifier_id, &anonymous_nullifier));
     assert_eq!(
         client.get_proof_status(&expired_id),
         ProofVerificationStatus::Expired
     );
     assert!(!client.get_issuer(&f.issuer).unwrap().active);
-    assert!(
-        !client
+    assert_eq!(
+        client
             .get_credential_root(&f.credential_root)
             .unwrap()
-            .active
+            .status,
+        STATUS_REVOKED
     );
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
 
@@ -749,11 +754,12 @@ fn deployment_fixture_revoked_credential_root_blocks_anonymous_registration() {
     let client = f.client();
 
     client.revoke_credential_root(&f.admin, &f.credential_root);
-    assert!(
-        !client
+    assert_eq!(
+        client
             .get_credential_root(&f.credential_root)
             .unwrap()
-            .active
+            .status,
+        STATUS_REVOKED
     );
 
     // Attempting to register with the revoked root must fail.
@@ -786,7 +792,7 @@ fn deployment_fixture_revoked_state_read_queries_still_work() {
     assert!(!issuer_rec.active); // revoked, not deleted
 
     let cred_rec = client.get_credential_root(&f.credential_root).unwrap();
-    assert!(!cred_rec.active); // revoked, not deleted
+    assert_eq!(cred_rec.status, STATUS_REVOKED); // revoked, not deleted
 
     assert_eq!(client.get_verifier(), Some(f.verifier_id.clone()));
     assert_eq!(

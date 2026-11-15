@@ -53,6 +53,35 @@ the data-layout versions reported by `get_schema_version` and
 The function performs no storage access and requires no authorization,
 so it is safe to call from any client or monitoring probe.
 
+## Public-Input And Metadata Size Policy (#1202)
+
+Callers can inspect active public-input, proof, and metadata size limits before
+building or submitting transactions via two bounded O(1) read entry points:
+
+```text
+get_input_size_policy() -> InputSizePolicy
+get_schema_input_limit(schema_id: u32) -> Option<u32>
+```
+
+`InputSizePolicy` carries `schema_version = 1` (`INPUT_SIZE_POLICY_SCHEMA_VERSION`)
+alongside canonical byte and cardinality limits:
+
+- Proof byte bounds: `min_proof_bytes = 64`, `max_proof_bytes = 65536`.
+- Public-input frame sizes: `silent_witness_v1_bytes = 160` (`SCHEMA_ID_SILENT_WITNESS = 1`),
+  `revocation_witness_bytes = 128` (`SCHEMA_ID_REVOCATION_WITNESS = 2`),
+  `silent_witness_v2_bytes = 256` (`SCHEMA_ID_SILENT_WITNESS_V2 = 3`),
+  `silent_witness_browser_bytes = 128` (`SCHEMA_ID_SILENT_WITNESS_BROWSER_V1 = 4`),
+  `selective_disclosure_bytes = 352` (`SCHEMA_ID_SELECTIVE_DISCLOSURE = 5`).
+- Batch aggregation bounds: `max_batch_aggregation_size = 8`,
+  `max_aggregated_inputs_bytes = 1056` (`32 + 8 * 128`).
+- Metadata & commitment bounds: `max_metadata_hash_bytes = 32`,
+  `metadata_envelope_min_version = 1`, `metadata_envelope_max_version = 2`,
+  `max_lineage_payload_bytes = 4096`, `max_source_batch_proof_len = 32`.
+
+`get_schema_input_limit` returns `None` for unknown selectors instead of
+reverting, and both reads require zero storage access or authorization (callable
+even before `init` or while registration domains are paused).
+
 ## Contract Wasm Size Budget
 
 Issue #346 adds a fail-closed size budget for the deployed registry artifact
