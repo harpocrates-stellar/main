@@ -112,3 +112,12 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Device attestation profile required-field and critical-extension validation
+
+`backend/capture_attestation.py` and `backend/issuer_key_transparency.py` validate profile versions and critical extension declarations fail-closed:
+
+- **Strict version and field allowlists:** `decode_attestation` verifies `profile == "harpocrates-capture-attestation/v1"` with integer `version == 1` (rejecting boolean coercion) and rejects unknown top-level fields or unknown subfields inside `appIdentity`, `secureTime`, and `cameraPipeline`.
+- **Critical declarations (`criticalFields` and `criticalExtensions`):** Unknown required fields in `criticalFields`, omitted declared critical fields, unrecognised `criticalExtensions` identifiers (outside `SUPPORTED_CRITICAL_EXTENSIONS`), or `platformClaims` entries marked `critical: true` / `required: true` raise `AttestationProfileValidationError` (a `ValueError` subclass) without echoing raw payload secrets. `IssuerManifest.from_dict` likewise rejects unsupported `criticalExtensions`.
+- **Known optional metadata without broad trust:** Known bounded `optionalMetadata` keys (`attestationBackend`, `captureMode`, `lensProfile`, `osPatchLevel`, `sensorModelClass`) and non-critical `platformClaims` round-trip intact while `inspect_attestation_profile_metadata` explicitly marks `optionalMetadataVerified: false` and `broadTrustAssumed: false`.
+
