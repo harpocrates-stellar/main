@@ -400,25 +400,20 @@ export class BatchVerifier {
         contractId: this.config.contractId,
         wallet: this.config.wallet,
         file: item.file,
+        videoHash,
         signal,
-        onEvent: (event) => {
-          item.events.push(event)
-          if (event.message) {
-            item.message = event.message
-          }
-          this.notifyProgress(false, false)
-        },
       })
 
-      item.videoHash = result.videoHash ?? item.videoHash
-      item.metadataHash = result.metadataHash ?? null
-      item.sourceHash = result.sourceHash ?? null
-      item.tier = result.tier ?? null
+      item.videoHash = result.chainProof?.videoHash ?? item.videoHash
+      item.metadataHash = result.chainProof?.metadataHash ?? null
+      item.sourceHash = result.chainProof?.source ?? null
+      item.tier = result.chainProof ? String(result.chainProof.tier) : null
       item.chainProof = result.chainProof ?? null
-      item.chainStatus = result.chainStatus ?? null
-      item.status = result.status
+      item.chainStatus = result.chainProof ? String(result.chainProof.status) : null
+      item.events = result.events
+      item.status = result.outcome
       item.message = result.message
-      item.failureReason = result.failureReason ?? null
+      item.failureReason = result.outcome === 'malformed' || result.outcome === 'unavailable' ? result.message : null
       item.durationMs = performance.now() - itemStart
     } catch (err) {
       if (signal.aborted) {

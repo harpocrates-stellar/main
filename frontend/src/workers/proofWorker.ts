@@ -19,6 +19,19 @@ function zero(buf: ArrayBuffer) {
   new Uint8Array(buf).fill(0)
 }
 
+function zeroInput(input: TransferableProofInput) {
+  try {
+    zero(input.credentialSecret)
+  } catch {
+    // detached
+  }
+  try {
+    zero(input.nullifierSecret)
+  } catch {
+    // detached
+  }
+}
+
 async function handleGenerate(requestId: string, input: TransferableProofInput) {
   if (activeRequestId !== null) {
     post({ type: 'ERROR', requestId, code: 'BUSY', message: 'A proof is already being generated.' })

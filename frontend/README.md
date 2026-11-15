@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Local Vault Recovery Readiness Report
+
+`CredentialVault.getRecoveryReadinessReport()` and `<VaultRecoveryReadinessPanel />`
+(`src/credentialVault.ts`, `src/components/VaultRecoveryReadinessPanel.tsx`)
+evaluate local recovery readiness without touching decrypted witness seeds or
+derived WebCrypto keys:
+
+- Reports envelope format version (`v1` vs. missing, corrupted, or unsupported), browser storage availability (`available`, `read-only`, or `unavailable`), and non-secret encrypted backup presence (`harpocrates:credential-vault:backup-status`).
+- Secret witness values, passphrases, derived `CryptoKey` objects, and raw ciphertext hex are excluded by construction.

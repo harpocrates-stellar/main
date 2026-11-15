@@ -1,15 +1,196 @@
 import type { SeedPair } from './seedVault'
+import {
+  clearVaultBackupPresence,
+  probeLocalStorageAvailability,
+  readVaultBackupPresence,
+  type StorageAvailabilityStatus,
+  writeVaultBackupPresence,
+} from './safeStorage'
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
 const PBKDF2_ITERATIONS = 600000
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
 
+const HEX_FIELD_PATTERN = /^[0-9a-fA-F]+$/
+
 export interface VaultEnvelope {
   v: number
   salt: string // hex
   iv: string // hex
   ct: string // hex (ciphertext)
+}
+
+export type VaultEnvelopeHealthStatus =
+  | 'supported'
+  | 'unsupported-version'
+  | 'corrupted'
+  | 'missing'
+  | 'unreadable'
+
+export interface VaultRecoveryReadinessReport {
+  readonly ready: boolean
+  readonly overallStatus: 'ready' | 'attention-needed' | 'unavailable'
+  readonly formatVersion: number | null
+  readonly supportedFormatVersion: number
+  readonly envelopeStatus: VaultEnvelopeHealthStatus
+  readonly storageAvailable: boolean
+  readonly storageStatus: StorageAvailabilityStatus
+  readonly backupPresent: boolean
+  readonly backupMatchesCurrentVersion: boolean
+  readonly lastBackupRecordedAt: string | null
+  readonly actionItems: readonly string[]
+}
+
+function inspectStoredEnvelopeStructure(rawStored: string | null): {
+  envelopeStatus: VaultEnvelopeHealthStatus
+  formatVersion: number | null
+} {
+  if (!rawStored) {
+    return { envelopeStatus: 'missing', formatVersion: null }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawStored)
+  } catch {
+    return { envelopeStatus: 'corrupted', formatVersion: null }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { envelopeStatus: 'corrupted', formatVersion: null }
+  }
+
+  const candidate = parsed as Partial<VaultEnvelope>
+  if (typeof candidate.v !== 'number' || !Number.isInteger(candidate.v)) {
+    return { envelopeStatus: 'corrupted', formatVersion: null }
+  }
+
+  for (const field of ['salt', 'iv', 'ct'] as const) {
+    const val = candidate[field]
+    if (
+      typeof val !== 'string' ||
+      val.length === 0 ||
+      val.length % 2 !== 0 ||
+      !HEX_FIELD_PATTERN.test(val)
+    ) {
+      return { envelopeStatus: 'corrupted', formatVersion: candidate.v }
+    }
+  }
+
+  if (candidate.v !== VAULT_VERSION) {
+    return { envelopeStatus: 'unsupported-version', formatVersion: candidate.v }
+  }
+
+  return { envelopeStatus: 'supported', formatVersion: candidate.v }
+}
+
+/**
+ * Produces a strictly non-secret local recovery readiness summary without ever
+ * accessing decrypted witness seeds, passphrases, or WebCrypto key handles.
+ */
+export function buildVaultRecoveryReadinessReport(): VaultRecoveryReadinessReport {
+  const storageProbe = probeLocalStorageAvailability()
+  const actionItems: string[] = []
+
+  if (storageProbe.status === 'unavailable') {
+    actionItems.push(
+      'Enable browser local storage permissions for this origin to inspect or persist encrypted vault state.',
+    )
+    return Object.freeze({
+      ready: false,
+      overallStatus: 'unavailable',
+      formatVersion: null,
+      supportedFormatVersion: VAULT_VERSION,
+      envelopeStatus: 'unreadable',
+      storageAvailable: false,
+      storageStatus: 'unavailable',
+      backupPresent: false,
+      backupMatchesCurrentVersion: false,
+      lastBackupRecordedAt: null,
+      actionItems: Object.freeze(actionItems),
+    })
+  }
+
+  if (storageProbe.status === 'read-only') {
+    actionItems.push(
+      'Free browser storage quota or restore write access before rotating or replacing your vault.',
+    )
+  }
+
+  let rawStored: string | null = null
+  let unreadable = false
+  try {
+    rawStored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+  } catch {
+    unreadable = true
+  }
+
+  if (unreadable) {
+    actionItems.push('Browser storage blocked reading harpocrates:credential-vault.')
+    return Object.freeze({
+      ready: false,
+      overallStatus: 'unavailable',
+      formatVersion: null,
+      supportedFormatVersion: VAULT_VERSION,
+      envelopeStatus: 'unreadable',
+      storageAvailable: false,
+      storageStatus: 'unavailable',
+      backupPresent: false,
+      backupMatchesCurrentVersion: false,
+      lastBackupRecordedAt: null,
+      actionItems: Object.freeze(actionItems),
+    })
+  }
+
+  const { envelopeStatus, formatVersion } = inspectStoredEnvelopeStructure(rawStored)
+  const backupRecord = readVaultBackupPresence()
+  const backupPresent = backupRecord.backupPresent
+  const backupMatchesCurrentVersion =
+    backupPresent &&
+    formatVersion !== null &&
+    backupRecord.recordedFormatVersion === formatVersion
+
+  if (envelopeStatus === 'missing') {
+    actionItems.push('Set up an encrypted credential vault or import an encrypted backup.')
+  } else if (envelopeStatus === 'corrupted') {
+    actionItems.push(
+      'Stored vault envelope is malformed; restore from a verified encrypted backup.',
+    )
+  } else if (envelopeStatus === 'unsupported-version') {
+    actionItems.push(
+      `Stored vault format version v${String(formatVersion)} does not match supported version v${VAULT_VERSION}.`,
+    )
+  }
+
+  if (envelopeStatus === 'supported' && !backupPresent) {
+    actionItems.push('Export an encrypted vault backup so credentials can be recovered offline.')
+  } else if (envelopeStatus === 'supported' && !backupMatchesCurrentVersion) {
+    actionItems.push(
+      'Export a fresh encrypted backup matching the active vault format version.',
+    )
+  }
+
+  const ready =
+    storageProbe.available &&
+    envelopeStatus === 'supported' &&
+    formatVersion === VAULT_VERSION &&
+    backupPresent &&
+    backupMatchesCurrentVersion
+
+  return Object.freeze({
+    ready,
+    overallStatus: ready ? 'ready' : 'attention-needed',
+    formatVersion,
+    supportedFormatVersion: VAULT_VERSION,
+    envelopeStatus,
+    storageAvailable: storageProbe.available,
+    storageStatus: storageProbe.status,
+    backupPresent,
+    backupMatchesCurrentVersion,
+    lastBackupRecordedAt: backupRecord.recordedAtIso,
+    actionItems: Object.freeze(actionItems),
+  })
 }
 
 function bufToHex(buffer: ArrayBuffer): string {
@@ -70,6 +251,27 @@ export class CredentialVault {
     return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
   }
 
+  getRecoveryReadinessReport(): VaultRecoveryReadinessReport {
+    return buildVaultRecoveryReadinessReport()
+  }
+
+  markBackupCompleted(recordedAt = new Date()): void {
+    const rawStored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    const { envelopeStatus, formatVersion } = inspectStoredEnvelopeStructure(rawStored)
+    if (envelopeStatus !== 'supported' || formatVersion === null) {
+      throw new Error('Cannot record backup presence without a valid supported vault envelope')
+    }
+    writeVaultBackupPresence({
+      backupPresent: true,
+      recordedFormatVersion: formatVersion,
+      recordedAtIso: recordedAt.toISOString(),
+    })
+  }
+
+  clearBackupRecord(): void {
+    clearVaultBackupPresence()
+  }
+
   async setup(password: string, seeds: SeedPair): Promise<void> {
     const salt = crypto.getRandomValues(new Uint8Array(16))
     const key = await deriveKey(password, salt as unknown as ArrayBuffer)
@@ -95,6 +297,8 @@ export class CredentialVault {
     }
 
     window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
+    // Freshly created or replaced vault requires its own encrypted backup
+    clearVaultBackupPresence()
     this.memoryKey = key
     this.seeds = { credentialSeed: seeds.credentialSeed, nullifierSeed: seeds.nullifierSeed }
     this.resetTimeout()
@@ -132,7 +336,7 @@ export class CredentialVault {
 
       const dec = new TextDecoder()
       const seedsRaw = JSON.parse(dec.decode(pt))
-      
+
       this.memoryKey = key
       this.seeds = {
         credentialSeed: seedsRaw.credentialSeed,
@@ -159,6 +363,7 @@ export class CredentialVault {
 
   destroy(): void {
     this.lock()
+    clearVaultBackupPresence()
     window.localStorage.removeItem(VAULT_STORAGE_KEY)
   }
 
