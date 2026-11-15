@@ -342,6 +342,27 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Verification Receipt Evidence Bundles
+
+`verification_receipt.py` and `time_attestation.py` implement the versioned
+`harpocrates-receipt-evidence-bundle` (`version: 1`) envelope for portable,
+offline receipt verification:
+
+- **Cryptographic Bindings:** `build_receipt_evidence_bundle` binds the signed
+  `harpocrates-verification-receipt` (`receiptDigest`), the public ECDSA P-256
+  `trustSnapshot` (`trustSnapshotDigest`), and the canonical `chainObservation`
+  plus optional `harpocrates-time-attestation/v1` envelope
+  (`chainObservationDigest`) into a domain-separated `bundleDigest`.
+- **Offline, Token-Free, Media-Free Verification:** `verify_receipt_evidence_bundle`
+  validates bundle protocol/version, size bounds (`65,536` bytes), component
+  digests, cross-statement consistency, time-attestation bindings, key validity
+  windows, and ECDSA P-256 signatures completely offline without API tokens,
+  network calls, database state, private keys, witness inputs, or media bytes.
+- **HTTP Endpoints:** `POST /api/receipts/evidence-bundle` assembles a verified
+  bundle, and `POST /api/receipts/evidence-bundle/verify` verifies bundles
+  offline while rejecting requests carrying `Authorization` or `X-Api-Key`
+  credentials or any embedded sensitive media.
+
 ## Test
 
 ```powershell

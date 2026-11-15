@@ -16,7 +16,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from datetime import datetime, timezone
 
 try:
@@ -34,6 +34,9 @@ except ImportError:  # pragma: no cover - package layout / optional path
 
 PROFILE_ID = "harpocrates-time-attestation/v1"
 SUPPORTED_VERSIONS = {1}
+CHAIN_OBSERVATION_DOMAIN = "harpocrates-chain-observation/v1"
+CHAIN_OBSERVATION_STATUSES = ("confirmed", "unverified", "revoked", "pending")
+CHAIN_OBSERVATION_TIERS = ("silent", "source", "seal")
 
 # Maximum allowed future drift: 5 minutes (accounts for clock skew)
 MAX_FUTURE_DRIFT_SECONDS = 300
@@ -244,22 +247,38 @@ def canonical_time_attestation_hash(attestation: TimeAttestation) -> str:
 
 def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str) -> list[str]:
     """
-    Validate a time attestation envelope.
-    
+    Validate a time attestation envelope against the current system clock.
+
     Returns a list of validation errors. Empty list means valid.
     """
+    return validate_time_attestation_at(
+        attestation,
+        evidence_digest,
+        reference_time_ms=int(time.time() * 1000),
+    )
+
+
+def validate_time_attestation_at(
+    attestation: TimeAttestation,
+    evidence_digest: str,
+    *,
+    reference_time_ms: int | None = None,
+) -> list[str]:
+    """Validate a time attestation deterministically at an optional reference timestamp."""
     errors: list[str] = []
-    
-    # Verify evidence digest binding
+
     if attestation.evidence_digest != evidence_digest:
         errors.append(
             f"Evidence digest mismatch: expected {evidence_digest}, "
             f"got {attestation.evidence_digest}"
         )
-    
-    current_time_ms = int(time.time() * 1000)
-    
-    # Validate claimed time
+
+    current_time_ms = (
+        int(time.time() * 1000)
+        if reference_time_ms is None
+        else reference_time_ms
+    )
+
     if attestation.claimed_time:
         claimed_ms = attestation.claimed_time.unix_ms
         if claimed_ms > current_time_ms + (MAX_FUTURE_DRIFT_SECONDS * 1000):
@@ -269,8 +288,7 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
             )
         if claimed_ms < 0:
             errors.append(f"Claimed time {claimed_ms} is negative")
-    
-    # Validate observed time
+
     if attestation.observed_time:
         observed_ms = attestation.observed_time.unix_ms
         if observed_ms > current_time_ms + (MAX_FUTURE_DRIFT_SECONDS * 1000):
@@ -280,8 +298,7 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
             )
         if observed_ms < 0:
             errors.append(f"Observed time {observed_ms} is negative")
-    
-    # Validate Stellar anchors
+
     for i, anchor in enumerate(attestation.stellar_anchors):
         if not _is_valid_hex(anchor.transaction_hash, 64):
             errors.append(
@@ -295,8 +312,7 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
             errors.append(
                 f"Stellar anchor {i}: ledger_timestamp must be non-negative"
             )
-    
-    # Validate RFC 3161 anchors
+
     for i, anchor in enumerate(attestation.rfc3161_anchors):
         if len(anchor.token_bytes) > MAX_TIMESTAMP_TOKEN_SIZE:
             errors.append(
@@ -310,8 +326,7 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
             errors.append(
                 f"RFC 3161 anchor {i}: genTime is too far in the future"
             )
-    
-    # Validate at least one time source exists
+
     has_time_source = (
         attestation.claimed_time is not None
         or attestation.observed_time is not None
@@ -320,8 +335,111 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
     )
     if not has_time_source:
         errors.append("At least one time source is required")
-    
+
     return errors
+
+
+def normalize_chain_observation(observation: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and normalize a portable chain observation record for receipt evidence bundles."""
+    if not isinstance(observation, Mapping):
+        raise ValueError("chainObservation must be an object")
+
+    proof_id = observation.get("proofId")
+    video_hash = observation.get("videoHash")
+    metadata_hash = observation.get("metadataHash")
+    if not isinstance(proof_id, str) or not _is_valid_hex(proof_id, 64):
+        raise ValueError("chainObservation.proofId must be a 32-byte hex string")
+    if not isinstance(video_hash, str) or not _is_valid_hex(video_hash, 64):
+        raise ValueError("chainObservation.videoHash must be a 32-byte hex string")
+    if not isinstance(metadata_hash, str) or not _is_valid_hex(metadata_hash, 64):
+        raise ValueError("chainObservation.metadataHash must be a 32-byte hex string")
+
+    tier = observation.get("tier")
+    if tier not in CHAIN_OBSERVATION_TIERS:
+        raise ValueError(
+            f"chainObservation.tier must be one of: {', '.join(CHAIN_OBSERVATION_TIERS)}"
+        )
+
+    network_passphrase = observation.get("networkPassphrase")
+    if not isinstance(network_passphrase, str) or not network_passphrase.strip():
+        raise ValueError("chainObservation.networkPassphrase must be a non-empty string")
+
+    contract_id = observation.get("contractId")
+    if not isinstance(contract_id, str) or not contract_id.strip():
+        raise ValueError("chainObservation.contractId must be a non-empty string")
+
+    ledger_sequence = observation.get("ledgerSequence")
+    if ledger_sequence is not None:
+        if (
+            not isinstance(ledger_sequence, int)
+            or isinstance(ledger_sequence, bool)
+            or ledger_sequence < 0
+        ):
+            raise ValueError(
+                "chainObservation.ledgerSequence must be a non-negative integer or null"
+            )
+
+    transaction_hash = observation.get("transactionHash")
+    normalized_tx_hash: str | None = None
+    if transaction_hash is not None:
+        if not isinstance(transaction_hash, str) or not _is_valid_hex(transaction_hash, 64):
+            raise ValueError("chainObservation.transactionHash must be a 32-byte hex string")
+        normalized_tx_hash = transaction_hash.lower()
+
+    status = observation.get("status")
+    if status not in CHAIN_OBSERVATION_STATUSES:
+        raise ValueError(
+            f"chainObservation.status must be one of: {', '.join(CHAIN_OBSERVATION_STATUSES)}"
+        )
+
+    observed_at = observation.get("observedAt")
+    if not isinstance(observed_at, str) or not observed_at.strip():
+        raise ValueError("chainObservation.observedAt must be an ISO-8601 UTC timestamp")
+    try:
+        parsed_observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("chainObservation.observedAt must be an ISO-8601 UTC timestamp") from exc
+    if parsed_observed.tzinfo is None:
+        raise ValueError("chainObservation.observedAt must include an explicit UTC timezone")
+    normalized_observed_at = (
+        parsed_observed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
+
+    normalized: dict[str, Any] = {
+        "proofId": proof_id.lower(),
+        "videoHash": video_hash.lower(),
+        "metadataHash": metadata_hash.lower(),
+        "tier": tier,
+        "networkPassphrase": network_passphrase,
+        "contractId": contract_id,
+        "ledgerSequence": ledger_sequence,
+        "transactionHash": normalized_tx_hash,
+        "status": status,
+        "observedAt": normalized_observed_at,
+    }
+
+    raw_time_att = observation.get("timeAttestation")
+    if raw_time_att is not None:
+        if isinstance(raw_time_att, TimeAttestation):
+            decoded_att = raw_time_att
+        elif isinstance(raw_time_att, Mapping):
+            decoded_att = decode_time_attestation(dict(raw_time_att))
+        else:
+            raise ValueError(
+                "chainObservation.timeAttestation must be a TimeAttestation or object"
+            )
+        encoded_att = encode_time_attestation(decoded_att)
+        normalized["timeAttestation"] = encoded_att
+        normalized["timeAttestationDigest"] = canonical_time_attestation_hash(decoded_att)
+
+    return normalized
+
+
+def compute_chain_observation_digest(observation: Mapping[str, Any]) -> str:
+    """Compute domain-separated canonical SHA-256 digest of a chain observation."""
+    normalized = normalize_chain_observation(observation)
+    payload = CHAIN_OBSERVATION_DOMAIN.encode("utf-8") + b":" + _canonical_json(normalized)
+    return hashlib.sha256(payload).hexdigest()
 
 
 def check_backdating_risk(attestation: TimeAttestation) -> dict[str, Any]:

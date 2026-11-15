@@ -111,8 +111,13 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
-from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from verification_receipt import (
+    MAX_EVIDENCE_BUNDLE_BYTES,
+    build_receipt_evidence_bundle,
+    build_verification_receipt,
+    verify_receipt_evidence_bundle,
+)
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2086,6 +2091,105 @@ def create_app() -> Flask:
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
         return jsonify(response)
+
+    @app.post("/api/receipts/evidence-bundle")
+    @limiter.limit(config.ratelimit_verify)
+    def create_receipt_evidence_bundle_endpoint():
+        if _enforce_json_size() > min(config.max_json_bytes, MAX_EVIDENCE_BUNDLE_BYTES * 2):
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+
+        receipt = payload.get("receipt")
+        trust_snapshot = payload.get("trustSnapshot")
+        chain_observation = payload.get("chainObservation")
+        bundled_at = payload.get("bundledAt")
+        if not isinstance(receipt, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="receipt must be a JSON object",
+                status=400,
+            )
+        if not isinstance(trust_snapshot, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="trustSnapshot must be a JSON object",
+                status=400,
+            )
+        if not isinstance(chain_observation, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="chainObservation must be a JSON object",
+                status=400,
+            )
+
+        try:
+            bundle = build_receipt_evidence_bundle(
+                receipt=receipt,
+                trust_snapshot=trust_snapshot,
+                chain_observation=chain_observation,
+                bundled_at=bundled_at,
+            )
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+        return ok_response({"bundle": bundle})
+
+    @app.post("/api/receipts/evidence-bundle/verify")
+    @limiter.limit(config.ratelimit_verify)
+    def verify_receipt_evidence_bundle_endpoint():
+        if _enforce_json_size() > min(config.max_json_bytes, MAX_EVIDENCE_BUNDLE_BYTES * 2):
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+
+        if request.headers.get("Authorization") or request.headers.get("X-Api-Key"):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="Offline receipt evidence bundle verification must not supply API tokens",
+                status=400,
+            )
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+
+        bundle_raw = payload.get("bundle")
+        if bundle_raw is None:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="bundle is required",
+                status=400,
+            )
+
+        verification = verify_receipt_evidence_bundle(
+            bundle_raw,
+            expected_network_passphrase=payload.get("expectedNetworkPassphrase"),
+            expected_proof_id=payload.get("expectedProofId"),
+            trusted_snapshot_digest=payload.get("trustedSnapshotDigest"),
+            now=payload.get("now"),
+            enforce_active_key_at_now=bool(payload.get("enforceActiveKeyAtNow", False)),
+        )
+        return ok_response({"verification": verification})
 
     @app.post("/api/capture-attestation/verify")
     @limiter.limit(config.ratelimit_verify)
