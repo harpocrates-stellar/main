@@ -112,3 +112,11 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Offline issuer trust snapshot exports
+
+Air-gapped verifiers can bundle trusted issuer state using `IssuerSnapshotSource`, `OfflineIssuerTrustSnapshot`, and `export_offline_issuer_trust_snapshot` (`backend/issuer_key_transparency.py`):
+
+- **Public-only schema (`harpocrates-offline-issuer-trust-snapshot/v1`):** Exports include only verified public `IssuerManifest` chains, `CheckpointReference` digests (`checkpointHash`, `treeHeadHash`, `eventCount`, `manifestHash`), and `PolicyVersionPin` metadata, sealed by a deterministic `snapshotHash`.
+- **Evidence-privacy boundary:** Private or evidence-specific identifiers (`captureNonce`, `deviceCommitment`, `evidenceDigestBinding`, `videoHash`, `proofId`, `buildFingerprint`, witness secrets, or organization PII) are excluded on export and rejected fail-closed on `OfflineIssuerTrustSnapshot.from_dict`.
+

@@ -647,3 +647,349 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+# ── Offline issuer trust snapshot exports ──────────────────────────────────
+
+OFFLINE_TRUST_SNAPSHOT_SCHEMA = "harpocrates-offline-issuer-trust-snapshot/v1"
+OFFLINE_TRUST_SNAPSHOT_VERSION = 1
+MAX_SNAPSHOT_ISSUERS = 128
+
+_FORBIDDEN_PRIVATE_KEY_TOKENS = (
+    "evidence",
+    "video",
+    "nonce",
+    "device",
+    "witness",
+    "nullifier",
+    "secret",
+    "fingerprint",
+    "proofid",
+    "session",
+    "email",
+    "phone",
+    "legalname",
+)
+
+
+def _assert_no_private_keys(obj: Any) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            lowered = str(k).lower().replace("_", "")
+            if any(tok in lowered for tok in _FORBIDDEN_PRIVATE_KEY_TOKENS):
+                raise TransparencyError(
+                    "offline issuer trust snapshot must not contain evidence-specific or private fields"
+                )
+            _assert_no_private_keys(v)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _assert_no_private_keys(item)
+
+
+@dataclass(frozen=True)
+class CheckpointReference:
+    """Compact public reference to a verified directory checkpoint."""
+
+    checkpoint_hash: str
+    tree_head_hash: str
+    event_count: int
+    manifest_hash: str
+    timestamp: int
+    signature_hash: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "checkpointHash": self.checkpoint_hash,
+            "eventCount": self.event_count,
+            "manifestHash": self.manifest_hash,
+            "timestamp": self.timestamp,
+            "treeHeadHash": self.tree_head_hash,
+        }
+        if self.signature_hash is not None:
+            d["signatureHash"] = self.signature_hash
+        return d
+
+    @staticmethod
+    def from_checkpoint(checkpoint: DirectoryCheckpoint) -> CheckpointReference:
+        return CheckpointReference(
+            checkpoint_hash=checkpoint_hash(checkpoint),
+            tree_head_hash=_require_hex("treeHeadHash", checkpoint.tree_head_hash),
+            event_count=int(checkpoint.event_count),
+            manifest_hash=_require_hex("manifestHash", checkpoint.manifest_hash),
+            timestamp=int(checkpoint.timestamp),
+            signature_hash=(
+                _require_hex("signatureHash", checkpoint.signature_hash)
+                if checkpoint.signature_hash
+                else None
+            ),
+        )
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> CheckpointReference:
+        allowed = {
+            "checkpointHash",
+            "eventCount",
+            "manifestHash",
+            "signatureHash",
+            "timestamp",
+            "treeHeadHash",
+        }
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected field in checkpointReference")
+        ev_count = obj.get("eventCount")
+        ts = obj.get("timestamp")
+        if isinstance(ev_count, bool) or not isinstance(ev_count, int) or ev_count < 0:
+            raise TransparencyError("checkpointReference.eventCount must be a non-negative integer")
+        if isinstance(ts, bool) or not isinstance(ts, int):
+            raise TransparencyError("checkpointReference.timestamp must be an integer")
+        return CheckpointReference(
+            checkpoint_hash=_require_hex("checkpointHash", str(obj["checkpointHash"])),
+            tree_head_hash=_require_hex("treeHeadHash", str(obj["treeHeadHash"])),
+            event_count=ev_count,
+            manifest_hash=_require_hex("manifestHash", str(obj["manifestHash"])),
+            timestamp=ts,
+            signature_hash=(
+                _require_hex("signatureHash", str(obj["signatureHash"]))
+                if obj.get("signatureHash")
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PolicyVersionPin:
+    """Public trust-policy version metadata bundled into an offline snapshot."""
+
+    policy_version: str
+    policy_hash: str
+    default_freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS
+    high_assurance_freshness_seconds: int = HIGH_ASSURANCE_FRESHNESS_SECONDS
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy_version, str) or not (
+            1 <= len(self.policy_version.strip()) <= 64
+        ):
+            raise TransparencyError("policy_version must be a non-empty string up to 64 chars")
+        _require_hex("policyHash", self.policy_hash)
+        for name, val in (
+            ("default_freshness_seconds", self.default_freshness_seconds),
+            ("high_assurance_freshness_seconds", self.high_assurance_freshness_seconds),
+        ):
+            if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+                raise TransparencyError(f"{name} must be a positive integer")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "defaultFreshnessSeconds": self.default_freshness_seconds,
+            "highAssuranceFreshnessSeconds": self.high_assurance_freshness_seconds,
+            "policyHash": self.policy_hash.lower(),
+            "policyVersion": self.policy_version.strip(),
+        }
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> PolicyVersionPin:
+        allowed = {
+            "defaultFreshnessSeconds",
+            "highAssuranceFreshnessSeconds",
+            "policyHash",
+            "policyVersion",
+        }
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected field in policy pin")
+        return PolicyVersionPin(
+            policy_version=str(obj["policyVersion"]),
+            policy_hash=_require_hex("policyHash", str(obj["policyHash"])),
+            default_freshness_seconds=int(obj.get("defaultFreshnessSeconds", DEFAULT_FRESHNESS_SECONDS)),
+            high_assurance_freshness_seconds=int(
+                obj.get("highAssuranceFreshnessSeconds", HIGH_ASSURANCE_FRESHNESS_SECONDS)
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class OfflineIssuerSnapshotEntry:
+    """Single-issuer public entry in an offline trust snapshot."""
+
+    organization_identity_hash: str
+    manifests: tuple[IssuerManifest, ...]
+    checkpoint_ref: CheckpointReference
+    policy: PolicyVersionPin
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "checkpointReference": self.checkpoint_ref.to_dict(),
+            "manifests": [m.to_dict() for m in self.manifests],
+            "organizationIdentityHash": self.organization_identity_hash,
+            "policy": self.policy.to_dict(),
+        }
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> OfflineIssuerSnapshotEntry:
+        allowed = {"checkpointReference", "manifests", "organizationIdentityHash", "policy"}
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected field in snapshot issuer entry")
+        org = _require_hex("organizationIdentityHash", str(obj["organizationIdentityHash"]))
+        raw_manifests = obj.get("manifests")
+        if not isinstance(raw_manifests, list) or len(raw_manifests) == 0:
+            raise TransparencyError("snapshot entry must include at least one public manifest")
+        manifests = tuple(IssuerManifest.from_dict(m) for m in raw_manifests)
+        for m in manifests:
+            canonicalize_manifest(m)
+            if m.organization_identity_hash != org:
+                raise TransparencyError("snapshot manifest organizationIdentityHash mismatch")
+        cp_ref = CheckpointReference.from_dict(obj["checkpointReference"])
+        manifest_hashes = {manifest_hash(m) for m in manifests}
+        if cp_ref.manifest_hash not in manifest_hashes:
+            raise TransparencyError(
+                "checkpointReference.manifestHash is not present in snapshot manifests"
+            )
+        policy = PolicyVersionPin.from_dict(obj["policy"])
+        return OfflineIssuerSnapshotEntry(
+            organization_identity_hash=org,
+            manifests=manifests,
+            checkpoint_ref=cp_ref,
+            policy=policy,
+        )
+
+
+@dataclass(frozen=True)
+class IssuerSnapshotSource:
+    """Input source for exporting an offline issuer trust snapshot.
+
+    Optional ``private_context`` is accepted solely so callers passing mixed
+    verification bundles have all evidence-specific fields stripped deterministically.
+    """
+
+    directory: IssuerDirectory
+    checkpoint: DirectoryCheckpoint
+    policy_version: str
+    private_context: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class OfflineIssuerTrustSnapshot:
+    """Portable, evidence-agnostic offline issuer trust snapshot."""
+
+    exported_at: int
+    entries: tuple[OfflineIssuerSnapshotEntry, ...]
+
+    def _unsigned_dict(self) -> dict[str, Any]:
+        ordered = sorted(self.entries, key=lambda e: e.organization_identity_hash)
+        return {
+            "exportedAt": self.exported_at,
+            "issuers": [entry.to_dict() for entry in ordered],
+            "schema": OFFLINE_TRUST_SNAPSHOT_SCHEMA,
+            "version": OFFLINE_TRUST_SNAPSHOT_VERSION,
+        }
+
+    def snapshot_hash(self) -> str:
+        return _sha256_hex(_canonical_json(self._unsigned_dict()))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self._unsigned_dict()
+        _assert_no_private_keys(payload)
+        payload["snapshotHash"] = self.snapshot_hash()
+        return payload
+
+    def to_canonical_json(self) -> str:
+        return _canonical_json(self.to_dict()).decode("utf-8")
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> OfflineIssuerTrustSnapshot:
+        if not isinstance(obj, dict):
+            raise TransparencyError("snapshot payload must be a JSON object")
+        _assert_no_private_keys(obj)
+        allowed = {"exportedAt", "issuers", "schema", "snapshotHash", "version"}
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected top-level field in offline trust snapshot")
+        if obj.get("schema") != OFFLINE_TRUST_SNAPSHOT_SCHEMA:
+            raise TransparencyError("unsupported offline trust snapshot schema")
+        ver = obj.get("version")
+        if isinstance(ver, bool) or ver != OFFLINE_TRUST_SNAPSHOT_VERSION:
+            raise TransparencyError("unsupported offline trust snapshot version")
+        exp = obj.get("exportedAt")
+        if isinstance(exp, bool) or not isinstance(exp, int) or exp < 0:
+            raise TransparencyError("exportedAt must be a non-negative integer")
+        raw_issuers = obj.get("issuers")
+        if (
+            not isinstance(raw_issuers, list)
+            or len(raw_issuers) == 0
+            or len(raw_issuers) > MAX_SNAPSHOT_ISSUERS
+        ):
+            raise TransparencyError("issuers must be a non-empty bounded list")
+        entries = tuple(OfflineIssuerSnapshotEntry.from_dict(item) for item in raw_issuers)
+        seen_orgs: set[str] = set()
+        for entry in entries:
+            if entry.organization_identity_hash in seen_orgs:
+                raise TransparencyError("duplicate organizationIdentityHash in snapshot")
+            seen_orgs.add(entry.organization_identity_hash)
+        snap = OfflineIssuerTrustSnapshot(exported_at=exp, entries=entries)
+        expected_hash = _require_hex("snapshotHash", str(obj.get("snapshotHash", "")))
+        if snap.snapshot_hash() != expected_hash:
+            raise TransparencyError("snapshotHash integrity mismatch")
+        return snap
+
+
+def export_offline_issuer_trust_snapshot(
+    sources: list[IssuerSnapshotSource] | tuple[IssuerSnapshotSource, ...],
+    *,
+    exported_at: int | None = None,
+) -> OfflineIssuerTrustSnapshot:
+    """Export public manifests, checkpoint references, and policy versions only.
+
+    Verifies checkpoint consistency before export and strips any evidence-specific
+    private identifiers that may exist in surrounding caller state.
+    """
+    if len(sources) == 0 or len(sources) > MAX_SNAPSHOT_ISSUERS:
+        raise TransparencyError(f"sources must contain 1..{MAX_SNAPSHOT_ISSUERS} issuers")
+    ts = int(time.time()) if exported_at is None else exported_at
+    if isinstance(ts, bool) or not isinstance(ts, int) or ts < 0:
+        raise TransparencyError("exported_at must be a non-negative integer")
+
+    entries: list[OfflineIssuerSnapshotEntry] = []
+    seen_orgs: set[str] = set()
+
+    for src in sources:
+        if not isinstance(src, IssuerSnapshotSource):
+            raise TransparencyError("each source must be an IssuerSnapshotSource")
+        directory = src.directory
+        checkpoint = src.checkpoint
+        if directory.current_manifest is None:
+            raise TransparencyError("cannot export snapshot without a published manifest")
+        if directory.organization_identity_hash in seen_orgs:
+            raise TransparencyError("duplicate issuer organizationIdentityHash in export")
+        seen_orgs.add(directory.organization_identity_hash)
+
+        errors = verify_checkpoint_consistency(directory, checkpoint)
+        if errors:
+            raise TransparencyError(
+                f"refusing to export inconsistent issuer checkpoint: {'; '.join(errors)}"
+            )
+
+        ordered_manifests = tuple(
+            sorted(
+                directory.manifests_by_hash.values(),
+                key=lambda m: (m.valid_from, manifest_hash(m)),
+            )
+        )
+        for mf in ordered_manifests:
+            canonicalize_manifest(mf)
+
+        cp_ref = CheckpointReference.from_checkpoint(checkpoint)
+        policy_pin = PolicyVersionPin(
+            policy_version=src.policy_version,
+            policy_hash=directory.current_manifest.policy_hash,
+        )
+        entries.append(
+            OfflineIssuerSnapshotEntry(
+                organization_identity_hash=directory.organization_identity_hash,
+                manifests=ordered_manifests,
+                checkpoint_ref=cp_ref,
+                policy=policy_pin,
+            )
+        )
+
+    ordered_entries = tuple(sorted(entries, key=lambda e: e.organization_identity_hash))
+    snapshot = OfflineIssuerTrustSnapshot(exported_at=ts, entries=ordered_entries)
+    _assert_no_private_keys(snapshot.to_dict())
+    return snapshot
