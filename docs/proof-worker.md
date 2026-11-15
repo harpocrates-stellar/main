@@ -211,3 +211,19 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Operation-identity envelope validation
+
+`validateWorkerOperationEnvelope` (in `src/proofWorkerMemory.ts`, enforced by
+`ProofWorkerManager` and `ProofWorkerClient`) validates incoming worker message
+envelopes before applying progress or settling operations:
+
+- **Pre-progress envelope check:** verifies plain-object envelope structure,
+  single non-contradictory operation identity (`operationId` / `requestId` /
+  `id`) matching the active operation, and canonical `ProofStage` identifiers
+  before invoking progress listeners.
+- **Preserved proof results:** messages with missing, contradictory, or
+  mismatched operation identities are rejected and counted without mutating
+  active progress stages, timers, pending handlers, or the currently established
+  proof result.
+
+

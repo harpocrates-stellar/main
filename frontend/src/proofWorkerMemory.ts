@@ -1,6 +1,7 @@
 import benchLock from '../../zk/bench/bench.lock.json'
 import browserArtifactManifest from '../../zk/browser.artifacts.manifest.json'
 import { CircuitInputError } from './circuitInputSchema'
+import { isProofStage, type ProofStage } from './proofStage'
 
 type BrowserArtifactEntry = {
   path: string
@@ -227,4 +228,107 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
   } catch {
     throw new CircuitInputError('circuit_load_failed')
   }
+}
+
+export type OperationEnvelopeRejectionReason =
+  | 'malformed_envelope'
+  | 'no_active_operation'
+  | 'missing_operation_identity'
+  | 'contradictory_operation_identity'
+  | 'mismatched_operation_identity'
+  | 'invalid_progress_stage'
+
+export type OperationEnvelopeValidationResult =
+  | {
+      readonly valid: true
+      readonly operationId: string
+      readonly stage?: ProofStage
+    }
+  | {
+      readonly valid: false
+      readonly code: 'MISMATCHED_OPERATION_IDENTITY'
+      readonly reason: OperationEnvelopeRejectionReason
+      readonly expectedOperationId: string | null
+    }
+
+const SAFE_ENVELOPE_ID = /^[A-Za-z0-9._:-]{1,128}$/
+
+function rejectEnvelope(
+  reason: OperationEnvelopeRejectionReason,
+  expectedOperationId: string | null,
+): OperationEnvelopeValidationResult {
+  return Object.freeze({
+    valid: false as const,
+    code: 'MISMATCHED_OPERATION_IDENTITY' as const,
+    reason,
+    expectedOperationId:
+      typeof expectedOperationId === 'string' && SAFE_ENVELOPE_ID.test(expectedOperationId)
+        ? expectedOperationId
+        : null,
+  })
+}
+
+/**
+ * Validate a worker message envelope's structure, operation identity, and
+ * progress stage **before** applying progress callbacks or mutating the
+ * currently active proof result.
+ */
+export function validateWorkerOperationEnvelope(
+  rawEnvelope: unknown,
+  expectedOperationId: string | null | undefined,
+): OperationEnvelopeValidationResult {
+  if (!rawEnvelope || typeof rawEnvelope !== 'object' || Array.isArray(rawEnvelope)) {
+    return rejectEnvelope('malformed_envelope', expectedOperationId ?? null)
+  }
+
+  if (
+    typeof expectedOperationId !== 'string' ||
+    !SAFE_ENVELOPE_ID.test(expectedOperationId)
+  ) {
+    return rejectEnvelope('no_active_operation', null)
+  }
+
+  const record = rawEnvelope as Record<string, unknown>
+  const explicitOpId = record.operationId
+  const requestId = record.requestId
+  const messageId = record.id
+
+  const candidates: string[] = []
+  for (const field of [explicitOpId, requestId, messageId]) {
+    if (field !== undefined) {
+      if (typeof field !== 'string' || !SAFE_ENVELOPE_ID.test(field)) {
+        return rejectEnvelope('missing_operation_identity', expectedOperationId)
+      }
+      candidates.push(field)
+    }
+  }
+
+  if (candidates.length === 0) {
+    return rejectEnvelope('missing_operation_identity', expectedOperationId)
+  }
+
+  const primary = candidates[0]
+  if (candidates.some((item) => item !== primary)) {
+    return rejectEnvelope('contradictory_operation_identity', expectedOperationId)
+  }
+
+  if (primary !== expectedOperationId) {
+    return rejectEnvelope('mismatched_operation_identity', expectedOperationId)
+  }
+
+  if (record.type === 'PROGRESS' || record.type === 'progress') {
+    if (!isProofStage(record.stage)) {
+      return rejectEnvelope('invalid_progress_stage', expectedOperationId)
+    }
+    return Object.freeze({
+      valid: true as const,
+      operationId: primary,
+      stage: record.stage,
+    })
+  }
+
+  return Object.freeze({
+    valid: true as const,
+    operationId: primary,
+  })
 }
