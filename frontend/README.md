@@ -79,3 +79,12 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Request revision and cancellation isolation
+
+`createVerificationRevisionGate`, `runRevisionBoundVerificationFlow`, and
+`runRevisionBoundUploadedVideoVerification` (`src/services/verificationFlow.ts`)
+coordinate with `src/views/VerifyView.tsx` to bind asynchronous verification
+operations to a monotonic request revision and active evidence selection
+identity. Cancelling a request or selecting newer evidence invalidates the prior
+revision so late-settling promises never overwrite the newer selection.
