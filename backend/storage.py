@@ -182,4 +182,129 @@ def sweep_job_files(
     return purged_count
 
 
+def preview_tenant_job_retention(
+    authenticated_tenant_id: str,
+    *,
+    requested_tenant_id: str | None = None,
+    storage_dir: Path | str | None = None,
+    ttl_seconds: int | float | None = None,
+    now: datetime | int | float | None = None,
+) -> dict[str, Any]:
+    """Preview staged job-file counts, ages, and deletion eligibility for one tenant.
+
+    Never deletes files and never exposes server filesystem paths, filenames,
+    or job records belonging to other tenants.
+    """
+    from evidence_storage import TenantAccessDeniedError
+
+    if not isinstance(authenticated_tenant_id, str) or not authenticated_tenant_id.strip():
+        raise TenantAccessDeniedError("Authenticated tenant identity is required.")
+    tenant_id = authenticated_tenant_id.strip()
+    if requested_tenant_id is not None:
+        if not isinstance(requested_tenant_id, str) or requested_tenant_id.strip() != tenant_id:
+            raise TenantAccessDeniedError("Cross-tenant job retention preview is forbidden.")
+
+    target_dir = get_storage_dir() if storage_dir is None else Path(storage_dir)
+    if ttl_seconds is None:
+        try:
+            from config import load_config
+
+            ttl_seconds = load_config().job_file_ttl_seconds
+        except Exception:
+            ttl_seconds = 86_400
+    ttl = float(ttl_seconds)
+    if ttl <= 0:
+        raise ValueError("ttl_seconds must be positive.")
+
+    if now is None:
+        now_dt = datetime.now(timezone.utc)
+    elif isinstance(now, datetime):
+        now_dt = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    elif isinstance(now, (int, float)) and not isinstance(now, bool):
+        now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+    else:
+        now_dt = datetime.now(timezone.utc)
+
+    terminal_states = {"completed", "failed", "cancelled", "abandoned"}
+    total_files = 0
+    eligible_count = 0
+    within_ttl_count = 0
+    active_job_count = 0
+    total_size_bytes = 0
+    reclaimable_size_bytes = 0
+    ages: list[float] = []
+
+    if target_dir.exists():
+        for entry in list(target_dir.iterdir()):
+            if not entry.is_file():
+                continue
+
+            match = re.match(r"^job_([^_]+)(?:_(?:input|output).*)?$", entry.name)
+            if not match:
+                continue
+            raw_id = match.group(1)
+            job_id: int | str = int(raw_id) if raw_id.isdigit() else raw_id
+
+            try:
+                from db import get_job
+
+                job = get_job(job_id)
+            except Exception:
+                job = None
+            if not isinstance(job, dict):
+                continue
+
+            job_owner = (
+                job.get("tenant_id")
+                or job.get("owner")
+                or job.get("source_address")
+            )
+            if job_owner != tenant_id:
+                continue
+
+            stat_res = entry.stat()
+            file_mtime = datetime.fromtimestamp(stat_res.st_mtime, tz=timezone.utc)
+            ts_val = (
+                job.get("completed_at")
+                or job.get("failed_at")
+                or job.get("cancelled_at")
+                or job.get("finished_at")
+                or job.get("ended_at")
+                or job.get("updated_at")
+                or job.get("created_at")
+            )
+            ref_dt = _parse_timestamp(ts_val) if ts_val is not None else file_mtime
+            age_seconds = round(max(0.0, (now_dt - ref_dt).total_seconds()), 3)
+            ages.append(age_seconds)
+            total_files += 1
+            total_size_bytes += int(stat_res.st_size)
+
+            status = job.get("status")
+            if status in terminal_states:
+                if age_seconds >= ttl:
+                    eligible_count += 1
+                    reclaimable_size_bytes += int(stat_res.st_size)
+                else:
+                    within_ttl_count += 1
+            else:
+                active_job_count += 1
+
+    return {
+        "tenant_id": tenant_id,
+        "ttl_seconds": ttl,
+        "counts": {
+            "total_files": total_files,
+            "eligible_for_deletion": eligible_count,
+            "within_retention_window": within_ttl_count,
+            "active_protected": active_job_count,
+            "total_size_bytes": total_size_bytes,
+            "reclaimable_size_bytes": reclaimable_size_bytes,
+        },
+        "ages": {
+            "oldest_age_seconds": max(ages) if ages else 0.0,
+            "newest_age_seconds": min(ages) if ages else 0.0,
+        },
+    }
+
+
 purge_stale_job_files = sweep_job_files

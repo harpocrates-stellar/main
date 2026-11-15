@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2431,6 +2431,53 @@ def create_app() -> Flask:
                 "records before making any trust decision."
             ),
         })
+
+    @app.route("/api/evidence/retention-preview", methods=["GET"])
+    def get_tenant_evidence_retention_preview():
+        import evidence_storage
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Authorization header with Bearer token is required"}), 401
+
+        token = auth_header[len("Bearer "):].strip()
+        now = datetime.now(tz=timezone.utc)
+        expires = config.register_api_key_expires
+        if expires is not None and now >= expires:
+            return jsonify({"error": "API key has expired"}), 401
+
+        principal = register_auth.authenticate(
+            token,
+            legacy_key=config.register_api_key,
+            scoped_keys=config.register_scoped_keys,
+        )
+        if principal is None:
+            return jsonify({"error": "Invalid API key"}), 401
+        if not principal.is_scoped or not principal.owner:
+            return jsonify({"error": "Owner-scoped credential is required for tenant retention preview"}), 403
+
+        requested_tenant = request.args.get("tenantId")
+        raw_ttl = request.args.get("ttlSeconds")
+        ttl_override: float | None = None
+        if raw_ttl is not None:
+            try:
+                ttl_override = float(raw_ttl)
+            except ValueError:
+                return jsonify({"error": "ttlSeconds must be a positive number"}), 400
+
+        try:
+            preview = evidence_storage.preview_tenant_retention(
+                principal.owner,
+                requested_tenant_id=requested_tenant,
+                retention_ttl_seconds=ttl_override,
+                now=now,
+            )
+        except evidence_storage.TenantAccessDeniedError:
+            return jsonify({"error": "Cross-tenant retention preview is forbidden"}), 403
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        return jsonify(preview), 200
 
     return app
 

@@ -325,6 +325,14 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Per-Tenant Evidence Retention Previews
+
+`evidence_storage.preview_tenant_retention()`, `storage.preview_tenant_job_retention()`, and `GET /api/evidence/retention-preview` return read-only retention previews scoped strictly to an authenticated tenant (`REGISTER_SCOPED_KEYS` owner credential):
+
+- **Counts & ages**: Reports `total_blobs`, `total_references`, `expired_blobs`, `within_retention_window`, `eligible_for_deletion`, `retained_by_shared_reference`, `total_size_bytes`, `reclaimable_size_bytes`, and `oldest_age_seconds` / `newest_age_seconds` / `average_age_seconds`.
+- **Deletion eligibility**: Distinguishes `eligible_for_deletion` (expired sole reference), `shared_blob_retained` (expired for the caller while shared references remain), `multiple_tenant_references`, and `within_retention_window`.
+- **Cross-tenant & path privacy**: Never exposes `storage_path`, `encrypted_dek`, filenames, or any `content_hash` / `tenant_id` belonging to another tenant. Cross-tenant or unscoped requests are rejected fail-closed (`403`).
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative
