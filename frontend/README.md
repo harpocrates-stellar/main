@@ -79,3 +79,11 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Cross-Tab Vault Change Detection
+
+`CredentialVault` (`src/credentialVault.ts`) subscribes to cross-tab storage
+updates via `subscribeToStorageKeyChanges` (`src/safeStorage.ts`):
+
+- When another browser tab updates or removes `harpocrates:credential-vault`, any unlocked view in the current tab immediately zeroes its in-memory `SeedPair` and rejects direct `unlock()` calls until an explicit recovery action is chosen.
+- Non-secret active work registered via `vault.setActiveWork(...)` remains preserved across invalidation until the user resolves the conflict (`reunlock-updated-vault`, `continue-locked-preserve-work`, or `discard-active-work`), surfaced through `<CrossTabVaultChangeBanner />`.

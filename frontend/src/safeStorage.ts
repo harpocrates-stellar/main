@@ -78,3 +78,59 @@ function createSafeStorage(name: StorageName) {
 
 export const safeLocalStorage = createSafeStorage('localStorage')
 export const safeSessionStorage = createSafeStorage('sessionStorage')
+
+export interface ExternalStorageChangeEvent {
+  key: string | null
+  oldValue: string | null
+  newValue: string | null
+}
+
+/**
+ * Computes a deterministic, non-secret 64-bit FNV-1a hexadecimal fingerprint
+ * for change detection across browser tabs without exposing envelope contents.
+ */
+export function computeEnvelopeChangeFingerprint(rawEnvelope: string | null): string | null {
+  if (!rawEnvelope) return null
+  let hash = 0xcbf29ce484222325n
+  const prime = 0x100000001b3n
+  const mask = 0xffffffffffffffffn
+  for (let i = 0; i < rawEnvelope.length; i++) {
+    hash ^= BigInt(rawEnvelope.charCodeAt(i))
+    hash = (hash * prime) & mask
+  }
+  return hash.toString(16).padStart(16, '0')
+}
+
+/**
+ * Subscribes to cross-tab `window` storage events affecting `targetKey`
+ * (including full storage clears where `event.key === null`).
+ */
+export function subscribeToStorageKeyChanges(
+  targetKey: string,
+  onChange: (event: ExternalStorageChangeEvent) => void,
+): () => void {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+    return () => {}
+  }
+
+  const handler = (event: StorageEvent) => {
+    if (event.storageArea && event.storageArea !== window.localStorage) {
+      return
+    }
+    if (event.key !== targetKey && event.key !== null) {
+      return
+    }
+    const newValue =
+      event.key === null ? window.localStorage.getItem(targetKey) : event.newValue
+    onChange({
+      key: event.key,
+      oldValue: event.oldValue,
+      newValue,
+    })
+  }
+
+  window.addEventListener('storage', handler)
+  return () => {
+    window.removeEventListener('storage', handler)
+  }
+}
