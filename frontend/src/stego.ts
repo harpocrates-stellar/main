@@ -62,7 +62,7 @@ async function unpackPayload(data: Uint8Array): Promise<unknown | null> {
   if (!bytesEqual(checksum, actualChecksum)) return null
 
   try {
-    const decompressed = inflate(body)
+    const decompressed = pako.inflate(body)
     const jsonStr = new TextDecoder('utf-8').decode(decompressed)
     const value = JSON.parse(jsonStr)
     return typeof value === 'object' && value !== null ? value : null

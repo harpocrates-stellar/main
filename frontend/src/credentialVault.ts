@@ -1,15 +1,112 @@
 import type { SeedPair } from './seedVault'
+import {
+  isAllowedBackupExportDestination,
+  sanitizeVaultBackupFileName,
+  type VaultBackupDestinationKind,
+} from './safeStorage'
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
 const PBKDF2_ITERATIONS = 600000
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
 
+const HEX_REGEX = /^[0-9a-fA-F]+$/
+
 export interface VaultEnvelope {
   v: number
   salt: string // hex
   iv: string // hex
   ct: string // hex (ciphertext)
+}
+
+export interface VaultBackupCompatibilityMetadata {
+  kdfAlgorithm: 'PBKDF2-HMAC-SHA-256'
+  kdfIterations: number
+  cipherAlgorithm: 'AES-256-GCM'
+  saltByteLength: number
+  ivByteLength: number
+  ciphertextByteLength: number
+  encoding: 'hex'
+}
+
+export interface VaultBackupExportPreview {
+  envelopeVersion: number
+  supportedVersion: boolean
+  serializedByteLength: number
+  suggestedFileName: string
+  compatibility: VaultBackupCompatibilityMetadata
+}
+
+export interface VaultBackupExportSelection {
+  destination: VaultBackupDestinationKind | string | null | undefined
+  explicitlySelectedByUser: boolean
+  fileName?: string
+}
+
+export interface VaultBackupExportPayload {
+  destination: VaultBackupDestinationKind
+  fileName: string
+  mimeType: 'application/json'
+  encryptedEnvelopeJson: string
+  preview: VaultBackupExportPreview
+}
+
+function parseEnvelopeForBackup(stored: string): VaultEnvelope {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stored)
+  } catch {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  const envelope = parsed as Partial<VaultEnvelope>
+  if (typeof envelope.v !== 'number' || !Number.isInteger(envelope.v)) {
+    throw new Error('Vault corrupted: invalid envelope version')
+  }
+
+  for (const field of ['salt', 'iv', 'ct'] as const) {
+    const val = envelope[field]
+    if (typeof val !== 'string' || val.length === 0 || val.length % 2 !== 0 || !HEX_REGEX.test(val)) {
+      throw new Error(`Vault corrupted: invalid ${field} encoding`)
+    }
+  }
+
+  return {
+    v: envelope.v,
+    salt: envelope.salt!.toLowerCase(),
+    iv: envelope.iv!.toLowerCase(),
+    ct: envelope.ct!.toLowerCase(),
+  }
+}
+
+export function buildVaultBackupExportPreview(
+  rawEnvelopeJson: string,
+  proposedFileName?: string,
+): VaultBackupExportPreview {
+  const envelope = parseEnvelopeForBackup(rawEnvelopeJson)
+  const canonicalJson = JSON.stringify(envelope)
+  const serializedByteLength = new TextEncoder().encode(canonicalJson).byteLength
+  const compatibility: VaultBackupCompatibilityMetadata = Object.freeze({
+    kdfAlgorithm: 'PBKDF2-HMAC-SHA-256',
+    kdfIterations: PBKDF2_ITERATIONS,
+    cipherAlgorithm: 'AES-256-GCM',
+    saltByteLength: envelope.salt.length / 2,
+    ivByteLength: envelope.iv.length / 2,
+    ciphertextByteLength: envelope.ct.length / 2,
+    encoding: 'hex',
+  })
+
+  return Object.freeze({
+    envelopeVersion: envelope.v,
+    supportedVersion: envelope.v === VAULT_VERSION,
+    serializedByteLength,
+    suggestedFileName: sanitizeVaultBackupFileName(proposedFileName, envelope.v),
+    compatibility,
+  })
 }
 
 function bufToHex(buffer: ArrayBuffer): string {
@@ -68,6 +165,45 @@ export class CredentialVault {
 
   hasVault(): boolean {
     return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
+  }
+
+  getBackupExportPreview(proposedFileName?: string): VaultBackupExportPreview {
+    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    if (!stored) throw new Error('Vault is empty')
+    return buildVaultBackupExportPreview(stored, proposedFileName)
+  }
+
+  exportEncryptedBackup(
+    selection: VaultBackupExportSelection | null | undefined,
+  ): VaultBackupExportPayload {
+    if (
+      !selection ||
+      !selection.explicitlySelectedByUser ||
+      !isAllowedBackupExportDestination(selection.destination)
+    ) {
+      throw new Error(
+        'Explicit user selection of an encrypted export destination is required',
+      )
+    }
+
+    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    if (!stored) throw new Error('Vault is empty')
+
+    const envelope = parseEnvelopeForBackup(stored)
+    if (envelope.v !== VAULT_VERSION) {
+      throw new Error(`Unsupported vault version: ${envelope.v}`)
+    }
+
+    const encryptedEnvelopeJson = JSON.stringify(envelope)
+    const preview = buildVaultBackupExportPreview(encryptedEnvelopeJson, selection.fileName)
+
+    return Object.freeze({
+      destination: selection.destination,
+      fileName: preview.suggestedFileName,
+      mimeType: 'application/json',
+      encryptedEnvelopeJson,
+      preview,
+    })
   }
 
   async setup(password: string, seeds: SeedPair): Promise<void> {
@@ -132,7 +268,7 @@ export class CredentialVault {
 
       const dec = new TextDecoder()
       const seedsRaw = JSON.parse(dec.decode(pt))
-      
+
       this.memoryKey = key
       this.seeds = {
         credentialSeed: seedsRaw.credentialSeed,

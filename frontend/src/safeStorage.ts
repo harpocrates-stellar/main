@@ -78,3 +78,35 @@ function createSafeStorage(name: StorageName) {
 
 export const safeLocalStorage = createSafeStorage('localStorage')
 export const safeSessionStorage = createSafeStorage('sessionStorage')
+
+export const ALLOWED_BACKUP_EXPORT_DESTINATIONS = [
+  'download-file',
+  'clipboard-encrypted-json',
+] as const
+
+export type VaultBackupDestinationKind =
+  (typeof ALLOWED_BACKUP_EXPORT_DESTINATIONS)[number]
+
+export function isAllowedBackupExportDestination(
+  value: unknown,
+): value is VaultBackupDestinationKind {
+  return (
+    typeof value === 'string' &&
+    (ALLOWED_BACKUP_EXPORT_DESTINATIONS as readonly string[]).includes(value)
+  )
+}
+
+export function sanitizeVaultBackupFileName(
+  proposedName: string | undefined,
+  envelopeVersion: number,
+): string {
+  const fallback = `harpocrates-vault-backup.v${envelopeVersion}.json`
+  if (!proposedName) return fallback
+  const cleaned = proposedName
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  if (!cleaned) return fallback
+  return cleaned.endsWith('.json') ? cleaned : `${cleaned}.json`
+}

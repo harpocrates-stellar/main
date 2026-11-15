@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Encrypted Vault Backup Preview
+
+`CredentialVault.getBackupExportPreview()` and `<VaultBackupExportPreviewCard />`
+(`src/credentialVault.ts`, `src/components/VaultBackupExportPreviewCard.tsx`)
+expose only non-secret envelope metadata before export:
+
+- Envelope format version (`v1`), compatibility status, PBKDF2-HMAC-SHA-256 iteration count, AES-256-GCM cipher identifier, and byte lengths.
+- Secret witness seeds, passphrases, and raw hex ciphertext/salt/IV values are excluded from preview state.
+- `exportEncryptedBackup()` fails closed unless the user explicitly selects an allowed encrypted destination (`download-file` or `clipboard-encrypted-json`).
