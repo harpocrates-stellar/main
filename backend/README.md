@@ -342,6 +342,22 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Resumable Evidence Integrity Verification
+
+`evidence_storage.verify_evidence_integrity_batch()` and `storage.IntegrityCheckpointStore`
+verify stored encrypted blobs and metadata in bounded batches (`1..500`, default
+`50`, configurable via `EVIDENCE_INTEGRITY_BATCH_SIZE`):
+
+- **Outcomes:** Distinguishes `verified` (valid Fernet AEAD envelope, wrapped
+  DEK authentication, size match, and SHA-256 content digest match), `corrupted`
+  (missing file, size mismatch, tampered ciphertext/DEK, or digest mismatch),
+  and `unverifiable_legacy` (pre-envelope/legacy rows lacking modern AEAD tags
+  or SHA-256 content identifiers whose files and recorded sizes remain intact).
+- **Non-secret progress checkpoints:** Persists only aggregate counters, offset,
+  completion flag, and a domain-separated SHA-256 `cursorDigest` (via optional
+  atomic file `EVIDENCE_INTEGRITY_CHECKPOINT_PATH`) — never plaintext media,
+  DEKs, wrapped DEKs, storage paths, filenames, or raw hashes.
+
 ## Test
 
 ```powershell

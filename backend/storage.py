@@ -1,10 +1,15 @@
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
 import logging
 import os
+from pathlib import Path
 import re
 import stat
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+import tempfile
+import threading
+from typing import Any, Mapping
 
 LOGGER = logging.getLogger(__name__)
 
@@ -183,3 +188,184 @@ def sweep_job_files(
 
 
 purge_stale_job_files = sweep_job_files
+
+
+INTEGRITY_CURSOR_DOMAIN = "harpocrates:integrity-cursor:v1:"
+INTEGRITY_AUDIT_REF_DOMAIN = "harpocrates:integrity-audit-ref:v1:"
+INTEGRITY_VERIFY_BATCH_DEFAULT = 50
+INTEGRITY_VERIFY_BATCH_MAX = 500
+
+
+def compute_integrity_cursor_digest(identifier: str) -> str:
+    """Compute a non-reversible cursor digest for resumable integrity checkpoints."""
+    return hashlib.sha256(
+        (INTEGRITY_CURSOR_DOMAIN + identifier.strip()).encode("utf-8")
+    ).hexdigest()
+
+
+def compute_integrity_audit_ref(identifier: str) -> str:
+    """Compute a non-secret 32-byte hex audit reference for an inspected blob."""
+    return hashlib.sha256(
+        (INTEGRITY_AUDIT_REF_DOMAIN + identifier.strip()).encode("utf-8")
+    ).hexdigest()
+
+
+def clamp_integrity_batch_size(batch_size: object = None) -> int:
+    """Validate and clamp integrity verification batch size into ``1..500``."""
+    if batch_size is None:
+        raw_env = os.getenv("EVIDENCE_INTEGRITY_BATCH_SIZE")
+        if raw_env is None or not raw_env.strip():
+            return INTEGRITY_VERIFY_BATCH_DEFAULT
+        batch_size = raw_env.strip()
+    if isinstance(batch_size, bool):
+        raise ValueError("batch_size must be a positive integer")
+    try:
+        parsed = int(batch_size)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("batch_size must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("batch_size must be a positive integer")
+    return min(parsed, INTEGRITY_VERIFY_BATCH_MAX)
+
+
+@dataclass(frozen=True)
+class IntegrityVerificationCheckpoint:
+    """Non-secret resumable progress checkpoint for evidence integrity scans."""
+
+    cursor_offset: int = 0
+    cursor_digest: str | None = None
+    scanned_count: int = 0
+    verified_count: int = 0
+    corrupted_count: int = 0
+    unverifiable_legacy_count: int = 0
+    completed: bool = False
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "cursorOffset": self.cursor_offset,
+            "cursorDigest": self.cursor_digest,
+            "scannedCount": self.scanned_count,
+            "verifiedCount": self.verified_count,
+            "corruptedCount": self.corrupted_count,
+            "unverifiableLegacyCount": self.unverifiable_legacy_count,
+            "completed": self.completed,
+            "updatedAt": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> IntegrityVerificationCheckpoint:
+        cursor_offset = int(raw.get("cursorOffset", 0))
+        if cursor_offset < 0:
+            raise ValueError("cursorOffset must be non-negative")
+        cursor_digest_raw = raw.get("cursorDigest")
+        cursor_digest: str | None = None
+        if cursor_digest_raw is not None:
+            cleaned = str(cursor_digest_raw).strip().lower()
+            if len(cleaned) != 64 or not all(c in "0123456789abcdef" for c in cleaned):
+                raise ValueError("cursorDigest must be a 32-byte hex string")
+            cursor_digest = cleaned
+        return cls(
+            cursor_offset=cursor_offset,
+            cursor_digest=cursor_digest,
+            scanned_count=max(0, int(raw.get("scannedCount", 0))),
+            verified_count=max(0, int(raw.get("verifiedCount", 0))),
+            corrupted_count=max(0, int(raw.get("corruptedCount", 0))),
+            unverifiable_legacy_count=max(0, int(raw.get("unverifiableLegacyCount", 0))),
+            completed=bool(raw.get("completed", False)),
+            updated_at=str(raw.get("updatedAt") or ""),
+        )
+
+
+def _checkpoint_env_path(explicit_path: Path | str | None = None) -> Path | None:
+    if explicit_path is not None:
+        return Path(explicit_path)
+    raw = os.getenv("EVIDENCE_INTEGRITY_CHECKPOINT_PATH")
+    if raw and raw.strip():
+        return Path(raw.strip())
+    return None
+
+
+class IntegrityCheckpointStore:
+    """Thread-safe store persisting strictly non-secret integrity verification progress."""
+
+    def __init__(self, *, checkpoint_path: Path | str | None = None) -> None:
+        self._lock = threading.Lock()
+        self._explicit_path = Path(checkpoint_path) if checkpoint_path is not None else None
+        self._checkpoint: IntegrityVerificationCheckpoint | None = None
+        self._loaded_path: Path | None = None
+
+    def _effective_path(self) -> Path | None:
+        return _checkpoint_env_path(self._explicit_path)
+
+    def load(self) -> IntegrityVerificationCheckpoint:
+        with self._lock:
+            path = self._effective_path()
+            if path is not None and self._loaded_path != path:
+                self._loaded_path = path
+                if path.exists():
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    if not isinstance(raw, Mapping):
+                        raise ValueError("invalid integrity checkpoint payload")
+                    self._checkpoint = IntegrityVerificationCheckpoint.from_dict(raw)
+            if self._checkpoint is None:
+                self._checkpoint = IntegrityVerificationCheckpoint()
+            return self._checkpoint
+
+    def save(self, checkpoint: IntegrityVerificationCheckpoint) -> IntegrityVerificationCheckpoint:
+        with self._lock:
+            self._checkpoint = checkpoint
+            path = self._effective_path()
+            if path is not None:
+                self._loaded_path = path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                encoded = json.dumps(
+                    checkpoint.to_dict(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                fd: int | None = None
+                tmp_name: str | None = None
+                try:
+                    fd, tmp_name = tempfile.mkstemp(
+                        dir=str(path.parent), prefix=".integrity_ckpt_", suffix=".tmp"
+                    )
+                    handle = os.fdopen(fd, "wb")
+                    fd = None
+                    with handle:
+                        handle.write(encoded)
+                        handle.flush()
+                    if os.name == "posix":
+                        try:
+                            os.chmod(tmp_name, 0o600)
+                        except OSError:
+                            pass
+                    os.replace(tmp_name, path)
+                    tmp_name = None
+                except BaseException:
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                    if tmp_name is not None:
+                        try:
+                            os.unlink(tmp_name)
+                        except OSError:
+                            pass
+                    raise
+            return checkpoint
+
+    def reset(self) -> IntegrityVerificationCheckpoint:
+        fresh = IntegrityVerificationCheckpoint(
+            updated_at=datetime.now(timezone.utc).isoformat()
+        )
+        return self.save(fresh)
+
+
+_DEFAULT_INTEGRITY_CHECKPOINT_STORE = IntegrityCheckpointStore()
+
+
+def get_default_integrity_checkpoint_store() -> IntegrityCheckpointStore:
+    return _DEFAULT_INTEGRITY_CHECKPOINT_STORE
