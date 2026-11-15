@@ -2,7 +2,9 @@ import threading
 from functools import wraps
 from typing import Dict, Tuple
 
-from flask import request, jsonify
+from flask import jsonify, request
+
+from streaming_upload import record_failed_upload_session, resolve_session_dir
 
 
 class AdmissionController:
@@ -111,6 +113,21 @@ def require_capacity(controller: AdmissionController):
                 # Record the rejection metric
                 endpoint = request.url_rule.rule if request.url_rule else request.path
                 metrics_collector.record_rejection(reason, endpoint)
+
+                session_id = kwargs.get("session_id") or (
+                    request.view_args.get("session_id") if request.view_args else None
+                )
+                if session_id:
+                    try:
+                        session_dir = resolve_session_dir(str(session_id))
+                        if session_dir.is_dir():
+                            record_failed_upload_session(
+                                session_dir,
+                                session_id=str(session_id),
+                                failure_reason="admission_rejected",
+                            )
+                    except ValueError:
+                        pass
                 
                 status_code = 429 if reason == "identity_limit" else 503
                 response = jsonify({

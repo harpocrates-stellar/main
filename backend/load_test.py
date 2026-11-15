@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -106,7 +107,7 @@ class LoadResult:
         if not self.latencies_ms:
             return 0.0
         sorted_lats = sorted(self.latencies_ms)
-        idx = max(0, min(len(sorted_lats) - 1, int(len(sorted_lats) * p / 100)))
+        idx = max(0, min(len(sorted_lats) - 1, math.ceil(len(sorted_lats) * p / 100) - 1))
         return sorted_lats[idx]
 
     def summary(self) -> dict[str, Any]:

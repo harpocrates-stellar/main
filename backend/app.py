@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -153,9 +153,15 @@ from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    DIGEST_STATUS_MISMATCH,
     StreamingFileStorage,
+    build_failed_session_integrity_report,
     create_streaming_file_storage,
     hash_paths_concat,
+    init_upload_session_metadata,
+    normalize_expected_sha256,
+    record_failed_upload_session,
+    resolve_session_dir,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -403,6 +409,8 @@ def create_app() -> Flask:
             headers_enabled=True,
             swallow_errors=True,
         )
+
+    app.extensions["harpocrates_limiter"] = limiter
 
     @limiter.request_filter
     def _health_exempt():
@@ -930,15 +938,54 @@ def create_app() -> Flask:
     @app.post("/api/stego/upload-session")
     @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
+        g.upload_config = config
+        payload = request.get_json(silent=True) if request.is_json else None
+        payload_dict = payload if isinstance(payload, dict) else {}
+        expected_bytes = (
+            request.headers.get("X-Upload-Expected-Bytes")
+            or request.form.get("expectedBytes")
+            or payload_dict.get("expectedBytes")
+        )
+        expected_sha256 = (
+            request.headers.get("X-Upload-Expected-SHA256")
+            or request.form.get("expectedSha256")
+            or payload_dict.get("expectedSha256")
+        )
         session_id = str(uuid.uuid4())
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
+        session_dir = resolve_session_dir(session_id)
+        try:
+            init_upload_session_metadata(
+                session_dir,
+                session_id=session_id,
+                expected_bytes=expected_bytes,
+                expected_sha256=expected_sha256,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify({"sessionId": session_id})
+
+    @app.get("/api/stego/upload-sessions/integrity-report")
+    @limiter.limit(config.ratelimit_upload_session)
+    def get_failed_upload_sessions_integrity_report():
+        g.upload_config = config
+        include_incomplete = (
+            request.args.get("includeIncomplete", "false").strip().lower()
+            in {"1", "true", "yes"}
+        )
+        return jsonify(
+            build_failed_session_integrity_report(
+                include_unmarked_incomplete=include_incomplete
+            )
+        )
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
     def upload_chunk(session_id: str, chunk_index: int):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        g.upload_config = config
+        try:
+            session_dir = resolve_session_dir(session_id)
+        except ValueError:
+            return jsonify({"error": "session not found"}), 404
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
         
@@ -949,12 +996,16 @@ def create_app() -> Flask:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
         # Persist each session chunk with bounded-chunk hashing for integrity.
-        g.upload_config = config
         streaming_chunk = create_streaming_file_storage(chunk)
         chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
             streaming_chunk.save(str(chunk_path))
         except RequestEntityTooLarge:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="chunk_limit_exceeded",
+            )
             return jsonify({"error": "chunk exceeds size limit"}), 413
         return jsonify({
             "ok": True,
@@ -966,47 +1017,122 @@ def create_app() -> Flask:
     @limiter.limit(config.ratelimit_upload_session)
     @require_capacity(admission_controller)
     def commit_upload_session(session_id: str):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        g.upload_config = config
+        try:
+            session_dir = resolve_session_dir(session_id)
+        except ValueError:
+            return jsonify({"error": "session not found"}), 404
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="metadata_invalid",
+            )
             return jsonify({"error": "metadata is required"}), 400
 
         try:
             metadata = json.loads(metadata_raw)
         except json.JSONDecodeError:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="metadata_invalid",
+            )
             return metadata_error_response(
                 MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
             )
         try:
             validate_embed_metadata(metadata)
         except MetadataError as exc:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="metadata_invalid",
+            )
             return metadata_error_response(exc)
         except ValueError as exc:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="metadata_invalid",
+            )
             return metadata_error_response(classify_validation_error(exc))
 
         combined_path = session_dir / "combined.video"
         chunk_files = sorted(
-            [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
+            [f for f in session_dir.iterdir() if f.is_file() and f.name.startswith("chunk-") and f.name[len("chunk-"):].isdigit()],
             key=lambda f: int(f.name.split("-")[1]),
         )
         if not chunk_files:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="empty_commit",
+            )
             return jsonify({"error": "session has no chunks"}), 400
 
         # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
-        source_hash, _written = hash_paths_concat(
-            chunk_files,
-            combined_path,
-            chunk_size=getattr(config, "upload_chunk_bytes", None),
-            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+        try:
+            source_hash, _written = hash_paths_concat(
+                chunk_files,
+                combined_path,
+                chunk_size=getattr(config, "upload_chunk_bytes", None),
+                max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+            )
+        except RequestEntityTooLarge:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="commit_limit_exceeded",
+            )
+            return jsonify({"error": "committed session exceeds size limit"}), 413
+
+        override_expected_sha = (
+            request.headers.get("X-Upload-Expected-SHA256")
+            or request.form.get("expectedSha256")
         )
+        try:
+            norm_override_sha = normalize_expected_sha256(override_expected_sha)
+        except ValueError as exc:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="metadata_invalid",
+                observed_bytes_override=_written,
+                observed_sha256_override=source_hash,
+            )
+            return jsonify({"error": str(exc)}), 400
+
+        probe_record = record_failed_upload_session(
+            session_dir,
+            session_id=session_id,
+            failure_reason="digest_mismatch",
+            expected_sha256=norm_override_sha,
+            observed_bytes_override=_written,
+            observed_sha256_override=source_hash,
+        )
+        if probe_record.digest_status == DIGEST_STATUS_MISMATCH:
+            combined_path.unlink(missing_ok=True)
+            return jsonify({"error": "assembled upload sha256 does not match expected digest"}), 400
+        # Remove provisional failure marker if digest matched or was unverified.
+        (session_dir / ".failure_record.json").unlink(missing_ok=True)
 
         # Sniff assembled file before handing it to ffmpeg.
         try:
             sniff_media_type_path(combined_path)
         except QuarantineError as exc:
+            record_failed_upload_session(
+                session_dir,
+                session_id=session_id,
+                failure_reason="quarantine_rejected",
+                expected_sha256=norm_override_sha,
+                observed_bytes_override=_written,
+                observed_sha256_override=source_hash,
+            )
             return error_response(
                 code=UNSUPPORTED_MEDIA_TYPE,
                 message=str(exc),
