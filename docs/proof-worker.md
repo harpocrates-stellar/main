@@ -211,3 +211,23 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Resource admission decisions
+
+`evaluateProofWorkerResourceAdmission` (in `src/proofWorkerMemory.ts`, exposed
+via `ProofWorkerManager.evaluateResourceAdmission()` and
+`ProofWorkerClient.evaluateAdmission()`) evaluates resource constraints before
+proving begins:
+
+- **Memory restrictions:** checks estimated operation bytes against
+  `PROOF_WORKER_MEMORY_LIMITS` and CSP `maxMemoryMB` (`ESTIMATED_MEMORY_EXCEEDS_BUDGET`),
+  and downgrades low-memory (`deviceMemory <= 2` GB) or `best-effort` mobile
+  surfaces (e.g. Safari on iOS/iPadOS) to single-threaded proving.
+- **Thread restrictions:** explains `CROSS_ORIGIN_ISOLATION_UNAVAILABLE`,
+  `SHARED_ARRAY_BUFFER_UNAVAILABLE`, `SINGLE_CORE_HARDWARE_CONCURRENCY`, and
+  `THREAD_CAP_CLAMPED` (capped at `8` threads).
+- **Concurrency & constrained fallback:** blocks saturated slots with
+  `MAX_CONCURRENT_OPERATIONS_REACHED`, fails closed when cryptographic
+  primitives are missing, and preserves `bounded-main-thread-fallback` when only
+  `Worker` is unavailable and bounded fallback is enabled.
+
+

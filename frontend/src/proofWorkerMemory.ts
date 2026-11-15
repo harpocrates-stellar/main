@@ -1,6 +1,10 @@
 import benchLock from '../../zk/bench/bench.lock.json'
 import browserArtifactManifest from '../../zk/browser.artifacts.manifest.json'
 import { CircuitInputError } from './circuitInputSchema'
+import {
+  detectWorkerCapabilities,
+  expectationFor,
+} from './workers/multiBrowserWorkerSupport'
 
 type BrowserArtifactEntry = {
   path: string
@@ -227,4 +231,365 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
   } catch {
     throw new CircuitInputError('circuit_load_failed')
   }
+}
+
+export type ResourceRestrictionCategory =
+  | 'memory'
+  | 'threads'
+  | 'concurrency'
+  | 'environment'
+
+export type ResourceRestrictionCode =
+  | 'ESTIMATED_MEMORY_EXCEEDS_BUDGET'
+  | 'LOW_DEVICE_MEMORY_CONSTRAINED'
+  | 'BEST_EFFORT_SURFACE_MEMORY_CONSTRAINED'
+  | 'CROSS_ORIGIN_ISOLATION_UNAVAILABLE'
+  | 'SHARED_ARRAY_BUFFER_UNAVAILABLE'
+  | 'SINGLE_CORE_HARDWARE_CONCURRENCY'
+  | 'THREAD_CAP_CLAMPED'
+  | 'MAX_CONCURRENT_OPERATIONS_REACHED'
+  | 'WORKER_CAPABILITY_MISSING'
+  | 'MAIN_THREAD_FALLBACK_REQUIRED'
+
+export type ResourceAdmissionRestriction = {
+  readonly category: ResourceRestrictionCategory
+  readonly code: ResourceRestrictionCode
+  readonly severity: 'advisory' | 'fallback' | 'blocking'
+  readonly explanation: string
+}
+
+export type ProofWorkerExecutionMode =
+  | 'multithreaded-worker'
+  | 'single-threaded-worker'
+  | 'bounded-main-thread-fallback'
+  | 'rejected'
+
+export type ProofWorkerAdmissionOutcome =
+  | 'admit_optimal'
+  | 'admit_constrained'
+  | 'reject'
+
+export type ProofWorkerAdmissionInput = {
+  globalObj?: typeof globalThis
+  browser?: string
+  platform?: string
+  activeOperations?: number
+  maxConcurrentOperations?: number
+  memoryBudgetBytes?: number
+  estimatedUsage?: ProofWorkerMemoryUsage
+  requestedThreads?: number
+  allowBoundedMainThreadFallback?: boolean
+  maxFallbackSecretBytes?: number
+}
+
+export type ProofWorkerAdmissionDecision = {
+  readonly admitted: boolean
+  readonly outcome: ProofWorkerAdmissionOutcome
+  readonly executionMode: ProofWorkerExecutionMode
+  readonly grantedThreads: number
+  readonly maxConcurrentOperations: number
+  readonly activeOperations: number
+  readonly memoryBudgetBytes: number
+  readonly estimatedOperationBytes: number
+  readonly restrictions: readonly ResourceAdmissionRestriction[]
+  readonly summary: string
+}
+
+const DEFAULT_MAX_CONCURRENT_OPERATIONS = 1
+const DEFAULT_MAX_FALLBACK_SECRET_BYTES = 256
+const MAX_WORKER_THREADS = 8
+
+function nonNegativeIntOrThrow(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return value
+}
+
+function positiveIntOrThrow(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return value
+}
+
+/**
+ * Evaluate memory, thread, concurrency, and capability restrictions before
+ * proving starts, preserving a safe bounded fallback for constrained browsers
+ * without exposing witness material.
+ */
+export function evaluateProofWorkerResourceAdmission(
+  input: ProofWorkerAdmissionInput = {},
+): ProofWorkerAdmissionDecision {
+  const globalObj = input.globalObj ?? globalThis
+  const activeOperations = nonNegativeIntOrThrow(input.activeOperations, 0)
+  const maxConcurrentOperations = positiveIntOrThrow(
+    input.maxConcurrentOperations,
+    DEFAULT_MAX_CONCURRENT_OPERATIONS,
+  )
+  const memoryBudgetBytes = positiveIntOrThrow(
+    input.memoryBudgetBytes,
+    PROOF_WORKER_MEMORY_LIMITS.maxRuntimeBytes,
+  )
+  const maxFallbackSecretBytes = positiveIntOrThrow(
+    input.maxFallbackSecretBytes,
+    DEFAULT_MAX_FALLBACK_SECRET_BYTES,
+  )
+  const allowFallback = input.allowBoundedMainThreadFallback ?? true
+
+  const restrictions: ResourceAdmissionRestriction[] = []
+  const capabilities = detectWorkerCapabilities(globalObj)
+
+  // 1. Core cryptographic prerequisites (fail closed; never downgrade privacy)
+  const coreMissing: string[] = []
+  if (!capabilities.WebAssembly) coreMissing.push('WebAssembly')
+  if (!capabilities.SubtleCrypto) coreMissing.push('SubtleCrypto')
+  if (!capabilities.BigInt) coreMissing.push('BigInt')
+  if (!capabilities.ArrayBuffer) coreMissing.push('ArrayBuffer')
+  if (coreMissing.length > 0) {
+    restrictions.push(
+      Object.freeze({
+        category: 'environment',
+        code: 'WORKER_CAPABILITY_MISSING',
+        severity: 'blocking',
+        explanation: `Required browser cryptographic primitives are unavailable: ${coreMissing.join(', ')}.`,
+      }),
+    )
+  }
+
+  // 2. Concurrency slot check
+  if (activeOperations >= maxConcurrentOperations) {
+    restrictions.push(
+      Object.freeze({
+        category: 'concurrency',
+        code: 'MAX_CONCURRENT_OPERATIONS_REACHED',
+        severity: 'blocking',
+        explanation: `Active proof operations (${activeOperations}) reached concurrency limit (${maxConcurrentOperations}).`,
+      }),
+    )
+  }
+
+  // 3. Memory budget & device surface constraints
+  const usage = input.estimatedUsage ?? {}
+  let estimatedOperationBytes = 0
+  let memoryExceeded = false
+  for (const field of [
+    usage.artifactBytes,
+    usage.witnessBytes,
+    usage.proofBytes,
+    usage.publicInputBytes,
+    usage.secretBytes,
+  ]) {
+    if (field !== undefined && field !== null) {
+      if (!Number.isSafeInteger(field) || field < 0) {
+        memoryExceeded = true
+      } else {
+        estimatedOperationBytes += field
+      }
+    }
+  }
+  try {
+    assertProofWorkerMemoryBudget(usage)
+  } catch {
+    memoryExceeded = true
+  }
+  if (estimatedOperationBytes > memoryBudgetBytes) {
+    memoryExceeded = true
+  }
+  if (memoryExceeded) {
+    restrictions.push(
+      Object.freeze({
+        category: 'memory',
+        code: 'ESTIMATED_MEMORY_EXCEEDS_BUDGET',
+        severity: 'blocking',
+        explanation: `Estimated proof buffer footprint exceeds configured memory budget (${memoryBudgetBytes} bytes).`,
+      }),
+    )
+  }
+
+  const nav = (
+    globalObj as {
+      navigator?: { hardwareConcurrency?: unknown; deviceMemory?: unknown }
+    }
+  ).navigator
+  const deviceMemoryGb =
+    nav && typeof nav.deviceMemory === 'number' && Number.isFinite(nav.deviceMemory)
+      ? nav.deviceMemory
+      : undefined
+  let forceSingleThreadForMemory = false
+  if (deviceMemoryGb !== undefined && deviceMemoryGb <= 2) {
+    forceSingleThreadForMemory = true
+    restrictions.push(
+      Object.freeze({
+        category: 'memory',
+        code: 'LOW_DEVICE_MEMORY_CONSTRAINED',
+        severity: 'fallback',
+        explanation:
+          'Reported device memory is 2 GB or lower; restricting proving to a single worker thread.',
+      }),
+    )
+  }
+
+  if (input.browser && input.platform) {
+    const surface = expectationFor(input.browser, input.platform)
+    if (surface?.memoryConstrained) {
+      forceSingleThreadForMemory = true
+      restrictions.push(
+        Object.freeze({
+          category: 'memory',
+          code: 'BEST_EFFORT_SURFACE_MEMORY_CONSTRAINED',
+          severity: 'fallback',
+          explanation: `${surface.browser} on ${surface.platform} is memory-constrained; restricting proving to a single worker thread.`,
+        }),
+      )
+    }
+  }
+
+  // 4. Worker vs bounded main-thread fallback evaluation
+  const workerSupported = capabilities.Worker && capabilities.moduleWorkerType
+  let useBoundedMainFallback = false
+  if (!workerSupported && coreMissing.length === 0) {
+    const secretBytes = safeBytes(usage.secretBytes)
+    if (allowFallback && secretBytes <= maxFallbackSecretBytes) {
+      useBoundedMainFallback = true
+      restrictions.push(
+        Object.freeze({
+          category: 'environment',
+          code: 'MAIN_THREAD_FALLBACK_REQUIRED',
+          severity: 'fallback',
+          explanation:
+            'Module Web Worker API is unavailable; admitting operation via bounded single-threaded fallback.',
+        }),
+      )
+    } else {
+      restrictions.push(
+        Object.freeze({
+          category: 'environment',
+          code: 'WORKER_CAPABILITY_MISSING',
+          severity: 'blocking',
+          explanation:
+            'Module Web Worker API is unavailable and bounded fallback is disabled or exceeded.',
+        }),
+      )
+    }
+  }
+
+  // 5. Threading restrictions
+  const crossOriginIsolated =
+    (globalObj as { crossOriginIsolated?: unknown }).crossOriginIsolated === true
+  const sharedArrayBufferAvailable =
+    typeof (globalObj as { SharedArrayBuffer?: unknown }).SharedArrayBuffer === 'function'
+  const rawHardwareThreads =
+    nav && typeof nav.hardwareConcurrency === 'number' && Number.isFinite(nav.hardwareConcurrency)
+      ? Math.max(1, Math.floor(nav.hardwareConcurrency))
+      : 1
+  const requestedThreads =
+    input.requestedThreads !== undefined
+      ? positiveIntOrThrow(input.requestedThreads, rawHardwareThreads)
+      : rawHardwareThreads
+
+  const canMultithreadWorker =
+    !useBoundedMainFallback &&
+    workerSupported &&
+    crossOriginIsolated &&
+    sharedArrayBufferAvailable &&
+    !forceSingleThreadForMemory
+
+  if (!useBoundedMainFallback && workerSupported) {
+    if (!crossOriginIsolated) {
+      restrictions.push(
+        Object.freeze({
+          category: 'threads',
+          code: 'CROSS_ORIGIN_ISOLATION_UNAVAILABLE',
+          severity: 'fallback',
+          explanation:
+            'Cross-origin isolation (COOP/COEP) is inactive; falling back safely to single-threaded worker proving.',
+        }),
+      )
+    } else if (!sharedArrayBufferAvailable) {
+      restrictions.push(
+        Object.freeze({
+          category: 'threads',
+          code: 'SHARED_ARRAY_BUFFER_UNAVAILABLE',
+          severity: 'fallback',
+          explanation:
+            'SharedArrayBuffer is unavailable; falling back safely to single-threaded worker proving.',
+        }),
+      )
+    } else if (canMultithreadWorker) {
+      if (requestedThreads > MAX_WORKER_THREADS) {
+        restrictions.push(
+          Object.freeze({
+            category: 'threads',
+            code: 'THREAD_CAP_CLAMPED',
+            severity: 'advisory',
+            explanation: `Requested thread count (${requestedThreads}) clamped to proof-worker maximum (${MAX_WORKER_THREADS}).`,
+          }),
+        )
+      }
+      if (Math.max(1, Math.min(requestedThreads, MAX_WORKER_THREADS)) === 1) {
+        restrictions.push(
+          Object.freeze({
+            category: 'threads',
+            code: 'SINGLE_CORE_HARDWARE_CONCURRENCY',
+            severity: 'advisory',
+            explanation: 'Browser reports single-thread concurrency; running 1 worker thread.',
+          }),
+        )
+      }
+    }
+  }
+
+  const hasBlocking = restrictions.some((r) => r.severity === 'blocking')
+  if (hasBlocking) {
+    const blockingCodes = restrictions
+      .filter((r) => r.severity === 'blocking')
+      .map((r) => r.code)
+      .join(', ')
+    return Object.freeze({
+      admitted: false,
+      outcome: 'reject' as const,
+      executionMode: 'rejected' as const,
+      grantedThreads: 0,
+      maxConcurrentOperations,
+      activeOperations,
+      memoryBudgetBytes,
+      estimatedOperationBytes,
+      restrictions: Object.freeze(restrictions),
+      summary: `Proving rejected before start (${blockingCodes}).`,
+    })
+  }
+
+  const grantedThreads = canMultithreadWorker
+    ? Math.max(1, Math.min(requestedThreads, MAX_WORKER_THREADS))
+    : 1
+
+  const hasFallbackRestriction =
+    useBoundedMainFallback || restrictions.some((r) => r.severity === 'fallback')
+  const executionMode: ProofWorkerExecutionMode = useBoundedMainFallback
+    ? 'bounded-main-thread-fallback'
+    : grantedThreads > 1
+      ? 'multithreaded-worker'
+      : 'single-threaded-worker'
+  const outcome: ProofWorkerAdmissionOutcome = hasFallbackRestriction
+    ? 'admit_constrained'
+    : 'admit_optimal'
+
+  return Object.freeze({
+    admitted: true,
+    outcome,
+    executionMode,
+    grantedThreads,
+    maxConcurrentOperations,
+    activeOperations,
+    memoryBudgetBytes,
+    estimatedOperationBytes,
+    restrictions: Object.freeze(restrictions),
+    summary:
+      outcome === 'admit_optimal'
+        ? `Admitted in ${executionMode} mode with ${grantedThreads} thread(s).`
+        : `Admitted with constrained fallback (${executionMode}, ${grantedThreads} thread).`,
+  })
 }

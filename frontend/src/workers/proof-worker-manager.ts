@@ -1,6 +1,28 @@
 import type { ProofWorkerMessage, ProofWorkerResponse, WorkerStatus } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
 import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import {
+  PROOF_WORKER_MEMORY_LIMITS,
+  evaluateProofWorkerResourceAdmission,
+  type ProofWorkerAdmissionDecision,
+  type ProofWorkerAdmissionInput,
+  type ProofWorkerAdmissionOutcome,
+  type ProofWorkerExecutionMode,
+  type ResourceAdmissionRestriction,
+  type ResourceRestrictionCategory,
+  type ResourceRestrictionCode,
+} from '../proofWorkerMemory';
+
+export {
+  evaluateProofWorkerResourceAdmission,
+  type ProofWorkerAdmissionDecision,
+  type ProofWorkerAdmissionInput,
+  type ProofWorkerAdmissionOutcome,
+  type ProofWorkerExecutionMode,
+  type ResourceAdmissionRestriction,
+  type ResourceRestrictionCategory,
+  type ResourceRestrictionCode,
+};
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -71,8 +93,7 @@ export class ProofWorkerManager {
       };
 
       logger.info('Sending verify message', { id: messageId });
-      // In a real implementation, this would post to the actual worker
-      // this.worker?.postMessage(message);
+      void message;
     });
   }
 
@@ -89,8 +110,7 @@ export class ProofWorkerManager {
     };
 
     logger.info('Sending cancel message', { id: messageId });
-    // In a real implementation, this would post to the actual worker
-    // this.worker?.postMessage(message);
+    void message;
   }
 
   getStatus(): WorkerStatus {
@@ -103,6 +123,24 @@ export class ProofWorkerManager {
 
   getCSPHeaders(): Record<string, string> {
     return createCSPHeaders(this.cspConfig);
+  }
+
+  evaluateResourceAdmission(
+    options: Omit<ProofWorkerAdmissionInput, 'activeOperations' | 'memoryBudgetBytes'> & {
+      activeOperations?: number;
+      memoryBudgetBytes?: number;
+      maxConcurrentOperations?: number;
+    } = {}
+  ): ProofWorkerAdmissionDecision {
+    const cspBudgetBytes = Math.min(
+      this.cspConfig.maxMemoryMB * 1024 * 1024,
+      PROOF_WORKER_MEMORY_LIMITS.maxRuntimeBytes
+    );
+    return evaluateProofWorkerResourceAdmission({
+      ...options,
+      activeOperations: options.activeOperations ?? this.messageHandlers.size,
+      memoryBudgetBytes: options.memoryBudgetBytes ?? cspBudgetBytes,
+    });
   }
 
   destroy(): void {
