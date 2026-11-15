@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Credential vault compatibility descriptor
+
+`src/credentialVault.ts` exports `VAULT_FORMAT_DESCRIPTOR`,
+`getVaultFormatDescriptor()`, `checkVaultCompatibility()`, and
+`assertVaultCompatibility()` to expose supported envelope and PBKDF2/AES-GCM
+parameters as frozen, non-secret machine-readable metadata (`v: 1`, KDF `v: 1`,
+`PBKDF2` with `SHA-256` at `600000` iterations, `AES-GCM-256`). Unsupported
+versions or required cryptographic parameters fail closed with
+`VaultCompatibilityError` before key derivation.

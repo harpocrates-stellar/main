@@ -2,14 +2,338 @@ import type { SeedPair } from './seedVault'
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
+const KDF_VERSION = 1
 const PBKDF2_ITERATIONS = 600000
+const SALT_BYTES = 16
+const IV_BYTES = 12
+const MIN_CIPHERTEXT_BYTES = 16 // AES-GCM authentication tag floor
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
+
+export const VAULT_FORMAT_DESCRIPTOR = Object.freeze({
+  schema: 'harpocrates.credential-vault.compatibility/v1',
+  currentEnvelopeVersion: VAULT_VERSION,
+  supportedEnvelopeVersions: Object.freeze([VAULT_VERSION] as const),
+  currentKdfVersion: KDF_VERSION,
+  supportedKdfVersions: Object.freeze([KDF_VERSION] as const),
+  cipher: Object.freeze({
+    algorithm: 'AES-GCM',
+    keyLengthBits: 256,
+    ivBytes: IV_BYTES,
+    saltBytes: SALT_BYTES,
+  }),
+  kdf: Object.freeze({
+    version: KDF_VERSION,
+    algorithm: 'PBKDF2',
+    hash: 'SHA-256',
+    iterations: PBKDF2_ITERATIONS,
+  }),
+  requiredEnvelopeFields: Object.freeze(['v', 'salt', 'iv', 'ct'] as const),
+} as const)
+
+export type VaultFormatDescriptor = typeof VAULT_FORMAT_DESCRIPTOR
+
+export function getVaultFormatDescriptor(): VaultFormatDescriptor {
+  return VAULT_FORMAT_DESCRIPTOR
+}
+
+export interface VaultKdfParameters {
+  v?: number
+  algorithm?: string
+  hash?: string
+  iterations?: number
+}
+
+export interface VaultCipherParameters {
+  algorithm?: string
+  keyLengthBits?: number
+}
 
 export interface VaultEnvelope {
   v: number
   salt: string // hex
   iv: string // hex
   ct: string // hex (ciphertext)
+  kdfVersion?: number
+  kdf?: VaultKdfParameters
+  cipher?: VaultCipherParameters
+  requiredParams?: readonly string[]
+}
+
+export type VaultCompatibilityErrorCode =
+  | 'MALFORMED_ENVELOPE'
+  | 'UNSUPPORTED_ENVELOPE_VERSION'
+  | 'UNSUPPORTED_KDF_VERSION'
+  | 'UNSUPPORTED_REQUIRED_PARAMETER'
+  | 'INVALID_REQUIRED_PARAMETER'
+
+export class VaultCompatibilityError extends Error {
+  readonly code: VaultCompatibilityErrorCode
+  readonly parameter?: string
+
+  constructor(code: VaultCompatibilityErrorCode, message: string, parameter?: string) {
+    super(message)
+    this.name = 'VaultCompatibilityError'
+    this.code = code
+    this.parameter = parameter
+  }
+}
+
+export type VaultCompatibilityResult =
+  | {
+      compatible: true
+      envelopeVersion: number
+      kdfVersion: number
+    }
+  | {
+      compatible: false
+      code: VaultCompatibilityErrorCode
+      parameter?: string
+      message: string
+    }
+
+const KNOWN_ENVELOPE_PARAMS = new Set([
+  'v',
+  'salt',
+  'iv',
+  'ct',
+  'kdfVersion',
+  'kdf',
+  'cipher',
+  'requiredParams',
+])
+
+function isEvenHex(value: unknown, minBytes: number, exactBytes?: number): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length % 2 !== 0) {
+    return false
+  }
+  const byteLength = value.length / 2
+  if (byteLength < minBytes) return false
+  if (exactBytes !== undefined && byteLength !== exactBytes) return false
+  return /^[0-9a-fA-F]+$/.test(value)
+}
+
+export function checkVaultCompatibility(candidate: unknown): VaultCompatibilityResult {
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+    return {
+      compatible: false,
+      code: 'MALFORMED_ENVELOPE',
+      message: 'Vault corrupted: unable to parse envelope',
+    }
+  }
+
+  const raw = candidate as Record<string, unknown>
+
+  if (
+    typeof raw.v !== 'number' ||
+    !Number.isInteger(raw.v) ||
+    !(VAULT_FORMAT_DESCRIPTOR.supportedEnvelopeVersions as readonly number[]).includes(raw.v)
+  ) {
+    return {
+      compatible: false,
+      code: 'UNSUPPORTED_ENVELOPE_VERSION',
+      parameter: 'v',
+      message: `Unsupported vault version: ${String(raw.v)}`,
+    }
+  }
+
+  const explicitKdfVersion = raw.kdfVersion
+  if (explicitKdfVersion !== undefined) {
+    if (
+      typeof explicitKdfVersion !== 'number' ||
+      !Number.isInteger(explicitKdfVersion) ||
+      !(VAULT_FORMAT_DESCRIPTOR.supportedKdfVersions as readonly number[]).includes(explicitKdfVersion)
+    ) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_KDF_VERSION',
+        parameter: 'kdfVersion',
+        message: `Unsupported vault KDF version: ${String(explicitKdfVersion)}`,
+      }
+    }
+  }
+
+  let resolvedKdfVersion = explicitKdfVersion ?? VAULT_FORMAT_DESCRIPTOR.currentKdfVersion
+
+  if (raw.kdf !== undefined) {
+    if (typeof raw.kdf !== 'object' || raw.kdf === null || Array.isArray(raw.kdf)) {
+      return {
+        compatible: false,
+        code: 'INVALID_REQUIRED_PARAMETER',
+        parameter: 'kdf',
+        message: 'Invalid required vault parameter: kdf',
+      }
+    }
+    const kdf = raw.kdf as Record<string, unknown>
+    for (const key of Object.keys(kdf)) {
+      if (!['v', 'algorithm', 'hash', 'iterations'].includes(key)) {
+        return {
+          compatible: false,
+          code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+          parameter: `kdf.${key}`,
+          message: `Unsupported required vault parameter: kdf.${key}`,
+        }
+      }
+    }
+    if (kdf.v !== undefined) {
+      if (
+        typeof kdf.v !== 'number' ||
+        !Number.isInteger(kdf.v) ||
+        !(VAULT_FORMAT_DESCRIPTOR.supportedKdfVersions as readonly number[]).includes(kdf.v)
+      ) {
+        return {
+          compatible: false,
+          code: 'UNSUPPORTED_KDF_VERSION',
+          parameter: 'kdf.v',
+          message: `Unsupported vault KDF version: ${String(kdf.v)}`,
+        }
+      }
+      if (explicitKdfVersion !== undefined && explicitKdfVersion !== kdf.v) {
+        return {
+          compatible: false,
+          code: 'INVALID_REQUIRED_PARAMETER',
+          parameter: 'kdf.v',
+          message: 'Conflicting vault KDF version parameters',
+        }
+      }
+      resolvedKdfVersion = kdf.v
+    }
+    if (kdf.algorithm !== undefined && kdf.algorithm !== VAULT_FORMAT_DESCRIPTOR.kdf.algorithm) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+        parameter: 'kdf.algorithm',
+        message: `Unsupported required vault parameter: kdf.algorithm`,
+      }
+    }
+    if (kdf.hash !== undefined && kdf.hash !== VAULT_FORMAT_DESCRIPTOR.kdf.hash) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+        parameter: 'kdf.hash',
+        message: `Unsupported required vault parameter: kdf.hash`,
+      }
+    }
+    if (kdf.iterations !== undefined && kdf.iterations !== VAULT_FORMAT_DESCRIPTOR.kdf.iterations) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+        parameter: 'kdf.iterations',
+        message: `Unsupported required vault parameter: kdf.iterations`,
+      }
+    }
+  }
+
+  if (raw.cipher !== undefined) {
+    if (typeof raw.cipher !== 'object' || raw.cipher === null || Array.isArray(raw.cipher)) {
+      return {
+        compatible: false,
+        code: 'INVALID_REQUIRED_PARAMETER',
+        parameter: 'cipher',
+        message: 'Invalid required vault parameter: cipher',
+      }
+    }
+    const cipher = raw.cipher as Record<string, unknown>
+    for (const key of Object.keys(cipher)) {
+      if (!['algorithm', 'keyLengthBits'].includes(key)) {
+        return {
+          compatible: false,
+          code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+          parameter: `cipher.${key}`,
+          message: `Unsupported required vault parameter: cipher.${key}`,
+        }
+      }
+    }
+    if (cipher.algorithm !== undefined && cipher.algorithm !== VAULT_FORMAT_DESCRIPTOR.cipher.algorithm) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+        parameter: 'cipher.algorithm',
+        message: `Unsupported required vault parameter: cipher.algorithm`,
+      }
+    }
+    if (
+      cipher.keyLengthBits !== undefined &&
+      cipher.keyLengthBits !== VAULT_FORMAT_DESCRIPTOR.cipher.keyLengthBits
+    ) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+        parameter: 'cipher.keyLengthBits',
+        message: `Unsupported required vault parameter: cipher.keyLengthBits`,
+      }
+    }
+  }
+
+  if (raw.requiredParams !== undefined) {
+    if (!Array.isArray(raw.requiredParams) || !raw.requiredParams.every((item) => typeof item === 'string')) {
+      return {
+        compatible: false,
+        code: 'INVALID_REQUIRED_PARAMETER',
+        parameter: 'requiredParams',
+        message: 'Invalid required vault parameter: requiredParams',
+      }
+    }
+    for (const param of raw.requiredParams) {
+      if (!KNOWN_ENVELOPE_PARAMS.has(param) || !(param in raw)) {
+        return {
+          compatible: false,
+          code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+          parameter: param,
+          message: `Unsupported required vault parameter: ${param}`,
+        }
+      }
+    }
+  }
+
+  for (const key of Object.keys(raw)) {
+    if (!KNOWN_ENVELOPE_PARAMS.has(key)) {
+      return {
+        compatible: false,
+        code: 'UNSUPPORTED_REQUIRED_PARAMETER',
+        parameter: key,
+        message: `Unsupported required vault parameter: ${key}`,
+      }
+    }
+  }
+
+  if (!isEvenHex(raw.salt, SALT_BYTES, SALT_BYTES)) {
+    return {
+      compatible: false,
+      code: 'INVALID_REQUIRED_PARAMETER',
+      parameter: 'salt',
+      message: 'Invalid required vault parameter: salt',
+    }
+  }
+  if (!isEvenHex(raw.iv, IV_BYTES, IV_BYTES)) {
+    return {
+      compatible: false,
+      code: 'INVALID_REQUIRED_PARAMETER',
+      parameter: 'iv',
+      message: 'Invalid required vault parameter: iv',
+    }
+  }
+  if (!isEvenHex(raw.ct, MIN_CIPHERTEXT_BYTES)) {
+    return {
+      compatible: false,
+      code: 'INVALID_REQUIRED_PARAMETER',
+      parameter: 'ct',
+      message: 'Invalid required vault parameter: ct',
+    }
+  }
+
+  return {
+    compatible: true,
+    envelopeVersion: raw.v,
+    kdfVersion: resolvedKdfVersion,
+  }
+}
+
+export function assertVaultCompatibility(candidate: unknown): VaultEnvelope {
+  const result = checkVaultCompatibility(candidate)
+  if (!result.compatible) {
+    throw new VaultCompatibilityError(result.code, result.message, result.parameter)
+  }
+  return candidate as VaultEnvelope
 }
 
 function bufToHex(buffer: ArrayBuffer): string {
@@ -104,16 +428,14 @@ export class CredentialVault {
     const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
     if (!stored) throw new Error('Vault is empty')
 
-    let envelope: VaultEnvelope
+    let parsed: unknown
     try {
-      envelope = JSON.parse(stored)
+      parsed = JSON.parse(stored)
     } catch {
-      throw new Error('Vault corrupted: unable to parse envelope')
+      throw new VaultCompatibilityError('MALFORMED_ENVELOPE', 'Vault corrupted: unable to parse envelope')
     }
 
-    if (envelope.v !== VAULT_VERSION) {
-      throw new Error(`Unsupported vault version: ${envelope.v}`)
-    }
+    const envelope = assertVaultCompatibility(parsed)
 
     const salt = hexToBuf(envelope.salt)
     const iv = hexToBuf(envelope.iv)

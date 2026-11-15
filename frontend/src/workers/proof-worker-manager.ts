@@ -59,7 +59,7 @@ export class ProofWorkerManager {
         resolve(response);
       });
 
-      const message: ProofWorkerMessage = {
+      void ({
         type: 'verify',
         payload: {
           evidence,
@@ -68,7 +68,7 @@ export class ProofWorkerManager {
           timeout,
         },
         id: messageId,
-      };
+      } satisfies ProofWorkerMessage);
 
       logger.info('Sending verify message', { id: messageId });
       // In a real implementation, this would post to the actual worker
@@ -83,10 +83,10 @@ export class ProofWorkerManager {
 
     const messageId = `cancel_${Date.now()}`;
 
-    const message: ProofWorkerMessage = {
+    void ({
       type: 'cancel',
       id: messageId,
-    };
+    } satisfies ProofWorkerMessage);
 
     logger.info('Sending cancel message', { id: messageId });
     // In a real implementation, this would post to the actual worker
