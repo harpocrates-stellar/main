@@ -639,3 +639,432 @@ def _validate_time_attestation_obj(obj: dict[str, Any]) -> None:
     
     if not _is_valid_hex(obj["evidenceDigest"], 64):
         raise ValueError("evidenceDigest must be 64-character hex string")
+
+
+# ── Offline timestamp-chain validation report ──────────────────────────────
+
+OFFLINE_TIMESTAMP_CHAIN_REPORT_SCHEMA = "harpocrates-offline-timestamp-chain-report/v1"
+
+BoundedDependencyTrustResult = Literal[
+    "verified_trusted",
+    "self_asserted_bounded",
+    "trust_material_unavailable",
+    "signature_or_chain_invalid",
+    "untrusted_anchor",
+]
+
+DependencyFailureClassification = Literal[
+    "none",
+    "invalid_signature",
+    "invalid_chain_or_policy",
+    "unavailable_trust_material",
+]
+
+OverallTimestampAssurance = Literal[
+    "verified_independent_anchor",
+    "bounded_unverified_material",
+    "self_asserted_only",
+    "failed_validation",
+]
+
+
+@dataclass(frozen=True)
+class TimestampDependencyEntry:
+    """Per-dependency bounded offline validation result."""
+
+    dependency_id: str
+    source_type: TimeSourceType
+    trust_result: BoundedDependencyTrustResult
+    failure_classification: DependencyFailureClassification
+    reason_code: str
+    timestamp_unix_ms: int
+    leaf_fingerprint: str | None = None
+    root_fingerprint: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "dependencyId": self.dependency_id,
+            "failureClassification": self.failure_classification,
+            "reasonCode": self.reason_code,
+            "sourceType": self.source_type,
+            "timestampUnixMs": self.timestamp_unix_ms,
+            "trustResult": self.trust_result,
+        }
+        if self.leaf_fingerprint is not None:
+            d["leafFingerprint"] = self.leaf_fingerprint
+        if self.root_fingerprint is not None:
+            d["rootFingerprint"] = self.root_fingerprint
+        return d
+
+
+@dataclass(frozen=True)
+class OfflineTimestampChainReport:
+    """Structured offline validation report over all attestation dependencies."""
+
+    evidence_digest: str
+    evidence_digest_matches: bool
+    overall_assurance: OverallTimestampAssurance
+    has_invalid_signatures: bool
+    has_unavailable_trust_material: bool
+    dependencies: tuple[TimestampDependencyEntry, ...]
+    invalid_signature_dependencies: tuple[str, ...]
+    unavailable_trust_material_dependencies: tuple[str, ...]
+    errors: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dependencies": [dep.to_dict() for dep in self.dependencies],
+            "errors": list(self.errors),
+            "evidenceDigest": self.evidence_digest,
+            "evidenceDigestMatches": self.evidence_digest_matches,
+            "hasInvalidSignatures": self.has_invalid_signatures,
+            "hasUnavailableTrustMaterial": self.has_unavailable_trust_material,
+            "invalidSignatureDependencies": list(self.invalid_signature_dependencies),
+            "overallAssurance": self.overall_assurance,
+            "schema": OFFLINE_TIMESTAMP_CHAIN_REPORT_SCHEMA,
+            "unavailableTrustMaterialDependencies": list(
+                self.unavailable_trust_material_dependencies
+            ),
+        }
+
+
+def _has_matching_issuer_subject_in_store(
+    chain_b64: list[str],
+    store: "TrustStore",
+) -> bool:
+    """Detect when a configured root matches ``last.issuer`` so signature failure is not misreported as untrusted."""
+    try:
+        import base64 as _b64
+
+        from cryptography import x509 as _x509
+
+        last_cert = _x509.load_der_x509_certificate(_b64.b64decode(chain_b64[-1], validate=True))
+        for root_der in store.root_der_list:
+            root_cert = _x509.load_der_x509_certificate(root_der)
+            if last_cert.issuer == root_cert.subject:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _evaluate_rfc3161_dependency(
+    idx: int,
+    anchor: RFC3161Anchor,
+    *,
+    store: "TrustStore | None",
+    has_trust_roots: bool,
+    eval_now_ms: int,
+) -> TimestampDependencyEntry:
+    dep_id = f"rfc3161_anchor[{idx}]"
+    if len(anchor.token_bytes) > MAX_TIMESTAMP_TOKEN_SIZE or anchor.gen_time < 0 or (
+        anchor.gen_time > eval_now_ms + (MAX_FUTURE_DRIFT_SECONDS * 1000)
+    ):
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="signature_or_chain_invalid",
+            failure_classification="invalid_chain_or_policy",
+            reason_code="invalid_token_bounds",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=anchor.cert_fingerprint,
+        )
+
+    if not anchor.certificate_chain:
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="trust_material_unavailable",
+            failure_classification="unavailable_trust_material",
+            reason_code="missing_certificate_chain",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=anchor.cert_fingerprint,
+        )
+
+    if validate_rfc3161_certificate_chain is None or TrustStore is None:
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="trust_material_unavailable",
+            failure_classification="unavailable_trust_material",
+            reason_code="dependency_failure",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=anchor.cert_fingerprint,
+        )
+
+    assert store is not None
+    at_time = datetime.fromtimestamp(anchor.gen_time / 1000.0, tz=timezone.utc)
+    chain_res = validate_rfc3161_certificate_chain(
+        anchor.certificate_chain,
+        trust_store=store,
+        at_time=at_time,
+    )
+
+    if chain_res.ok:
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="verified_trusted",
+            failure_classification="none",
+            reason_code="verified",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=chain_res.leaf_fingerprint or anchor.cert_fingerprint,
+            root_fingerprint=chain_res.root_fingerprint,
+        )
+
+    code = chain_res.error_code or "chain_validation_failed"
+    if code == "dependency_failure":
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="trust_material_unavailable",
+            failure_classification="unavailable_trust_material",
+            reason_code="dependency_failure",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=chain_res.leaf_fingerprint,
+        )
+
+    if code == "untrusted_root":
+        if not has_trust_roots:
+            return TimestampDependencyEntry(
+                dependency_id=dep_id,
+                source_type="rfc3161_tsa",
+                trust_result="trust_material_unavailable",
+                failure_classification="unavailable_trust_material",
+                reason_code="missing_trust_roots",
+                timestamp_unix_ms=anchor.gen_time,
+                leaf_fingerprint=chain_res.leaf_fingerprint,
+            )
+        if _has_matching_issuer_subject_in_store(anchor.certificate_chain, store):
+            return TimestampDependencyEntry(
+                dependency_id=dep_id,
+                source_type="rfc3161_tsa",
+                trust_result="signature_or_chain_invalid",
+                failure_classification="invalid_signature",
+                reason_code="signature_invalid",
+                timestamp_unix_ms=anchor.gen_time,
+                leaf_fingerprint=chain_res.leaf_fingerprint,
+            )
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="untrusted_anchor",
+            failure_classification="invalid_chain_or_policy",
+            reason_code="untrusted_root",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=chain_res.leaf_fingerprint,
+        )
+
+    if code == "signature_invalid":
+        return TimestampDependencyEntry(
+            dependency_id=dep_id,
+            source_type="rfc3161_tsa",
+            trust_result="signature_or_chain_invalid",
+            failure_classification="invalid_signature",
+            reason_code="signature_invalid",
+            timestamp_unix_ms=anchor.gen_time,
+            leaf_fingerprint=chain_res.leaf_fingerprint,
+            root_fingerprint=chain_res.root_fingerprint,
+        )
+
+    return TimestampDependencyEntry(
+        dependency_id=dep_id,
+        source_type="rfc3161_tsa",
+        trust_result="signature_or_chain_invalid",
+        failure_classification="invalid_chain_or_policy",
+        reason_code=code,
+        timestamp_unix_ms=anchor.gen_time,
+        leaf_fingerprint=chain_res.leaf_fingerprint,
+        root_fingerprint=chain_res.root_fingerprint,
+    )
+
+
+def build_offline_timestamp_chain_report(
+    attestation: TimeAttestation,
+    *,
+    expected_evidence_digest: str | None = None,
+    trust_store: "TrustStore | None" = None,
+    trust_roots_b64: list[str] | None = None,
+    revoked_serials_hex: list[str] | None = None,
+    offline_stellar_snapshots: dict[str, dict[str, Any]] | None = None,
+    now_unix_ms: int | None = None,
+) -> OfflineTimestampChainReport:
+    """Validate every attestation dependency offline and classify bounded trust results.
+
+    Cleanly separates cryptographic signature/chain failures from unavailable
+    offline trust material (missing TSA chains, empty trust stores, or absent
+    offline ledger snapshots).
+    """
+    eval_now_ms = int(time.time() * 1000) if now_unix_ms is None else now_unix_ms
+    target_digest = (
+        attestation.evidence_digest
+        if expected_evidence_digest is None
+        else expected_evidence_digest
+    )
+    digest_matches = attestation.evidence_digest == target_digest
+    errors: list[str] = []
+    if not digest_matches:
+        errors.append("evidence_digest_mismatch")
+
+    resolved_store = trust_store
+    if resolved_store is None and TrustStore is not None and trust_store_from_b64_roots is not None:
+        resolved_store = trust_store_from_b64_roots(
+            trust_roots_b64 or [], revoked_serials_hex or []
+        )
+    has_trust_roots = bool(resolved_store is not None and len(resolved_store.root_der_list) > 0)
+
+    deps: list[TimestampDependencyEntry] = []
+
+    if attestation.claimed_time is not None:
+        ct = attestation.claimed_time
+        ct_ok = 0 <= ct.unix_ms <= eval_now_ms + (MAX_FUTURE_DRIFT_SECONDS * 1000)
+        deps.append(
+            TimestampDependencyEntry(
+                dependency_id="claimed_time",
+                source_type="claimed",
+                trust_result="self_asserted_bounded" if ct_ok else "signature_or_chain_invalid",
+                failure_classification="none" if ct_ok else "invalid_chain_or_policy",
+                reason_code="bounded_unanchored_claim" if ct_ok else "claimed_time_out_of_bounds",
+                timestamp_unix_ms=ct.unix_ms,
+            )
+        )
+
+    if attestation.observed_time is not None:
+        ot = attestation.observed_time
+        ot_ok = 0 <= ot.unix_ms <= eval_now_ms + (MAX_FUTURE_DRIFT_SECONDS * 1000)
+        deps.append(
+            TimestampDependencyEntry(
+                dependency_id="observed_time",
+                source_type="observed",
+                trust_result="self_asserted_bounded" if ot_ok else "signature_or_chain_invalid",
+                failure_classification="none" if ot_ok else "invalid_chain_or_policy",
+                reason_code="bounded_backend_observation" if ot_ok else "observed_time_out_of_bounds",
+                timestamp_unix_ms=ot.unix_ms,
+            )
+        )
+
+    for idx, s_anchor in enumerate(attestation.stellar_anchors):
+        dep_id = f"stellar_anchor[{idx}]"
+        tx_ms = s_anchor.ledger_timestamp * 1000
+        if (
+            not _is_valid_hex(s_anchor.transaction_hash, 64)
+            or s_anchor.ledger_sequence < 0
+            or s_anchor.ledger_timestamp < 0
+        ):
+            deps.append(
+                TimestampDependencyEntry(
+                    dependency_id=dep_id,
+                    source_type="stellar_ledger",
+                    trust_result="signature_or_chain_invalid",
+                    failure_classification="invalid_chain_or_policy",
+                    reason_code="malformed_stellar_anchor",
+                    timestamp_unix_ms=tx_ms,
+                )
+            )
+        elif offline_stellar_snapshots is None or s_anchor.transaction_hash not in offline_stellar_snapshots:
+            deps.append(
+                TimestampDependencyEntry(
+                    dependency_id=dep_id,
+                    source_type="stellar_ledger",
+                    trust_result="trust_material_unavailable",
+                    failure_classification="unavailable_trust_material",
+                    reason_code="missing_offline_ledger_snapshot",
+                    timestamp_unix_ms=tx_ms,
+                )
+            )
+        else:
+            snap = offline_stellar_snapshots[s_anchor.transaction_hash]
+            snap_ok = (
+                snap.get("ledgerSequence") == s_anchor.ledger_sequence
+                and snap.get("ledgerTimestamp") == s_anchor.ledger_timestamp
+                and snap.get("networkPassphrase") == s_anchor.network_passphrase
+                and (
+                    snap.get("signatureValid", True) is True
+                )
+            )
+            if not snap.get("signatureValid", True):
+                deps.append(
+                    TimestampDependencyEntry(
+                        dependency_id=dep_id,
+                        source_type="stellar_ledger",
+                        trust_result="signature_or_chain_invalid",
+                        failure_classification="invalid_signature",
+                        reason_code="signature_invalid",
+                        timestamp_unix_ms=tx_ms,
+                    )
+                )
+            elif not snap_ok:
+                deps.append(
+                    TimestampDependencyEntry(
+                        dependency_id=dep_id,
+                        source_type="stellar_ledger",
+                        trust_result="signature_or_chain_invalid",
+                        failure_classification="invalid_chain_or_policy",
+                        reason_code="ledger_snapshot_mismatch",
+                        timestamp_unix_ms=tx_ms,
+                    )
+                )
+            else:
+                deps.append(
+                    TimestampDependencyEntry(
+                        dependency_id=dep_id,
+                        source_type="stellar_ledger",
+                        trust_result="verified_trusted",
+                        failure_classification="none",
+                        reason_code="verified",
+                        timestamp_unix_ms=tx_ms,
+                    )
+                )
+
+    for idx, r_anchor in enumerate(attestation.rfc3161_anchors):
+        deps.append(
+            _evaluate_rfc3161_dependency(
+                idx,
+                r_anchor,
+                store=resolved_store,
+                has_trust_roots=has_trust_roots,
+                eval_now_ms=eval_now_ms,
+            )
+        )
+
+    if not deps:
+        errors.append("no_time_sources")
+
+    invalid_sig_ids = tuple(
+        d.dependency_id for d in deps if d.failure_classification == "invalid_signature"
+    )
+    unavail_ids = tuple(
+        d.dependency_id for d in deps if d.failure_classification == "unavailable_trust_material"
+    )
+    any_hard_failure = (
+        not digest_matches
+        or not deps
+        or any(
+            d.trust_result in ("signature_or_chain_invalid", "untrusted_anchor")
+            for d in deps
+        )
+    )
+    any_verified_anchor = any(d.trust_result == "verified_trusted" for d in deps)
+
+    overall: OverallTimestampAssurance
+    if any_hard_failure:
+        overall = "failed_validation"
+    elif any_verified_anchor:
+        overall = "verified_independent_anchor"
+    elif unavail_ids:
+        overall = "bounded_unverified_material"
+    else:
+        overall = "self_asserted_only"
+
+    return OfflineTimestampChainReport(
+        evidence_digest=attestation.evidence_digest,
+        evidence_digest_matches=digest_matches,
+        overall_assurance=overall,
+        has_invalid_signatures=len(invalid_sig_ids) > 0,
+        has_unavailable_trust_material=len(unavail_ids) > 0,
+        dependencies=tuple(deps),
+        invalid_signature_dependencies=invalid_sig_ids,
+        unavailable_trust_material_dependencies=unavail_ids,
+        errors=tuple(errors),
+    )
+
