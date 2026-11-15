@@ -384,3 +384,117 @@ class TestBuildWorkflows:
         assert commands_run[3] == ["nargo", "execute", "witness"]
         assert commands_run[4][:2] == ["bb", "prove"]
         assert commands_run[5][:2] == ["bb", "verify"]
+
+
+class TestSignedReleaseManifest:
+    """Tests for signed circuit artifact release manifests (#1214)."""
+
+    def test_parser_accepts_sign_and_verify_release_subcommands(self) -> None:
+        parser = bc.create_parser()
+        sign_args = parser.parse_args(
+            ["sign-release", "--scope", "browser", "--source-revision", "a9d2dd4"]
+        )
+        assert sign_args.subcommand == "sign-release"
+        assert sign_args.scope == "browser"
+        assert sign_args.source_revision == "a9d2dd4"
+
+        verify_args = parser.parse_args(
+            ["verify-release", "--public-key", "aa" * 32, "--skip-sources"]
+        )
+        assert verify_args.subcommand == "verify-release"
+        assert verify_args.skip_sources is True
+
+    def test_export_verifies_signed_release_manifest_offline_before_loading(
+        self, tmp_path: Path
+    ) -> None:
+        am = bc._load_artifact_manifest_module()
+        (tmp_path / "zk" / "noir" / "silent_witness" / "src").mkdir(parents=True)
+        (tmp_path / "zk" / "noir" / "silent_witness" / "Nargo.toml").write_text(
+            '[package]\nname = "silent_witness"\ntype = "bin"\n', encoding="utf-8"
+        )
+        (tmp_path / "zk" / "noir" / "silent_witness" / "src" / "main.nr").write_text(
+            "fn main(x: pub Field) { assert(x == 1); }\n", encoding="utf-8"
+        )
+        target = tmp_path / "zk" / "noir" / "silent_witness" / "target"
+        target.mkdir(parents=True)
+        (target / "silent_witness.json").write_text(
+            '{"bytecode":"AA","abi":{}}', encoding="utf-8"
+        )
+        (target / "proof").write_bytes(b"\x01\x02")
+        (target / "public_inputs").write_bytes(b"\x03\x04")
+        (target / "vk").write_bytes(b"\x05" * 32)
+
+        lock_data = {
+            "format": "harpocrates.zk-toolchain-lock",
+            "version": 1,
+            "toolchain": {
+                "nargo": {"version": "1.0.0-beta.9"},
+                "barretenberg": {"version": "0.87.0"},
+                "proving_scheme": "ultra_honk",
+                "oracle_hash": "keccak",
+            },
+            "environment": {"SOURCE_DATE_EPOCH": "0", "TZ": "UTC"},
+            "limits": {
+                "max_artifact_bytes": 1048576,
+                "max_artifacts": 32,
+                "max_provenance_files": 64,
+                "max_circuits": 16,
+            },
+            "normalization": {
+                "json": {"volatile_keys": ["debug_symbols", "file_map", "names"]},
+                "wasm": {"strip_custom_sections": ["producers", "name"]},
+            },
+            "provenance_sources": {
+                "globs": ["zk/noir/*/Nargo.toml", "zk/noir/*/src/**/*.nr"]
+            },
+            "artifacts": [
+                {
+                    "path": "zk/noir/silent_witness/target/silent_witness.json",
+                    "kind": "json",
+                    "role": "acir",
+                    "required": True,
+                },
+                {
+                    "path": "zk/noir/silent_witness/target/vk",
+                    "kind": "binary",
+                    "role": "vk",
+                    "required": True,
+                },
+            ],
+        }
+        lock_path = tmp_path / "zk" / "toolchain.lock.json"
+        lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
+        lock = am.load_lock(lock_path)
+
+        seed_hex, pub_hex, _ = am.generate_release_signing_keypair(b"\x44" * 32)
+        payload = am.build_release_manifest_payload(
+            lock, tmp_path, scope="all", source_revision="rev-test", lock_path=lock_path
+        )
+        signed = am.sign_release_manifest(payload, seed_hex=seed_hex)
+        manifest_file = tmp_path / "zk" / "release.manifest.signed.json"
+        manifest_file.write_text(am.serialize_manifest(signed), encoding="utf-8")
+
+        out_json = tmp_path / "exported.json"
+        parser = bc.create_parser()
+        ok_args = parser.parse_args(
+            [
+                "export",
+                "silent_witness",
+                "--target-dir",
+                str(target),
+                "--output",
+                str(out_json),
+                "--release-manifest",
+                str(manifest_file),
+                "--public-key",
+                pub_hex,
+            ]
+        )
+        assert bc.cmd_export(ok_args, repo_root=tmp_path) == bc.EXIT_OK
+        exported = json.loads(out_json.read_text(encoding="utf-8"))
+        assert exported["verificationKey"] == ("05" * 32)
+
+        # Corrupting VK after signing blocks export fail-closed
+        (target / "vk").write_bytes(b"\x99" * 32)
+        with pytest.raises(bc.BuildError, match="offline artifact digest verification failed"):
+            bc.cmd_export(ok_args, repo_root=tmp_path)

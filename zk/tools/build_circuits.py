@@ -24,13 +24,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
 DEFAULT_MANIFEST = REPO_ROOT / "zk" / "artifacts.manifest.json"
+DEFAULT_RELEASE_MANIFEST = REPO_ROOT / "zk" / "release.manifest.signed.json"
 TOOL_MANIFEST = REPO_ROOT / "zk" / "tools" / "artifact_manifest.py"
 
 DEFAULT_CIRCUITS: tuple[str, ...] = (
@@ -449,6 +451,67 @@ def cmd_build(
         return EXIT_OK
 
 
+def _load_artifact_manifest_module() -> Any:
+    tools_dir = str(TOOL_MANIFEST.parent)
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import artifact_manifest as am
+
+    return am
+
+
+def verify_client_release_before_loading(
+    *,
+    release_manifest: Path,
+    public_key: str | None = None,
+    public_key_file: Path | None = None,
+    trusted_keys: Path | None = None,
+    repo_root: Path = REPO_ROOT,
+    lock_path: Path | None = None,
+    required_artifacts: Sequence[Path] = (),
+) -> dict[str, bytes]:
+    """Verify a signed release manifest offline BEFORE reading circuit artifacts."""
+    am = _load_artifact_manifest_module()
+    try:
+        trusted = am.load_trusted_public_keys(
+            public_key=public_key,
+            public_key_file=public_key_file,
+            trusted_keys_file=trusted_keys,
+        )
+        resolved_lock_path = lock_path or (repo_root / "zk" / "toolchain.lock.json")
+        lock = am.load_lock(resolved_lock_path) if resolved_lock_path.is_file() else None
+        loaded: dict[str, bytes] = {}
+        if required_artifacts:
+            for art_file in required_artifacts:
+                rel_path = art_file.resolve().relative_to(repo_root.resolve()).as_posix()
+                data = am.load_verified_release_artifact(
+                    rel_path,
+                    signed_manifest=release_manifest,
+                    trusted_public_keys=trusted,
+                    root=repo_root,
+                    lock=lock,
+                    verify_sources=False,
+                )
+                loaded[rel_path] = data
+        else:
+            findings = am.verify_signed_release_manifest(
+                am._load_signed_release_manifest(release_manifest),
+                trusted_public_keys=trusted,
+                lock=lock,
+                root=repo_root,
+                verify_sources=lock is not None,
+                verify_artifacts=True,
+            )
+            if findings:
+                raise BuildError(
+                    f"offline release manifest verification failed: {findings[0]}",
+                    exit_code=EXIT_DRIFT,
+                )
+        return loaded
+    except am.BuildError as exc:
+        raise BuildError(str(exc), exit_code=EXIT_DRIFT) from exc
+
+
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
     target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
@@ -459,6 +522,25 @@ def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
         "verificationKey": target_dir / "vk",
     }
 
+    release_manifest = getattr(args, "release_manifest", None)
+    if release_manifest:
+        verified = verify_client_release_before_loading(
+            release_manifest=Path(release_manifest),
+            public_key=getattr(args, "public_key", None),
+            public_key_file=(
+                Path(args.public_key_file) if getattr(args, "public_key_file", None) else None
+            ),
+            trusted_keys=(
+                Path(args.trusted_keys) if getattr(args, "trusted_keys", None) else None
+            ),
+            repo_root=repo_root,
+            required_artifacts=[files["verificationKey"]],
+        )
+        vk_rel = files["verificationKey"].resolve().relative_to(repo_root.resolve()).as_posix()
+        vk_bytes = verified[vk_rel]
+    else:
+        vk_bytes = None
+
     for key, path in files.items():
         if not path.is_file():
             raise BuildError(f"Missing {key} artifact at {path}. Run build first.")
@@ -466,7 +548,9 @@ def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     result = {
         "proof": files["proof"].read_bytes().hex(),
         "publicInputs": files["publicInputs"].read_bytes().hex(),
-        "verificationKey": files["verificationKey"].read_bytes().hex(),
+        "verificationKey": (
+            vk_bytes if vk_bytes is not None else files["verificationKey"].read_bytes()
+        ).hex(),
     }
 
     output_str = json.dumps(result, indent=2)
@@ -484,10 +568,26 @@ def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -
     vk_path = target_dir / "vk"
     soroban_vk_path = target_dir / "vk_soroban"
 
-    if not vk_path.is_file():
-        raise BuildError(f"Missing VK artifact at {vk_path}. Run build first.")
-
-    vk = vk_path.read_bytes()
+    release_manifest = getattr(args, "release_manifest", None)
+    if release_manifest:
+        verified = verify_client_release_before_loading(
+            release_manifest=Path(release_manifest),
+            public_key=getattr(args, "public_key", None),
+            public_key_file=(
+                Path(args.public_key_file) if getattr(args, "public_key_file", None) else None
+            ),
+            trusted_keys=(
+                Path(args.trusted_keys) if getattr(args, "trusted_keys", None) else None
+            ),
+            repo_root=repo_root,
+            required_artifacts=[vk_path],
+        )
+        vk_rel = vk_path.resolve().relative_to(repo_root.resolve()).as_posix()
+        vk = verified[vk_rel]
+    else:
+        if not vk_path.is_file():
+            raise BuildError(f"Missing VK artifact at {vk_path}. Run build first.")
+        vk = vk_path.read_bytes()
     if len(vk) == 1764:
         stripped = bytearray(vk[4:])
         for offset in range(0, 32, 8):
@@ -1070,6 +1170,14 @@ def create_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_exp.add_argument("--target-dir", default=None, help="Circuit target directory")
     p_exp.add_argument("--output", default=None, help="Output JSON file path")
+    p_exp.add_argument(
+        "--release-manifest",
+        default=None,
+        help="Signed release manifest to verify offline before loading artifacts",
+    )
+    p_exp.add_argument("--public-key", default=None, help="Pinned 64-hex Ed25519 public key")
+    p_exp.add_argument("--public-key-file", default=None, help="Pinned Ed25519 public key file")
+    p_exp.add_argument("--trusted-keys", default=None, help="JSON trusted public keys file")
 
     # --- prepare-soroban ---
     p_soroban = subparsers.add_parser("prepare-soroban", help="Prepare VK artifact for Soroban verifier")
@@ -1077,8 +1185,122 @@ def create_parser() -> argparse.ArgumentParser:
     p_soroban.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_soroban.add_argument("--target-dir", default=None, help="Circuit target directory")
     p_soroban.add_argument("--output", default=None, help="Output JSON file path")
+    p_soroban.add_argument(
+        "--release-manifest",
+        default=None,
+        help="Signed release manifest to verify offline before loading VK",
+    )
+    p_soroban.add_argument("--public-key", default=None, help="Pinned 64-hex Ed25519 public key")
+    p_soroban.add_argument("--public-key-file", default=None, help="Pinned Ed25519 public key file")
+    p_soroban.add_argument("--trusted-keys", default=None, help="JSON trusted public keys file")
+
+    # --- sign-release ---
+    p_sign = subparsers.add_parser(
+        "sign-release", help="Build and Ed25519-sign a circuit artifact release manifest"
+    )
+    p_sign.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_sign.add_argument("--output", default=str(DEFAULT_RELEASE_MANIFEST), help="Output path")
+    p_sign.add_argument(
+        "--scope", choices=("browser", "all"), default="browser", help="Artifact release scope"
+    )
+    p_sign.add_argument("--source-revision", default=None, help="Source commit SHA or release tag")
+    p_sign.add_argument(
+        "--extra-artifact",
+        action="append",
+        default=[],
+        help="Additional exported artifact path relative to repo root",
+    )
+    p_sign.add_argument("--signing-key-file", default=None, help="Ed25519 signing seed file")
+    p_sign.add_argument(
+        "--signing-key-env",
+        default="HARPOCRATES_RELEASE_SIGNING_KEY",
+        help="Environment variable with Ed25519 signing seed",
+    )
+    p_sign.add_argument("--key-id", default=None, help="Explicit signer key ID")
+
+    # --- verify-release ---
+    p_ver_rel = subparsers.add_parser(
+        "verify-release", help="Verify a signed circuit artifact release manifest offline"
+    )
+    p_ver_rel.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_ver_rel.add_argument(
+        "--manifest", default=str(DEFAULT_RELEASE_MANIFEST), help="Signed release manifest path"
+    )
+    p_ver_rel.add_argument("--public-key", default=None, help="Pinned 64-hex Ed25519 public key")
+    p_ver_rel.add_argument("--public-key-file", default=None, help="Pinned public key file")
+    p_ver_rel.add_argument("--trusted-keys", default=None, help="JSON trusted keys file")
+    p_ver_rel.add_argument(
+        "--expected-source-revision", default=None, help="Expected source revision string"
+    )
+    p_ver_rel.add_argument("--skip-lock", action="store_true", help="Skip local toolchain lock")
+    p_ver_rel.add_argument("--skip-sources", action="store_true", help="Skip local source checks")
+    p_ver_rel.add_argument(
+        "--skip-artifacts", action="store_true", help="Skip reading artifact files"
+    )
 
     return parser
+
+
+def cmd_sign_release(
+    args: argparse.Namespace,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> int:
+    lock_path = Path(args.lock) if args.lock else (repo_root / "zk" / "toolchain.lock.json")
+    cli_args: list[str] = [
+        "--lock",
+        str(lock_path),
+        "sign-release",
+        "--output",
+        str(args.output),
+        "--scope",
+        str(args.scope),
+        "--signing-key-env",
+        str(args.signing_key_env),
+        "--root",
+        str(repo_root),
+    ]
+    if args.source_revision:
+        cli_args.extend(["--source-revision", str(args.source_revision)])
+    if args.signing_key_file:
+        cli_args.extend(["--signing-key-file", str(args.signing_key_file)])
+    if args.key_id:
+        cli_args.extend(["--key-id", str(args.key_id)])
+    for extra in args.extra_artifact or []:
+        cli_args.extend(["--extra-artifact", str(extra)])
+    return run_manifest_tool(cli_args, repo_root=repo_root, runner=runner)
+
+
+def cmd_verify_release(
+    args: argparse.Namespace,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> int:
+    lock_path = Path(args.lock) if args.lock else (repo_root / "zk" / "toolchain.lock.json")
+    cli_args: list[str] = [
+        "--lock",
+        str(lock_path),
+        "verify-release",
+        "--manifest",
+        str(args.manifest),
+        "--root",
+        str(repo_root),
+    ]
+    if args.public_key:
+        cli_args.extend(["--public-key", str(args.public_key)])
+    if args.public_key_file:
+        cli_args.extend(["--public-key-file", str(args.public_key_file)])
+    if args.trusted_keys:
+        cli_args.extend(["--trusted-keys", str(args.trusted_keys)])
+    if args.expected_source_revision:
+        cli_args.extend(["--expected-source-revision", str(args.expected_source_revision)])
+    if args.skip_lock:
+        cli_args.append("--skip-lock")
+    if args.skip_sources:
+        cli_args.append("--skip-sources")
+    if args.skip_artifacts:
+        cli_args.append("--skip-artifacts")
+    return run_manifest_tool(cli_args, repo_root=repo_root, runner=runner)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1110,6 +1332,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_prepare_soroban(args)
         if args.subcommand == "generate":
             return cmd_generate(args)
+        if args.subcommand == "sign-release":
+            return cmd_sign_release(args)
+        if args.subcommand == "verify-release":
+            return cmd_verify_release(args)
 
         parser.print_help()
         return EXIT_USAGE

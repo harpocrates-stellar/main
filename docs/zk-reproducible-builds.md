@@ -229,6 +229,8 @@ Both the script and the tool emit single-line JSON on **stderr**:
 | `verify.ok` / `verify.failed` | `artifacts` / `findings` | Verdict |
 | `compare.ok` / `compare.failed` | `artifacts` / `findings` | Double-build verdict |
 | `coverage.ok` / `coverage.failed` | `circuits` / `findings` | Circuit-coverage verdict |
+| `release.manifest.signed` | `path`, `scope`, `key_id`, `revision`, `artifacts`, `sources` | Signed release manifest written |
+| `release.verify.ok` / `release.verify.failed` | `key_id`, `revision`, `artifacts` / `findings` | Offline signed release verification verdict |
 | `run.fatal` / `run.error` / `run.cancelled` | `path`, `state`, `reason` | Terminal failure |
 
 **Privacy.** Signals carry only repo-relative paths, byte counts, digests, and
@@ -269,6 +271,53 @@ python zk/tools/artifact_manifest.py verify-provenance
 It does **not** embed `.nr` source, witnesses, proofs, or private keys. Drift
 findings name paths and truncated digests only. CI enforces the document once it
 is committed; deleting it makes the provenance step inert again (rollback).
+
+## Signed release manifest and offline client verification
+
+For release distribution and offline client loading, `artifact_manifest.py` and
+`build_circuits.py` generate and verify a domain-separated Ed25519-signed release
+manifest (`format: "harpocrates.zk-signed-release-manifest"`, default path
+`zk/release.manifest.signed.json`).
+
+The signed payload binds three protocol anchors together under canonical UTF-8 JSON:
+
+1. **Compiler lock (`compiler_lock`):** canonical SHA-256 of `zk/toolchain.lock.json`,
+   pinned `nargo` / `barretenberg` / `proving_scheme` / `oracle_hash` versions,
+   hermetic environment variables, and `normalization_policy_sha256`.
+2. **Circuit source revision (`source_revision`):** explicit `--source-revision`
+   (or deterministic `provenance-sha256:<digest>`), `provenance_sha256`, and the
+   per-file SHA-256 map of lock-declared `.nr` and `Nargo.toml` sources.
+3. **Exported / published artifact digests (`artifacts`):** repo-relative path,
+   kind, role, byte sizes (`raw_bytes`, `normalized_bytes`), `raw_sha256`, and
+   `normalized_sha256` for browser ACIR (`--scope browser`), full build outputs
+   (`--scope all`), and any extra exported hex bundles (`--extra-artifact`).
+
+```bash
+# Sign published browser ACIR (or --scope all for full build outputs)
+HARPOCRATES_RELEASE_SIGNING_KEY="<64-hex-ed25519-seed>" \
+  python zk/tools/build_circuits.py sign-release \
+    --scope browser \
+    --source-revision "a9d2dd4bcb37" \
+    --output zk/release.manifest.signed.json
+
+# Verify offline against a pinned public key or trusted keyset JSON
+python zk/tools/build_circuits.py verify-release \
+  --manifest zk/release.manifest.signed.json \
+  --public-key "<64-hex-ed25519-public-key>" \
+  --expected-source-revision "a9d2dd4bcb37"
+
+# Export or prepare Soroban VK only after offline manifest verification succeeds
+python zk/tools/build_circuits.py export silent_witness \
+  --release-manifest zk/release.manifest.signed.json \
+  --public-key "<64-hex-ed25519-public-key>"
+```
+
+Client callers (`load_verified_release_artifact` and `load_verified_client_artifacts`
+in `zk/tools/artifact_manifest.py`) verify the Ed25519 signature, pinned `key_id`
+trust anchor, compiler lock digest, and source revision **offline before opening or
+reading any artifact file on disk**, then verify path containment, byte-size caps,
+and canonical/raw SHA-256 digests before returning artifact bytes. Signing seeds
+and artifact contents are never logged or echoed in failure messages.
 
 ## Deployment impact and rollout
 

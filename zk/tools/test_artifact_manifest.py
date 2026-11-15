@@ -1195,3 +1195,207 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+# ── Signed release manifest & offline client verification (#1214) ────────────
+
+
+def _write_fixture_tree(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "repo"
+    (root / "zk" / "noir" / "demo" / "src").mkdir(parents=True)
+    (root / "zk" / "noir" / "demo" / "Nargo.toml").write_text(
+        '[package]\nname = "demo"\ntype = "bin"\n', encoding="utf-8"
+    )
+    (root / "zk" / "noir" / "demo" / "src" / "main.nr").write_text(
+        "fn main(x: pub Field) { assert(x == 1); }\n", encoding="utf-8"
+    )
+    target = root / "zk" / "noir" / "demo" / "target"
+    target.mkdir(parents=True)
+    (target / "demo.json").write_text(
+        '{"bytecode":"AAAA","abi":{"parameters":[]}}', encoding="utf-8"
+    )
+    raw_lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    raw_lock["artifacts"] = [
+        {
+            "path": "zk/noir/demo/target/demo.json",
+            "kind": "json",
+            "role": "acir",
+            "required": True,
+        }
+    ]
+    raw_lock["provenance_sources"] = {
+        "globs": ["zk/noir/*/Nargo.toml", "zk/noir/*/src/**/*.nr"]
+    }
+    lock_path = root / "zk" / "toolchain.lock.json"
+    lock_path.write_text(json.dumps(raw_lock), encoding="utf-8")
+    return root, lock_path
+
+
+def test_ed25519_pure_fallback_matches_rfc8032_and_cryptography():
+    # RFC 8032 Section 7.1 TEST 1 official vector (empty message)
+    seed_hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    expected_pub = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    expected_sig = (
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    )
+    seed_bytes = bytes.fromhex(seed_hex)
+    assert am._pure_ed25519_public_key(seed_bytes).hex() == expected_pub
+    assert am._pure_ed25519_sign(seed_bytes, b"").hex() == expected_sig
+    assert am._pure_ed25519_verify(bytes.fromhex(expected_pub), b"", bytes.fromhex(expected_sig))
+
+    # Cross-check public API (which uses cryptography when installed)
+    assert am.ed25519_public_key_from_seed(seed_hex) == expected_pub
+    assert am.ed25519_sign_message(seed_hex, b"") == expected_sig
+    assert am.ed25519_verify_message(expected_pub, b"", expected_sig)
+
+    # Reject non-canonical S >= L malleability
+    s_orig = int.from_bytes(bytes.fromhex(expected_sig)[32:], "little")
+    malleable_sig = bytes.fromhex(expected_sig)[:32] + (s_orig + am._ED25519_L).to_bytes(
+        32, "little"
+    )
+    assert not am.ed25519_verify_message(expected_pub, b"", malleable_sig.hex())
+
+
+def test_signed_release_manifest_binds_lock_source_revision_and_artifacts(tmp_path: Path):
+    root, lock_path = _write_fixture_tree(tmp_path)
+    pub_dir = root / "frontend" / "public" / "noir"
+    pub_dir.mkdir(parents=True)
+    pub_acir = root / "zk" / "noir" / "demo" / "target" / "demo.json"
+    pub_dir.joinpath("demo.json").write_bytes(pub_acir.read_bytes())
+
+    exported_bundle = root / "zk" / "noir" / "demo" / "target" / "export.json"
+    exported_bundle.write_text('{"proof":"aa","publicInputs":"bb","verificationKey":"cc"}', encoding="utf-8")
+
+    # Add published_acir slot to lock
+    raw_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    raw_lock["artifacts"].append(
+        {
+            "path": "frontend/public/noir/demo.json",
+            "kind": "json",
+            "role": "published_acir",
+            "required": False,
+        }
+    )
+    lock_path.write_text(json.dumps(raw_lock), encoding="utf-8")
+    lock = am.load_lock(lock_path)
+
+    seed_hex, pub_hex, key_id = am.generate_release_signing_keypair(b"\x11" * 32)
+    payload = am.build_release_manifest_payload(
+        lock,
+        root,
+        scope="browser",
+        source_revision="rev-2026-11-15",
+        extra_artifacts=["zk/noir/demo/target/export.json"],
+        lock_path=lock_path,
+    )
+    signed = am.sign_release_manifest(payload, seed_hex=seed_hex)
+
+    assert signed["format"] == am.RELEASE_MANIFEST_FORMAT
+    assert signed["signature"]["key_id"] == key_id
+    assert signed["payload"]["source_revision"]["revision"] == "rev-2026-11-15"
+    assert len(signed["payload"]["artifacts"]) == 2
+
+    findings = am.verify_signed_release_manifest(
+        signed,
+        trusted_public_keys={key_id: pub_hex},
+        lock=lock,
+        root=root,
+        expected_source_revision="rev-2026-11-15",
+    )
+    assert findings == []
+
+    # Mutating toolchain lock fails verification
+    drifted_lock_raw = dict(raw_lock)
+    drifted_lock_raw["toolchain"] = dict(raw_lock["toolchain"])
+    drifted_lock_raw["toolchain"]["barretenberg"] = {"version": "0.99.0"}
+    drifted_lock_path = tmp_path / "drifted.lock.json"
+    drifted_lock_path.write_text(json.dumps(drifted_lock_raw), encoding="utf-8")
+    drifted_lock = am.load_lock(drifted_lock_path)
+    lock_findings = am.verify_signed_release_manifest(
+        signed,
+        trusted_public_keys={key_id: pub_hex},
+        lock=drifted_lock,
+        root=root,
+    )
+    assert any("compiler_lock" in f for f in lock_findings)
+
+    # Mutating source file fails provenance binding
+    main_nr = root / "zk" / "noir" / "demo" / "src" / "main.nr"
+    main_nr.write_text("fn main(x: pub Field) { assert(x == 99); }\n", encoding="utf-8")
+    src_findings = am.verify_signed_release_manifest(
+        signed,
+        trusted_public_keys={key_id: pub_hex},
+        lock=lock,
+        root=root,
+    )
+    assert any("source zk/noir/demo/src/main.nr" in f for f in src_findings)
+
+
+def test_offline_client_loader_rejects_bad_signature_before_reading_artifacts(
+    tmp_path: Path, monkeypatch
+):
+    root, lock_path = _write_fixture_tree(tmp_path)
+    lock = am.load_lock(lock_path)
+    seed_hex, pub_hex, key_id = am.generate_release_signing_keypair(b"\x22" * 32)
+    _, wrong_pub_hex, wrong_key_id = am.generate_release_signing_keypair(b"\x33" * 32)
+
+    payload = am.build_release_manifest_payload(
+        lock, root, scope="all", source_revision="commit-abc1234", lock_path=lock_path
+    )
+    signed = am.sign_release_manifest(payload, seed_hex=seed_hex)
+
+    # Valid offline load succeeds and parses JSON
+    loaded_acir = am.load_verified_release_artifact(
+        "zk/noir/demo/target/demo.json",
+        signed_manifest=signed,
+        trusted_public_keys={key_id: pub_hex},
+        root=root,
+        lock=lock,
+        expected_source_revision="commit-abc1234",
+        parse_json=True,
+    )
+    assert loaded_acir["bytecode"] == "AAAA"
+
+    # Guard Path.read_bytes to prove tampered signature NEVER reads artifact files!
+    real_read_bytes = Path.read_bytes
+    opened_paths: list[str] = []
+
+    def tracked_read_bytes(self: Path) -> bytes:
+        opened_paths.append(self.as_posix())
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
+
+    tampered = json.loads(json.dumps(signed))
+    tampered["payload"]["source_revision"]["revision"] = "forged-revision"
+    with pytest.raises(am.BuildError, match="offline release manifest verification failed"):
+        am.load_verified_release_artifact(
+            "zk/noir/demo/target/demo.json",
+            signed_manifest=tampered,
+            trusted_public_keys={key_id: pub_hex},
+            root=root,
+        )
+    assert opened_paths == []
+
+    # Untrusted signer key also fails before touching disk
+    with pytest.raises(am.BuildError, match="not in trusted public keys"):
+        am.load_verified_release_artifact(
+            "zk/noir/demo/target/demo.json",
+            signed_manifest=signed,
+            trusted_public_keys={wrong_key_id: wrong_pub_hex},
+            root=root,
+        )
+    assert opened_paths == []
+
+    # Corrupted on-disk artifact fails closed before returning bytes to client
+    (root / "zk" / "noir" / "demo" / "target" / "demo.json").write_text(
+        '{"bytecode":"TAMPERED","abi":{"parameters":[]}}', encoding="utf-8"
+    )
+    with pytest.raises(am.BuildError, match="offline artifact digest verification failed"):
+        am.load_verified_release_artifact(
+            "zk/noir/demo/target/demo.json",
+            signed_manifest=signed,
+            trusted_public_keys={key_id: pub_hex},
+            root=root,
+        )
