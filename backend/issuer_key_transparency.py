@@ -601,6 +601,151 @@ def key_was_compromised_at(directory: IssuerDirectory, key_id: str, at: int) -> 
     return key.valid_until is not None and at >= key.valid_until
 
 
+@dataclass(frozen=True)
+class IssuerCertificationAssessment:
+    """Stable summary of institutional issuer key-transparency certification."""
+
+    certified: bool
+    high_assurance_eligible: bool
+    status: str
+    organization_identity_hash: str | None
+    key_id: str | None
+    checkpoint_fresh: bool | None
+    reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "certified": self.certified,
+            "checkpointFresh": self.checkpoint_fresh,
+            "highAssuranceEligible": self.high_assurance_eligible,
+            "keyId": self.key_id,
+            "organizationIdentityHash": self.organization_identity_hash,
+            "reasons": list(self.reasons),
+            "status": self.status,
+        }
+
+
+def classify_issuer_certification(
+    directory: IssuerDirectory | None,
+    key_id: str | None,
+    signature_timestamp: int | None,
+    *,
+    directory_cache: DirectoryCache | None = None,
+    now: int | None = None,
+) -> IssuerCertificationAssessment:
+    """Classify institutional issuer certification without elevating missing/invalid state."""
+    if directory is None or key_id is None or signature_timestamp is None:
+        return IssuerCertificationAssessment(
+            certified=False,
+            high_assurance_eligible=False,
+            status="not_provided",
+            organization_identity_hash=None,
+            key_id=None,
+            checkpoint_fresh=None,
+            reasons=("issuer_context_not_provided",),
+        )
+
+    org_hash = directory.organization_identity_hash
+    key = directory.keys.get(key_id)
+    if key is None:
+        return IssuerCertificationAssessment(
+            certified=False,
+            high_assurance_eligible=False,
+            status="unknown_issuer_key",
+            organization_identity_hash=org_hash,
+            key_id=key_id,
+            checkpoint_fresh=None,
+            reasons=("unknown_issuer_key",),
+        )
+
+    if key_was_compromised_at(directory, key_id, signature_timestamp):
+        return IssuerCertificationAssessment(
+            certified=False,
+            high_assurance_eligible=False,
+            status="compromised_rejected",
+            organization_identity_hash=org_hash,
+            key_id=key_id,
+            checkpoint_fresh=None,
+            reasons=("key_compromised_at_or_before_signature",),
+        )
+
+    if not key_valid_for_historical_signature(directory, key_id, signature_timestamp):
+        return IssuerCertificationAssessment(
+            certified=False,
+            high_assurance_eligible=False,
+            status="invalid_signature_window",
+            organization_identity_hash=org_hash,
+            key_id=key_id,
+            checkpoint_fresh=None,
+            reasons=("signature_outside_key_validity_window",),
+        )
+
+    checkpoint_fresh: bool | None = None
+    high_assurance_fresh = False
+    if directory_cache is not None:
+        consistency_errors = verify_checkpoint_consistency(directory, directory_cache.checkpoint)
+        if consistency_errors:
+            return IssuerCertificationAssessment(
+                certified=False,
+                high_assurance_eligible=False,
+                status="consistency_failed",
+                organization_identity_hash=org_hash,
+                key_id=key_id,
+                checkpoint_fresh=False,
+                reasons=("checkpoint_consistency_failed",),
+            )
+        try:
+            require_fresh_checkpoint(directory_cache, high_assurance=False, now=now)
+            checkpoint_fresh = True
+        except FreshnessError:
+            return IssuerCertificationAssessment(
+                certified=False,
+                high_assurance_eligible=False,
+                status="stale_checkpoint_rejected",
+                organization_identity_hash=org_hash,
+                key_id=key_id,
+                checkpoint_fresh=False,
+                reasons=("stale_directory_checkpoint",),
+            )
+        try:
+            require_fresh_checkpoint(directory_cache, high_assurance=True, now=now)
+            high_assurance_fresh = True
+        except FreshnessError:
+            high_assurance_fresh = False
+
+    if key.status == KeyStatus.COMPROMISED:
+        return IssuerCertificationAssessment(
+            certified=True,
+            high_assurance_eligible=False,
+            status="historical_pre_compromise_warning",
+            organization_identity_hash=org_hash,
+            key_id=key_id,
+            checkpoint_fresh=checkpoint_fresh,
+            reasons=("key_later_compromised",),
+        )
+
+    if key.status in (KeyStatus.ROTATED, KeyStatus.RETIRED):
+        return IssuerCertificationAssessment(
+            certified=True,
+            high_assurance_eligible=high_assurance_fresh,
+            status="historical_valid_post_rotation",
+            organization_identity_hash=org_hash,
+            key_id=key_id,
+            checkpoint_fresh=checkpoint_fresh,
+            reasons=(),
+        )
+
+    return IssuerCertificationAssessment(
+        certified=True,
+        high_assurance_eligible=high_assurance_fresh,
+        status="active_institutional_seal",
+        organization_identity_hash=org_hash,
+        key_id=key_id,
+        checkpoint_fresh=checkpoint_fresh,
+        reasons=(),
+    )
+
+
 def create_activation_event(
     organization_identity_hash: str,
     key_id: str,

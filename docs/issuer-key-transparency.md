@@ -112,3 +112,14 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Stable capture-attestation assurance schema
+
+`evaluate_capture_assurance` (`backend/capture_attestation.py`) and `classify_issuer_certification` (`backend/issuer_key_transparency.py`) emit a versioned `harpocrates-capture-assurance/v1` record separating three distinct evidence planes:
+
+1. `deviceClaims` — unverified device/pipeline self-claims (`authority: "device_self_claim"`, `trustLevel`, `deviceTier`, `claimedTimeSource`, `claimedPipelineIntegrity`).
+2. `issuerCertification` — institutional key-transparency standing (`active_institutional_seal`, `historical_valid_post_rotation`, `historical_pre_compromise_warning`, `compromised_rejected`, `stale_checkpoint_rejected`, `consistency_failed`, or `not_provided`).
+3. `verifiedCaptureProperties` — cryptographically verified bindings only (`evidence_digest_binding`, `per_session_device_commitment`).
+
+Unsupported or degraded device profiles (`trustLevel` `0 = unattested`, `3 = rooted_or_emulated`, `4 = unverifiable`), unverified evidence bindings, stale checkpoints, and compromised keys are never elevated to `institutional_certified` or `institutional_high_assurance`; `elevationBlockedReasons` records the exact non-sensitive guard that capped assurance.
+

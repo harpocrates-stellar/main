@@ -15,6 +15,21 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+try:
+    from issuer_key_transparency import (
+        DirectoryCache,
+        IssuerCertificationAssessment,
+        IssuerDirectory,
+        classify_issuer_certification,
+    )
+except ImportError:  # pragma: no cover - package import fallback
+    from backend.issuer_key_transparency import (
+        DirectoryCache,
+        IssuerCertificationAssessment,
+        IssuerDirectory,
+        classify_issuer_certification,
+    )
+
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -279,4 +294,222 @@ def _decode_camera_pipeline(data: object) -> CameraPipeline | None:
         sensor_orientation=data.get("sensorOrientation"),
         has_watermark=bool(data.get("hasWatermark", False)),
         claimed_integrity=data.get("claimedIntegrity"),
+    )
+
+
+# ── Stable capture-attestation assurance schema ────────────────────────────
+
+CAPTURE_ASSURANCE_SCHEMA = "harpocrates-capture-assurance/v1"
+CAPTURE_ASSURANCE_VERSION = 1
+
+ASSURANCE_LEVELS: tuple[str, ...] = (
+    "rejected_invalid_binding",
+    "degraded_or_unverifiable",
+    "unverified_claim",
+    "device_software_verified",
+    "device_hardware_verified",
+    "institutional_certified",
+    "institutional_high_assurance",
+)
+
+
+@dataclass(frozen=True)
+class DeviceClaimSummary:
+    """Self-reported device and capture-pipeline claims (not independently verified)."""
+
+    trust_level: int
+    trust_level_label: str
+    device_tier: str
+    privacy_scope: str
+    claimed_time_source: str | None
+    claimed_pipeline_integrity: str | None
+    has_watermark: bool | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "authority": "device_self_claim",
+            "claimedPipelineIntegrity": self.claimed_pipeline_integrity,
+            "claimedTimeSource": self.claimed_time_source,
+            "deviceTier": self.device_tier,
+            "hasWatermark": self.has_watermark,
+            "privacyScope": self.privacy_scope,
+            "trustLevel": self.trust_level,
+            "trustLevelLabel": self.trust_level_label,
+        }
+
+
+@dataclass(frozen=True)
+class VerifiedCaptureProperties:
+    """Cryptographically checked capture properties (distinct from self-claims)."""
+
+    evidence_binding_verified: bool | None
+    device_commitment_verified: bool | None
+
+    @property
+    def has_cryptographic_failure(self) -> bool:
+        return (
+            self.evidence_binding_verified is False
+            or self.device_commitment_verified is False
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        verified_props: list[str] = []
+        if self.evidence_binding_verified is True:
+            verified_props.append("evidence_digest_binding")
+        if self.device_commitment_verified is True:
+            verified_props.append("per_session_device_commitment")
+        return {
+            "deviceCommitmentVerified": self.device_commitment_verified,
+            "evidenceBindingVerified": self.evidence_binding_verified,
+            "hasCryptographicFailure": self.has_cryptographic_failure,
+            "verifiedProperties": verified_props,
+        }
+
+
+@dataclass(frozen=True)
+class CaptureAssuranceRecord:
+    """Stable assurance schema separating device claims, issuer seal, and verified bindings."""
+
+    attestation_hash: str
+    overall_assurance_level: str
+    institutional_trust_granted: bool
+    elevation_blocked_reasons: tuple[str, ...]
+    device_claims: DeviceClaimSummary
+    issuer_certification: IssuerCertificationAssessment
+    verified_capture_properties: VerifiedCaptureProperties
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attestationHash": self.attestation_hash,
+            "deviceClaims": self.device_claims.to_dict(),
+            "elevationBlockedReasons": list(self.elevation_blocked_reasons),
+            "institutionalTrustGranted": self.institutional_trust_granted,
+            "issuerCertification": self.issuer_certification.to_dict(),
+            "overallAssuranceLevel": self.overall_assurance_level,
+            "schema": CAPTURE_ASSURANCE_SCHEMA,
+            "version": CAPTURE_ASSURANCE_VERSION,
+            "verifiedCaptureProperties": self.verified_capture_properties.to_dict(),
+        }
+
+
+def evaluate_capture_assurance(
+    attestation: CaptureAttestation,
+    *,
+    evidence_payload: bytes | None = None,
+    evidence_digest: str | None = None,
+    per_session_device_key: bytes | None = None,
+    issuer_directory: IssuerDirectory | None = None,
+    issuer_key_id: str | None = None,
+    signature_timestamp: int | None = None,
+    directory_cache: DirectoryCache | None = None,
+    now: int | None = None,
+) -> CaptureAssuranceRecord:
+    """Evaluate capture-attestation assurance without elevating unsupported attestations."""
+    _validate_attestation(attestation)
+    if evidence_payload is not None and evidence_digest is not None:
+        raise ValueError("pass at most one of evidence_payload or evidence_digest")
+
+    ev_verified: bool | None = None
+    if evidence_payload is not None:
+        ev_verified = verify_evidence_binding(attestation, evidence_payload)
+    elif evidence_digest is not None:
+        normalized_digest = evidence_digest.lower()
+        if not _is_hex32(normalized_digest):
+            raise ValueError("evidence_digest must be a 32-byte hex string")
+        ev_verified = attestation.evidence_digest_binding.lower() == normalized_digest
+
+    dev_verified: bool | None = None
+    if per_session_device_key is not None:
+        if not isinstance(per_session_device_key, (bytes, bytearray)) or len(per_session_device_key) != 32:
+            raise ValueError("per_session_device_key must be 32 bytes")
+        dev_verified = verify_device_commitment(attestation, bytes(per_session_device_key))
+
+    if attestation.trust_level == 2:
+        device_tier = "hardware_backed"
+    elif attestation.trust_level == 1:
+        device_tier = "software_attested"
+    elif attestation.trust_level == 0:
+        device_tier = "unattested"
+    else:
+        device_tier = "degraded_environment"
+
+    device_claims = DeviceClaimSummary(
+        trust_level=attestation.trust_level,
+        trust_level_label=TRUST_LEVEL_LABELS[attestation.trust_level],
+        device_tier=device_tier,
+        privacy_scope=attestation.privacy_scope,
+        claimed_time_source=attestation.secure_time.source if attestation.secure_time else None,
+        claimed_pipeline_integrity=(
+            attestation.camera_pipeline.claimed_integrity
+            if attestation.camera_pipeline
+            else None
+        ),
+        has_watermark=(
+            attestation.camera_pipeline.has_watermark if attestation.camera_pipeline else None
+        ),
+    )
+
+    verified_props = VerifiedCaptureProperties(
+        evidence_binding_verified=ev_verified,
+        device_commitment_verified=dev_verified,
+    )
+
+    issuer_cert = classify_issuer_certification(
+        issuer_directory,
+        issuer_key_id,
+        signature_timestamp,
+        directory_cache=directory_cache,
+        now=now,
+    )
+
+    blocked: list[str] = []
+    if verified_props.has_cryptographic_failure:
+        blocked.append("cryptographic_binding_mismatch")
+        overall = "rejected_invalid_binding"
+    elif attestation.trust_level in (3, 4):
+        blocked.append("unsupported_or_degraded_device_trust_level")
+        overall = "degraded_or_unverifiable"
+    elif ev_verified is not True:
+        blocked.append("evidence_binding_unverified")
+        overall = "unverified_claim"
+    elif attestation.trust_level == 0:
+        blocked.append("unattested_device_cannot_reach_institutional_trust")
+        overall = "unverified_claim"
+    elif issuer_cert.certified:
+        if (
+            attestation.trust_level == 2
+            and dev_verified is True
+            and issuer_cert.high_assurance_eligible
+            and issuer_cert.status != "historical_pre_compromise_warning"
+        ):
+            overall = "institutional_high_assurance"
+        else:
+            if attestation.trust_level != 2:
+                blocked.append("software_device_capped_below_high_assurance")
+            if dev_verified is not True:
+                blocked.append("device_commitment_unverified_for_high_assurance")
+            if not issuer_cert.high_assurance_eligible:
+                blocked.append("fresh_high_assurance_checkpoint_required")
+            overall = "institutional_certified"
+    else:
+        blocked.extend(issuer_cert.reasons)
+        overall = (
+            "device_hardware_verified"
+            if attestation.trust_level == 2
+            else "device_software_verified"
+        )
+
+    institutional_granted = overall in (
+        "institutional_certified",
+        "institutional_high_assurance",
+    )
+
+    return CaptureAssuranceRecord(
+        attestation_hash=canonical_attestation_hash(attestation),
+        overall_assurance_level=overall,
+        institutional_trust_granted=institutional_granted,
+        elevation_blocked_reasons=tuple(dict.fromkeys(blocked)),
+        device_claims=device_claims,
+        issuer_certification=issuer_cert,
+        verified_capture_properties=verified_props,
     )
