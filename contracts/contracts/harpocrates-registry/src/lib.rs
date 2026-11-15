@@ -176,6 +176,8 @@ pub const MAX_EVIDENCE_METADATA_HASH_BYTES: u32 = 32;
 //   single query, protecting callers from unbounded iteration costs.
 pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
 pub const MAX_HISTORY_LIMIT: u32 = 50;
+/// Version identifier for `LifecycleTransitionReceipt` (#1194).
+pub const TRANSITION_RECEIPT_V1: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Scoped emergency pause controls (#87)
@@ -851,6 +853,38 @@ pub struct ProofHistoryEntry {
     pub timestamp: u64,
     pub actor: Option<Address>,
     pub reason_code: u32,
+}
+
+/// Versioned, hash-chained evidence lifecycle transition receipt (#1194).
+///
+/// Binds each transition to `previous_revision`, `previous_receipt_hash`, and
+/// the privacy-safe `statement_digest` without storing or disclosing private
+/// witness values, proof bytes, or nullifiers.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LifecycleTransitionReceipt {
+    pub receipt_version: u32,
+    pub proof_id: BytesN<32>,
+    pub revision: u32,
+    pub previous_revision: u32,
+    pub action: u32,
+    pub timestamp: u64,
+    pub ledger_sequence: u32,
+    pub reason_code: u32,
+    pub statement_digest: BytesN<32>,
+    pub previous_receipt_hash: BytesN<32>,
+    pub receipt_hash: BytesN<32>,
+}
+
+/// Bounded verification result for `verify_lifecycle_continuity` (#1194).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContinuityVerifyReport {
+    pub valid: bool,
+    pub checked_count: u32,
+    pub total_revisions: u32,
+    pub failed_at_revision: u32,
+    pub head_receipt_hash: BytesN<32>,
 }
 
 #[contractevent(topics = ["proof", "reg"])]
@@ -1963,6 +1997,8 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Versioned lifecycle transition receipt keyed by `(proof_id, revision)` (#1194).
+    TransitionReceipt(BytesN<32>, u32),
 }
 
 #[contracterror]
@@ -4512,6 +4548,7 @@ impl HarpocratesRegistry {
         record_proof_history(
             env,
             proof_id,
+            &record,
             ProofLifecycleAction::Revoked as u32,
             Some(admin.clone()),
             reason_code,
@@ -4556,7 +4593,7 @@ impl HarpocratesRegistry {
     pub fn verify_proof(env: Env, actor: Address, proof_id: BytesN<32>, reason_code: u32) {
         require_admin(&env, &actor);
 
-        let _record = get_proof_record(&env, &proof_id);
+        let record = get_proof_record(&env, &proof_id);
 
         if reason_code > 255 {
             panic_with_error!(&env, RegistryError::InvalidReasonCode);
@@ -4565,6 +4602,7 @@ impl HarpocratesRegistry {
         record_proof_history(
             &env,
             &proof_id,
+            &record,
             ProofLifecycleAction::Verified as u32,
             Some(actor),
             reason_code,
@@ -4590,6 +4628,7 @@ impl HarpocratesRegistry {
         record_proof_history(
             &env,
             &proof_id,
+            &record,
             ProofLifecycleAction::Expired as u32,
             Some(admin),
             reason_code,
@@ -4630,6 +4669,7 @@ impl HarpocratesRegistry {
         record_proof_history(
             &env,
             &proof_id,
+            &record,
             ProofLifecycleAction::Corrected as u32,
             Some(admin),
             reason_code,
@@ -4661,6 +4701,75 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::ProofHistorySeq(proof_id))
             .unwrap_or(0)
+    }
+
+    /// Return the canonical privacy-safe statement digest for `proof_id`,
+    /// binding `(proof_id, video_hash, tier)` without exposing private witness
+    /// values or nullifiers (#1194).
+    pub fn get_statement_digest(env: Env, proof_id: BytesN<32>) -> Option<BytesN<32>> {
+        let record: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proof(proof_id.clone()))?;
+        Some(compute_statement_digest(
+            &env,
+            &proof_id,
+            &record.video_hash,
+            record.tier,
+        ))
+    }
+
+    /// Return the versioned transition receipt for `proof_id` at 1-based
+    /// `revision`, or `None` when out of range (#1194).
+    pub fn get_transition_receipt(
+        env: Env,
+        proof_id: BytesN<32>,
+        revision: u32,
+    ) -> Option<LifecycleTransitionReceipt> {
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+            .unwrap_or(0);
+        if revision == 0 || revision > total {
+            return None;
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::TransitionReceipt(proof_id, revision))
+    }
+
+    /// Return the latest versioned lifecycle transition receipt for `proof_id` (#1194).
+    pub fn get_latest_transition_rcpt(
+        env: Env,
+        proof_id: BytesN<32>,
+    ) -> Option<LifecycleTransitionReceipt> {
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+            .unwrap_or(0);
+        if total == 0 {
+            return None;
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::TransitionReceipt(proof_id, total))
+    }
+
+    /// Verify versioned lifecycle receipt continuity across a bounded window
+    /// `[from_revision .. from_revision + limit)` without disclosing private
+    /// witness values (#1194).
+    pub fn verify_lifecycle_continuity(
+        env: Env,
+        proof_id: BytesN<32>,
+        from_revision: u32,
+        limit: u32,
+    ) -> ContinuityVerifyReport {
+        if limit == 0 || limit > MAX_HISTORY_LIMIT {
+            panic_with_error!(&env, RegistryError::ListLimitExceeded);
+        }
+        verify_continuity_window(&env, &proof_id, from_revision, limit)
     }
 
     // -----------------------------------------------------------------------
@@ -7589,6 +7698,7 @@ fn save_record(
     record_proof_history(
         env,
         proof_id,
+        &record,
         ProofLifecycleAction::Registered as u32,
         actor,
         record.tier,
@@ -7599,15 +7709,19 @@ fn save_record(
     record
 }
 
-/// Append a bounded, privacy-safe lifecycle entry to a proof's history (#90).
+/// Append a bounded, privacy-safe lifecycle entry and versioned transition
+/// receipt to a proof's history (#90, #1194).
 ///
 /// Enforces `MAX_HISTORY_ENTRIES_PER_PROOF`, rejects unknown actions and
-/// out-of-range reason codes, and emits only the `ProofHistoryEvent`
+/// out-of-range reason codes, persists a hash-chained
+/// `LifecycleTransitionReceipt` bound to the previous revision and privacy-safe
+/// `statement_digest`, and emits only `ProofHistoryEvent`
 /// (`["proof", "history", proof_id]`). No media, proof bytes, witnesses,
 /// nullifiers, or metadata hashes are written or emitted here.
 fn record_proof_history(
     env: &Env,
     proof_id: &BytesN<32>,
+    record: &ProofRecord,
     action: u32,
     actor: Option<Address>,
     reason_code: u32,
@@ -7628,6 +7742,7 @@ fn record_proof_history(
 
     let next_seq = seq + 1;
     let now = env.ledger().timestamp();
+    let ledger_sequence = env.ledger().sequence();
     env.storage().persistent().set(
         &DataKey::ProofHistoryEntry(proof_id.clone(), next_seq),
         &ProofHistoryEntry {
@@ -7637,6 +7752,53 @@ fn record_proof_history(
             reason_code,
         },
     );
+
+    let previous_receipt_hash = if seq == 0 {
+        BytesN::from_array(env, &[0u8; 32])
+    } else if let Some(prev_rcpt) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, LifecycleTransitionReceipt>(&DataKey::TransitionReceipt(
+            proof_id.clone(),
+            seq,
+        ))
+    {
+        prev_rcpt.receipt_hash
+    } else {
+        compute_legacy_prev_anchor(env, proof_id, seq)
+    };
+
+    let statement_digest = compute_statement_digest(env, proof_id, &record.video_hash, record.tier);
+    let receipt_hash = compute_transition_receipt_hash(
+        env,
+        TRANSITION_RECEIPT_V1,
+        proof_id,
+        next_seq,
+        seq,
+        action,
+        now,
+        ledger_sequence,
+        reason_code,
+        &statement_digest,
+        &previous_receipt_hash,
+    );
+    env.storage().persistent().set(
+        &DataKey::TransitionReceipt(proof_id.clone(), next_seq),
+        &LifecycleTransitionReceipt {
+            receipt_version: TRANSITION_RECEIPT_V1,
+            proof_id: proof_id.clone(),
+            revision: next_seq,
+            previous_revision: seq,
+            action,
+            timestamp: now,
+            ledger_sequence,
+            reason_code,
+            statement_digest,
+            previous_receipt_hash,
+            receipt_hash,
+        },
+    );
+
     env.storage().persistent().set(&seq_key, &next_seq);
 
     ProofHistoryEvent {
@@ -7647,6 +7809,207 @@ fn record_proof_history(
         reason_code,
     }
     .publish(env);
+}
+
+fn compute_statement_digest(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    video_hash: &BytesN<32>,
+    tier: u32,
+) -> BytesN<32> {
+    const PREFIX: [u8; 11] = *b"hpx:stmt:v1";
+    let mut preimage = [0u8; 79];
+    preimage[0..11].copy_from_slice(&PREFIX);
+    preimage[11..43].copy_from_slice(&proof_id.to_array());
+    preimage[43..75].copy_from_slice(&video_hash.to_array());
+    preimage[75..79].copy_from_slice(&tier.to_be_bytes());
+    env.crypto()
+        .sha256(&Bytes::from_array(env, &preimage))
+        .into()
+}
+
+fn compute_legacy_prev_anchor(env: &Env, proof_id: &BytesN<32>, seq: u32) -> BytesN<32> {
+    const PREFIX: [u8; 14] = *b"hpx:lcr:legacy";
+    let mut preimage = [0u8; 50];
+    preimage[0..14].copy_from_slice(&PREFIX);
+    preimage[14..46].copy_from_slice(&proof_id.to_array());
+    preimage[46..50].copy_from_slice(&seq.to_be_bytes());
+    env.crypto()
+        .sha256(&Bytes::from_array(env, &preimage))
+        .into()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_transition_receipt_hash(
+    env: &Env,
+    receipt_version: u32,
+    proof_id: &BytesN<32>,
+    revision: u32,
+    previous_revision: u32,
+    action: u32,
+    timestamp: u64,
+    ledger_sequence: u32,
+    reason_code: u32,
+    statement_digest: &BytesN<32>,
+    previous_receipt_hash: &BytesN<32>,
+) -> BytesN<32> {
+    const PREFIX: [u8; 10] = *b"hpx:lcr:v1";
+    let mut preimage = [0u8; 138];
+    preimage[0..10].copy_from_slice(&PREFIX);
+    preimage[10..14].copy_from_slice(&receipt_version.to_be_bytes());
+    preimage[14..46].copy_from_slice(&proof_id.to_array());
+    preimage[46..50].copy_from_slice(&revision.to_be_bytes());
+    preimage[50..54].copy_from_slice(&previous_revision.to_be_bytes());
+    preimage[54..58].copy_from_slice(&action.to_be_bytes());
+    preimage[58..66].copy_from_slice(&timestamp.to_be_bytes());
+    preimage[66..70].copy_from_slice(&ledger_sequence.to_be_bytes());
+    preimage[70..74].copy_from_slice(&reason_code.to_be_bytes());
+    preimage[74..106].copy_from_slice(&statement_digest.to_array());
+    preimage[106..138].copy_from_slice(&previous_receipt_hash.to_array());
+    env.crypto()
+        .sha256(&Bytes::from_array(env, &preimage))
+        .into()
+}
+
+fn verify_single_receipt(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    expected_rev: u32,
+    expected_stmt_digest: &BytesN<32>,
+    expected_prev_hash: Option<&BytesN<32>>,
+) -> Option<BytesN<32>> {
+    let entry: ProofHistoryEntry = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProofHistoryEntry(proof_id.clone(), expected_rev))?;
+    let rcpt: LifecycleTransitionReceipt = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TransitionReceipt(proof_id.clone(), expected_rev))?;
+
+    if rcpt.receipt_version != TRANSITION_RECEIPT_V1
+        || rcpt.proof_id != *proof_id
+        || rcpt.revision != expected_rev
+        || rcpt.previous_revision != expected_rev - 1
+        || rcpt.action != entry.action
+        || rcpt.timestamp != entry.timestamp
+        || rcpt.reason_code != entry.reason_code
+        || rcpt.statement_digest != *expected_stmt_digest
+    {
+        return None;
+    }
+    if let Some(prev_hash) = expected_prev_hash {
+        if rcpt.previous_receipt_hash != *prev_hash {
+            return None;
+        }
+    } else if expected_rev == 1 && rcpt.previous_receipt_hash != BytesN::from_array(env, &[0u8; 32])
+    {
+        return None;
+    }
+
+    let recomputed = compute_transition_receipt_hash(
+        env,
+        rcpt.receipt_version,
+        proof_id,
+        rcpt.revision,
+        rcpt.previous_revision,
+        rcpt.action,
+        rcpt.timestamp,
+        rcpt.ledger_sequence,
+        rcpt.reason_code,
+        &rcpt.statement_digest,
+        &rcpt.previous_receipt_hash,
+    );
+    if recomputed == rcpt.receipt_hash {
+        Some(recomputed)
+    } else {
+        None
+    }
+}
+
+fn verify_continuity_window(
+    env: &Env,
+    proof_id: &BytesN<32>,
+    from_revision: u32,
+    limit: u32,
+) -> ContinuityVerifyReport {
+    let zero_hash = BytesN::from_array(env, &[0u8; 32]);
+    let Some(record) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, ProofRecord>(&DataKey::Proof(proof_id.clone()))
+    else {
+        return ContinuityVerifyReport {
+            valid: false,
+            checked_count: 0,
+            total_revisions: 0,
+            failed_at_revision: 0,
+            head_receipt_hash: zero_hash,
+        };
+    };
+
+    let total: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+        .unwrap_or(0);
+    if total == 0 || from_revision == 0 || from_revision > total {
+        return ContinuityVerifyReport {
+            valid: false,
+            checked_count: 0,
+            total_revisions: total,
+            failed_at_revision: from_revision,
+            head_receipt_hash: zero_hash,
+        };
+    }
+
+    let expected_stmt = compute_statement_digest(env, proof_id, &record.video_hash, record.tier);
+    let mut prev_hash = if from_revision == 1 {
+        zero_hash.clone()
+    } else {
+        match verify_single_receipt(env, proof_id, from_revision - 1, &expected_stmt, None) {
+            Some(anchor_hash) => anchor_hash,
+            None => {
+                return ContinuityVerifyReport {
+                    valid: false,
+                    checked_count: 0,
+                    total_revisions: total,
+                    failed_at_revision: from_revision - 1,
+                    head_receipt_hash: zero_hash,
+                };
+            }
+        }
+    };
+
+    let end_rev = total.min(from_revision.saturating_add(limit - 1));
+    let mut checked_count = 0u32;
+    let mut rev = from_revision;
+    while rev <= end_rev {
+        match verify_single_receipt(env, proof_id, rev, &expected_stmt, Some(&prev_hash)) {
+            Some(curr_hash) => {
+                prev_hash = curr_hash;
+                checked_count += 1;
+            }
+            None => {
+                return ContinuityVerifyReport {
+                    valid: false,
+                    checked_count,
+                    total_revisions: total,
+                    failed_at_revision: rev,
+                    head_receipt_hash: prev_hash,
+                };
+            }
+        }
+        rev += 1;
+    }
+
+    ContinuityVerifyReport {
+        valid: true,
+        checked_count,
+        total_revisions: total,
+        failed_at_revision: 0,
+        head_receipt_hash: prev_hash,
+    }
 }
 
 fn require_timestamp_claim_actor(env: &Env, actor: &Address, proof: &ProofRecord) {
@@ -9123,6 +9486,8 @@ mod test_threshold_seal;
 pub mod test_timelock;
 #[cfg(test)]
 mod test_timestamp_claim;
+#[cfg(test)]
+mod test_transition_receipts;
 #[cfg(test)]
 mod test_ttl;
 #[cfg(test)]
