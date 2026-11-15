@@ -1,7 +1,12 @@
 import { UltraHonkBackend } from '@aztec/bb.js'
 import { Noir } from '@noir-lang/noir_js'
 import type { CompiledCircuit } from '@noir-lang/types'
-import { encodeFieldToBytes32Hex, encodePublicInputs, EXPECTED_CIRCUIT_VERSION } from './verifierInputs'
+import {
+  encodeFieldToBytes32Hex,
+  encodePublicInputs,
+  EXPECTED_CIRCUIT_VERSION,
+  MAX_AGGREGATION_SIZE,
+} from './verifierInputs'
 import { assertArtifactPair, assertProofOutput, CircuitInputError, prepareSilentWitnessInputs, PUBLIC_FRAMES } from './circuitInputSchema'
 import type { SilentWitnessInput } from './circuitInputSchema'
 import {
@@ -10,16 +15,7 @@ import {
   readBoundedCircuitArtifact,
 } from './proofWorkerMemory'
 
-const MAX_AGGREGATION_SIZE = 8
 const AGGREGATED_PUBLIC_INPUT_BYTES = 32 + (MAX_AGGREGATION_SIZE * 128)
-
-import {
-  checkAggregationBatchSize,
-  encodeFieldToBytes32Hex,
-  encodePublicInputs,
-  MAX_AGGREGATION_SIZE,
-  MIN_AGGREGATION_SIZE,
-} from './verifierInputs'
 
 export type SilentWitnessProof = {
   credentialRoot: string
@@ -63,36 +59,43 @@ let mainCircuitPromise: Promise<LoadedCircuit> | null = null
 let aggregatorCircuitPromise: Promise<LoadedCircuit> | null = null
 let aggregatorHelperCircuitPromise: Promise<LoadedCircuit> | null = null
 
-async function loadCircuit(path: string): Promise<CompiledCircuit> {
+async function loadCircuit(path: string): Promise<LoadedCircuit> {
   const response = await fetch(path, { cache: 'no-store' })
   if (!response.ok) {
-    throw new Error(`Unable to load Noir circuit artifact: ${path}`)
+    throw new CircuitInputError('circuit_load_failed')
   }
-  return (await response.json()) as CompiledCircuit
+  const { value, rawBytes } = await readBoundedCircuitArtifact<CompiledCircuit>(response, path)
+  return { circuit: value, rawBytes }
 }
 
-async function loadHelperCircuit(): Promise<CompiledCircuit> {
+async function loadHelperCircuit(): Promise<LoadedCircuit> {
   helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
   return helperCircuitPromise
 }
 
-async function loadMainCircuit(): Promise<CompiledCircuit> {
+async function loadMainCircuit(): Promise<LoadedCircuit> {
   mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
   return mainCircuitPromise
 }
 
-async function loadAggregatorCircuit(): Promise<CompiledCircuit> {
+async function loadAggregatorCircuit(): Promise<LoadedCircuit> {
   aggregatorCircuitPromise ??= loadCircuit('/noir/silent_witness_aggregator.json')
   return aggregatorCircuitPromise
 }
 
-async function loadAggregatorHelperCircuit(): Promise<CompiledCircuit> {
+async function loadAggregatorHelperCircuit(): Promise<LoadedCircuit> {
   aggregatorHelperCircuitPromise ??= loadCircuit('/noir/silent_witness_aggregator_helper.json')
   return aggregatorHelperCircuitPromise
 }
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function sha256(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input)
+  const hash = await crypto.subtle.digest('SHA-256', bytes as BufferSource)
+  return bytesToHex(new Uint8Array(hash))
 }
 
 /**
@@ -113,6 +116,7 @@ export async function generateSilentWitnessProof(
   const threadCount = options?.threadCount ?? 1
   const prepared = prepareSilentWitnessInputs(input)
   try {
+    input.onStage?.('loading_circuits')
     const [helperCircuit, mainCircuit] = await Promise.all([loadHelperCircuit(), loadMainCircuit()])
     const artifactBytes = helperCircuit.rawBytes + mainCircuit.rawBytes
     assertProofWorkerMemoryBudget({ artifactBytes })
@@ -120,6 +124,7 @@ export async function generateSilentWitnessProof(
     if (frame !== 'scoped_v2' && (prepared.verifier_scope !== '0' || prepared.epoch !== '0')) {
       throw new CircuitInputError('unsupported_input_schema')
     }
+    const circuitVersion = frame === 'scoped_v2' ? String(EXPECTED_CIRCUIT_VERSION) : null
 
     const helperInputs = frame === 'scoped_v2' ? prepared : {
       credential_secret: prepared.credential_secret,
@@ -127,12 +132,14 @@ export async function generateSilentWitnessProof(
       video_hash_hi: prepared.video_hash_hi,
       video_hash_lo: prepared.video_hash_lo,
     }
+    input.onStage?.('executing_helper')
     const helperResult = await new Noir(helperCircuit.circuit).execute(helperInputs)
     const returned = helperResult.returnValue
     if (!Array.isArray(returned) || returned.length !== (frame === 'browser_v1' ? 2 : 3)) {
       throw new CircuitInputError('invalid_proof_output')
     }
     const [credentialRoot, nullifier, domainTag] = returned as string[]
+    input.onStage?.('executing_main')
     const { witness } = await new Noir(mainCircuit.circuit).execute({
       ...helperInputs,
       credential_root: credentialRoot,
@@ -143,6 +150,7 @@ export async function generateSilentWitnessProof(
     const witnessBytes = byteLengthOfProofWorkerValue(witness)
     assertProofWorkerMemoryBudget({ artifactBytes, witnessBytes })
 
+    input.onStage?.('generating_proof')
     const backend = new UltraHonkBackend(mainCircuit.circuit.bytecode, { threads: threadCount })
     try {
       const proofData = await backend.generateProof(witness, { keccak: true })
@@ -283,105 +291,3 @@ export async function generateAggregatedProof({
   }
 }
 
-async function loadHelperCircuit() {
-  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
-  return helperCircuitPromise
-}
-
-async function loadMainCircuit() {
-  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
-  return mainCircuitPromise
-}
-
-async function loadAggregatorCircuit() {
-  aggregatorCircuitPromise ??= loadCircuit('/noir/silent_witness_aggregator.json')
-  return aggregatorCircuitPromise
-}
-
-async function loadAggregatorHelperCircuit() {
-  aggregatorHelperCircuitPromise ??= loadCircuit('/noir/silent_witness_aggregator_helper.json')
-  return aggregatorHelperCircuitPromise
-}
-
-async function loadCircuit(path: string) {
-  // Load the artifact manifest (once per page load)
-  const manifest = await (async () => {
-    const resp = await fetch('/zk/browser.artifacts.manifest.json', { cache: 'no-store' })
-    if (!resp.ok) throw new CircuitInputError('manifest_load_failed')
-    return resp.json() as Promise<any>
-  })()
-
-  // Find the manifest entry for this artifact path
-  const entry = manifest.artifacts?.find((a: any) => a.path.replace('frontend/', '/') === path)
-  const expectedSha = entry?.normalized_sha256 ?? entry?.raw_sha256
-
-  // Helper to compute SHA-256 of a Uint8Array
-  async function computeSha256(buf: Uint8Array): Promise<string> {
-    const hash = await crypto.subtle.digest('SHA-256', buf)
-    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
-  }
-
-  // Attempt to serve from Cache Storage if available
-  if (typeof caches !== 'undefined') {
-    const cache = await caches.open('artifact-cache')
-    const cachedResp = await cache.match(path)
-    if (cachedResp) {
-      const cachedArray = new Uint8Array(await cachedResp.arrayBuffer())
-      const cachedHash = await computeSha256(cachedArray)
-      if (expectedSha && cachedHash !== expectedSha) {
-        // Invalidate mismatched cache entry
-        await cache.delete(path)
-      } else {
-        // Return cached artifact
-        const json = JSON.parse(new TextDecoder().decode(cachedArray)) as CompiledCircuit
-        return { circuit: json, rawBytes: cachedArray.byteLength }
-      }
-    }
-  }
-
-  // Fallback: fetch from network
-  const response = await fetch(path, { cache: 'no-store' })
-  if (!response.ok) throw new CircuitInputError('circuit_load_failed')
-  const { value, rawBytes } = await readBoundedCircuitArtifact<CompiledCircuit>(response, path)
-
-  // Store the fetched artifact in Cache Storage for future loads
-  if (typeof caches !== 'undefined') {
-    const cache = await caches.open('artifact-cache')
-    const respClone = response.clone()
-    await cache.put(path, respClone)
-  }
-
-  return { circuit: value, rawBytes }
-}
-
-function bytesToHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-async function sha256(input: string): Promise<string> {
-  const bytes = new TextEncoder().encode(input)
-  const hash = await crypto.subtle.digest('SHA-256', bytes)
-  return bytesToHex(new Uint8Array(hash))
-}
-
-async function loadHelperCircuit() {
-  helperCircuitPromise ??= loadCircuit('/noir/silent_witness_helper.json')
-  return helperCircuitPromise
-}
-
-async function loadMainCircuit() {
-  mainCircuitPromise ??= loadCircuit('/noir/silent_witness.json')
-  return mainCircuitPromise
-}
-
-async function loadCircuit(path: string) {
-  const response = await fetch(path, { cache: 'no-store' })
-  if (!response.ok) {
-    throw new Error(`Unable to load Noir circuit artifact: ${path}`)
-  }
-  return (await response.json()) as CompiledCircuit
-}
-
-function bytesToHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}

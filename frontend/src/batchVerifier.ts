@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { verifyArtifact, type VerificationEvent } from './verificationFlow'
+import { MalformedEvidenceError, verifyArtifact, type VerificationEvent } from './verificationFlow'
 import type { ProofManifest } from './proofManifest'
 import { appConfig } from './config'
 
@@ -70,6 +70,148 @@ export type BatchSummary = {
   cancelled: number
   totalBytes: number
   durationMs: number
+}
+
+export const SUPPORTED_BATCH_VIDEO_EXTENSIONS = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'] as const
+export const SUPPORTED_BATCH_MANIFEST_EXTENSIONS = ['.json'] as const
+
+export type BatchPreflightDuplicate = {
+  index: number
+  fileName: string
+  fileSizeBytes: number
+  duplicateOfIndex: number
+  duplicateOfFileName: string
+}
+
+export type BatchPreflightUnsupported = {
+  index: number
+  fileName: string
+  mimeType: string
+  reason: string
+}
+
+export type BatchPreflightOversized = {
+  index: number
+  fileName: string
+  fileSizeBytes: number
+  reason: 'per-file-limit' | 'total-budget-limit'
+}
+
+export type BatchPreflightReport = {
+  totalFiles: number
+  totalBytes: number
+  eligibleCount: number
+  eligibleBytes: number
+  duplicateInputs: BatchPreflightDuplicate[]
+  unsupportedFormats: BatchPreflightUnsupported[]
+  oversizedFiles: BatchPreflightOversized[]
+  exceedsTotalBudget: boolean
+  canProceed: boolean
+}
+
+export type BatchRunOptions = {
+  preflightOnly?: boolean
+  onPreflight?: (report: BatchPreflightReport) => boolean | Promise<boolean> | void
+}
+
+/**
+ * Checks format eligibility using synchronous File metadata only (no byte reads).
+ */
+export function isSupportedBatchFormat(file: Pick<File, 'name' | 'type'>): boolean {
+  const mime = (file.type ?? '').trim().toLowerCase()
+  if (mime.startsWith('video/') || mime === 'application/json') {
+    return true
+  }
+  const lowerName = (file.name ?? '').trim().toLowerCase()
+  for (const ext of SUPPORTED_BATCH_VIDEO_EXTENSIONS) {
+    if (lowerName.endsWith(ext)) return true
+  }
+  for (const ext of SUPPORTED_BATCH_MANIFEST_EXTENSIONS) {
+    if (lowerName.endsWith(ext)) return true
+  }
+  return false
+}
+
+/**
+ * Generates a synchronous preflight report from File descriptor metadata before
+ * any hashing, manifest parsing, proving, or network requests occur.
+ */
+export function inspectBatchPreflight(
+  files: ReadonlyArray<File>,
+  config: Partial<BatchConfig> = {},
+): BatchPreflightReport {
+  const resolved: BatchConfig = { ...DEFAULT_BATCH_CONFIG, ...config }
+  const duplicateInputs: BatchPreflightDuplicate[] = []
+  const unsupportedFormats: BatchPreflightUnsupported[] = []
+  const oversizedFiles: BatchPreflightOversized[] = []
+  const seenDescriptors = new Map<string, { index: number; fileName: string }>()
+
+  let totalBytes = 0
+  let eligibleBytes = 0
+  let eligibleCount = 0
+
+  files.forEach((file, index) => {
+    totalBytes += file.size
+
+    if (!isSupportedBatchFormat(file)) {
+      unsupportedFormats.push({
+        index,
+        fileName: file.name,
+        mimeType: file.type || 'unknown',
+        reason: `Unsupported format (${file.type || file.name.split('.').pop() || 'unknown'}).`,
+      })
+      return
+    }
+
+    const descriptorKey = `${file.name.toLowerCase()}::${file.size}::${file.lastModified}`
+    const firstSeen = seenDescriptors.get(descriptorKey)
+    if (firstSeen) {
+      duplicateInputs.push({
+        index,
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        duplicateOfIndex: firstSeen.index,
+        duplicateOfFileName: firstSeen.fileName,
+      })
+      return
+    }
+    seenDescriptors.set(descriptorKey, { index, fileName: file.name })
+
+    if (file.size > resolved.maxFileSizeBytes) {
+      oversizedFiles.push({
+        index,
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        reason: 'per-file-limit',
+      })
+      return
+    }
+
+    if (eligibleBytes + file.size > resolved.maxTotalSizeBytes) {
+      oversizedFiles.push({
+        index,
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        reason: 'total-budget-limit',
+      })
+      return
+    }
+
+    eligibleBytes += file.size
+    eligibleCount += 1
+  })
+
+  return {
+    totalFiles: files.length,
+    totalBytes,
+    eligibleCount,
+    eligibleBytes,
+    duplicateInputs,
+    unsupportedFormats,
+    oversizedFiles,
+    exceedsTotalBudget: totalBytes > resolved.maxTotalSizeBytes,
+    canProceed: eligibleCount > 0,
+  }
 }
 
 export const DEFAULT_BATCH_CONFIG: BatchConfig = {
@@ -194,6 +336,10 @@ export class BatchVerifier {
     return [...this.items]
   }
 
+  public preflight(files: ReadonlyArray<File>): BatchPreflightReport {
+    return inspectBatchPreflight(files, this.config)
+  }
+
   public setOnProgress(cb: (progress: BatchProgress, items: BatchItemResult[]) => void): void {
     this.onProgressCallback = cb
   }
@@ -215,7 +361,8 @@ export class BatchVerifier {
   public async runBatch(
     files: File[],
     onProgress?: (progress: BatchProgress, items: BatchItemResult[]) => void,
-  ): Promise<{ items: BatchItemResult[]; summary: BatchSummary }> {
+    options?: BatchRunOptions,
+  ): Promise<{ items: BatchItemResult[]; summary: BatchSummary; preflight: BatchPreflightReport }> {
     if (onProgress) {
       this.onProgressCallback = onProgress
     }
@@ -223,19 +370,117 @@ export class BatchVerifier {
     this.abortController = new AbortController()
     const signal = this.abortController.signal
 
-    // Initialize item results
+    // Step 1: Complete synchronous preflight inspection before any byte reads, hashing, or proving
     const startTime = performance.now()
+    const preflight = this.preflight(files)
+    const unsupportedByIndex = new Map(preflight.unsupportedFormats.map((u) => [u.index, u]))
+    const duplicateByIndex = new Map(preflight.duplicateInputs.map((d) => [d.index, d]))
+    const oversizedByIndex = new Map(preflight.oversizedFiles.map((o) => [o.index, o]))
+
     this.processedHashes.clear()
-    this.accumulatedTotalBytes = 0
+    this.accumulatedTotalBytes = preflight.eligibleBytes
 
     this.items = files.map((file, idx) => {
       const id = `item-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const unsupported = unsupportedByIndex.get(idx)
+      if (unsupported) {
+        return {
+          id,
+          file,
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          status: 'malformed' as BatchOutcome,
+          videoHash: null,
+          metadataHash: null,
+          sourceHash: null,
+          tier: null,
+          chainStatus: null,
+          message: unsupported.reason,
+          events: [],
+          chainProof: null,
+          duplicateOf: null,
+          manifest: null,
+          durationMs: 0,
+          failureReason: 'Unsupported file format rejected during preflight.',
+        }
+      }
+
+      const preflightDup = duplicateByIndex.get(idx)
+      if (preflightDup) {
+        return {
+          id,
+          file,
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          status: 'duplicate' as BatchOutcome,
+          videoHash: null,
+          metadataHash: null,
+          sourceHash: null,
+          tier: null,
+          chainStatus: null,
+          message: `Duplicate file detected (matches ${preflightDup.duplicateOfFileName}).`,
+          events: [],
+          chainProof: null,
+          duplicateOf: preflightDup.duplicateOfFileName,
+          manifest: null,
+          durationMs: 0,
+          failureReason: null,
+        }
+      }
+
+      const oversized = oversizedByIndex.get(idx)
+      if (oversized) {
+        if (oversized.reason === 'per-file-limit') {
+          const limitMb = Math.round(this.config.maxFileSizeBytes / (1024 * 1024))
+          const fileMb = (file.size / (1024 * 1024)).toFixed(1)
+          return {
+            id,
+            file,
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            status: 'oversized' as BatchOutcome,
+            videoHash: null,
+            metadataHash: null,
+            sourceHash: null,
+            tier: null,
+            chainStatus: null,
+            message: `File exceeds size limit (${fileMb}MB > ${limitMb}MB limit).`,
+            events: [],
+            chainProof: null,
+            duplicateOf: null,
+            manifest: null,
+            durationMs: 0,
+            failureReason: `Per-file limit exceeded (${file.size} bytes vs max ${this.config.maxFileSizeBytes} bytes).`,
+          }
+        }
+        const totalLimitMb = Math.round(this.config.maxTotalSizeBytes / (1024 * 1024))
+        return {
+          id,
+          file,
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          status: 'oversized' as BatchOutcome,
+          videoHash: null,
+          metadataHash: null,
+          sourceHash: null,
+          tier: null,
+          chainStatus: null,
+          message: `Total batch size limit exceeded (${totalLimitMb}MB max).`,
+          events: [],
+          chainProof: null,
+          duplicateOf: null,
+          manifest: null,
+          durationMs: 0,
+          failureReason: `Total batch memory limit exceeded by queueing ${file.name}.`,
+        }
+      }
+
       return {
         id,
         file,
         fileName: file.name,
         fileSizeBytes: file.size,
-        status: 'pending',
+        status: 'pending' as BatchOutcome,
         videoHash: null,
         metadataHash: null,
         sourceHash: null,
@@ -253,31 +498,27 @@ export class BatchVerifier {
 
     this.notifyProgress(false, false)
 
-    // Filter oversized files upfront based on total and per-file limits
-    let currentBatchBytes = 0
-    for (const item of this.items) {
-      if (item.fileSizeBytes > this.config.maxFileSizeBytes) {
-        item.status = 'oversized'
-        const limitMb = Math.round(this.config.maxFileSizeBytes / (1024 * 1024))
-        const fileMb = (item.fileSizeBytes / (1024 * 1024)).toFixed(1)
-        item.message = `File exceeds size limit (${fileMb}MB > ${limitMb}MB limit).`
-        item.failureReason = `Per-file limit exceeded (${item.fileSizeBytes} bytes vs max ${this.config.maxFileSizeBytes} bytes).`
-        continue
+    if (options?.onPreflight) {
+      const shouldContinue = await options.onPreflight(preflight)
+      if (shouldContinue === false) {
+        for (const item of this.items) {
+          if (item.status === 'pending') {
+            item.status = 'cancelled'
+            item.message = 'Stopped after preflight inspection.'
+            item.failureReason = 'Verification halted at preflight gate.'
+          }
+        }
+        const summary = this.computeSummary(performance.now() - startTime)
+        this.notifyProgress(true, true)
+        return { items: [...this.items], summary, preflight }
       }
-
-      if (currentBatchBytes + item.fileSizeBytes > this.config.maxTotalSizeBytes) {
-        item.status = 'oversized'
-        const totalLimitMb = Math.round(this.config.maxTotalSizeBytes / (1024 * 1024))
-        item.message = `Total batch size limit exceeded (${totalLimitMb}MB max).`
-        item.failureReason = `Total batch memory limit exceeded by queueing ${item.fileName}.`
-        continue
-      }
-
-      currentBatchBytes += item.fileSizeBytes
     }
 
-    this.accumulatedTotalBytes = currentBatchBytes
-    this.notifyProgress(false, false)
+    if (options?.preflightOnly || !preflight.canProceed) {
+      const summary = this.computeSummary(performance.now() - startTime)
+      this.notifyProgress(false, !options?.preflightOnly)
+      return { items: [...this.items], summary, preflight }
+    }
 
     // Execute with bounded concurrency
     const queue = this.items.filter((item) => item.status === 'pending')
@@ -312,7 +553,7 @@ export class BatchVerifier {
     const summary = this.computeSummary(endTime - startTime)
     this.notifyProgress(signal.aborted, true)
 
-    return { items: [...this.items], summary }
+    return { items: [...this.items], summary, preflight }
   }
 
   private async processItem(item: BatchItemResult, signal: AbortSignal): Promise<void> {
@@ -395,30 +636,66 @@ export class BatchVerifier {
       item.message = 'Extracting stego metadata and checking Stellar registry...'
       this.notifyProgress(false, false)
 
+      let extractedMetadataObj: Record<string, unknown> | null = null
       const result = await verifyArtifact({
         apiBase: this.config.apiBase,
         contractId: this.config.contractId,
         wallet: this.config.wallet,
         file: item.file,
+        videoHash,
         signal,
-        onEvent: (event) => {
-          item.events.push(event)
-          if (event.message) {
-            item.message = event.message
+        extractMetadataOverride: async (apiBase, file, reqSignal) => {
+          const form = new FormData()
+          form.append('video', file)
+          const response = await fetch(`${apiBase}/api/stego/extract`, {
+            method: 'POST',
+            body: form,
+            signal: reqSignal,
+          })
+          if (!response.ok) {
+            if (response.status >= 400 && response.status < 500) {
+              throw new MalformedEvidenceError()
+            }
+            throw new Error(`Stego extraction failed (${response.status})`)
           }
-          this.notifyProgress(false, false)
+          const payload = (await response.json()) as { metadata?: unknown }
+          if (payload?.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)) {
+            extractedMetadataObj = payload.metadata as Record<string, unknown>
+          }
+          return payload?.metadata ?? null
         },
       })
 
-      item.videoHash = result.videoHash ?? item.videoHash
-      item.metadataHash = result.metadataHash ?? null
-      item.sourceHash = result.sourceHash ?? null
-      item.tier = result.tier ?? null
-      item.chainProof = result.chainProof ?? null
-      item.chainStatus = result.chainStatus ?? null
-      item.status = result.status
+      item.events = result.events
+      item.chainProof = result.chainProof
+      item.metadataHash =
+        result.chainProof?.metadataHash ??
+        (typeof extractedMetadataObj?.['metadataHash'] === 'string'
+          ? (extractedMetadataObj['metadataHash'] as string)
+          : null)
+      item.sourceHash =
+        typeof extractedMetadataObj?.['sourceHash'] === 'string'
+          ? (extractedMetadataObj['sourceHash'] as string)
+          : null
+      item.tier =
+        result.chainProof !== null
+          ? (result.chainProof.tier === 0 ? 'silent' : result.chainProof.tier === 2 ? 'seal' : 'source')
+          : typeof extractedMetadataObj?.['tier'] === 'string'
+            ? (extractedMetadataObj['tier'] as string)
+            : (result.events[0]?.tier ?? null)
+      item.chainStatus = result.chainProof
+        ? result.chainProof.status === 2
+          ? 'Revoked'
+          : 'Active'
+        : null
+      item.status = result.outcome
       item.message = result.message
-      item.failureReason = result.failureReason ?? null
+      item.failureReason =
+        result.outcome === 'confirmed' ||
+        result.outcome === 'metadata-only' ||
+        result.outcome === 'database-only'
+          ? null
+          : result.message
       item.durationMs = performance.now() - itemStart
     } catch (err) {
       if (signal.aborted) {

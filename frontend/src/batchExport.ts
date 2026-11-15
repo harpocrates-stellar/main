@@ -1,6 +1,5 @@
-import type { BatchItemResult } from './batchVerifier'
+import type { BatchItemResult, BatchPreflightReport } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
-import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
   fileName: string
@@ -47,15 +46,20 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
 }
 
 /**
- * Export privacy-safe JSON representation of batch results.
+ * Export privacy-safe JSON representation of batch results, optionally
+ * embedding the preflight inspection report.
  */
-export function exportBatchJSON(results: BatchItemResult[]): string {
+export function exportBatchJSON(
+  results: BatchItemResult[],
+  preflight?: BatchPreflightReport | null,
+): string {
   const clean = sanitizeBatchResults(results)
   const report = {
     protocol: 'harpocrates-batch-report',
     version: 1,
     exportedAt: new Date().toISOString(),
     totalCount: clean.length,
+    ...(preflight ? { preflight } : {}),
     results: clean,
   }
   return JSON.stringify(report, null, 2)

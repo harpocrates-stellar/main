@@ -19,8 +19,10 @@ import {
 } from 'lucide-react'
 import {
   BatchVerifier,
+  inspectBatchPreflight,
   type BatchItemResult,
   type BatchOutcome,
+  type BatchPreflightReport,
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
@@ -39,6 +41,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const [items, setItems] = useState<BatchItemResult[]>([])
   const [progress, setProgress] = useState<BatchProgress | null>(null)
   const [summary, setSummary] = useState<BatchSummary | null>(null)
+  const [preflight, setPreflight] = useState<BatchPreflightReport | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [selectedFilter, setSelectedFilter] = useState<FilterType>('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -61,14 +64,20 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     if (fileArray.length === 0) return
 
     // Update config on verifier
-    verifier.updateConfig({
+    const nextConfig = {
       maxConcurrency: concurrency,
       maxFileSizeBytes: maxFileMb * 1024 * 1024,
       maxTotalSizeBytes: maxTotalMb * 1024 * 1024,
       apiBase,
       contractId,
       wallet,
-    })
+    }
+    verifier.updateConfig(nextConfig)
+    const preflightReport =
+      typeof verifier.preflight === 'function'
+        ? verifier.preflight(fileArray)
+        : inspectBatchPreflight(fileArray, nextConfig)
+    setPreflight(preflightReport)
 
     const initialItems = fileArray.map((file, idx) => ({
       id: `item-${idx}-${Date.now()}`,
@@ -139,6 +148,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     setItems([])
     setProgress(null)
     setSummary(null)
+    setPreflight(null)
     setDetailItem(null)
   }
 
@@ -211,7 +221,8 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     URL.revokeObjectURL(url)
   }
 
-  const exportJSON = () => triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
+  const exportJSON = () =>
+    triggerDownload(exportBatchJSON(items, preflight), 'harpocrates-batch-report.json', 'application/json')
   const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
@@ -341,7 +352,12 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
         {items.length > 0 ? (
           <div className="controls-row">
             {!isRunning ? (
-              <button className="hero-primary" type="button" onClick={() => void startBatch()}>
+              <button
+                className="hero-primary"
+                type="button"
+                onClick={() => void startBatch()}
+                disabled={preflight !== null && !preflight.canProceed}
+              >
                 <Play size={16} aria-hidden="true" />
                 <span>Verify Batch ({items.length})</span>
               </button>
@@ -403,6 +419,28 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
           </div>
         ) : null}
       </section>
+
+      {/* Preflight Inspection Summary */}
+      {preflight ? (
+        <section className="metrics-banner" aria-label="Batch preflight report">
+          <div className="metric-card">
+            <span>Preflight Bytes</span>
+            <strong>{preflight.totalBytes.toLocaleString()} B</strong>
+          </div>
+          <div className="metric-card">
+            <span>Eligible Inputs</span>
+            <strong>{preflight.eligibleCount}</strong>
+          </div>
+          <div className="metric-card purple">
+            <span>Duplicate Inputs</span>
+            <strong>{preflight.duplicateInputs.length}</strong>
+          </div>
+          <div className="metric-card warning">
+            <span>Unsupported Formats</span>
+            <strong>{preflight.unsupportedFormats.length}</strong>
+          </div>
+        </section>
+      ) : null}
 
       {/* Aggregate Metrics Bar */}
       {progress ? (

@@ -1,6 +1,14 @@
 import type { Evidence, Proof, Contract, Deployment } from './types';
-import { HarpocratesError } from './errors';
-import { Logger } from './logger';
+
+export class HarpocratesError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = 'HarpocratesError';
+    this.code = code;
+  }
+}
 
 /**
  * Localization Boundary Module
@@ -16,7 +24,12 @@ import { Logger } from './logger';
  * Failure responses are stable and generic to avoid information leakage.
  */
 
-const logger = Logger.getInstance('localization-boundary');
+const logger = {
+  debug: (..._args: unknown[]) => {},
+  info: (..._args: unknown[]) => {},
+  warn: (..._args: unknown[]) => {},
+  error: (..._args: unknown[]) => {},
+};
 
 // Constants for validation
 const MAX_EVIDENCE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -60,8 +73,8 @@ function sanitizeForDisplay<T extends Record<string, unknown>>(obj: T): Record<s
  * Validates the size of a buffer or string.
  * Throws HarpocratesError if the size exceeds the limit.
  */
-function validateSize(data: Buffer | string, maxSize: number, context: string): void {
-  const size = typeof data === 'string' ? Buffer.byteLength(data, 'utf-8') : data.length;
+function validateSize(data: Uint8Array | string, maxSize: number, context: string): void {
+  const size = typeof data === 'string' ? new TextEncoder().encode(data).byteLength : data.byteLength;
   if (size > maxSize) {
     logger.warn(`Oversized ${context}: ${size} bytes exceeds limit of ${maxSize} bytes`);
     throw new HarpocratesError(
@@ -134,7 +147,7 @@ function validateSupportedContract(contract: Contract, context: string): void {
  * Validates that the deployment is valid.
  * Throws HarpocratesError if the deployment is invalid.
  */
-function validateDeployment(deployment: Deployment, context: string): void {
+function validateDeploymentFields(deployment: Deployment, context: string): void {
   if (!deployment.contractAddress || !deployment.blockNumber) {
     logger.warn(`Invalid ${context}: ${context} missing required fields`);
     throw new HarpocratesError(
@@ -180,14 +193,14 @@ export function validateContract(contract: Contract): void {
  */
 export function validateDeployment(deployment: Deployment): void {
   validateSize(deployment.data, MAX_DEPLOYMENT_SIZE, 'deployment');
-  validateDeployment(deployment, 'deployment');
+  validateDeploymentFields(deployment, 'deployment');
 }
 
 /**
  * Validates an artifact object.
  * Throws HarpocratesError if the artifact is invalid.
  */
-export function validateArtifact(data: Buffer | string): void {
+export function validateArtifact(data: Uint8Array | string): void {
   validateSize(data, MAX_ARTIFACT_SIZE, 'artifact');
 }
 
@@ -328,7 +341,7 @@ export function validateNotEmpty<T>(input: T, context: string): void {
 export function validateUrl(input: string): void {
   try {
     new URL(input);
-  } catch (error) {
+  } catch {
     logger.warn(`Invalid URL: ${input}`);
     throw new HarpocratesError(
       'Invalid URL',
@@ -457,7 +470,7 @@ export function validateObject(input: Record<string, unknown>): void {
  * Validates that the input is a valid function.
  * Throws HarpocratesError if the input is not a valid function.
  */
-export function validateFunction(input: Function): void {
+export function validateFunction(input: (...args: unknown[]) => unknown): void {
   if (typeof input !== 'function') {
     logger.warn(`Invalid function: ${input}`);
     throw new HarpocratesError(
@@ -597,7 +610,7 @@ export function validateArrayType(input: unknown[]): void {
  * Validates that the input is a valid function.
  * Throws HarpocratesError if the input is not a valid function.
  */
-export function validateFunctionType(input: Function): void {
+export function validateFunctionType(input: (...args: unknown[]) => unknown): void {
   if (typeof input !== 'function') {
     logger.warn(`Invalid function: ${input}`);
     throw new HarpocratesError(
