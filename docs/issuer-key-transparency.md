@@ -112,3 +112,12 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Historical issuer-key validity explanations
+
+Use `explain_historical_issuer_key_validity(directory, key_id, signature_timestamp, max_event_refs=8)` to emit a bounded, portable explanation record (`schema: harpocrates-historical-key-validity-explanation/v1`) that wraps `key_valid_for_historical_signature`:
+
+- **Stable reason codes (`HistoricalKeyValidityReason`):** `valid_active_key`, `valid_historical_rotated_key`, `valid_historical_retired_key`, `valid_pre_compromise_warning`, `invalid_unknown_key`, `invalid_before_activation`, `invalid_at_or_after_rotation`, `invalid_at_or_after_retirement`, `invalid_at_or_after_compromise`, and `invalid_expired_window`.
+- **Bounded public lifecycle references:** Includes up to `MAX_EXPLANATION_EVENT_REFS` (`16`) public `DirectoryEvent` references (`sequence`, `eventType`, `timestamp`, `eventHash`, `keyId`, `relatedKeyId`) with `totalMatchingEvents` and `truncatedEventReferences` flags.
+- **Evidence privacy:** Private evidence context (`captureNonce`, `evidenceDigestBinding`, `videoHash`, `proofId`, `deviceCommitment`) is stripped at generation time and rejected fail-closed during `HistoricalKeyValidityExplanation.from_dict` deserialization.
+

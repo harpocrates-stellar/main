@@ -647,3 +647,321 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+# ── Historical issuer-key validity explanation record ──────────────────────
+
+HISTORICAL_VALIDITY_EXPLANATION_SCHEMA = "harpocrates-historical-key-validity-explanation/v1"
+DEFAULT_EXPLANATION_EVENT_REFS = 8
+MAX_EXPLANATION_EVENT_REFS = 16
+
+_PRIVATE_EVIDENCE_KEY_TOKENS = (
+    "evidence",
+    "video",
+    "nonce",
+    "device",
+    "witness",
+    "nullifier",
+    "secret",
+    "fingerprint",
+    "proofid",
+    "session",
+    "email",
+    "phone",
+    "legalname",
+)
+
+
+def _reject_private_evidence_keys(obj: Any) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            normalized = str(k).lower().replace("_", "")
+            if any(tok in normalized for tok in _PRIVATE_EVIDENCE_KEY_TOKENS):
+                raise TransparencyError(
+                    "historical validity explanation must not contain private evidence identifiers"
+                )
+            _reject_private_evidence_keys(v)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _reject_private_evidence_keys(item)
+
+
+class HistoricalKeyValidityReason(str, Enum):
+    VALID_ACTIVE_KEY = "valid_active_key"
+    VALID_HISTORICAL_ROTATED_KEY = "valid_historical_rotated_key"
+    VALID_HISTORICAL_RETIRED_KEY = "valid_historical_retired_key"
+    VALID_PRE_COMPROMISE_WARNING = "valid_pre_compromise_warning"
+    INVALID_UNKNOWN_KEY = "invalid_unknown_key"
+    INVALID_BEFORE_ACTIVATION = "invalid_before_activation"
+    INVALID_AT_OR_AFTER_ROTATION = "invalid_at_or_after_rotation"
+    INVALID_AT_OR_AFTER_RETIREMENT = "invalid_at_or_after_retirement"
+    INVALID_AT_OR_AFTER_COMPROMISE = "invalid_at_or_after_compromise"
+    INVALID_EXPIRED_WINDOW = "invalid_expired_window"
+
+
+@dataclass(frozen=True)
+class PublicLifecycleEventReference:
+    """Bounded public directory lifecycle reference (no private evidence fields)."""
+
+    sequence: int
+    event_type: EventType
+    timestamp: int
+    event_hash: str
+    key_id: str
+    related_key_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "eventHash": self.event_hash,
+            "eventType": self.event_type.value,
+            "keyId": self.key_id,
+            "sequence": self.sequence,
+            "timestamp": self.timestamp,
+        }
+        if self.related_key_id is not None:
+            d["relatedKeyId"] = self.related_key_id
+        return d
+
+    @staticmethod
+    def from_event(event: DirectoryEvent) -> PublicLifecycleEventReference:
+        return PublicLifecycleEventReference(
+            sequence=event.sequence,
+            event_type=event.event_type,
+            timestamp=event.timestamp,
+            event_hash=event_hash(event),
+            key_id=event.key_id,
+            related_key_id=event.related_key_id,
+        )
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> PublicLifecycleEventReference:
+        allowed = {"eventHash", "eventType", "keyId", "relatedKeyId", "sequence", "timestamp"}
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected field in lifecycle event reference")
+        seq = obj.get("sequence")
+        ts = obj.get("timestamp")
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+            raise TransparencyError("event reference sequence must be a non-negative integer")
+        if isinstance(ts, bool) or not isinstance(ts, int) or ts < 0:
+            raise TransparencyError("event reference timestamp must be a non-negative integer")
+        return PublicLifecycleEventReference(
+            sequence=seq,
+            event_type=EventType(str(obj["eventType"])),
+            timestamp=ts,
+            event_hash=_require_hex("eventHash", str(obj["eventHash"])),
+            key_id=str(obj["keyId"]),
+            related_key_id=str(obj["relatedKeyId"]) if obj.get("relatedKeyId") else None,
+        )
+
+
+@dataclass(frozen=True)
+class HistoricalKeyValidityExplanation:
+    """Bounded, evidence-agnostic explanation of signature-time issuer key validity."""
+
+    organization_identity_hash: str
+    key_id: str
+    signature_timestamp: int
+    valid: bool
+    reason_code: HistoricalKeyValidityReason
+    key_status: KeyStatus | None
+    valid_from: int | None
+    valid_until: int | None
+    compromise_warning: bool
+    compromised_at_signature_time: bool
+    event_references: tuple[PublicLifecycleEventReference, ...]
+    total_matching_events: int
+    truncated_event_references: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "compromiseWarning": self.compromise_warning,
+            "compromisedAtSignatureTime": self.compromised_at_signature_time,
+            "eventReferences": [ref.to_dict() for ref in self.event_references],
+            "keyId": self.key_id,
+            "keyStatus": self.key_status.value if self.key_status is not None else None,
+            "organizationIdentityHash": self.organization_identity_hash,
+            "reasonCode": self.reason_code.value,
+            "schema": HISTORICAL_VALIDITY_EXPLANATION_SCHEMA,
+            "signatureTimestamp": self.signature_timestamp,
+            "totalMatchingEvents": self.total_matching_events,
+            "truncatedEventReferences": self.truncated_event_references,
+            "valid": self.valid,
+            "validFrom": self.valid_from,
+            "validUntil": self.valid_until,
+        }
+        _reject_private_evidence_keys(payload)
+        return payload
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> HistoricalKeyValidityExplanation:
+        if not isinstance(obj, dict):
+            raise TransparencyError("explanation payload must be a JSON object")
+        _reject_private_evidence_keys(obj)
+        allowed = {
+            "compromiseWarning",
+            "compromisedAtSignatureTime",
+            "eventReferences",
+            "keyId",
+            "keyStatus",
+            "organizationIdentityHash",
+            "reasonCode",
+            "schema",
+            "signatureTimestamp",
+            "totalMatchingEvents",
+            "truncatedEventReferences",
+            "valid",
+            "validFrom",
+            "validUntil",
+        }
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected field in historical validity explanation")
+        if obj.get("schema") != HISTORICAL_VALIDITY_EXPLANATION_SCHEMA:
+            raise TransparencyError("unsupported historical validity explanation schema")
+        refs_raw = obj.get("eventReferences")
+        if not isinstance(refs_raw, list) or len(refs_raw) > MAX_EXPLANATION_EVENT_REFS:
+            raise TransparencyError("eventReferences exceeds bound or is malformed")
+        sig_ts = obj.get("signatureTimestamp")
+        total = obj.get("totalMatchingEvents")
+        if isinstance(sig_ts, bool) or not isinstance(sig_ts, int) or sig_ts < 0:
+            raise TransparencyError("signatureTimestamp must be a non-negative integer")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise TransparencyError("totalMatchingEvents must be a non-negative integer")
+        for flag_name in ("valid", "compromiseWarning", "compromisedAtSignatureTime", "truncatedEventReferences"):
+            if not isinstance(obj.get(flag_name), bool):
+                raise TransparencyError(f"{flag_name} must be a boolean")
+        vf = obj.get("validFrom")
+        vu = obj.get("validUntil")
+        if vf is not None and (isinstance(vf, bool) or not isinstance(vf, int)):
+            raise TransparencyError("validFrom must be an integer or null")
+        if vu is not None and (isinstance(vu, bool) or not isinstance(vu, int)):
+            raise TransparencyError("validUntil must be an integer or null")
+        status_raw = obj.get("keyStatus")
+        return HistoricalKeyValidityExplanation(
+            organization_identity_hash=_require_hex(
+                "organizationIdentityHash", str(obj["organizationIdentityHash"])
+            ),
+            key_id=str(obj["keyId"]),
+            signature_timestamp=sig_ts,
+            valid=bool(obj["valid"]),
+            reason_code=HistoricalKeyValidityReason(str(obj["reasonCode"])),
+            key_status=KeyStatus(str(status_raw)) if status_raw is not None else None,
+            valid_from=vf,
+            valid_until=vu,
+            compromise_warning=bool(obj["compromiseWarning"]),
+            compromised_at_signature_time=bool(obj["compromisedAtSignatureTime"]),
+            event_references=tuple(PublicLifecycleEventReference.from_dict(r) for r in refs_raw),
+            total_matching_events=total,
+            truncated_event_references=bool(obj["truncatedEventReferences"]),
+        )
+
+
+def _select_bounded_lifecycle_refs(
+    events: list[DirectoryEvent],
+    key_id: str,
+    max_refs: int,
+) -> tuple[tuple[PublicLifecycleEventReference, ...], int, bool]:
+    matching = [ev for ev in events if ev.key_id == key_id or ev.related_key_id == key_id]
+    total = len(matching)
+    if total <= max_refs:
+        return (
+            tuple(PublicLifecycleEventReference.from_event(ev) for ev in matching),
+            total,
+            False,
+        )
+    if max_refs == 1:
+        selected = [matching[-1]]
+    else:
+        selected = [matching[0], *matching[-(max_refs - 1) :]]
+    return (
+        tuple(PublicLifecycleEventReference.from_event(ev) for ev in selected),
+        total,
+        True,
+    )
+
+
+def explain_historical_issuer_key_validity(
+    directory: IssuerDirectory,
+    key_id: str,
+    signature_timestamp: int,
+    *,
+    max_event_refs: int = DEFAULT_EXPLANATION_EVENT_REFS,
+    evidence_context: dict[str, Any] | None = None,
+) -> HistoricalKeyValidityExplanation:
+    """Explain signature-time key validity with stable reason codes and public event refs.
+
+    Reuses ``key_valid_for_historical_signature`` and ``key_was_compromised_at``
+    directly while omitting any private evidence identifiers from ``evidence_context``.
+    """
+    if not isinstance(key_id, str) or not (1 <= len(key_id.strip()) <= 128):
+        raise TransparencyError("key_id must be a non-empty bounded string")
+    if isinstance(signature_timestamp, bool) or not isinstance(signature_timestamp, int) or signature_timestamp < 0:
+        raise TransparencyError("signature_timestamp must be a non-negative integer")
+    if (
+        isinstance(max_event_refs, bool)
+        or not isinstance(max_event_refs, int)
+        or max_event_refs < 1
+        or max_event_refs > MAX_EXPLANATION_EVENT_REFS
+    ):
+        raise TransparencyError(
+            f"max_event_refs must be an integer in 1..{MAX_EXPLANATION_EVENT_REFS}"
+        )
+    # Explicitly ignore evidence_context so private evidence identifiers never enter the explanation.
+    _ = evidence_context
+
+    valid = key_valid_for_historical_signature(directory, key_id, signature_timestamp)
+    compromised_at_sig = key_was_compromised_at(directory, key_id, signature_timestamp)
+    key = directory.keys.get(key_id)
+    refs, total_matching, truncated = _select_bounded_lifecycle_refs(
+        directory.events, key_id, max_event_refs
+    )
+
+    if key is None:
+        reason = HistoricalKeyValidityReason.INVALID_UNKNOWN_KEY
+        compromise_warning = False
+    elif valid:
+        if key.status == KeyStatus.ACTIVE:
+            reason = HistoricalKeyValidityReason.VALID_ACTIVE_KEY
+            compromise_warning = False
+        elif key.status == KeyStatus.ROTATED:
+            reason = HistoricalKeyValidityReason.VALID_HISTORICAL_ROTATED_KEY
+            compromise_warning = False
+        elif key.status == KeyStatus.RETIRED:
+            reason = HistoricalKeyValidityReason.VALID_HISTORICAL_RETIRED_KEY
+            compromise_warning = False
+        elif key.status == KeyStatus.COMPROMISED:
+            reason = HistoricalKeyValidityReason.VALID_PRE_COMPROMISE_WARNING
+            compromise_warning = True
+        else:
+            reason = HistoricalKeyValidityReason.VALID_ACTIVE_KEY
+            compromise_warning = False
+    else:
+        compromise_warning = key.status == KeyStatus.COMPROMISED
+        if signature_timestamp < key.valid_from:
+            reason = HistoricalKeyValidityReason.INVALID_BEFORE_ACTIVATION
+        elif compromised_at_sig or key.status == KeyStatus.COMPROMISED:
+            reason = HistoricalKeyValidityReason.INVALID_AT_OR_AFTER_COMPROMISE
+        elif key.status == KeyStatus.ROTATED:
+            reason = HistoricalKeyValidityReason.INVALID_AT_OR_AFTER_ROTATION
+        elif key.status == KeyStatus.RETIRED:
+            reason = HistoricalKeyValidityReason.INVALID_AT_OR_AFTER_RETIREMENT
+        else:
+            reason = HistoricalKeyValidityReason.INVALID_EXPIRED_WINDOW
+
+    return HistoricalKeyValidityExplanation(
+        organization_identity_hash=_require_hex(
+            "organizationIdentityHash", directory.organization_identity_hash
+        ),
+        key_id=key_id,
+        signature_timestamp=signature_timestamp,
+        valid=valid,
+        reason_code=reason,
+        key_status=key.status if key is not None else None,
+        valid_from=key.valid_from if key is not None else None,
+        valid_until=key.valid_until if key is not None else None,
+        compromise_warning=compromise_warning,
+        compromised_at_signature_time=compromised_at_sig,
+        event_references=refs,
+        total_matching_events=total_matching,
+        truncated_event_references=truncated,
+    )
+
