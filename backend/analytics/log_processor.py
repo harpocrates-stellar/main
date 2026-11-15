@@ -155,6 +155,7 @@ class LogEntry:
     export_signature: Optional[str] = None
     source: str = "backend"
     annotations: Dict[str, str] = field(default_factory=dict)
+    consent_policy_revision: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.severity not in VALID_SEVERITIES:
@@ -605,6 +606,12 @@ class LogProcessor:
                     export_signature=item.get("export_signature"),
                     source=_cap_bytes(item.get("source", "backend"), 64),
                     annotations=filtered_annotations,
+                    consent_policy_revision=(
+                        _cap_bytes(item["consent_policy_revision"], 64)
+                        if isinstance(item.get("consent_policy_revision"), str)
+                        and item.get("consent_policy_revision")
+                        else None
+                    ),
                 )
                 validate_log_export_safety(entry)
                 results.append(entry)

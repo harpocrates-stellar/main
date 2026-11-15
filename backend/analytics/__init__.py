@@ -39,12 +39,15 @@ try:
     from analytics.consent import (
         CONSENT_GRACE_PERIOD_SECONDS,
         CONSENT_SCHEMA_VERSION,
+        ConsentCollectionDisposition,
         ConsentDecision,
         ConsentManager,
         ConsentSource,
         ConsentState,
         ConsentStatus,
+        DEFAULT_CONSENT_POLICY_REVISION,
         DEFAULT_CONSENT_STATE,
+        validate_consent_policy_revision,
     )
 except Exception:
     pass
@@ -174,12 +177,15 @@ __all__ = [
     "transition_event_state",
     "CONSENT_GRACE_PERIOD_SECONDS",
     "CONSENT_SCHEMA_VERSION",
+    "ConsentCollectionDisposition",
     "ConsentDecision",
     "ConsentManager",
     "ConsentSource",
     "ConsentState",
     "ConsentStatus",
+    "DEFAULT_CONSENT_POLICY_REVISION",
     "DEFAULT_CONSENT_STATE",
+    "validate_consent_policy_revision",
     "MAX_REPLAY_WINDOW_SECONDS",
     "NONCE_TTL_SECONDS",
     "REPLAY_PROTECTION_VERSION",

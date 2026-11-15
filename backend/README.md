@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Consent Policy Revisions in Analytics Exports
+
+`ConsentDecision`, `ConsentState`, and `ConsentManager.record_collection()`
+record the `policy_revision` effective at collection time across an append-only
+`collection_policy_history`. Exported `LogEntry` items carry the historical
+`consent_policy_revision` active when each event was collected rather than a
+later policy upgrade. `ExportArtifact.to_consent_summary()` exposes
+`consent_disposition` (`collected_under_consent`, `consent_withdrawn`, or
+`never_collected`), explicitly distinguishing suppressed withdrawn-consent
+subjects from subjects whose data was never collected.
+
 ## Test
 
 ```powershell
