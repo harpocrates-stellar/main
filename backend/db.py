@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1171,39 +1172,129 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
 
+DEFAULT_JOB_MAX_RETRIES = 3
+STABLE_CANCELLED_RESULT: dict[str, Any] = {
+    "code": "CANCELLED",
+    "cancelled": True,
+}
 
-def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
+
+class JobCancelledError(Exception):
+    """Raised when an active job is intentionally cancelled rather than failing."""
+
+
+def _default_max_retries() -> int:
+    raw = os.getenv("JOB_MAX_RETRIES")
+    if raw is None or not raw.strip():
+        return DEFAULT_JOB_MAX_RETRIES
+    try:
+        parsed = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError("JOB_MAX_RETRIES must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError("JOB_MAX_RETRIES must be a non-negative integer")
+    return parsed
+
+
+def _cancelled_result_payload() -> dict[str, Any]:
+    return dict(STABLE_CANCELLED_RESULT)
+
+
+def enqueue_job(
+    job_type: str,
+    payload: dict[str, Any],
+    *,
+    max_retries: int | None = None,
+) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    resolved_max_retries = _default_max_retries() if max_retries is None else max(0, int(max_retries))
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "failure_count": 0,
+            "retry_count": 0,
+            "max_retries": resolved_max_retries,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
 def get_job(job_id: int) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
+
+
+def is_job_cancelled(job_id: int | str) -> bool:
+    """Return True when ``job_id`` has been intentionally cancelled."""
+    if not isinstance(job_id, int):
+        return False
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        return bool(job.get("status") == "cancelled" or job.get("_cancel_requested"))
+
+
+def raise_if_job_cancelled(job_id: int | str) -> None:
+    """Raise :class:`JobCancelledError` if ``job_id`` was intentionally cancelled."""
+    if is_job_cancelled(job_id):
+        raise JobCancelledError(f"Job {job_id} was cancelled")
 
 
 def cancel_job(job_id: int) -> bool:
-    """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
+    """Intentionally cancel a pending or running job without counting as a failure.
+
+    Preserves a stable cancelled result for the requester and never increments
+    ``failure_count`` or ``retry_count``. Returns True when the job transitioned
+    to ``cancelled``.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        status = job.get("status")
+        if status not in {"pending", "running"}:
+            return False
+        now_iso = datetime.now(timezone.utc).isoformat()
+        job["_cancel_requested"] = True
         job["status"] = "cancelled"
+        job["cancelled_at"] = job.get("cancelled_at") or now_iso
+        job["result"] = _cancelled_result_payload()
+        job.pop("error", None)
         return True
-    return False
+
+
+def acknowledge_job_cancellation(job_id: int | str) -> bool:
+    """Finalize worker-side intentional cancellation without touching failure counts."""
+    if not isinstance(job_id, int):
+        return False
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        if job.get("status") in {"completed", "failed"} and not job.get("_cancel_requested"):
+            return False
+        now_iso = datetime.now(timezone.utc).isoformat()
+        job["_cancel_requested"] = True
+        job["status"] = "cancelled"
+        job["cancelled_at"] = job.get("cancelled_at") or now_iso
+        job["result"] = _cancelled_result_payload()
+        job.pop("error", None)
+        job.pop("worker_id", None)
+        return True
 
 
 def lease_job(
@@ -1213,12 +1304,17 @@ def lease_job(
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
     del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
-    return None
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if (
+                job.get("status") == "pending"
+                and not job.get("_cancel_requested")
+                and job.get("type") in job_types
+            ):
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                return dict(job)
+        return None
 
 
 def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
@@ -1229,9 +1325,10 @@ def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: in
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
     del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running" and not job.get("_cancel_requested"):
+            job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1255,51 +1352,72 @@ def report_job_progress(
     ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
     updated. Returns True when the update was stored.
     """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running" or job.get("_cancel_requested"):
+            return False
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("progress phase must be a non-empty string")
+        phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        current = time.monotonic() if now is None else now
+        last = job.get("_progress_at")
+        if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+            return False
+        job["_progress_at"] = current
+        job["progress"] = {"phase": phase, "percent": percent}
+        return True
 
 
-def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+def complete_job(job_id: int, result: Any = None) -> bool:
+    """Mark an in-memory job completed unless it was intentionally cancelled."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        if job.get("status") == "cancelled" or job.get("_cancel_requested"):
+            job["status"] = "cancelled"
+            job["result"] = _cancelled_result_payload()
+            return False
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
+        return True
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> bool:
+    """Mark an in-memory job failed (fatal / retries exhausted) or pending for retry.
+
+    Intentional cancellations are excluded from automatic failure retry counts
+    and preserve their stable ``cancelled`` state and result.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        if job.get("status") == "cancelled" or job.get("_cancel_requested"):
+            job["status"] = "cancelled"
+            job["result"] = _cancelled_result_payload()
+            return False
+        job["failure_count"] = int(job.get("failure_count", 0)) + 1
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        max_retries = int(job.get("max_retries", DEFAULT_JOB_MAX_RETRIES))
+        retries_used = int(job.get("retry_count", 0))
+        if is_fatal or retries_used >= max_retries:
+            job["status"] = "failed"
+        else:
+            job["retry_count"] = retries_used + 1
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+        return True
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

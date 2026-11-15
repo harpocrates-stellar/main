@@ -6,9 +6,15 @@ import threading
 import traceback
 from pathlib import Path
 
+from concurrent.futures import CancelledError
+
 from db import (
+    JobCancelledError,
+    acknowledge_job_cancellation,
+    is_job_cancelled,
     lease_job,
     heartbeat_job,
+    raise_if_job_cancelled,
     report_job_progress,
     complete_job,
     fail_job,
@@ -21,12 +27,21 @@ from db import (
 from envelope import canonical_metadata_hash
 from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
+try:
+    from registration_reconcile import (
+        default_min_confirmations,
+        process_verify_tx_job,
+        reconcile_pending_registrations,
+    )
+except ImportError:
+    default_min_confirmations = None
+    process_verify_tx_job = None
+    reconcile_pending_registrations = None
 from tracing import traced_job
 from chain_indexer import run_indexer_loop
 
@@ -40,7 +55,14 @@ LOGGER.setLevel(logging.INFO)
 WORKER_ID = f"worker-{os.getpid()}"
 
 @traced_job("job.media.embed")
-def process_embed(job: dict) -> dict:
+def process_embed(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        message_path = job["message_path"]
+        output_path = job["output_path"]
+        message = Path(message_path).read_text()
+        meta = embed_metadata(input_path, message, output_path)
+        return {"output_path": output_path, "message": message, **(meta if isinstance(meta, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     metadata = payload["metadata"]
@@ -52,19 +74,28 @@ def process_embed(job: dict) -> dict:
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
         
+    raise_if_job_cancelled(job_id)
     report_job_progress(job_id, "hashing_source")
     source_hash = sha256_file(input_path)
 
     def on_frame(frames_done: int, frames_total: int | None) -> None:
+        raise_if_job_cancelled(job_id)
         percent = (frames_done / frames_total * 100.0) if frames_total else None
         report_job_progress(job_id, "embedding", percent)
 
-    embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
+    try:
+        embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
+        raise_if_job_cancelled(job_id)
+    except JobCancelledError:
+        input_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+        raise
 
     report_job_progress(job_id, "hashing_output")
     embedded_hash = sha256_file(output_path)
     metadata_hash = canonical_metadata_hash(metadata)
 
+    raise_if_job_cancelled(job_id)
     report_job_progress(job_id, "recording")
     db_event = insert_proof_event(
         event_type="embed",
@@ -87,7 +118,12 @@ def process_embed(job: dict) -> dict:
     }
 
 @traced_job("job.media.extract")
-def process_extract(job: dict) -> dict:
+def process_extract(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = extract_metadata(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     filename = payload["filename"]
@@ -96,11 +132,18 @@ def process_extract(job: dict) -> dict:
     
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
-        
-    metadata = extract_metadata(input_path)
-    video_hash = sha256_file(input_path)
-    metadata_hash = canonical_metadata_hash(metadata) if metadata else None
-    
+
+    try:
+        raise_if_job_cancelled(job_id)
+        metadata = extract_metadata(input_path)
+        raise_if_job_cancelled(job_id)
+        video_hash = sha256_file(input_path)
+        metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        raise_if_job_cancelled(job_id)
+    except JobCancelledError:
+        input_path.unlink(missing_ok=True)
+        raise
+
     db_event = insert_proof_event(
         event_type="extract",
         file_name=normalize_filename(filename),
@@ -121,7 +164,12 @@ def process_extract(job: dict) -> dict:
     }
 
 @traced_job("job.proof.noir")
-def process_silent_witness(job: dict) -> dict:
+def process_silent_witness(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = generate_silent_witness(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
 
     video_hash = payload["video_hash"]
@@ -130,18 +178,39 @@ def process_silent_witness(job: dict) -> dict:
 
     # Phase names only: proof generation runs as one external command and
     # reports no measurable fraction, so percent stays None.
+    raise_if_job_cancelled(job["id"])
     report_job_progress(job["id"], "generating_proof")
     proof = generate_silent_witness(
         video_hash,
         credential_secret,
         nullifier_secret,
     )
-    
+    raise_if_job_cancelled(job["id"])
+
     return {"proof": proof}
 
-def process_verify_tx(job: dict) -> dict:
+def process_verify_tx(job: dict, storage: object | None = None) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
+    if storage is not None or ("input_path" in job and "payload" not in job):
+        import json
+        data = json.loads(Path(job["input_path"]).read_text())
+        status = verify_transaction_status(data["tx_id"])
+        output_path = job["output_path"]
+        Path(output_path).write_text(json.dumps(status))
+        return {"output_path": output_path, **(status if isinstance(status, dict) else {"status": status})}
     return process_verify_tx_job(job.get("payload") or {})
+
+
+def is_cancellation(err: BaseException) -> bool:
+    """Return True when ``err`` represents intentional worker cancellation."""
+    return isinstance(err, (JobCancelledError, CancelledError))
+
+
+def is_fatal(job_type: str, err: BaseException) -> bool:
+    """Classify whether a job failure is non-retryable."""
+    if is_cancellation(err):
+        return False
+    return isinstance(err, ValueError) and job_type != "verify_tx"
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
@@ -269,6 +338,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -298,6 +368,7 @@ def run_worker(
 
             def _execute_job():
                 try:
+                    raise_if_job_cancelled(job_id)
                     if job_type == "embed":
                         res = process_embed(job)
                     elif job_type == "extract":
@@ -308,15 +379,22 @@ def run_worker(
                         res = process_verify_tx(job)
                     else:
                         raise ValueError(f"Unknown job type {job_type}")
-                    complete_job(job_id, res)
-                    LOGGER.info(f"Completed job {job_id}")
+                    if is_job_cancelled(job_id):
+                        acknowledge_job_cancellation(job_id)
+                        LOGGER.info(f"Job {job_id} cancelled before completion commit")
+                    else:
+                        complete_job(job_id, res)
+                        LOGGER.info(f"Completed job {job_id}")
                 except Exception as err:
-                    LOGGER.error(f"Failed job {job_id}: {err}")
-                    LOGGER.error(traceback.format_exc())
-                    is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
-                    if job_type == "verify_tx":
-                        is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                    if is_cancellation(err) or is_job_cancelled(job_id):
+                        acknowledge_job_cancellation(job_id)
+                        LOGGER.info(f"Cancelled job {job_id} intentionally")
+                    else:
+                        LOGGER.error(f"Failed job {job_id}: {type(err).__name__}")
+                        fatal = is_fatal(job_type, err)
+                        if job_type == "verify_tx" and isinstance(err, ValueError):
+                            fatal = True
+                        fail_job(job_id, str(err), is_fatal=fatal)
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()

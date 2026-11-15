@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1940,7 +1940,23 @@ def create_app() -> Flask:
     @app.post("/api/jobs/<int:job_id>/cancel")
     def cancel_job_endpoint(job_id: int):
         if cancel_job(job_id):
-            return jsonify({"ok": True, "message": "Job cancelled"})
+            job = get_job(job_id)
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Job cancelled",
+                    "job": public_job_view(job) if job else None,
+                }
+            )
+        job = get_job(job_id)
+        if job and job.get("status") == "cancelled":
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Job cancelled",
+                    "job": public_job_view(job),
+                }
+            )
         return jsonify({"error": "Job cannot be cancelled or not found"}), 400
 
     # Start webhook worker if DB is enabled
