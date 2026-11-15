@@ -228,3 +228,100 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+export const PROOF_WORKER_PROTOCOL_VERSION = 'harpocrates.proof-worker.v1' as const
+
+export const RELOAD_REQUIRED_MESSAGE =
+  'Proof worker protocol mismatch; reload the application so the main thread and worker run matching versions.' as const
+
+const SAFE_PROTOCOL_VERSION_TAG = /^[A-Za-z0-9._-]{1,64}$/
+
+export type ProtocolCompatibilityResult =
+  | {
+      readonly compatible: true
+      readonly expectedVersion: string
+      readonly actualVersion: string
+      readonly reloadRequired: false
+    }
+  | {
+      readonly compatible: false
+      readonly code: 'PROTOCOL_VERSION_MISMATCH'
+      readonly expectedVersion: string
+      readonly actualVersion: string | null
+      readonly reloadRequired: true
+      readonly message: typeof RELOAD_REQUIRED_MESSAGE
+    }
+
+/**
+ * Strictly validate main-thread and worker protocol versions without loose
+ * coercion or fallback parsing. Malformed or oversized version tags are
+ * sanitized to `null` so witness-shaped strings can never echo back.
+ */
+export function checkWorkerProtocolCompatibility(
+  actualVersion: unknown,
+  expectedVersion: string = PROOF_WORKER_PROTOCOL_VERSION,
+): ProtocolCompatibilityResult {
+  if (typeof actualVersion === 'string' && actualVersion === expectedVersion) {
+    return Object.freeze({
+      compatible: true,
+      expectedVersion,
+      actualVersion,
+      reloadRequired: false,
+    })
+  }
+
+  const safeReported =
+    typeof actualVersion === 'string' && SAFE_PROTOCOL_VERSION_TAG.test(actualVersion)
+      ? actualVersion
+      : null
+
+  return Object.freeze({
+    compatible: false,
+    code: 'PROTOCOL_VERSION_MISMATCH',
+    expectedVersion,
+    actualVersion: safeReported,
+    reloadRequired: true,
+    message: RELOAD_REQUIRED_MESSAGE,
+  })
+}
+
+/**
+ * Gate transferable buffers before structured-clone transfer or worker
+ * consumption. When versions conflict, returns a reload-required failure
+ * before any transfer list is built or accepted.
+ */
+export function guardTransferableBuffersForProtocol(
+  actualVersion: unknown,
+  buffers: readonly ArrayBuffer[],
+  expectedVersion: string = PROOF_WORKER_PROTOCOL_VERSION,
+):
+  | {
+      readonly ok: true
+      readonly transferList: ArrayBuffer[]
+      readonly reloadRequired: false
+    }
+  | {
+      readonly ok: false
+      readonly code: 'PROTOCOL_VERSION_MISMATCH'
+      readonly reloadRequired: true
+      readonly message: typeof RELOAD_REQUIRED_MESSAGE
+      readonly expectedVersion: string
+      readonly actualVersion: string | null
+    } {
+  const check = checkWorkerProtocolCompatibility(actualVersion, expectedVersion)
+  if (!check.compatible) {
+    return Object.freeze({
+      ok: false,
+      code: check.code,
+      reloadRequired: true,
+      message: check.message,
+      expectedVersion: check.expectedVersion,
+      actualVersion: check.actualVersion,
+    })
+  }
+  return Object.freeze({
+    ok: true,
+    transferList: [...buffers],
+    reloadRequired: false,
+  })
+}

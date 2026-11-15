@@ -22,6 +22,7 @@ export type ProofErrorCode =
   | 'TIMEOUT'
   | 'WORKER_UNAVAILABLE'
   | 'FALLBACK_LIMIT_EXCEEDED'
+  | 'PROTOCOL_VERSION_MISMATCH'
 
 /**
  * Which runtime actually executes proof generation.
@@ -56,12 +57,19 @@ export type SilentWitnessProof = {
 }
 
 export type WorkerRequest =
-  | { type: 'GENERATE_PROOF'; requestId: string; input: TransferableProofInput }
-  | { type: 'CANCEL'; requestId: string }
+  | { type: 'GENERATE_PROOF'; protocolVersion?: string; requestId: string; input: TransferableProofInput }
+  | { type: 'CANCEL'; protocolVersion?: string; requestId: string }
 
 export type WorkerResponse =
-  | { type: 'READY' }
-  | { type: 'PROGRESS'; requestId: string; stage: ProofStage }
-  | { type: 'RESULT'; requestId: string; proof: SilentWitnessProof }
-  | { type: 'ERROR'; requestId: string; code: ProofErrorCode; message: string }
-  | { type: 'CANCELLED'; requestId: string }
+  | { type: 'READY'; protocolVersion?: string }
+  | { type: 'PROGRESS'; protocolVersion?: string; requestId: string; stage: ProofStage }
+  | { type: 'RESULT'; protocolVersion?: string; requestId: string; proof: SilentWitnessProof }
+  | {
+      type: 'ERROR'
+      protocolVersion?: string
+      requestId: string
+      code: ProofErrorCode
+      message: string
+      reloadRequired?: boolean
+    }
+  | { type: 'CANCELLED'; protocolVersion?: string; requestId: string }

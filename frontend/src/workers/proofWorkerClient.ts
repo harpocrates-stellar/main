@@ -6,6 +6,11 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './proofWorker.types'
+import {
+  PROOF_WORKER_PROTOCOL_VERSION,
+  RELOAD_REQUIRED_MESSAGE,
+  checkWorkerProtocolCompatibility,
+} from '../proofWorkerMemory'
 import { assessWorkerSupport } from './multiBrowserWorkerSupport'
 
 const PROOF_TIMEOUT_MS = 60_000
@@ -34,14 +39,17 @@ export type GenerateSilentWitnessInput = {
   inputSchemaVersion?: number
   verifierScope?: string
   epoch?: number
+  protocolVersion?: string
 }
 
 export class ProofWorkerError extends Error {
   code: ProofErrorCode
-  constructor(code: ProofErrorCode, message: string) {
+  readonly reloadRequired: boolean
+  constructor(code: ProofErrorCode, message: string, reloadRequired?: boolean) {
     super(message)
     this.name = 'ProofWorkerError'
     this.code = code
+    this.reloadRequired = reloadRequired ?? code === 'PROTOCOL_VERSION_MISMATCH'
   }
 }
 
@@ -51,6 +59,49 @@ type PendingJob = {
   onProgress?: (stage: string) => void
   timeoutId: ReturnType<typeof setTimeout>
   generation: number
+}
+
+export type FallbackLimits = {
+  timeoutMs: number
+  maxSecretBytes: number
+}
+
+export type FallbackProver = (input: GenerateSilentWitnessInput) => Promise<SilentWitnessProof>
+
+type FallbackPendingJob = {
+  requestId: string
+  reject: (err: ProofWorkerError) => void
+}
+
+export type ProofWorkerClientOptions = {
+  runtime?: 'auto' | 'worker' | 'main'
+  enableFallback?: boolean
+  timeoutMs?: number
+  maxSecretBytes?: number
+  prover?: FallbackProver
+  workerFactory?: () => Worker | null
+  expectedProtocolVersion?: string
+}
+
+export const DEFAULT_FALLBACK_LIMITS: FallbackLimits = Object.freeze({
+  timeoutMs: PROOF_TIMEOUT_MS,
+  maxSecretBytes: MAX_SECRET_BYTES,
+})
+
+function toFallbackError(err: unknown): ProofWorkerError {
+  if (err instanceof ProofWorkerError) return err
+  const codeField = (err as { code?: unknown })?.code
+  if (codeField === 'invalid_input') return new ProofWorkerError('INVALID_INPUT', 'invalid_input')
+  if (codeField === 'unsupported_input_schema') {
+    return new ProofWorkerError('UNSUPPORTED_INPUT_SCHEMA', 'unsupported_input_schema')
+  }
+  if (codeField === 'artifact_mismatch') return new ProofWorkerError('ARTIFACT_MISMATCH', 'artifact_mismatch')
+  if (codeField === 'invalid_proof_output') return new ProofWorkerError('INVALID_PROOF_OUTPUT', 'invalid_proof_output')
+  if (codeField === 'circuit_load_failed') return new ProofWorkerError('CIRCUIT_LOAD_FAILED', 'circuit_load_failed')
+  if (codeField === 'proof_worker_memory_exceeded') {
+    return new ProofWorkerError('MEMORY_LIMIT_EXCEEDED', 'proof_worker_memory_exceeded')
+  }
+  return new ProofWorkerError('PROOF_GENERATION_FAILED', 'proof_generation_failed')
 }
 
 /**
@@ -74,16 +125,21 @@ export class ProofWorkerClient {
   private pending: Map<string, PendingJob> = new Map()
   private fallbackPending: FallbackPendingJob | null = null
   private fallbackActive = false
+  private generation = 0
+  private destroyed = false
   private readonly allowFallback: boolean
   private readonly fallbackLimits: FallbackLimits
   private readonly prover: FallbackProver
   private readonly workerFactory: () => Worker | null
+  private readonly expectedProtocolVersion: string
+  private protocolIncompatible = false
   private runtimeMode: RuntimeMode | 'unavailable'
   private reason: FallbackReason | null = null
 
   constructor(options: ProofWorkerClientOptions = {}) {
     const runtime = options.runtime ?? 'auto'
     this.allowFallback = options.enableFallback ?? true
+    this.expectedProtocolVersion = options.expectedProtocolVersion ?? PROOF_WORKER_PROTOCOL_VERSION
     this.fallbackLimits = {
       timeoutMs: options.timeoutMs ?? DEFAULT_FALLBACK_LIMITS.timeoutMs,
       maxSecretBytes: options.maxSecretBytes ?? DEFAULT_FALLBACK_LIMITS.maxSecretBytes,
@@ -103,6 +159,16 @@ export class ProofWorkerClient {
       this.reason = 'runtime_forced_main'
       return
     }
+    const workerAvailable = typeof Worker === 'function'
+    if (!workerAvailable && !options.workerFactory) {
+      if (this.allowFallback) {
+        this.runtimeMode = 'main-thread'
+        this.reason = 'worker_api_unavailable'
+        return
+      }
+      this.runtimeMode = 'unavailable'
+      return
+    }
     const worker = this.spawnWorker()
     if (worker) {
       this.worker = worker
@@ -118,25 +184,42 @@ export class ProofWorkerClient {
     this.runtimeMode = 'unavailable'
   }
 
-  private spawn(): Worker {
-    const worker = new Worker(new URL('./proofWorker.ts', import.meta.url), { type: 'module' })
-    const generation = this.generation
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      if (generation !== this.generation) return
-      this.handleMessage(event.data)
+  private spawnWorker(): Worker | null {
+    try {
+      const worker = this.workerFactory()
+      if (!worker) return null
+      const generation = this.generation
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        if (generation !== this.generation) return
+        this.handleMessage(event.data)
+      }
+      worker.onerror = () => {
+        if (generation !== this.generation) return
+        this.handleCrash()
+      }
+      worker.onmessageerror = () => {
+        if (generation !== this.generation) return
+        this.handleCrash()
+      }
+      return worker
+    } catch {
+      return null
     }
-    worker.onerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    worker.onmessageerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    return worker
   }
 
   private handleMessage(msg: WorkerResponse) {
+    if (!msg || typeof msg !== 'object') {
+      this.failProtocolMismatch()
+      return
+    }
+    if (
+      'protocolVersion' in msg &&
+      msg.protocolVersion !== undefined &&
+      !checkWorkerProtocolCompatibility(msg.protocolVersion, this.expectedProtocolVersion).compatible
+    ) {
+      this.failProtocolMismatch()
+      return
+    }
     if (msg.type === 'READY') return
     const job = this.pending.get('requestId' in msg ? msg.requestId : '')
     if (!job) return
@@ -145,12 +228,26 @@ export class ProofWorkerClient {
     } else if (msg.type === 'RESULT') {
       this.settle(msg.requestId, (j) => j.resolve(msg.proof))
     } else if (msg.type === 'ERROR') {
-      this.settle(msg.requestId, (j) => j.reject(new ProofWorkerError(msg.code, msg.message)))
+      this.settle(msg.requestId, (j) =>
+        j.reject(new ProofWorkerError(msg.code, msg.message, msg.reloadRequired)),
+      )
     } else if (msg.type === 'CANCELLED') {
       this.settle(msg.requestId, (j) =>
         j.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.')),
       )
     }
+  }
+
+  private failProtocolMismatch() {
+    this.protocolIncompatible = true
+    this.generation += 1
+    try {
+      this.worker?.terminate()
+    } catch {
+      // ignore
+    }
+    this.worker = null
+    this.rejectAll('PROTOCOL_VERSION_MISMATCH', RELOAD_REQUIRED_MESSAGE)
   }
 
   private settle(requestId: string, apply: (job: PendingJob) => void) {
@@ -173,12 +270,12 @@ export class ProofWorkerClient {
   private respawnWorker() {
     this.generation += 1
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }
     if (!this.destroyed) {
-      this.worker = this.spawn()
+      this.worker = this.spawnWorker()
     }
   }
 
@@ -209,6 +306,19 @@ export class ProofWorkerClient {
       return {
         requestId: '',
         result: Promise.reject(new ProofWorkerError('CANCELLED', 'Proof worker has been destroyed.')),
+      }
+    }
+
+    const requestProtocolVersion = input.protocolVersion ?? this.expectedProtocolVersion
+    if (
+      this.protocolIncompatible ||
+      !checkWorkerProtocolCompatibility(requestProtocolVersion, this.expectedProtocolVersion).compatible
+    ) {
+      return {
+        requestId: '',
+        result: Promise.reject(
+          new ProofWorkerError('PROTOCOL_VERSION_MISMATCH', RELOAD_REQUIRED_MESSAGE, true),
+        ),
       }
     }
 
@@ -291,6 +401,7 @@ export class ProofWorkerClient {
 
       const msg: WorkerRequest = {
         type: 'GENERATE_PROOF',
+        protocolVersion: this.expectedProtocolVersion,
         requestId,
         input: {
           videoHash: input.videoHash,
@@ -375,12 +486,19 @@ export class ProofWorkerClient {
    * 3. Terminate + respawn so UltraHonk cannot keep running with witness data
    */
   cancel(requestId: string) {
+    if (this.fallbackPending && this.fallbackPending.requestId === requestId) {
+      const fb = this.fallbackPending
+      this.fallbackPending = null
+      this.fallbackActive = false
+      fb.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+      return
+    }
     const job = this.pending.get(requestId)
     if (!job) return
 
     try {
       const msg: WorkerRequest = { type: 'CANCEL', requestId }
-      this.worker.postMessage(msg)
+      this.worker?.postMessage(msg)
     } catch {
       // Worker may already be dead; terminate path below still settles.
     }
@@ -395,10 +513,16 @@ export class ProofWorkerClient {
   destroy() {
     if (this.destroyed) return
     this.destroyed = true
+    if (this.fallbackPending) {
+      const fb = this.fallbackPending
+      this.fallbackPending = null
+      this.fallbackActive = false
+      fb.reject(new ProofWorkerError('CANCELLED', 'Proof generation was cancelled.'))
+    }
     this.rejectAll('CANCELLED', 'Proof generation was cancelled.')
     this.generation += 1
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }

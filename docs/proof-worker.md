@@ -83,6 +83,7 @@ worker so they cannot settle a newer request.
 | `CIRCUIT_LOAD_FAILED` | Fetching a compiled circuit artifact failed. |
 | `MEMORY_LIMIT_EXCEEDED` | A published ACIR, witness estimate, proof, public-input frame, or total worker runtime estimate exceeded the pinned proof-worker budget. |
 | `PROOF_GENERATION_FAILED` | Witness execution or proof generation threw (e.g. invalid field value). |
+| `PROTOCOL_VERSION_MISMATCH` | Main-thread and worker protocol versions conflict (`reloadRequired: true`). Rejected before accepting or transferring secret buffers without fallback parsing. |
 
 ## Input and dependency outcomes
 
@@ -210,4 +211,20 @@ Focused coverage lives in:
 cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
+
+## Protocol version compatibility
+
+Main-thread controllers (`ProofWorkerManager` and `ProofWorkerClient`) and the
+proving worker (`proofWorker.ts`) stamp messages with
+`PROOF_WORKER_PROTOCOL_VERSION` (`harpocrates.proof-worker.v1`).
+
+- **Pre-transfer rejection:** `guardTransferableBuffersForProtocol`,
+  `ProofWorkerManager.dispatchTransferableOperation`, and
+  `ProofWorkerClient.generate` verify protocol compatibility **before**
+  accepting or detaching transferable `ArrayBuffer` secrets.
+- **Reload-required outcome:** incompatible worker handshakes or response
+  envelopes fail closed with `code: 'PROTOCOL_VERSION_MISMATCH'` and
+  `reloadRequired: true`, terminating the mismatched worker without loose
+  fallback parsing or main-thread fallback proving.
+
 

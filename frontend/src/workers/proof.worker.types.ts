@@ -1,5 +1,6 @@
 export interface ProofWorkerMessage {
   type: 'init' | 'verify' | 'cancel' | 'status';
+  protocolVersion?: string;
   payload?: {
     evidence?: string;
     proof?: string;
@@ -12,6 +13,8 @@ export interface ProofWorkerMessage {
 
 export interface ProofWorkerResponse {
   type: 'success' | 'error' | 'status';
+  protocolVersion?: string;
+  reloadRequired?: boolean;
   id?: string;
   data?: {
     valid?: boolean;
