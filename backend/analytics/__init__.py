@@ -37,14 +37,17 @@ except Exception:
 
 try:
     from analytics.consent import (
+        CONSENT_AUDIT_DOMAIN_TAG,
         CONSENT_GRACE_PERIOD_SECONDS,
         CONSENT_SCHEMA_VERSION,
+        ConsentAuditReference,
         ConsentDecision,
         ConsentManager,
         ConsentSource,
         ConsentState,
         ConsentStatus,
         DEFAULT_CONSENT_STATE,
+        MAX_CONSENT_AUDIT_REFERENCES,
     )
 except Exception:
     pass
@@ -122,11 +125,19 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        CleanupPhase,
+        DELETION_AUDIT_DOMAIN_TAG,
+        DeletionAuditReference,
         EXPORT_FORMAT_VERSION,
         ExportArtifact,
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        MAX_DELETION_AUDIT_REFERENCES,
+        RETENTION_CHECKPOINT_VERSION,
+        RetentionCheckpoint,
+        load_retention_checkpoint,
+        save_retention_checkpoint,
     )
 except Exception:
     pass
@@ -172,14 +183,17 @@ __all__ = [
     "create_event",
     "event_is_allowed",
     "transition_event_state",
+    "CONSENT_AUDIT_DOMAIN_TAG",
     "CONSENT_GRACE_PERIOD_SECONDS",
     "CONSENT_SCHEMA_VERSION",
+    "ConsentAuditReference",
     "ConsentDecision",
     "ConsentManager",
     "ConsentSource",
     "ConsentState",
     "ConsentStatus",
     "DEFAULT_CONSENT_STATE",
+    "MAX_CONSENT_AUDIT_REFERENCES",
     "MAX_REPLAY_WINDOW_SECONDS",
     "NONCE_TTL_SECONDS",
     "REPLAY_PROTECTION_VERSION",
@@ -221,11 +235,19 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "CleanupPhase",
+    "DELETION_AUDIT_DOMAIN_TAG",
+    "DeletionAuditReference",
     "EXPORT_FORMAT_VERSION",
     "ExportArtifact",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "MAX_DELETION_AUDIT_REFERENCES",
+    "RETENTION_CHECKPOINT_VERSION",
+    "RetentionCheckpoint",
+    "load_retention_checkpoint",
+    "save_retention_checkpoint",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",

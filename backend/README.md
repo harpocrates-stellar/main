@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Retention Checkpoints
+
+`ExportManager.run_retention_cleanup()` sweeps expired consent states, buffered
+operational log entries, and aged export artifacts in bounded batches
+(`batch_size`, `max_batches`) using a durable `RetentionCheckpoint` cursor across
+phases (`consent` -> `log_entries` -> `export_artifacts` -> `completed`). When
+interrupted cooperatively or by an exception, progress persists atomically via
+`save_retention_checkpoint()` and resumes from the last committed cursor while
+retaining domain-separated `ConsentAuditReference` and `DeletionAuditReference`
+digests (never raw account tags, consent tokens, or private event payloads).
+
 ## Test
 
 ```powershell

@@ -10,6 +10,8 @@ from typing import Dict, List, Optional, Tuple
 
 CONSENT_SCHEMA_VERSION = "1.0.0"
 CONSENT_GRACE_PERIOD_SECONDS = 1800
+CONSENT_AUDIT_DOMAIN_TAG = "harpocrates:consent-audit-ref:v1"
+MAX_CONSENT_AUDIT_REFERENCES = 4096
 
 
 class ConsentStatus:
@@ -122,15 +124,42 @@ DEFAULT_CONSENT_STATE = ConsentState(
 )
 
 
+@dataclass(frozen=True)
+class ConsentAuditReference:
+    """Privacy-safe audit reference retained when terminal consent state is pruned."""
+
+    reference_id: str
+    account_tag_digest: str
+    terminal_status: str
+    version: str
+    recorded_at_epoch_seconds: float
+    withdrawal_epoch_seconds: Optional[float] = None
+
+
+def _hash_account_tag_for_audit(account_tag: str) -> str:
+    payload = f"{CONSENT_AUDIT_DOMAIN_TAG}:{len(account_tag)}:{account_tag}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class ConsentManager:
     _consent_states: Dict[str, ConsentState]
+    _audit_references: Dict[str, ConsentAuditReference]
+    _audit_order: List[str]
     _grace_period: float
+    _max_audit_references: int
     _lock: threading.Lock
 
-    def __init__(self, grace_period_seconds: float = CONSENT_GRACE_PERIOD_SECONDS) -> None:
+    def __init__(
+        self,
+        grace_period_seconds: float = CONSENT_GRACE_PERIOD_SECONDS,
+        max_audit_references: int = MAX_CONSENT_AUDIT_REFERENCES,
+    ) -> None:
         self._grace_period = float(grace_period_seconds)
+        self._max_audit_references = max(1, int(max_audit_references))
         self._lock = threading.Lock()
         self._consent_states = {}
+        self._audit_references = {}
+        self._audit_order = []
 
     def check_consent(
         self,
@@ -237,6 +266,33 @@ class ConsentManager:
             state.last_modified_epoch_seconds = now
             return state
 
+    def _record_audit_reference_locked(
+        self,
+        account_tag: str,
+        state: ConsentState,
+        now_epoch_seconds: float,
+    ) -> ConsentAuditReference:
+        acct_digest = _hash_account_tag_for_audit(account_tag)
+        seed = (
+            f"{CONSENT_AUDIT_DOMAIN_TAG}|{acct_digest}|{state.status}|"
+            f"{state.last_modified_epoch_seconds:.6f}|{now_epoch_seconds:.6f}"
+        ).encode("utf-8") + os.urandom(8)
+        ref_id = "car-v1:" + hashlib.sha256(seed).hexdigest()[:16]
+        ref = ConsentAuditReference(
+            reference_id=ref_id,
+            account_tag_digest=acct_digest,
+            terminal_status=state.status,
+            version=state.version,
+            recorded_at_epoch_seconds=now_epoch_seconds,
+            withdrawal_epoch_seconds=state.withdrawal_epoch_seconds,
+        )
+        while len(self._audit_references) >= self._max_audit_references and self._audit_order:
+            oldest = self._audit_order.pop(0)
+            self._audit_references.pop(oldest, None)
+        self._audit_references[ref_id] = ref
+        self._audit_order.append(ref_id)
+        return ref
+
     def prune_expired(self, now_epoch_seconds: float | None = None, max_to_prune: int = 1000) -> int:
         now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
         removed = 0
@@ -250,9 +306,69 @@ class ConsentManager:
                     if age > self._grace_period:
                         to_remove.append(tag)
             for tag in to_remove:
-                del self._consent_states[tag]
+                state = self._consent_states.pop(tag)
+                self._record_audit_reference_locked(tag, state, now)
                 removed += 1
         return removed
+
+    def prune_expired_batch(
+        self,
+        *,
+        now_epoch_seconds: float | None = None,
+        batch_size: int = 64,
+        after_account_tag: Optional[str] = None,
+    ) -> Tuple[int, Optional[str], bool, List[ConsentAuditReference]]:
+        """Scan up to batch_size consent records after cursor and prune aged terminal states."""
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0 or batch_size > 10_000:
+            raise ValueError("batch_size must be an integer between 1 and 10000")
+        now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+        audit_refs: List[ConsentAuditReference] = []
+        removed = 0
+        with self._lock:
+            ordered_tags = sorted(self._consent_states.keys())
+            if after_account_tag is not None:
+                ordered_tags = [t for t in ordered_tags if t > after_account_tag]
+            if not ordered_tags:
+                return 0, after_account_tag, True, []
+
+            batch_tags = ordered_tags[:batch_size]
+            phase_completed = len(ordered_tags) <= batch_size
+            next_cursor = batch_tags[-1]
+
+            for tag in batch_tags:
+                state = self._consent_states.get(tag)
+                if state is None:
+                    continue
+                effective_status = state.status
+                if state.status == ConsentStatus.GRANTED and state.expires_at_epoch_seconds > 0:
+                    if now > state.expires_at_epoch_seconds:
+                        effective_status = ConsentStatus.EXPIRED
+                        state.status = ConsentStatus.EXPIRED
+                        state.last_modified_epoch_seconds = state.expires_at_epoch_seconds
+                if effective_status in {ConsentStatus.EXPIRED, ConsentStatus.WITHDRAWN, ConsentStatus.INVALID}:
+                    if (now - state.last_modified_epoch_seconds) > self._grace_period:
+                        popped = self._consent_states.pop(tag)
+                        audit_refs.append(self._record_audit_reference_locked(tag, popped, now))
+                        removed += 1
+
+        return removed, next_cursor, phase_completed, audit_refs
+
+    def get_consent_audit_reference(self, reference_id: str) -> Optional[ConsentAuditReference]:
+        with self._lock:
+            return self._audit_references.get(reference_id)
+
+    def list_consent_audit_references(self, limit: int = 100) -> List[ConsentAuditReference]:
+        if limit <= 0:
+            return []
+        with self._lock:
+            refs: List[ConsentAuditReference] = []
+            for ref_id in reversed(self._audit_order):
+                if len(refs) >= limit:
+                    break
+                item = self._audit_references.get(ref_id)
+                if item is not None:
+                    refs.append(item)
+            return refs
 
     def generate_consent_token(self, account_tag: str, status: str, scopes: List[str]) -> str:
         sorted_scopes = sorted(scopes)
