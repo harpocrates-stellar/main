@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { BatchItemResult } from './batchVerifier'
 import {
+  exportBatchCheckpointJSON,
   exportBatchCSV,
   exportBatchJSON,
   exportReceiptCollection,
+  importBatchCheckpointJSON,
   sanitizeBatchResults,
 } from './batchExport'
 
@@ -76,5 +78,21 @@ describe('batchExport', () => {
     const parsed = JSON.parse(collectionJson) as Record<string, unknown>
     expect(parsed.protocol).toBe('harpocrates-receipt-collection')
     expect(parsed.totalItems).toBe(1)
+  })
+
+  it('exports and validates resumable batch checkpoints without leaking raw filenames or media bytes', () => {
+    const files = mockItems.map((i) => i.file)
+    const cfg = {
+      maxFileSizeBytes: 100 * 1024 * 1024,
+      maxTotalSizeBytes: 500 * 1024 * 1024,
+      apiBase: 'http://127.0.0.1:5050',
+      contractId: 'CTEST',
+    }
+    const json = exportBatchCheckpointJSON(files, mockItems, cfg)
+    expect(json).not.toContain('media bytes')
+    expect(json).not.toContain('evidence1.mp4')
+    const validated = importBatchCheckpointJSON(json, files, cfg)
+    expect(validated.protocol).toBe('harpocrates-batch-checkpoint')
+    expect(validated.completedEntries).toHaveLength(2)
   })
 })

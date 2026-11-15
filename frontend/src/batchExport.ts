@@ -1,4 +1,10 @@
-import type { BatchItemResult } from './batchVerifier'
+import {
+  createBatchCheckpoint,
+  validateBatchCheckpoint,
+  type BatchConfig,
+  type BatchItemResult,
+  type BatchVerificationCheckpoint,
+} from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
@@ -135,6 +141,31 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
   }
 
   return JSON.stringify(collection, null, 2)
+}
+
+/**
+ * Serializes a privacy-safe resumable batch checkpoint containing only
+ * non-secret input fingerprints and completed terminal outcomes.
+ */
+export function exportBatchCheckpointJSON(
+  files: ReadonlyArray<File>,
+  results: ReadonlyArray<BatchItemResult>,
+  config?: Partial<BatchConfig>,
+): string {
+  const checkpoint = createBatchCheckpoint(files, results, config)
+  return JSON.stringify(checkpoint, null, 2)
+}
+
+/**
+ * Parses and validates a serialized batch checkpoint against the current
+ * selected files, batch size policy, and network/contract context.
+ */
+export function importBatchCheckpointJSON(
+  rawCheckpoint: string,
+  files: ReadonlyArray<File>,
+  config?: Partial<BatchConfig>,
+): BatchVerificationCheckpoint {
+  return validateBatchCheckpoint(rawCheckpoint, files, config)
 }
 
 function escapeCSV(val: string): string {
