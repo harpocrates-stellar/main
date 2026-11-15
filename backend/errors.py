@@ -69,6 +69,12 @@ NOT_FOUND = "NOT_FOUND"
 GONE = "GONE"
 """The requested resource has been purged and is no longer available (410)."""
 
+UPLOAD_CANCELLED = "UPLOAD_CANCELLED"
+"""The upload session was cancelled by the caller (409)."""
+
+UPLOAD_ALREADY_COMPLETED = "UPLOAD_ALREADY_COMPLETED"
+"""The upload session already completed and can no longer be cancelled (409)."""
+
 INTERNAL_ERROR = "INTERNAL_ERROR"
 """An unexpected server-side failure occurred (500)."""
 

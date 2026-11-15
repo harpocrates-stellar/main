@@ -10,12 +10,14 @@ payload bytes, filenames beyond what Flask already accepted, or secrets.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 import shutil
 import tempfile
+import threading
 from pathlib import Path
-from typing import BinaryIO, Iterable, Optional, Tuple, Union
+from typing import Any, BinaryIO, Callable, Dict, Iterable, Iterator, Optional, Tuple, Union
 
 from flask import g
 from werkzeug.datastructures import FileStorage
@@ -28,6 +30,259 @@ from werkzeug.exceptions import RequestEntityTooLarge
 DEFAULT_CHUNK_BYTES = 65_536  # 64 KiB
 MIN_CHUNK_BYTES = 4_096  # 4 KiB
 MAX_CHUNK_BYTES = 1_048_576  # 1 MiB
+
+UPLOAD_STATE_IDLE = "idle"
+UPLOAD_STATE_QUEUED = "queued"
+UPLOAD_STATE_RECEIVING = "receiving"
+UPLOAD_STATE_CANCELLING = "cancelling"
+UPLOAD_STATE_CANCELLED = "cancelled"
+UPLOAD_STATE_COMPLETED = "completed"
+
+
+class UploadCancelledError(Exception):
+    """Raised when a queued or receiving upload session is cancelled."""
+
+
+class UploadSessionCancellationCoordinator:
+    """Coordinates upload cancellation, admission release, and writer-safe cleanup."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+
+    def register_session(self, session_id: str, session_dir: Union[str, Path]) -> Dict[str, Any]:
+        with self._condition:
+            existing = self._sessions.get(session_id)
+            if existing is not None:
+                return self._public_view_unlocked(existing)
+            entry: Dict[str, Any] = {
+                "session_id": session_id,
+                "session_dir": Path(session_dir),
+                "state": UPLOAD_STATE_IDLE,
+                "cancel_event": threading.Event(),
+                "active_writers": 0,
+                "cleaned": False,
+                "cancel_hooks": [],
+            }
+            self._sessions[session_id] = entry
+            return self._public_view_unlocked(entry)
+
+    def ensure_session(self, session_id: str, session_dir: Union[str, Path]) -> threading.Event:
+        path = Path(session_dir)
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                if not path.exists():
+                    raise FileNotFoundError("session not found")
+                self.register_session(session_id, path)
+                entry = self._sessions[session_id]
+            return entry["cancel_event"]
+
+    def add_cancel_hook(self, session_id: str, hook: Callable[[], None]) -> None:
+        call_immediately = False
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return
+            if entry["cancel_event"].is_set():
+                call_immediately = True
+            else:
+                entry["cancel_hooks"].append(hook)
+        if call_immediately:
+            hook()
+
+    def mark_queued(self, session_id: str) -> None:
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return
+            if entry["cancel_event"].is_set() or entry["state"] in (
+                UPLOAD_STATE_CANCELLING,
+                UPLOAD_STATE_CANCELLED,
+            ):
+                raise UploadCancelledError("upload session cancelled")
+            entry["state"] = UPLOAD_STATE_QUEUED
+            self._condition.notify_all()
+
+    def mark_receiving(self, session_id: str) -> None:
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return
+            if entry["cancel_event"].is_set() or entry["state"] in (
+                UPLOAD_STATE_CANCELLING,
+                UPLOAD_STATE_CANCELLED,
+            ):
+                raise UploadCancelledError("upload session cancelled")
+            entry["state"] = UPLOAD_STATE_RECEIVING
+            self._condition.notify_all()
+
+    def mark_idle(self, session_id: str) -> None:
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return
+            if (
+                not entry["cancel_event"].is_set()
+                and entry["active_writers"] == 0
+                and entry["state"] not in (UPLOAD_STATE_COMPLETED, UPLOAD_STATE_CANCELLED)
+            ):
+                entry["state"] = UPLOAD_STATE_IDLE
+                entry["cancel_hooks"].clear()
+                self._condition.notify_all()
+
+    def mark_completed(self, session_id: str) -> None:
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return
+            entry["state"] = UPLOAD_STATE_COMPLETED
+            entry["cleaned"] = True
+            entry["cancel_hooks"].clear()
+            self._condition.notify_all()
+
+    @contextmanager
+    def writer_scope(self, session_id: str) -> Iterator[threading.Event]:
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                raise FileNotFoundError("session not found")
+            if entry["cancel_event"].is_set() or entry["state"] in (
+                UPLOAD_STATE_CANCELLING,
+                UPLOAD_STATE_CANCELLED,
+            ):
+                raise UploadCancelledError("upload session cancelled")
+            entry["active_writers"] += 1
+            entry["state"] = UPLOAD_STATE_RECEIVING
+            cancel_event: threading.Event = entry["cancel_event"]
+            self._condition.notify_all()
+
+        try:
+            yield cancel_event
+        finally:
+            cleanup_dir: Optional[Path] = None
+            with self._condition:
+                entry = self._sessions.get(session_id)
+                if entry is not None:
+                    entry["active_writers"] = max(0, entry["active_writers"] - 1)
+                    if entry["cancel_event"].is_set() and entry["active_writers"] == 0:
+                        cleanup_dir = entry["session_dir"]
+            if cleanup_dir is not None:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+                with self._condition:
+                    entry = self._sessions.get(session_id)
+                    if entry is not None:
+                        entry["cleaned"] = True
+                        entry["state"] = UPLOAD_STATE_CANCELLED
+                        self._condition.notify_all()
+            else:
+                with self._condition:
+                    self._condition.notify_all()
+
+    def cancel(
+        self,
+        session_id: str,
+        *,
+        fallback_dir: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        hooks_to_run: list[Callable[[], None]] = []
+        cleanup_now: Optional[Path] = None
+
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                if fallback_dir is None or not fallback_dir.exists():
+                    return None
+                self.register_session(session_id, fallback_dir)
+                entry = self._sessions[session_id]
+
+            if entry["state"] == UPLOAD_STATE_COMPLETED:
+                return self._public_view_unlocked(entry, cancelled=False)
+
+            entry["cancel_event"].set()
+            hooks_to_run = list(entry["cancel_hooks"])
+            entry["cancel_hooks"].clear()
+
+            if entry["active_writers"] > 0:
+                entry["state"] = UPLOAD_STATE_CANCELLING
+            else:
+                cleanup_now = entry["session_dir"]
+                entry["state"] = UPLOAD_STATE_CANCELLED
+            self._condition.notify_all()
+
+        for hook in hooks_to_run:
+            try:
+                hook()
+            except Exception:
+                pass
+
+        if cleanup_now is not None:
+            shutil.rmtree(cleanup_now, ignore_errors=True)
+            with self._condition:
+                entry = self._sessions.get(session_id)
+                if entry is not None and entry["active_writers"] == 0:
+                    entry["cleaned"] = True
+                    entry["state"] = UPLOAD_STATE_CANCELLED
+                    self._condition.notify_all()
+
+        with self._condition:
+            entry = self._sessions[session_id]
+            return self._public_view_unlocked(entry, cancelled=True)
+
+    def get_status(
+        self,
+        session_id: str,
+        *,
+        fallback_dir: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._condition:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                if fallback_dir is None or not fallback_dir.exists():
+                    return None
+                self.register_session(session_id, fallback_dir)
+                entry = self._sessions[session_id]
+            return self._public_view_unlocked(
+                entry,
+                cancelled=entry["state"] in (UPLOAD_STATE_CANCELLING, UPLOAD_STATE_CANCELLED),
+            )
+
+    def wait_for_state(self, session_id: str, expected_state: str, timeout: float = 2.0) -> bool:
+        deadline = threading.Event()
+        del deadline
+        import time as _time
+
+        end = _time.monotonic() + timeout
+        with self._condition:
+            while True:
+                entry = self._sessions.get(session_id)
+                if entry is not None and entry["state"] == expected_state:
+                    return True
+                rem = end - _time.monotonic()
+                if rem <= 0:
+                    return False
+                self._condition.wait(timeout=min(rem, 0.05))
+
+    @staticmethod
+    def _public_view_unlocked(
+        entry: Dict[str, Any],
+        *,
+        cancelled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        is_cancelled = (
+            cancelled
+            if cancelled is not None
+            else entry["state"] in (UPLOAD_STATE_CANCELLING, UPLOAD_STATE_CANCELLED)
+        )
+        return {
+            "ok": True,
+            "sessionId": entry["session_id"],
+            "state": entry["state"],
+            "cancelled": bool(is_cancelled),
+            "activeWriters": int(entry["active_writers"]),
+            "cleaned": bool(entry["cleaned"]),
+        }
 
 
 def clamp_chunk_bytes(value: int | None, *, enforce_min: bool = False) -> int:
@@ -102,6 +357,7 @@ def hash_stream_to_path(
     chunk_size: int | None = None,
     max_size: int | None = None,
     temp_dir: str | Path | None = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Tuple[str, int]:
     """Copy *source* to *destination* in bounded chunks while hashing SHA-256.
 
@@ -120,6 +376,8 @@ def hash_stream_to_path(
     tmp_path: Optional[Path] = None
 
     try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise UploadCancelledError("upload session cancelled")
         fd, tmp_name = tempfile.mkstemp(
             prefix="harpocrates-stream-",
             dir=resolve_temp_dir(temp_dir),
@@ -127,7 +385,11 @@ def hash_stream_to_path(
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as tmp_file:
             while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise UploadCancelledError("upload session cancelled")
                 chunk = source.read(bounded)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise UploadCancelledError("upload session cancelled")
                 if not chunk:
                     break
                 if limit > 0 and bytes_written + len(chunk) > limit:
@@ -138,6 +400,8 @@ def hash_stream_to_path(
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
 
+        if cancel_event is not None and cancel_event.is_set():
+            raise UploadCancelledError("upload session cancelled")
         # Atomic-ish replace into the final destination.
         shutil.move(str(tmp_path), str(dest))
         tmp_path = None
@@ -160,6 +424,7 @@ def hash_paths_concat(
     *,
     chunk_size: int | None = None,
     max_size: int | None = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Tuple[str, int]:
     """Concatenate *paths* into *destination* with bounded-chunk SHA-256 hashing."""
     bounded = resolve_chunk_bytes(chunk_size)
@@ -172,12 +437,16 @@ def hash_paths_concat(
     tmp_path: Optional[Path] = None
 
     try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise UploadCancelledError("upload session cancelled")
         fd, tmp_name = tempfile.mkstemp(prefix="harpocrates-concat-")
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as out:
             for path in paths:
                 with Path(path).open("rb") as handle:
                     while True:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise UploadCancelledError("upload session cancelled")
                         chunk = handle.read(bounded)
                         if not chunk:
                             break
@@ -188,6 +457,8 @@ def hash_paths_concat(
                         bytes_written += len(chunk)
             out.flush()
             os.fsync(out.fileno())
+        if cancel_event is not None and cancel_event.is_set():
+            raise UploadCancelledError("upload session cancelled")
         shutil.move(str(tmp_path), str(dest))
         tmp_path = None
         return hasher.hexdigest(), bytes_written
@@ -230,11 +501,13 @@ class StreamingFileStorage(FileStorage):
         max_size: int = 0,
         chunk_size: int | None = None,
         temp_dir: str | Path | None = None,
+        cancel_event: Optional[threading.Event] = None,
     ):
         super().__init__(stream, filename, content_type=content_type)
         self._max_size = max_size
         self._chunk_size = resolve_chunk_bytes(chunk_size)
         self._temp_dir = resolve_temp_dir(temp_dir)
+        self._cancel_event = cancel_event
         self._materialized_path: Optional[Path] = None
         self._bytes_written = 0
         self._hash_computed = False
@@ -271,6 +544,7 @@ class StreamingFileStorage(FileStorage):
             chunk_size=self._chunk_size,
             max_size=self._max_size,
             temp_dir=self._temp_dir,
+            cancel_event=self._cancel_event,
         )
         self._bytes_written = written
         self._digest = digest
@@ -285,7 +559,11 @@ class StreamingFileStorage(FileStorage):
             pass
 
 
-def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileStorage:
+def create_streaming_file_storage(
+    field_storage: FileStorage,
+    *,
+    cancel_event: Optional[threading.Event] = None,
+) -> StreamingFileStorage:
     """Wrap a Werkzeug ``FileStorage`` with bounded-chunk streaming hashing."""
     config = _upload_config()
     max_size = resolve_max_bytes(
@@ -308,4 +586,5 @@ def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileSt
         max_size=max_size,
         chunk_size=chunk_size,
         temp_dir=temp_dir,
+        cancel_event=cancel_event,
     )

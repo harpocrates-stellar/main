@@ -45,6 +45,8 @@ from errors import (
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UPLOAD_ALREADY_COMPLETED,
+    UPLOAD_CANCELLED,
     UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
@@ -148,12 +150,15 @@ from tracing import (
 )
 from readiness import ReadinessManager
 from verifier_cache import VerifierCache
-from admission import AdmissionController, require_capacity
+from admission import AdmissionController, _get_client_identity, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
+    UPLOAD_STATE_COMPLETED,
+    UploadCancelledError,
+    UploadSessionCancellationCoordinator,
     create_streaming_file_storage,
     hash_paths_concat,
 )
@@ -404,6 +409,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -428,6 +435,44 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    upload_cancellation = UploadSessionCancellationCoordinator()
+    app.extensions["admission_controller"] = admission_controller
+    app.extensions["upload_cancellation"] = upload_cancellation
+
+    def _acquire_session_admission(session_id: str, session_dir: Path):
+        cancel_ev = upload_cancellation.ensure_session(session_id, session_dir)
+        upload_cancellation.add_cancel_hook(
+            session_id,
+            admission_controller.notify_cancelled,
+        )
+        identity = _get_client_identity()
+        lease, reason = admission_controller.acquire_lease(
+            identity,
+            cancel_event=cancel_ev,
+            on_queued=lambda: upload_cancellation.mark_queued(session_id),
+        )
+        if lease is None:
+            if reason == "cancelled":
+                return None, error_response(
+                    code=UPLOAD_CANCELLED,
+                    message="upload session was cancelled",
+                    status=409,
+                )
+            endpoint = request.url_rule.rule if request.url_rule else request.path
+            metrics_collector.record_rejection(reason, endpoint)
+            status_code = 429 if reason == "identity_limit" else 503
+            resp = jsonify({"error": "service overloaded", "reason": reason})
+            resp.status_code = status_code
+            resp.headers["Retry-After"] = str(
+                int(admission_controller.timeout_seconds * 2) or 5
+            )
+            return None, resp
+        upload_cancellation.add_cancel_hook(session_id, lambda: _ignore_bool(lease.release()))
+        upload_cancellation.mark_receiving(session_id)
+        return lease, None
+
+    def _ignore_bool(_val: object) -> None:
+        return None
 
     @app.before_request
     def start_request_context():
@@ -690,6 +735,14 @@ def create_app() -> Flask:
             cli_code=OVERSIZED_INPUT,
         )
 
+    @app.errorhandler(UploadCancelledError)
+    def handle_upload_cancelled(_error: UploadCancelledError):
+        return error_response(
+            code=UPLOAD_CANCELLED,
+            message="upload session was cancelled",
+            status=409,
+        )
+
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
         return error_response(
@@ -933,130 +986,193 @@ def create_app() -> Flask:
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         session_dir.mkdir(parents=True, exist_ok=True)
+        upload_cancellation.register_session(session_id, session_dir)
         return jsonify({"sessionId": session_id})
+
+    @app.get("/api/stego/upload-session/<session_id>/status")
+    @limiter.limit(config.ratelimit_upload_session)
+    def get_upload_session_status(session_id: str):
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        status_view = upload_cancellation.get_status(session_id, fallback_dir=session_dir)
+        if status_view is None:
+            return jsonify({"error": "session not found"}), 404
+        return jsonify(status_view)
+
+    @app.post("/api/stego/upload-session/<session_id>/cancel")
+    @limiter.limit(config.ratelimit_upload_session)
+    def cancel_upload_session(session_id: str):
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        result = upload_cancellation.cancel(session_id, fallback_dir=session_dir)
+        if result is None:
+            return jsonify({"error": "session not found"}), 404
+        if result["state"] == UPLOAD_STATE_COMPLETED and not result["cancelled"]:
+            return error_response(
+                code=UPLOAD_ALREADY_COMPLETED,
+                message="upload session already completed",
+                status=409,
+            )
+        return jsonify(result)
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
     def upload_chunk(session_id: str, chunk_index: int):
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        status_view = upload_cancellation.get_status(session_id, fallback_dir=session_dir)
+        if status_view is None:
+            return jsonify({"error": "session not found"}), 404
+        if status_view["cancelled"]:
+            return error_response(
+                code=UPLOAD_CANCELLED,
+                message="upload session was cancelled",
+                status=409,
+            )
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
-        
+
         chunk = request.files.get("chunk")
         if chunk is None:
             return jsonify({"error": "chunk is required"}), 400
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
-        # Persist each session chunk with bounded-chunk hashing for integrity.
-        g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
-        chunk_path = session_dir / f"chunk-{chunk_index}"
+        lease, rejection = _acquire_session_admission(session_id, session_dir)
+        if rejection is not None:
+            return rejection
+        assert lease is not None
         try:
-            streaming_chunk.save(str(chunk_path))
-        except RequestEntityTooLarge:
-            return jsonify({"error": "chunk exceeds size limit"}), 413
-        return jsonify({
-            "ok": True,
-            "bytes": streaming_chunk.bytes_written,
-            "sha256": streaming_chunk.computed_hash,
-        })
+            with upload_cancellation.writer_scope(session_id) as cancel_ev:
+                g.upload_config = config
+                streaming_chunk = create_streaming_file_storage(
+                    chunk,
+                    cancel_event=cancel_ev,
+                )
+                chunk_path = session_dir / f"chunk-{chunk_index}"
+                try:
+                    streaming_chunk.save(str(chunk_path))
+                except RequestEntityTooLarge:
+                    return jsonify({"error": "chunk exceeds size limit"}), 413
+            upload_cancellation.mark_idle(session_id)
+            return jsonify({
+                "ok": True,
+                "bytes": streaming_chunk.bytes_written,
+                "sha256": streaming_chunk.computed_hash,
+            })
+        finally:
+            lease.release()
 
     @app.post("/api/stego/upload-session/<session_id>/commit")
     @limiter.limit(config.ratelimit_upload_session)
-    @require_capacity(admission_controller)
     def commit_upload_session(session_id: str):
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        status_view = upload_cancellation.get_status(session_id, fallback_dir=session_dir)
+        if status_view is None:
+            return jsonify({"error": "session not found"}), 404
+        if status_view["cancelled"]:
+            return error_response(
+                code=UPLOAD_CANCELLED,
+                message="upload session was cancelled",
+                status=409,
+            )
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
 
-        metadata_raw = request.form.get("metadata")
-        if metadata_raw is None:
-            return jsonify({"error": "metadata is required"}), 400
-
+        lease, rejection = _acquire_session_admission(session_id, session_dir)
+        if rejection is not None:
+            return rejection
+        assert lease is not None
         try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return metadata_error_response(
-                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+            metadata_raw = request.form.get("metadata")
+            if metadata_raw is None:
+                return jsonify({"error": "metadata is required"}), 400
+
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                return metadata_error_response(
+                    MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+                )
+            try:
+                validate_embed_metadata(metadata)
+            except MetadataError as exc:
+                return metadata_error_response(exc)
+            except ValueError as exc:
+                return metadata_error_response(classify_validation_error(exc))
+
+            combined_path = session_dir / "combined.video"
+            chunk_files = sorted(
+                [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
+                key=lambda f: int(f.name.split("-")[1]),
             )
-        try:
-            validate_embed_metadata(metadata)
-        except MetadataError as exc:
-            return metadata_error_response(exc)
-        except ValueError as exc:
-            return metadata_error_response(classify_validation_error(exc))
+            if not chunk_files:
+                return jsonify({"error": "session has no chunks"}), 400
 
-        combined_path = session_dir / "combined.video"
-        chunk_files = sorted(
-            [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
-            key=lambda f: int(f.name.split("-")[1]),
-        )
-        if not chunk_files:
-            return jsonify({"error": "session has no chunks"}), 400
+            with upload_cancellation.writer_scope(session_id) as cancel_ev:
+                # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
+                source_hash, _written = hash_paths_concat(
+                    chunk_files,
+                    combined_path,
+                    chunk_size=getattr(config, "upload_chunk_bytes", None),
+                    max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+                    cancel_event=cancel_ev,
+                )
 
-        # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
-        source_hash, _written = hash_paths_concat(
-            chunk_files,
-            combined_path,
-            chunk_size=getattr(config, "upload_chunk_bytes", None),
-            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
-        )
+                # Sniff assembled file before handing it to ffmpeg.
+                try:
+                    sniff_media_type_path(combined_path)
+                except QuarantineError as exc:
+                    return error_response(
+                        code=UNSUPPORTED_MEDIA_TYPE,
+                        message=str(exc),
+                        status=400,
+                    )
 
-        # Sniff assembled file before handing it to ffmpeg.
-        try:
-            sniff_media_type_path(combined_path)
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
+                with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+                    output_path = Path(tmp_dir) / "embedded.mp4"
+                    embed_metadata(combined_path, output_path, metadata)
+                    output_bytes = output_path.read_bytes()
+                    embedded_hash = sha256_file(output_path)
+                    metadata_hash = canonical_metadata_hash(metadata)
+
+            retention_class = request.headers.get("X-Harpocrates-Retention-Class") or metadata.get("retentionClass", "default")
+            if retention_class not in config.retention_classes:
+                return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+            retention_days = config.retention_classes[retention_class]
+            expires_at = None
+            if retention_days >= 0:
+                expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=normalize_filename(metadata.get("fileName", "unknown.mp4")),
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                retention_class=retention_class,
+                expires_at=expires_at,
+                metadata=redact_metadata(metadata),
             )
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            embed_metadata(combined_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+            response = Response(output_bytes, mimetype="video/mp4")
+            response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+            response.headers["X-Harpocrates-Source-Hash"] = source_hash
+            response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+            response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+            response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+            response.headers["X-Harpocrates-Retention-Class"] = retention_class
+            if config.expose_metadata_header:
+                response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                ).decode("ascii")
 
-        retention_class = request.headers.get("X-Harpocrates-Retention-Class") or metadata.get("retentionClass", "default")
-        if retention_class not in config.retention_classes:
-            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
-        retention_days = config.retention_classes[retention_class]
-        expires_at = None
-        if retention_days >= 0:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+            import shutil
+            shutil.rmtree(session_dir, ignore_errors=True)
+            upload_cancellation.mark_completed(session_id)
 
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=normalize_filename(metadata.get("fileName", "unknown.mp4")),
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            retention_class=retention_class,
-            expires_at=expires_at,
-            metadata=redact_metadata(metadata),
-        )
-
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        response.headers["X-Harpocrates-Retention-Class"] = retention_class
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-
-        import shutil
-        shutil.rmtree(session_dir, ignore_errors=True)
-
-        return response
+            return response
+        finally:
+            lease.release()
 
     @app.post("/api/stego/extract")
     @limiter.limit(config.ratelimit_extract)
