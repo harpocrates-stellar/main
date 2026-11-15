@@ -79,3 +79,15 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  CLI_EXIT_CODES,
+  evaluateVerificationChecks,
+  exitCodeForVerificationResult,
+  aggregateBatchExitCode,
+} from './exit-codes.js'
+export type {
+  CliExitCode,
+  VerificationCheckStatus,
+  RequiredVerificationCheck,
+  VerificationCheckSummaryOutcome,
+} from './exit-codes.js'

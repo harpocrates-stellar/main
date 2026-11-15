@@ -78,17 +78,18 @@ Script authors and CI integrations can rely on the following exit codes to deter
 
 | Code | Meaning | Emitted by |
 | :--- | :--- | :--- |
-| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
-| `1` | `expired` | `verify`, `status`, `verify-lineage` |
-| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
-| `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
-| `4` | `network_mismatch` | `verify` |
-| `5` | `contract_mismatch` | `verify` |
-| `6` | `pending` (offline verification) | `verify` |
-| `7` | `failed` transaction | `verify` |
-| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `0` | `valid` / `registered` / success (all required checks passed) | `verify` (single & `--batch`), `status`, `verify-receipt`, `verify-lineage` |
+| `1` | `expired` | `verify` (single & `--batch`), `status`, `verify-lineage` |
+| `2` | `revoked` / usage error (missing required flag) | `verify` (single & `--batch`), `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `3` | `not_found` / `missing` / `unknown` | `verify` (single & `--batch`), `status`, `verify-lineage` |
+| `4` | `network_mismatch` | `verify` (single & `--batch`) |
+| `5` | `contract_mismatch` | `verify` (single & `--batch`) |
+| `6` | `incomplete` / `pending` (skipped required checks such as `--offline`, empty batch, or unconfirmed tx) | `verify` (single & `--batch`) |
+| `7` | `failed` transaction | `verify` (single & `--batch`) |
+| `8` | `invalid` / `error` (malformed input, invalid receipt signature, statement/chain hash mismatch, cycle/disputed lineage) | `verify` (single & `--batch`), `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `9` | `unavailable` (RPC timeout or unreachable verification dependency) | `verify` (single & `--batch`), `status`, `verify-lineage` |
 
-An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
+An offline verification (`--offline`) skips required on-chain verification checks and therefore exits `6` (`incomplete` / `pending`), **never** `0`: it checks local syntax and deployment binding only and cannot establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. Invalid cryptographic or schema inputs exit `8` (`invalid`), while RPC request timeouts (`--timeout`) and unreachable verification endpoints exit `9` (`unavailable`). Batch verification (`verify --batch <manifest-list.json>`) applies the exact same exit-code table and exits `0` only when every item passes all required checks (empty batches exit `6`).
 
 Harpocrates CLI environment variables:
 

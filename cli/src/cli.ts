@@ -35,13 +35,22 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  CLI_EXIT_CODES,
+  exitCodeForVerificationResult,
+  aggregateBatchExitCode,
+  type CliExitCode,
+} from './exit-codes.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -116,8 +125,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -128,6 +138,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 async function handleVerify(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
   const contractId = flags['contract-id'] || flags.contractId
   const manifestPath = flags.manifest || flags.m
+  const batchPath = flags.batch || flags.b
   const txHash = flags['tx-hash'] || flags.txHash
   const rpcUrl = flags['rpc-url'] || flags.rpcUrl
   const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
@@ -136,26 +147,44 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
   const network = resolveNetwork(flags.network || DEFAULT_NETWORK_PASSPHRASE)
   const timeoutMs = parseTimeout(flags.timeout)
 
+  if (manifestPath && batchPath) {
+    exit(2, 'cannot specify both --manifest and --batch')
+  }
+
   if (!contractId || !StrKey.isValidContract(contractId)) {
-    exit(8, 'a valid --contract-id is required for verification')
+    exit(CLI_EXIT_CODES.INVALID, 'a valid --contract-id is required for verification')
+  }
+
+  if (batchPath) {
+    return await handleVerifyBatchList({
+      batchPath,
+      contractId,
+      network,
+      rpcUrl,
+      sourceAddress,
+      offline,
+      timeoutMs,
+      outputFormat,
+      debugLog,
+    })
   }
 
   // ── Read manifest (file, stdin, or flag-constructed) ──────────────────
   let manifest: ReturnType<typeof parseManifest>
 
   if (!manifestPath) {
-    exit(8, '--manifest is required for verification')
+    exit(CLI_EXIT_CODES.INVALID, '--manifest is required for verification')
   }
   try {
     manifest = parseManifest(await readText(manifestPath))
   } catch {
-    exit(8, 'invalid or unreadable manifest')
+    exit(CLI_EXIT_CODES.INVALID, 'invalid or unreadable manifest')
   }
 
-  if (manifest.contractId !== contractId) exit(5, 'contract_mismatch')
-  if (manifest.network !== network) exit(4, 'network_mismatch')
+  if (manifest.contractId !== contractId) exit(CLI_EXIT_CODES.CONTRACT_MISMATCH, 'contract_mismatch')
+  if (manifest.network !== network) exit(CLI_EXIT_CODES.NETWORK_MISMATCH, 'network_mismatch')
   if (txHash && txHash.toLowerCase() !== manifest.transactionRef.toLowerCase()) {
-    exit(8, 'transaction hash does not match manifest')
+    exit(CLI_EXIT_CODES.INVALID, 'transaction hash does not match manifest')
   }
 
   debugLog({ event: 'verify.manifest', manifest: redactSensitive(manifest) })
@@ -183,8 +212,10 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
       const result = classifyVerification(manifest, txVerification, chainRecord)
       receipt = createReceipt(manifest, txVerification, chainRecord, result)
     } catch (err) {
-      if (err instanceof LookupTimeoutError) exit(8, 'verification dependency failed: RPC timeout')
-      exit(8, 'verification dependency failed')
+      if (err instanceof LookupTimeoutError) {
+        exit(CLI_EXIT_CODES.UNAVAILABLE, 'verification unavailable: RPC timeout')
+      }
+      exit(CLI_EXIT_CODES.UNAVAILABLE, 'verification unavailable: dependency failed')
     }
   }
 
@@ -194,18 +225,159 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
     printText(formatReceipt(receipt))
   }
 
-  const exitCodes: Record<string, number> = {
-    valid: 0,
-    expired: 1,
-    revoked: 2,
-    not_found: 3,
-    network_mismatch: 4,
-    contract_mismatch: 5,
-    pending: 6,
-    failed: 7,
-    error: 8,
+  exit(exitCodeForVerificationResult(receipt.result))
+}
+
+const MAX_VERIFY_BATCH_ITEMS = 64
+
+async function handleVerifyBatchList(params: {
+  batchPath: string
+  contractId: string
+  network: string
+  rpcUrl: string | undefined
+  sourceAddress: string | undefined
+  offline: boolean
+  timeoutMs: number
+  outputFormat: string
+  debugLog: (event: Record<string, unknown>) => void
+}): Promise<void> {
+  const {
+    batchPath,
+    contractId,
+    network,
+    rpcUrl,
+    sourceAddress,
+    offline,
+    timeoutMs,
+    outputFormat,
+    debugLog,
+  } = params
+
+  let manifestPaths: string[]
+  try {
+    const raw = await readText(batchPath)
+    const parsed: unknown = JSON.parse(raw)
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length > MAX_VERIFY_BATCH_ITEMS ||
+      parsed.some((item) => typeof item !== 'string' || item.trim() === '' || item === '-')
+    ) {
+      throw new Error('invalid batch manifest list')
+    }
+    manifestPaths = parsed as string[]
+  } catch {
+    exit(CLI_EXIT_CODES.INVALID, 'invalid or unreadable batch manifest list')
   }
-  exit(exitCodes[receipt.result] ?? 8)
+
+  type BatchItemReport = {
+    index: number
+    proofId: string | null
+    outcome: string
+    exitCode: CliExitCode
+    skippedRequiredChecks: boolean
+  }
+
+  const items: BatchItemReport[] = []
+  for (let i = 0; i < manifestPaths.length; i++) {
+    let manifest: ReturnType<typeof parseManifest>
+    try {
+      manifest = parseManifest(await readText(manifestPaths[i]))
+    } catch {
+      items.push({
+        index: i,
+        proofId: null,
+        outcome: 'invalid',
+        exitCode: CLI_EXIT_CODES.INVALID,
+        skippedRequiredChecks: false,
+      })
+      continue
+    }
+
+    debugLog({ event: 'verify.batch.manifest', index: i, manifest: redactSensitive(manifest) })
+
+    if (manifest.contractId !== contractId) {
+      items.push({
+        index: i,
+        proofId: manifest.proofId,
+        outcome: 'contract_mismatch',
+        exitCode: CLI_EXIT_CODES.CONTRACT_MISMATCH,
+        skippedRequiredChecks: false,
+      })
+      continue
+    }
+    if (manifest.network !== network) {
+      items.push({
+        index: i,
+        proofId: manifest.proofId,
+        outcome: 'network_mismatch',
+        exitCode: CLI_EXIT_CODES.NETWORK_MISMATCH,
+        skippedRequiredChecks: false,
+      })
+      continue
+    }
+
+    if (offline) {
+      items.push({
+        index: i,
+        proofId: manifest.proofId,
+        outcome: 'incomplete',
+        exitCode: CLI_EXIT_CODES.INCOMPLETE,
+        skippedRequiredChecks: true,
+      })
+      continue
+    }
+
+    try {
+      const txVerification = await verifyTransaction(manifest.transactionRef, contractId, {
+        rpcUrl,
+        sourceAddress,
+        timeoutMs,
+      })
+      const chainRecord = await lookupByVideoHash(contractId, manifest.videoHash, {
+        rpcUrl,
+        sourceAddress,
+        networkPassphrase: network,
+        timeoutMs,
+      })
+      const result = classifyVerification(manifest, txVerification, chainRecord)
+      const outcome = result === 'pending' ? 'incomplete' : result === 'error' ? 'invalid' : result
+      items.push({
+        index: i,
+        proofId: manifest.proofId,
+        outcome,
+        exitCode: exitCodeForVerificationResult(result),
+        skippedRequiredChecks: false,
+      })
+    } catch {
+      items.push({
+        index: i,
+        proofId: manifest.proofId,
+        outcome: 'unavailable',
+        exitCode: CLI_EXIT_CODES.UNAVAILABLE,
+        skippedRequiredChecks: false,
+      })
+    }
+  }
+
+  const batchExitCode = aggregateBatchExitCode(items.map((item) => item.exitCode))
+  const summary = {
+    total: items.length,
+    valid: items.filter((item) => item.exitCode === CLI_EXIT_CODES.VALID).length,
+    incomplete: items.filter((item) => item.exitCode === CLI_EXIT_CODES.INCOMPLETE).length,
+    invalid: items.filter((item) => item.exitCode === CLI_EXIT_CODES.INVALID).length,
+    unavailable: items.filter((item) => item.exitCode === CLI_EXIT_CODES.UNAVAILABLE).length,
+    exitCode: batchExitCode,
+  }
+
+  if (outputFormat === 'json') {
+    printJson({ items, summary })
+  } else {
+    printText(
+      `Batch verification: total=${summary.total} valid=${summary.valid} incomplete=${summary.incomplete} invalid=${summary.invalid} unavailable=${summary.unavailable} exitCode=${summary.exitCode}`,
+    )
+  }
+
+  exit(batchExitCode)
 }
 
 function parseTimeout(raw: string | undefined): number {
@@ -490,10 +662,13 @@ async function handleVerifyLineage(
   }
 
   if (!result.success) {
-    if (result.revokedCount > 0) exit(2, 'an ancestor is revoked')
-    if (result.expiredCount > 0) exit(1, 'an ancestor is expired')
-    if (result.missingCount > 0) exit(3, 'an ancestor is missing')
-    exit(8, result.failureReason ?? 'lineage verification failed')
+    if (result.revokedCount > 0) exit(CLI_EXIT_CODES.REVOKED, 'an ancestor is revoked')
+    if (result.expiredCount > 0) exit(CLI_EXIT_CODES.EXPIRED, 'an ancestor is expired')
+    if (result.missingCount > 0) exit(CLI_EXIT_CODES.NOT_FOUND, 'an ancestor is missing')
+    if (result.unavailableCount > 0 && !result.cycleDetected && result.disputedCount === 0) {
+      exit(CLI_EXIT_CODES.UNAVAILABLE, 'lineage verification unavailable')
+    }
+    exit(CLI_EXIT_CODES.INVALID, result.failureReason ?? 'lineage verification failed')
   }
 
   exit(0)
@@ -566,7 +741,7 @@ export async function handleStatus(
       networkPassphrase: network,
     })
   } catch {
-    exit(8, 'status lookup dependency failed')
+    exit(CLI_EXIT_CODES.UNAVAILABLE, 'status lookup unavailable: dependency failed')
   }
 
   const payload = {
@@ -655,13 +830,14 @@ Verify Receipt options:
 
 Verify options:
   --contract-id     Contract ID on Stellar (required).
-  --manifest        Path to a proof manifest JSON file (use "-" for stdin).
+  --manifest, -m    Path to a proof manifest JSON file (use "-" for stdin).
+  --batch, -b       Path to a JSON array of manifest paths for batch verification (bounded <= 64).
   --tx-hash         Transaction hash to verify on-chain.
   --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --rpc-url         Stellar RPC URL (default: testnet).
   --source-address  Source address for simulation.
   --output, -o      Output format: "text" (default) or "json".
-  --offline         Skip on-chain lookup; validate locally only.
+  --offline         Skip on-chain lookup; validate locally only (exits 6 incomplete, never 0).
   --timeout         RPC request timeout in milliseconds (default: 15000).
 
 Manifest options:
@@ -688,16 +864,16 @@ Debugging:
                                 credentials) are never logged.
 
 Exit codes:
-  0   valid / registered
+  0   valid / registered (all required verification checks passed)
   1   expired
-  2   revoked
+  2   revoked / usage error
   3   not_found / missing / unknown
   4   network_mismatch
   5   contract_mismatch
-  6   pending
+  6   pending / incomplete (skipped required checks such as --offline, or pending tx; never 0)
   7   failed
-  8   error
-      (RPC timeouts during verification also exit with 8)
+  8   invalid / error (malformed input, invalid signature, or digest/lineage mismatch)
+  9   unavailable (RPC timeout or unreachable verification dependency)
   For a full table of every exit code and which commands emit them, see the Exit codes section in cli/README.md.
 `
   return help.trim()
