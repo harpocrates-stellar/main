@@ -647,3 +647,371 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+# ── Portable issuer transparency consistency proof bundle ──────────────────
+
+CONSISTENCY_PROOF_BUNDLE_SCHEMA = "harpocrates-issuer-consistency-proof-bundle/v1"
+CONSISTENCY_PROOF_BUNDLE_VERSION = 1
+MAX_BUNDLE_BYTES = 524_288  # 512 KiB bound for offline portable bundles
+
+
+@dataclass(frozen=True)
+class ConsistencyProofBundle:
+    """Portable offline proof binding an earlier and later checkpoint via intervening events."""
+
+    organization_identity_hash: str
+    earlier_checkpoint: DirectoryCheckpoint
+    later_checkpoint: DirectoryCheckpoint
+    intervening_events: tuple[DirectoryEvent, ...]
+    anchor_event_hash: str | None = None
+    intervening_manifests: tuple[IssuerManifest, ...] = ()
+
+    def _unsigned_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "anchorEventHash": self.anchor_event_hash,
+            "earlierCheckpoint": self.earlier_checkpoint.to_dict(),
+            "interveningEvents": [ev.to_dict() for ev in self.intervening_events],
+            "interveningManifests": [mf.to_dict() for mf in self.intervening_manifests],
+            "laterCheckpoint": self.later_checkpoint.to_dict(),
+            "organizationIdentityHash": self.organization_identity_hash,
+            "schema": CONSISTENCY_PROOF_BUNDLE_SCHEMA,
+            "version": CONSISTENCY_PROOF_BUNDLE_VERSION,
+        }
+        return payload
+
+    def bundle_hash(self) -> str:
+        encoded = _canonical_json(self._unsigned_dict())
+        if len(encoded) > MAX_BUNDLE_BYTES:
+            raise TransparencyError("consistency proof bundle exceeds size bound")
+        return _sha256_hex(encoded)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self._unsigned_dict()
+        payload["bundleHash"] = self.bundle_hash()
+        return payload
+
+    def to_canonical_json(self) -> str:
+        encoded = _canonical_json(self.to_dict())
+        if len(encoded) > MAX_BUNDLE_BYTES:
+            raise TransparencyError("consistency proof bundle exceeds size bound")
+        return encoded.decode("utf-8")
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> ConsistencyProofBundle:
+        if not isinstance(obj, dict):
+            raise TransparencyError("consistency proof bundle must be a JSON object")
+        allowed = {
+            "anchorEventHash",
+            "bundleHash",
+            "earlierCheckpoint",
+            "interveningEvents",
+            "interveningManifests",
+            "laterCheckpoint",
+            "organizationIdentityHash",
+            "schema",
+            "version",
+        }
+        if set(obj.keys()) - allowed:
+            raise TransparencyError("unexpected field in consistency proof bundle")
+        if obj.get("schema") != CONSISTENCY_PROOF_BUNDLE_SCHEMA:
+            raise TransparencyError("unsupported consistency proof bundle schema")
+        ver = obj.get("version")
+        if isinstance(ver, bool) or ver != CONSISTENCY_PROOF_BUNDLE_VERSION:
+            raise TransparencyError("unsupported consistency proof bundle version")
+        org = _require_hex("organizationIdentityHash", str(obj["organizationIdentityHash"]))
+        earlier_cp = DirectoryCheckpoint.from_dict(obj["earlierCheckpoint"])
+        later_cp = DirectoryCheckpoint.from_dict(obj["laterCheckpoint"])
+        raw_events = obj.get("interveningEvents")
+        if not isinstance(raw_events, list) or len(raw_events) > MAX_EVENTS:
+            raise TransparencyError("interveningEvents must be a bounded list")
+        raw_manifests = obj.get("interveningManifests", [])
+        if not isinstance(raw_manifests, list) or len(raw_manifests) > MAX_EVENTS:
+            raise TransparencyError("interveningManifests must be a bounded list")
+        anchor_raw = obj.get("anchorEventHash")
+        anchor = (
+            _require_hex("anchorEventHash", str(anchor_raw))
+            if anchor_raw is not None
+            else None
+        )
+        bundle = ConsistencyProofBundle(
+            organization_identity_hash=org,
+            earlier_checkpoint=earlier_cp,
+            later_checkpoint=later_cp,
+            intervening_events=tuple(DirectoryEvent.from_dict(e) for e in raw_events),
+            anchor_event_hash=anchor,
+            intervening_manifests=tuple(IssuerManifest.from_dict(m) for m in raw_manifests),
+        )
+        expected_hash = _require_hex("bundleHash", str(obj.get("bundleHash", "")))
+        if bundle.bundle_hash() != expected_hash:
+            raise TransparencyError("bundleHash integrity mismatch")
+        return bundle
+
+    @staticmethod
+    def from_canonical_json(raw: str | bytes) -> ConsistencyProofBundle:
+        raw_bytes = raw.encode("utf-8") if isinstance(raw, str) else raw
+        if len(raw_bytes) > MAX_BUNDLE_BYTES:
+            raise TransparencyError("consistency proof bundle exceeds size bound")
+        try:
+            parsed = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TransparencyError("malformed consistency proof bundle JSON") from exc
+        return ConsistencyProofBundle.from_dict(parsed)
+
+
+@dataclass(frozen=True)
+class ConsistencyProofVerificationResult:
+    """Offline verification verdict for a ``ConsistencyProofBundle``."""
+
+    valid: bool
+    errors: tuple[str, ...]
+    organization_identity_hash: str
+    earlier_checkpoint_hash: str
+    later_checkpoint_hash: str
+    verified_tree_head_hash: str
+    intervening_event_count: int
+    bundle_hash: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bundleHash": self.bundle_hash,
+            "earlierCheckpointHash": self.earlier_checkpoint_hash,
+            "errors": list(self.errors),
+            "interveningEventCount": self.intervening_event_count,
+            "laterCheckpointHash": self.later_checkpoint_hash,
+            "organizationIdentityHash": self.organization_identity_hash,
+            "valid": self.valid,
+            "verifiedTreeHeadHash": self.verified_tree_head_hash,
+        }
+
+
+def _advance_tree_head(starting_head: str, events: Iterable[DirectoryEvent]) -> str:
+    head = starting_head
+    for ev in events:
+        head = _sha256_hex((head + event_hash(ev)).encode("utf-8"))
+    return head
+
+
+def _without_successor_link(mf: IssuerManifest) -> IssuerManifest:
+    if mf.successor_manifest_hash is None:
+        return mf
+    return IssuerManifest(
+        organization_identity_hash=mf.organization_identity_hash,
+        issuer_address=mf.issuer_address,
+        active_keys=list(mf.active_keys),
+        policy_hash=mf.policy_hash,
+        valid_from=mf.valid_from,
+        valid_until=mf.valid_until,
+        predecessor_manifest_hash=mf.predecessor_manifest_hash,
+        successor_manifest_hash=None,
+        signature_hash=mf.signature_hash,
+        version=mf.version,
+        protocol=mf.protocol,
+    )
+
+
+def _publication_manifest_hash(mf: IssuerManifest) -> str:
+    return manifest_hash(_without_successor_link(mf))
+
+
+def build_consistency_proof_bundle(
+    directory: IssuerDirectory,
+    earlier_checkpoint: DirectoryCheckpoint,
+    later_checkpoint: DirectoryCheckpoint,
+    *,
+    intervening_manifests: list[IssuerManifest] | None = None,
+) -> ConsistencyProofBundle:
+    """Build a portable consistency proof bundle from authoritative directory history."""
+    org = _require_hex("organizationIdentityHash", directory.organization_identity_hash)
+    rollback_errs = detect_rollback(earlier_checkpoint, later_checkpoint)
+    if rollback_errs:
+        raise TransparencyError("; ".join(rollback_errs))
+    for label, cp in (("earlier", earlier_checkpoint), ("later", later_checkpoint)):
+        cp_errs = verify_checkpoint_consistency(directory, cp)
+        if cp_errs:
+            raise TransparencyError(
+                f"{label} checkpoint inconsistent with directory: {'; '.join(cp_errs)}"
+            )
+
+    start = earlier_checkpoint.event_count
+    end = later_checkpoint.event_count
+    slice_events = tuple(directory.events[start:end])
+    anchor = event_hash(directory.events[start - 1]) if start > 0 else None
+
+    manifests_tuple: tuple[IssuerManifest, ...] = ()
+    if intervening_manifests is not None:
+        manifests_tuple = tuple(intervening_manifests)
+    elif earlier_checkpoint.manifest_hash != later_checkpoint.manifest_hash:
+        # Walk backwards from later_checkpoint.manifest_hash to earlier_checkpoint.manifest_hash
+        chain: list[IssuerManifest] = []
+        cursor: str | None = later_checkpoint.manifest_hash
+        visited: set[str] = set()
+        while cursor is not None and cursor != earlier_checkpoint.manifest_hash:
+            if cursor in visited:
+                raise TransparencyError("cycle in manifest predecessor chain")
+            visited.add(cursor)
+            mf = directory.manifests_by_hash.get(cursor)
+            if mf is None:
+                raise TransparencyError(
+                    "missing intervening manifest between checkpoints in directory"
+                )
+            unlinked = _without_successor_link(mf)
+            chain.append(unlinked if manifest_hash(unlinked) == cursor else mf)
+            cursor = mf.predecessor_manifest_hash
+        if cursor != earlier_checkpoint.manifest_hash:
+            raise TransparencyError(
+                "later checkpoint manifest does not descend from earlier checkpoint manifest"
+            )
+        chain.reverse()
+        manifests_tuple = tuple(chain)
+
+    bundle = ConsistencyProofBundle(
+        organization_identity_hash=org,
+        earlier_checkpoint=earlier_checkpoint,
+        later_checkpoint=later_checkpoint,
+        intervening_events=slice_events,
+        anchor_event_hash=anchor,
+        intervening_manifests=manifests_tuple,
+    )
+    verdict = verify_consistency_proof_bundle(bundle)
+    if not verdict.valid:
+        raise TransparencyError("; ".join(verdict.errors))
+    return bundle
+
+
+def verify_consistency_proof_bundle(
+    bundle: ConsistencyProofBundle | dict[str, Any],
+    *,
+    trusted_earlier_checkpoint: DirectoryCheckpoint | None = None,
+    max_intervening_events: int = MAX_EVENTS,
+) -> ConsistencyProofVerificationResult:
+    """Verify checkpoint-to-checkpoint continuity completely offline."""
+    if (
+        isinstance(max_intervening_events, bool)
+        or not isinstance(max_intervening_events, int)
+        or max_intervening_events < 0
+        or max_intervening_events > MAX_EVENTS
+    ):
+        raise TransparencyError(f"max_intervening_events must be in 0..{MAX_EVENTS}")
+
+    parsed = (
+        ConsistencyProofBundle.from_dict(bundle)
+        if isinstance(bundle, dict)
+        else bundle
+    )
+    canonicalize_checkpoint(parsed.earlier_checkpoint)
+    canonicalize_checkpoint(parsed.later_checkpoint)
+
+    errors: list[str] = []
+    earlier = parsed.earlier_checkpoint
+    later = parsed.later_checkpoint
+
+    if earlier.organization_identity_hash != parsed.organization_identity_hash:
+        errors.append("earlierCheckpoint organizationIdentityHash mismatch")
+    if later.organization_identity_hash != parsed.organization_identity_hash:
+        errors.append("laterCheckpoint organizationIdentityHash mismatch")
+
+    if trusted_earlier_checkpoint is not None:
+        if checkpoint_hash(earlier) != checkpoint_hash(trusted_earlier_checkpoint):
+            errors.append("earlierCheckpoint does not match caller's pinned checkpoint")
+
+    errors.extend(detect_rollback(earlier, later))
+
+    if earlier.event_count < 0 or later.event_count < 0:
+        errors.append("checkpoint eventCount must be non-negative")
+    if earlier.event_count == 0 and earlier.tree_head_hash != "0" * 64:
+        errors.append("genesis earlierCheckpoint must have zero treeHeadHash")
+    if earlier.event_count == 0 and parsed.anchor_event_hash is not None:
+        errors.append("genesis earlierCheckpoint must not set anchorEventHash")
+    if (
+        earlier.event_count > 0
+        and len(parsed.intervening_events) > 0
+        and parsed.anchor_event_hash is None
+    ):
+        errors.append("non-genesis consistency proof requires anchorEventHash")
+
+    if len(parsed.intervening_events) > max_intervening_events:
+        errors.append("interveningEvents exceeds max_intervening_events bound")
+
+    expected_span = later.event_count - earlier.event_count
+    if expected_span >= 0 and len(parsed.intervening_events) != expected_span:
+        errors.append(
+            f"interveningEvents count mismatch: expected {expected_span}, got {len(parsed.intervening_events)}"
+        )
+
+    prev_ev_hash = parsed.anchor_event_hash if earlier.event_count > 0 else None
+    for offset, ev in enumerate(parsed.intervening_events):
+        expected_seq = earlier.event_count + offset
+        if ev.organization_identity_hash != parsed.organization_identity_hash:
+            errors.append(f"event[{offset}] organizationIdentityHash mismatch")
+        if ev.sequence != expected_seq:
+            errors.append(
+                f"event[{offset}] non-monotonic sequence: expected {expected_seq}, got {ev.sequence}"
+            )
+        if expected_seq == 0:
+            if ev.previous_event_hash is not None:
+                errors.append("genesis intervening event must not set previousEventHash")
+        elif ev.previous_event_hash != prev_ev_hash:
+            errors.append(f"event[{offset}] broken previousEventHash link")
+        prev_ev_hash = event_hash(ev)
+
+    computed_later_head = _advance_tree_head(
+        earlier.tree_head_hash, parsed.intervening_events
+    )
+    if computed_later_head != later.tree_head_hash:
+        errors.append("recomputed tree head does not match laterCheckpoint.treeHeadHash")
+
+    if earlier.manifest_hash != later.manifest_hash:
+        if not parsed.intervening_manifests:
+            errors.append(
+                "manifestHash changed across checkpoints without interveningManifests lineage"
+            )
+        else:
+            prev_mh = earlier.manifest_hash
+            for idx, mf in enumerate(parsed.intervening_manifests):
+                canonicalize_manifest(mf)
+                if mf.organization_identity_hash != parsed.organization_identity_hash:
+                    errors.append(f"manifest[{idx}] organizationIdentityHash mismatch")
+                if mf.predecessor_manifest_hash != prev_mh:
+                    errors.append(f"manifest[{idx}] broken predecessorManifestHash link")
+                prev_mh = _publication_manifest_hash(mf)
+            if prev_mh != later.manifest_hash:
+                errors.append(
+                    "final intervening manifest hash does not match laterCheckpoint.manifestHash"
+                )
+    else:
+        for idx, mf in enumerate(parsed.intervening_manifests):
+            canonicalize_manifest(mf)
+            if manifest_hash(mf) != later.manifest_hash:
+                errors.append(
+                    f"manifest[{idx}] conflicts with unchanged checkpoint manifestHash"
+                )
+
+    return ConsistencyProofVerificationResult(
+        valid=len(errors) == 0,
+        errors=tuple(errors),
+        organization_identity_hash=parsed.organization_identity_hash,
+        earlier_checkpoint_hash=checkpoint_hash(earlier),
+        later_checkpoint_hash=checkpoint_hash(later),
+        verified_tree_head_hash=computed_later_head,
+        intervening_event_count=len(parsed.intervening_events),
+        bundle_hash=parsed.bundle_hash(),
+    )
+
+
+def require_valid_consistency_proof_bundle(
+    bundle: ConsistencyProofBundle | dict[str, Any],
+    *,
+    trusted_earlier_checkpoint: DirectoryCheckpoint | None = None,
+    max_intervening_events: int = MAX_EVENTS,
+) -> ConsistencyProofVerificationResult:
+    """Fail-closed wrapper that raises ``TransparencyError`` if bundle verification fails."""
+    verdict = verify_consistency_proof_bundle(
+        bundle,
+        trusted_earlier_checkpoint=trusted_earlier_checkpoint,
+        max_intervening_events=max_intervening_events,
+    )
+    if not verdict.valid:
+        raise TransparencyError("; ".join(verdict.errors))
+    return verdict
+

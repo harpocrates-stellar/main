@@ -112,3 +112,12 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Portable consistency proof bundles
+
+Offline verifiers can confirm continuity between two checkpoints without contacting or trusting a live directory server using `build_consistency_proof_bundle` and `verify_consistency_proof_bundle` (`schema: harpocrates-issuer-consistency-proof-bundle/v1`):
+
+- **Self-contained checkpoint bridge:** Binds `earlierCheckpoint` and `laterCheckpoint` to `anchorEventHash`, the exact `interveningEvents` slice (`[earlier.eventCount : later.eventCount]`), and any `interveningManifests` linking `earlierCheckpoint.manifestHash` to `laterCheckpoint.manifestHash`.
+- **Offline continuity verification:** Recomputes the event hash chain and Merkle-style `treeHeadHash` step-by-step from `earlierCheckpoint.treeHeadHash` to `laterCheckpoint.treeHeadHash`, optionally pinning against a caller's locally cached `trusted_earlier_checkpoint`.
+- **Fail-closed tamper & rollback detection:** `require_valid_consistency_proof_bundle` raises `TransparencyError` on tampered events, missing sequence steps, checkpoint rollbacks, equivocating heads, broken manifest predecessor links, or `bundleHash` mismatches.
+
