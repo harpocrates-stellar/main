@@ -35,13 +35,20 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  formatBundleVerificationReport,
+  verifyOfflineBundle,
+} from './verify-bundle.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -112,12 +119,15 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleHash(flags)
     case 'verify-receipt':
       return await handleVerifyReceipt(flags, debugLog)
+    case 'verify-bundle':
+      return await handleVerifyBundle(flags, debugLog)
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -384,6 +394,75 @@ async function handleVerifyReceipt(flags: Record<string, string>, debugLog: (eve
   }
 }
 
+async function handleVerifyBundle(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const bundlePath = flags.bundle || flags.b
+  const outputFormat = flags.output || flags.o || 'text'
+  const rawContractId = flags['contract-id'] || flags.contractId
+  const rawProofId = flags['proof-id'] || flags.proofId
+  const rawNetwork = flags.network
+  const rawAt = flags.at
+
+  if (!bundlePath) {
+    exit(2, '--bundle is required for offline bundle verification')
+  }
+  if (outputFormat !== 'text' && outputFormat !== 'json') {
+    exit(2, 'invalid --output: expected "text" or "json"')
+  }
+
+  let expectedProofId: string | undefined
+  if (rawProofId !== undefined) {
+    try {
+      expectedProofId = asHex32(rawProofId, 'proofId')
+    } catch {
+      exit(2, 'invalid --proof-id: must be a 32-byte hex string')
+    }
+  }
+
+  let evaluationDate: Date | undefined
+  if (rawAt !== undefined) {
+    const parsedMs = Date.parse(rawAt)
+    if (Number.isNaN(parsedMs)) {
+      exit(2, 'invalid --at: expected an ISO-8601 timestamp')
+    }
+    evaluationDate = new Date(parsedMs)
+  }
+
+  if (rawContractId !== undefined && !StrKey.isValidContract(rawContractId)) {
+    exit(8, 'invalid --contract-id: must be a valid Stellar contract ID')
+  }
+
+  let parsedBundle: unknown
+  try {
+    const rawText = await readText(bundlePath)
+    parsedBundle = JSON.parse(rawText)
+  } catch {
+    exit(8, 'invalid or unreadable verification bundle')
+  }
+
+  const report = await verifyOfflineBundle(parsedBundle, {
+    expectedNetwork: rawNetwork,
+    expectedContractId: rawContractId,
+    expectedProofId,
+    now: evaluationDate,
+  })
+
+  debugLog({
+    event: 'verify-bundle.report',
+    report: redactSensitive(report),
+  })
+
+  if (outputFormat === 'json') {
+    printJson(report)
+  } else {
+    printText(formatBundleVerificationReport(report))
+  }
+
+  exit(report.exitCode)
+}
+
 async function handleC2pa(flags: Record<string, string>, debugLog: (event: Record<string, unknown>) => void): Promise<void> {
   const inputPath = flags.manifest || flags.m
   const receiptPath = flags.receipt || flags.r
@@ -601,6 +680,7 @@ Commands:
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
   verify-receipt Verify an offline signed receipt.
+  verify-bundle  Validate a self-contained offline verification bundle.
   c2pa           Export C2PA authenticity assertions from a proof manifest.
   version        Print the CLI version.
   help           Show this help message.
@@ -652,6 +732,16 @@ Verify Receipt options:
   --network         Optional expected network: testnet, mainnet/public, futurenet, or a full passphrase.
   --proof-id        Optional expected proof ID.
   --output, -o      Output format: "text" (default) or "json".
+
+Verify Bundle options:
+  --bundle, -b      Path to self-contained verification bundle JSON (use "-" for stdin; required).
+  --contract-id     Optional expected contract ID on Stellar.
+  --network         Optional expected network: testnet, mainnet/public, futurenet, or a full passphrase.
+  --proof-id        Optional expected 32-byte hex proof ID.
+  --at              Optional ISO-8601 timestamp for deterministic key/expiry evaluation.
+  --output, -o      Output format: "text" (default) or "json".
+  Validates manifests, receipts, and trust snapshots locally without network access and
+  reports online-only RPC checks explicitly as unavailable.
 
 Verify options:
   --contract-id     Contract ID on Stellar (required).

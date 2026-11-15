@@ -79,3 +79,29 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  VERIFICATION_BUNDLE_PROTOCOL,
+  VERIFICATION_BUNDLE_VERSION,
+  BUNDLE_REPORT_PROTOCOL,
+  BUNDLE_REPORT_VERSION,
+  MAX_VERIFICATION_BUNDLE_BYTES,
+  computeManifestDigest,
+  createOfflineVerificationBundle,
+  serializeVerificationBundle,
+  verifyOfflineBundle,
+  formatBundleVerificationReport,
+} from './verify-bundle.js'
+export type {
+  KeyValidityWindow,
+  OfflineLineageSnapshot,
+  BundleTrustSnapshot,
+  OfflineVerificationBundle,
+  BundleCheckScope,
+  BundleCheckStatus,
+  BundleCheckId,
+  BundleCheckEntry,
+  BundleOverallStatus,
+  BundleVerificationReport,
+  VerifyOfflineBundleOptions,
+  CreateOfflineVerificationBundleInput,
+} from './verify-bundle.js'

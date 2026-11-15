@@ -1,7 +1,13 @@
-import { Command } from 'commander';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as crypto from 'crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+
+export interface CommandLike {
+  command(name: string): CommandLike;
+  description(desc: string): CommandLike;
+  option(flags: string, desc: string): CommandLike;
+  action(fn: (options: Record<string, string | undefined>) => Promise<void> | void): CommandLike;
+}
 
 interface DryRunInput {
   metadata: {
@@ -33,20 +39,21 @@ const SUPPORTED_VERSIONS = ['v1', 'v2'];
  * @param metadata - The metadata object to validate
  * @throws Error if validation fails
  */
-function validateMetadata(metadata: any): void {
+export function validateMetadata(metadata: unknown): void {
   if (typeof metadata !== 'object' || metadata === null) {
     throw new Error('Metadata must be an object');
   }
 
+  const record = metadata as Record<string, unknown>;
   const requiredKeys = ['version', 'timestamp', 'hash'];
   for (const key of requiredKeys) {
-    if (!(key in metadata)) {
+    if (!(key in record)) {
       throw new Error(`Missing required metadata key: ${key}`);
     }
   }
 
-  if (!SUPPORTED_VERSIONS.includes(metadata.version)) {
-    throw new Error(`Unsupported version: ${metadata.version}`);
+  if (typeof record.version !== 'string' || !SUPPORTED_VERSIONS.includes(record.version)) {
+    throw new Error(`Unsupported version: ${String(record.version)}`);
   }
 }
 
@@ -55,7 +62,7 @@ function validateMetadata(metadata: any): void {
  * @param payload - The payload to validate
  * @throws Error if payload is too large
  */
-function validatePayloadSize(payload: string): void {
+export function validatePayloadSize(payload: string): void {
   const payloadBytes = Buffer.from(payload, 'utf-8');
   if (payloadBytes.length > MAX_PAYLOAD_SIZE) {
     throw new Error(
@@ -69,7 +76,7 @@ function validatePayloadSize(payload: string): void {
  * @param data - The data to hash
  * @returns Hex string of the hash
  */
-function computeHash(data: string): string {
+export function computeHash(data: string): string {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
@@ -78,12 +85,13 @@ function computeHash(data: string): string {
  * @param deps - List of dependencies
  * @throws Error if a dependency is invalid
  */
-function checkDependencies(deps: string[]): void {
+export function checkDependencies(deps: string[]): boolean {
   for (const dep of deps) {
     if (typeof dep !== 'string' || dep.trim().length === 0) {
       throw new Error('Dependency check failed');
     }
   }
+  return true;
 }
 
 /**
@@ -121,7 +129,10 @@ export function runDryRun(input: DryRunInput): DryRunResult {
     let errorType = 'unknown';
     let message = 'Internal error occurred';
 
-    if (error.message.includes('Missing required metadata key')) {
+    if (
+      error.message.includes('Missing required metadata key') ||
+      error.message.includes('Metadata must be an object')
+    ) {
       errorType = 'malformed_input';
       message = 'Input validation failed';
     } else if (error.message.includes('exceeds maximum')) {
@@ -147,7 +158,7 @@ export function runDryRun(input: DryRunInput): DryRunResult {
 /**
  * Main CLI handler for dry-run command.
  */
-export function setupDryRunCommand(program: Command): void {
+export function setupDryRunCommand(program: CommandLike): void {
   program
     .command('dry-run')
     .description('Run a testnet deployment dry run')

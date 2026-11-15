@@ -6,8 +6,10 @@ export type Command =
   | 'manifest'
   | 'hash'
   | 'verify-receipt'
+  | 'verify-bundle'
   | 'c2pa'
   | 'verify-lineage'
+  | 'version'
   | 'help'
 
 export interface ParsedArgs {
@@ -91,6 +93,17 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  'verify-bundle': {
+    bundle: alias('b'),
+    'contract-id': text,
+    contractId: text,
+    network: text,
+    'proof-id': text,
+    proofId: text,
+    at: text,
+    output: alias('o'),
+    debug: toggle,
+  },
   c2pa: {
     manifest: alias('m'),
     receipt: alias('r'),
@@ -111,6 +124,9 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  version: {
+    debug: toggle,
+  },
 }
 
 // Environment variable defaults for flags that are otherwise required on every call.
@@ -129,6 +145,10 @@ const ENV_DEFAULTS: Partial<Record<Exclude<Command, 'help'>, { keys: string[]; e
     env: '',
   },
   'verify-receipt': {
+    keys: [],
+    env: '',
+  },
+  'verify-bundle': {
     keys: [],
     env: '',
   },
@@ -170,6 +190,9 @@ function describeUsageError(command: string, err: unknown): string {
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv
+  if (command === '--version' || command === '-v') {
+    return { command: 'version', flags: {} }
+  }
   if (command === undefined || !Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
     return { command: 'help', flags: {} }
   }
