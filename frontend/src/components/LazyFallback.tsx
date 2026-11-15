@@ -15,11 +15,12 @@ export function LazyFallback({ label = 'Loading workspace' }: LazyFallbackProps)
     <div
       ref={ref}
       className="lazy-fallback"
+      data-testid="lazy-workspace-loading"
       role="status"
       aria-live="polite"
       aria-busy="true"
       aria-label={label}
-      tabPolinter="-1"
+      tabIndex={-1}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -31,7 +32,7 @@ export function LazyFallback({ label = 'Loading workspace' }: LazyFallbackProps)
         textTransform: 'uppercase',
       }}
     >
-      <span>{label}&mdquo;s loading&#8230;</span>
+      <span>{label}&#8230;</span>
     </div>
   )
 }

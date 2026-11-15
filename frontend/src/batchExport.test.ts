@@ -49,10 +49,12 @@ describe('batchExport', () => {
     },
   ]
 
-  it('sanitizeBatchResults strips raw File handles and media buffers', () => {
+  it('sanitizeBatchResults strips raw File handles and media buffers and classifies outcome categories', () => {
     const sanitized = sanitizeBatchResults(mockItems)
     expect(sanitized).toHaveLength(2)
     expect(sanitized[0].fileName).toBe('evidence1.mp4')
+    expect(sanitized[0].outcomeCategory).toBe('verified')
+    expect(sanitized[1].outcomeCategory).toBe('skipped')
     expect((sanitized[0] as Record<string, unknown>).file).toBeUndefined()
   })
 

@@ -1,11 +1,15 @@
-import type { BatchItemResult } from './batchVerifier'
+import {
+  classifyBatchOutcome,
+  type BatchItemResult,
+  type BatchOutcomeCategory,
+} from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
-import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
   fileName: string
   fileSizeBytes: number
   status: string
+  outcomeCategory: BatchOutcomeCategory
   videoHash: string | null
   metadataHash: string | null
   sourceHash: string | null
@@ -34,6 +38,7 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
     fileName: item.fileName,
     fileSizeBytes: item.fileSizeBytes,
     status: item.status,
+    outcomeCategory: item.outcomeCategory ?? classifyBatchOutcome(item.status),
     videoHash: item.videoHash,
     metadataHash: item.metadataHash,
     sourceHash: item.sourceHash,
@@ -79,6 +84,7 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
     'Duplicate Of',
     'Failure Reason',
     'Duration (ms)',
+    'Outcome Category',
   ]
 
   const rows = clean.map((item) => [
@@ -94,6 +100,7 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
     escapeCSV(item.duplicateOf ?? ''),
     escapeCSV(item.failureReason ?? ''),
     item.durationMs !== null ? String(item.durationMs) : '',
+    escapeCSV(item.outcomeCategory),
   ])
 
   return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n')

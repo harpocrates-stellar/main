@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   BatchVerifier,
+  classifyBatchOutcome,
   computeChunkedSha256,
   tryParseManifest,
   type BatchConfig,
@@ -178,6 +179,115 @@ describe('batchVerifier', () => {
       const { items } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+    })
+
+    it('cancels one active or queued item without stopping unrelated items and distinguishes skipped, cancelled, failed, and verified', async () => {
+      const verifier = new BatchVerifier({
+        maxConcurrency: 2,
+        apiBase: 'http://127.0.0.1:5050',
+        contractId: '',
+      })
+
+      const validManifestJson = JSON.stringify({
+        protocol: 'harpocrates',
+        version: 1,
+        proofId: '11'.repeat(32),
+        tier: 'silent',
+        network: 'testnet',
+        contractId: '',
+        transactionRef: 'tx1',
+        videoHash: '11'.repeat(32),
+        metadataHash: '22'.repeat(32),
+        sourceHash: '11'.repeat(32),
+        timestamp: '2026-01-01T00:00:00.000Z',
+        verifierScope: '0',
+        epoch: 0,
+      })
+
+      const activeTargetFile = new File(['slow-active-item'], 'active_cancel.mp4', { type: 'video/mp4' })
+      const verifiedFile = new File([validManifestJson], 'verified_receipt.json', { type: 'application/json' })
+      const queuedCancelFile = new File(['queued-cancel-item'], 'queued_cancel.mp4', { type: 'video/mp4' })
+      const skippedFile = new File(['queued-skip-item'], 'queued_skip.mp4', { type: 'video/mp4' })
+      const failedFile = new File(['corrupt-stego-item'], 'failed_item.mp4', { type: 'video/mp4' })
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+          if (url.includes('/api/stego/extract')) {
+            const body = init?.body as FormData | undefined
+            const uploaded = body?.get('video') as File | null
+            if (uploaded?.name === 'active_cancel.mp4') {
+              return new Promise((_resolve, reject) => {
+                if (init?.signal?.aborted) {
+                  reject(new DOMException('Aborted', 'AbortError'))
+                  return
+                }
+                init?.signal?.addEventListener('abort', () => {
+                  reject(new DOMException('Aborted', 'AbortError'))
+                })
+                const liveTarget = verifier.getItems().find((i) => i.fileName === 'active_cancel.mp4')
+                if (liveTarget) {
+                  setTimeout(() => {
+                    verifier.cancelItem(liveTarget.id)
+                  }, 5)
+                }
+              })
+            }
+            return Promise.resolve({ ok: false, status: 400 })
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ events: [] }) })
+        }),
+      )
+
+      const { items, summary } = await verifier.runBatch(
+        [activeTargetFile, verifiedFile, queuedCancelFile, skippedFile, failedFile],
+        undefined,
+        {
+          onReady: (readyItems) => {
+            // Cancel queued #2 and skip queued #3 before workers pick them up
+            expect(verifier.cancelItem(readyItems[2].id)).toBe(true)
+            expect(verifier.skipItem(readyItems[3].id)).toBe(true)
+            expect(verifier.cancelItem('nonexistent-id')).toBe(false)
+          },
+        },
+      )
+
+      expect(items[0].fileName).toBe('active_cancel.mp4')
+      expect(items[0].status).toBe('cancelled')
+      expect(items[0].outcomeCategory).toBe('cancelled')
+
+      expect(items[1].fileName).toBe('verified_receipt.json')
+      expect(items[1].status).toBe('manifest-valid')
+      expect(items[1].outcomeCategory).toBe('verified')
+
+      expect(items[2].fileName).toBe('queued_cancel.mp4')
+      expect(items[2].status).toBe('cancelled')
+      expect(items[2].outcomeCategory).toBe('cancelled')
+
+      expect(items[3].fileName).toBe('queued_skip.mp4')
+      expect(items[3].status).toBe('skipped')
+      expect(items[3].outcomeCategory).toBe('skipped')
+
+      expect(items[4].fileName).toBe('failed_item.mp4')
+      expect(items[4].status).toBe('malformed')
+      expect(items[4].outcomeCategory).toBe('failed')
+
+      // Terminal items cannot be retroactively cancelled
+      expect(verifier.cancelItem(items[1].id)).toBe(false)
+      expect(items[1].status).toBe('manifest-valid')
+
+      expect(summary.verified).toBe(1)
+      expect(summary.cancelled).toBe(2)
+      expect(summary.skipped).toBe(1)
+      expect(summary.failed).toBe(1)
+
+      expect(classifyBatchOutcome('confirmed')).toBe('verified')
+      expect(classifyBatchOutcome('revoked')).toBe('failed')
+      expect(classifyBatchOutcome('cancelled')).toBe('cancelled')
+      expect(classifyBatchOutcome('skipped')).toBe('skipped')
+      expect(classifyBatchOutcome('duplicate')).toBe('skipped')
+
+      vi.unstubAllGlobals()
     })
   })
 })
