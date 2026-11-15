@@ -20,13 +20,53 @@ pub mod wasm_budget;
 
 use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN, REVOCATION_PUBLIC_INPUTS_LEN};
 
-/// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
+/// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`]
+/// and [`HarpocratesRegistry::get_schema_input_limit`].
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
 pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
 /// Circuit-versioned silent-witness envelope (`silent_witness/v2`, #368).
 /// Distinct from [`SCHEMA_ID_SILENT_WITNESS`] so `classify_public_inputs` can
 /// enforce the appended circuit-version field without touching the v1 codec.
 pub const SCHEMA_ID_SILENT_WITNESS_V2: u32 = 3;
+/// Browser single-witness 4-field layout (`silent_witness/browser-v1`, 128 bytes, #1202).
+pub const SCHEMA_ID_SILENT_WITNESS_BROWSER_V1: u32 = 4;
+/// Selective-disclosure 11-field layout (352 bytes, #1202).
+pub const SCHEMA_ID_SELECTIVE_DISCLOSURE: u32 = 5;
+
+/// Schema version of the [`InputSizePolicy`] read contract (#1202).
+pub const INPUT_SIZE_POLICY_SCHEMA_VERSION: u32 = 1;
+/// Canonical public-input byte length for browser single-witness (`4 * 32` bytes).
+pub const SILENT_WITNESS_BROWSER_V1_PUBLIC_INPUTS_LEN: u32 = 128;
+/// Canonical public-input byte length for selective disclosure (`11 * 32` bytes).
+pub const SELECTIVE_DISCLOSURE_PUBLIC_INPUTS_LEN: u32 = 352;
+/// Maximum public-input byte length for aggregated batch proofs (`32 + 8 * 128` bytes).
+pub const MAX_AGGREGATED_PUBLIC_INPUTS_LEN: u32 = 32 + (8 * 128);
+
+/// Bounded, schema-versioned snapshot of public-input, proof, and metadata size
+/// limits exposed via [`HarpocratesRegistry::get_input_size_policy`] (#1202).
+///
+/// Returned in O(1) without touching contract storage or authorization so
+/// clients can validate statement sizes locally instead of inferring limits
+/// from failed transactions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputSizePolicy {
+    pub schema_version: u32,
+    pub min_proof_bytes: u32,
+    pub max_proof_bytes: u32,
+    pub silent_witness_v1_bytes: u32,
+    pub silent_witness_v2_bytes: u32,
+    pub silent_witness_browser_bytes: u32,
+    pub revocation_witness_bytes: u32,
+    pub selective_disclosure_bytes: u32,
+    pub max_batch_aggregation_size: u32,
+    pub max_aggregated_inputs_bytes: u32,
+    pub max_metadata_hash_bytes: u32,
+    pub metadata_envelope_min_version: u32,
+    pub metadata_envelope_max_version: u32,
+    pub max_lineage_payload_bytes: u32,
+    pub max_source_batch_proof_len: u32,
+}
 
 /// Maximum Merkle depth for the `revocation_witness` circuit (#357).
 /// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
@@ -6969,6 +7009,56 @@ impl HarpocratesRegistry {
         };
         collect_valid_seal_signers(&env, &policy, &proof_id, None).len()
     }
+
+    /// Return the bounded, schema-versioned public-input, proof, and metadata
+    /// size policy for this contract build (#1202).
+    ///
+    /// Performs zero storage accesses and requires no authorization, so callers
+    /// can read active byte-size ceilings even before initialization or while a
+    /// registration domain is paused, without submitting trial transactions.
+    pub fn get_input_size_policy(_env: Env) -> InputSizePolicy {
+        const _: () = assert!(
+            MAX_AGGREGATED_PUBLIC_INPUTS_LEN == 32 + (MAX_AGGREGATION_SIZE * 128),
+            "MAX_AGGREGATED_PUBLIC_INPUTS_LEN must stay aligned with MAX_AGGREGATION_SIZE"
+        );
+        InputSizePolicy {
+            schema_version: INPUT_SIZE_POLICY_SCHEMA_VERSION,
+            min_proof_bytes: verifier_inputs::MIN_PROOF_BYTES,
+            max_proof_bytes: verifier_inputs::MAX_PROOF_BYTES,
+            silent_witness_v1_bytes: PUBLIC_INPUTS_LEN as u32,
+            silent_witness_v2_bytes: verifier_inputs::SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN as u32,
+            silent_witness_browser_bytes: SILENT_WITNESS_BROWSER_V1_PUBLIC_INPUTS_LEN,
+            revocation_witness_bytes: REVOCATION_PUBLIC_INPUTS_LEN as u32,
+            selective_disclosure_bytes: SELECTIVE_DISCLOSURE_PUBLIC_INPUTS_LEN,
+            max_batch_aggregation_size: MAX_AGGREGATION_SIZE,
+            max_aggregated_inputs_bytes: MAX_AGGREGATED_PUBLIC_INPUTS_LEN,
+            max_metadata_hash_bytes: MAX_EVIDENCE_METADATA_HASH_BYTES,
+            metadata_envelope_min_version: METADATA_ENVELOPE_V1,
+            metadata_envelope_max_version: METADATA_ENVELOPE_VERSION_MAX,
+            max_lineage_payload_bytes: MAX_LINEAGE_PAYLOAD_BYTES,
+            max_source_batch_proof_len: MAX_SOURCE_BATCH_PROOF_LEN,
+        }
+    }
+
+    /// Return the exact public-input frame length in bytes for a known
+    /// `SCHEMA_ID_*` selector, or `None` when `schema_id` is unknown (#1202).
+    ///
+    /// Never panics on unknown selectors so clients can probe schema support
+    /// without triggering reverted transactions.
+    pub fn get_schema_input_limit(_env: Env, schema_id: u32) -> Option<u32> {
+        match schema_id {
+            SCHEMA_ID_SILENT_WITNESS => Some(PUBLIC_INPUTS_LEN as u32),
+            SCHEMA_ID_REVOCATION_WITNESS => Some(REVOCATION_PUBLIC_INPUTS_LEN as u32),
+            SCHEMA_ID_SILENT_WITNESS_V2 => {
+                Some(verifier_inputs::SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN as u32)
+            }
+            SCHEMA_ID_SILENT_WITNESS_BROWSER_V1 => {
+                Some(SILENT_WITNESS_BROWSER_V1_PUBLIC_INPUTS_LEN)
+            }
+            SCHEMA_ID_SELECTIVE_DISCLOSURE => Some(SELECTIVE_DISCLOSURE_PUBLIC_INPUTS_LEN),
+            _ => None,
+        }
+    }
 }
 
 pub fn version(env: Env) -> soroban_sdk::String {
@@ -9085,6 +9175,8 @@ mod test_expiry;
 mod test_fuzz;
 #[cfg(test)]
 mod test_identity_tier_properties;
+#[cfg(test)]
+mod test_input_size_policy;
 #[cfg(test)]
 mod test_invariants;
 #[cfg(test)]

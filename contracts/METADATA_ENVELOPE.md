@@ -73,6 +73,8 @@ the persistent storage encoding, so no migration or data rewrite is required.
 - `get_metadata_envelope(proof_id)`
 - `resolve_metadata_envelope_ver(proof_id)`
 - `is_supported_envelope_version(version)`
+- `get_input_size_policy()` — returns `InputSizePolicy` (including `max_metadata_hash_bytes = 32`, `metadata_envelope_min_version = 1`, `metadata_envelope_max_version = 2`, and `max_lineage_payload_bytes = 4096` with `schema_version = 1`)
+- `get_schema_input_limit(schema_id)` — returns the exact public-input frame byte length for a known `SCHEMA_ID_*` selector or `None` for unknown selectors
 
 ## Verification
 

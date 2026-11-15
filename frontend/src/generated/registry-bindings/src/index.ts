@@ -743,6 +743,33 @@ export interface CouncilProposal {
 }
 
 
+/**
+ * Bounded, schema-versioned snapshot of public-input, proof, and metadata size
+ * limits exposed via [`HarpocratesRegistry::get_input_size_policy`] (#1202).
+ * 
+ * Returned in O(1) without touching contract storage or authorization so
+ * clients can validate statement sizes locally instead of inferring limits
+ * from failed transactions.
+ */
+export interface InputSizePolicy {
+  max_aggregated_inputs_bytes: u32;
+  max_batch_aggregation_size: u32;
+  max_lineage_payload_bytes: u32;
+  max_metadata_hash_bytes: u32;
+  max_proof_bytes: u32;
+  max_source_batch_proof_len: u32;
+  metadata_envelope_max_version: u32;
+  metadata_envelope_min_version: u32;
+  min_proof_bytes: u32;
+  revocation_witness_bytes: u32;
+  schema_version: u32;
+  selective_disclosure_bytes: u32;
+  silent_witness_browser_bytes: u32;
+  silent_witness_v1_bytes: u32;
+  silent_witness_v2_bytes: u32;
+}
+
+
 
 
 
@@ -1815,6 +1842,17 @@ export interface Client {
   get_current_wasm_hash: (options?: MethodOptions) => Promise<AssembledTransaction<Option<Buffer>>>
 
   /**
+   * Construct and simulate a get_input_size_policy transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the bounded, schema-versioned public-input, proof, and metadata
+   * size policy for this contract build (#1202).
+   * 
+   * Performs zero storage accesses and requires no authorization, so callers
+   * can read active byte-size ceilings even before initialization or while a
+   * registration domain is paused, without submitting trial transactions.
+   */
+  get_input_size_policy: (options?: MethodOptions) => Promise<AssembledTransaction<InputSizePolicy>>
+
+  /**
    * Construct and simulate a get_metadata_envelope transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Return the versioned metadata envelope for `proof_id`, if stored.
    */
@@ -1965,6 +2003,16 @@ export interface Client {
    * Return the committed receipt digest record for `proof_id`, if any.
    */
   get_receipt_commitment: ({proof_id}: {proof_id: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Option<ReceiptCommitmentRecord>>>
+
+  /**
+   * Construct and simulate a get_schema_input_limit transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the exact public-input frame length in bytes for a known
+   * `SCHEMA_ID_*` selector, or `None` when `schema_id` is unknown (#1202).
+   * 
+   * Never panics on unknown selectors so clients can probe schema support
+   * without triggering reverted transactions.
+   */
+  get_schema_input_limit: ({schema_id}: {schema_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u32>>>
 
   /**
    * Construct and simulate a propose_council_action transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -2406,6 +2454,7 @@ export class Client extends ContractClient {
         "AAAABQAAAOJFbWl0dGVkIHdoZW4gdGhlIGFkbWluIHNldHMgb3IgY2xlYXJzIG9uZSBrZXkncyByZWdpc3RyYXRpb24gcXVvdGEgKCM4MDYpLgpBIGBtYXhfcmVnaXN0cmF0aW9uc2AgKG9yIGB3aW5kb3dfc2Vjc2ApIG9mIHplcm8gcHVibGlzaGVzIHRoZSBjbGVhciwgc28gYW4KaW5kZXhlciBjYW4gdGVsbCAidW5saW1pdGVkIiBmcm9tICJubyBjb25maWd1cmF0aW9uIGV2ZXIiIGJ5IHRoZSBldmVudCBsb2cuAAAAAAAAAAAADklzc3VlclF1b3RhU2V0AAAAAAACAAAABXF1b3RhAAAAAAAAA3NldAAAAAAEAAAAAAAAAAZpc3N1ZXIAAAAAABMAAAABAAAAAAAAABFtYXhfcmVnaXN0cmF0aW9ucwAAAAAAAAQAAAAAAAAAAAAAAAt3aW5kb3dfc2VjcwAAAAAGAAAAAAAAAAAAAAAGc2V0X2J5AAAAAAATAAAAAQAAAAI=",
         "AAAABQAAAAAAAAAAAAAADlNjaGVtYVVwZ3JhZGVkAAAAAAACAAAABnNjaGVtYQAAAAAAB3VwZ3JhZGUAAAAAAgAAAAAAAAAIcHJldmlvdXMAAAAEAAAAAAAAAAAAAAAHY3VycmVudAAAAAAEAAAAAAAAAAI=",
         "AAAAAQAAAAAAAAAAAAAAD0NvdW5jaWxQcm9wb3NhbAAAAAAKAAAAAAAAAAZhY3Rpb24AAAAAAAQAAAAAAAAACWFwcHJvdmFscwAAAAAAA+oAAAATAAAAAAAAAAljYW5jZWxsZWQAAAAAAAABAAAAAAAAAApjcmVhdGVkX2F0AAAAAAAGAAAAAAAAAAhleGVjdXRlZAAAAAEAAAAAAAAACmV4cGlyZXNfYXQAAAAAAAYAAAAAAAAAAmlkAAAAAAAEAAAAAAAAAAdwYXlsb2FkAAAAA+4AAAAgAAAAAAAAAAhwcm9wb3NlcgAAABMAAAAAAAAABnRhcmdldAAAAAAAEw==",
+        "AAAAAQAAAUJCb3VuZGVkLCBzY2hlbWEtdmVyc2lvbmVkIHNuYXBzaG90IG9mIHB1YmxpYy1pbnB1dCwgcHJvb2YsIGFuZCBtZXRhZGF0YSBzaXplCmxpbWl0cyBleHBvc2VkIHZpYSBbYEhhcnBvY3JhdGVzUmVnaXN0cnk6OmdldF9pbnB1dF9zaXplX3BvbGljeWBdICgjMTIwMikuCgpSZXR1cm5lZCBpbiBPKDEpIHdpdGhvdXQgdG91Y2hpbmcgY29udHJhY3Qgc3RvcmFnZSBvciBhdXRob3JpemF0aW9uIHNvCmNsaWVudHMgY2FuIHZhbGlkYXRlIHN0YXRlbWVudCBzaXplcyBsb2NhbGx5IGluc3RlYWQgb2YgaW5mZXJyaW5nIGxpbWl0cwpmcm9tIGZhaWxlZCB0cmFuc2FjdGlvbnMuAAAAAAAAAAAAD0lucHV0U2l6ZVBvbGljeQAAAAAPAAAAAAAAABttYXhfYWdncmVnYXRlZF9pbnB1dHNfYnl0ZXMAAAAABAAAAAAAAAAabWF4X2JhdGNoX2FnZ3JlZ2F0aW9uX3NpemUAAAAAAAQAAAAAAAAAGW1heF9saW5lYWdlX3BheWxvYWRfYnl0ZXMAAAAAAAAEAAAAAAAAABdtYXhfbWV0YWRhdGFfaGFzaF9ieXRlcwAAAAAEAAAAAAAAAA9tYXhfcHJvb2ZfYnl0ZXMAAAAABAAAAAAAAAAabWF4X3NvdXJjZV9iYXRjaF9wcm9vZl9sZW4AAAAAAAQAAAAAAAAAHW1ldGFkYXRhX2VudmVsb3BlX21heF92ZXJzaW9uAAAAAAAABAAAAAAAAAAdbWV0YWRhdGFfZW52ZWxvcGVfbWluX3ZlcnNpb24AAAAAAAAEAAAAAAAAAA9taW5fcHJvb2ZfYnl0ZXMAAAAABAAAAAAAAAAYcmV2b2NhdGlvbl93aXRuZXNzX2J5dGVzAAAABAAAAAAAAAAOc2NoZW1hX3ZlcnNpb24AAAAAAAQAAAAAAAAAGnNlbGVjdGl2ZV9kaXNjbG9zdXJlX2J5dGVzAAAAAAAEAAAAAAAAABxzaWxlbnRfd2l0bmVzc19icm93c2VyX2J5dGVzAAAABAAAAAAAAAAXc2lsZW50X3dpdG5lc3NfdjFfYnl0ZXMAAAAABAAAAAAAAAAXc2lsZW50X3dpdG5lc3NfdjJfYnl0ZXMAAAAABA==",
         "AAAABQAAAAAAAAAAAAAAD0FkbWluQ291bmNpbFNldAAAAAACAAAAB2NvdW5jaWwAAAAAA3NldAAAAAADAAAAAAAAAAl0aHJlc2hvbGQAAAAAAAAEAAAAAAAAAAAAAAAMbWVtYmVyX2NvdW50AAAABAAAAAAAAAAAAAAADGVmZmVjdGl2ZV9hdAAAAAYAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAD0Rpc3B1dGVSZXNvbHZlZAAAAAACAAAAB2Rpc3B1dGUAAAAAB3Jlc29sdmUAAAAAAwAAAAAAAAAKZGlzcHV0ZV9pZAAAAAAD7gAAACAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAAAAAAAALcmVzb2x2ZWRfYXQAAAAABgAAAAAAAAAC",
         "AAAABQAAAAAAAAAAAAAAD0d1YXJkaWFuQ2xlYXJlZAAAAAACAAAACGd1YXJkaWFuAAAABWNsZWFyAAAAAAAAAAAAAAI=",
@@ -2561,6 +2610,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAVY2FuY2VsX2FkbWluX3RyYW5zZmVyAAAAAAAAAQAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAA==",
         "AAAAAAAAAH9BbmNob3IgYSBzaWduZWQgdmVyaWZpY2F0aW9uIHJlY2VpcHQgZGlnZXN0IGZvciBgcHJvb2ZfaWRgLgoKSWRlbXBvdGVudCB3aGVuIHJldHJpZWQgd2l0aCB0aGUgZXhhY3QgY29tbWl0dGVkIGByZWNlaXB0X2RpZ2VzdGAuAAAAABVjb21taXRfcmVjZWlwdF9kaWdlc3QAAAAAAAAFAAAAAAAAAAZjYWxsZXIAAAAAABMAAAAAAAAACHByb29mX2lkAAAD7gAAACAAAAAAAAAADnJlY2VpcHRfZGlnZXN0AAAAAAPuAAAAIAAAAAAAAAAKcHVibGljX2tleQAAAAAD7gAAAEEAAAAAAAAACXNpZ25hdHVyZQAAAAAAA+4AAABAAAAAAQAAB9AAAAAXUmVjZWlwdENvbW1pdG1lbnRSZWNvcmQA",
         "AAAAAAAAAAAAAAAVZ2V0X2N1cnJlbnRfd2FzbV9oYXNoAAAAAAAAAAAAAAEAAAPoAAAD7gAAACA=",
+        "AAAAAAAAAUxSZXR1cm4gdGhlIGJvdW5kZWQsIHNjaGVtYS12ZXJzaW9uZWQgcHVibGljLWlucHV0LCBwcm9vZiwgYW5kIG1ldGFkYXRhCnNpemUgcG9saWN5IGZvciB0aGlzIGNvbnRyYWN0IGJ1aWxkICgjMTIwMikuCgpQZXJmb3JtcyB6ZXJvIHN0b3JhZ2UgYWNjZXNzZXMgYW5kIHJlcXVpcmVzIG5vIGF1dGhvcml6YXRpb24sIHNvIGNhbGxlcnMKY2FuIHJlYWQgYWN0aXZlIGJ5dGUtc2l6ZSBjZWlsaW5ncyBldmVuIGJlZm9yZSBpbml0aWFsaXphdGlvbiBvciB3aGlsZSBhCnJlZ2lzdHJhdGlvbiBkb21haW4gaXMgcGF1c2VkLCB3aXRob3V0IHN1Ym1pdHRpbmcgdHJpYWwgdHJhbnNhY3Rpb25zLgAAABVnZXRfaW5wdXRfc2l6ZV9wb2xpY3kAAAAAAAAAAAAAAQAAB9AAAAAPSW5wdXRTaXplUG9saWN5AA==",
         "AAAAAAAAAEFSZXR1cm4gdGhlIHZlcnNpb25lZCBtZXRhZGF0YSBlbnZlbG9wZSBmb3IgYHByb29mX2lkYCwgaWYgc3RvcmVkLgAAAAAAABVnZXRfbWV0YWRhdGFfZW52ZWxvcGUAAAAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAA+gAAAfQAAAAEE1ldGFkYXRhRW52ZWxvcGU=",
         "AAAAAAAAAVZSZXR1cm4gdGhlIHZlcmlmaWNhdGlvbiBzdGF0dXMgb2YgbXVsdGlwbGUgdmlkZW9zIGluIGEgc2luZ2xlIGJhdGNoIHF1ZXJ5LApyZXNvbHZpbmcgdmlkZW8gaGFzaGVzIHRvIHRoZWlyIHVuZGVybHlpbmcgcHJvb2YgdmVyaWZpY2F0aW9uIHN0YXR1c2VzLgoKVW5rbm93biB2aWRlbyBoYXNoZXMgcmV0dXJuIGBQcm9vZlZlcmlmaWNhdGlvblN0YXR1czo6Tm90Rm91bmRgIGluc3RlYWQgb2YgZmFpbGluZyB0aGUgYmF0Y2guClRoZSBtYXhpbXVtIG51bWJlciBvZiB2aWRlbyBoYXNoZXMgaW4gYSBzaW5nbGUgYmF0Y2ggaXMgYm91bmRlZCAoMTAwKSB0byBtYXRjaCBgZ2V0X3Byb29mX3N0YXR1c2VzYC4AAAAAABVnZXRfc3RhdHVzZXNfYnlfdmlkZW8AAAAAAAABAAAAAAAAAAx2aWRlb19oYXNoZXMAAAPqAAAD7gAAACAAAAABAAAD6gAAB9AAAAAXUHJvb2ZWZXJpZmljYXRpb25TdGF0dXMA",
         "AAAAAAAAAAAAAAAVZ2V0X3RpbWVsb2NrX3Byb3Bvc2FsAAAAAAAAAQAAAAAAAAALcHJvcG9zYWxfaWQAAAAABAAAAAEAAAPoAAAH0AAAABBUaW1lbG9ja1Byb3Bvc2Fs",
@@ -2577,6 +2627,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAMVSZXR1cm4gdGhlIGN1cnJlbnQgd2luZG93LWJ1Y2tldCB1c2FnZSBmb3IgYGlzc3VlcmAuCgpBdXRvbWF0aWNhbGx5IHJlc29sdmVzIGxlZGdlci10aW1lIHdpbmRvdyByb2xsb3ZlciBzbyBjYWxsZXJzIHNlZSBgY291bnQgPT0gMGAKZm9yIGEgZnJlc2ggYnVja2V0IHdpdGhvdXQgcmVxdWlyaW5nIGFuIGFkbWluIHJlc2V0IHRyYW5zYWN0aW9uLgAAAAAAABZnZXRfaXNzdWVyX3F1b3RhX3VzYWdlAAAAAAABAAAAAAAAAAZpc3N1ZXIAAAAAABMAAAABAAAH0AAAABBJc3N1ZXJRdW90YVVzYWdl",
         "AAAAAAAAAD9SZXR1cm4gdGhlIG51bWJlciBvZiBjdXJyZW50bHkgT3BlbiBkaXNwdXRlcyBmb3IgYSBnaXZlbiBwcm9vZi4AAAAAFmdldF9vcGVuX2Rpc3B1dGVfY291bnQAAAAAAAEAAAAAAAAACHByb29mX2lkAAAD7gAAACAAAAABAAAABA==",
         "AAAAAAAAAEJSZXR1cm4gdGhlIGNvbW1pdHRlZCByZWNlaXB0IGRpZ2VzdCByZWNvcmQgZm9yIGBwcm9vZl9pZGAsIGlmIGFueS4AAAAAABZnZXRfcmVjZWlwdF9jb21taXRtZW50AAAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAA+gAAAfQAAAAF1JlY2VpcHRDb21taXRtZW50UmVjb3JkAA==",
+        "AAAAAAAAAPdSZXR1cm4gdGhlIGV4YWN0IHB1YmxpYy1pbnB1dCBmcmFtZSBsZW5ndGggaW4gYnl0ZXMgZm9yIGEga25vd24KYFNDSEVNQV9JRF8qYCBzZWxlY3Rvciwgb3IgYE5vbmVgIHdoZW4gYHNjaGVtYV9pZGAgaXMgdW5rbm93biAoIzEyMDIpLgoKTmV2ZXIgcGFuaWNzIG9uIHVua25vd24gc2VsZWN0b3JzIHNvIGNsaWVudHMgY2FuIHByb2JlIHNjaGVtYSBzdXBwb3J0CndpdGhvdXQgdHJpZ2dlcmluZyByZXZlcnRlZCB0cmFuc2FjdGlvbnMuAAAAABZnZXRfc2NoZW1hX2lucHV0X2xpbWl0AAAAAAABAAAAAAAAAAlzY2hlbWFfaWQAAAAAAAAEAAAAAQAAA+gAAAAE",
         "AAAAAAAAADZQcm9wb3NlIGEgY3JpdGljYWwgYWN0aW9uIHRvIHRoZSBhY3RpdmUgYWRtaW4gY291bmNpbC4AAAAAABZwcm9wb3NlX2NvdW5jaWxfYWN0aW9uAAAAAAAEAAAAAAAAAAhwcm9wb3NlcgAAABMAAAAAAAAABmFjdGlvbgAAAAAABAAAAAAAAAAGdGFyZ2V0AAAAAAATAAAAAAAAAAdwYXlsb2FkAAAAA+4AAAAgAAAAAQAAAAQ=",
         "AAAAAAAAAAAAAAAWcmV2b2tlX2NyZWRlbnRpYWxfcm9vdAAAAAAAAgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAA9jcmVkZW50aWFsX3Jvb3QAAAAD7gAAACAAAAAA",
         "AAAAAAAAATNVcGRhdGUgYW4gYWN0aXZlIGlzc3VlcidzIG1ldGFkYXRhIGhhc2guCgpSZXF1aXJlcyBhZG1pbiBhdXRoIGFuZCB0aGF0IGBpc3N1ZXJgIGlzIGFjdGl2ZS4KT25seSB0aGUgbWV0YWRhdGEgaGFzaCBjaGFuZ2VzOyBhY3RpdmUgc3RhdHVzIGFuZCBhbnkgcm90YXRpb24gZ3JhY2UKcmVjb3JkcyBhcmUgcHJlc2VydmVkLgoKIyBSZXZlcnRzCgotIGBVbmF1dGhvcml6ZWRgIGlmIGBhZG1pbmAgaXMgbm90IHRoZSBjdXJyZW50IGFkbWluCi0gYFVua25vd25Jc3N1ZXJgIGlmIGBpc3N1ZXJgIGRvZXMgbm90IGV4aXN0IG9yIGlzIGluYWN0aXZlAAAAABZ1cGRhdGVfaXNzdWVyX21ldGFkYXRhAAAAAAADAAAAAAAAAAVhZG1pbgAAAAAAABMAAAAAAAAABmlzc3VlcgAAAAAAEwAAAAAAAAANbWV0YWRhdGFfaGFzaAAAAAAAA+4AAAAgAAAAAA==",
@@ -2718,6 +2769,7 @@ export class Client extends ContractClient {
         cancel_admin_transfer: this.txFromJSON<null>,
         commit_receipt_digest: this.txFromJSON<ReceiptCommitmentRecord>,
         get_current_wasm_hash: this.txFromJSON<Option<Buffer>>,
+        get_input_size_policy: this.txFromJSON<InputSizePolicy>,
         get_metadata_envelope: this.txFromJSON<Option<MetadataEnvelope>>,
         get_statuses_by_video: this.txFromJSON<Array<ProofVerificationStatus>>,
         get_timelock_proposal: this.txFromJSON<Option<TimelockProposal>>,
@@ -2734,6 +2786,7 @@ export class Client extends ContractClient {
         get_issuer_quota_usage: this.txFromJSON<IssuerQuotaUsage>,
         get_open_dispute_count: this.txFromJSON<u32>,
         get_receipt_commitment: this.txFromJSON<Option<ReceiptCommitmentRecord>>,
+        get_schema_input_limit: this.txFromJSON<Option<u32>>,
         propose_council_action: this.txFromJSON<u32>,
         revoke_credential_root: this.txFromJSON<null>,
         update_issuer_metadata: this.txFromJSON<null>,
