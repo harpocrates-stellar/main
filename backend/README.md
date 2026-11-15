@@ -301,6 +301,12 @@ DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
 VERIFIER_CACHE_NEGATIVE_TTL_SECONDS=300.0
+INDEXER_MAX_IN_MEMORY_EVENTS=100
+INDEXER_MIN_PAGE_SIZE=5
+INDEXER_SLOW_WRITE_THRESHOLD_MS=250.0
+INDEXER_MAX_BATCH_WRITE_BUDGET_MS=2000.0
+INDEXER_MAX_CONCURRENT_BATCHES=1
+INDEXER_SLOW_COOLDOWN_SECONDS=2.0
 ```
 
 Production notes:
@@ -341,6 +347,23 @@ Bump `CACHE_KEY_DOMAIN_TAG` (e.g. to `...:v2`) whenever the key field layout
 changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
+
+## Chain Indexer Backpressure Policy
+
+`chain_indexer.py` enforces bounded in-memory batching and admission control
+through `IndexerBackpressurePolicy`:
+
+- **Bounded Admission and In-Memory Batches:** `INDEXER_MAX_CONCURRENT_BATCHES`
+  rejects overlapping batch admission while a slow write batch is active, and
+  `INDEXER_MAX_IN_MEMORY_EVENTS` caps buffered RPC events per cycle.
+- **Adaptive Slow-Write Throttling:** Database writes exceeding
+  `INDEXER_SLOW_WRITE_THRESHOLD_MS` step down the effective RPC page size toward
+  `INDEXER_MIN_PAGE_SIZE`, and cumulative write times reaching
+  `INDEXER_MAX_BATCH_WRITE_BUDGET_MS` pause mid-page with cooldown backoff.
+- **At-Least-Once & Idempotent Resume:** Partial batches advance the stored
+  cursor only up to the last contiguous durably processed event token (never to
+  the page tail cursor), while `(tx_hash, event_index)` uniqueness guarantees
+  idempotent projections across restarts and replays.
 
 ## Test
 
