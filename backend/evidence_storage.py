@@ -1,9 +1,21 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
+import hashlib
 import logging
 import os
-import hashlib
-from typing import Tuple
+from pathlib import Path
+from typing import Any, Tuple
+
 from cryptography.fernet import Fernet
 import db
+from storage import (
+    PROTECTED_PATH_ALIAS,
+    StoragePathAliasError,
+    validate_storage_destination,
+    validate_storage_dir,
+    write_evidence_blob,
+)
 
 logger = logging.getLogger("harpocrates.evidence_storage")
 
@@ -34,6 +46,7 @@ def get_encryptor(dek: bytes):
 
 
 def record_blob(content_hash: str, encrypted_dek: bytes, size_bytes: int, storage_path: str):
+    validate_storage_destination(storage_path)
     with db.get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -175,3 +188,40 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+
+def store_encrypted_evidence_at(
+    plaintext: bytes,
+    destination: Path | str,
+    *,
+    allowed_root: Path | str | None = None,
+    protected_paths: Iterable[Path | str] = (),
+    record_in_db: bool = True,
+) -> dict[str, Any]:
+    """Validate output destination before encryption/write and persist encrypted evidence."""
+    if not isinstance(plaintext, (bytes, bytearray)):
+        raise TypeError("plaintext must be bytes")
+    raw_dest = Path(destination)
+    if raw_dest.is_symlink():
+        raise StoragePathAliasError("refusing to write evidence through a symbolic link")
+    resolved_dest = validate_storage_destination(
+        raw_dest,
+        allowed_root=allowed_root,
+        protected_paths=protected_paths,
+    )
+    raw_bytes = bytes(plaintext)
+    content_hash = hashlib.sha256(raw_bytes).hexdigest()
+    dek, encrypted_dek = generate_dek()
+    ciphertext = get_encryptor(dek).encrypt(raw_bytes)
+    written_path = write_evidence_blob(
+        resolved_dest,
+        ciphertext,
+        allowed_root=allowed_root,
+        protected_paths=protected_paths,
+    )
+    if record_in_db:
+        record_blob(content_hash, encrypted_dek, len(ciphertext), str(written_path))
+    return {
+        "contentHash": content_hash,
+        "ciphertextBytes": len(ciphertext),
+    }

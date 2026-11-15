@@ -342,6 +342,23 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Storage Destination Aliasing Protection
+
+`storage.py` (`validate_storage_destination`, `validate_storage_dir`,
+`write_evidence_blob`) and `evidence_storage.py` (`record_blob`,
+`store_encrypted_evidence_at`) resolve and validate output destinations before
+opening, truncating, or persisting evidence files:
+
+- Rejects (`StoragePathAliasError` / `PROTECTED_PATH_ALIAS`) any path, relative
+  traversal (`..`), hardlink (`os.path.samefile`), symbolic link, or case-folded
+  alias targeting metadata databases (`.db`, `.sqlite`, `.sqlite3`, `-wal`/`-shm`
+  sidecars, `sqlite:` `DATABASE_URL`, `HARPOCRATES_METADATA_DB_PATH`,
+  `ANALYTICS_DURABLE_PATH`) or key/secret files (`.key`, `.pem`, `.p12`, `.pfx`,
+  `.jks`, `.keystore`, `.age`, `.env`, `MASTER_ENCRYPTION_KEY_FILE`,
+  `HARPOCRATES_KEY_FILE`, `HARPOCRATES_KEYSTORE_DIR`).
+- Pre-existing metadata databases and key files remain byte-for-byte intact on
+  rejection, with no database rows recorded.
+
 ## Test
 
 ```powershell
