@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import { buildExportPrivacySummary, useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -230,6 +230,73 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('builds export privacy summaries and requires explicit acknowledgement only for newly exposed sensitive fields', () => {
+    const baseProof = {
+      fileName: 'harpocrates-clip.mp4',
+      sourceHash: 'a'.repeat(64),
+      videoHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+      proofId: 'd'.repeat(64),
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }
+
+    // Silent Witness with no capture-time attestation or ledger tx has no sensitive fields -> no ack needed.
+    const silentSummary = buildExportPrivacySummary({
+      proof: { ...baseProof, tier: 'silent' },
+      networkPassphrase: 'Test SDF Network ; September 2015',
+      contractId: 'C'.repeat(56),
+    })
+    expect(silentSummary?.metadataClasses.map((c) => c.id)).toEqual([
+      'portable_manifest',
+      'integrity_digests',
+      'capture_timestamp',
+      'zk_anonymous_credential',
+    ])
+    expect(silentSummary?.publicIdentifiers.map((p) => p.key)).toContain('proofId')
+    expect(silentSummary?.sensitiveFields).toHaveLength(0)
+    expect(silentSummary?.requiresAcknowledgement).toBe(false)
+    expect(silentSummary?.canExport).toBe(true)
+
+    // Consistent Source exposes wallet attribution -> newly exposed -> requires acknowledgement.
+    const sourceUnacked = buildExportPrivacySummary({
+      proof: { ...baseProof, tier: 'source' },
+      wallet: 'G'.repeat(56),
+      networkPassphrase: 'Test SDF Network ; September 2015',
+      acknowledgedKeys: [],
+    })
+    expect(sourceUnacked?.newlyExposedFields.map((f) => f.key)).toEqual([
+      'pseudonymous_wallet_attribution',
+    ])
+    expect(sourceUnacked?.requiresAcknowledgement).toBe(true)
+    expect(sourceUnacked?.canExport).toBe(false)
+
+    // Once wallet attribution is acknowledged, export is allowed without prompting again.
+    const sourceAcked = buildExportPrivacySummary({
+      proof: { ...baseProof, tier: 'source' },
+      wallet: 'G'.repeat(56),
+      networkPassphrase: 'Test SDF Network ; September 2015',
+      acknowledgedKeys: ['pseudonymous_wallet_attribution'],
+    })
+    expect(sourceAcked?.newlyExposedFields).toHaveLength(0)
+    expect(sourceAcked?.requiresAcknowledgement).toBe(false)
+    expect(sourceAcked?.canExport).toBe(true)
+
+    // When Stellar registration subsequently adds a public transaction reference, ONLY the newly exposed field requires ack.
+    const afterRegistration = buildExportPrivacySummary({
+      proof: { ...baseProof, tier: 'source' },
+      registration: { hash: 'f'.repeat(64), status: 'SUCCESS' },
+      wallet: 'G'.repeat(56),
+      networkPassphrase: 'Test SDF Network ; September 2015',
+      acknowledgedKeys: ['pseudonymous_wallet_attribution'],
+    })
+    expect(afterRegistration?.sensitiveFields).toHaveLength(2)
+    expect(afterRegistration?.newlyExposedFields.map((f) => f.key)).toEqual([
+      'ledger_transaction_reference',
+    ])
+    expect(afterRegistration?.requiresAcknowledgement).toBe(true)
+    expect(afterRegistration?.canExport).toBe(false)
   })
 })
 

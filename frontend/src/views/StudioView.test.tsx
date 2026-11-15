@@ -5,12 +5,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StudioView } from './StudioView'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
+import { expectNoA11yViolations, runAxe } from '../test/axeA11y'
 
 function makeVerification(): UseVerificationReturn {
   return {
@@ -41,6 +42,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
       description: 'Noir ZK proof.',
     },
     stage: 'idle',
+    hashProgress: null,
     file: null,
     proof: null,
     processedVideoUrl: '',
@@ -55,6 +57,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +124,87 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('StudioView – export privacy summary', () => {
+  it('lists metadata classes and public identifiers without gating Silent Witness exports that expose no sensitive fields', async () => {
+    const { container } = renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        processedVideoUrl: 'blob:embedded-silent',
+      }),
+    )
+
+    const summary = screen.getByRole('region', { name: /export privacy summary/i })
+    expect(within(summary).getByRole('list', { name: /included metadata classes/i })).toBeInTheDocument()
+    expect(within(summary).getByText(/portable harpocrates manifest/i)).toBeInTheDocument()
+    expect(within(summary).getByText(/^Proof ID$/)).toBeInTheDocument()
+    expect(within(summary).getByText(/explicit acknowledgement is not required/i)).toBeInTheDocument()
+
+    const downloadLink = screen.getByRole('link', { name: /download harpocrates-clip\.mp4/i })
+    expect(downloadLink).toHaveAttribute('href', 'blob:embedded-silent')
+    expectNoA11yViolations(await runAxe(container), 'studio export privacy summary silent')
+  })
+
+  it('gates export until newly exposed sensitive fields are acknowledged, then unlocks without re-prompting previously acknowledged fields', async () => {
+    const user = userEvent.setup()
+    const sourceProof: ProofPackage = { ...proof, tier: 'source' }
+    const { container, rerender } = render(
+      <StudioView
+        wallet={'G'.repeat(56)}
+        evidence={makeEvidence({
+          selectedTier: 'source',
+          stage: 'ready',
+          proof: sourceProof,
+          processedVideoUrl: 'blob:embedded-source',
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', {
+        name: /download harpocrates-clip\.mp4 \(requires sensitive field acknowledgement\)/i,
+      }),
+    ).toBeDisabled()
+    expect(screen.queryByRole('link', { name: /download harpocrates-clip\.mp4/i })).not.toBeInTheDocument()
+    expectNoA11yViolations(await runAxe(container), 'studio export privacy summary gated')
+
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: /i acknowledge exporting newly exposed sensitive fields: pseudonymous wallet address/i,
+      }),
+    )
+    await user.click(screen.getByRole('button', { name: /confirm export disclosure/i }))
+
+    expect(screen.getByRole('link', { name: /download harpocrates-clip\.mp4/i })).toHaveAttribute(
+      'href',
+      'blob:embedded-source',
+    )
+
+    // When a registration hash is later attached, only the newly exposed transaction reference requires acknowledgement.
+    rerender(
+      <StudioView
+        wallet={'G'.repeat(56)}
+        evidence={makeEvidence({
+          selectedTier: 'source',
+          stage: 'registered',
+          proof: sourceProof,
+          registration: { hash: 'f'.repeat(64), status: 'SUCCESS' },
+          processedVideoUrl: 'blob:embedded-source',
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    const checkbox = screen.getByRole('checkbox', {
+      name: /i acknowledge exporting newly exposed sensitive fields: public stellar transaction reference/i,
+    })
+    expect(checkbox).not.toBeChecked()
+    expect(screen.getByText(/previously acknowledged/i)).toBeInTheDocument()
   })
 })

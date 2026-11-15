@@ -1,7 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
-import type { UseEvidenceReturn } from '../hooks/useEvidence'
-import { TIERS } from '../hooks/useEvidence'
+import type { SensitiveExportFieldKey, UseEvidenceReturn } from '../hooks/useEvidence'
+import { buildExportPrivacySummary, TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
@@ -38,6 +38,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    acknowledgedExportFields,
+    acknowledgeExportFields,
     message,
     registration,
     networkMismatch,
@@ -56,6 +58,39 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const [fallbackAckFields, setFallbackAckFields] = useState<SensitiveExportFieldKey[]>([])
+  const [checkedAckSignature, setCheckedAckSignature] = useState<string>('')
+
+  const effectiveAckFields = acknowledgedExportFields ?? fallbackAckFields
+
+  const exportPrivacySummary = useMemo(
+    () =>
+      buildExportPrivacySummary({
+        proof,
+        registration,
+        wallet,
+        contractId: CONTRACT_ID,
+        networkPassphrase: CONTRACT_NETWORK_PASSPHRASE,
+        acknowledgedKeys: effectiveAckFields,
+      }),
+    [proof, registration, wallet, effectiveAckFields],
+  )
+
+  const newlyExposedSignature =
+    exportPrivacySummary?.newlyExposedFields.map((field) => field.key).join(',') ?? ''
+  const isAckChecked =
+    newlyExposedSignature !== '' && checkedAckSignature === newlyExposedSignature
+
+  function handleConfirmExportDisclosure() {
+    if (!exportPrivacySummary || !isAckChecked) return
+    const keys = exportPrivacySummary.newlyExposedFields.map((field) => field.key)
+    if (acknowledgeExportFields) {
+      acknowledgeExportFields(keys)
+    } else {
+      setFallbackAckFields((prev) => Array.from(new Set([...prev, ...keys])))
+    }
+    setCheckedAckSignature('')
+  }
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -235,15 +270,121 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         />
 
-        {processedVideoUrl ? (
-          <a
-            className="download-link"
-            href={processedVideoUrl}
-            download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
-            aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
+        {exportPrivacySummary ? (
+          <div
+            className="rail-block"
+            role="region"
+            aria-labelledby="export-privacy-summary-heading"
+            data-requires-ack={exportPrivacySummary.requiresAcknowledgement ? 'true' : 'false'}
           >
-            Download embedded evidence video
-          </a>
+            <h3 id="export-privacy-summary-heading">Export privacy summary</h3>
+            <p>
+              Review the metadata classes and public identifiers included in exported evidence
+              artifacts before downloading or sharing.
+            </p>
+            <h4 style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>Included metadata classes</h4>
+            <ul aria-label="Included metadata classes">
+              {exportPrivacySummary.metadataClasses.map((cls) => (
+                <li key={cls.id} data-metadata-class={cls.id}>
+                  <strong>{cls.label}:</strong> {cls.description}
+                </li>
+              ))}
+            </ul>
+
+            <h4 style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>Public identifiers</h4>
+            <dl className="data-list" aria-label="Exported public identifiers">
+              {exportPrivacySummary.publicIdentifiers.map((identifier) => (
+                <div key={identifier.key}>
+                  <dt>{identifier.label}</dt>
+                  <dd>{identifier.value}</dd>
+                </div>
+              ))}
+            </dl>
+
+            {exportPrivacySummary.sensitiveFields.length === 0 ? (
+              <p role="status">
+                No sensitive attribution or capture-timing fields are exposed. Explicit
+                acknowledgement is not required.
+              </p>
+            ) : (
+              <div>
+                <h4 style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>
+                  Sensitive disclosure fields
+                </h4>
+                <ul aria-label="Sensitive disclosure fields">
+                  {exportPrivacySummary.sensitiveFields.map((field) => (
+                    <li
+                      key={field.key}
+                      data-sensitive-key={field.key}
+                      data-newly-exposed={field.newlyExposed ? 'true' : 'false'}
+                    >
+                      <strong>{field.label}</strong> (
+                      {field.newlyExposed ? 'Newly exposed' : 'Previously acknowledged'}):{' '}
+                      {field.reason}
+                    </li>
+                  ))}
+                </ul>
+
+                {exportPrivacySummary.requiresAcknowledgement ? (
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={isAckChecked}
+                        onChange={(event) =>
+                          setCheckedAckSignature(
+                            event.target.checked ? newlyExposedSignature : '',
+                          )
+                        }
+                      />
+                      <span>
+                        I acknowledge exporting newly exposed sensitive fields:{' '}
+                        {exportPrivacySummary.newlyExposedFields
+                          .map((field) => field.label)
+                          .join(', ')}
+                      </span>
+                    </label>
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <button
+                        type="button"
+                        className="hero-secondary verify-action-btn"
+                        disabled={!isAckChecked}
+                        onClick={handleConfirmExportDisclosure}
+                      >
+                        Confirm export disclosure
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p role="status">
+                    All sensitive fields in this export have already been acknowledged.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {processedVideoUrl ? (
+          exportPrivacySummary && !exportPrivacySummary.canExport ? (
+            <button
+              type="button"
+              className="hero-secondary verify-action-btn"
+              disabled
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'} (requires sensitive field acknowledgement)`}
+            >
+              Download embedded evidence video (acknowledge newly exposed fields first)
+            </button>
+          ) : (
+            <a
+              className="download-link"
+              href={processedVideoUrl}
+              download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
+            >
+              Download embedded evidence video
+            </a>
+          )
         ) : null}
 
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -275,7 +416,9 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           ) : null}
         </div>
 
-        <ShareVerificationLink input={shareLinkInput} />
+        <ShareVerificationLink
+          input={exportPrivacySummary && !exportPrivacySummary.canExport ? null : shareLinkInput}
+        />
       </div>
 
       <aside className="side-rail">

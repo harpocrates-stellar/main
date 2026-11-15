@@ -14,6 +14,7 @@ import { Building2, Fingerprint, KeyRound } from 'lucide-react'
 import type { IdentityTier, ProofPackage, SilentWitnessProof, Stage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
 import type { HashProgress } from '../utils'
+import { shortHash } from '../utils'
 import {
   ProofWorkerClient,
   ProofWorkerError,
@@ -60,6 +61,204 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   cancelled: 'Request cancelled.',
 }
 
+export type ExportMetadataClass = {
+  id: string
+  label: string
+  description: string
+}
+
+export type ExportPublicIdentifier = {
+  key: string
+  label: string
+  value: string
+}
+
+export type SensitiveExportFieldKey =
+  | 'pseudonymous_wallet_attribution'
+  | 'institutional_issuer_attribution'
+  | 'claimed_capture_time_attestation'
+  | 'ledger_transaction_reference'
+
+export type SensitiveExportField = {
+  key: SensitiveExportFieldKey
+  label: string
+  reason: string
+  newlyExposed: boolean
+}
+
+export type ExportPrivacySummary = {
+  metadataClasses: ExportMetadataClass[]
+  publicIdentifiers: ExportPublicIdentifier[]
+  sensitiveFields: SensitiveExportField[]
+  newlyExposedFields: SensitiveExportField[]
+  requiresAcknowledgement: boolean
+  canExport: boolean
+}
+
+export function buildExportPrivacySummary(params: {
+  proof: ProofPackage | null
+  registration?: RegisterProofResult | null
+  wallet?: string
+  contractId?: string
+  networkPassphrase?: string
+  acknowledgedKeys?: ReadonlySet<SensitiveExportFieldKey> | SensitiveExportFieldKey[]
+}): ExportPrivacySummary | null {
+  const {
+    proof,
+    registration = null,
+    wallet = '',
+    contractId = '',
+    networkPassphrase = '',
+    acknowledgedKeys = [],
+  } = params
+  if (!proof) return null
+
+  const acknowledgedSet =
+    acknowledgedKeys instanceof Set ? acknowledgedKeys : new Set(acknowledgedKeys)
+
+  const metadataClasses: ExportMetadataClass[] = [
+    {
+      id: 'portable_manifest',
+      label: 'Portable Harpocrates manifest',
+      description: 'Protocol version, sanitized artifact filename, and selected identity tier.',
+    },
+    {
+      id: 'integrity_digests',
+      label: 'Cryptographic integrity digests',
+      description: 'SHA-256 digests for source media, embedded video, metadata, and proof ID.',
+    },
+    {
+      id: 'capture_timestamp',
+      label: 'Artifact timestamp metadata',
+      description: proof.timeAttestation
+        ? 'ISO-8601 embedding timestamp and claimed capture time attestation.'
+        : 'ISO-8601 embedding timestamp.',
+    },
+  ]
+
+  if (proof.tier === 'silent') {
+    metadataClasses.push({
+      id: 'zk_anonymous_credential',
+      label: 'Zero-knowledge anonymous credential',
+      description: 'Noir proof commitment and replay nullifier without creator wallet identity.',
+    })
+  } else if (proof.tier === 'source') {
+    metadataClasses.push({
+      id: 'pseudonymous_source',
+      label: 'Pseudonymous wallet attribution',
+      description: 'Recurring Stellar source public key linked to the signature.',
+    })
+  } else if (proof.tier === 'seal') {
+    metadataClasses.push({
+      id: 'institutional_seal',
+      label: 'Institutional issuer seal',
+      description: 'Verified Stellar organization public key and official attribution.',
+    })
+  }
+
+  if (registration?.hash) {
+    metadataClasses.push({
+      id: 'ledger_settlement',
+      label: 'On-chain settlement reference',
+      description: 'Public Stellar transaction hash and submission status.',
+    })
+  }
+
+  const publicIdentifiers: ExportPublicIdentifier[] = [
+    { key: 'proofId', label: 'Proof ID', value: shortHash(proof.proofId) },
+    { key: 'videoHash', label: 'Video Hash', value: shortHash(proof.videoHash) },
+    { key: 'metadataHash', label: 'Metadata Hash', value: shortHash(proof.metadataHash) },
+    { key: 'sourceHash', label: 'Source Hash', value: shortHash(proof.sourceHash) },
+    {
+      key: 'network',
+      label: 'Stellar Network',
+      value: networkPassphrase || 'Not configured',
+    },
+  ]
+
+  if (contractId) {
+    publicIdentifiers.push({
+      key: 'contractId',
+      label: 'Registry Contract',
+      value: shortHash(contractId),
+    })
+  }
+  if (proof.silentWitness?.nullifier) {
+    publicIdentifiers.push({
+      key: 'nullifier',
+      label: 'Nullifier',
+      value: shortHash(proof.silentWitness.nullifier),
+    })
+  }
+  if (proof.silentWitness?.credentialRoot) {
+    publicIdentifiers.push({
+      key: 'credentialRoot',
+      label: 'Credential Root',
+      value: shortHash(proof.silentWitness.credentialRoot),
+    })
+  }
+  if ((proof.tier === 'source' || proof.tier === 'seal') && wallet) {
+    publicIdentifiers.push({
+      key: 'signerWallet',
+      label: 'Signer Wallet',
+      value: shortHash(wallet),
+    })
+  }
+  if (registration?.hash) {
+    publicIdentifiers.push({
+      key: 'transactionHash',
+      label: 'Transaction Hash',
+      value: shortHash(registration.hash),
+    })
+  }
+
+  const candidates: Array<Omit<SensitiveExportField, 'newlyExposed'>> = []
+  if (proof.tier === 'source') {
+    candidates.push({
+      key: 'pseudonymous_wallet_attribution',
+      label: 'Pseudonymous wallet address',
+      reason: 'Links exported evidence to a recurring Stellar source public key.',
+    })
+  }
+  if (proof.tier === 'seal') {
+    candidates.push({
+      key: 'institutional_issuer_attribution',
+      label: 'Institutional issuer identity',
+      reason: 'Publicly attributes exported evidence to a registered Stellar issuer account.',
+    })
+  }
+  if (proof.timeAttestation) {
+    candidates.push({
+      key: 'claimed_capture_time_attestation',
+      label: 'Claimed capture time window',
+      reason: 'Discloses fine-grained claimed capture timestamp bounds alongside the artifact.',
+    })
+  }
+  if (registration?.hash) {
+    candidates.push({
+      key: 'ledger_transaction_reference',
+      label: 'Public Stellar transaction reference',
+      reason: 'Links the artifact to a public ledger transaction timestamp and fee account.',
+    })
+  }
+
+  const sensitiveFields: SensitiveExportField[] = candidates.map((field) => ({
+    ...field,
+    newlyExposed: !acknowledgedSet.has(field.key),
+  }))
+  const newlyExposedFields = sensitiveFields.filter((field) => field.newlyExposed)
+  const requiresAcknowledgement = newlyExposedFields.length > 0
+
+  return {
+    metadataClasses,
+    publicIdentifiers,
+    sensitiveFields,
+    newlyExposedFields,
+    requiresAcknowledgement,
+    canExport: !requiresAcknowledgement,
+  }
+}
+
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
   setSelectedTier: (tier: IdentityTier) => void
@@ -74,6 +273,8 @@ export type UseEvidenceReturn = {
   setCredentialSeed: (v: string) => void
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
+  acknowledgedExportFields?: SensitiveExportFieldKey[]
+  acknowledgeExportFields?: (keys: SensitiveExportFieldKey[]) => void
   message: string
   registration: RegisterProofResult | null
   networkMismatch: string | null
@@ -101,6 +302,9 @@ export function useEvidence(): UseEvidenceReturn {
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
+  const [acknowledgedExportFields, setAcknowledgedExportFields] = useState<
+    SensitiveExportFieldKey[]
+  >([])
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
@@ -204,6 +408,7 @@ export function useEvidence(): UseEvidenceReturn {
 
     if (!isCacheHit) {
       cachedFileHashRef.current = null
+      setAcknowledgedExportFields([])
       setHashProgress({
         processedBytes: 0,
         totalBytes: nextFile.size,
@@ -444,7 +649,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -473,6 +678,11 @@ export function useEvidence(): UseEvidenceReturn {
     setMessage(CANCELLED_MESSAGES[currentStage])
   }
 
+  function acknowledgeExportFields(keys: SensitiveExportFieldKey[]) {
+    if (keys.length === 0) return
+    setAcknowledgedExportFields((prev) => Array.from(new Set([...prev, ...keys])))
+  }
+
   return {
     selectedTier,
     setSelectedTier,
@@ -486,6 +696,8 @@ export function useEvidence(): UseEvidenceReturn {
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    acknowledgedExportFields,
+    acknowledgeExportFields,
     message,
     registration,
     networkMismatch,
