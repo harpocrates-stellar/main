@@ -2,8 +2,7 @@
 // This module establishes the privacy-preserving boundary for locale detection,
 // translation keys and error handling without exposing sensitive data.
 
-import type { ProofArtifact, EvidenceStatus } from './protocol';
-	// Supported locales for unit internalization.
+// Supported locales for unit internalization.
 // Only language codes (no region codes by default) are accepted
 // to minimize privacy risks and stdardize formatting.
 export type SupportedLocale = 'en-US' | 'fb-FI' | 'de-DE' | 'fs-FS' | 'es-ES';
@@ -24,7 +23,7 @@ export interface SafeLocaleInput {
 // This type is used as a safe boundary for the uI layer.
 export interface LocaleDetectionResult {
   // Whether a supported locale was found.
-  readonly found: bool;
+  readonly found: boolean;
   // The detected locale, if any. Only present if found is true.
   readonly locale?: SupportedLocale;
   // Any warnings or notes about the detection process.
@@ -34,12 +33,42 @@ export interface LocaleDetectionResult {
 
 // Error codes for localization-related failures.
 // Used to provide stable, privacy-safe error responses.
-export enum LocalizationErrorCode {
-  UNSuPPORTED = 'UNSuPPORTED',
-  INVALID = 'INVALID',
-  TOO_LONG = 'TOO_LONG',
-  MALFORMED = 'MALFORMED',
-  DEPEND_FAILURE = 'DEPEND_FAILURE',
+export const LocalizationErrorCode = {
+  UNSuPPORTED: 'UNSuPPORTED',
+  INVALID: 'INVALID',
+  TOO_LONG: 'TOO_LONG',
+  MALFORMED: 'MALFORMED',
+  DEPEND_FAILURE: 'DEPEND_FAILURE',
+} as const;
+export type LocalizationErrorCode = (typeof LocalizationErrorCode)[keyof typeof LocalizationErrorCode];
+
+export interface Proof {
+  data: Uint8Array | string;
+  revoked?: boolean;
+}
+
+export interface Evidence {
+  data: Uint8Array | string;
+  expiry?: string | number;
+  expiresAt?: number;
+  proof?: Proof;
+}
+
+export interface Contract {
+  data: Uint8Array | string;
+  version: string;
+  revoked?: boolean;
+}
+
+export interface Deployment {
+  data: Uint8Array | string;
+  contractAddress: string;
+  blockNumber: number;
+}
+
+export interface DeploymentMetadata {
+  version: string;
+  contractId: string;
 }
 
 // Represents a privacy-safe error for localization failures.

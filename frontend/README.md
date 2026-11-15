@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Error serialization privacy boundary
+
+`CredentialVaultError` (`serializeVaultError` in `src/credentialVault.ts`) and
+`SafeStorageError` (`src/safeStorage.ts`) serialize browser storage, key
+derivation, encryption, and decryption failures with stable field names
+(`name`, `reasonCode`, `message`, `operation`, `retryable`, `cause`) and
+redacted reason codes. Unredacted `Error.cause` graphs, stack traces, and JSON
+parse snippets are stripped so private passphrases, seeds, ciphertexts, and
+witness values never leak into browser error telemetry.
