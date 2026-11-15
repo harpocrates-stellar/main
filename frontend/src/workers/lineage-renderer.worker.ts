@@ -2,7 +2,7 @@ import type { LineageNode, RenderRequest, RenderResponse } from '../types/lineag
 
 // Simple layout algorithm for lineage graphs
 // In production, this would use a proper graph layout library
-function computeLayout(nodes: LineageNode[]): Record<string, { x: number; y: number; width: number; height: number }> {
+export function computeLayout(nodes: LineageNode[]): Record<string, { x: number; y: number; width: number; height: number }> {
   const layout: Record<string, { x: number; y: number; width: number; height: number }> = {};
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
   
@@ -41,7 +41,7 @@ function computeLayout(nodes: LineageNode[]): Record<string, { x: number; y: num
 
 self.onmessage = function(e: MessageEvent<RenderRequest>): void {
   try {
-    const { nodeIds, viewport } = e.data;
+    void e.data;
     
     // In a real implementation, we would fetch nodes from IndexedDB or state
     // For this demo, we assume nodes are passed or available in scope
@@ -71,6 +71,6 @@ self.onmessage = function(e: MessageEvent<RenderRequest>): void {
 };
 
 // Handle cancellation
-self.onmessage = function(e: MessageEvent): void {
+self.onmessage = function(_e: MessageEvent): void {
   // No-op for now, but structure allows for cancellation tokens
 };

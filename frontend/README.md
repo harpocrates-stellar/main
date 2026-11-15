@@ -79,3 +79,15 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Verification snapshot binding
+
+Completed verification banners in `src/views/VerifyView.tsx` are bound to a
+canonical statement and trust snapshot via
+`createVerificationResultSnapshotBinding` and
+`evaluateCachedVerificationFreshness` in `src/services/verificationFlow.ts`.
+Whenever the statement identity (`videoHash`, `proofId`, `metadataHash`) or
+active trust context (Stellar network passphrase, wallet network mismatch,
+registry contract ID, online/offline mode, or chain standing) diverges from the
+bound snapshot without a fresh verification run, the cached success banner and
+shareable link are suppressed until an explicit check completes.

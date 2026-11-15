@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { AlertTriangle, CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { DisputePanel } from '../components/DisputePanel'
@@ -13,6 +13,12 @@ import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
+import {
+  createVerificationResultSnapshotBinding,
+  evaluateCachedVerificationFreshness,
+  type StatementAndTrustSnapshotInput,
+  type VerificationResultSnapshotBinding,
+} from '../services/verificationFlow'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const MAX_MANIFEST_SIZE_BYTES = 64 * 1024 // 64 KB cap
@@ -58,15 +64,17 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const inputRef = useRef<HTMLInputElement | null>(null)
   const manifestInputRef = useRef<HTMLInputElement | null>(null)
   const [videoHashInput, setVideoHashInput] = useState('')
+  const [prevVerifyHash, setPrevVerifyHash] = useState(verifyHash)
   const [proofIdInput, setProofIdInput] = useState('')
   const [manifestError, setManifestError] = useState<string | null>(null)
 
   // Keep videoHashInput synced when verifyHash updates externally
-  useEffect(() => {
-    if (verifyHash && !videoHashInput) {
+  if (verifyHash !== prevVerifyHash) {
+    setPrevVerifyHash(verifyHash)
+    if (verifyHash) {
       setVideoHashInput(verifyHash)
     }
-  }, [verifyHash, videoHashInput])
+  }
 
   const handleManifestFile = async (file: File) => {
     if (file.size > MAX_MANIFEST_SIZE_BYTES) {
@@ -118,20 +126,84 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
     }
   }
 
+  const activeStatementHash =
+    verifyHash !== prevVerifyHash && verifyHash ? verifyHash : videoHashInput || verifyHash
+
   const revocationProofId =
-    events.find((event) => event.video_hash === (videoHashInput || verifyHash) && event.proof_id)?.proof_id ??
+    events.find((event) => event.video_hash === activeStatementHash && event.proof_id)?.proof_id ??
     proofIdInput ??
     null
+
+  const activeMetadataHash =
+    chainProof?.metadataHash ?? provenanceRecord?.metadata.metadataHash ?? null
+  const activeNetworkPassphrase =
+    provenanceRecord?.network.passphrase || CONTRACT_NETWORK_PASSPHRASE
+  const activeContractId = provenanceRecord?.verifier.contractId || CONTRACT_ID
+
+  const currentSnapshotInput: StatementAndTrustSnapshotInput = useMemo(
+    () => ({
+      videoHash: activeStatementHash,
+      proofId: proofIdInput || revocationProofId,
+      metadataHash: activeMetadataHash,
+      networkPassphrase: activeNetworkPassphrase,
+      contractId: activeContractId,
+      offline,
+      networkMismatch,
+      chainStatus: chainProof?.status ?? null,
+      issuer: chainProof?.issuer ?? null,
+    }),
+    [
+      activeStatementHash,
+      proofIdInput,
+      revocationProofId,
+      activeMetadataHash,
+      activeNetworkPassphrase,
+      activeContractId,
+      offline,
+      networkMismatch,
+      chainProof,
+    ],
+  )
+
+  const [prevStatus, setPrevStatus] = useState(status)
+  const [boundSuccessSnapshot, setBoundSuccessSnapshot] =
+    useState<VerificationResultSnapshotBinding | null>(() =>
+      status === 'success'
+        ? createVerificationResultSnapshotBinding({
+            ...currentSnapshotInput,
+            networkMismatch: null,
+          })
+        : null,
+    )
+
+  if (status !== prevStatus) {
+    setPrevStatus(status)
+    if (status === 'success' && !networkMismatch) {
+      setBoundSuccessSnapshot(createVerificationResultSnapshotBinding(currentSnapshotInput))
+    } else if (status !== 'success') {
+      setBoundSuccessSnapshot(null)
+    }
+  }
+
+  const cachedFreshness = useMemo(
+    () =>
+      status === 'success'
+        ? evaluateCachedVerificationFreshness(boundSuccessSnapshot, currentSnapshotInput)
+        : null,
+    [status, boundSuccessSnapshot, currentSnapshotInput],
+  )
+  const isStaleCachedSuccess =
+    status === 'success' && cachedFreshness !== null && !cachedFreshness.fresh
 
   const isError = status === 'error'
   const isCancelled = status === 'cancelled'
   const showRetry = isError && !manifestError && !!errorCode && errorCode !== 'CANCELLED' && errorCode !== 'REVOKED_EVIDENCE' && errorCode !== 'EXPIRED_EVIDENCE'
   // Revoked/expired are terminal trust decisions, retry still allowed but we keep it available via retry button
-  const effectiveRetry = isError || isCancelled
+  const effectiveRetry = isError || isCancelled || isStaleCachedSuccess
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
-    const activeHash = videoHashInput || verifyHash
-    if (status !== 'success' || !activeHash || !CONTRACT_ID) return null
+    const activeHash = activeStatementHash
+    if (status !== 'success' || isStaleCachedSuccess || !activeHash || !CONTRACT_ID) return null
     const matchedEvent = events.find((event) => event.proof_id && event.video_hash === activeHash)
       ?? events.find((event) => !!event.proof_id)
     const proofId = matchedEvent?.proof_id ?? proofIdInput ?? null
@@ -149,7 +221,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
       transactionRef: provenanceRecord?.ledger.transactionHash || matchedEvent?.tx_hash || undefined,
       tier,
     }
-  }, [status, videoHashInput, verifyHash, events, proofIdInput, chainProof, provenanceRecord])
+  }, [status, isStaleCachedSuccess, activeStatementHash, events, proofIdInput, chainProof, provenanceRecord])
 
   return (
     <section className="workspace app-page verify-page" id="verify">
@@ -178,6 +250,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           className="dropzone"
           role="button"
           tabIndex={isVerifying ? -1 : 0}
+          htmlFor="verify-video-input"
           aria-label={isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video. Press Enter or Space to open file picker'}
           aria-busy={isVerifying}
           aria-disabled={isVerifying}
@@ -213,24 +286,26 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             MP4, WebM, or MOV · up to 100 MB
           </span>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              void verifyEvidence(f, wallet || undefined)
-              // allow re-selecting the same file
-              event.target.value = ''
-            }}
-          />
         </label>
+        <input
+          ref={inputRef}
+          id="verify-video-input"
+          className="sr-only"
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            void verifyEvidence(f, wallet || undefined)
+            // allow re-selecting the same file
+            event.target.value = ''
+          }}
+        />
 
-        {/* Manifest Dropzone — keyboard: Tab focuses label, Enter/Space opens manifest file picker */}
-        <label
+        {/* Manifest Dropzone — keyboard: Tab focuses control, Enter/Space opens manifest file picker */}
+        <div
           className="dropzone manifest-dropzone"
           role="button"
           tabIndex={isVerifying ? -1 : 0}
@@ -238,6 +313,11 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           aria-busy={isVerifying}
           aria-disabled={isVerifying}
           style={{ minHeight: 100 }}
+          onClick={() => {
+            if (!isVerifying) {
+              manifestInputRef.current?.click()
+            }
+          }}
           onKeyDown={(e) => {
             if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) {
               e.preventDefault()
@@ -262,20 +342,22 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             Portable manifest receipt · max 64 KB
           </span>
-          <input
-            ref={manifestInputRef}
-            type="file"
-            accept=".json,application/json"
-            tabIndex={-1}
-            aria-label="Drop or choose a proof manifest JSON"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              if (f) void handleManifestFile(f)
-              event.target.value = ''
-            }}
-          />
-        </label>
+        </div>
+        <input
+          ref={manifestInputRef}
+          id="verify-manifest-input"
+          className="sr-only"
+          type="file"
+          accept=".json,application/json"
+          tabIndex={-1}
+          aria-label="Drop or choose a proof manifest JSON"
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            if (f) void handleManifestFile(f)
+            event.target.value = ''
+          }}
+        />
 
         {/* Verification form — prefilled by manifest or manual typing */}
         <form
@@ -318,13 +400,15 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               aria-label="Proof ID"
             />
           </div>
-          <button
-            type="submit"
-            className="hero-secondary"
-            disabled={isVerifying || !videoHashInput.trim()}
-          >
-            Verify On-Chain
-          </button>
+          <div>
+            <button
+              type="submit"
+              className="hero-secondary"
+              disabled={isVerifying || !videoHashInput.trim()}
+            >
+              Verify On-Chain
+            </button>
+          </div>
         </form>
 
         {/* Verification mode — offline runs entirely in the browser, online uses backend + registry */}
@@ -363,20 +447,31 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
         </div>
 
         <div
-          className={`verify-result large ${isError || manifestError ? 'verify-error' : ''} ${isCancelled ? 'verify-cancelled' : ''}`}
+          className={`verify-result large ${isError || manifestError ? 'verify-error' : ''} ${isCancelled ? 'verify-cancelled' : ''} ${isStaleCachedSuccess ? 'verify-stale' : ''}`}
           role={isError ? 'alert' : 'status'}
           aria-live={isError ? 'assertive' : 'polite'}
           aria-atomic="true"
+          data-stale-reason={isStaleCachedSuccess && cachedFreshness && !cachedFreshness.fresh ? cachedFreshness.reason : undefined}
         >
           {isError || manifestError ? (
             <XCircle size={14} aria-hidden="true" />
+          ) : isStaleCachedSuccess ? (
+            <AlertTriangle size={14} aria-hidden="true" />
           ) : (
             <CheckCircle2 size={14} aria-hidden="true" />
           )}
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
-              {manifestError || verifyResult || statusLabel(status, offline)}
+              {manifestError ||
+                (isStaleCachedSuccess && cachedFreshness && !cachedFreshness.fresh
+                  ? cachedFreshness.message
+                  : verifyResult || statusLabel(status, offline))}
             </p>
+            {isStaleCachedSuccess && cachedFreshness && !cachedFreshness.fresh && !manifestError ? (
+              <p className="muted" style={{ marginTop: 4, fontSize: 11 }}>
+                Snapshot status: {cachedFreshness.reason}
+              </p>
+            ) : null}
             {errorCode && !manifestError ? (
               <p className="muted" style={{ marginTop: 4, fontSize: 11 }}>
                 Code: {errorCode}
@@ -386,50 +481,57 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
         </div>
 
         <VerificationTimeline
-          status={status}
-          verifyHash={verifyHash}
-          events={events}
-          chainProof={chainProof}
+          status={isStaleCachedSuccess ? 'idle' : status}
+          verifyHash={isStaleCachedSuccess ? '' : verifyHash}
+          events={isStaleCachedSuccess ? [] : events}
+          chainProof={isStaleCachedSuccess ? null : chainProof}
           errorCode={errorCode}
         />
 
         {/* Action row — reachable on mobile, adequate touch targets */}
         <div className="verify-actions" role="group" aria-label="Verification actions">
           {isVerifying ? (
-            <button
-              type="button"
-              className="hero-secondary verify-action-btn"
-              onClick={cancel}
-              aria-label="Cancel verification"
-            >
-              Cancel
-            </button>
+            <div>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={cancel}
+                aria-label="Cancel verification"
+              >
+                Cancel
+              </button>
+            </div>
           ) : null}
           {effectiveRetry ? (
-            <button
-              type="button"
-              className="hero-secondary verify-action-btn"
-              onClick={() => void retry()}
-              aria-label="Retry verification"
-            >
-              <RefreshCw size={14} aria-hidden="true" />
-              <span>Retry</span>
-            </button>
+            <div>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={() => void retry()}
+                aria-label="Retry verification"
+              >
+                <RefreshCw size={14} aria-hidden="true" />
+                <span>Retry</span>
+              </button>
+            </div>
           ) : null}
           {!isVerifying && (verifyHash || verifyResult || videoHashInput || proofIdInput || manifestError) ? (
-            <button
-              type="button"
-              className="hero-secondary verify-action-btn"
-              onClick={() => {
-                setVideoHashInput('')
-                setProofIdInput('')
-                setManifestError(null)
-                clear()
-              }}
-              aria-label="Clear verification result"
-            >
-              Clear
-            </button>
+            <div>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={() => {
+                  setVideoHashInput('')
+                  setProofIdInput('')
+                  setManifestError(null)
+                  setBoundSuccessSnapshot(null)
+                  clear()
+                }}
+                aria-label="Clear verification result"
+              >
+                Clear
+              </button>
+            </div>
           ) : null}
           {/* Hidden retry helper for tests / keyboard users */}
           {showRetry ? null : null}
