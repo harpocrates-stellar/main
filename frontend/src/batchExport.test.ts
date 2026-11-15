@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { BatchItemResult } from './batchVerifier'
 import {
+  BatchExportConflictError,
   exportBatchCSV,
   exportBatchJSON,
   exportReceiptCollection,
+  inspectBatchStatementConflicts,
   sanitizeBatchResults,
 } from './batchExport'
 
@@ -76,5 +78,109 @@ describe('batchExport', () => {
     const parsed = JSON.parse(collectionJson) as Record<string, unknown>
     expect(parsed.protocol).toBe('harpocrates-receipt-collection')
     expect(parsed.totalItems).toBe(1)
+  })
+
+  it('rejects contradictory duplicate statement identifiers before serialization while preserving valid unique results', () => {
+    const sharedHash = 'abcd1234'.repeat(8)
+    const uniqueValidHash = '99990000'.repeat(8)
+
+    const validUniqueItem: BatchItemResult = {
+      ...mockItems[0],
+      id: 'valid-unique',
+      fileName: 'unique_valid.mp4',
+      videoHash: uniqueValidHash,
+      metadataHash: 'eeee1111'.repeat(8),
+      sourceHash: uniqueValidHash,
+      status: 'confirmed',
+      tier: 'silent',
+      chainStatus: 'Active',
+    }
+
+    const identicalRepeatItem: BatchItemResult = {
+      ...validUniqueItem,
+      id: 'valid-repeat',
+      fileName: 'unique_valid_copy.mp4',
+    }
+
+    const conflictRowA: BatchItemResult = {
+      ...mockItems[0],
+      id: 'conflict-a',
+      fileName: 'statement_confirmed.mp4',
+      videoHash: sharedHash,
+      metadataHash: '1111aaaa'.repeat(8),
+      sourceHash: sharedHash,
+      status: 'confirmed',
+      tier: 'source',
+      chainStatus: 'Active',
+    }
+
+    const conflictRowB: BatchItemResult = {
+      ...mockItems[0],
+      id: 'conflict-b',
+      fileName: 'statement_revoked.mp4',
+      videoHash: sharedHash,
+      metadataHash: '2222bbbb'.repeat(8),
+      sourceHash: sharedHash,
+      status: 'revoked',
+      tier: 'seal',
+      chainStatus: 'Revoked',
+    }
+
+    const batch = [validUniqueItem, identicalRepeatItem, conflictRowA, conflictRowB]
+    const inspection = inspectBatchStatementConflicts(batch)
+
+    expect(inspection.hasConflicts).toBe(true)
+    expect(inspection.conflicts).toHaveLength(1)
+    expect(inspection.conflicts[0].statementId).toBe(sharedHash)
+    expect(inspection.conflicts[0].conflictingFields).toEqual(
+      expect.arrayContaining(['status', 'metadataHash', 'tier', 'chainStatus']),
+    )
+    expect(inspection.conflicts[0].inputs.map((i) => i.fileName)).toEqual([
+      'statement_confirmed.mp4',
+      'statement_revoked.mp4',
+    ])
+    expect(inspection.validResults).toHaveLength(1)
+    expect(inspection.validResults[0].id).toBe('valid-unique')
+
+    expect(() => exportBatchJSON(batch)).toThrowError(BatchExportConflictError)
+    expect(() => exportBatchCSV(batch)).toThrowError(BatchExportConflictError)
+    expect(() => exportReceiptCollection(batch)).toThrowError(BatchExportConflictError)
+
+    try {
+      exportBatchJSON(batch)
+    } catch (err) {
+      const conflictErr = err as BatchExportConflictError
+      expect(conflictErr.conflicts).toHaveLength(1)
+      expect(conflictErr.validResults.map((r) => r.fileName)).toEqual(['unique_valid.mp4'])
+    }
+
+    const validSubsetJson = JSON.parse(exportBatchJSON(batch, { excludeConflicting: true })) as {
+      totalCount: number
+      results: Array<{ fileName: string }>
+    }
+    expect(validSubsetJson.totalCount).toBe(1)
+    expect(validSubsetJson.results[0].fileName).toBe('unique_valid.mp4')
+  })
+
+  it('allows benign byte-duplicate marker rows emitted by BatchVerifier without false conflict errors', () => {
+    const benignDuplicate: BatchItemResult = {
+      ...mockItems[0],
+      id: 'dup-row',
+      fileName: 'evidence1_copy.mp4',
+      status: 'duplicate',
+      metadataHash: null,
+      sourceHash: null,
+      tier: null,
+      chainStatus: null,
+      duplicateOf: 'evidence1.mp4',
+      manifest: null,
+    }
+
+    const batchWithDup = [mockItems[0], benignDuplicate]
+    const inspection = inspectBatchStatementConflicts(batchWithDup)
+    expect(inspection.hasConflicts).toBe(false)
+    expect(inspection.validResults).toHaveLength(1)
+    expect(() => exportBatchJSON(batchWithDup)).not.toThrow()
+    expect(() => exportBatchCSV(batchWithDup)).not.toThrow()
   })
 })

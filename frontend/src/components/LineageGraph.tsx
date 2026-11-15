@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { LineageNode, LineageGraph, VirtualizationConfig } from '../types/lineage';
+import type { LineageNode, LineageGraph as LineageGraphModel, VirtualizationConfig } from '../types/lineage';
 import { VirtualizedList } from '../lib/virtualized-list';
 
 interface LineageGraphProps {
-  graph: LineageGraph;
+  graph: LineageGraphModel;
   config?: Partial<VirtualizationConfig>;
   onNodeClick?: (nodeId: string) => void;
   className?: string;
@@ -27,7 +27,6 @@ export const LineageGraph: React.FC<LineageGraphProps> = ({
   const [scrollTop, setScrollTop] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes] = useState<LineageNode[]>([]);
-  const [layout, setLayout] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
 
   // Initialize nodes from graph
   useEffect(() => {
@@ -48,13 +47,14 @@ export const LineageGraph: React.FC<LineageGraphProps> = ({
 
       setNodes(validNodes);
       setError(null);
-    } catch (err) {
+    } catch {
       setError('Failed to load lineage graph');
     }
   }, [graph]);
 
   // Create virtualized list
   const virtualizedList = new VirtualizedList(config, nodes);
+  virtualizedList.updateScroll(scrollTop);
 
   // Handle scroll
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {

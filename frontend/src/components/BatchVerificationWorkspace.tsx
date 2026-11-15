@@ -24,7 +24,13 @@ import {
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  BatchExportConflictError,
+  exportBatchCSV,
+  exportBatchJSON,
+  exportReceiptCollection,
+  inspectBatchStatementConflicts,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -211,10 +217,41 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     URL.revokeObjectURL(url)
   }
 
-  const exportJSON = () => triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
-  const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
-  const exportReceipts = () =>
-    triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+  const [exportError, setExportError] = useState<string | null>(null)
+  const conflictInspection = useMemo(() => inspectBatchStatementConflicts(items), [items])
+
+  const exportJSON = () => {
+    try {
+      setExportError(null)
+      triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
+    } catch (err) {
+      setExportError(err instanceof BatchExportConflictError ? err.message : 'Batch export failed.')
+    }
+  }
+  const exportCSV = () => {
+    try {
+      setExportError(null)
+      triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
+    } catch (err) {
+      setExportError(err instanceof BatchExportConflictError ? err.message : 'Batch export failed.')
+    }
+  }
+  const exportReceipts = () => {
+    try {
+      setExportError(null)
+      triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+    } catch (err) {
+      setExportError(err instanceof BatchExportConflictError ? err.message : 'Batch export failed.')
+    }
+  }
+  const exportValidUniqueJSON = () => {
+    setExportError(null)
+    triggerDownload(
+      exportBatchJSON(items, { excludeConflicting: true }),
+      'harpocrates-batch-report-valid.json',
+      'application/json',
+    )
+  }
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
@@ -399,7 +436,28 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 <FileCheck size={16} aria-hidden="true" />
                 <span>Receipts</span>
               </button>
+              {conflictInspection.hasConflicts ? (
+                <button
+                  className="icon-button secondary"
+                  type="button"
+                  onClick={exportValidUniqueJSON}
+                  disabled={isRunning || conflictInspection.validResults.length === 0}
+                  title="Export Valid Unique Non-Conflicting Results Only"
+                >
+                  <Download size={16} aria-hidden="true" />
+                  <span>Export Valid Unique ({conflictInspection.validResults.length})</span>
+                </button>
+              ) : null}
             </div>
+            {exportError || conflictInspection.hasConflicts ? (
+              <div role="alert" className="batch-error-banner">
+                <strong>Conflicting statement identifiers detected:</strong>{' '}
+                {exportError ??
+                  conflictInspection.conflicts
+                    .map((c) => `${c.statementId} (${c.inputs.map((i) => i.fileName).join(' vs ')})`)
+                    .join('; ')}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
