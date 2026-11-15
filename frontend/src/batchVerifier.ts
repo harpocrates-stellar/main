@@ -16,9 +16,43 @@ export type BatchOutcome =
   | 'malformed'
   | 'oversized'
   | 'duplicate'
+  | 'skipped'
   | 'error'
   | 'unavailable'
   | 'cancelled'
+
+export type BatchOutcomeCategory = 'verified' | 'failed' | 'cancelled' | 'skipped' | 'in-progress'
+
+/**
+ * Classifies granular BatchOutcome values into canonical outcome categories
+ * distinguishing skipped, cancelled, failed, and verified items.
+ */
+export function classifyBatchOutcome(status: BatchOutcome | string): BatchOutcomeCategory {
+  switch (status) {
+    case 'confirmed':
+    case 'manifest-valid':
+      return 'verified'
+    case 'revoked':
+    case 'manifest-invalid':
+    case 'malformed':
+    case 'error':
+    case 'unavailable':
+      return 'failed'
+    case 'cancelled':
+      return 'cancelled'
+    case 'skipped':
+    case 'duplicate':
+    case 'oversized':
+      return 'skipped'
+    case 'pending':
+    case 'hashing':
+    case 'processing':
+    case 'metadata-only':
+    case 'database-only':
+    default:
+      return 'in-progress'
+  }
+}
 
 export type BatchConfig = {
   maxConcurrency: number
@@ -47,6 +81,7 @@ export type BatchItemResult = {
   manifest: ProofManifest | null
   durationMs: number | null
   failureReason: string | null
+  outcomeCategory?: BatchOutcomeCategory
 }
 
 export type BatchProgress = {
@@ -68,6 +103,9 @@ export type BatchSummary = {
   duplicates: number
   errors: number
   cancelled: number
+  skipped?: number
+  verified?: number
+  failed?: number
   totalBytes: number
   durationMs: number
 }
@@ -174,6 +212,7 @@ export class BatchVerifier {
   private config: BatchConfig
   private items: BatchItemResult[] = []
   private abortController: AbortController | null = null
+  private itemAbortControllers = new Map<string, AbortController>()
   private onProgressCallback?: (progress: BatchProgress, items: BatchItemResult[]) => void
   private processedHashes = new Map<string, string>() // videoHash -> itemId
   private accumulatedTotalBytes = 0
@@ -202,9 +241,13 @@ export class BatchVerifier {
     if (this.abortController) {
       this.abortController.abort()
     }
+    for (const controller of this.itemAbortControllers.values()) {
+      controller.abort()
+    }
     for (const item of this.items) {
       if (item.status === 'pending' || item.status === 'hashing' || item.status === 'processing') {
         item.status = 'cancelled'
+        item.outcomeCategory = 'cancelled'
         item.message = 'Cancelled by user.'
         item.failureReason = 'Batch execution was aborted by user request.'
       }
@@ -212,9 +255,56 @@ export class BatchVerifier {
     this.notifyProgress(true, true)
   }
 
+  /**
+   * Cancels a single queued (`pending`) or active (`hashing` / `processing`)
+   * item without aborting unrelated items in the batch.
+   */
+  public cancelItem(itemId: string): boolean {
+    const target = this.items.find((item) => item.id === itemId)
+    if (!target) return false
+    if (target.status !== 'pending' && target.status !== 'hashing' && target.status !== 'processing') {
+      return false
+    }
+
+    const controller = this.itemAbortControllers.get(itemId)
+    controller?.abort()
+
+    if (target.videoHash && this.processedHashes.get(target.videoHash) === target.id) {
+      this.processedHashes.delete(target.videoHash)
+    }
+
+    target.status = 'cancelled'
+    target.outcomeCategory = 'cancelled'
+    target.message = 'Item verification cancelled by user.'
+    target.failureReason = 'Per-item cancellation requested by user.'
+    this.notifyProgress(Boolean(this.abortController?.signal.aborted), false)
+    return true
+  }
+
+  /**
+   * Marks a queued (`pending`) item as explicitly `skipped` without cancelling
+   * or failing sibling items.
+   */
+  public skipItem(itemId: string, reason: string = 'Skipped before verification.'): boolean {
+    const target = this.items.find((item) => item.id === itemId)
+    if (!target || target.status !== 'pending') {
+      return false
+    }
+    const controller = this.itemAbortControllers.get(itemId)
+    controller?.abort()
+    target.status = 'skipped'
+    target.outcomeCategory = 'skipped'
+    target.message = reason
+    target.failureReason = null
+    target.durationMs = 0
+    this.notifyProgress(Boolean(this.abortController?.signal.aborted), false)
+    return true
+  }
+
   public async runBatch(
     files: File[],
     onProgress?: (progress: BatchProgress, items: BatchItemResult[]) => void,
+    options?: { onReady?: (items: ReadonlyArray<BatchItemResult>) => void },
   ): Promise<{ items: BatchItemResult[]; summary: BatchSummary }> {
     if (onProgress) {
       this.onProgressCallback = onProgress
@@ -222,6 +312,7 @@ export class BatchVerifier {
 
     this.abortController = new AbortController()
     const signal = this.abortController.signal
+    this.itemAbortControllers.clear()
 
     // Initialize item results
     const startTime = performance.now()
@@ -230,12 +321,14 @@ export class BatchVerifier {
 
     this.items = files.map((file, idx) => {
       const id = `item-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      this.itemAbortControllers.set(id, new AbortController())
       return {
         id,
         file,
         fileName: file.name,
         fileSizeBytes: file.size,
         status: 'pending',
+        outcomeCategory: 'in-progress',
         videoHash: null,
         metadataHash: null,
         sourceHash: null,
@@ -251,13 +344,26 @@ export class BatchVerifier {
       }
     })
 
+    signal.addEventListener(
+      'abort',
+      () => {
+        for (const controller of this.itemAbortControllers.values()) {
+          controller.abort()
+        }
+      },
+      { once: true },
+    )
+
+    options?.onReady?.(this.getItems())
     this.notifyProgress(false, false)
 
     // Filter oversized files upfront based on total and per-file limits
     let currentBatchBytes = 0
     for (const item of this.items) {
+      if (item.status !== 'pending') continue
       if (item.fileSizeBytes > this.config.maxFileSizeBytes) {
         item.status = 'oversized'
+        item.outcomeCategory = 'skipped'
         const limitMb = Math.round(this.config.maxFileSizeBytes / (1024 * 1024))
         const fileMb = (item.fileSizeBytes / (1024 * 1024)).toFixed(1)
         item.message = `File exceeds size limit (${fileMb}MB > ${limitMb}MB limit).`
@@ -267,6 +373,7 @@ export class BatchVerifier {
 
       if (currentBatchBytes + item.fileSizeBytes > this.config.maxTotalSizeBytes) {
         item.status = 'oversized'
+        item.outcomeCategory = 'skipped'
         const totalLimitMb = Math.round(this.config.maxTotalSizeBytes / (1024 * 1024))
         item.message = `Total batch size limit exceeded (${totalLimitMb}MB max).`
         item.failureReason = `Total batch memory limit exceeded by queueing ${item.fileName}.`
@@ -288,24 +395,32 @@ export class BatchVerifier {
         if (signal.aborted) break
         const item = queue.shift()
         if (!item) break
+        if (item.status !== 'pending') continue
 
-        await this.processItem(item, signal)
-        this.notifyProgress(false, queue.length === 0)
+        const itemSignal = this.itemAbortControllers.get(item.id)?.signal ?? signal
+        await this.processItem(item, itemSignal)
+        item.outcomeCategory = classifyBatchOutcome(item.status)
+        this.notifyProgress(false, false)
       }
     }
 
     const workers = Array.from({ length: concurrency }, () => worker())
     await Promise.all(workers)
 
-    // Ensure all remaining pending/hashing items are updated if cancelled
+    // Ensure all remaining pending/hashing items are updated if batch-wide cancelled
     if (signal.aborted) {
       for (const item of this.items) {
         if (item.status === 'pending' || item.status === 'hashing' || item.status === 'processing') {
           item.status = 'cancelled'
+          item.outcomeCategory = 'cancelled'
           item.message = 'Cancelled by user.'
           item.failureReason = 'Batch execution was aborted by user request.'
         }
       }
+    }
+
+    for (const item of this.items) {
+      item.outcomeCategory = classifyBatchOutcome(item.status)
     }
 
     const endTime = performance.now()
@@ -395,6 +510,16 @@ export class BatchVerifier {
       item.message = 'Extracting stego metadata and checking Stellar registry...'
       this.notifyProgress(false, false)
 
+      if (signal.aborted) {
+        if (this.processedHashes.get(videoHash) === item.id) {
+          this.processedHashes.delete(videoHash)
+        }
+        item.status = 'cancelled'
+        item.outcomeCategory = 'cancelled'
+        item.durationMs = performance.now() - itemStart
+        return
+      }
+
       let extractedMetadataObj: Record<string, unknown> | null = null
       const result = await verifyArtifact({
         apiBase: this.config.apiBase,
@@ -424,6 +549,22 @@ export class BatchVerifier {
           return payload?.metadata ?? null
         },
       })
+
+      if (signal.aborted) {
+        if (this.processedHashes.get(videoHash) === item.id) {
+          this.processedHashes.delete(videoHash)
+        }
+        item.status = 'cancelled'
+        item.outcomeCategory = 'cancelled'
+        item.message =
+          item.message === 'Item verification cancelled by user.'
+            ? item.message
+            : 'Cancelled during verification.'
+        item.failureReason =
+          item.failureReason ?? 'Per-item cancellation requested by user.'
+        item.durationMs = performance.now() - itemStart
+        return
+      }
 
       item.events = result.events
       item.chainProof = result.chainProof
@@ -458,11 +599,22 @@ export class BatchVerifier {
       item.durationMs = performance.now() - itemStart
     } catch (err) {
       if (signal.aborted) {
-        item.status = 'cancelled'
-        item.message = 'Cancelled.'
-        item.failureReason = 'Batch execution was aborted by user request.'
+        if (item.videoHash && this.processedHashes.get(item.videoHash) === item.id) {
+          this.processedHashes.delete(item.videoHash)
+        }
+        if (item.status !== 'skipped') {
+          item.status = 'cancelled'
+          item.outcomeCategory = 'cancelled'
+          item.message =
+            item.message === 'Item verification cancelled by user.'
+              ? item.message
+              : 'Cancelled.'
+          item.failureReason =
+            item.failureReason ?? 'Item verification was aborted by user request.'
+        }
       } else {
         item.status = 'error'
+        item.outcomeCategory = 'failed'
         item.message = err instanceof Error ? err.message : 'Unknown error.'
         item.failureReason = item.message
       }
@@ -507,12 +659,20 @@ export class BatchVerifier {
       duplicates: 0,
       errors: 0,
       cancelled: 0,
+      skipped: 0,
+      verified: 0,
+      failed: 0,
       totalBytes: 0,
       durationMs,
     }
 
     for (const item of this.items) {
       summary.totalBytes += item.fileSizeBytes
+      const category = classifyBatchOutcome(item.status)
+      if (category === 'verified') summary.verified = (summary.verified ?? 0) + 1
+      if (category === 'failed') summary.failed = (summary.failed ?? 0) + 1
+      if (category === 'skipped') summary.skipped = (summary.skipped ?? 0) + 1
+
       switch (item.status) {
         case 'confirmed':
           summary.confirmed++
@@ -526,6 +686,8 @@ export class BatchVerifier {
           break
         case 'duplicate':
           summary.duplicates++
+          break
+        case 'skipped':
           break
         case 'cancelled':
           summary.cancelled++

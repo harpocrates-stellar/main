@@ -20,3 +20,9 @@ Verify the application compiles and bundles successfully for production:
 npm run build
 ```
 (This performs TypeScript type-checking and Vite compilation. It will fail if there are any TypeScript or bundling errors).
+
+## 4. Per-Item Batch Cancellation & Outcome Classification
+`BatchVerifier` (`frontend/src/batchVerifier.ts`) maintains an isolated `AbortController` per batch item alongside the batch-wide controller:
+
+- `verifier.cancelItem(itemId)` aborts a single queued (`pending`) or active (`hashing` / `processing`) item without interrupting sibling concurrent items; `verifier.skipItem(itemId)` skips a queued item prior to execution.
+- `classifyBatchOutcome` (`outcomeCategory` on `BatchItemResult` and `CleanBatchReportItem`, plus `BatchSummary` counters) explicitly distinguishes **`verified`** (`confirmed`, `manifest-valid`), **`failed`** (`revoked`, `manifest-invalid`, `malformed`, `error`, `unavailable`), **`cancelled`** (`cancelled`), and **`skipped`** (`skipped`, `duplicate`, `oversized`).

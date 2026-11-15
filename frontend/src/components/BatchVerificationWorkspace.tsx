@@ -32,7 +32,16 @@ type Props = {
   wallet?: string
 }
 
-type FilterType = 'all' | 'confirmed' | 'revoked' | 'unconfirmed' | 'duplicate' | 'error' | 'manifest' | 'cancelled'
+type FilterType =
+  | 'all'
+  | 'confirmed'
+  | 'revoked'
+  | 'unconfirmed'
+  | 'duplicate'
+  | 'skipped'
+  | 'error'
+  | 'manifest'
+  | 'cancelled'
 
 export default function BatchVerificationWorkspace({ apiBase, contractId, wallet }: Props) {
   const [verifier] = useState(() => new BatchVerifier({ apiBase, contractId, wallet }))
@@ -134,6 +143,26 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     setIsRunning(false)
   }
 
+  const cancelSingleItem = (itemId: string) => {
+    if (typeof verifier.cancelItem === 'function') {
+      verifier.cancelItem(itemId)
+    }
+    setItems((prev) =>
+      prev.map((entry) =>
+        entry.id === itemId &&
+        (entry.status === 'pending' || entry.status === 'hashing' || entry.status === 'processing')
+          ? {
+              ...entry,
+              status: 'cancelled',
+              outcomeCategory: 'cancelled',
+              message: 'Item verification cancelled by user.',
+              failureReason: 'Per-item cancellation requested by user.',
+            }
+          : entry,
+      ),
+    )
+  }
+
   const clearBatch = () => {
     if (isRunning) cancelBatch()
     setItems([])
@@ -176,6 +205,13 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       )
         return false
       if (selectedFilter === 'duplicate' && item.status !== 'duplicate') return false
+      if (
+        selectedFilter === 'skipped' &&
+        item.status !== 'skipped' &&
+        item.status !== 'duplicate' &&
+        item.status !== 'oversized'
+      )
+        return false
       if (
         selectedFilter === 'error' &&
         item.status !== 'error' &&
@@ -548,6 +584,18 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                     >
                       View
                     </button>
+                    {isRunning &&
+                    (item.status === 'pending' || item.status === 'hashing' || item.status === 'processing') ? (
+                      <button
+                        className="table-action-btn"
+                        type="button"
+                        onClick={() => cancelSingleItem(item.id)}
+                        aria-label={`Cancel verification for ${item.fileName}`}
+                        title="Cancel This Item"
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -666,6 +714,12 @@ function StatusBadge({ status }: { status: BatchOutcome }) {
       return (
         <span className="badge badge-duplicate">
           <Copy size={12} aria-hidden="true" /> Duplicate
+        </span>
+      )
+    case 'skipped':
+      return (
+        <span className="badge badge-duplicate">
+          <StopCircle size={12} aria-hidden="true" /> Skipped
         </span>
       )
     case 'oversized':
