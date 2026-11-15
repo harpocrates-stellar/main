@@ -49,7 +49,8 @@ let mainPromise: Promise<{ circuit: CompiledCircuit; rawBytes: number }> | null 
 async function loadArtifact(path: string): Promise<{ circuit: CompiledCircuit; rawBytes: number }> {
   const response = await fetch(path, { cache: 'no-store' })
   if (!response.ok) throw new CircuitInputError('circuit_load_failed')
-  return readBoundedCircuitArtifact<CompiledCircuit>(response, path)
+  const { value, rawBytes } = await readBoundedCircuitArtifact<CompiledCircuit>(response, path)
+  return { circuit: value, rawBytes }
 }
 
 function loadHelper() {

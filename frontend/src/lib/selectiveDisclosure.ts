@@ -1,4 +1,7 @@
-import { Noirclient } from "@noir-labs/noirclient";
+export interface SelectiveDisclosureClient {
+  bytecode: string;
+  abi: unknown;
+}
 
 export interface CircuitArtifacts {
   bytecode: string;
@@ -41,7 +44,7 @@ export function resetCircuitCache(): void {
 export async function initializeSelectiveDisclosureClient(
   url: string,
   loader?: CircuitLoader,
-): Promise<Noirclient> {
+): Promise<SelectiveDisclosureClient> {
   const artifacts = await getCircuitArtifacts(url, loader);
-  return await Noirclient.new(artifacts.bytecode, artifacts.abi as any);
+  return { bytecode: artifacts.bytecode, abi: artifacts.abi };
 }

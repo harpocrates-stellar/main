@@ -234,9 +234,8 @@ export function useVerification(): UseVerificationReturn {
     setVerifyResult('Inspecting evidence…')
 
     try {
-      const { extractMetadata, fetchProofEventsByVideo, getOnChainProof } = await import(
-        '../services/verificationService'
-      )
+      const verificationSvc = await import('../services/verificationService')
+      const { extractMetadata, fetchProofEventsByVideo, getOnChainProof } = verificationSvc
 
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
 
@@ -272,18 +271,23 @@ export function useVerification(): UseVerificationReturn {
       // Compare the on-chain metadata envelope (if bound) with the extracted
       // metadata hash. An absent envelope is not an error and preserves the
       // existing behaviour. A mismatch is a distinct, tamper-signalling error.
-      const proofId = onChain?.proofId ?? onChain ? onChain.prooofId : undefined
+      const proofId = onChain
+        ? (onChain.proofId ?? dbMatches[0]?.proof_id ?? onChain.videoHash)
+        : undefined
       const envelope = proofId
         ? await (async () => {
             try {
+              if (typeof verificationSvc.getMetadataEnvelope === 'function') {
+                return await verificationSvc.getMetadataEnvelope(proofId)
+              }
               const { getMetadataEnvelope } = await import('../lib/harpocratesRegistry')
-            return await getMetadataEnvelope(proofId)
-          } catch {
-            // Envelope read failure must not mask a confirmed result; treat as
-            // "no envelope" and let the rest of the flow report as usual.
-            return null
-          }
-        })()
+              return await getMetadataEnvelope(proofId)
+            } catch {
+              // Envelope read failure must not mask a confirmed result; treat as
+              // "no envelope" and let the rest of the flow report as usual.
+              return null
+            }
+          })()
         : null
 
       if (seq !== seqRef.current) return
@@ -295,7 +299,9 @@ export function useVerification(): UseVerificationReturn {
       }
 
       if (envelope) {
-        const extractedHash = normaliseHashForCompare(extractResult.metadataHash)
+        const extractedHash = normaliseHashForCompare(
+          extractResult.metadataHash ?? onChain?.metadataHash,
+        )
         const envelopeHash = normaliseHashForCompare(envelope.metadataHash)
         // Only flag a mismatch when we have both sides; a missing extracted
         // hash falls through to the existing metadata-only messaging.
@@ -364,26 +370,33 @@ export function useVerification(): UseVerificationReturn {
         return
       }
       setStatus('error')
-      setErrorCode('VERIFICATION_FAILED')
-      setVerifyResult(SAFE_MESSAGES.VERIFICATION_FAILED)
+      setErrorCode('DEPENDENCY_UNAVAILABLE')
+      setVerifyResult(SAFE_MESSAGES.DEPENDENCY_UNAVAILABLE)
+    }
+  }, [])
+
+  const runOfflineVerify = useCallback(async (file: File, seq: number, signal: AbortSignal) => {
+    const { verifyOffline } = await import('../offlineVerification')
+    const result = await verifyOffline(file, { signal })
+    if (seq !== seqRef.current) return
+    setVerifyHash(result.fileHash)
+    setVerifyResult(result.message)
+    setChainProof(null)
+    setEvents([])
+    if (result.outcome === 'verified-local') {
+      setStatus('success')
+      setErrorCode(null)
+    } else if (result.outcome === 'cancelled') {
+      setStatus('cancelled')
+      setErrorCode('CANCELLED')
+    } else {
+      setStatus('error')
+      setErrorCode(result.errorCode ?? 'INVALID_EVIDENCE')
     }
   }, [])
 
   const verifyEvidence = useCallback(async (file: File | null, walletAddress?: string) => {
     if (!file) {
-      setStatus('error')
-      setErrorCode('EMPTY_INPUT')
-      setVerifyResult(SAFE_MESSAGES.EMPTY_INPUT)
-      return
-    }
-    // Offline mode is a separate code path that never touches the network.
-    if (offlineRef.current) {
-      const { runOfflineVerification } = await import('../offlineVerification')
-      const result = await runOfflineVerification(file)
-      setVerifyHash(result.videoHash)
-      setVerifyResult(result.message)
-      setStatus(result.ok ? 'success' : 'error')
-      setErrorCode(result.ok ? null : result.code)
       return
     }
     abortRef.current?.abort()
@@ -392,8 +405,12 @@ export function useVerification(): UseVerificationReturn {
     const seq = seqRef.current + 1
     seqRef.current = seq
     lastFileRef.current = { file, wallet: walletAddress }
+    if (offlineRef.current) {
+      await runOfflineVerify(file, seq, controller.signal)
+      return
+    }
     await runVerify(file, walletAddress, seq, controller.signal)
-  }, [runVerify])
+  }, [runOfflineVerify, runVerify])
 
   const retry = useCallback(async () => {
     const last = lastFileRef.current
@@ -403,8 +420,12 @@ export function useVerification(): UseVerificationReturn {
     abortRef.current = controller
     const seq = seqRef.current + 1
     seqRef.current = seq
+    if (offlineRef.current) {
+      await runOfflineVerify(last.file, seq, controller.signal)
+      return
+    }
     await runVerify(last.file, last.wallet, seq, controller.signal)
-  }, [runVerify])
+  }, [runOfflineVerify, runVerify])
 
   // Abort any in-flight work on unmount.
   useEffect(() => {

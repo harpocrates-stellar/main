@@ -33,9 +33,9 @@ function base64ToBytes(base64: string): Uint8Array {
 
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   const encoder = new TextEncoder();
-  const baseKey = await crypto.subtle.importKey('raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  const baseKey = await crypto.subtle.importKey('raw', encoder.encode(passphrase) as BufferSource, 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt: salt as BufferSource, iterations: 100000, hash: 'SHA-256' },
     baseKey,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -61,9 +61,9 @@ export async function encryptCredentials(
   const key = await deriveKey(passphrase, iv);
   const encoder = new TextEncoder();
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: iv as BufferSource },
     key,
-    encoder.encode(JSON.stringify(material)),
+    encoder.encode(JSON.stringify(material)) as BufferSource,
   );
   return {
     ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
@@ -79,9 +79,9 @@ export async function decryptCredentials(
   const key = await deriveKey(passphrase, iv);
   const ciphertext = base64ToBytes(vault.ciphertext);
   const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: iv as BufferSource },
     key,
-    ciphertext,
+    ciphertext as BufferSource,
   );
   const decoder = new TextDecoder();
   return JSON.parse(decoder.decode(plaintext)) as CredentialMaterial[];
