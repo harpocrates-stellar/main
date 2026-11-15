@@ -361,6 +361,28 @@ pub const MIN_SUPPORTED_CIRCUIT_VERSION: u32 = 1;
 /// Highest circuit version this wasm build can frame and interpret.
 pub const MAX_SUPPORTED_CIRCUIT_VERSION: u32 = CIRCUIT_VERSION_SILENT_WITNESS_V2;
 
+/// Descriptor schema version for `StatementCompatibilityDesc` (#1195).
+pub const STATEMENT_COMPAT_DESC_V1: u32 = 1;
+/// Hard cap on format entries returned by `get_statement_compatibility` (#1195).
+pub const MAX_STATEMENT_FORMAT_DESCS: u32 = 8;
+
+/// Critical statement field bitflags recognised by this wasm build (#1195).
+pub const CRIT_FIELD_CREDENTIAL_ROOT: u32 = 1 << 0;
+pub const CRIT_FIELD_NULLIFIER: u32 = 1 << 1;
+pub const CRIT_FIELD_DOMAIN_TAG: u32 = 1 << 2;
+pub const CRIT_FIELD_VERIFIER_SCOPE: u32 = 1 << 3;
+pub const CRIT_FIELD_SCOPE_EPOCH: u32 = 1 << 4;
+pub const CRIT_FIELD_CIRCUIT_VERSION: u32 = 1 << 5;
+pub const CRIT_FIELD_SCHEMA_BINDING: u32 = 1 << 6;
+
+pub const CRIT_MASK_V1_BASE: u32 =
+    CRIT_FIELD_CREDENTIAL_ROOT | CRIT_FIELD_NULLIFIER | CRIT_FIELD_DOMAIN_TAG;
+pub const CRIT_MASK_V2_SCOPED: u32 = CRIT_MASK_V1_BASE
+    | CRIT_FIELD_VERIFIER_SCOPE
+    | CRIT_FIELD_SCOPE_EPOCH
+    | CRIT_FIELD_CIRCUIT_VERSION;
+pub const SUPPORTED_CRITICAL_FIELDS_MASK: u32 = CRIT_MASK_V2_SCOPED | CRIT_FIELD_SCHEMA_BINDING;
+
 // ---------------------------------------------------------------------------
 // Verifier rotation state
 // ---------------------------------------------------------------------------
@@ -407,6 +429,49 @@ pub struct VerifierCircuitVersions {
     pub max_version: u32,
     pub set_by: Address,
     pub set_at: u64,
+}
+
+/// Bounded descriptor for one accepted verifier-input frame schema (#1195).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifierInputFormatDesc {
+    pub schema_id: u32,
+    pub codec_version: u32,
+    pub circuit_version: u32,
+    pub primary_byte_len: u32,
+    pub alt_byte_len: u32,
+    pub supported_crit_mask: u32,
+    pub active_in_window: bool,
+}
+
+/// Bounded proof statement compatibility descriptor (#1195).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatementCompatibilityDesc {
+    pub descriptor_version: u32,
+    pub storage_schema_version: u32,
+    pub min_circuit_version: u32,
+    pub max_circuit_version: u32,
+    pub active_min_circuit_ver: u32,
+    pub active_max_circuit_ver: u32,
+    pub min_envelope_version: u32,
+    pub max_envelope_version: u32,
+    pub selective_disc_version: u32,
+    pub aggregation_version: u32,
+    pub min_proof_bytes: u32,
+    pub max_proof_bytes: u32,
+    pub supported_crit_mask: u32,
+    pub fail_closed_crit_fields: bool,
+    pub formats: Vec<VerifierInputFormatDesc>,
+}
+
+/// Fail-closed evaluation verdict for a candidate proof statement (#1195).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatementCompatVerdict {
+    pub compatible: bool,
+    pub reject_error_code: u32,
+    pub schema_active: bool,
 }
 
 /// Configuration snapshot for verifier-backed operations.
@@ -2524,6 +2589,125 @@ impl HarpocratesRegistry {
         }
         let (min_version, max_version) = get_verifier_circuit_versions_raw(&env);
         version >= min_version && version <= max_version
+    }
+
+    /// Expose a bounded proof statement compatibility descriptor (#1195).
+    ///
+    /// Summarises accepted verifier-input schemas, codec/circuit versions,
+    /// active verifier version window, metadata envelope bounds, selective
+    /// disclosure and aggregation versions, proof byte limits, and the
+    /// fail-closed critical field mask in O(1) bounded space.
+    pub fn get_statement_compatibility(env: Env) -> StatementCompatibilityDesc {
+        let (active_min, active_max) = get_verifier_circuit_versions_raw(&env);
+        let storage_schema_version = Self::get_schema_version(env.clone());
+
+        let mut formats = SorobanVec::new(&env);
+        formats.push_back(VerifierInputFormatDesc {
+            schema_id: SCHEMA_ID_SILENT_WITNESS,
+            codec_version: 1,
+            circuit_version: CIRCUIT_VERSION_SILENT_WITNESS_V1,
+            primary_byte_len: SILENT_WITNESS_V1_INPUT_LEN,
+            alt_byte_len: SILENT_WITNESS_BROWSER_V1_INPUT_LEN,
+            supported_crit_mask: CRIT_MASK_V1_BASE,
+            active_in_window: CIRCUIT_VERSION_SILENT_WITNESS_V1 >= active_min
+                && CIRCUIT_VERSION_SILENT_WITNESS_V1 <= active_max,
+        });
+        formats.push_back(VerifierInputFormatDesc {
+            schema_id: SCHEMA_ID_REVOCATION_WITNESS,
+            codec_version: 1,
+            circuit_version: CIRCUIT_VERSION_REVOCATION_WITNESS,
+            primary_byte_len: REVOCATION_PUBLIC_INPUTS_LEN as u32,
+            alt_byte_len: 0,
+            supported_crit_mask: CRIT_MASK_V1_BASE,
+            active_in_window: CIRCUIT_VERSION_REVOCATION_WITNESS >= active_min
+                && CIRCUIT_VERSION_REVOCATION_WITNESS <= active_max,
+        });
+        formats.push_back(VerifierInputFormatDesc {
+            schema_id: SCHEMA_ID_SILENT_WITNESS_V2,
+            codec_version: 2,
+            circuit_version: CIRCUIT_VERSION_SILENT_WITNESS_V2,
+            primary_byte_len: SILENT_WITNESS_V2_ENVELOPED_INPUT_LEN,
+            alt_byte_len: 0,
+            supported_crit_mask: CRIT_MASK_V2_SCOPED,
+            active_in_window: CIRCUIT_VERSION_SILENT_WITNESS_V2 >= active_min
+                && CIRCUIT_VERSION_SILENT_WITNESS_V2 <= active_max,
+        });
+
+        StatementCompatibilityDesc {
+            descriptor_version: STATEMENT_COMPAT_DESC_V1,
+            storage_schema_version,
+            min_circuit_version: MIN_SUPPORTED_CIRCUIT_VERSION,
+            max_circuit_version: MAX_SUPPORTED_CIRCUIT_VERSION,
+            active_min_circuit_ver: active_min,
+            active_max_circuit_ver: active_max,
+            min_envelope_version: METADATA_ENVELOPE_V1,
+            max_envelope_version: METADATA_ENVELOPE_VERSION_MAX,
+            selective_disc_version: CURRENT_SELECTIVE_DISCLOSURE_VERSION,
+            aggregation_version: CIRCUIT_VERSION_AGGREGATION,
+            min_proof_bytes: verifier_inputs::MIN_PROOF_BYTES,
+            max_proof_bytes: verifier_inputs::MAX_PROOF_BYTES,
+            supported_crit_mask: SUPPORTED_CRITICAL_FIELDS_MASK,
+            fail_closed_crit_fields: true,
+            formats,
+        }
+    }
+
+    /// Evaluate proof statement compatibility while keeping unsupported
+    /// critical fields, schemas, and versions strictly fail-closed (#1195).
+    pub fn check_statement_compat(
+        env: Env,
+        verifier_schema_id: u32,
+        circuit_version: u32,
+        envelope_version: u32,
+        critical_field_mask: u32,
+        schema_hash: Option<BytesN<32>>,
+        expected_schema_ver: u32,
+    ) -> StatementCompatVerdict {
+        match evaluate_statement_compat(
+            &env,
+            verifier_schema_id,
+            circuit_version,
+            envelope_version,
+            critical_field_mask,
+            schema_hash,
+            expected_schema_ver,
+        ) {
+            Ok(schema_active) => StatementCompatVerdict {
+                compatible: true,
+                reject_error_code: 0,
+                schema_active,
+            },
+            Err(err) => StatementCompatVerdict {
+                compatible: false,
+                reject_error_code: err as u32,
+                schema_active: false,
+            },
+        }
+    }
+
+    /// Fail-closed assertion counterpart to `check_statement_compat`: reverts
+    /// with the exact `RegistryError` when any critical field, schema, or
+    /// version is unsupported (#1195).
+    pub fn assert_statement_compat(
+        env: Env,
+        verifier_schema_id: u32,
+        circuit_version: u32,
+        envelope_version: u32,
+        critical_field_mask: u32,
+        schema_hash: Option<BytesN<32>>,
+        expected_schema_ver: u32,
+    ) {
+        if let Err(err) = evaluate_statement_compat(
+            &env,
+            verifier_schema_id,
+            circuit_version,
+            envelope_version,
+            critical_field_mask,
+            schema_hash,
+            expected_schema_ver,
+        ) {
+            panic_with_error!(&env, err);
+        }
     }
 
     pub fn schedule_verifier_rotation(
@@ -8255,6 +8439,79 @@ fn require_verified_proof(
     }
 }
 
+fn evaluate_statement_compat(
+    env: &Env,
+    verifier_schema_id: u32,
+    circuit_version: u32,
+    envelope_version: u32,
+    critical_field_mask: u32,
+    schema_hash: Option<BytesN<32>>,
+    expected_schema_ver: u32,
+) -> Result<bool, RegistryError> {
+    // 1. Fail-closed on any globally unrecognised critical statement field bit.
+    if (critical_field_mask & !SUPPORTED_CRITICAL_FIELDS_MASK) != 0 {
+        return Err(RegistryError::InvalidPublicInputs);
+    }
+
+    // 2. Validate verifier-input schema and format-specific circuit/critical-field bounds.
+    let (expected_circuit_version, format_crit_mask) = match verifier_schema_id {
+        SCHEMA_ID_SILENT_WITNESS => (CIRCUIT_VERSION_SILENT_WITNESS_V1, CRIT_MASK_V1_BASE),
+        SCHEMA_ID_REVOCATION_WITNESS => (CIRCUIT_VERSION_REVOCATION_WITNESS, CRIT_MASK_V1_BASE),
+        SCHEMA_ID_SILENT_WITNESS_V2 => (CIRCUIT_VERSION_SILENT_WITNESS_V2, CRIT_MASK_V2_SCOPED),
+        0 if schema_hash.is_some() => (
+            CIRCUIT_VERSION_SELECTIVE_DISCLOSURE,
+            SUPPORTED_CRITICAL_FIELDS_MASK,
+        ),
+        _ => return Err(RegistryError::UnknownSchema),
+    };
+
+    // Critical fields unsupported by the selected verifier-input frame also fail closed.
+    let allowed_mask = if schema_hash.is_some() {
+        format_crit_mask | CRIT_FIELD_SCHEMA_BINDING
+    } else {
+        format_crit_mask
+    };
+    if (critical_field_mask & !allowed_mask) != 0 {
+        return Err(RegistryError::InvalidPublicInputs);
+    }
+
+    // 3. Validate circuit version against both format expectation and active verifier window.
+    if circuit_version < MIN_SUPPORTED_CIRCUIT_VERSION
+        || circuit_version > MAX_SUPPORTED_CIRCUIT_VERSION
+        || circuit_version != expected_circuit_version
+    {
+        return Err(RegistryError::CircuitVersionMismatch);
+    }
+    let (active_min, active_max) = get_verifier_circuit_versions_raw(env);
+    if circuit_version < active_min || circuit_version > active_max {
+        return Err(RegistryError::UnsupportedCircuitVersion);
+    }
+
+    // 4. Validate metadata envelope version bounds.
+    if envelope_version < METADATA_ENVELOPE_V1 || envelope_version > METADATA_ENVELOPE_VERSION_MAX {
+        return Err(RegistryError::UnsupportedMetadataEnvelopeVersion);
+    }
+
+    // 5. Optional selective-disclosure / structured schema record check.
+    let mut schema_active = false;
+    if let Some(hash) = schema_hash {
+        let schema: SchemaRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Schema(hash))
+            .ok_or(RegistryError::UnknownSchema)?;
+        if !schema.active {
+            return Err(RegistryError::InactiveSchema);
+        }
+        if expected_schema_ver != 0 && schema.version != expected_schema_ver {
+            return Err(RegistryError::SchemaVersionMismatch);
+        }
+        schema_active = true;
+    }
+
+    Ok(schema_active)
+}
+
 struct RevocationPublicInputs {
     revocation_root: BytesN<32>,
     nullifier: BytesN<32>,
@@ -9117,6 +9374,8 @@ mod test_scoped_nullifier;
 mod test_selective_disclosure;
 #[cfg(test)]
 mod test_state_machine;
+#[cfg(test)]
+mod test_statement_compat;
 #[cfg(test)]
 mod test_threshold_seal;
 #[cfg(test)]
