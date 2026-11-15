@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   BatchVerifier,
   computeChunkedSha256,
+  deriveSelectedInputIdentity,
+  orderBatchItemsBySelection,
   tryParseManifest,
   type BatchConfig,
 } from './batchVerifier'
@@ -178,6 +180,96 @@ describe('batchVerifier', () => {
       const { items } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+    })
+
+    it('keeps batch result ordering and duplicate ownership stable when concurrent items finish out of order', async () => {
+      const verifier = new BatchVerifier({
+        maxConcurrency: 4,
+        apiBase: 'http://127.0.0.1:5050',
+      })
+
+      const slowPrimary = new File(['shared-payload-alpha'], '01_slow_primary.mp4', {
+        type: 'video/mp4',
+        lastModified: 1001,
+      })
+      const mediumUnique = new File(['unique-payload-beta'], '02_medium_unique.mp4', {
+        type: 'video/mp4',
+        lastModified: 1002,
+      })
+      const fastUnique = new File(['unique-payload-gamma'], '03_fast_unique.mp4', {
+        type: 'video/mp4',
+        lastModified: 1003,
+      })
+      const fastDuplicateCopy = new File(['shared-payload-alpha'], '04_fast_dup_copy.mp4', {
+        type: 'video/mp4',
+        lastModified: 1004,
+      })
+
+      // Force reverse completion latency during arrayBuffer reads so slot #3 and #2 finish before #0
+      const realArrayBuffer = File.prototype.arrayBuffer
+      const arrayBufferSpy = vi.spyOn(File.prototype, 'arrayBuffer').mockImplementation(async function (this: File) {
+        if (this.name === '01_slow_primary.mp4') {
+          await new Promise((r) => setTimeout(r, 45))
+        } else if (this.name === '02_medium_unique.mp4') {
+          await new Promise((r) => setTimeout(r, 20))
+        }
+        return realArrayBuffer.call(this)
+      })
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((url: string) => {
+          if (url.includes('/api/stego/extract')) {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({ metadata: { protocol: 'harpocrates' } }),
+            })
+          }
+          if (url.includes('/api/proofs/by-video/')) {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({ events: [] }),
+            })
+          }
+          return Promise.reject(new Error('Unknown url'))
+        }),
+      )
+
+      const progressSnapshots: string[][] = []
+      const { items } = await verifier.runBatch(
+        [slowPrimary, mediumUnique, fastUnique, fastDuplicateCopy],
+        (_prog, snapshot) => {
+          progressSnapshots.push(snapshot.map((entry) => entry.fileName))
+        },
+      )
+
+      const expectedNames = [
+        '01_slow_primary.mp4',
+        '02_medium_unique.mp4',
+        '03_fast_unique.mp4',
+        '04_fast_dup_copy.mp4',
+      ]
+
+      for (const names of progressSnapshots) {
+        expect(names).toEqual(expectedNames)
+      }
+
+      expect(items.map((i) => i.fileName)).toEqual(expectedNames)
+      expect(items.map((i) => i.inputIndex)).toEqual([0, 1, 2, 3])
+      expect(items[0].inputIdentity).toBe(deriveSelectedInputIdentity(slowPrimary, 0))
+      expect(items[3].inputIdentity).toBe(deriveSelectedInputIdentity(fastDuplicateCopy, 3))
+
+      // Even though slot #3 finished hashing before slot #0, slot #0 remains primary and #3 is duplicate
+      expect(items[0].status).not.toBe('duplicate')
+      expect(items[3].status).toBe('duplicate')
+      expect(items[3].duplicateOf).toBe('01_slow_primary.mp4')
+
+      expect(orderBatchItemsBySelection([items[2], items[0], items[3], items[1]]).map((i) => i.inputIndex)).toEqual([
+        0, 1, 2, 3,
+      ])
+
+      arrayBufferSpy.mockRestore()
+      vi.unstubAllGlobals()
     })
   })
 })

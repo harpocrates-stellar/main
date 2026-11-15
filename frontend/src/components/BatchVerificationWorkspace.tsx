@@ -19,6 +19,8 @@ import {
 } from 'lucide-react'
 import {
   BatchVerifier,
+  deriveSelectedInputIdentity,
+  orderBatchItemsBySelection,
   type BatchItemResult,
   type BatchOutcome,
   type BatchProgress,
@@ -72,6 +74,8 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
 
     const initialItems = fileArray.map((file, idx) => ({
       id: `item-${idx}-${Date.now()}`,
+      inputIndex: idx,
+      inputIdentity: deriveSelectedInputIdentity(file, idx),
       file,
       fileName: file.name,
       fileSizeBytes: file.size,
@@ -121,7 +125,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     try {
       const res = await verifier.runBatch(filesToRun, (prog, currentItems) => {
         setProgress(prog)
-        setItems(currentItems)
+        setItems(orderBatchItemsBySelection(currentItems))
       })
       setSummary(res.summary)
     } finally {
@@ -143,9 +147,10 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   }
 
   const retryFailed = async () => {
-    const failedFiles = items
-      .filter((i) => i.status === 'error' || i.status === 'malformed' || i.status === 'cancelled')
-      .map((i) => i.file)
+    const retryTargets = items.filter(
+      (i) => i.status === 'error' || i.status === 'malformed' || i.status === 'cancelled',
+    )
+    const failedFiles = retryTargets.map((i) => i.file)
 
     if (failedFiles.length === 0) return
 
@@ -154,8 +159,24 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       await verifier.runBatch(failedFiles, (prog, currentItems) => {
         setProgress(prog)
         setItems((prev) => {
-          const updatedMap = new Map(currentItems.map((ci) => [ci.fileName, ci]))
-          return prev.map((item) => updatedMap.get(item.fileName) || item)
+          const updatedByIdentity = new Map<string, BatchItemResult>()
+          currentItems.forEach((ci, retrySlot) => {
+            const originalTarget = retryTargets[ci.inputIndex ?? retrySlot]
+            if (!originalTarget) return
+            const origIndex = originalTarget.inputIndex
+            const origIdentity = originalTarget.inputIdentity
+            if (origIdentity) {
+              updatedByIdentity.set(origIdentity, {
+                ...ci,
+                id: originalTarget.id,
+                inputIndex: origIndex,
+                inputIdentity: origIdentity,
+              })
+            }
+          })
+          return orderBatchItemsBySelection(
+            prev.map((item) => (item.inputIdentity && updatedByIdentity.get(item.inputIdentity)) || item),
+          )
         })
       })
     } finally {
