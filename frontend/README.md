@@ -79,3 +79,15 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Verification Detail Explorer
+
+The Verification Portal (`src/views/VerifyView.tsx`, `src/components/VerificationDetailExplorer.tsx`,
+and `src/services/verificationFlow.ts`) exposes three keyboard-accessible expandable
+accordion sections (`<h3>` / `<h4>` heading hierarchy with `aria-expanded`,
+`aria-controls`, logical `Tab` order, and `ArrowUp`/`ArrowDown`/`Home`/`End`
+header navigation):
+
+- **Public-input checks**: redacted statement SHA-256 binding, proof ID binding, and metadata commitment status.
+- **Chain observations**: Soroban registry standing, identity tier, and NeonDB event corroboration count (or explicit offline-mode skipped state).
+- **Trust reasons**: non-secret trust rationale, revocation/expiry standing, and stable diagnostic code.
