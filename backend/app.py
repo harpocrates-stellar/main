@@ -50,6 +50,7 @@ from errors import (
     VALIDATION_ERROR,
     classify_cli_error,
     error_response,
+    ok_response,
 )
 from db import (
     check_db,
@@ -111,8 +112,12 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
-from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from verification_receipt import (
+    DEFAULT_RECEIPT_FRESHNESS_SECONDS,
+    build_verification_receipt,
+    evaluate_signed_receipt,
+)
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2086,6 +2091,81 @@ def create_app() -> Flask:
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
         return jsonify(response)
+
+    @app.post("/api/receipts/evaluate")
+    def evaluate_verification_receipt_endpoint():
+        """Evaluate receipt cryptographic signature validity separately from freshness."""
+        if _enforce_json_size() > config.max_json_bytes:
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+
+        receipt_obj = payload.get("receipt")
+        keys_obj = payload.get("keys")
+        if not isinstance(receipt_obj, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="receipt must be a JSON object",
+                status=400,
+            )
+        if not isinstance(keys_obj, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="keys must be a JSON object mapping keyId to public JWK",
+                status=400,
+            )
+
+        key_validity = payload.get("keyValidity")
+        if key_validity is not None and not isinstance(key_validity, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="keyValidity must be a JSON object when provided",
+                status=400,
+            )
+
+        time_att = payload.get("timeAttestation")
+        if time_att is not None and not isinstance(time_att, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="timeAttestation must be a JSON object when provided",
+                status=400,
+            )
+
+        max_ver_age = payload.get(
+            "maxVerificationAgeSeconds",
+            DEFAULT_RECEIPT_FRESHNESS_SECONDS,
+        )
+        max_obs_age = payload.get("maxObservationAgeSeconds")
+
+        try:
+            evaluation = evaluate_signed_receipt(
+                receipt_obj,
+                keys=keys_obj,
+                key_validity=key_validity,
+                evidence_observed_at=payload.get("evidenceObservedAt"),
+                time_attestation=time_att,
+                now=payload.get("now"),
+                max_verification_age_seconds=max_ver_age,
+                max_observation_age_seconds=max_obs_age,
+            )
+        except (ValueError, TypeError) as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response(dict(evaluation))
 
     @app.post("/api/capture-attestation/verify")
     @limiter.limit(config.ratelimit_verify)

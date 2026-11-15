@@ -325,6 +325,14 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Orthogonal Receipt Signature Validity and Freshness
+
+`verification_receipt.py` (`verify_receipt_signature_only` and `evaluate_signed_receipt`), `time_attestation.py` (`extract_observation_timestamp_ms`), and `POST /api/receipts/evaluate` evaluate cryptographic receipt signature validity separately from temporal freshness:
+
+- `signatureValidity`: checks ECDSA P-256 signature integrity and whether the signer key was valid at `verifiedAt` (rotating a key after signing or inspecting an older receipt does not invalidate the signature).
+- `receiptFreshness`: tracks both `evidenceObservedAt` (preferring `stellar_ledger` or `rfc3161_tsa` anchors over backend `observedTime`, and ignoring uncorroborated device `claimedTime`) and `verifiedAt` against `evaluatedAt` (`maxVerificationAgeSeconds`, default `3600`, and optional `maxObservationAgeSeconds`).
+- `chainTruthStanding` / `isCurrentChainTruth`: an old validly signed receipt returns `signatureValidity.valid = true`, `receiptFreshness.fresh = false`, `isCurrentChainTruth = false`, and `chainTruthStanding = "historical_signed_snapshot"`, preventing historical receipts from being presented as current chain truth.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative

@@ -386,6 +386,39 @@ def check_backdating_risk(attestation: TimeAttestation) -> dict[str, Any]:
     }
 
 
+def extract_observation_timestamp_ms(
+    attestation: TimeAttestation,
+) -> tuple[int, str] | None:
+    """Extract the most authoritative observation timestamp ``(unix_ms, source)``.
+
+    Prefers independent anchors (``stellar_ledger``, then ``rfc3161_tsa``) over
+    backend ``observed`` time, and intentionally ignores uncorroborated device
+    ``claimed`` timestamps so self-asserted capture clocks cannot masquerade as
+    an external observation.
+    """
+    if attestation.stellar_anchors:
+        latest_stellar = max(
+            attestation.stellar_anchors,
+            key=lambda anchor: (anchor.ledger_timestamp, anchor.ledger_sequence),
+        )
+        return latest_stellar.ledger_timestamp * 1000, "stellar_ledger"
+
+    if attestation.rfc3161_anchors:
+        valid_or_all = [
+            anchor
+            for anchor in attestation.rfc3161_anchors
+            if anchor.verification_status not in ("invalid", "untrusted")
+        ]
+        if valid_or_all:
+            latest_tsa = max(valid_or_all, key=lambda anchor: anchor.gen_time)
+            return latest_tsa.gen_time, "rfc3161_tsa"
+
+    if attestation.observed_time is not None:
+        return attestation.observed_time.unix_ms, "observed"
+
+    return None
+
+
 # ── Factory functions ──────────────────────────────────────────────────────
 
 def create_time_attestation(
