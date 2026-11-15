@@ -7,13 +7,15 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Bytes, BytesN, Env, Symbol,
-};
+use soroban_sdk::{testutils::Address as _, Address, Bytes, BytesN, Env, Symbol};
+use std::boxed::Box;
 
 fn bytes32(env: &Env, v: u8) -> BytesN<32> {
     BytesN::from_array(env, &[v; 32])
+}
+
+fn has_persistent_key(env: &Env, client: &HarpocratesRegistryClient<'_>, key: &DataKey) -> bool {
+    env.as_contract(&client.address, || env.storage().persistent().has(key))
 }
 
 fn uninit_setup() -> (Env, HarpocratesRegistryClient<'static>, Address, Address) {
@@ -30,7 +32,10 @@ fn uninit_setup() -> (Env, HarpocratesRegistryClient<'static>, Address, Address)
     (env, client, caller1, caller2)
 }
 
-fn assert_err_code<T: core::fmt::Debug>(result: Result<T, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>, expected_code: u32) {
+fn assert_err_code<T: core::fmt::Debug>(
+    result: Result<T, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
+    expected_code: u32,
+) {
     match result {
         Err(Ok(err)) => {
             assert_eq!(
@@ -40,7 +45,10 @@ fn assert_err_code<T: core::fmt::Debug>(result: Result<T, Result<soroban_sdk::Er
                 expected_code
             );
         }
-        other => panic!("expected contract error #{}, got {:?}", expected_code, other),
+        other => panic!(
+            "expected contract error #{}, got {:?}",
+            expected_code, other
+        ),
     }
 }
 
@@ -53,7 +61,7 @@ fn uninit_upgrade_storage_fails() {
     let (env, client, caller1, _) = uninit_setup();
     let res = client.try_upgrade_storage(&caller1);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::SchemaVersion));
+    assert!(!has_persistent_key(&env, &client, &DataKey::SchemaVersion));
 }
 
 #[test]
@@ -61,7 +69,7 @@ fn uninit_propose_admin_fails() {
     let (env, client, caller1, caller2) = uninit_setup();
     let res = client.try_propose_admin(&caller1, &caller2);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
+    assert!(!has_persistent_key(&env, &client, &DataKey::PendingAdmin));
 }
 
 #[test]
@@ -69,7 +77,7 @@ fn uninit_cancel_admin_transfer_fails() {
     let (env, client, caller1, _) = uninit_setup();
     let res = client.try_cancel_admin_transfer(&caller1);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
+    assert!(!has_persistent_key(&env, &client, &DataKey::PendingAdmin));
 }
 
 #[test]
@@ -84,7 +92,11 @@ fn uninit_add_issuer_fails() {
     let (env, client, caller1, caller2) = uninit_setup();
     let res = client.try_add_issuer(&caller1, &caller2, &bytes32(&env, 1));
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Issuer(caller2)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Issuer(caller2)
+    ));
 }
 
 #[test]
@@ -92,7 +104,7 @@ fn uninit_set_verifier_fails() {
     let (env, client, caller1, caller2) = uninit_setup();
     let res = client.try_set_verifier(&caller1, &caller2);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Verifier));
+    assert!(!has_persistent_key(&env, &client, &DataKey::Verifier));
 }
 
 #[test]
@@ -104,7 +116,11 @@ fn uninit_set_verifier_circuit_versions_fails() {
         &MAX_SUPPORTED_CIRCUIT_VERSION,
     );
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::VerifierCircuitVersions));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::VerifierCircuitVersions
+    ));
 }
 
 #[test]
@@ -112,7 +128,7 @@ fn uninit_schedule_verifier_rotation_fails() {
     let (env, client, caller1, caller2) = uninit_setup();
     let res = client.try_schedule_verifier_rotation(&caller1, &caller2, &100, &10, &10);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::VerifierState));
+    assert!(!has_persistent_key(&env, &client, &DataKey::VerifierState));
 }
 
 #[test]
@@ -120,7 +136,7 @@ fn uninit_activate_verifier_rotation_fails() {
     let (env, client, caller1, _) = uninit_setup();
     let res = client.try_activate_verifier_rotation(&caller1);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::VerifierState));
+    assert!(!has_persistent_key(&env, &client, &DataKey::VerifierState));
 }
 
 #[test]
@@ -128,7 +144,7 @@ fn uninit_rollback_verifier_rotation_fails() {
     let (env, client, caller1, _) = uninit_setup();
     let res = client.try_rollback_verifier_rotation(&caller1);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::VerifierState));
+    assert!(!has_persistent_key(&env, &client, &DataKey::VerifierState));
 }
 
 #[test]
@@ -138,7 +154,11 @@ fn uninit_add_credential_root_fails() {
     let meta = bytes32(&env, 11);
     let res = client.try_add_credential_root(&caller1, &root, &meta);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::CredentialRootV2(root)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::CredentialRootV2(root)
+    ));
 }
 
 #[test]
@@ -183,7 +203,7 @@ fn uninit_set_proof_ttl_fails() {
     let (env, client, caller1, _) = uninit_setup();
     let res = client.try_set_proof_ttl(&caller1, &3600);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::ProofTtl));
+    assert!(!has_persistent_key(&env, &client, &DataKey::ProofTtl));
 }
 
 #[test]
@@ -220,7 +240,11 @@ fn uninit_set_timelock_min_delay_secs_fails() {
     let (env, client, caller1, _) = uninit_setup();
     let res = client.try_set_timelock_min_delay_secs(&caller1, &86400);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::TimelockMinDelay));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::TimelockMinDelay
+    ));
 }
 
 #[test]
@@ -229,7 +253,11 @@ fn uninit_set_scope_epoch_fails() {
     let scope = bytes32(&env, 1);
     let res = client.try_set_scope_epoch(&caller1, &scope, &5);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::ScopeEpoch(scope)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::ScopeEpoch(scope)
+    ));
 }
 
 #[test]
@@ -271,7 +299,7 @@ fn uninit_set_revocation_root_fails() {
     let root = bytes32(&env, 1);
     let res = client.try_set_revocation_root(&caller1, &root);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::RevocationRoot));
+    assert!(!has_persistent_key(&env, &client, &DataKey::RevocationRoot));
 }
 
 #[test]
@@ -279,7 +307,7 @@ fn uninit_set_guardian_fails() {
     let (env, client, caller1, caller2) = uninit_setup();
     let res = client.try_set_guardian(&caller1, &caller2);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Guardian));
+    assert!(!has_persistent_key(&env, &client, &DataKey::Guardian));
 }
 
 #[test]
@@ -295,7 +323,11 @@ fn uninit_add_schema_fails() {
     let schema_hash = bytes32(&env, 1);
     let res = client.try_add_schema(&caller1, &schema_hash, &bytes32(&env, 2), &1, &4);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Schema(schema_hash)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Schema(schema_hash)
+    ));
 }
 
 #[test]
@@ -318,8 +350,12 @@ fn uninit_register_source_fails() {
     let proof_id = bytes32(&env, 3);
     let res = client.try_register_source(&caller1, &video, &meta, &proof_id);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Proof(proof_id)));
-    assert!(!env.storage().persistent().has(&DataKey::Video(video)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(proof_id)
+    ));
+    assert!(!has_persistent_key(&env, &client, &DataKey::Video(video)));
 }
 
 #[test]
@@ -329,7 +365,11 @@ fn uninit_register_source_batch_root_fails() {
     let meta = bytes32(&env, 2);
     let res = client.try_register_source_batch_root(&caller1, &root, &10, &meta);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::SourceBatch(root)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::SourceBatch(root)
+    ));
 }
 
 #[test]
@@ -340,8 +380,12 @@ fn uninit_register_seal_fails() {
     let proof_id = bytes32(&env, 3);
     let res = client.try_register_seal(&caller1, &video, &meta, &proof_id);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Proof(proof_id)));
-    assert!(!env.storage().persistent().has(&DataKey::Video(video)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(proof_id)
+    ));
+    assert!(!has_persistent_key(&env, &client, &DataKey::Video(video)));
 }
 
 #[test]
@@ -354,8 +398,12 @@ fn uninit_register_anonymous_fails() {
     let root = bytes32(&env, 5);
     let proof = Bytes::from_array(&env, &[1, 2, 3, 4]);
     let res = client.try_register_anonymous(&video, &meta, &proof_id, &nullifier, &root, &proof);
-    assert_err_code(res, RegistryError::VerifierNotSet as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Proof(proof_id)));
+    assert_err_code(res, RegistryError::NotInitialized as u32);
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(proof_id)
+    ));
 }
 
 #[test]
@@ -366,9 +414,14 @@ fn uninit_register_anonymous_verified_fails() {
     let proof_id = bytes32(&env, 3);
     let public_inputs = Bytes::from_array(&env, &[0u8; 160]);
     let proof = Bytes::from_array(&env, &[1, 2, 3, 4]);
-    let res = client.try_register_anonymous_verified(&video, &meta, &proof_id, &public_inputs, &proof);
+    let res =
+        client.try_register_anonymous_verified(&video, &meta, &proof_id, &public_inputs, &proof);
     assert!(res.is_err(), "must fail on uninitialized contract");
-    assert!(!env.storage().persistent().has(&DataKey::Proof(proof_id)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(proof_id)
+    ));
 }
 
 #[test]
@@ -382,7 +435,11 @@ fn uninit_register_batch_verified_fails() {
     videos.push_back(bytes32(&env, 10));
     let res = client.try_register_batch_verified(&batch_id, &meta, &public_inputs, &proof, &videos);
     assert!(res.is_err(), "must fail on uninitialized contract");
-    assert!(!env.storage().persistent().has(&DataKey::Proof(batch_id)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(batch_id)
+    ));
 }
 
 #[test]
@@ -393,7 +450,11 @@ fn uninit_register_source_delegated_fails() {
     let proof_id = bytes32(&env, 3);
     let res = client.try_register_source_delegated(&caller1, &caller2, &video, &meta, &proof_id);
     assert_err_code(res, RegistryError::DelegationNotFound as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Proof(proof_id)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(proof_id)
+    ));
 }
 
 #[test]
@@ -404,7 +465,11 @@ fn uninit_register_seal_delegated_fails() {
     let proof_id = bytes32(&env, 3);
     let res = client.try_register_seal_delegated(&caller1, &caller2, &video, &meta, &proof_id);
     assert_err_code(res, RegistryError::DelegationNotFound as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Proof(proof_id)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Proof(proof_id)
+    ));
 }
 
 #[test]
@@ -417,7 +482,11 @@ fn uninit_register_lineage_fails() {
     let output = bytes32(&env, 3);
     let res = client.try_register_lineage(&caller1, &parents, &manifest, &op, &output, &1);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Lineage(output)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Lineage(output)
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +495,7 @@ fn uninit_register_lineage_fails() {
 
 #[test]
 fn uninit_pause_fails() {
-    let (env, client, caller1, _) = uninit_setup();
+    let (_env, client, caller1, _) = uninit_setup();
     let res = client.try_pause(&caller1, &PAUSE_DOMAIN_TIER1_REGISTRATION, &3600);
     assert_err_code(res, RegistryError::NotInitialized as u32);
     assert!(!client.is_paused(&PAUSE_DOMAIN_TIER1_REGISTRATION));
@@ -435,9 +504,14 @@ fn uninit_pause_fails() {
 #[test]
 fn uninit_grant_delegation_fails() {
     let (env, client, caller1, caller2) = uninit_setup();
-    let res = client.try_grant_delegation(&caller1, &caller2, &DELEGATION_SCOPE_REGISTER_SOURCE, &3600);
+    let res =
+        client.try_grant_delegation(&caller1, &caller2, &DELEGATION_SCOPE_REGISTER_SOURCE, &3600);
     assert_err_code(res, RegistryError::NotInitialized as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Delegation(caller1, caller2)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Delegation(caller1, caller2)
+    ));
 }
 
 #[test]
@@ -463,7 +537,11 @@ fn uninit_open_dispute_fails() {
         &commitment,
     );
     assert_err_code(res, RegistryError::DisputeNotFound as u32);
-    assert!(!env.storage().persistent().has(&DataKey::Dispute(dispute_id)));
+    assert!(!has_persistent_key(
+        &env,
+        &client,
+        &DataKey::Dispute(dispute_id)
+    ));
 }
 
 #[test]

@@ -299,6 +299,7 @@ get_revocation_root
 check_non_revocation
 get_proof_status
 get_proof_history
+get_proof_history_page
 get_proof_history_at
 get_proof_history_count
 open_dispute
@@ -531,12 +532,32 @@ TtlUpdated  = 6
 ### Query
 
 ```text
-get_proof_history(proof_id, offset, limit) -> Vec<ProofHistoryEntry>
+get_proof_history(proof_id, offset, limit) -> ProofHistoryPage
+get_proof_history_page(proof_id, offset, limit) -> ProofHistoryPage
+get_proof_history_at(proof_id, seq) -> Option<ProofHistoryEntry>
 get_proof_history_count(proof_id) -> u32
 ```
 
-`offset` is zero-based. `limit` must be `<= MAX_HISTORY_LIMIT`. Entries are
-returned in chronological order.
+`offset` is zero-based. `limit` must be `<= MAX_HISTORY_LIMIT` (`50`), otherwise
+the query reverts with `HistoryLimitExceeded` (`#16`). Entries are returned in
+chronological sequence order (`1..=total_entries`).
+
+Bounded history queries return `ProofHistoryPage` with explicit completeness,
+truncation, and immediate-predecessor metadata (`#1203`) so callers never mistake
+a partial window for a complete evidence lifecycle history:
+
+- `is_complete`: `true` strictly when `offset == 0` and every recorded entry is
+  included (`entries.len() == total_entries`). Never `true` when older or newer
+  entries are omitted.
+- `truncated`, `has_older_entries`, `has_newer_entries`, and `next_offset`:
+  explicit truncation flags and next-page offset (`Some(end_idx)` when newer
+  entries exist, else `None`).
+- `predecessor_seq`, `predecessor_action`, `predecessor_timestamp`,
+  `predecessor_actor`, and `predecessor_reason_code`: populated from the
+  immediate predecessor transition (`seq = offset.min(total_entries)`) whenever
+  `has_older_entries` is `true`, allowing multi-page callers to verify sequence
+  continuity across pages. Missing indexed or predecessor storage slots fail
+  closed with `HistoryCorruption` (`#19`).
 
 ### State Transitions
 
@@ -558,7 +579,10 @@ All registration functions and `revoke_proof` automatically record history.
 ### Backward Compatibility
 
 Proofs registered before this feature have zero history entries. `get_proof_history`
-returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
+and `get_proof_history_page` return an empty `entries` slice (`total_entries = 0`,
+`is_complete = true` at `offset = 0`, `truncated = false`) for such proofs, and
+`get_proof_history_at` / `get_proof_history_count` remain unchanged. The existing
+`ProofRecord` schema is unchanged.
 
 ## Dispute And Supersession
 
