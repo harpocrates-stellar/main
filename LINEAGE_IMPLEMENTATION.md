@@ -91,6 +91,37 @@ Response: 200 OK
 }
 ```
 
+#### Source-to-Derivative Audit Export
+```
+POST /api/lineage/audit-export
+Content-Type: application/json
+
+{
+  "targetOutputDigest": "...",
+  "lineageRecords": [...],
+  "sourceProofs": [...]
+}
+
+Response: 200 OK
+{
+  "ok": true,
+  "audit": {
+    "schema": "harpocrates.lineage.audit/v1",
+    "version": 1,
+    "target_output_digest": "...",
+    "proof_statements": [...],
+    "transformation_links": [...],
+    "redaction_summary": {
+      "redacted_source_location": true,
+      "redacted_upload_filename": true,
+      "redacted_field_categories": ["source_location", "upload_filename"]
+    },
+    "audit_digest": "..."
+  }
+}
+```
+`export_lineage_audit_trail()` orders verified transformation links topologically from source proof statement digests to final derivatives (`SHA-256("harp_lin_pc" || binding_a || binding_b)` commitments included) while stripping private source location coordinates/URIs and upload/local filenames.
+
 ### Database Schema
 
 #### lineage_events table

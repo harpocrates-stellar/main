@@ -100,7 +100,12 @@ class LineageListEndpointErrorEnvelopeTests(unittest.TestCase):
         error = payload["error"]
         self.assertIsInstance(error, dict)
         self.assertEqual(error.get("code"), "VALIDATION_ERROR")
-        self.assertTruthy(error.get("requestId") or payload.get("requestId"))
+        self.assertTrue(
+            error.get("request_id")
+            or payload.get("request_id")
+            or error.get("requestId")
+            or payload.get("requestId")
+        )
 
     def test_lineage_events_rejects_non_integer_limit(self) -> None:
         response = self.client.get("/api/proofs/lineage?limit=abc")
@@ -111,11 +116,11 @@ class LineageListEndpointErrorEnvelopeTests(unittest.TestCase):
         self._assert_validation_envelope(response)
 
     def test_lineage_by_actor_rejects_non_integer_limit(self) -> None:
-        response = self.client.get("/api/proofs/lineage/actor/GAJC123?limit=abc")
+        response = self.client.get("/api/lineage/by-actor/GAJC123?limit=abc")
         self._assert_validation_envelope(response)
 
     def test_lineage_by_actor_rejects_negative_limit(self) -> None:
-        response = self.client.get("/api/proofs/lineage/actor/GAJC123?limit=-1")
+        response = self.client.get("/api/lineage/by-actor/GAJC123?limit=-1")
         self._assert_validation_envelope(response)
 
 

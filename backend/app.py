@@ -91,6 +91,7 @@ from idempotency import idempotent
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
+    export_lineage_audit_trail,
     lineage_manifest_digest,
     validate_lineage_graph,
 )
@@ -112,7 +113,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1241,6 +1242,58 @@ def create_app() -> Flask:
             )
 
         return ok_response({"record": record})
+
+    @app.post("/api/lineage/audit-export")
+    def lineage_audit_export():
+        if _enforce_json_size() > config.max_json_bytes:
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+
+        target_digest = payload.get("targetOutputDigest") or payload.get("target_output_digest")
+        if not isinstance(target_digest, str) or not is_hex_32(target_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="targetOutputDigest must be a 32-byte hex string",
+                status=400,
+                field="targetOutputDigest",
+            )
+
+        supplied_records = payload.get("lineageRecords")
+        if supplied_records is None:
+            supplied_records = payload.get("lineage_records")
+        lineage_source = (
+            supplied_records if supplied_records is not None else find_lineage_by_output_digest
+        )
+        source_proofs = payload.get("sourceProofs")
+        if source_proofs is None:
+            source_proofs = payload.get("source_proofs")
+
+        try:
+            audit_export = export_lineage_audit_trail(
+                target_digest,
+                lineage_source,
+                source_proofs=source_proofs,
+                require_verified_ancestry=bool(payload.get("requireVerifiedAncestry", True)),
+            )
+        except LineageValidationError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response({"audit": audit_export})
 
     @app.post("/api/proofs/lineage")
     def register_lineage_event():

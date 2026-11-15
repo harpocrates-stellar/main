@@ -557,6 +557,34 @@ def corroborate_binding(
     )
 
 
+def proof_statement_from_c2pa(
+    source: C2paParsedManifest | C2paHarpocratesBinding,
+) -> dict[str, Any]:
+    """Extract canonical public proof statement fields from a parsed C2PA binding.
+
+    Preserves ``c2pa_trust_status`` separately so C2PA manifest claims are never
+    conflated with on-chain or ZK verification outcomes.
+    """
+    if isinstance(source, C2paParsedManifest):
+        binding = source.binding
+        trust_status = source.trust_status.value
+    elif isinstance(source, C2paHarpocratesBinding):
+        binding = source
+        trust_status = C2paTrustStatus.SIGNATURE_NOT_CHECKED.value
+    else:
+        raise TypeError("source must be C2paParsedManifest or C2paHarpocratesBinding")
+
+    return {
+        "proof_id": binding.proof_id,
+        "video_hash": binding.video_hash,
+        "metadata_hash": binding.metadata_hash,
+        "tier": binding.tier,
+        "network": binding.network,
+        "contract_id": binding.contract_id,
+        "c2pa_trust_status": trust_status,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

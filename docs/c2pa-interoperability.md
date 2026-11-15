@@ -137,11 +137,13 @@ written to logs.
 For library callers, the same check is available without the HTTP layer:
 
 ```python
-from c2pa import corroborate_binding, parse_c2pa_manifest
+from c2pa import corroborate_binding, parse_c2pa_manifest, proof_statement_from_c2pa
 
 parsed = parse_c2pa_manifest(raw_manifest)
 result = corroborate_binding(parsed, video_hash=registered_video_hash)
 # result.ok, result.compared_fields, result.mismatches — field names only
+statement = proof_statement_from_c2pa(parsed)
+# statement keeps c2pa_trust_status distinct for lineage audit exports
 ```
 
 ---
