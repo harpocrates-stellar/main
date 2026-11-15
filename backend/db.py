@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1278,6 +1279,104 @@ def report_job_progress(
     return True
 
 
+MAX_JOB_ERROR_DIAGNOSTIC_BYTES = 256
+
+_DIAG_PEM_BLOCK_RE = re.compile(
+    r"-{5}BEGIN [A-Z0-9 ]*PRIVATE" + r" KEY-{5}[\s\S]*?-{5}END [A-Z0-9 ]*PRIVATE" + r" KEY-{5}"
+)
+_DIAG_PEM_HEADER_RE = re.compile(r"-{5}BEGIN [A-Z0-9 ]*PRIVATE" + r" KEY-{5}")
+_DIAG_DSN_RE = re.compile(
+    r"(?i)\b(?:postgres(?:ql)?|mysql|redis|amqps?|mongodb(?:\+srv)?)://[^\s\"'\)\],;]+"
+)
+_DIAG_AUTH_HEADER_RE = re.compile(r"(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}")
+_DIAG_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_DIAG_STELLAR_KEY_RE = re.compile(r"\b[GSM][A-Z2-7]{55,68}\b")
+_DIAG_KV_SECRET_RE = re.compile(
+    r"(?i)\b(secret|password|passwd|pwd|token|api_?key|private_?key|"
+    r"credential_?secret|nullifier_?secret|witness|xdr|mnemonic|seed_?phrase)"
+    r"(\s*[\"']?\s*[:=]\s*[\"']?)([^\s\"',;\)\]}]+)"
+)
+_DIAG_HEX_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{32,}\b")
+_DIAG_B64_CANDIDATE_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9_])")
+_DIAG_WIN_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)[^\s\"':,\)\];]+")
+_DIAG_POSIX_ROOT_PATH_RE = re.compile(
+    r"/(?:tmp|var|etc|home|Users|root|opt|srv|private|mnt|proc|app|workspace|data|storage)"
+    r"(?:/[^\s\"':,\)\];]*)?"
+)
+_DIAG_POSIX_MULTI_PATH_RE = re.compile(r"/(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]+")
+_DIAG_SENSITIVE_FILE_RE = re.compile(
+    r"(?i)\b[A-Za-z0-9_.-]+\.(?:mp4|mov|mkv|avi|webm|wav|mp3|png|jpg|jpeg|wtns|proof|acir|pem|key|tr)\b"
+)
+
+
+def _cap_utf8_bytes(text: str, max_bytes: int, *, suffix: str = "...[truncated]") -> tuple[str, bool]:
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text, False
+    suffix_bytes = suffix.encode("ascii")
+    if max_bytes <= len(suffix_bytes):
+        return encoded[:max_bytes].decode("utf-8", errors="ignore"), True
+    budget = max_bytes - len(suffix_bytes)
+    prefix = encoded[:budget].decode("utf-8", errors="ignore")
+    return prefix + suffix, True
+
+
+def _replace_path_match(match: re.Match[str]) -> str:
+    raw_path = match.group(0).rstrip(".,;)")
+    normalized = raw_path.replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename.lower().endswith(".py") and re.match(r"^[A-Za-z0-9_.-]+\.py$", basename):
+        return f"<file:{basename}>"
+    return "[REDACTED:path]"
+
+
+def _replace_b64_if_high_entropy(match: re.Match[str]) -> str:
+    token = match.group(0)
+    has_alpha = any(ch.isalpha() for ch in token)
+    has_digit_or_sym = any(ch.isdigit() or ch in "+/=" for ch in token)
+    if has_alpha and has_digit_or_sym:
+        return "[REDACTED:secret]"
+    return token
+
+
+def sanitize_diagnostic_text(
+    value: object,
+    *,
+    max_bytes: int = MAX_JOB_ERROR_DIAGNOSTIC_BYTES,
+) -> str:
+    """Sanitize an exception or diagnostic string before logging or job storage.
+
+    Redacts secret-shaped values, database URLs, private filesystem paths, and
+    sensitive media/proof filenames, strips control characters, and bounds total
+    UTF-8 output to ``max_bytes``.
+    """
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    raw = "" if value is None else str(value)
+    # Strip multiline / control chars first after PEM block replacement
+    cleaned = _DIAG_PEM_BLOCK_RE.sub("[REDACTED:secret]", raw)
+    cleaned = _DIAG_PEM_HEADER_RE.sub("[REDACTED:secret]", cleaned)
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", cleaned).strip()
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+
+    cleaned = _DIAG_DSN_RE.sub("[REDACTED:dsn]", cleaned)
+    cleaned = _DIAG_AUTH_HEADER_RE.sub("[REDACTED:secret]", cleaned)
+    cleaned = _DIAG_JWT_RE.sub("[REDACTED:secret]", cleaned)
+    cleaned = _DIAG_STELLAR_KEY_RE.sub("[REDACTED:secret]", cleaned)
+    cleaned = _DIAG_KV_SECRET_RE.sub(r"\1=[REDACTED:secret]", cleaned)
+    cleaned = _DIAG_WIN_PATH_RE.sub(_replace_path_match, cleaned)
+    cleaned = _DIAG_POSIX_ROOT_PATH_RE.sub(_replace_path_match, cleaned)
+    cleaned = _DIAG_POSIX_MULTI_PATH_RE.sub(_replace_path_match, cleaned)
+    cleaned = _DIAG_SENSITIVE_FILE_RE.sub("[REDACTED:path]", cleaned)
+    cleaned = _DIAG_HEX_RE.sub("[REDACTED:hex]", cleaned)
+    cleaned = _DIAG_B64_CANDIDATE_RE.sub(_replace_b64_if_high_entropy, cleaned)
+
+    bounded, _ = _cap_utf8_bytes(cleaned, max_bytes)
+    return bounded
+
+
 def complete_job(job_id: int, result: Any = None) -> None:
     """Mark an in-memory job completed."""
     job = _JOBS.get(job_id)
@@ -1288,12 +1387,18 @@ def complete_job(job_id: int, result: Any = None) -> None:
     job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
+def fail_job(
+    job_id: int,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    max_error_bytes: int = MAX_JOB_ERROR_DIAGNOSTIC_BYTES,
+) -> None:
+    """Mark an in-memory job failed (fatal) or pending for retry with bounded sanitized diagnostics."""
     job = _JOBS.get(job_id)
     if not job:
         return
-    job["error"] = error
+    job["error"] = sanitize_diagnostic_text(error, max_bytes=max_error_bytes)
     job["failed_at"] = datetime.now(timezone.utc).isoformat()
     if is_fatal:
         job["status"] = "failed"
@@ -1333,7 +1438,11 @@ def get_job_queue_metrics() -> dict[str, Any]:
                 )
                 rows = cursor.fetchall()
     except Exception as exc:
-        logger.warning("Failed to query job queue metrics: %s", exc)
+        logger.warning(
+            "Failed to query job queue metrics (%s): %s",
+            type(exc).__name__,
+            sanitize_diagnostic_text(exc, max_bytes=MAX_JOB_ERROR_DIAGNOSTIC_BYTES),
+        )
         return {"counts": {}, "oldest_queued_seconds": {}}
 
     counts: dict[tuple[str, str], int] = {}

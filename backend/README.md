@@ -342,6 +342,23 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Bounded Worker Exception Diagnostics
+
+`worker.py` and `db.py` sanitize and byte-bound worker exception messages and
+traceback frames before emitting logs or persisting failure diagnostics via
+`fail_job`:
+
+- **Secret and path redaction:** `sanitize_diagnostic_text` and
+  `sanitize_traceback_frames` redact database connection URLs (`[REDACTED:dsn]`),
+  Stellar keys/seeds, PEM private keys, Bearer/JWT tokens, `secret=`/`witness=`
+  key-value pairs, hex digests (`>=32` hex chars), and private host/upload paths
+  (`[REDACTED:path]`, preserving `<file:basename.py>` for Python frames without
+  emitting source code lines).
+- **Strict byte caps:** Persisted job failure messages are capped at
+  `MAX_JOB_ERROR_DIAGNOSTIC_BYTES` (256 UTF-8 bytes) and logged traceback
+  summaries are capped at `MAX_TRACEBACK_FRAMES` (8 frames) and
+  `MAX_TRACEBACK_DIAGNOSTIC_BYTES` (1,024 UTF-8 bytes).
+
 ## Test
 
 ```powershell

@@ -1,4 +1,8 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 import logging
+import re
 import time
 import os
 from logging_utils import log_structured
@@ -7,6 +11,8 @@ import traceback
 from pathlib import Path
 
 from db import (
+    MAX_JOB_ERROR_DIAGNOSTIC_BYTES,
+    _cap_utf8_bytes,
     lease_job,
     heartbeat_job,
     report_job_progress,
@@ -16,17 +22,27 @@ from db import (
     init_db,
     database_url,
     get_connection,
+    sanitize_diagnostic_text,
     update_tx_status,
 )
 from envelope import canonical_metadata_hash
 from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
+try:
+    from registration_reconcile import (
+        default_min_confirmations,
+        process_verify_tx_job,
+        reconcile_pending_registrations,
+    )
+except ImportError:
+    default_min_confirmations = None
+    process_verify_tx_job = None
+    reconcile_pending_registrations = None
 from tracing import traced_job
 from chain_indexer import run_indexer_loop
 
@@ -40,7 +56,14 @@ LOGGER.setLevel(logging.INFO)
 WORKER_ID = f"worker-{os.getpid()}"
 
 @traced_job("job.media.embed")
-def process_embed(job: dict) -> dict:
+def process_embed(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        message_path = job["message_path"]
+        output_path = job["output_path"]
+        message = Path(message_path).read_text()
+        meta = embed_metadata(input_path, message, output_path)
+        return {"output_path": output_path, "message": message, **(meta if isinstance(meta, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     metadata = payload["metadata"]
@@ -87,7 +110,12 @@ def process_embed(job: dict) -> dict:
     }
 
 @traced_job("job.media.extract")
-def process_extract(job: dict) -> dict:
+def process_extract(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = extract_metadata(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     filename = payload["filename"]
@@ -121,7 +149,12 @@ def process_extract(job: dict) -> dict:
     }
 
 @traced_job("job.proof.noir")
-def process_silent_witness(job: dict) -> dict:
+def process_silent_witness(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = generate_silent_witness(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
 
     video_hash = payload["video_hash"]
@@ -139,9 +172,118 @@ def process_silent_witness(job: dict) -> dict:
     
     return {"proof": proof}
 
-def process_verify_tx(job: dict) -> dict:
+def process_verify_tx(job: dict, storage: object | None = None) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
+    if storage is not None or ("input_path" in job and "payload" not in job):
+        import json
+        data = json.loads(Path(job["input_path"]).read_text())
+        status = verify_transaction_status(data["tx_id"])
+        output_path = job["output_path"]
+        Path(output_path).write_text(json.dumps(status))
+        return {"output_path": output_path, **(status if isinstance(status, dict) else {"status": status})}
     return process_verify_tx_job(job.get("payload") or {})
+
+
+MAX_TRACEBACK_DIAGNOSTIC_BYTES = 1024
+MAX_TRACEBACK_FRAMES = 8
+_SAFE_IDENT_RE = re.compile(r"^[A-Za-z_<][A-Za-z0-9_<>.-]{0,63}$")
+
+
+@dataclass(frozen=True)
+class BoundedWorkerDiagnostic:
+    error_type: str
+    error_message: str
+    traceback_summary: str
+    truncated: bool
+
+
+def _sanitize_frame_filename(raw_filename: str) -> str:
+    normalized = str(raw_filename or "").replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename.lower().endswith(".py") and re.match(r"^[A-Za-z0-9_.-]+\.py$", basename):
+        return f"<file:{basename}>"
+    if basename == "<string>" or basename == "<stdin>":
+        return basename
+    return "[REDACTED:path]"
+
+
+def _sanitize_frame_function(raw_func: str) -> str:
+    candidate = str(raw_func or "<unknown>").strip()
+    if _SAFE_IDENT_RE.match(candidate):
+        return candidate
+    return sanitize_diagnostic_text(candidate, max_bytes=64) or "<redacted>"
+
+
+def sanitize_traceback_frames(
+    err: BaseException,
+    *,
+    max_frames: int = MAX_TRACEBACK_FRAMES,
+    max_bytes: int = MAX_TRACEBACK_DIAGNOSTIC_BYTES,
+) -> tuple[str, bool]:
+    """Build a bounded, redacted traceback summary excluding source lines and private paths."""
+    if max_frames <= 0:
+        raise ValueError("max_frames must be positive")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+
+    tb = getattr(err, "__traceback__", None)
+    extracted = traceback.extract_tb(tb) if tb is not None else []
+    was_truncated = False
+    lines: list[str] = []
+
+    if len(extracted) > max_frames:
+        omitted = len(extracted) - max_frames
+        lines.append(f"  [+{omitted} outer frames omitted]")
+        extracted = extracted[-max_frames:]
+        was_truncated = True
+
+    for frame in extracted:
+        safe_file = _sanitize_frame_filename(frame.filename)
+        safe_func = _sanitize_frame_function(frame.name)
+        lineno = int(frame.lineno or 0)
+        # Intentionally omit frame.line so literal secrets or witness expressions in source are never emitted.
+        lines.append(f"  at {safe_file}:{lineno} in {safe_func}")
+
+    err_type = _sanitize_frame_function(type(err).__name__)
+    msg_budget = min(MAX_JOB_ERROR_DIAGNOSTIC_BYTES, max(32, max_bytes // 2))
+    safe_msg = sanitize_diagnostic_text(err, max_bytes=msg_budget)
+    lines.append(f"{err_type}: {safe_msg}" if safe_msg else err_type)
+
+    joined = "\n".join(lines)
+    bounded, byte_truncated = _cap_utf8_bytes(joined, max_bytes)
+    return bounded, (was_truncated or byte_truncated)
+
+
+def format_bounded_worker_diagnostic(
+    err: BaseException,
+    *,
+    max_error_bytes: int = MAX_JOB_ERROR_DIAGNOSTIC_BYTES,
+    max_traceback_bytes: int = MAX_TRACEBACK_DIAGNOSTIC_BYTES,
+    max_frames: int = MAX_TRACEBACK_FRAMES,
+) -> BoundedWorkerDiagnostic:
+    """Produce sanitized, byte-capped exception and traceback diagnostics for logging and persistence."""
+    if max_error_bytes <= 0:
+        raise ValueError("max_error_bytes must be positive")
+    error_type = _sanitize_frame_function(type(err).__name__)
+    raw_msg = "" if err is None else str(err)
+    sanitized_full = sanitize_diagnostic_text(raw_msg, max_bytes=max_error_bytes)
+    msg_was_truncated = sanitized_full.endswith("...[truncated]")
+    tb_summary, tb_truncated = sanitize_traceback_frames(
+        err,
+        max_frames=max_frames,
+        max_bytes=max_traceback_bytes,
+    )
+    return BoundedWorkerDiagnostic(
+        error_type=error_type,
+        error_message=sanitized_full,
+        traceback_summary=tb_summary,
+        truncated=(msg_was_truncated or tb_truncated),
+    )
+
+
+def is_fatal(job_type: str, err: BaseException) -> bool:
+    """Classify whether a job failure is non-retryable."""
+    return isinstance(err, ValueError) and job_type != "verify_tx"
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
@@ -269,6 +411,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -311,12 +454,23 @@ def run_worker(
                     complete_job(job_id, res)
                     LOGGER.info(f"Completed job {job_id}")
                 except Exception as err:
-                    LOGGER.error(f"Failed job {job_id}: {err}")
-                    LOGGER.error(traceback.format_exc())
-                    is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
+                    diag = format_bounded_worker_diagnostic(err)
+                    LOGGER.error(
+                        "Failed job %s (%s): %s",
+                        job_id,
+                        diag.error_type,
+                        diag.error_message,
+                    )
+                    if diag.traceback_summary:
+                        LOGGER.error(
+                            "Bounded traceback for job %s:\n%s",
+                            job_id,
+                            diag.traceback_summary,
+                        )
+                    fatal = isinstance(err, ValueError) and job_type != "verify_tx"
                     if job_type == "verify_tx":
-                        is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                        fatal = isinstance(err, ValueError)
+                    fail_job(job_id, diag.error_message, is_fatal=fatal)
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -339,7 +493,8 @@ def run_worker(
                     break
 
         except Exception as e:
-            LOGGER.error(f"Worker loop error: {e}")
+            loop_diag = format_bounded_worker_diagnostic(e)
+            LOGGER.error("Worker loop error (%s): %s", loop_diag.error_type, loop_diag.error_message)
             stop_event.wait(5)
 
     LOGGER.info("Worker stop event set, waiting for tx verification loop to terminate")
