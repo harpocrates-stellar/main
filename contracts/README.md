@@ -224,7 +224,7 @@ Production observers continue to rely on existing typed events:
 ["credroot", "add", root]       => metadata_hash, issued_at
 ["credroot", "revoke", root]   => {}
 ["admin", "propose", pending] => current_admin
-["admin", "cancel", pending]  => current_admin
+["admin", "cancel", pending]  => current_admin, reason_code
 ["admin", "accept", new_admin] => previous_admin
 ["revroot", "set", root]      => {}
 ["nonrev", "check", root]     => nullifier, revocation_root
@@ -266,6 +266,11 @@ get_storage_schema_version
 upgrade_storage
 propose_admin
 cancel_admin_transfer
+cancel_admin_with_reason
+cancel_timelock_with_reason
+cancel_council_with_reason
+cancel_seal_pol_with_reason
+cancel_seal_approval
 accept_admin
 get_admin
 get_pending_admin
@@ -579,6 +584,22 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## Explicit Institutional Approval Cancellation Reasons (#1186)
+
+All institutional approval cancellation events (`AdminTransferCancelled`,
+`TimelockProposalCancelled`, `AdminCouncilCancelled`, `CouncilProposalCancelled`,
+`SealPolicyCancelledEvent`, and `SealApprovalCancelled`) include a bounded
+`reason_code: u32` (`ApprovalCancelReason`, `0..=6`) alongside their stable
+approval identity (`pending_admin`, `proposal_id`, `version`, or `(proof_id, signer)`):
+
+- Explicit cancellation entry points (`cancel_admin_with_reason`,
+  `cancel_timelock_with_reason`, `cancel_council_with_reason`,
+  `cancel_seal_pol_with_reason`, and `cancel_seal_approval`) require a bounded
+  non-zero reason (`1..=MAX_APPROVAL_CANCEL_REASON`, reverting with
+  `InvalidReasonCode` `#15` otherwise) and never accept free-text strings.
+- Legacy zero-reason cancellation entry points remain compatible and emit
+  `ApprovalCancelReason::Unspecified` (`0`).
 
 ## Contract Error ABI (#344)
 

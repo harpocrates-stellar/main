@@ -1343,6 +1343,29 @@ pub struct SchemaRecord {
     pub created_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Bounded typed institutional approval cancellation reasons (#1186)
+// ---------------------------------------------------------------------------
+
+/// Highest valid explicit `ApprovalCancelReason` discriminant (#1186).
+pub const MAX_APPROVAL_CANCEL_REASON: u32 = 6;
+
+/// Bounded typed reason code emitted on institutional approval cancellations (#1186).
+///
+/// Free-text strings and raw byte payloads are never accepted or emitted.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ApprovalCancelReason {
+    Unspecified = 0,
+    Superseded = 1,
+    KeyCompromised = 2,
+    PolicyChanged = 3,
+    OperatorWithdrawn = 4,
+    QuorumRestructured = 5,
+    EmergencyHalt = 6,
+}
+
 #[contractevent(topics = ["schema", "add"])]
 pub struct SchemaAdded {
     #[topic]
@@ -1509,6 +1532,7 @@ pub struct AdminTransferCancelled {
     #[topic]
     pub pending_admin: Address,
     pub current_admin: Address,
+    pub reason_code: u32,
 }
 
 #[contractevent(topics = ["admin", "accept"])]
@@ -1549,6 +1573,7 @@ pub struct TimelockProposalCancelled {
     #[topic]
     pub cancelled_by: Address,
     pub cancelled_at: u64,
+    pub reason_code: u32,
 }
 
 #[contractevent(topics = ["timelock", "exec"])]
@@ -1599,6 +1624,7 @@ pub struct AdminCouncilCancelled {
     #[topic]
     pub admin: Address,
     pub cancelled_at: u64,
+    pub reason_code: u32,
 }
 
 #[contractevent(topics = ["council", "propose"])]
@@ -1640,6 +1666,7 @@ pub struct CouncilProposalCancelled {
     #[topic]
     pub cancelled_by: Address,
     pub cancelled_at: u64,
+    pub reason_code: u32,
 }
 
 #[contracttype]
@@ -1823,6 +1850,19 @@ pub struct SealPolicyCreated {
 pub struct SealPolicyCancelledEvent {
     #[topic]
     pub version: u32,
+    pub cancelled_by: Address,
+    pub reason_code: u32,
+}
+
+#[contractevent(topics = ["seal", "cancel"])]
+pub struct SealApprovalCancelled {
+    #[topic]
+    pub proof_id: BytesN<32>,
+    #[topic]
+    pub signer: Address,
+    pub policy_version: u32,
+    pub reason_code: u32,
+    pub cancelled_at: u64,
 }
 
 #[contractevent(topics = ["seal", "approve"])]
@@ -2344,19 +2384,13 @@ impl HarpocratesRegistry {
     }
 
     pub fn cancel_admin_transfer(env: Env, admin: Address) {
-        require_admin(&env, &admin);
+        cancel_admin_transfer_inner(&env, admin, ApprovalCancelReason::Unspecified as u32);
+    }
 
-        let pending_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PendingAdmin)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
-        AdminTransferCancelled {
-            pending_admin,
-            current_admin: admin,
-        }
-        .publish(&env);
+    /// Cancel a pending admin transfer with an explicit bounded `ApprovalCancelReason` (#1186).
+    pub fn cancel_admin_with_reason(env: Env, admin: Address, reason_code: u32) {
+        require_explicit_cancel_reason(&env, reason_code);
+        cancel_admin_transfer_inner(&env, admin, reason_code);
     }
 
     pub fn accept_admin(env: Env, pending_admin: Address) {
@@ -3077,25 +3111,23 @@ impl HarpocratesRegistry {
     }
 
     pub fn cancel_timelocked_proposal(env: Env, admin: Address, proposal_id: u32) {
-        require_admin(&env, &admin);
-        let mut proposal = get_timelock_proposal_or_panic(&env, proposal_id);
-        if proposal.executed {
-            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
-        }
-        if proposal.cancelled {
-            panic_with_error!(&env, RegistryError::AlreadyCancelled);
-        }
-        proposal.cancelled = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proposal(proposal_id), &proposal);
-        TimelockProposalCancelled {
+        cancel_timelock_inner(
+            &env,
+            admin,
             proposal_id,
-            action: proposal.action,
-            cancelled_by: admin,
-            cancelled_at: env.ledger().timestamp(),
-        }
-        .publish(&env);
+            ApprovalCancelReason::Unspecified as u32,
+        );
+    }
+
+    /// Cancel a timelock proposal with an explicit bounded `ApprovalCancelReason` (#1186).
+    pub fn cancel_timelock_with_reason(
+        env: Env,
+        admin: Address,
+        proposal_id: u32,
+        reason_code: u32,
+    ) {
+        require_explicit_cancel_reason(&env, reason_code);
+        cancel_timelock_inner(&env, admin, proposal_id, reason_code);
     }
 
     pub fn execute_timelocked_proposal(env: Env, caller: Address, proposal_id: u32) {
@@ -3327,6 +3359,7 @@ impl HarpocratesRegistry {
         AdminCouncilCancelled {
             admin,
             cancelled_at: env.ledger().timestamp(),
+            reason_code: ApprovalCancelReason::Unspecified as u32,
         }
         .publish(&env);
     }
@@ -3489,46 +3522,23 @@ impl HarpocratesRegistry {
 
     /// Cancel a council proposal.
     pub fn cancel_council_proposal(env: Env, caller: Address, proposal_id: u32) {
-        let council = Self::get_admin_council(env.clone())
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
-
-        caller.require_auth();
-
-        let mut proposal = get_council_proposal_or_panic(&env, proposal_id);
-        if proposal.executed {
-            panic_with_error!(&env, RegistryError::ProposalAlreadyExecuted);
-        }
-        if proposal.cancelled {
-            panic_with_error!(&env, RegistryError::AlreadyCancelled);
-        }
-
-        // Caller must be proposer, admin, or a council member
-        let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
-        let is_admin = admin.as_ref() == Some(&caller);
-        let is_proposer = proposal.proposer == caller;
-        let mut is_member = false;
-        for i in 0..council.members.len() {
-            if council.members.get(i).unwrap() == caller {
-                is_member = true;
-                break;
-            }
-        }
-
-        if !is_admin && !is_proposer && !is_member {
-            panic_with_error!(&env, RegistryError::Unauthorized);
-        }
-
-        proposal.cancelled = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::CouncilProposal(proposal_id), &proposal);
-
-        CouncilProposalCancelled {
+        cancel_council_proposal_inner(
+            &env,
+            caller,
             proposal_id,
-            cancelled_by: caller,
-            cancelled_at: env.ledger().timestamp(),
-        }
-        .publish(&env);
+            ApprovalCancelReason::Unspecified as u32,
+        );
+    }
+
+    /// Cancel a council proposal with an explicit bounded `ApprovalCancelReason` (#1186).
+    pub fn cancel_council_with_reason(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+        reason_code: u32,
+    ) {
+        require_explicit_cancel_reason(&env, reason_code);
+        cancel_council_proposal_inner(&env, caller, proposal_id, reason_code);
     }
 
     pub fn get_council_proposal(env: Env, proposal_id: u32) -> Option<CouncilProposal> {
@@ -6767,27 +6777,50 @@ impl HarpocratesRegistry {
 
     /// Cancel a threshold seal policy (#124).
     pub fn cancel_seal_policy(env: Env, admin: Address, version: u32) {
-        require_admin(&env, &admin);
-        let mut policy: SealPolicy = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SealPolicy(version))
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::SealPolicyCancelled));
-        policy.status = STATUS_POLICY_CANCELLED;
-        env.storage()
-            .persistent()
-            .set(&DataKey::SealPolicy(version), &policy);
+        cancel_seal_policy_inner(
+            &env,
+            admin,
+            version,
+            ApprovalCancelReason::Unspecified as u32,
+        );
+    }
+
+    /// Cancel a threshold seal policy with an explicit bounded `ApprovalCancelReason` (#1186).
+    pub fn cancel_seal_pol_with_reason(env: Env, admin: Address, version: u32, reason_code: u32) {
+        require_explicit_cancel_reason(&env, reason_code);
+        cancel_seal_policy_inner(&env, admin, version, reason_code);
+    }
+
+    /// Withdraw an unfinalized threshold seal approval with an explicit bounded reason (#1186).
+    pub fn cancel_seal_approval(env: Env, signer: Address, proof_id: BytesN<32>, reason_code: u32) {
+        signer.require_auth();
+        require_explicit_cancel_reason(&env, reason_code);
         if env
             .storage()
             .persistent()
-            .get::<DataKey, u32>(&DataKey::ActiveSealPolicyVersion)
-            == Some(version)
-        {
-            env.storage()
+            .has(&DataKey::SealExplicitFinalized(proof_id.clone()))
+            || env
+                .storage()
                 .persistent()
-                .remove(&DataKey::ActiveSealPolicyVersion);
+                .has(&DataKey::Proof(proof_id.clone()))
+        {
+            panic_with_error!(&env, RegistryError::SealAlreadyFinalized);
         }
-        SealPolicyCancelledEvent { version }.publish(&env);
+        let key = DataKey::SealApproval(proof_id.clone(), signer.clone());
+        let approval: SealApproval = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::ProposalNotFound));
+        env.storage().persistent().remove(&key);
+        SealApprovalCancelled {
+            proof_id,
+            signer,
+            policy_version: approval.policy_version,
+            reason_code,
+            cancelled_at: env.ledger().timestamp(),
+        }
+        .publish(&env);
     }
 
     /// Record an authorized signer's approval for a threshold seal and finalize if met (#124).
@@ -8574,6 +8607,123 @@ fn count_pending_proposals(env: &Env) -> u32 {
     pending
 }
 
+fn require_explicit_cancel_reason(env: &Env, reason_code: u32) {
+    if reason_code == 0 || reason_code > MAX_APPROVAL_CANCEL_REASON {
+        panic_with_error!(env, RegistryError::InvalidReasonCode);
+    }
+}
+
+fn cancel_admin_transfer_inner(env: &Env, admin: Address, reason_code: u32) {
+    require_admin(env, &admin);
+    let pending_admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingAdmin)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::NoPendingAdmin));
+    env.storage().persistent().remove(&DataKey::PendingAdmin);
+    AdminTransferCancelled {
+        pending_admin,
+        current_admin: admin,
+        reason_code,
+    }
+    .publish(env);
+}
+
+fn cancel_timelock_inner(env: &Env, admin: Address, proposal_id: u32, reason_code: u32) {
+    require_admin(env, &admin);
+    let mut proposal = get_timelock_proposal_or_panic(env, proposal_id);
+    if proposal.executed {
+        panic_with_error!(env, RegistryError::ProposalAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        panic_with_error!(env, RegistryError::AlreadyCancelled);
+    }
+    proposal.cancelled = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Proposal(proposal_id), &proposal);
+    TimelockProposalCancelled {
+        proposal_id,
+        action: proposal.action,
+        cancelled_by: admin,
+        cancelled_at: env.ledger().timestamp(),
+        reason_code,
+    }
+    .publish(env);
+}
+
+fn cancel_council_proposal_inner(env: &Env, caller: Address, proposal_id: u32, reason_code: u32) {
+    let council = HarpocratesRegistry::get_admin_council(env.clone())
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::Unauthorized));
+
+    caller.require_auth();
+
+    let mut proposal = get_council_proposal_or_panic(env, proposal_id);
+    if proposal.executed {
+        panic_with_error!(env, RegistryError::ProposalAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        panic_with_error!(env, RegistryError::AlreadyCancelled);
+    }
+
+    let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+    let is_admin = admin.as_ref() == Some(&caller);
+    let is_proposer = proposal.proposer == caller;
+    let mut is_member = false;
+    for i in 0..council.members.len() {
+        if council.members.get(i).unwrap() == caller {
+            is_member = true;
+            break;
+        }
+    }
+
+    if !is_admin && !is_proposer && !is_member {
+        panic_with_error!(env, RegistryError::Unauthorized);
+    }
+
+    proposal.cancelled = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::CouncilProposal(proposal_id), &proposal);
+
+    CouncilProposalCancelled {
+        proposal_id,
+        cancelled_by: caller,
+        cancelled_at: env.ledger().timestamp(),
+        reason_code,
+    }
+    .publish(env);
+}
+
+fn cancel_seal_policy_inner(env: &Env, admin: Address, version: u32, reason_code: u32) {
+    require_admin(env, &admin);
+    let mut policy: SealPolicy = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SealPolicy(version))
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::SealPolicyCancelled));
+    policy.status = STATUS_POLICY_CANCELLED;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SealPolicy(version), &policy);
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::ActiveSealPolicyVersion)
+        == Some(version)
+    {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveSealPolicyVersion);
+    }
+    SealPolicyCancelledEvent {
+        version,
+        cancelled_by: admin,
+        reason_code,
+    }
+    .publish(env);
+}
+
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
     match proposal.action {
         1 => {
@@ -9069,6 +9219,8 @@ mod test_aggregation;
 mod test_auth;
 #[cfg(test)]
 mod test_budget;
+#[cfg(test)]
+mod test_cancellation_reasons;
 #[cfg(test)]
 mod test_conformance;
 #[cfg(test)]
