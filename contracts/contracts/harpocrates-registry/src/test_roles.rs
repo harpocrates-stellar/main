@@ -6,7 +6,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _},
-    Address, BytesN, Env, IntoVal, Symbol,
+    Address, BytesN, Env,
 };
 
 fn b32(env: &Env, value: u8) -> BytesN<32> {
@@ -57,7 +57,7 @@ fn separate_issuer_can_register_a_tier_three_seal() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #93)")]
 fn admin_cannot_be_granted_issuer_role() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -72,17 +72,20 @@ fn rejected_role_assignment_has_a_bounded_budget() {
     env.cost_estimate().budget().reset_unlimited();
 
     let result = client.try_add_issuer(&admin, &admin, &b32(&env, 0xA1));
-    assert!(result.is_err(), "expected RoleConflict for admin/issuer overlap");
+    assert!(
+        result.is_err(),
+        "expected RoleConflict for admin/issuer overlap"
+    );
 
     let budget = env.cost_estimate().budget();
     assert!(budget.cpu_instruction_cost() <= MAX_CPU_ROLE_CONFLICT);
     assert!(budget.memory_bytes_cost() <= MAX_MEM_ROLE_CONFLICT);
     assert!(!client.is_issuer(&admin));
-    assert_eq!(env.events().all().len(), 0);
+    assert_eq!(env.events().all().events().len(), 0);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #93)")]
 fn active_issuer_cannot_be_proposed_as_admin() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -191,9 +194,12 @@ fn v2_migration_revokes_only_conflicting_authority_and_preserves_stored_evidence
 
     assert_eq!(client.get_schema_version(), SchemaVersion::V1 as u32);
     client.upgrade_storage(&admin);
+    let events = env.events().all();
 
     assert_eq!(client.get_schema_version(), SchemaVersion::V2 as u32);
-    let issuer = client.get_issuer(&admin).expect("issuer metadata must remain");
+    let issuer = client
+        .get_issuer(&admin)
+        .expect("issuer metadata must remain");
     assert!(!issuer.active);
     assert_eq!(issuer.metadata_hash, b32(&env, 0xA1));
     assert_eq!(client.get_proof(&proof_id), Some(legacy_proof));
@@ -201,29 +207,26 @@ fn v2_migration_revokes_only_conflicting_authority_and_preserves_stored_evidence
     assert!(client.is_admin(&admin));
 
     // IssuerRevoked and SchemaUpgraded are emitted, with no media or proof data.
-    let events = env.events().all();
-    assert_eq!(events.len(), 2);
-    let issuer_topic: Symbol = events[0]
-        .1
-        .get(0)
-        .unwrap()
-        .try_into_val(&env)
-        .unwrap();
-    let revoke_topic: Symbol = events[0]
-        .1
-        .get(1)
-        .unwrap()
-        .try_into_val(&env)
-        .unwrap();
-    assert_eq!(issuer_topic, Symbol::new(&env, "issuer"));
-    assert_eq!(revoke_topic, Symbol::new(&env, "revoke"));
-    let upgraded: SchemaUpgraded = events[1].2.clone().try_into_val(&env).unwrap();
-    assert_eq!(upgraded.previous, SchemaVersion::V1 as u32);
-    assert_eq!(upgraded.current, SchemaVersion::V2 as u32);
+    let raw_events = events.events();
+    assert_eq!(raw_events.len(), 2);
+    let revoke_topics = event_test_utils::symbol_topics(&raw_events[0]);
+    assert_eq!(revoke_topics[0].as_str(), "issuer");
+    assert_eq!(revoke_topics[1].as_str(), "revoke");
+    let upgrade_topics = event_test_utils::symbol_topics(&raw_events[1]);
+    assert_eq!(upgrade_topics[0].as_str(), "schema");
+    assert_eq!(upgrade_topics[1].as_str(), "upgrade");
+    assert_eq!(
+        event_test_utils::event_u32_field(&raw_events[1], "previous"),
+        Some(SchemaVersion::V1 as u32)
+    );
+    assert_eq!(
+        event_test_utils::event_u32_field(&raw_events[1], "current"),
+        Some(SchemaVersion::V2 as u32)
+    );
 
     // Migration is idempotent: no repeated revocation or schema event.
     client.upgrade_storage(&admin);
-    assert_eq!(env.events().all().len(), 0);
+    assert_eq!(env.events().all().events().len(), 0);
 }
 
 #[test]
@@ -240,6 +243,7 @@ fn v2_migration_preserves_non_conflicting_issuer_authority() {
     let _ = env.events().all();
 
     client.upgrade_storage(&admin);
+    let events = env.events().all();
 
     assert_eq!(client.get_schema_version(), SchemaVersion::V2 as u32);
     assert!(client.is_issuer(&issuer));
@@ -248,37 +252,21 @@ fn v2_migration_preserves_non_conflicting_issuer_authority() {
         b32(&env, 0xA1)
     );
     // Only SchemaUpgraded is emitted when no authority conflicts.
-    let events = env.events().all();
-    assert_eq!(events.len(), 1);
-    let schema_topic: Symbol = events[0]
-        .1
-        .get(0)
-        .unwrap()
-        .try_into_val(&env)
-        .unwrap();
-    let upgrade_topic: Symbol = events[0]
-        .1
-        .get(1)
-        .unwrap()
-        .try_into_val(&env)
-        .unwrap();
-    assert_eq!(schema_topic, Symbol::new(&env, "schema"));
-    assert_eq!(upgrade_topic, Symbol::new(&env, "upgrade"));
+    let raw_events = events.events();
+    assert_eq!(raw_events.len(), 1);
+    let upgrade_topics = event_test_utils::symbol_topics(&raw_events[0]);
+    assert_eq!(upgrade_topics[0].as_str(), "schema");
+    assert_eq!(upgrade_topics[1].as_str(), "upgrade");
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #93)")]
 fn legacy_admin_issuer_record_cannot_seal_before_migration_runs() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     install_legacy_conflict(&env, &contract_id, &admin);
 
-    client.register_seal(
-        &admin,
-        &b32(&env, 0x41),
-        &b32(&env, 0x42),
-        &b32(&env, 0x43),
-    );
+    client.register_seal(&admin, &b32(&env, 0x41), &b32(&env, 0x42), &b32(&env, 0x43));
 }
 
 // ---------------------------------------------------------------------------
@@ -299,12 +287,14 @@ fn update_issuer_metadata_succeeds_and_emits_event_once() {
     assert!(before.active);
 
     client.update_issuer_metadata(&admin, &issuer, &updated_hash);
+    assert_eq!(
+        event_test_utils::count_events(&env, &["issuer", "metadata"]),
+        1
+    );
 
     let after = client.get_issuer(&issuer).unwrap();
     assert_eq!(after.metadata_hash, updated_hash);
     assert!(after.active); // only metadata hash changes
-
-    assert_eq!(event_test_utils::count_events(&env, &["issuer", "metadata"]), 1);
 }
 
 #[test]
