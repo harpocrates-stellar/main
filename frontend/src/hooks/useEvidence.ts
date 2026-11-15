@@ -302,10 +302,10 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     try {
-      const { getWalletNetwork, CONTRACT_NETWORK_PASSTHRASE } = await import('../stellar')
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('../stellar')
       const { checkNetworkMatch } = await import('../networkGuard')
       const walletPassphrase = await getWalletNetwork()
-      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSTHRASE)
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
@@ -369,7 +369,16 @@ export function useEvidence(): UseEvidenceReturn {
       const result = await registerProofOnStellar({
         contractId: CONTRACT_ID,
         publicKey: wallet,
-        proof: proofForRegistration,
+        tier: proofForRegistration.tier,
+        videoHash: proofForRegistration.videoHash,
+        metadataHash: proofForRegistration.metadataHash,
+        proofId: proofForRegistration.proofId,
+        silentWitness: proofForRegistration.silentWitness
+          ? {
+              publicInputs: proofForRegistration.silentWitness.publicInputs,
+              proof: proofForRegistration.silentWitness.proof,
+            }
+          : undefined,
       })
       pendingPersistenceRef.current = {
         key: registrationKey,
@@ -411,19 +420,21 @@ export function useEvidence(): UseEvidenceReturn {
     setMessage('Generating Silent Witness ZK proof locally.')
 
     try {
-      const silentWitness: SilentWitnessProof = await client.generateProof({
-        requestId,
-        videoHash: baseProof.videoHash,
-        credentialSecret: credentialSeed,
-        nullifierSecret: nullifierSeed,
-        inputSchemaVersion: 1,
-        verifierScope: 'harpocrates',
-        epoch: Math.floor(Date.now() / 86400000),
-        signal: controller.signal,
-        onProgress: () => {
+      const job = client.generate(
+        {
+          videoHash: baseProof.videoHash,
+          credentialSecret: credentialSeed,
+          nullifierSecret: nullifierSeed,
+          inputSchemaVersion: 1,
+          verifierScope: '0',
+          epoch: Math.floor(Date.now() / 86400000),
+        },
+        () => {
           if (seqRef.current !== seq) return
         },
-      })
+        controller.signal,
+      )
+      const silentWitness: SilentWitnessProof = await job.result
       if (seqRef.current !== seq) throw new Error('Stale proof result ignored.')
       return { ...baseProof, silentWitness }
     } catch (error) {

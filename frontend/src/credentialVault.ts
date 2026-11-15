@@ -1,4 +1,10 @@
 import type { SeedPair } from './seedVault'
+import {
+  createBrowserVaultLockTransport,
+  sanitizeVaultLockBroadcastPayload,
+  type VaultLockBroadcastPayload,
+  type VaultLockTransport,
+} from './safeStorage'
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
@@ -10,6 +16,11 @@ export interface VaultEnvelope {
   salt: string // hex
   iv: string // hex
   ct: string // hex (ciphertext)
+}
+
+export interface CredentialVaultOptions {
+  lockTransport?: VaultLockTransport
+  initialSessionGeneration?: number
 }
 
 function bufToHex(buffer: ArrayBuffer): string {
@@ -50,19 +61,37 @@ async function deriveKey(password: string, salt: ArrayBuffer): Promise<CryptoKey
 export class CredentialVault {
   private memoryKey: CryptoKey | null = null
   private seeds: SeedPair | null = null
+  private issuedSeedRefs = new Set<SeedPair>()
   private timeoutId: ReturnType<typeof setTimeout> | null = null
   private inactivityTimeoutMs: number
+  private sessionGeneration: number
+  private lockTransport: VaultLockTransport
+  private unsubscribeLock: (() => void) | null = null
 
-  constructor(inactivityTimeoutMs = DEFAULT_TIMEOUT_MS) {
+  constructor(
+    inactivityTimeoutMs = DEFAULT_TIMEOUT_MS,
+    options: CredentialVaultOptions = {},
+  ) {
     this.inactivityTimeoutMs = inactivityTimeoutMs
+    this.sessionGeneration = options.initialSessionGeneration ?? 0
+    this.lockTransport = options.lockTransport ?? createBrowserVaultLockTransport()
+    this.unsubscribeLock = this.lockTransport.subscribeLock((payload) => {
+      this.handleRemoteLockBroadcast(payload)
+    })
   }
 
   isLocked(): boolean {
     return this.memoryKey === null || this.seeds === null
   }
 
+  getSessionGeneration(): number {
+    return this.sessionGeneration
+  }
+
   getSeeds(): SeedPair | null {
     this.resetTimeout()
+    if (!this.seeds) return null
+    this.issuedSeedRefs.add(this.seeds)
     return this.seeds
   }
 
@@ -95,8 +124,10 @@ export class CredentialVault {
     }
 
     window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
+    this.clearDecryptedReferences()
     this.memoryKey = key
     this.seeds = { credentialSeed: seeds.credentialSeed, nullifierSeed: seeds.nullifierSeed }
+    this.sessionGeneration += 1
     this.resetTimeout()
   }
 
@@ -132,12 +163,14 @@ export class CredentialVault {
 
       const dec = new TextDecoder()
       const seedsRaw = JSON.parse(dec.decode(pt))
-      
+
+      this.clearDecryptedReferences()
       this.memoryKey = key
       this.seeds = {
         credentialSeed: seedsRaw.credentialSeed,
         nullifierSeed: seedsRaw.nullifierSeed,
       }
+      this.sessionGeneration += 1
       this.resetTimeout()
       return true
     } catch {
@@ -146,15 +179,19 @@ export class CredentialVault {
     }
   }
 
+  /**
+   * Explicitly locks the vault in the current tab and broadcasts a non-secret
+   * lock event (`{ type: 'VAULT_EXPLICIT_LOCK', sessionGeneration }`) to clear
+   * decrypted references across all other open tabs.
+   */
   lock(): void {
-    this.memoryKey = null
-    // Zero out references
-    if (this.seeds) {
-      this.seeds.credentialSeed = ''
-      this.seeds.nullifierSeed = ''
-    }
-    this.seeds = null
-    this.clearTimeout()
+    this.clearDecryptedReferences()
+    this.sessionGeneration += 1
+    const payload: VaultLockBroadcastPayload = Object.freeze({
+      type: 'VAULT_EXPLICIT_LOCK',
+      sessionGeneration: this.sessionGeneration,
+    })
+    this.lockTransport.publishLock(payload)
   }
 
   destroy(): void {
@@ -162,11 +199,52 @@ export class CredentialVault {
     window.localStorage.removeItem(VAULT_STORAGE_KEY)
   }
 
+  dispose(): void {
+    if (this.unsubscribeLock) {
+      this.unsubscribeLock()
+      this.unsubscribeLock = null
+    }
+    this.lockTransport.close()
+    this.clearTimeout()
+  }
+
+  private handleRemoteLockBroadcast(rawPayload: VaultLockBroadcastPayload): void {
+    const safePayload = sanitizeVaultLockBroadcastPayload(rawPayload)
+    if (!safePayload) return
+
+    // Reject replayed/stale lock generations older than the active session generation
+    if (safePayload.sessionGeneration < this.sessionGeneration) {
+      return
+    }
+
+    this.sessionGeneration = Math.max(this.sessionGeneration, safePayload.sessionGeneration)
+    this.clearDecryptedReferences()
+  }
+
+  private clearDecryptedReferences(): void {
+    this.memoryKey = null
+    if (this.seeds) {
+      this.seeds.credentialSeed = ''
+      this.seeds.nullifierSeed = ''
+    }
+    for (const ref of this.issuedSeedRefs) {
+      ref.credentialSeed = ''
+      ref.nullifierSeed = ''
+    }
+    this.issuedSeedRefs.clear()
+    this.seeds = null
+    this.clearTimeout()
+  }
+
+  private lockFromInactivityTimeout(): void {
+    this.clearDecryptedReferences()
+  }
+
   private resetTimeout(): void {
     this.clearTimeout()
     if (!this.isLocked() && this.inactivityTimeoutMs > 0) {
       this.timeoutId = setTimeout(() => {
-        this.lock()
+        this.lockFromInactivityTimeout()
       }, this.inactivityTimeoutMs)
     }
   }

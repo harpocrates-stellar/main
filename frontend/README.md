@@ -79,3 +79,11 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Cross-Tab Explicit Lock Propagation
+
+Explicit `CredentialVault.lock()` calls propagate across open browser tabs via
+`createBrowserVaultLockTransport` (`src/safeStorage.ts`, `src/credentialVault.ts`):
+
+- Only the two-field non-secret message `{ type: 'VAULT_EXPLICIT_LOCK', sessionGeneration }` is broadcast (`sanitizeVaultLockBroadcastPayload` rejects any payload with extra or malformed fields).
+- Every receiving tab zeroes its decrypted `SeedPair` references in place, clears its in-memory `CryptoKey`, advances its `sessionGeneration`, and preserves the encrypted `VaultEnvelope` in `localStorage`.
