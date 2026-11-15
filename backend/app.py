@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -122,6 +122,7 @@ from c2pa import (
     C2paParseError,
     C2paTrustStatus,
     corroborate_binding,
+    evaluate_c2pa_assertion_compatibility,
     export_c2pa_manifest,
     parse_c2pa_manifest,
 )
@@ -2424,11 +2425,61 @@ def create_app() -> Flask:
             "hashes_verified": bool(corroboration is not None and corroboration.ok),
             "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
+            "assertion_compatibility": parsed.assertion_compatibility.to_dict(),
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
                 "verification. A matching 'expected' block is integrity "
                 "corroboration only. Corroborate this binding against on-chain "
                 "records before making any trust decision."
+            ),
+        })
+
+    @app.post("/api/c2pa/compatibility")
+    @require_capacity(admission_controller)
+    def c2pa_compatibility():
+        if _enforce_json_size() > config.max_json_bytes:
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+        body = request.get_json(silent=True) or {}
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        if not isinstance(manifest_raw, (dict, str)):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            report = evaluate_c2pa_assertion_compatibility(manifest_raw)
+        except C2paParseError as exc:
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        return ok_response({
+            "compatibility": report.to_dict(),
+            "trust_status": (
+                C2paTrustStatus.SIGNATURE_NOT_CHECKED.value
+                if report.compatible
+                else C2paTrustStatus.PARSE_FAILED.value
+            ),
+            "note": (
+                "Unsupported critical assertions fail closed during C2PA import. "
+                "C2PA trust status remains independent of Harpocrates verification."
             ),
         })
 

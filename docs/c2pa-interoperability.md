@@ -344,13 +344,22 @@ or adversarial manifests are rejected early without deep parsing.
 
 ## Unknown assertions
 
-Assertions whose label is not `harpocrates.binding/v1` are preserved in the
-`unknown_assertions` (backend) / `unknownAssertions` (frontend) list with an
-explicit `unsupported_semantics: true` flag. They do not affect the parsed
-binding and should not be acted upon by callers.
+Assertions whose label is not `harpocrates.binding/v1` are classified by
+criticality via `evaluate_c2pa_assertion_compatibility()` and `POST /api/c2pa/compatibility`:
 
-This allows consuming existing C2PA manifests that carry standard C2PA
-assertions (e.g., `c2pa.actions`, `c2pa.thumbnail`) without rejecting them.
+- `supported`: recognised Harpocrates assertions (`harpocrates.binding/v1`),
+  including when marked critical.
+- `optional_unknown`: non-critical unknown assertions (e.g. `c2pa.actions`,
+  `c2pa.thumbnail`). Preserved in `unknown_assertions` with
+  `unsupported_semantics: true` without affecting the parsed binding.
+- `required_unknown`: unknown assertions marked critical (`critical: true`,
+  `is_critical: true`, `required: true`, or listed in manifest
+  `critical_assertions` / `required_assertions`).
+
+Unsupported critical semantics are strictly **fail-closed**: whenever
+`required_unknown` is non-empty (`compatible: false`), `parse_c2pa_manifest()`
+and `POST /api/c2pa/import` reject the manifest with
+`unsupported_critical_assertion` without echoing assertion data values.
 
 ---
 

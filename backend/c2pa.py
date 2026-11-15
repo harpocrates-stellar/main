@@ -133,9 +133,16 @@ class C2paTrustStatus(str, Enum):
 class C2paParseError(Exception):
     """Raised when manifest parsing fails.  Never leaks raw manifest bytes."""
 
-    def __init__(self, reason: str, field: str | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        field: str | None = None,
+        *,
+        compatibility_report: C2paAssertionCompatibilityReport | None = None,
+    ) -> None:
         self.reason = reason
         self.field = field
+        self.compatibility_report = compatibility_report
         super().__init__(reason if field is None else f"{reason}: {field}")
 
     def to_dict(self) -> dict[str, str | None]:
@@ -161,6 +168,7 @@ class _Reason:
     RECURSION_DETECTED = "recursion_detected"
     EMBEDDED_BINDING_MISMATCH = "embedded_binding_mismatch"
     EMBEDDED_BINDING_DUPLICATE = "embedded_binding_duplicate"
+    UNSUPPORTED_CRITICAL_ASSERTION = "unsupported_critical_assertion"
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +201,25 @@ class C2paUnknownAssertion:
     label: str
     data: Any
     unsupported_semantics: bool = True
+    critical: bool = False
+
+
+@dataclass(frozen=True)
+class C2paAssertionCompatibilityReport:
+    """Compatibility breakdown of manifest assertions by semantic requirement."""
+
+    supported: tuple[str, ...] = ()
+    optional_unknown: tuple[str, ...] = ()
+    required_unknown: tuple[str, ...] = ()
+    compatible: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "supported": list(self.supported),
+            "optional_unknown": list(self.optional_unknown),
+            "required_unknown": list(self.required_unknown),
+            "compatible": self.compatible,
+        }
 
 
 @dataclass
@@ -210,6 +237,9 @@ class C2paParsedManifest:
     binding: C2paHarpocratesBinding
     unknown_assertions: list[C2paUnknownAssertion] = field(default_factory=list)
     trust_status: C2paTrustStatus = C2paTrustStatus.SIGNATURE_NOT_CHECKED
+    assertion_compatibility: C2paAssertionCompatibilityReport = field(
+        default_factory=C2paAssertionCompatibilityReport
+    )
 
 
 @dataclass(frozen=True)
@@ -246,25 +276,47 @@ class C2paHashCorroboration:
 # ---------------------------------------------------------------------------
 
 
-def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
-    """
-    Parse and validate a C2PA-compatible manifest.
+def _extract_manifest_critical_labels(data: dict[str, Any]) -> list[tuple[str, str]]:
+    """Validate optional manifest-level critical assertion label lists."""
+    declared: list[tuple[str, str]] = []
+    for list_key in ("critical_assertions", "required_assertions"):
+        if list_key not in data:
+            continue
+        raw_list = data[list_key]
+        if not isinstance(raw_list, list):
+            raise C2paParseError(_Reason.INVALID_TYPE, list_key)
+        if len(raw_list) > _MAX_ASSERTION_COUNT:
+            raise C2paParseError(_Reason.ASSERTION_COUNT_EXCEEDED, list_key)
+        for idx, item in enumerate(raw_list):
+            if not isinstance(item, str) or not item.strip():
+                raise C2paParseError(_Reason.INVALID_TYPE, f"{list_key}[{idx}]")
+            if len(item) > _MAX_ASSERTION_LABEL_LEN:
+                raise C2paParseError(_Reason.ASSERTION_LABEL_TOO_LONG, f"{list_key}[{idx}]")
+            declared.append((item, f"{list_key}[{idx}]"))
+    return declared
 
-    Applies strict size, depth, algorithm, and resource limits before any
-    semantic processing.  Unknown assertions are preserved in
-    ``C2paParsedManifest.unknown_assertions`` without affecting the binding.
 
-    Args:
-        raw: Raw manifest bytes or string (UTF-8 JSON).
+def _assertion_is_critical(
+    assertion: dict[str, Any],
+    *,
+    idx: int,
+    manifest_critical_set: set[str],
+) -> bool:
+    label = assertion.get("label", "")
+    is_crit = label in manifest_critical_set
+    for flag_key in ("critical", "is_critical", "required"):
+        if flag_key in assertion:
+            flag_val = assertion[flag_key]
+            if not isinstance(flag_val, bool):
+                raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}].{flag_key}")
+            if flag_val:
+                is_crit = True
+    return is_crit
 
-    Returns:
-        A ``C2paParsedManifest`` on success.
 
-    Raises:
-        C2paParseError: On any structural, size, or semantic violation.
-            Error payloads contain only reason codes and field names; no
-            manifest content is included.
-    """
+def _parse_manifest_core(
+    raw: bytes | str,
+) -> tuple[C2paParsedManifest, C2paAssertionCompatibilityReport, str | None]:
     if isinstance(raw, str):
         raw = raw.encode("utf-8")
 
@@ -303,7 +355,10 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
             raise C2paParseError(_Reason.INVALID_TYPE, "spec_version")
         spec_version = sv
 
-    # 8. assertions list.
+    # 8. assertions list and critical-assertion declarations.
+    declared_critical = _extract_manifest_critical_labels(data)
+    manifest_critical_set = {lbl for lbl, _path in declared_critical}
+
     assertions_raw = data["assertions"]
     if not isinstance(assertions_raw, list):
         raise C2paParseError(_Reason.INVALID_TYPE, "assertions")
@@ -312,6 +367,15 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
 
     unknown: list[C2paUnknownAssertion] = []
     assertion_bindings: list[C2paHarpocratesBinding] = []
+    supported_labels: list[str] = []
+    optional_unknown_labels: list[str] = []
+    required_unknown_labels: list[str] = []
+    first_critical_field: str | None = None
+
+    def _append_unique(target: list[str], value: str) -> None:
+        if value not in target:
+            target.append(value)
+
     for idx, assertion in enumerate(assertions_raw):
         if not isinstance(assertion, dict):
             raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}]")
@@ -320,6 +384,11 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
             raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}].label")
         if len(label) > _MAX_ASSERTION_LABEL_LEN:
             raise C2paParseError(_Reason.ASSERTION_LABEL_TOO_LONG, f"assertions[{idx}].label")
+        is_crit = _assertion_is_critical(
+            assertion,
+            idx=idx,
+            manifest_critical_set=manifest_critical_set,
+        )
         # Measure assertion data size.
         try:
             assertion_bytes = json.dumps(assertion, separators=(",", ":")).encode("utf-8")
@@ -334,15 +403,33 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
             assertion_bindings.append(
                 _parse_binding(assertion.get("data"), prefix=f"assertions[{idx}].data")
             )
+            _append_unique(supported_labels, label)
             continue
+
+        if is_crit:
+            _append_unique(required_unknown_labels, label)
+            if first_critical_field is None:
+                first_critical_field = f"assertions[{idx}]"
+        else:
+            _append_unique(optional_unknown_labels, label)
+
         # Preserve unknown assertions.
         unknown.append(
             C2paUnknownAssertion(
                 label=label,
                 data=assertion.get("data"),
                 unsupported_semantics=True,
+                critical=is_crit,
             )
         )
+
+    for lbl, field_path in declared_critical:
+        if lbl == _MAPPING_LABEL:
+            _append_unique(supported_labels, lbl)
+        else:
+            _append_unique(required_unknown_labels, lbl)
+            if first_critical_field is None:
+                first_critical_field = field_path
 
     # 9. algorithm check (optional field; only SHA-256 supported).
     if "alg" in data:
@@ -364,13 +451,58 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
     if assertion_bindings:
         _require_consistent_embedded_binding(binding, assertion_bindings[0])
 
-    return C2paParsedManifest(
+    compatibility_report = C2paAssertionCompatibilityReport(
+        supported=tuple(supported_labels),
+        optional_unknown=tuple(optional_unknown_labels),
+        required_unknown=tuple(required_unknown_labels),
+        compatible=len(required_unknown_labels) == 0,
+    )
+
+    parsed = C2paParsedManifest(
         claim_generator=claim_generator.strip(),
         spec_version=spec_version,
         binding=binding,
         unknown_assertions=unknown,
         trust_status=C2paTrustStatus.SIGNATURE_NOT_CHECKED,
+        assertion_compatibility=compatibility_report,
     )
+    return parsed, compatibility_report, first_critical_field
+
+
+def evaluate_c2pa_assertion_compatibility(
+    raw: bytes | str | dict[str, Any],
+) -> C2paAssertionCompatibilityReport:
+    """Evaluate C2PA assertion compatibility into supported, optional, and required unknown sets."""
+    if isinstance(raw, dict):
+        try:
+            encoded: bytes | str = json.dumps(raw, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError):
+            raise C2paParseError(_Reason.INVALID_TYPE, "manifest")
+    else:
+        encoded = raw
+
+    _parsed, report, _first_field = _parse_manifest_core(encoded)
+    return report
+
+
+def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
+    """
+    Parse and validate a C2PA-compatible manifest.
+
+    Applies strict size, depth, algorithm, and resource limits before any
+    semantic processing.  Optional unknown assertions are preserved in
+    ``C2paParsedManifest.unknown_assertions`` without affecting the binding,
+    while unsupported critical/required assertions fail closed with
+    ``C2paParseError("unsupported_critical_assertion", ...)``.
+    """
+    parsed, report, first_critical_field = _parse_manifest_core(raw)
+    if not report.compatible:
+        raise C2paParseError(
+            _Reason.UNSUPPORTED_CRITICAL_ASSERTION,
+            first_critical_field,
+            compatibility_report=report,
+        )
+    return parsed
 
 
 def export_c2pa_manifest(

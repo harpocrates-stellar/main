@@ -153,3 +153,21 @@ def _contains_in_ancestry(
 
 def _is_hex_32(value: str) -> bool:
     return len(value) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in value)
+
+
+def validate_lineage_c2pa_compatibility(
+    raw_c2pa_manifest: bytes | str | dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate C2PA critical-assertion compatibility for lineage evidence, failing closed."""
+    from c2pa import C2paParseError, evaluate_c2pa_assertion_compatibility
+
+    try:
+        report = evaluate_c2pa_assertion_compatibility(raw_c2pa_manifest)
+    except C2paParseError as exc:
+        raise LineageValidationError(f"C2PA manifest invalid: {exc.reason}") from exc
+
+    if not report.compatible:
+        raise LineageValidationError(
+            "unsupported critical C2PA assertion semantics in lineage manifest"
+        )
+    return report.to_dict()
