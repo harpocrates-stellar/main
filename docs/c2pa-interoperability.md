@@ -236,10 +236,35 @@ ignored:
   "hashes_verified":     true,
   "hashes_compared":     ["video_hash", "metadata_hash", "proof_id", "tier", "network", "contract_id"],
   "unknown_assertions":  [{ "label": "c2pa.actions", "unsupported_semantics": true }],
+  "privacy_summary": {
+    "has_source_location": false,
+    "has_identifying_metadata": false,
+    "flagged_categories": [],
+    "asserted_digests": ["..."]
+  },
   "note":                "Corroborate this binding against on-chain records before trusting it.",
   "request_id":          "uuid"
 }
 ```
+
+### Privacy-sensitive ingredient flags
+
+`C2paParsedManifest.privacy_summary` (and `summarize_c2pa_manifest()` /
+`POST /api/c2pa/import` `privacy_summary`) inspects manifest `ingredients` and
+assertions (`c2pa.ingredient*`, `stds.exif`, etc.) to flag:
+
+- `has_source_location`: `true` when GPS/location fields (`gps`, `latitude`,
+  `longitude`, `source_location`, `geo:`) or source locator URIs (`source_uri`,
+  `file://`, `s3://`, `gs://`) are present (`flagged_categories`:
+  `source_location`, `source_uri`).
+- `has_identifying_metadata`: `true` when creator identities (`dc:creator`,
+  `author`, `email`), device serials (`serial_number`, `body_serial_number`,
+  `device_id`), or upload/ingredient filenames (`filename`, `title` inside
+  ingredient blocks) are present (`flagged_categories`: `creator_identity`,
+  `device_identifier`, `local_filename`).
+- `asserted_digests`: sorted 32-byte lower-case hex digests asserted in bindings
+  and ingredients. Raw private values (coordinates, creator names, serials,
+  filenames, URIs) are never echoed in the summary.
 
 `hashes_verified` is `true` only when `expected` was supplied and every supplied
 field matched; without `expected` it is `false` and `hashes_compared` is `[]`.

@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2424,6 +2424,7 @@ def create_app() -> Flask:
             "hashes_verified": bool(corroboration is not None and corroboration.ok),
             "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
+            "privacy_summary": parsed.privacy_summary.to_dict(),
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
                 "verification. A matching 'expected' block is integrity "

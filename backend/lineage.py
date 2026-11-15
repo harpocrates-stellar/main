@@ -153,3 +153,17 @@ def _contains_in_ancestry(
 
 def _is_hex_32(value: str) -> bool:
     return len(value) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in value)
+
+
+def summarize_lineage_ingredient_privacy(raw_c2pa_manifest: bytes | str | dict[str, Any]) -> dict[str, Any]:
+    """Parse a C2PA manifest and return its privacy-safe ingredient flag summary."""
+    from c2pa import parse_c2pa_manifest, summarize_c2pa_manifest
+
+    if isinstance(raw_c2pa_manifest, dict):
+        encoded: bytes | str = json.dumps(
+            raw_c2pa_manifest, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    else:
+        encoded = raw_c2pa_manifest
+    parsed = parse_c2pa_manifest(encoded)
+    return summarize_c2pa_manifest(parsed)

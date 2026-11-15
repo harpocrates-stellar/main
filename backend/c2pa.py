@@ -90,6 +90,103 @@ _BINDING_TEXT_FIELDS: tuple[str, ...] = ("tier", "network", "contract_id")
 # Hex-32 pattern (64 lower-case hex chars).
 _HEX32_RE = re.compile(r"^[0-9a-f]{64}$")
 
+_PRIVACY_LOCATION_KEYS: frozenset[str] = frozenset(
+    {
+        "gps",
+        "gpslatitude",
+        "gpslongitude",
+        "gpsaltitude",
+        "gpscoordinates",
+        "exifgpslatitude",
+        "exifgpslongitude",
+        "exifgpsaltitude",
+        "latitude",
+        "longitude",
+        "lat",
+        "lon",
+        "lng",
+        "location",
+        "sourcelocation",
+        "capturelocation",
+        "contentlocation",
+        "locationcreated",
+        "geotag",
+        "coordinates",
+    }
+)
+
+_PRIVACY_SOURCE_URI_KEYS: frozenset[str] = frozenset(
+    {
+        "sourceuri",
+        "remoteurl",
+        "manifesturl",
+        "locator",
+        "dcsource",
+    }
+)
+
+_PRIVACY_CREATOR_KEYS: frozenset[str] = frozenset(
+    {
+        "author",
+        "creator",
+        "dccreator",
+        "copyright",
+        "dcrights",
+        "credit",
+        "artist",
+        "owner",
+        "username",
+        "email",
+        "contributor",
+    }
+)
+
+_PRIVACY_DEVICE_KEYS: frozenset[str] = frozenset(
+    {
+        "serialnumber",
+        "deviceserial",
+        "cameraserial",
+        "bodyserialnumber",
+        "lensserialnumber",
+        "exifbodyserialnumber",
+        "exiflensserialnumber",
+        "deviceid",
+        "hardwareid",
+        "imei",
+        "udid",
+        "macaddress",
+    }
+)
+
+_PRIVACY_FILENAME_KEYS: frozenset[str] = frozenset(
+    {
+        "filename",
+        "uploadfilename",
+        "originalfilename",
+        "filepath",
+        "inputpath",
+        "outputpath",
+        "localpath",
+        "sourcepath",
+        "title",
+    }
+)
+
+_ASSERTED_DIGEST_KEYS: frozenset[str] = frozenset(
+    {
+        "hash",
+        "digest",
+        "assethash",
+        "ingredientdigest",
+        "manifestdigest",
+        "videohash",
+        "metadatahash",
+        "proofid",
+        "outputdigest",
+        "parametersdigest",
+    }
+)
+
 # ---------------------------------------------------------------------------
 # Trust status — MUST be kept separate from on-chain / ZK status
 # ---------------------------------------------------------------------------
@@ -195,6 +292,28 @@ class C2paUnknownAssertion:
     unsupported_semantics: bool = True
 
 
+@dataclass(frozen=True)
+class C2paPrivacySummary:
+    """Privacy-safe summary of location and identifying ingredient metadata flags.
+
+    Preserves canonical 32-byte hex digests asserted in the manifest while never
+    including raw coordinates, URIs, creator names, device serials, or filenames.
+    """
+
+    has_source_location: bool = False
+    has_identifying_metadata: bool = False
+    flagged_categories: tuple[str, ...] = ()
+    asserted_digests: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "has_source_location": self.has_source_location,
+            "has_identifying_metadata": self.has_identifying_metadata,
+            "flagged_categories": list(self.flagged_categories),
+            "asserted_digests": list(self.asserted_digests),
+        }
+
+
 @dataclass
 class C2paParsedManifest:
     """
@@ -210,6 +329,7 @@ class C2paParsedManifest:
     binding: C2paHarpocratesBinding
     unknown_assertions: list[C2paUnknownAssertion] = field(default_factory=list)
     trust_status: C2paTrustStatus = C2paTrustStatus.SIGNATURE_NOT_CHECKED
+    privacy_summary: C2paPrivacySummary = field(default_factory=C2paPrivacySummary)
 
 
 @dataclass(frozen=True)
@@ -364,12 +484,22 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
     if assertion_bindings:
         _require_consistent_embedded_binding(binding, assertion_bindings[0])
 
+    if "ingredients" in data:
+        ingredients_raw = data["ingredients"]
+        if not isinstance(ingredients_raw, list):
+            raise C2paParseError(_Reason.INVALID_TYPE, "ingredients")
+        if len(ingredients_raw) > _MAX_ASSERTION_COUNT:
+            raise C2paParseError(_Reason.ASSERTION_COUNT_EXCEEDED, "ingredients")
+
+    privacy_summary = inspect_c2pa_privacy_flags(data, binding=binding)
+
     return C2paParsedManifest(
         claim_generator=claim_generator.strip(),
         spec_version=spec_version,
         binding=binding,
         unknown_assertions=unknown,
         trust_status=C2paTrustStatus.SIGNATURE_NOT_CHECKED,
+        privacy_summary=privacy_summary,
     )
 
 
@@ -555,6 +685,146 @@ def corroborate_binding(
         compared_fields=tuple(compared),
         mismatches=tuple(mismatches),
     )
+
+
+def _has_meaningful_value(val: Any) -> bool:
+    if val is None or val is False:
+        return False
+    if isinstance(val, str):
+        return bool(val.strip())
+    if isinstance(val, (list, dict)):
+        return len(val) > 0
+    return True
+
+
+def _normalize_privacy_key(raw_key: str) -> str:
+    return re.sub(r"[_\-:\s]+", "", raw_key.strip().lower())
+
+
+def inspect_c2pa_privacy_flags(
+    manifest_data: dict[str, Any],
+    *,
+    binding: C2paHarpocratesBinding | None = None,
+) -> C2paPrivacySummary:
+    """Inspect a C2PA manifest and its ingredients for privacy-sensitive metadata.
+
+    Exposes boolean flags, category labels, and asserted 32-byte hex digests only;
+    raw private field values are never included in the returned summary.
+    """
+    categories: set[str] = set()
+    digests: set[str] = set()
+
+    if binding is not None:
+        digests.add(binding.video_hash)
+        digests.add(binding.metadata_hash)
+        digests.add(binding.proof_id)
+
+    def _scan(node: Any, *, in_ingredient_scope: bool = False) -> None:
+        if isinstance(node, dict):
+            for raw_k, raw_v in node.items():
+                if not isinstance(raw_k, str):
+                    continue
+                norm_k = _normalize_privacy_key(raw_k)
+
+                if norm_k in _ASSERTED_DIGEST_KEYS and isinstance(raw_v, str):
+                    lowered = raw_v.strip().lower()
+                    if _HEX32_RE.match(lowered):
+                        digests.add(lowered)
+
+                if _has_meaningful_value(raw_v):
+                    if norm_k in _PRIVACY_LOCATION_KEYS:
+                        categories.add("source_location")
+                    elif norm_k in _PRIVACY_SOURCE_URI_KEYS:
+                        categories.add("source_uri")
+                    elif norm_k in _PRIVACY_CREATOR_KEYS:
+                        categories.add("creator_identity")
+                    elif norm_k in _PRIVACY_DEVICE_KEYS:
+                        categories.add("device_identifier")
+                    elif norm_k in _PRIVACY_FILENAME_KEYS and (
+                        in_ingredient_scope or norm_k != "title"
+                    ):
+                        categories.add("local_filename")
+
+                if isinstance(raw_v, str):
+                    val_lower = raw_v.strip().lower()
+                    if val_lower.startswith("geo:"):
+                        categories.add("source_location")
+                    elif val_lower.startswith(("file://", "s3://", "gs://")):
+                        categories.add("source_uri")
+
+                child_in_ingredient = in_ingredient_scope or norm_k in (
+                    "ingredients",
+                    "ingredient",
+                )
+                _scan(raw_v, in_ingredient_scope=child_in_ingredient)
+        elif isinstance(node, list):
+            for entry in node:
+                _scan(entry, in_ingredient_scope=in_ingredient_scope)
+
+    ingredients_list = manifest_data.get("ingredients")
+    if isinstance(ingredients_list, list):
+        _scan(ingredients_list, in_ingredient_scope=True)
+
+    assertions_list = manifest_data.get("assertions")
+    if isinstance(assertions_list, list):
+        for assertion in assertions_list:
+            if not isinstance(assertion, dict):
+                continue
+            label = assertion.get("label", "")
+            if label == _MAPPING_LABEL:
+                continue
+            label_lower = label.lower() if isinstance(label, str) else ""
+            is_ing_assertion = "ingredient" in label_lower
+            if "gps" in label_lower or "location" in label_lower:
+                if _has_meaningful_value(assertion.get("data")):
+                    categories.add("source_location")
+            _scan(assertion.get("data"), in_ingredient_scope=is_ing_assertion)
+
+    top_binding = manifest_data.get("harpocrates_binding")
+    if isinstance(top_binding, dict):
+        _scan(top_binding, in_ingredient_scope=False)
+
+    has_location = bool(categories & {"source_location", "source_uri"})
+    has_identifying = bool(
+        categories & {"creator_identity", "device_identifier", "local_filename"}
+    )
+
+    return C2paPrivacySummary(
+        has_source_location=has_location,
+        has_identifying_metadata=has_identifying,
+        flagged_categories=tuple(sorted(categories)),
+        asserted_digests=tuple(sorted(digests)),
+    )
+
+
+def summarize_c2pa_manifest(parsed: C2paParsedManifest) -> dict[str, Any]:
+    """Build a privacy-safe summary for a parsed C2PA manifest.
+
+    Preserves asserted digests, binding hashes, unknown assertion labels, and
+    privacy flags while omitting raw unknown assertion data and private values.
+    """
+    return {
+        "claim_generator": parsed.claim_generator,
+        "spec_version": parsed.spec_version,
+        "trust_status": parsed.trust_status.value,
+        "binding": {
+            "mapping_version": parsed.binding.mapping_version,
+            "video_hash": parsed.binding.video_hash,
+            "metadata_hash": parsed.binding.metadata_hash,
+            "proof_id": parsed.binding.proof_id,
+            "tier": parsed.binding.tier,
+            "network": parsed.binding.network,
+            "contract_id": parsed.binding.contract_id,
+        },
+        "unknown_assertions": [
+            {
+                "label": ua.label,
+                "unsupported_semantics": ua.unsupported_semantics,
+            }
+            for ua in parsed.unknown_assertions
+        ],
+        "privacy_summary": parsed.privacy_summary.to_dict(),
+    }
 
 
 # ---------------------------------------------------------------------------
