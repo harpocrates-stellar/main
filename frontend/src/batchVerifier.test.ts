@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
+import { CheckpointStorage } from './lib/checkpointStorage'
 import {
+  BatchCheckpointError,
   BatchVerifier,
   computeChunkedSha256,
+  createBatchCheckpoint,
+  loadBatchCheckpointFromStorage,
+  saveBatchCheckpointToStorage,
   tryParseManifest,
+  validateBatchCheckpoint,
   type BatchConfig,
+  type BatchVerificationCheckpoint,
 } from './batchVerifier'
 
 describe('batchVerifier', () => {
@@ -178,6 +185,159 @@ describe('batchVerifier', () => {
       const { items } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+    })
+
+    it('persists only non-secret fingerprints and completed results in checkpoints and resumes without re-hashing completed items', async () => {
+      const manifestOne = JSON.stringify({
+        protocol: 'harpocrates',
+        version: 1,
+        proofId: 'aa'.repeat(32),
+        tier: 'silent',
+        network: 'testnet',
+        contractId: '',
+        transactionRef: 'tx1',
+        videoHash: 'aa'.repeat(32),
+        metadataHash: 'bb'.repeat(32),
+        sourceHash: 'aa'.repeat(32),
+        timestamp: '2026-01-01T00:00:00.000Z',
+        verifierScope: '0',
+        epoch: 0,
+      })
+
+      const fileCompleted = new File([manifestOne], '/private/user/path/completed_receipt.json', {
+        type: 'application/json',
+        lastModified: 1700001000,
+      })
+      const filePending = new File(['synthetic-video-payload-two'], '/private/user/path/pending_clip.mp4', {
+        type: 'video/mp4',
+        lastModified: 1700002000,
+      })
+      const fileDuplicateOfPending = new File(['synthetic-video-payload-two'], '/private/user/path/dup_clip.mp4', {
+        type: 'video/mp4',
+        lastModified: 1700003000,
+      })
+
+      const baseConfig: Partial<BatchConfig> = {
+        maxConcurrency: 1,
+        maxFileSizeBytes: 10 * 1024 * 1024,
+        maxTotalSizeBytes: 50 * 1024 * 1024,
+        apiBase: 'http://127.0.0.1:5050/',
+        contractId: 'CTESTCONTRACT123',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        wallet: 'GSECRETWALLETADDRESS',
+      }
+
+      const verifier = new BatchVerifier(baseConfig)
+
+      // First run: let item 0 (manifest) finish, then cancel when item 1 starts hashing
+      await verifier.runBatch([fileCompleted, filePending, fileDuplicateOfPending], (_prog, snapshot) => {
+        if (snapshot[0]?.status === 'manifest-valid' && snapshot[1]?.status === 'hashing') {
+          verifier.cancel()
+        }
+      })
+
+      const checkpoint = verifier.createCheckpoint([fileCompleted, filePending, fileDuplicateOfPending])
+      const serialized = JSON.stringify(checkpoint)
+
+      // Privacy invariants: zero raw paths, zero media bytes, zero wallet secrets, and only completed entries saved
+      expect(serialized).not.toContain('/private/user/path')
+      expect(serialized).not.toContain('completed_receipt.json')
+      expect(serialized).not.toContain('pending_clip.mp4')
+      expect(serialized).not.toContain('synthetic-video-payload-two')
+      expect(serialized).not.toContain('GSECRETWALLETADDRESS')
+      expect(checkpoint.inputFingerprints).toHaveLength(3)
+      expect(checkpoint.completedEntries).toHaveLength(1)
+      expect(checkpoint.completedEntries[0].inputIndex).toBe(0)
+      expect(checkpoint.completedEntries[0].status).toBe('manifest-valid')
+
+      // Storage round-trip check
+      const memStorage = new CheckpointStorage<BatchVerificationCheckpoint>()
+      expect(saveBatchCheckpointToStorage(checkpoint, memStorage)).toBe(true)
+      expect(loadBatchCheckpointFromStorage(memStorage)).toEqual(checkpoint)
+
+      // Resume batch: item 0 must NOT have .text() called again; items 1 & 2 finish cleanly
+      const textSpy = vi.spyOn(fileCompleted, 'text')
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((url: string) => {
+          if (url.includes('/api/stego/extract')) {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({ metadata: { protocol: 'harpocrates' } }),
+            })
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ events: [] }) })
+        }),
+      )
+
+      const resumedVerifier = new BatchVerifier(baseConfig)
+      const resumed = await resumedVerifier.resumeBatch(
+        [fileCompleted, filePending, fileDuplicateOfPending],
+        serialized,
+      )
+
+      expect(resumed.resumedCount).toBe(1)
+      expect(textSpy).not.toHaveBeenCalled()
+      expect(resumed.items[0].status).toBe('manifest-valid')
+      expect(resumed.items[1].status).not.toBe('cancelled')
+      expect(resumed.items[2].status).toBe('duplicate')
+      expect(resumed.items[2].duplicateOf).toBe('/private/user/path/pending_clip.mp4')
+
+      textSpy.mockRestore()
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects checkpoint resume fail-closed when files, policy, or network context no longer match', async () => {
+      const f1 = new File(['alpha'], 'a.mp4', { type: 'video/mp4', lastModified: 100 })
+      const f2 = new File(['beta'], 'b.mp4', { type: 'video/mp4', lastModified: 200 })
+
+      const cfg: Partial<BatchConfig> = {
+        maxFileSizeBytes: 5_000_000,
+        maxTotalSizeBytes: 20_000_000,
+        apiBase: 'http://127.0.0.1:5050',
+        contractId: 'CREGISTRY_A',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      }
+
+      const checkpoint = createBatchCheckpoint([f1, f2], [], cfg)
+
+      // Reordered files -> files_mismatch
+      expect(() => validateBatchCheckpoint(checkpoint, [f2, f1], cfg)).toThrowError(BatchCheckpointError)
+      try {
+        validateBatchCheckpoint(checkpoint, [f2, f1], cfg)
+      } catch (err) {
+        expect((err as BatchCheckpointError).code).toBe('files_mismatch')
+      }
+
+      // Modified file bytes/size -> files_mismatch
+      const f1Modified = new File(['alpha-tampered'], 'a.mp4', { type: 'video/mp4', lastModified: 100 })
+      expect(() => validateBatchCheckpoint(checkpoint, [f1Modified, f2], cfg)).toThrow(/Selected input at index 0/)
+
+      // Policy mismatch -> policy_mismatch
+      try {
+        validateBatchCheckpoint(checkpoint, [f1, f2], { ...cfg, maxFileSizeBytes: 1_000_000 })
+        throw new Error('expected policy_mismatch')
+      } catch (err) {
+        expect((err as BatchCheckpointError).code).toBe('policy_mismatch')
+      }
+
+      // Network / contract / passphrase mismatch -> network_mismatch
+      for (const badNet of [
+        { ...cfg, apiBase: 'https://other-api.example' },
+        { ...cfg, contractId: 'CREGISTRY_B' },
+        { ...cfg, networkPassphrase: 'Public Global Stellar Network ; September 2015' },
+      ]) {
+        const verifier = new BatchVerifier(badNet)
+        await expect(verifier.resumeBatch([f1, f2], checkpoint)).rejects.toMatchObject({
+          code: 'network_mismatch',
+        })
+      }
+
+      // Malformed / unsupported version
+      expect(() => validateBatchCheckpoint('{bad-json', [f1, f2], cfg)).toThrowError(BatchCheckpointError)
+      expect(() =>
+        validateBatchCheckpoint({ ...checkpoint, version: 99 }, [f1, f2], cfg),
+      ).toThrow(/Unsupported batch checkpoint version/)
     })
   })
 })

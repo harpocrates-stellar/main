@@ -18,13 +18,21 @@ import {
   XCircle,
 } from 'lucide-react'
 import {
+  BatchCheckpointError,
   BatchVerifier,
+  loadBatchCheckpointFromStorage,
+  saveBatchCheckpointToStorage,
   type BatchItemResult,
   type BatchOutcome,
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  exportBatchCheckpointJSON,
+  exportBatchCSV,
+  exportBatchJSON,
+  exportReceiptCollection,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -55,6 +63,8 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
 
   // Ref for programmatic keyboard-triggered file picker
   const batchInputRef = useRef<HTMLInputElement | null>(null)
+  const checkpointInputRef = useRef<HTMLInputElement | null>(null)
+  const [checkpointError, setCheckpointError] = useState<string | null>(null)
 
   const handleFilesAdded = (files: FileList | File[]) => {
     const fileArray = Array.from(files)
@@ -215,6 +225,63 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+
+  const currentBatchConfig = () => ({
+    maxConcurrency: concurrency,
+    maxFileSizeBytes: maxFileMb * 1024 * 1024,
+    maxTotalSizeBytes: maxTotalMb * 1024 * 1024,
+    apiBase,
+    contractId,
+    wallet,
+  })
+
+  const saveCheckpoint = () => {
+    if (items.length === 0) return
+    const files = items.map((i) => i.file)
+    const cfg = currentBatchConfig()
+    verifier.updateConfig(cfg)
+    const checkpointJson = exportBatchCheckpointJSON(files, items, cfg)
+    if (typeof verifier.createCheckpoint === 'function') {
+      saveBatchCheckpointToStorage(verifier.createCheckpoint(files))
+    }
+    setCheckpointError(null)
+    triggerDownload(checkpointJson, 'harpocrates-batch-checkpoint.json', 'application/json')
+  }
+
+  const resumeFromCheckpointPayload = async (payload: string | unknown) => {
+    if (items.length === 0 || isRunning) return
+    if (typeof verifier.resumeBatch !== 'function') return
+    const files = items.map((i) => i.file)
+    verifier.updateConfig(currentBatchConfig())
+    setIsRunning(true)
+    try {
+      setCheckpointError(null)
+      const res = await verifier.resumeBatch(
+        files,
+        payload as string,
+        (prog, currentItems) => {
+          setProgress(prog)
+          setItems(currentItems)
+        },
+      )
+      setSummary(res.summary)
+    } catch (err) {
+      setCheckpointError(
+        err instanceof BatchCheckpointError ? err.message : 'Checkpoint validation failed.',
+      )
+    } finally {
+      setIsRunning(false)
+    }
+  }
+
+  const resumeStoredCheckpoint = () => {
+    const saved = loadBatchCheckpointFromStorage()
+    if (!saved) {
+      setCheckpointError('No saved batch checkpoint found in browser storage.')
+      return
+    }
+    void resumeFromCheckpointPayload(saved)
+  }
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
@@ -399,7 +466,47 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 <FileCheck size={16} aria-hidden="true" />
                 <span>Receipts</span>
               </button>
+              <button
+                className="icon-button secondary"
+                type="button"
+                onClick={saveCheckpoint}
+                disabled={items.length === 0 || isRunning}
+                title="Save Non-Secret Batch Checkpoint"
+              >
+                <Download size={16} aria-hidden="true" />
+                <span>Save Checkpoint</span>
+              </button>
+              <input
+                ref={checkpointInputRef}
+                id="batch-checkpoint-file-input"
+                type="file"
+                accept=".json,application/json"
+                aria-label="Import batch verification checkpoint JSON"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) {
+                    void file.text().then((txt) => resumeFromCheckpointPayload(txt))
+                  }
+                  e.target.value = ''
+                }}
+              />
+              <button
+                className="icon-button secondary"
+                type="button"
+                onClick={resumeStoredCheckpoint}
+                disabled={items.length === 0 || isRunning}
+                title="Resume Batch From Saved Checkpoint"
+              >
+                <RefreshCw size={16} aria-hidden="true" />
+                <span>Resume Checkpoint</span>
+              </button>
             </div>
+            {checkpointError ? (
+              <p role="alert" className="batch-error-banner">
+                {checkpointError}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </section>

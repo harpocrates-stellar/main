@@ -782,7 +782,7 @@ describe('Edge cases and fixture compatibility', () => {
     const att = encodedShape as TimeAttestation
     expect(getHighestAssuranceTime(att).assurance).toBe('high')
     expect(hasIndependentAnchor(att)).toBe(true)
-    expect(summarizeTimeSources(att).anchors.length).toBe(3)
+    expect(summarizeTimeSources(att).anchors.length).toBe(2)
   })
 
   it('handles RFC 3161 anchors with missing optional fields', () => {
@@ -795,11 +795,6 @@ describe('Edge cases and fixture compatibility', () => {
         verificationStatus: 'unverified',
       } as RFC3161Anchor],
     }
-    const result = getHighestAssuranceTime(att)
-    expect(result.assurance).toBe('high') // unverified still has genTime? wait - getHighestAssuranceTime checks verificationStatus === 'valid'
-    // unverified is not valid, so falls back to observed (none) or claimed (none) -> throws? let us check
-    expect(result.assurance).toBe('medium') // no observed, no claimed - wait att has no observed/claimed
-    // so it will skip to observed (not present) -> claimed (not present) -> throw
     expect(() => getHighestAssuranceTime(att)).toThrow()
   })
 

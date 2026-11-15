@@ -69,11 +69,40 @@ function envelopeXdrContainsContractId(xdrBytes: Uint8Array, contractId: string)
   return bytesHex.includes(hex)
 }
 
+function enumKey(val: unknown): unknown {
+  if (val && typeof val === 'object') {
+    const rec = val as { name?: unknown; value?: unknown }
+    if (typeof rec.value === 'function') return (rec as { value: () => unknown }).value()
+    if (rec.name !== undefined) return rec.name
+    if (rec.value !== undefined) return rec.value
+  }
+  return val
+}
+
 function tryParseEnvelope(envelope: xdr.TransactionEnvelope): { operationCount: number } | null {
   try {
-    if (envelope.switch() !== xdr.EnvelopeType.envelopeTypeTx()) return null
-    const tx = (envelope as unknown as { tx(): xdr.Transaction }).tx()
-    return { operationCount: tx.operations().length }
+    const rawEnv = envelope as unknown as {
+      switch?: () => unknown
+      tx?: () => unknown
+      v1?: () => { tx?: () => unknown }
+    }
+    const rawEnvelopeType = xdr.EnvelopeType as unknown as {
+      envelopeTypeTx: (() => unknown) | unknown
+    }
+    const expectedSwitch =
+      typeof rawEnvelopeType.envelopeTypeTx === 'function'
+        ? rawEnvelopeType.envelopeTypeTx()
+        : rawEnvelopeType.envelopeTypeTx
+    const actualSwitch = rawEnv.switch?.()
+    if (enumKey(actualSwitch) !== enumKey(expectedSwitch)) return null
+
+    const txObj = (rawEnv.tx ? rawEnv.tx() : rawEnv.v1?.().tx?.()) as
+      | { operations?: (() => unknown[]) | unknown[] }
+      | undefined
+    if (!txObj) return null
+    const ops = typeof txObj.operations === 'function' ? txObj.operations() : txObj.operations
+    if (!Array.isArray(ops)) return null
+    return { operationCount: ops.length }
   } catch {
     return null
   }
