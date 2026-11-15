@@ -301,6 +301,7 @@ DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
 VERIFIER_CACHE_NEGATIVE_TTL_SECONDS=300.0
+STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
 ```
 
 Production notes:
@@ -341,6 +342,21 @@ Bump `CACHE_KEY_DOMAIN_TAG` (e.g. to `...:v2`) whenever the key field layout
 changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
+
+## Transaction Network Binding Mismatches
+
+`tx_verification.py`, `registration_reconcile.py`, and `chain_indexer.py`
+validate transaction and event network identity against the configured Stellar
+network (`STELLAR_NETWORK_PASSPHRASE` or `RELEASE_NETWORK`):
+
+- **Distinct Wrong-Network Classification:** Transactions or contract events
+  observed on a different Stellar network resolve to status `network_mismatch`
+  with `reason="network_binding_mismatch"`, `failureKind="wrong_network"`,
+  `expectedNetwork`, and `observedNetwork`, keeping wrong-network evidence
+  separate from malformed proof/hash inputs (`failureKind="malformed_proof_data"`).
+- **Non-Retryable Terminal Resolution:** `network_mismatch` is included in
+  `TERMINAL_STATUSES`, persisted by `update_tx_status`, and memoized in a
+  bounded cache so incompatible transactions are never retried indefinitely.
 
 ## Test
 

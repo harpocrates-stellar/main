@@ -1058,8 +1058,10 @@ def update_tx_status(tx_hash: str, status: str, *, force: bool = False) -> bool:
         return False
     if not isinstance(tx_hash, str) or not tx_hash.strip():
         return False
-    if status not in {"pending", "confirmed", "failed", "missing"}:
-        raise ValueError("tx status must be pending, confirmed, failed, or missing")
+    if status not in {"pending", "confirmed", "failed", "missing", "network_mismatch"}:
+        raise ValueError(
+            "tx status must be pending, confirmed, failed, missing, or network_mismatch"
+        )
 
     with get_connection() as connection:
         with connection.cursor() as cursor:

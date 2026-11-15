@@ -90,6 +90,13 @@ def _result_payload(
         payload["proofId"] = proof_id
     if event_id is not None:
         payload["eventId"] = event_id
+    if verification.failure_kind is not None:
+        payload["failureKind"] = verification.failure_kind
+    if verification.expected_network is not None:
+        payload["expectedNetwork"] = verification.expected_network
+    if verification.observed_network is not None:
+        payload["observedNetwork"] = verification.observed_network
+    payload["retryable"] = bool(verification.retryable)
     return payload
 
 
@@ -101,11 +108,13 @@ def reconcile_registration(
     event_id: int | None = None,
     min_confirmations: int | None = None,
     force: bool = False,
+    expected_network: str | None = None,
 ) -> dict[str, Any]:
     """
     Reconcile a single registration transaction hash against Horizon.
 
     - Malformed hashes → status ``failed`` / reason ``malformed_tx_hash``
+    - Wrong-network txs → status ``network_mismatch`` / reason ``network_binding_mismatch``
     - Horizon dependency failures → status ``error`` (no durable write)
     - Terminal rows are left unchanged unless ``force`` is true
     """
@@ -121,7 +130,12 @@ def reconcile_registration(
         normalized = normalize_tx_hash(tx_hash)
     except ValueError:
         LOGGER.info("registration_reconcile_rejected reason=malformed_tx_hash")
-        verification = TxVerificationResult(status="failed", reason="malformed_tx_hash")
+        verification = TxVerificationResult(
+            status="failed",
+            reason="malformed_tx_hash",
+            failure_kind="malformed_proof_data",
+            retryable=False,
+        )
         # Malformed hashes cannot be keyed in proof_events; no durable write.
         payload = _result_payload(
             tx_hash="",
@@ -143,6 +157,7 @@ def reconcile_registration(
         verification = TxVerificationResult(
             status=previous_status,
             reason="already_terminal",
+            retryable=False,
         )
         return _result_payload(
             tx_hash=normalized,
@@ -153,7 +168,14 @@ def reconcile_registration(
             event_id=event_id,
         )
 
-    verification = verify_transaction(normalized, min_confirmations=min_conf)
+    if expected_network is not None:
+        verification = verify_transaction(
+            normalized,
+            min_confirmations=min_conf,
+            expected_network=expected_network,
+        )
+    else:
+        verification = verify_transaction(normalized, min_confirmations=min_conf)
     updated = False
 
     if verification.status in TERMINAL_STATUSES:
@@ -213,6 +235,7 @@ def reconcile_pending_registrations(
         "confirmed": 0,
         "failed": 0,
         "missing": 0,
+        "network_mismatch": 0,
         "pending": 0,
         "error": 0,
         "updated": 0,
@@ -252,11 +275,13 @@ def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
     tx_hash = payload.get("tx_hash") or payload.get("txHash")
     proof_id = payload.get("proof_id") or payload.get("proofId")
     min_confirmations = payload.get("min_confirmations") or payload.get("minConfirmations")
+    expected_network = payload.get("expected_network") or payload.get("expectedNetwork")
     result = reconcile_registration(
         tx_hash,
         previous_status="pending",
         proof_id=proof_id if isinstance(proof_id, str) else None,
         min_confirmations=int(min_confirmations) if min_confirmations is not None else None,
+        expected_network=expected_network if isinstance(expected_network, str) else None,
     )
     if result.get("status") == "error":
         # Surface dependency failures so the worker can retry non-fatally.

@@ -40,6 +40,10 @@ from strkey import (
     _VERSION_BYTE_ED25519_PUBLIC,
     make_strkey,
 )
+from tx_verification import (
+    configured_expected_network,
+    extract_payload_network,
+)
 from webhook import queue_webhook_deliveries
 
 LOGGER = logging.getLogger("harpocrates.chain_indexer")
@@ -351,29 +355,77 @@ def classify_and_decode_event(
 # ---------------------------------------------------------------------------
 
 
+def _is_valid_hex32(val: Any) -> bool:
+    if not isinstance(val, str) or len(val) != 64:
+        return False
+    return all(ch in "0123456789abcdef" for ch in val.lower())
+
+
 def process_events_batch(
     events: list[dict[str, Any]],
     contract_id: str | None = None,
+    *,
+    expected_network: str | None = None,
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
-    Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    Decodes lifecycle events, separates wrong-network events from malformed
+    proof data, inserts valid events idempotently into proof_events, queues
+    webhooks for newly written events, and tracks unknown topics.
     """
-    summary = {
+    bound_network, _ = configured_expected_network(expected_network)
+    summary: dict[str, Any] = {
         "scanned": 0,
         "indexed": 0,
         "skipped": 0,
         "duplicates": 0,
+        "network_mismatches": 0,
+        "malformed": 0,
+        "mismatches": [],
     }
 
     for raw in events:
         summary["scanned"] += 1
+
+        observed_net = extract_payload_network(raw) if isinstance(raw, dict) else None
+        if bound_network is not None and observed_net is not None and observed_net != bound_network:
+            summary["network_mismatches"] += 1
+            raw_tx = (
+                raw.get("txHash") or raw.get("transactionHash") or raw.get("tx_hash")
+                if isinstance(raw, dict)
+                else None
+            )
+            summary["mismatches"].append(
+                {
+                    "txHash": _normalize_hex(raw_tx) if isinstance(raw_tx, str) else None,
+                    "reason": "network_binding_mismatch",
+                    "failureKind": "wrong_network",
+                    "expectedNetwork": bound_network,
+                    "observedNetwork": observed_net,
+                    "retryable": False,
+                }
+            )
+            continue
+
         decoded = classify_and_decode_event(raw, default_contract_id=contract_id)
 
         if decoded is None:
             collector.record_indexer_unknown_topic()
             summary["skipped"] += 1
+            continue
+
+        if not _is_valid_hex32(decoded.tx_hash) or (
+            decoded.proof_id is not None and not _is_valid_hex32(decoded.proof_id)
+        ):
+            summary["malformed"] += 1
+            summary["mismatches"].append(
+                {
+                    "txHash": decoded.tx_hash if _is_valid_hex32(decoded.tx_hash) else None,
+                    "reason": "malformed_proof_data",
+                    "failureKind": "malformed_proof_data",
+                    "retryable": False,
+                }
+            )
             continue
 
         row, created = insert_indexed_proof_event(
