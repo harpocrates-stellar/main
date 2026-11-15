@@ -15,8 +15,6 @@
  * non-fatal, optional signal.
  */
 
-import type { ApiClientError } from '../services/apiError'
-
 /**
  * Normalised on-chain metadata envelope.
  *

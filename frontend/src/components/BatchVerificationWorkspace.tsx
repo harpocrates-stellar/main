@@ -24,7 +24,12 @@ import {
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  exportBatchArchiveManifest,
+  exportBatchCSV,
+  exportBatchJSON,
+  exportReceiptCollection,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -215,6 +220,8 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+  const exportArchivePlan = () =>
+    triggerDownload(exportBatchArchiveManifest(items), 'harpocrates-batch-archive.json', 'application/json')
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
@@ -398,6 +405,16 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
               >
                 <FileCheck size={16} aria-hidden="true" />
                 <span>Receipts</span>
+              </button>
+              <button
+                className="icon-button secondary"
+                type="button"
+                onClick={exportArchivePlan}
+                disabled={items.length === 0 || isRunning}
+                title="Export Bounded Archive Manifest"
+              >
+                <Download size={16} aria-hidden="true" />
+                <span>Archive Manifest</span>
               </button>
             </div>
           </div>
