@@ -20,3 +20,6 @@ Verify the application compiles and bundles successfully for production:
 npm run build
 ```
 (This performs TypeScript type-checking and Vite compilation. It will fail if there are any TypeScript or bundling errors).
+
+## 4. Separating Selected Evidence from Previously Verified Artifacts
+When an operator selects a replacement video file in Evidence Studio (`frontend/src/hooks/useEvidence.ts` and `frontend/src/views/StudioView.tsx`), prior `proof`, `registration`, `processedVideoUrl`, Quick Verify status, `ChainProofPanel` badges, and `ProvenanceCard` records are cleared immediately before the replacement file finishes processing, while a polite `role="status"` region explains that previous verification badges were cleared because they belonged to an earlier artifact.

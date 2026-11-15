@@ -231,5 +231,47 @@ describe('useEvidence hashing progress', () => {
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
   })
+
+  it('clears prior proof digests immediately on file replacement even if the replacement fails processing', async () => {
+    hashFileInWorkerMock
+      .mockResolvedValueOnce('a'.repeat(64))
+      .mockRejectedValueOnce(new Error('Replacement file could not be hashed.'))
+    embedVideoMock.mockResolvedValueOnce({
+      embeddedBlob: new Blob(['embedded-first']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    const revokeSpy = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:first-video',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeSpy,
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    const firstFile = new File(['first-video'], 'first.mp4', { type: 'video/mp4' })
+    const replacementFile = new File(['corrupt-second'], 'second.mp4', { type: 'video/mp4' })
+
+    await act(async () => {
+      await result.current.handleEvidence(firstFile)
+    })
+    expect(result.current.proof?.videoHash).toBe('b'.repeat(64))
+    expect(result.current.processedVideoUrl).toBe('blob:first-video')
+    expect(result.current.evidenceChangeNotice).toBeNull()
+
+    await act(async () => {
+      await result.current.handleEvidence(replacementFile)
+    })
+
+    expect(result.current.stage).toBe('error')
+    expect(result.current.file?.name).toBe('second.mp4')
+    expect(result.current.proof).toBeNull()
+    expect(result.current.processedVideoUrl).toBe('')
+    expect(revokeSpy).toHaveBeenCalledWith('blob:first-video')
+    expect(result.current.evidenceChangeNotice).toMatch(/previous verification and registration results were cleared/i)
+  })
 })
 

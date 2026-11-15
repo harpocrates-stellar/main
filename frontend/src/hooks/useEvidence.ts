@@ -74,6 +74,7 @@ export type UseEvidenceReturn = {
   setCredentialSeed: (v: string) => void
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
+  evidenceChangeNotice?: string | null
   message: string
   registration: RegisterProofResult | null
   networkMismatch: string | null
@@ -101,6 +102,7 @@ export function useEvidence(): UseEvidenceReturn {
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
+  const [evidenceChangeNotice, setEvidenceChangeNotice] = useState<string | null>(null)
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
@@ -192,8 +194,6 @@ export function useEvidence(): UseEvidenceReturn {
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
-    setFile(nextFile)
-
     const cached = cachedFileHashRef.current
     const isCacheHit =
       cached !== null &&
@@ -202,8 +202,26 @@ export function useEvidence(): UseEvidenceReturn {
       cached.size === nextFile.size &&
       cached.lastModified === nextFile.lastModified
 
+    const hadPriorEvidenceState =
+      file !== null || proof !== null || registration !== null || processedVideoUrl !== ''
+
     if (!isCacheHit) {
       cachedFileHashRef.current = null
+      if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
+      setProcessedVideoUrl('')
+      setProof(null)
+      setRegistration(null)
+      setNetworkMismatch(null)
+      if (hadPriorEvidenceState) {
+        setEvidenceChangeNotice(
+          'Replacement evidence file selected. Previous verification and registration results were cleared so only the newly selected file is evaluated.',
+        )
+      }
+    }
+
+    setFile(nextFile)
+
+    if (!isCacheHit) {
       setHashProgress({
         processedBytes: 0,
         totalBytes: nextFile.size,
@@ -444,7 +462,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -486,6 +504,7 @@ export function useEvidence(): UseEvidenceReturn {
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    evidenceChangeNotice,
     message,
     registration,
     networkMismatch,

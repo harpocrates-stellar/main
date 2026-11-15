@@ -5,12 +5,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StudioView } from './StudioView'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
+import { expectNoA11yViolations, runAxe } from '../test/axeA11y'
 
 function makeVerification(): UseVerificationReturn {
   return {
@@ -41,6 +42,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
       description: 'Noir ZK proof.',
     },
     stage: 'idle',
+    hashProgress: null,
     file: null,
     proof: null,
     processedVideoUrl: '',
@@ -55,6 +57,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +124,77 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('StudioView – distinct selected evidence after file replacement', () => {
+  it('clears stale verification badges upon file replacement while preserving an accessible explanation', async () => {
+    const clearVerification = vi.fn()
+    const handleEvidence = vi.fn().mockResolvedValue(undefined)
+    const firstFile = new File(['first'], 'first.mp4', { type: 'video/mp4' })
+    const secondFile = new File(['second'], 'second.mp4', { type: 'video/mp4' })
+
+    const verificationWithBadges: UseVerificationReturn = {
+      ...makeVerification(),
+      verifyHash: proof.videoHash,
+      verifyResult: 'Confirmed on Stellar registry.',
+      chainProof: {
+        tier: 2,
+        status: 1,
+        issuer: 'G'.repeat(56),
+        source: 'G'.repeat(56),
+        metadataHash: proof.metadataHash,
+        expiresAt: 0,
+      },
+      clear: clearVerification,
+    }
+
+    const { container, rerender } = render(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          stage: 'ready',
+          file: firstFile,
+          proof,
+          handleEvidence,
+        })}
+        verification={verificationWithBadges}
+        provenanceRecord={null}
+      />,
+    )
+
+    // Matching verification badges are visible before replacement.
+    expect(screen.getByText('Confirmed on Stellar registry.')).toBeInTheDocument()
+    expect(screen.queryByText('No on-chain match loaded.')).not.toBeInTheDocument()
+
+    // Select a replacement file via Studio's dropzone input.
+    const fileInput = container.querySelector('#studio-evidence-input') as HTMLInputElement
+    fireEvent.change(fileInput, { target: { files: [secondFile] } })
+    expect(clearVerification).toHaveBeenCalledTimes(1)
+    expect(handleEvidence).toHaveBeenCalledWith(secondFile)
+
+    // Even if stale verification props linger across a render before clearing settles, badges stay hidden and explained.
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          stage: 'hashing',
+          file: secondFile,
+          proof: null,
+          evidenceChangeNotice:
+            'Replacement evidence file selected. Previous verification and registration results were cleared so only the newly selected file is evaluated.',
+        })}
+        verification={verificationWithBadges}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(screen.queryByText('Confirmed on Stellar registry.')).not.toBeInTheDocument()
+    expect(screen.getByText('No on-chain match loaded.')).toBeInTheDocument()
+    const statusRegion = screen.getByRole('status', {
+      name: /selected evidence replacement status/i,
+    })
+    expect(statusRegion).toHaveTextContent(/previous verification and registration results were cleared/i)
+    expectNoA11yViolations(await runAxe(container), 'studio distinct selected evidence')
   })
 })
