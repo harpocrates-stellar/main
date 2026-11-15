@@ -46,6 +46,8 @@ To verify a signed verification receipt offline without hitting the RPC:
 node dist/cli.js verify-receipt --receipt receipt.json --keys trusted_keys.json
 ```
 
+Deterministic cross-surface receipt canonicalization and ECDSA P-256 SHA-256 signature vectors are maintained in `backend/fixtures/verification_receipt_interop_vectors.json` (`schema: harpocrates-receipt-interoperability-vectors/v1`). Both `backend/verification_receipt.py` (`verify_signed_verification_receipt`, `serialize_signed_receipt`, `encode_receipt_for_qr`) and `cli/src/signed-receipt.ts` (`verifyVerificationReceipt`, `serializeVerificationReceipt`, `encodeReceiptForQr`) validate against the same canonical payload, QR encoding, and mutated-statement rejection cases.
+
 To export C2PA authenticity assertions from a proof manifest (with an optional
 verification receipt) for signing by your own C2PA tooling and key material:
 

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   decodeReceiptFromQr,
@@ -5,6 +7,7 @@ import {
   signVerificationReceipt,
   serializeVerificationReceipt,
   verifyVerificationReceipt,
+  type SignedVerificationReceipt,
   type VerificationReceiptInput,
 } from '../src/signed-receipt.js'
 
@@ -59,5 +62,43 @@ describe('signed verification receipts', () => {
       keyValidity: { 'verifier-2026-07': { notAfter: '2026-07-25T00:00:00.000Z' } },
       now: new Date('2026-07-26T12:00:00.000Z'),
     })).resolves.toMatchObject({ valid: false, reason: expect.stringMatching(/stale/) })
+  })
+
+  it('matches deterministic backend receipt interoperability vectors', async () => {
+    const fixturePath = resolve(
+      import.meta.dirname,
+      '../../backend/fixtures/verification_receipt_interop_vectors.json',
+    )
+    const doc = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+      keys: Record<string, JsonWebKey>
+      validVectors: Array<{
+        id: string
+        signedReceipt: SignedVerificationReceipt
+        expectedSignedCanonicalJson: string
+        expectedQrPayload: string
+      }>
+      mutatedVectors: Array<{
+        id: string
+        expectedReasonSubstring: string
+        receipt: SignedVerificationReceipt
+      }>
+    }
+
+    for (const vec of doc.validVectors) {
+      expect(serializeVerificationReceipt(vec.signedReceipt)).toBe(vec.expectedSignedCanonicalJson)
+      expect(encodeReceiptForQr(vec.signedReceipt)).toBe(vec.expectedQrPayload)
+      expect(decodeReceiptFromQr(vec.expectedQrPayload)).toEqual(vec.signedReceipt)
+      await expect(
+        verifyVerificationReceipt(vec.signedReceipt, { keys: doc.keys }),
+      ).resolves.toMatchObject({ valid: true })
+    }
+
+    for (const mut of doc.mutatedVectors) {
+      const verdict = await verifyVerificationReceipt(mut.receipt, { keys: doc.keys })
+      expect(verdict.valid).toBe(false)
+      if (!verdict.valid) {
+        expect(verdict.reason.toLowerCase()).toContain(mut.expectedReasonSubstring.toLowerCase())
+      }
+    }
   })
 })
