@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { createReadStream } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
@@ -35,30 +34,23 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import { InputSizeLimitError, readBoundedTextInput } from './bounded-input.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
 
-async function readText(path: string): Promise<string> {
-  const chunks: Buffer[] = []
-  let size = 0
-  const source = path === '-' ? process.stdin : createReadStream(path)
-  for await (const chunk of source) {
-    size += Buffer.byteLength(chunk)
-    if (size > 1024 * 1024) {
-      if (path !== '-') source.destroy()
-      throw new Error('input exceeds 1 MiB limit')
-    }
-    chunks.push(Buffer.from(chunk))
-  }
-  return Buffer.concat(chunks).toString('utf-8')
+async function readText(path: string, label = 'input'): Promise<string> {
+  return readBoundedTextInput(path, { label })
 }
 
 function printJson(data: unknown): void {
@@ -116,8 +108,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -147,8 +140,9 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
     exit(8, '--manifest is required for verification')
   }
   try {
-    manifest = parseManifest(await readText(manifestPath))
-  } catch {
+    manifest = parseManifest(await readText(manifestPath, 'manifest'))
+  } catch (err) {
+    if (err instanceof InputSizeLimitError) exit(8, err.message)
     exit(8, 'invalid or unreadable manifest')
   }
 
@@ -229,15 +223,11 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
 
   let metadata: HarpocratesMetadata
   try {
-    let raw: string
-    if (inputPath === '-') {
-      raw = await readText('-')
-    } else {
-      raw = await readText(inputPath)
-    }
+    const raw = await readText(inputPath, 'metadata')
     const parsed = JSON.parse(raw)
     metadata = validateMetadata(parsed)
-  } catch {
+  } catch (err) {
+    if (err instanceof InputSizeLimitError) exit(8, err.message)
     exit(8, 'invalid or unreadable metadata')
   }
 
@@ -341,21 +331,23 @@ async function handleVerifyReceipt(flags: Record<string, string>, debugLog: (eve
 
   let receipt: SignedVerificationReceipt
   try {
-    const raw = await readText(receiptPath)
+    const raw = await readText(receiptPath, 'receipt')
     if (raw.trim().startsWith('{')) {
       receipt = JSON.parse(raw)
     } else {
       receipt = decodeReceiptFromQr(raw.trim())
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof InputSizeLimitError) exit(8, err.message)
     exit(8, 'invalid or unreadable receipt')
   }
 
   let keys: Record<string, JsonWebKey>
   try {
-    const rawKeys = await readText(keysPath)
+    const rawKeys = await readText(keysPath, 'keys')
     keys = JSON.parse(rawKeys)
-  } catch {
+  } catch (err) {
+    if (err instanceof InputSizeLimitError) exit(8, err.message)
     exit(8, 'invalid or unreadable keys file')
   }
 
@@ -396,10 +388,11 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
 
   let manifest: ReturnType<typeof parseManifest>
   try {
-    const raw = await readText(inputPath)
+    const raw = await readText(inputPath, 'manifest')
     assertC2paInputWithinLimit(raw, 'manifest')
     manifest = parseManifest(raw)
-  } catch {
+  } catch (err) {
+    if (err instanceof InputSizeLimitError) exit(8, err.message)
     exit(8, 'invalid or unreadable manifest')
   }
 
@@ -408,10 +401,11 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
   let receipt: VerificationReceipt | undefined
   if (receiptPath) {
     try {
-      const rawReceipt = await readText(receiptPath)
+      const rawReceipt = await readText(receiptPath, 'receipt')
       assertC2paInputWithinLimit(rawReceipt, 'receipt')
       receipt = parseC2paReceiptInput(JSON.parse(rawReceipt))
-    } catch {
+    } catch (err) {
+      if (err instanceof InputSizeLimitError) exit(8, err.message)
       exit(8, 'invalid or unreadable receipt')
     }
   }
@@ -655,7 +649,7 @@ Verify Receipt options:
 
 Verify options:
   --contract-id     Contract ID on Stellar (required).
-  --manifest        Path to a proof manifest JSON file (use "-" for stdin).
+  --manifest        Path to a proof manifest JSON file (use "-" for stdin; bounded to 1 MiB before JSON parsing).
   --tx-hash         Transaction hash to verify on-chain.
   --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --rpc-url         Stellar RPC URL (default: testnet).

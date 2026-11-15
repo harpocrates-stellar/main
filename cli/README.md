@@ -99,7 +99,13 @@ Harpocrates CLI environment variables:
 Explicit flags always take precedence over environment values. Contract-id
 validation still applies to environment values.
 
-The CLI accepts at most 1 MiB of manifest/metadata JSON. It rejects unknown
+The CLI accepts at most 1 MiB (`1048576` bytes) of manifest, metadata, or
+receipt JSON from files or standard input (`-`). Streamed standard-input reads
+enforce the 1 MiB byte bound incrementally before buffer concatenation or
+`JSON.parse`: oversized inputs abort immediately, exit `8`, write a stable
+privacy-safe error (`harpocrates: <label> exceeds the 1 MiB input limit`) to
+`stderr`, and emit zero bytes on `stdout` so callers expecting `--output json`
+never receive partial or non-JSON stdout payloads. The CLI rejects unknown
 manifest fields and unsupported versions, and writes fixed, privacy-safe
 error messages rather than raw RPC or file errors. Do not pass private
 witnesses, seeds, credentials, media, or secrets in a manifest. The receipt

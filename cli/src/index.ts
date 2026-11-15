@@ -79,3 +79,11 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  MAX_MANIFEST_INPUT_BYTES,
+  InputSizeLimitError,
+  readBoundedStream,
+  readBoundedJson,
+  readBoundedTextInput,
+} from './bounded-input.js'
+export type { BoundedStreamOptions } from './bounded-input.js'

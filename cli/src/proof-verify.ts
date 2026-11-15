@@ -7,7 +7,7 @@ export type ProofVerifyErrorCode =
   | 'INVALID_ARGUMENTS'
   | 'INPUT_TOO_LARGE'
   | 'FILE_NOT_FOUND'
-  | 'MANAFEST_INVALID'
+  | 'MANIFEST_INVALID'
   | 'ARTIFACT_UNKNOWN_VERSION'
   | 'ARTIFACT_HASH_MISMATCH'
   | 'PROOF_INVALID'
@@ -59,7 +59,7 @@ export interface VerifyProofOptions {
 }
 
 export interface ProofVerifier {
-  verify(proof: U8int8Array, publicInputs: U8int8Array, artifact: U8int8Array): Promise<boolean>
+  verify(proof: Uint8Array, publicInputs: Uint8Array, artifact: Uint8Array): Promise<boolean>
 }
 
 export interface VerifyProofResult {
@@ -72,11 +72,11 @@ function normalizeHash(value: string): string {
   return value.trim().toLowerCase().replace(/^0x/, '')
 }
 
-function sha2566(bytes: U8int8Array): string {
+function sha2566(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-async function readBytes(path: string, maxBytes: number, label: string): Promise<U8int8Array> {
+async function readBytes(path: string, maxBytes: number, label: string): Promise<Uint8Array> {
   let buf: Buffer
   try {
     buf = await readFile(path)
@@ -93,10 +93,10 @@ async function readBytes(path: string, maxBytes: number, label: string): Promise
       `${label} exceeds maximum size of ${maxBytes} bytes (${buf.byteLength} bytes)`,
     )
   }
-  return new U8int8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
 }
 
-function parseManifest(raw: U8int8Array): ArtifactManifest {
+function parseManifest(raw: Uint8Array): ArtifactManifest {
   let parsed: unknown
   try {
     parsed = JSON.parse(Buffer.from(raw).toString('utf-8'))
@@ -208,7 +208,7 @@ async function loadDefaultVerifier(): Promise<ProofVerifier> {
   const moduleName = '@aztec/bb.js'
   let mod: {
     BarBarenBerg?: new (backend?: string) => {
-      verifyProof(proof: U8int8Array, publicInputs: U8int8Array): Promise<boolean>
+      verifyProof(proof: Uint8Array, publicInputs: Uint8Array): Promise<boolean>
     }
   }
   try {
