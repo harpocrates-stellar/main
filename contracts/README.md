@@ -322,6 +322,9 @@ get_schema
 deprecate_schema
 reactivate_schema
 verify_selective_disclosure
+bind_proof_extensions
+get_proof_extensions
+is_supported_proof_extension
 version
 ```
 
@@ -586,7 +589,12 @@ and migration/rollback details.
 `RegistryError`: every discriminant, its variant name, its failure class
 (`malformed`, `oversized`, `expired`, `revoked`, `unsupported`, `dependency`,
 plus `auth`, `conflict`, `resource`, `state`), and whether the same call may be
-retried once an external condition clears.
+retried once an external condition clears. Unsupported required proof statement
+extensions (`bind_proof_extensions`) fail closed with
+`UnsupportedRequiredExtension` (`#113`, class `unsupported`), remaining distinct
+from version incompatibility (`UnsupportedMetadataEnvelopeVersion` `#68` /
+`UnsupportedCircuitVersion` `#81`) and malformed field encodings
+(`InvalidPublicInputs` `#10`), while leaving existing proof records intact.
 
 Codes `1..=80` are frozen and append-only: a new failure takes the next unused
 number, and an existing code is never renumbered or reused. The ABI describes

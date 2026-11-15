@@ -77,11 +77,34 @@ pub enum RejectCode {
     /// The envelope's declared circuit version is not the one this codec
     /// accepts (`hpx-vi/2` cases only).
     VersionMismatch,
+    /// A well-formed proof extension marked critical (`required`) uses an
+    /// extension tag not supported by this verifier/registry build (#1196).
+    UnsupportedRequiredExtension,
 }
 
 /// Numeric result meaning "the material was accepted", returned by the
 /// on-chain `classify_public_inputs` entry point.
 pub const ACCEPTED_CODE: u32 = 0;
+
+/// Maximum number of proof extensions accepted on a single statement (#1196).
+pub const MAX_PROOF_EXTENSIONS: usize = 8;
+
+/// Canonical supported proof extension tags (#1196).
+pub const PROOF_EXT_TIMESTAMP_ANCHOR: u32 = 1;
+pub const PROOF_EXT_METADATA_ENVELOPE: u32 = 2;
+pub const PROOF_EXT_LINEAGE_BINDING: u32 = 3;
+pub const PROOF_EXT_RECEIPT_COMMITMENT: u32 = 4;
+
+/// Whether `tag` is a recognised proof extension tag in this build (#1196).
+pub const fn is_supported_extension_tag(tag: u32) -> bool {
+    matches!(
+        tag,
+        PROOF_EXT_TIMESTAMP_ANCHOR
+            | PROOF_EXT_METADATA_ENVELOPE
+            | PROOF_EXT_LINEAGE_BINDING
+            | PROOF_EXT_RECEIPT_COMMITMENT
+    )
+}
 
 impl RejectCode {
     /// Stable numeric identity, used where a `&'static str` cannot cross the
@@ -98,6 +121,7 @@ impl RejectCode {
             RejectCode::ProofOversize => 8,
             RejectCode::UnknownSchema => 9,
             RejectCode::VersionMismatch => 10,
+            RejectCode::UnsupportedRequiredExtension => 11,
         }
     }
 
@@ -115,6 +139,7 @@ impl RejectCode {
             "proof_oversize" => Some(RejectCode::ProofOversize),
             "unknown_schema" => Some(RejectCode::UnknownSchema),
             "version_mismatch" => Some(RejectCode::VersionMismatch),
+            "unsupported_required_extension" => Some(RejectCode::UnsupportedRequiredExtension),
             _ => None,
         }
     }
@@ -132,6 +157,7 @@ impl RejectCode {
             RejectCode::ProofOversize => "proof_oversize",
             RejectCode::UnknownSchema => "unknown_schema",
             RejectCode::VersionMismatch => "version_mismatch",
+            RejectCode::UnsupportedRequiredExtension => "unsupported_required_extension",
         }
     }
 }
@@ -459,6 +485,54 @@ pub fn classify(
     }
 
     check_proof_bounds(proof_len)
+}
+
+/// Validate a canonical 2-field proof extension descriptor `(header_field, commitment_field)` (#1196).
+///
+/// Header field layout (32 bytes, big-endian):
+/// - `[0..27]`: must be zero (`RejectCode::Padding` if non-zero after BN254 check)
+/// - `[27]`: criticality flag (`0` = optional, `1` = required; any other byte -> `RejectCode::Padding`)
+/// - `[28..32]`: `tag: u32` (`0` -> `RejectCode::ZeroField`)
+///
+/// Distinguishes:
+/// 1. `declared_version != expected_version` -> `RejectCode::VersionMismatch`
+/// 2. Non-canonical BN254 field, non-zero upper padding, or zero tag/commitment ->
+///    `RejectCode::NonCanonicalField` / `RejectCode::Padding` / `RejectCode::ZeroField`
+/// 3. Well-formed required (`critical == 1`) extension with an unsupported tag ->
+///    `RejectCode::UnsupportedRequiredExtension`
+pub fn validate_extension_field(
+    header_field: &[u8; FIELD_LEN],
+    commitment_field: &[u8; FIELD_LEN],
+    declared_version: u32,
+    expected_version: u32,
+) -> Result<(u32, bool), RejectCode> {
+    if declared_version != expected_version {
+        return Err(RejectCode::VersionMismatch);
+    }
+    if !is_canonical_field(header_field) || !is_canonical_field(commitment_field) {
+        return Err(RejectCode::NonCanonicalField);
+    }
+    let mut pad_acc = 0u8;
+    for byte in header_field.iter().take(27) {
+        pad_acc |= *byte;
+    }
+    if pad_acc != 0 || header_field[27] > 1 {
+        return Err(RejectCode::Padding);
+    }
+    let critical = header_field[27] == 1;
+    let tag = u32::from_be_bytes([
+        header_field[28],
+        header_field[29],
+        header_field[30],
+        header_field[31],
+    ]);
+    if tag == 0 || is_zero(commitment_field) {
+        return Err(RejectCode::ZeroField);
+    }
+    if critical && !is_supported_extension_tag(tag) {
+        return Err(RejectCode::UnsupportedRequiredExtension);
+    }
+    Ok((tag, critical))
 }
 
 #[cfg(test)]

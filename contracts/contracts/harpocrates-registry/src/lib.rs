@@ -746,6 +746,20 @@ pub struct MetadataEnvelope {
     pub bound_at: u64,
 }
 
+/// Privacy-safe proof statement extension commitment (#1196).
+///
+/// Carries only `(tag, critical, commitment)` — never raw witness data, media,
+/// or secret payloads. Unknown optional (`critical == false`) tags are allowed
+/// for forward compatibility, while unknown required (`critical == true`) tags
+/// fail closed with `RegistryError::UnsupportedRequiredExtension` (#113).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofExtension {
+    pub tag: u32,
+    pub critical: bool,
+    pub commitment: BytesN<32>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssuerRecord {
@@ -1963,6 +1977,8 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Bound proof statement extensions keyed by `proof_id` (#1196).
+    ProofExtensions(BytesN<32>),
 }
 
 #[contracterror]
@@ -2157,6 +2173,8 @@ pub enum RegistryError {
     SealSignerSetTooLarge = 111,
     /// The threshold seal for this proof has already been finalized (#124).
     SealAlreadyFinalized = 112,
+    /// The submission carries a required proof extension tag that this build does not support (#1196).
+    UnsupportedRequiredExtension = 113,
 }
 
 #[contract]
@@ -4787,6 +4805,50 @@ impl HarpocratesRegistry {
     /// Whether `version` is accepted by this wasm build.
     pub fn is_supported_envelope_version(_env: Env, version: u32) -> bool {
         version >= METADATA_ENVELOPE_V1 && version <= METADATA_ENVELOPE_VERSION_MAX
+    }
+
+    /// Whether `tag` is a supported proof extension tag in this wasm build (#1196).
+    pub fn is_supported_proof_extension(_env: Env, tag: u32) -> bool {
+        verifier_inputs::is_supported_extension_tag(tag)
+    }
+
+    /// Bind or update bounded proof statement extensions on an existing proof (#1196).
+    ///
+    /// Validation runs strictly before any storage write so a rejected call
+    /// preserves the existing `ProofRecord`, `MetadataEnvelope`, lifecycle
+    /// history, and any previously bound `ProofExtensions` untouched:
+    /// - Unsupported `envelope_version` -> `UnsupportedMetadataEnvelopeVersion` (#68)
+    /// - More than `MAX_PROOF_EXTENSIONS` entries -> `BatchTooLarge` (#43)
+    /// - Malformed encoding (`tag == 0`, zero commitment, duplicate tag, or
+    ///   non-canonical commitment field) -> `InvalidPublicInputs` (#10)
+    /// - Well-formed entry with `critical == true` and an unsupported `tag` ->
+    ///   `UnsupportedRequiredExtension` (#113)
+    pub fn bind_proof_extensions(
+        env: Env,
+        actor: Address,
+        proof_id: BytesN<32>,
+        envelope_version: u32,
+        extensions: Vec<ProofExtension>,
+    ) -> Vec<ProofExtension> {
+        let proof = get_proof_record(&env, &proof_id);
+        require_metadata_envelope_actor(&env, &actor, &proof);
+        require_supported_metadata_envelope_version(&env, envelope_version);
+        validate_proof_extensions(&env, &extensions);
+
+        let key = DataKey::ProofExtensions(proof_id);
+        env.storage().persistent().set(&key, &extensions);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        extensions
+    }
+
+    /// Return the bound proof extensions for `proof_id`, or an empty list (#1196).
+    pub fn get_proof_extensions(env: Env, proof_id: BytesN<32>) -> Vec<ProofExtension> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofExtensions(proof_id))
+            .unwrap_or_else(|| SorobanVec::new(&env))
     }
 
     pub fn get_proof(env: Env, proof_id: BytesN<32>) -> Option<ProofRecord> {
@@ -7721,6 +7783,45 @@ fn require_supported_metadata_envelope_version(env: &Env, version: u32) {
     }
 }
 
+fn validate_proof_extensions(env: &Env, extensions: &SorobanVec<ProofExtension>) {
+    let len = extensions.len();
+    if len > verifier_inputs::MAX_PROOF_EXTENSIONS as u32 {
+        panic_with_error!(env, RegistryError::BatchTooLarge);
+    }
+    let zero = [0u8; 32];
+    let mut seen_tags = [0u32; verifier_inputs::MAX_PROOF_EXTENSIONS];
+    let mut seen_len: usize = 0;
+
+    // Pass 1: validate canonical encoding on every entry so malformed field
+    // encodings always report `InvalidPublicInputs` (#10) rather than masking as
+    // an unsupported extension.
+    for ext in extensions.iter() {
+        let commitment_arr = ext.commitment.to_array();
+        if ext.tag == 0
+            || commitment_arr == zero
+            || !verifier_inputs::is_canonical_field(&commitment_arr)
+        {
+            panic_with_error!(env, RegistryError::InvalidPublicInputs);
+        }
+        let mut idx = 0usize;
+        while idx < seen_len {
+            if seen_tags[idx] == ext.tag {
+                panic_with_error!(env, RegistryError::InvalidPublicInputs);
+            }
+            idx += 1;
+        }
+        seen_tags[seen_len] = ext.tag;
+        seen_len += 1;
+    }
+
+    // Pass 2: reject any well-formed required extension whose tag is unsupported.
+    for ext in extensions.iter() {
+        if ext.critical && !verifier_inputs::is_supported_extension_tag(ext.tag) {
+            panic_with_error!(env, RegistryError::UnsupportedRequiredExtension);
+        }
+    }
+}
+
 fn require_metadata_envelope_actor(env: &Env, actor: &Address, proof: &ProofRecord) {
     actor.require_auth();
 
@@ -9101,6 +9202,8 @@ mod test_list_credential_roots;
 mod test_metadata_envelope;
 #[cfg(test)]
 mod test_pause;
+#[cfg(test)]
+mod test_proof_extensions;
 #[cfg(test)]
 mod test_receipt;
 #[cfg(test)]

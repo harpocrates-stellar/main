@@ -162,6 +162,7 @@ call can succeed.
 | 110 | `InvalidSealThreshold` | malformed | no | `required_approvals` is zero or exceeds `max_signers`. |
 | 111 | `SealSignerSetTooLarge` | oversized | no | `max_signers` or the signer set exceeds the configured limit. |
 | 112 | `SealAlreadyFinalized` | conflict | no | The threshold seal for this proof has already been finalized. |
+| 113 | `UnsupportedRequiredExtension` | unsupported | no | The submission carries a required proof extension tag that this build does not support. |
 
 ## Privacy Rules
 
