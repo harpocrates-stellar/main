@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react'
-import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
+import { BadgeCheck, CheckCircle2, Eye, EyeOff, Loader2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
-import { TIERS } from '../hooks/useEvidence'
+import { TIERS, buildProofPreparationPreview } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
@@ -38,6 +38,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    proofPreview,
+    isProofPreviewOpen = false,
+    openProofPreview,
+    closeProofPreview,
     message,
     registration,
     networkMismatch,
@@ -47,6 +51,18 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     cancelEvidence,
     cancelProving,
   } = evidence
+
+  const resolvedPreview = useMemo(
+    () =>
+      proofPreview ??
+      buildProofPreparationPreview({
+        proof,
+        tier: selectedTier,
+        credentialSeed,
+        nullifierSeed,
+      }),
+    [proofPreview, proof, selectedTier, credentialSeed, nullifierSeed],
+  )
 
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
 
@@ -246,7 +262,66 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </a>
         ) : null}
 
+        {isProofPreviewOpen ? (
+          <section
+            className="redaction-preview proof-preparation-preview"
+            aria-label="Read-only proof preparation preview"
+          >
+            <header className="redaction-preview__header">
+              <Eye size={16} aria-hidden="true" />
+              <h3>Proof preparation preview (read-only)</h3>
+            </header>
+            <p className="muted" style={{ margin: '0.25rem 0 0.75rem' }}>
+              Policy version: <code data-testid="preview-policy-version">{resolvedPreview.policyVersion}</code> ·
+              Schema: <code data-testid="preview-schema-version">v{resolvedPreview.inputSchemaVersion}</code> ·
+              No proof generated or transaction submitted
+            </p>
+            {resolvedPreview.ok ? (
+              <>
+                <dl className="data-list" aria-label="Canonical public inputs">
+                  {resolvedPreview.publicInputs.map((entry) => (
+                    <div key={entry.name}>
+                      <dt>{entry.name}</dt>
+                      <dd>
+                        <code data-testid={`public-input-${entry.name}`}>{entry.value}</code>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                {resolvedPreview.concealedWitnesses.length > 0 ? (
+                  <dl className="data-list" aria-label="Concealed private witnesses" style={{ marginTop: '0.75rem' }}>
+                    {resolvedPreview.concealedWitnesses.map((witness) => (
+                      <div key={witness.name}>
+                        <dt>{witness.name}</dt>
+                        <dd>
+                          <EyeOff size={12} aria-hidden="true" style={{ marginRight: '0.25rem' }} />
+                          <code data-testid={`witness-${witness.name}`}>{witness.displayValue}</code>
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : null}
+              </>
+            ) : (
+              <p role="alert" data-error-code={resolvedPreview.code}>
+                {resolvedPreview.message}
+              </p>
+            )}
+          </section>
+        ) : null}
+
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {openProofPreview ? (
+            <button
+              className="secondary-action"
+              type="button"
+              aria-expanded={isProofPreviewOpen}
+              onClick={() => (isProofPreviewOpen ? closeProofPreview?.() : openProofPreview())}
+            >
+              <Eye size={18} aria-hidden="true" />
+              {isProofPreviewOpen ? 'Hide proof preview' : 'Preview proof inputs'}
+            </button>
+          ) : null}
           <button
             className="primary-action"
             type="button"
