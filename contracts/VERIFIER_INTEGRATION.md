@@ -184,3 +184,24 @@ clear the window; a newly configured verifier must declare its own.
 
 Version numbers only are emitted (`verif`/`versions`); no witness, public input,
 or proof material is ever logged.
+
+## Read-only statement preflight (#1199)
+
+Before submitting `register_anonymous_verified` (or Tier 2/3 registrations),
+provers and clients can call `preflight_statement` (Tier 1) or
+`preflight_tier_statement` (Tier 2 / Tier 3) to validate canonical public-field
+framing (`verifier_inputs`) and active registry policy without a trial write
+transaction:
+
+```text
+preflight_statement(video_hash, metadata_hash, envelope_version, proof_id, public_inputs, proof_len) -> StatementPreflightResult
+preflight_tier_statement(tier, actor, video_hash, metadata_hash, envelope_version, proof_id) -> StatementPreflightResult
+```
+
+Preflight stops strictly at the structural and policy boundary: it never calls
+the external UltraHonk verifier, never requires account signatures, never stores
+a proof or consumes a nullifier/quota, and always returns
+`cryptographically_verified = false`, `proof_stored = false`,
+`requires_crypto_verify = true`, and
+`stage = PreflightStage::StructureAndPolicyOnly`.
+

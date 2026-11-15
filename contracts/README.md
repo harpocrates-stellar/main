@@ -285,6 +285,8 @@ register_anonymous
 register_anonymous_verified
 register_source
 register_seal
+preflight_statement
+preflight_tier_statement
 revoke_proof
 get_proof
 get_by_video
@@ -442,6 +444,21 @@ Current Testnet verifier:
 ```text
 CCP2EQPKT5XAYTOARX3LGHNMJ37A6W2WY3H54MRIHEZVTVAZZPUSGZQJ
 ```
+
+## Statement Registration Preflight (#1199)
+
+Clients can validate canonical public-field structure and active on-chain
+registry policy before submitting a registration transaction via two
+unauthenticated, side-effect-free read methods:
+
+```text
+preflight_statement(video_hash, metadata_hash, envelope_version, proof_id, public_inputs, proof_len) -> StatementPreflightResult
+preflight_tier_statement(tier, actor, video_hash, metadata_hash, envelope_version, proof_id) -> StatementPreflightResult
+```
+
+- `preflight_statement` evaluates Tier 1 anonymous statements (`silent_witness/v1` 160-byte frames, `silent_witness/v2` 256-byte circuit-versioned envelopes, and browser v1 128-byte frames) without taking an `Address`, preserving Tier 1 anonymity. It validates initialization, Tier 1 pause state, metadata envelope version policy, `proof_id` / `video_hash` uniqueness, canonical BN254 limb padding / scalar canonicity / non-zero identity fields / domain binding (`verifier_inputs`), `video_hash` limb binding, active unrevoked/unexpired credential root, scoped-nullifier epoch, nullifier replay state, active verifier presence, verifier circuit-version window, and `proof_len` bounds (`64..=65536`).
+- `preflight_tier_statement` evaluates Tier 2 (`Consistent Source`) and Tier 3 (`Public Seal`) statements against initialization, per-tier pause state, metadata envelope version policy, `proof_id` / `video_hash` uniqueness, Tier 3 admin/issuer role separation (`RoleConflict`), active issuer standing (`UnknownIssuer`), and windowed registration quota availability (`IssuerQuotaExhausted`).
+- **Explicit separation from cryptographic verification:** every `StatementPreflightResult` sets `cryptographically_verified = false`, `proof_stored = false`, `requires_crypto_verify = true`, and `stage = PreflightStage::StructureAndPolicyOnly` (`1`). Preflight never invokes the external UltraHonk `verify_proof` contract, never checks account signatures (`require_auth`), never writes a `ProofRecord`, never consumes a nullifier or registration quota, and emits zero events.
 
 ## Receipt Digest Commitment (#337)
 
