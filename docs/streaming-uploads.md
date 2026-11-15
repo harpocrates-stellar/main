@@ -15,6 +15,7 @@ destination artifact is retained.
 | Size limit | Enforced mid-stream; raises `RequestEntityTooLarge` without logging payload bytes |
 | Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`) |
 | Streaming trigger | Multipart bodies larger than `UPLOAD_STREAM_THRESHOLD_BYTES` (default 1 MiB) wrap `FileStorage` |
+| Declared size binding | `X-Upload-Declared-Size` / `declaredSize` binds the declared total byte count to `sessionId` and rejects mid-session changes with `409 UPLOAD_DECLARED_SIZE_MISMATCH` while preserving previously accepted chunks |
 
 ## Configuration
 

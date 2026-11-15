@@ -45,6 +45,7 @@ from errors import (
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UPLOAD_DECLARED_SIZE_MISMATCH,
     UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
@@ -153,9 +154,12 @@ from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    DeclaredUploadSizeBinder,
+    DeclaredUploadSizeMismatchError,
     StreamingFileStorage,
     create_streaming_file_storage,
     hash_paths_concat,
+    parse_declared_upload_size,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -404,6 +408,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -428,6 +434,33 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    declared_size_binder = DeclaredUploadSizeBinder()
+    app.extensions["declared_size_binder"] = declared_size_binder
+
+    def _extract_declared_upload_size() -> int | None:
+        header_raw = request.headers.get("X-Upload-Declared-Size")
+        form_raw = None
+        json_raw = None
+        if request.is_json:
+            body = request.get_json(silent=True)
+            if isinstance(body, dict):
+                json_raw = body.get("declaredSize")
+        else:
+            form_raw = request.form.get("declaredSize")
+
+        candidates = [
+            parse_declared_upload_size(val)
+            for val in (header_raw, form_raw, json_raw)
+            if val is not None and str(val).strip() != ""
+        ]
+        if not candidates:
+            return None
+        first = candidates[0]
+        if any(item != first for item in candidates[1:]):
+            raise DeclaredUploadSizeMismatchError(
+                "conflicting declared upload size headers and body fields"
+            )
+        return first
 
     @app.before_request
     def start_request_context():
@@ -690,6 +723,18 @@ def create_app() -> Flask:
             cli_code=OVERSIZED_INPUT,
         )
 
+    @app.errorhandler(DeclaredUploadSizeMismatchError)
+    def handle_declared_size_mismatch(_error: DeclaredUploadSizeMismatchError):
+        metrics_collector.record_rejection(
+            "upload_declared_size_mismatch",
+            request.url_rule.rule if request.url_rule else request.path,
+        )
+        return error_response(
+            code=UPLOAD_DECLARED_SIZE_MISMATCH,
+            message="declared upload size conflicts with session binding",
+            status=409,
+        )
+
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
         return error_response(
@@ -930,10 +975,17 @@ def create_app() -> Flask:
     @app.post("/api/stego/upload-session")
     @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
+        declared_size = _extract_declared_upload_size()
+        if declared_size is not None and declared_size > config.max_video_bytes:
+            return jsonify({"error": "declared upload size exceeds limit"}), 413
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         session_dir.mkdir(parents=True, exist_ok=True)
-        return jsonify({"sessionId": session_id})
+        declared_size_binder.bind_session(session_id, session_dir, declared_size)
+        payload = {"sessionId": session_id}
+        if declared_size is not None:
+            payload["declaredSize"] = declared_size
+        return jsonify(payload)
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
@@ -941,7 +993,17 @@ def create_app() -> Flask:
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
-        
+
+        declared_size = _extract_declared_upload_size()
+        if declared_size is not None and declared_size > config.max_video_bytes:
+            return jsonify({"error": "declared upload size exceeds limit"}), 413
+        # Verify/bind declared size BEFORE touching any existing or incoming chunk file.
+        bound_size = declared_size_binder.verify_for_chunk(
+            session_id,
+            session_dir,
+            declared_size,
+        )
+
         chunk = request.files.get("chunk")
         if chunk is None:
             return jsonify({"error": "chunk is required"}), 400
@@ -949,18 +1011,30 @@ def create_app() -> Flask:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
         # Persist each session chunk with bounded-chunk hashing for integrity.
+        # Stage into an adjacent file first so an overwritten chunk_index preserves
+        # the previously accepted chunk if streaming fails mid-transfer.
         g.upload_config = config
         streaming_chunk = create_streaming_file_storage(chunk)
         chunk_path = session_dir / f"chunk-{chunk_index}"
+        staging_path = session_dir / f".staging-chunk-{chunk_index}"
         try:
-            streaming_chunk.save(str(chunk_path))
+            streaming_chunk.save(str(staging_path))
+            os.replace(staging_path, chunk_path)
         except RequestEntityTooLarge:
+            staging_path.unlink(missing_ok=True)
             return jsonify({"error": "chunk exceeds size limit"}), 413
-        return jsonify({
+        except Exception:
+            staging_path.unlink(missing_ok=True)
+            raise
+        declared_size_binder.record_chunk_accepted(session_id, session_dir)
+        res_payload = {
             "ok": True,
             "bytes": streaming_chunk.bytes_written,
             "sha256": streaming_chunk.computed_hash,
-        })
+        }
+        if bound_size is not None:
+            res_payload["declaredSize"] = bound_size
+        return jsonify(res_payload)
 
     @app.post("/api/stego/upload-session/<session_id>/commit")
     @limiter.limit(config.ratelimit_upload_session)
@@ -969,6 +1043,13 @@ def create_app() -> Flask:
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
+
+        commit_declared = _extract_declared_upload_size()
+        bound_size = declared_size_binder.verify_for_commit(
+            session_id,
+            session_dir,
+            commit_declared,
+        )
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:
@@ -1002,6 +1083,13 @@ def create_app() -> Flask:
             chunk_size=getattr(config, "upload_chunk_bytes", None),
             max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
         )
+        if bound_size is not None and _written != bound_size:
+            combined_path.unlink(missing_ok=True)
+            raise DeclaredUploadSizeMismatchError(
+                session_id=session_id,
+                bound_size=bound_size,
+                presented_size=_written,
+            )
 
         # Sniff assembled file before handing it to ffmpeg.
         try:
@@ -1055,6 +1143,7 @@ def create_app() -> Flask:
 
         import shutil
         shutil.rmtree(session_dir, ignore_errors=True)
+        declared_size_binder.clear_session(session_id)
 
         return response
 

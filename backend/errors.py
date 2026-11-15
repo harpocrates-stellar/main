@@ -69,6 +69,9 @@ NOT_FOUND = "NOT_FOUND"
 GONE = "GONE"
 """The requested resource has been purged and is no longer available (410)."""
 
+UPLOAD_DECLARED_SIZE_MISMATCH = "UPLOAD_DECLARED_SIZE_MISMATCH"
+"""Declared upload size changed or conflicted with the bound session size (409)."""
+
 INTERNAL_ERROR = "INTERNAL_ERROR"
 """An unexpected server-side failure occurred (500)."""
 

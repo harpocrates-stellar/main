@@ -11,11 +11,13 @@ payload bytes, filenames beyond what Flask already accepted, or secrets.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import tempfile
+import threading
 from pathlib import Path
-from typing import BinaryIO, Iterable, Optional, Tuple, Union
+from typing import Any, BinaryIO, Dict, Iterable, Optional, Tuple, Union
 
 from flask import g
 from werkzeug.datastructures import FileStorage
@@ -28,6 +30,187 @@ from werkzeug.exceptions import RequestEntityTooLarge
 DEFAULT_CHUNK_BYTES = 65_536  # 64 KiB
 MIN_CHUNK_BYTES = 4_096  # 4 KiB
 MAX_CHUNK_BYTES = 1_048_576  # 1 MiB
+SESSION_META_FILENAME = "session-meta.json"
+
+
+class DeclaredUploadSizeMismatchError(Exception):
+    """Raised when a chunk or commit changes a session's bound declared size."""
+
+    def __init__(
+        self,
+        message: str = "declared upload size conflicts with session binding",
+        *,
+        session_id: str = "",
+        bound_size: Optional[int] = None,
+        presented_size: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.session_id = session_id
+        self.bound_size = bound_size
+        self.presented_size = presented_size
+
+
+def parse_declared_upload_size(raw: object) -> Optional[int]:
+    """Parse an optional non-negative integer declared upload size."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("declared upload size must be a non-negative integer")
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        raw = stripped
+    try:
+        parsed = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("declared upload size must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError("declared upload size must be a non-negative integer")
+    return parsed
+
+
+class DeclaredUploadSizeBinder:
+    """Binds declared upload size to ``session_id`` and rejects mid-session changes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._records: Dict[str, Dict[str, Any]] = {}
+
+    def _meta_path(self, session_dir: Union[str, Path]) -> Path:
+        return Path(session_dir) / SESSION_META_FILENAME
+
+    def _load_or_init_unlocked(
+        self,
+        session_id: str,
+        session_dir: Union[str, Path],
+    ) -> Dict[str, Any]:
+        meta_file = self._meta_path(session_dir)
+        if meta_file.exists():
+            data = json.loads(meta_file.read_text(encoding="utf-8"))
+            if data.get("sessionId") != session_id:
+                raise DeclaredUploadSizeMismatchError(
+                    "session metadata identity mismatch",
+                    session_id=session_id,
+                )
+            self._records[session_id] = data
+            return data
+
+        cached = self._records.get(session_id)
+        if cached is not None:
+            return cached
+
+        existing_chunks = [
+            p.name for p in Path(session_dir).iterdir() if p.name.startswith("chunk-")
+        ]
+        record: Dict[str, Any] = {
+            "sessionId": session_id,
+            "declaredSize": None,
+            "sizeLocked": bool(existing_chunks),
+            "acceptedChunks": len(existing_chunks),
+        }
+        self._persist_unlocked(session_dir, record)
+        self._records[session_id] = record
+        return record
+
+    def _persist_unlocked(self, session_dir: Union[str, Path], record: Dict[str, Any]) -> None:
+        meta_file = self._meta_path(session_dir)
+        tmp_file = meta_file.with_suffix(".tmp")
+        tmp_file.write_text(
+            json.dumps(record, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp_file, meta_file)
+
+    def bind_session(
+        self,
+        session_id: str,
+        session_dir: Union[str, Path],
+        declared_size: Optional[int] = None,
+    ) -> Optional[int]:
+        with self._lock:
+            record = {
+                "sessionId": session_id,
+                "declaredSize": declared_size,
+                "sizeLocked": declared_size is not None,
+                "acceptedChunks": 0,
+            }
+            self._persist_unlocked(session_dir, record)
+            self._records[session_id] = record
+            return declared_size
+
+    def verify_for_chunk(
+        self,
+        session_id: str,
+        session_dir: Union[str, Path],
+        declared_size: Optional[int],
+    ) -> Optional[int]:
+        """Verify or bind *declared_size* BEFORE writing a chunk file."""
+        with self._lock:
+            record = self._load_or_init_unlocked(session_id, session_dir)
+            bound = record["declaredSize"]
+            locked = bool(record["sizeLocked"])
+
+            if not locked:
+                # First chunk on a session that did not bind at creation locks the mode
+                # (either integer declaredSize or explicitly undeclared None).
+                if declared_size is not None:
+                    record["declaredSize"] = declared_size
+                    record["sizeLocked"] = True
+                    self._persist_unlocked(session_dir, record)
+                return record["declaredSize"]
+
+            if bound is None:
+                # Session already accepted undeclared chunk(s); introducing a declared
+                # size on a later chunk changes the session's declared size mid-upload.
+                if declared_size is not None:
+                    raise DeclaredUploadSizeMismatchError(
+                        session_id=session_id,
+                        bound_size=None,
+                        presented_size=declared_size,
+                    )
+                return None
+
+            # Session is bound to an explicit integer size.
+            if declared_size is not None and declared_size != bound:
+                raise DeclaredUploadSizeMismatchError(
+                    session_id=session_id,
+                    bound_size=bound,
+                    presented_size=declared_size,
+                )
+            return bound
+
+    def record_chunk_accepted(
+        self,
+        session_id: str,
+        session_dir: Union[str, Path],
+    ) -> None:
+        with self._lock:
+            record = self._load_or_init_unlocked(session_id, session_dir)
+            record["acceptedChunks"] = int(record.get("acceptedChunks", 0)) + 1
+            record["sizeLocked"] = True
+            self._persist_unlocked(session_dir, record)
+
+    def verify_for_commit(
+        self,
+        session_id: str,
+        session_dir: Union[str, Path],
+        declared_size: Optional[int],
+    ) -> Optional[int]:
+        with self._lock:
+            record = self._load_or_init_unlocked(session_id, session_dir)
+            bound = record["declaredSize"]
+            if declared_size is not None and bound != declared_size:
+                raise DeclaredUploadSizeMismatchError(
+                    session_id=session_id,
+                    bound_size=bound,
+                    presented_size=declared_size,
+                )
+            return bound
+
+    def clear_session(self, session_id: str) -> None:
+        with self._lock:
+            self._records.pop(session_id, None)
 
 
 def clamp_chunk_bytes(value: int | None, *, enforce_min: bool = False) -> int:
