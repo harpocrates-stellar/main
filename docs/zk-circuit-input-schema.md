@@ -19,6 +19,30 @@ Scope and epoch are accepted by the input envelope, but nonzero values are
 rejected before execution when the loaded artifact cannot bind them. They are
 passed to a scoped circuit only when that circuit's ABI is present.
 
+## Canonical scope encoding in prover tooling
+
+`zk/tools/validate_prover_inputs.py` and `zk/tools/build_circuits.py` enforce
+exact canonical `verifier_scope` encoding **before** invoking `nargo execute` or
+`bb prove` (see `scope_encoding` in
+[`zk/noir/circuit_input_schema_v1.json`](../zk/noir/circuit_input_schema_v1.json)):
+
+- **Numeric scope field (`verifier_scope`):** must be a canonical minimal base-10
+  integer in `[0, BN254_FIELD_MODULUS)` (`"0"` for global unscoped context, or
+  `"[1-9][0-9]*"`). Leading zeros (`"00"`, `"07"`), whitespace (`" 7 "`), signs,
+  hexadecimal aliases (`"0x07"`), and unreduced scalars (`>= BN254_FIELD_MODULUS`)
+  are rejected with `noncanonical_scope_identifier` or
+  `field_element_out_of_range`.
+- **Textual scope identifier (`--scope-id` / `verifier_scope_id` / `v:...`):**
+  must match `^v:[a-z0-9]+(?:[_-][a-z0-9]+)*:p:[a-z0-9]+(?:[_-][a-z0-9]+)*$`
+  (`<= 64` ASCII bytes, NFC-normalized, lowercase only) and hashes to
+  `SHA-256("harpocrates:scope:{id}") % BN254_FIELD_MODULUS` (`0 -> 1`).
+  Equivalent-looking variants — uppercase characters, omitted or empty
+  `:p:<purpose>`, whitespace, extra colons, repeated separators, Unicode
+  homoglyphs, and unscoped aliases (`global`, `unscoped`, `0`, `none`, `null`) —
+  fail closed with `noncanonical_scope_identifier` without echoing input values.
+  Supplying both a numeric `verifier_scope` and `--scope-id` requires exact
+  agreement (`scope_binding_mismatch` on drift).
+
 The checked-in browser artifacts produce a four-field frame
 (`video_hash_hi`, `video_hash_lo`, `credential_root`, `nullifier`) and a helper
 with two return fields. The schema records that as `browser_v1` and pins the

@@ -288,9 +288,20 @@ Generate proof artifacts for a specific video hash:
 python zk/tools/build_circuits.py generate silent_witness `
   --video-hash YOUR_32_BYTE_HEX `
   --credential-secret YOUR_FIELD_DECIMAL `
-  --nullifier-secret YOUR_FIELD_DECIMAL
+  --nullifier-secret YOUR_FIELD_DECIMAL `
+  --verifier-scope "0"
 ```
-or via the PowerShell wrapper:
+
+`--verifier-scope` and `Prover.toml` `verifier_scope` values are validated before
+witness generation (`zk/tools/validate_prover_inputs.py`): pass either a
+canonical base-10 field element (`"0"` for global unscoped context or minimal
+decimal `< BN254_FIELD_MODULUS`) or a canonical lowercase identifier matching
+`v:<verifier>:p:<purpose>` (`<= 64` ASCII bytes, optional `--scope-id` cross-check).
+Leading zeros, whitespace, hex aliases, uppercase characters, omitted purposes,
+and unscoped lookalike strings (`global`, `unscoped`) fail closed prior to
+`nargo execute`; see [docs/zk-circuit-input-schema.md](../../docs/zk-circuit-input-schema.md).
+
+Or via the PowerShell wrapper:
 ```powershell
 .\zk\noir\scripts\generate-silent-witness-wsl.ps1 `
   -VideoHash YOUR_32_BYTE_HEX `

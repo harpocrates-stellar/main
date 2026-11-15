@@ -57,5 +57,13 @@
     }
   },
   "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "scope_encoding": {
+    "global_scope": "0",
+    "field_pattern": "^(?:0|[1-9][0-9]*)$",
+    "identifier_pattern": "^v:[a-z0-9]+(?:[_-][a-z0-9]+)*:p:[a-z0-9]+(?:[_-][a-z0-9]+)*$",
+    "identifier_max_bytes": 64,
+    "domain_prefix": "harpocrates:scope:",
+    "reserved_unscoped_aliases": ["0", "global", "unscoped", "none", "null"]
+  },
   "proof_bytes": { "min": 64, "max": 65536 }
 }

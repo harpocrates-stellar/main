@@ -24,9 +24,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+try:
+    import validate_prover_inputs as vpi
+except ModuleNotFoundError:
+    from zk.tools import validate_prover_inputs as vpi
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -106,7 +112,7 @@ def load_toolchain_lock(lock_path: Path) -> dict[str, Any]:
         raise BuildError(f"toolchain lock missing: {lock_path}")
     try:
         return json.loads(lock_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise BuildError(f"unreadable toolchain lock: {exc}") from exc
 
 
@@ -216,6 +222,71 @@ def normalize_vk_layout(target_dir: Path) -> None:
             tmp_file.rename(dir_path)
 
 
+def validate_circuit_prover_scope(
+    circuit_dir: Path,
+    *,
+    expected_scope_id: str | None = None,
+) -> None:
+    """Validate canonical scope encoding in Prover.toml before witness generation."""
+    prover_toml = circuit_dir / "Prover.toml"
+    if not prover_toml.is_file():
+        if expected_scope_id is not None:
+            try:
+                vpi.validate_canonical_scope_identifier(expected_scope_id)
+            except vpi.ProverInputValidationError as exc:
+                raise BuildError(
+                    f"invalid scope input ({exc.code}) for field '{exc.field or 'verifier_scope_id'}'",
+                    exit_code=EXIT_USAGE,
+                ) from exc
+        return
+
+    try:
+        data = vpi.parse_prover_toml(prover_toml.read_text(encoding="utf-8"))
+        if (
+            "verifier_scope" in data
+            or "verifier_scope_id" in data
+            or expected_scope_id is not None
+        ):
+            vpi.validate_prover_inputs(
+                data,
+                required_fields=[],
+                expected_scope_id=expected_scope_id,
+            )
+    except vpi.ProverInputValidationError as exc:
+        field_detail = f" for field '{exc.field}'" if exc.field else ""
+        raise BuildError(
+            f"invalid scope input ({exc.code}){field_detail}",
+            exit_code=EXIT_USAGE,
+        ) from exc
+
+
+def resolve_cli_prover_scope(
+    raw_scope: str | int | None,
+    *,
+    scope_id: str | None = None,
+    epoch: int = 0,
+) -> tuple[str, int]:
+    """Resolve and validate CLI scope and epoch flags prior to witness generation."""
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0 or epoch >= BN254_MODULUS:
+        raise BuildError(
+            "invalid epoch input (field_element_out_of_range) for field 'epoch'",
+            exit_code=EXIT_USAGE,
+        )
+    try:
+        canonical_scope = vpi.resolve_prover_scope(
+            raw_scope,
+            scope_id=scope_id,
+            field_modulus=BN254_MODULUS,
+        )
+    except vpi.ProverInputValidationError as exc:
+        field_detail = f" for field '{exc.field}'" if exc.field else ""
+        raise BuildError(
+            f"invalid scope input ({exc.code}){field_detail}",
+            exit_code=EXIT_USAGE,
+        ) from exc
+    return canonical_scope, epoch
+
+
 def compile_circuit(
     circuit: str,
     toolchain: ToolchainInfo,
@@ -229,6 +300,9 @@ def compile_circuit(
     if not circuit_dir.is_dir():
         signal("circuit.skipped", detail=circuit)
         return
+
+    if prove:
+        validate_circuit_prover_scope(circuit_dir)
 
     target_dir = circuit_dir / "target"
     if clean and target_dir.exists():
@@ -529,9 +603,27 @@ def _generate_silent_witness(
     toolchain: ToolchainInfo,
     repo_root: Path = REPO_ROOT,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    verifier_scope: str | None = "0",
+    epoch: int = 0,
+    scope_id: str | None = None,
 ) -> int:
+    canonical_scope, canonical_epoch = resolve_cli_prover_scope(
+        verifier_scope,
+        scope_id=scope_id,
+        epoch=epoch,
+    )
+
     if not re.match(r"^[0-9a-fA-F]{64}$", video_hash):
         raise BuildError("video hash must be a 32-byte hex string", exit_code=EXIT_USAGE)
+
+    try:
+        vpi.validate_field_element(credential_secret, "credential_secret", BN254_MODULUS)
+        vpi.validate_field_element(nullifier_secret, "nullifier_secret", BN254_MODULUS)
+    except vpi.ProverInputValidationError as exc:
+        raise BuildError(
+            f"invalid prover input ({exc.code}) for field '{exc.field}'",
+            exit_code=EXIT_USAGE,
+        ) from exc
 
     hi_hex = video_hash[:32]
     lo_hex = video_hash[32:]
@@ -543,17 +635,35 @@ def _generate_silent_witness(
     helper_toml = helper_dir / "Prover.toml"
     circuit_toml = circuit_dir / "Prover.toml"
 
+    helper_src = helper_dir / "src" / "main.nr"
+    main_src = circuit_dir / "src" / "main.nr"
+    helper_takes_scope = (
+        helper_src.is_file()
+        and "verifier_scope" in helper_src.read_text(encoding="utf-8")
+    )
+    main_takes_scope = (
+        main_src.is_file()
+        and "verifier_scope" in main_src.read_text(encoding="utf-8")
+    )
+    main_takes_version = (
+        main_src.is_file()
+        and "circuit_version" in main_src.read_text(encoding="utf-8")
+    )
+
     helper_backup = helper_toml.read_text(encoding="utf-8") if helper_toml.is_file() else None
     circuit_backup = circuit_toml.read_text(encoding="utf-8") if circuit_toml.is_file() else None
 
     try:
-        helper_toml.write_text(
-            f'credential_secret = "{credential_secret}"\n'
-            f'nullifier_secret = "{nullifier_secret}"\n'
-            f'video_hash_hi = "{hi_dec}"\n'
-            f'video_hash_lo = "{lo_dec}"\n',
-            encoding="utf-8",
-        )
+        helper_lines = [
+            f'credential_secret = "{credential_secret}"',
+            f'nullifier_secret = "{nullifier_secret}"',
+            f'video_hash_hi = "{hi_dec}"',
+            f'video_hash_lo = "{lo_dec}"',
+        ]
+        if helper_takes_scope:
+            helper_lines.append(f'verifier_scope = "{canonical_scope}"')
+            helper_lines.append(f'epoch = "{canonical_epoch}"')
+        helper_toml.write_text("\n".join(helper_lines) + "\n", encoding="utf-8")
 
         proc_helper = run_command(
             ["nargo", "execute", "generated_helper"],
@@ -564,21 +674,29 @@ def _generate_silent_witness(
         combined_out = proc_helper.stdout + proc_helper.stderr
         raw_fields = re.findall(r"Field\((-?\d+)\)", combined_out)
         values = [int(v) % BN254_MODULUS for v in raw_fields]
-        if len(values) != 2:
-            raise BuildError(f"Expected 2 Field values from helper, got {len(values)}: {values}")
+        if len(values) not in (2, 3):
+            raise BuildError(f"Expected 2 or 3 Field values from helper, got {len(values)}")
 
         credential_root = f"0x{values[0]:064x}"
         nullifier = f"0x{values[1]:064x}"
+        domain_tag = f"0x{values[2]:064x}" if len(values) == 3 else None
 
-        circuit_toml.write_text(
-            f'credential_secret = "{credential_secret}"\n'
-            f'nullifier_secret = "{nullifier_secret}"\n'
-            f'video_hash_hi = "{hi_dec}"\n'
-            f'video_hash_lo = "{lo_dec}"\n'
-            f'credential_root = "{credential_root}"\n'
-            f'nullifier = "{nullifier}"\n',
-            encoding="utf-8",
-        )
+        circuit_lines = [
+            f'credential_secret = "{credential_secret}"',
+            f'nullifier_secret = "{nullifier_secret}"',
+            f'video_hash_hi = "{hi_dec}"',
+            f'video_hash_lo = "{lo_dec}"',
+            f'credential_root = "{credential_root}"',
+            f'nullifier = "{nullifier}"',
+        ]
+        if main_takes_scope:
+            circuit_lines.append(f'verifier_scope = "{canonical_scope}"')
+            circuit_lines.append(f'epoch = "{canonical_epoch}"')
+        if domain_tag is not None:
+            circuit_lines.append(f'domain_tag = "{domain_tag}"')
+        if main_takes_version:
+            circuit_lines.append('circuit_version = "2"')
+        circuit_toml.write_text("\n".join(circuit_lines) + "\n", encoding="utf-8")
 
         run_command(["nargo", "check"], circuit_dir, "nargo check failed", runner=runner)
         run_command(["nargo", "execute", "witness"], circuit_dir, "witness execution failed", runner=runner)
@@ -837,7 +955,7 @@ def _generate_aggregator(
         }
         print(json.dumps(manifest))
         return EXIT_OK
-    except Exception as exc:
+    except (BuildError, OSError, ValueError) as exc:
         err = {
             "protocol": "harpocrates",
             "version": 1,
@@ -860,10 +978,13 @@ def _generate_generic_circuit(
     toolchain: ToolchainInfo,
     repo_root: Path = REPO_ROOT,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    expected_scope_id: str | None = None,
 ) -> int:
     circuit_dir = repo_root / "zk" / "noir" / circuit
     if not circuit_dir.is_dir():
         raise BuildError(f"Circuit directory does not exist: {circuit_dir}")
+
+    validate_circuit_prover_scope(circuit_dir, expected_scope_id=expected_scope_id)
 
     run_command(["nargo", "check"], circuit_dir, f"nargo check failed for {circuit}", runner=runner)
     run_command(["nargo", "execute", "witness"], circuit_dir, f"witness execution failed for {circuit}", runner=runner)
@@ -917,14 +1038,41 @@ def _generate_generic_circuit(
     return EXIT_OK
 
 
+class _ExplicitScopeAction(argparse.Action):
+    """Track whether `--verifier-scope` was explicitly supplied on the CLI."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        namespace.verifier_scope_explicit = True
+
+
 def cmd_generate(
     args: argparse.Namespace,
     repo_root: Path = REPO_ROOT,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> int:
     apply_umask()
-    toolchain = check_toolchain(runner=runner)
     circuit = args.circuit
+    scope_id = getattr(args, "scope_id", None)
+    scope_explicit = bool(getattr(args, "verifier_scope_explicit", False))
+    raw_scope = (
+        args.verifier_scope
+        if (scope_id is None or scope_explicit)
+        else None
+    )
+    canonical_scope, canonical_epoch = resolve_cli_prover_scope(
+        raw_scope,
+        scope_id=scope_id,
+        epoch=getattr(args, "epoch", 0),
+    )
+
+    toolchain = check_toolchain(runner=runner)
 
     # Dissect positional args and optional flags
     pos_args: list[str] = list(args.args or [])
@@ -949,6 +1097,9 @@ def cmd_generate(
             toolchain=toolchain,
             repo_root=repo_root,
             runner=runner,
+            verifier_scope=canonical_scope,
+            epoch=canonical_epoch,
+            scope_id=scope_id,
         )
 
     if circuit == "silent_witness_aggregator":
@@ -1021,6 +1172,7 @@ def cmd_generate(
         toolchain=toolchain,
         repo_root=repo_root,
         runner=runner,
+        expected_scope_id=scope_id,
     )
 
 
@@ -1061,7 +1213,17 @@ def create_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--credential-secret", default=None, help="Credential secret field decimal")
     p_gen.add_argument("--nullifier-secret", default=None, help="Nullifier secret field decimal")
     p_gen.add_argument("--output-dir", default=None, help="Output directory for generated artifacts")
-    p_gen.add_argument("--verifier-scope", default="0", help="Verifier scope (optional)")
+    p_gen.add_argument(
+        "--verifier-scope",
+        action=_ExplicitScopeAction,
+        default="0",
+        help="Canonical decimal scope field or canonical v:<verifier>:p:<purpose> identifier",
+    )
+    p_gen.add_argument(
+        "--scope-id",
+        default=None,
+        help="Canonical v:<verifier>:p:<purpose> scope identifier to derive or cross-check",
+    )
     p_gen.add_argument("--epoch", type=int, default=0, help="Epoch (optional)")
 
     # --- export ---
