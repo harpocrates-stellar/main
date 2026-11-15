@@ -79,15 +79,19 @@ try:
     from registration_reconcile import (
         clamp_reconcile_limit,
         default_min_confirmations,
+        get_registration_reconcile_timeline,
+        get_timeline_recorded_owner,
         reconcile_pending_registrations,
         reconcile_registration,
     )
 except ImportError:
     clamp_reconcile_limit = None
     default_min_confirmations = None
+    get_registration_reconcile_timeline = None
+    get_timeline_recorded_owner = None
     reconcile_pending_registrations = None
     reconcile_registration = None
-from idempotency import idempotent
+from idempotency import idempotent, record_idempotency_timeline_event
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
@@ -112,7 +116,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1526,10 +1530,25 @@ def create_app() -> Flask:
                 claimed_capture_time=claimed_capture_time,
             )
         except ConflictError as exc:
+            record_idempotency_timeline_event(
+                proof_id=proof_id,
+                tx_hash=normalized_tx_hash,
+                outcome="rejected",
+                reason="idempotency_conflict",
+                owner=validated_source_address,
+            )
             return jsonify({
                 "error": "idempotency key reused with conflicting payload",
                 "conflict_field": exc.field,
             }), 409
+
+        record_idempotency_timeline_event(
+            proof_id=proof_id,
+            tx_hash=normalized_tx_hash,
+            outcome="submitted" if normalized_tx_hash else "unknown",
+            reason="registration_submitted" if created else "idempotent_replay",
+            owner=validated_source_address,
+        )
 
         if db_event and db_event.get("id") and created:
             # A newly registered proof can change the on-chain verification
@@ -1631,6 +1650,65 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         return jsonify(report)
+
+    @app.get("/api/proofs/<proof_id>/reconcile/timeline")
+    @require_register_auth
+    def get_proof_reconciliation_timeline(proof_id: str):
+        """Return bounded observation and transition records to the authorized requester."""
+        if not is_hex_32(proof_id):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="proofId must be a 32-byte hex string",
+                status=400,
+                field="proofId",
+            )
+
+        principal = g.get("register_principal")
+        if principal is not None and principal.is_scoped:
+            try:
+                proof_owner = find_proof_owner(proof_id)
+                if proof_owner is None and get_timeline_recorded_owner is not None:
+                    proof_owner = get_timeline_recorded_owner(proof_id)
+            except Exception:
+                log_structured(
+                    LOGGER,
+                    logging.ERROR,
+                    {"event": "timeline_owner_lookup_failed", "request_id": request_id()},
+                )
+                return error_response(
+                    code=DEPENDENCY_UNAVAILABLE,
+                    message="ownership check unavailable",
+                    status=503,
+                )
+            if not register_auth.scope_allows(principal, proof_owner):
+                log_structured(
+                    LOGGER,
+                    logging.WARNING,
+                    {
+                        "event": "register_auth_rejected",
+                        "reason": register_auth.REASON_SCOPE,
+                        "request_id": request_id(),
+                    },
+                )
+                return error_response(
+                    code=FORBIDDEN,
+                    message="credential is not authorized for this proof",
+                    status=403,
+                    field="proofId",
+                )
+
+        raw_limit = request.args.get("limit")
+        try:
+            limit = clamp_reconcile_limit(raw_limit) if raw_limit is not None else 50
+            timeline = get_registration_reconcile_timeline(proof_id, limit=limit)
+        except ValueError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return jsonify(timeline)
 
     @app.post("/api/time-attestation/create")
     def create_time_attestation_endpoint():

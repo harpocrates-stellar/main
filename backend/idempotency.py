@@ -120,6 +120,26 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+def record_idempotency_timeline_event(
+    *,
+    proof_id: str,
+    tx_hash: str | None = None,
+    outcome: str = "submitted",
+    reason: str = "idempotent_submission",
+    owner: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a privacy-safe registration submission/replay event on the timeline."""
+    from registration_reconcile import record_registration_timeline_submission
+
+    return record_registration_timeline_submission(
+        proof_id=proof_id,
+        tx_hash=tx_hash,
+        outcome=outcome,
+        reason=reason,
+        owner=owner,
+    )
+
+
 def _canonical_digest() -> str:
     """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
     method = request.method.encode()

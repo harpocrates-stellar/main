@@ -342,6 +342,26 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Registration Reconciliation Timeline
+
+Authorized callers can inspect bounded chain-observation and state-transition
+records for a proof via `GET /api/proofs/<proof_id>/reconcile/timeline` (and
+`get_registration_reconcile_timeline()` in `registration_reconcile.py`):
+
+- Each timeline entry classifies its outcome into one of four canonical values:
+  `submitted` (registration accepted or awaiting confirmations), `confirmed`
+  (on-chain confirmation depth satisfied), `rejected` (unsuccessful on-chain
+  transaction, malformed hash, or idempotency conflict), and `unknown`
+  (transaction not yet found on Horizon, RPC dependency outage, or no chain
+  observation recorded).
+- Per-proof retention is bounded (`RECONCILE_TIMELINE_MAX_ENTRIES`, default
+  `64`, maximum `256`, with `evictedCount` accounting) and `limit` is clamped to
+  `1..50`.
+- Enforces `@require_register_auth` and owner-scoped credential isolation
+  (`401` for invalid/missing credentials when auth is enabled, `403 FORBIDDEN`
+  when a scoped key requests another owner's proof) without exposing owner
+  addresses, filenames, or private evidence metadata.
+
 ## Test
 
 ```powershell
