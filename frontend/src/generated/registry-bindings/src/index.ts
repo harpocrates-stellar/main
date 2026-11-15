@@ -809,6 +809,24 @@ version: u32;
 }
 
 
+/**
+ * Canonical public role-policy digest descriptor (#1192).
+ * 
+ * Hashes the registry's effective, bounded role and governance policy state
+ * using a domain-separated, versioned canonical byte encoding so equivalent
+ * policy states always yield the exact same `digest`.
+ */
+export interface RolePolicyDigest {
+  council_active: boolean;
+  digest: Buffer;
+  encoding_version: u32;
+  has_guardian: boolean;
+  paused_domains: u32;
+  schema_version: u32;
+  seal_policy_active: boolean;
+}
+
+
 export interface TimelockProposal {
   action: u32;
   cancelled: boolean;
@@ -1967,6 +1985,18 @@ export interface Client {
   get_receipt_commitment: ({proof_id}: {proof_id: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Option<ReceiptCommitmentRecord>>>
 
   /**
+   * Construct and simulate a get_role_policy_digest transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the canonical public role-policy digest over the registry's
+   * bounded role and governance policy fields (#1192).
+   * 
+   * Equivalent effective policy states (regardless of signer/member insertion
+   * order, monotonic policy version numbers, cleared pauses/guardians, or
+   * cancelled/expired pending policies) normalize to the same versioned
+   * byte preimage and produce an identical SHA-256 `digest`.
+   */
+  get_role_policy_digest: (options?: MethodOptions) => Promise<AssembledTransaction<RolePolicyDigest>>
+
+  /**
    * Construct and simulate a propose_council_action transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Propose a critical action to the active admin council.
    */
@@ -2139,6 +2169,13 @@ export interface Client {
    * Remove a signer from a threshold seal policy (#124).
    */
   remove_seal_policy_signer: ({admin, version, signer}: {admin: string, version: u32, signer: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
+   * Construct and simulate a verify_role_policy_digest transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Verify that the live canonical role-policy state matches an expected
+   * `encoding_version` and `expected_digest` (#1192).
+   */
+  verify_role_policy_digest: ({expected_version, expected_digest}: {expected_version: u32, expected_digest: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
 
   /**
    * Construct and simulate a activate_verifier_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -2413,6 +2450,7 @@ export class Client extends ContractClient {
         "AAAAAQAAADtBIG5hcnJvd2x5IHNjb3BlZCwgZXhwaXJpbmcgYXV0aG9yaXR5IHRvIGFjdCBmb3IgYGdyYW50b3JgLgAAAAAAAAAAEERlbGVnYXRpb25SZWNvcmQAAAAFAAAAAAAAAAhkZWxlZ2F0ZQAAABMAAAA+RXBvY2ggc2Vjb25kcyBhZnRlciB3aGljaCB0aGUgZGVsZWdhdGlvbiBpcyBpbmVydC4gTmV2ZXIgemVyby4AAAAAAApleHBpcmVzX2F0AAAAAAAGAAAAAAAAAApncmFudGVkX2F0AAAAAAAGAAAAAAAAAAdncmFudG9yAAAAABMAAAAjQml0d2lzZS1PUiBvZiBgREVMRUdBVElPTl9TQ09QRV8qYC4AAAAABXNjb3BlAAAAAAAABA==",
         "AAAAAQAAARxPbmUgc21hbGwgdXNhZ2UgcmVjb3JkIHBlciBrZXllZCBhZGRyZXNzOiB0aGUgY3VycmVudCBsZWRnZXItdGltZSB3aW5kb3cKYnVja2V0IGFuZCBob3cgbWFueSByZWdpc3RyYXRpb25zIGhhdmUgYmVlbiBjaGFyZ2VkIGluc2lkZSBpdCAoIzgwNikuCkEgc3RvcmVkIGBidWNrZXRgIGJlaGluZCB0aGUgY3VycmVudCBvbmUgaXMgdHJlYXRlZCBhcyBlbXB0eSwgc28gY291bnRzCm5lZWQgbm8gZXhwbGljaXQgcmVzZXQgYW5kIHRoZSBzdG9yYWdlIHN0YXlzIGEgc2luZ2xlIGNvbXBhY3QgcmVjb3JkLgAAAAAAAAAQSXNzdWVyUXVvdGFVc2FnZQAAAAIAAABAYGxlZGdlciB0aW1lc3RhbXAgLyB3aW5kb3dfc2Vjc2AgYXQgdGhlIHRpbWUgb2YgdGhlIGxhc3QgY2hhcmdlLgAAAAZidWNrZXQAAAAAAAYAAAAmUmVnaXN0cmF0aW9ucyBjaGFyZ2VkIGluc2lkZSBgYnVja2V0YC4AAAAAAAVjb3VudAAAAAAAAAQ=",
         "AAAAAQAAAMdWZXJzaW9uZWQgb24tY2hhaW4gbWV0YWRhdGEgZW52ZWxvcGUgYmluZGluZyAoIzMxNykuCgpTdG9yZXMgb25seSBgKHZlcnNpb24sIG1ldGFkYXRhX2hhc2gpYCBjb21taXRtZW50cyDigJQgbmV2ZXIgcmF3IGVudmVsb3BlCmJ5dGVzLCBtZWRpYSwgd2l0bmVzc2VzLCBvciBzZWNyZXRzLiBBbGlnbnMgd2l0aCBiYWNrZW5kIGBlbnZlbG9wZS5weWAuAAAAAAAAAAAQTWV0YWRhdGFFbnZlbG9wZQAAAAQAAAA4TGVkZ2VyIHRpbWVzdGFtcCB3aGVuIHRoaXMgZW52ZWxvcGUgYmluZGluZyB3YXMgd3JpdHRlbi4AAAAIYm91bmRfYXQAAAAGAAAAPUNhbm9uaWNhbCBtZXRhZGF0YSBoYXNoIChzYW1lIHZhbHVlIHN0b3JlZCBvbiBgUHJvb2ZSZWNvcmRgKS4AAAAAAAANbWV0YWRhdGFfaGFzaAAAAAAAA+4AAAAgAAAAIFByb29mIHRoaXMgZW52ZWxvcGUgaXMgYm91bmQgdG8uAAAACHByb29mX2lkAAAD7gAAACAAAAA4RW52ZWxvcGUgc2NoZW1hIHZlcnNpb24gKGBNRVRBREFUQV9FTlZFTE9QRV9WMWAgLyBgVjJgKS4AAAAHdmVyc2lvbgAAAAAE",
+        "AAAAAQAAAQBDYW5vbmljYWwgcHVibGljIHJvbGUtcG9saWN5IGRpZ2VzdCBkZXNjcmlwdG9yICgjMTE5MikuCgpIYXNoZXMgdGhlIHJlZ2lzdHJ5J3MgZWZmZWN0aXZlLCBib3VuZGVkIHJvbGUgYW5kIGdvdmVybmFuY2UgcG9saWN5IHN0YXRlCnVzaW5nIGEgZG9tYWluLXNlcGFyYXRlZCwgdmVyc2lvbmVkIGNhbm9uaWNhbCBieXRlIGVuY29kaW5nIHNvIGVxdWl2YWxlbnQKcG9saWN5IHN0YXRlcyBhbHdheXMgeWllbGQgdGhlIGV4YWN0IHNhbWUgYGRpZ2VzdGAuAAAAAAAAABBSb2xlUG9saWN5RGlnZXN0AAAABwAAAAAAAAAOY291bmNpbF9hY3RpdmUAAAAAAAEAAAAAAAAABmRpZ2VzdAAAAAAD7gAAACAAAAAAAAAAEGVuY29kaW5nX3ZlcnNpb24AAAAEAAAAAAAAAAxoYXNfZ3VhcmRpYW4AAAABAAAAAAAAAA5wYXVzZWRfZG9tYWlucwAAAAAABAAAAAAAAAAOc2NoZW1hX3ZlcnNpb24AAAAAAAQAAAAAAAAAEnNlYWxfcG9saWN5X2FjdGl2ZQAAAAAAAQ==",
         "AAAAAQAAAAAAAAAAAAAAEFRpbWVsb2NrUHJvcG9zYWwAAAAIAAAAAAAAAAZhY3Rpb24AAAAAAAQAAAAAAAAACWNhbmNlbGxlZAAAAAAAAAEAAAAAAAAACmNyZWF0ZWRfYXQAAAAAAAYAAAAAAAAACGV4ZWN1dGVkAAAAAQAAAAAAAAAQbWluX2V4ZWN1dGlvbl9hdAAAAAYAAAAAAAAAB3BheWxvYWQAAAAD7gAAACAAAAAAAAAACHByb3Bvc2VyAAAAEwAAAAAAAAAGdGFyZ2V0AAAAAAAT",
         "AAAABQAAAAAAAAAAAAAAEENvbnRyYWN0VXBncmFkZWQAAAACAAAACGNvbnRyYWN0AAAAB3VwZ3JhZGUAAAAAAgAAAAAAAAANb2xkX3dhc21faGFzaAAAAAAAA+4AAAAgAAAAAAAAAAAAAAANbmV3X3dhc21faGFzaAAAAAAAA+4AAAAgAAAAAAAAAAI=",
         "AAAABQAAAAAAAAAAAAAAEERpc3B1dGVEaXNtaXNzZWQAAAACAAAAB2Rpc3B1dGUAAAAAB2Rpc21pc3MAAAAAAwAAAAAAAAAKZGlzcHV0ZV9pZAAAAAAD7gAAACAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAAAAAAAALcmVzb2x2ZWRfYXQAAAAABgAAAAAAAAAC",
@@ -2577,6 +2615,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAMVSZXR1cm4gdGhlIGN1cnJlbnQgd2luZG93LWJ1Y2tldCB1c2FnZSBmb3IgYGlzc3VlcmAuCgpBdXRvbWF0aWNhbGx5IHJlc29sdmVzIGxlZGdlci10aW1lIHdpbmRvdyByb2xsb3ZlciBzbyBjYWxsZXJzIHNlZSBgY291bnQgPT0gMGAKZm9yIGEgZnJlc2ggYnVja2V0IHdpdGhvdXQgcmVxdWlyaW5nIGFuIGFkbWluIHJlc2V0IHRyYW5zYWN0aW9uLgAAAAAAABZnZXRfaXNzdWVyX3F1b3RhX3VzYWdlAAAAAAABAAAAAAAAAAZpc3N1ZXIAAAAAABMAAAABAAAH0AAAABBJc3N1ZXJRdW90YVVzYWdl",
         "AAAAAAAAAD9SZXR1cm4gdGhlIG51bWJlciBvZiBjdXJyZW50bHkgT3BlbiBkaXNwdXRlcyBmb3IgYSBnaXZlbiBwcm9vZi4AAAAAFmdldF9vcGVuX2Rpc3B1dGVfY291bnQAAAAAAAEAAAAAAAAACHByb29mX2lkAAAD7gAAACAAAAABAAAABA==",
         "AAAAAAAAAEJSZXR1cm4gdGhlIGNvbW1pdHRlZCByZWNlaXB0IGRpZ2VzdCByZWNvcmQgZm9yIGBwcm9vZl9pZGAsIGlmIGFueS4AAAAAABZnZXRfcmVjZWlwdF9jb21taXRtZW50AAAAAAABAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAA+gAAAfQAAAAF1JlY2VpcHRDb21taXRtZW50UmVjb3JkAA==",
+        "AAAAAAAAAYNSZXR1cm4gdGhlIGNhbm9uaWNhbCBwdWJsaWMgcm9sZS1wb2xpY3kgZGlnZXN0IG92ZXIgdGhlIHJlZ2lzdHJ5J3MKYm91bmRlZCByb2xlIGFuZCBnb3Zlcm5hbmNlIHBvbGljeSBmaWVsZHMgKCMxMTkyKS4KCkVxdWl2YWxlbnQgZWZmZWN0aXZlIHBvbGljeSBzdGF0ZXMgKHJlZ2FyZGxlc3Mgb2Ygc2lnbmVyL21lbWJlciBpbnNlcnRpb24Kb3JkZXIsIG1vbm90b25pYyBwb2xpY3kgdmVyc2lvbiBudW1iZXJzLCBjbGVhcmVkIHBhdXNlcy9ndWFyZGlhbnMsIG9yCmNhbmNlbGxlZC9leHBpcmVkIHBlbmRpbmcgcG9saWNpZXMpIG5vcm1hbGl6ZSB0byB0aGUgc2FtZSB2ZXJzaW9uZWQKYnl0ZSBwcmVpbWFnZSBhbmQgcHJvZHVjZSBhbiBpZGVudGljYWwgU0hBLTI1NiBgZGlnZXN0YC4AAAAAFmdldF9yb2xlX3BvbGljeV9kaWdlc3QAAAAAAAAAAAABAAAH0AAAABBSb2xlUG9saWN5RGlnZXN0",
         "AAAAAAAAADZQcm9wb3NlIGEgY3JpdGljYWwgYWN0aW9uIHRvIHRoZSBhY3RpdmUgYWRtaW4gY291bmNpbC4AAAAAABZwcm9wb3NlX2NvdW5jaWxfYWN0aW9uAAAAAAAEAAAAAAAAAAhwcm9wb3NlcgAAABMAAAAAAAAABmFjdGlvbgAAAAAABAAAAAAAAAAGdGFyZ2V0AAAAAAATAAAAAAAAAAdwYXlsb2FkAAAAA+4AAAAgAAAAAQAAAAQ=",
         "AAAAAAAAAAAAAAAWcmV2b2tlX2NyZWRlbnRpYWxfcm9vdAAAAAAAAgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAA9jcmVkZW50aWFsX3Jvb3QAAAAD7gAAACAAAAAA",
         "AAAAAAAAATNVcGRhdGUgYW4gYWN0aXZlIGlzc3VlcidzIG1ldGFkYXRhIGhhc2guCgpSZXF1aXJlcyBhZG1pbiBhdXRoIGFuZCB0aGF0IGBpc3N1ZXJgIGlzIGFjdGl2ZS4KT25seSB0aGUgbWV0YWRhdGEgaGFzaCBjaGFuZ2VzOyBhY3RpdmUgc3RhdHVzIGFuZCBhbnkgcm90YXRpb24gZ3JhY2UKcmVjb3JkcyBhcmUgcHJlc2VydmVkLgoKIyBSZXZlcnRzCgotIGBVbmF1dGhvcml6ZWRgIGlmIGBhZG1pbmAgaXMgbm90IHRoZSBjdXJyZW50IGFkbWluCi0gYFVua25vd25Jc3N1ZXJgIGlmIGBpc3N1ZXJgIGRvZXMgbm90IGV4aXN0IG9yIGlzIGluYWN0aXZlAAAAABZ1cGRhdGVfaXNzdWVyX21ldGFkYXRhAAAAAAADAAAAAAAAAAVhZG1pbgAAAAAAABMAAAAAAAAABmlzc3VlcgAAAAAAEwAAAAAAAAANbWV0YWRhdGFfaGFzaAAAAAAAA+4AAAAgAAAAAA==",
@@ -2596,6 +2635,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAZcHJvcG9zZV90aW1lbG9ja2VkX2FjdGlvbgAAAAAAAAQAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAGYWN0aW9uAAAAAAAEAAAAAAAAAAZ0YXJnZXQAAAAAABMAAAAAAAAAB3BheWxvYWQAAAAD7gAAACAAAAABAAAABA==",
         "AAAAAAAAAZdSZWdpc3RlciBhIFRpZXIgMiBjb25zaXN0ZW50LXNvdXJjZSBwcm9vZiBvbiBgc291cmNlYCdzIGJlaGFsZi4KCkF1dGhvcml6ZXMgdGhlICpkZWxlZ2F0ZSosIG5vdCB0aGUgc291cmNlOiB0aGUgc291cmNlJ3Mga2V5IGlzIG5ldmVyCnJlcXVpcmVkIGF0IGNhbGwgdGltZS4gVGhlIHN0b3JlZCBgUHJvb2ZSZWNvcmRgIHN0aWxsIG5hbWVzIGBzb3VyY2VgLAp3aGlsZSB0aGUgZGVsZWdhdGUgaXMgcmVjb3JkZWQgaW4gdGhlIHByb29mJ3MgbGlmZWN5Y2xlIGhpc3RvcnksIHNvIHRoZQphdWRpdCB0cmFpbCBkaXN0aW5ndWlzaGVzIGF1dGhvcml0eSBmcm9tIGFjdG9yLgoKU3ViamVjdCB0byB0aGUgc2FtZSBUaWVyIDIgcGF1c2UgZG9tYWluIGFuZCB1bmlxdWVuZXNzIHJ1bGVzIGFzCmByZWdpc3Rlcl9zb3VyY2VgLgAAAAAZcmVnaXN0ZXJfc291cmNlX2RlbGVnYXRlZAAAAAAAAAUAAAAAAAAACGRlbGVnYXRlAAAAEwAAAAAAAAAGc291cmNlAAAAAAATAAAAAAAAAAp2aWRlb19oYXNoAAAAAAPuAAAAIAAAAAAAAAANbWV0YWRhdGFfaGFzaAAAAAAAA+4AAAAgAAAAAAAAAAhwcm9vZl9pZAAAA+4AAAAgAAAAAQAAB9AAAAALUHJvb2ZSZWNvcmQA",
         "AAAAAAAAADRSZW1vdmUgYSBzaWduZXIgZnJvbSBhIHRocmVzaG9sZCBzZWFsIHBvbGljeSAoIzEyNCkuAAAAGXJlbW92ZV9zZWFsX3BvbGljeV9zaWduZXIAAAAAAAADAAAAAAAAAAVhZG1pbgAAAAAAABMAAAAAAAAAB3ZlcnNpb24AAAAABAAAAAAAAAAGc2lnbmVyAAAAAAATAAAAAA==",
+        "AAAAAAAAAHZWZXJpZnkgdGhhdCB0aGUgbGl2ZSBjYW5vbmljYWwgcm9sZS1wb2xpY3kgc3RhdGUgbWF0Y2hlcyBhbiBleHBlY3RlZApgZW5jb2RpbmdfdmVyc2lvbmAgYW5kIGBleHBlY3RlZF9kaWdlc3RgICgjMTE5MikuAAAAAAAZdmVyaWZ5X3JvbGVfcG9saWN5X2RpZ2VzdAAAAAAAAAIAAAAAAAAAEGV4cGVjdGVkX3ZlcnNpb24AAAAEAAAAAAAAAA9leHBlY3RlZF9kaWdlc3QAAAAD7gAAACAAAAABAAAAAQ==",
         "AAAAAAAAAAAAAAAaYWN0aXZhdGVfdmVyaWZpZXJfcm90YXRpb24AAAAAAAEAAAAAAAAABWFkbWluAAAAAAAAEwAAAAA=",
         "AAAAAAAAAAAAAAAaY2FuY2VsX3RpbWVsb2NrZWRfcHJvcG9zYWwAAAAAAAIAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAALcHJvcG9zYWxfaWQAAAAABAAAAAA=",
         "AAAAAAAAAAAAAAAaZW1lcmdlbmN5X2V4ZWN1dGVfdGltZWxvY2sAAAAAAAIAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAALcHJvcG9zYWxfaWQAAAAABAAAAAA=",
@@ -2734,6 +2774,7 @@ export class Client extends ContractClient {
         get_issuer_quota_usage: this.txFromJSON<IssuerQuotaUsage>,
         get_open_dispute_count: this.txFromJSON<u32>,
         get_receipt_commitment: this.txFromJSON<Option<ReceiptCommitmentRecord>>,
+        get_role_policy_digest: this.txFromJSON<RolePolicyDigest>,
         propose_council_action: this.txFromJSON<u32>,
         revoke_credential_root: this.txFromJSON<null>,
         update_issuer_metadata: this.txFromJSON<null>,
@@ -2753,6 +2794,7 @@ export class Client extends ContractClient {
         propose_timelocked_action: this.txFromJSON<u32>,
         register_source_delegated: this.txFromJSON<ProofRecord>,
         remove_seal_policy_signer: this.txFromJSON<null>,
+        verify_role_policy_digest: this.txFromJSON<boolean>,
         activate_verifier_rotation: this.txFromJSON<null>,
         cancel_timelocked_proposal: this.txFromJSON<null>,
         emergency_execute_timelock: this.txFromJSON<null>,

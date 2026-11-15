@@ -1843,6 +1843,26 @@ pub struct SealFinalized {
     pub approval_count: u32,
 }
 
+/// Canonical encoding version for [`RolePolicyDigest`] (`harpocrates:role-policy:v1`, #1192).
+pub const ROLE_POLICY_DIGEST_V1: u32 = 1;
+
+/// Canonical public role-policy digest descriptor (#1192).
+///
+/// Hashes the registry's effective, bounded role and governance policy state
+/// using a domain-separated, versioned canonical byte encoding so equivalent
+/// policy states always yield the exact same `digest`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RolePolicyDigest {
+    pub encoding_version: u32,
+    pub digest: BytesN<32>,
+    pub schema_version: u32,
+    pub paused_domains: u32,
+    pub has_guardian: bool,
+    pub council_active: bool,
+    pub seal_policy_active: bool,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -6309,6 +6329,30 @@ impl HarpocratesRegistry {
             .unwrap_or(false)
     }
 
+    /// Return the canonical public role-policy digest over the registry's
+    /// bounded role and governance policy fields (#1192).
+    ///
+    /// Equivalent effective policy states (regardless of signer/member insertion
+    /// order, monotonic policy version numbers, cleared pauses/guardians, or
+    /// cancelled/expired pending policies) normalize to the same versioned
+    /// byte preimage and produce an identical SHA-256 `digest`.
+    pub fn get_role_policy_digest(env: Env) -> RolePolicyDigest {
+        build_role_policy_digest(&env)
+    }
+
+    /// Verify that the live canonical role-policy state matches an expected
+    /// `encoding_version` and `expected_digest` (#1192).
+    pub fn verify_role_policy_digest(
+        env: Env,
+        expected_version: u32,
+        expected_digest: BytesN<32>,
+    ) -> bool {
+        if expected_version != ROLE_POLICY_DIGEST_V1 {
+            return false;
+        }
+        build_role_policy_digest(&env).digest == expected_digest
+    }
+
     // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
@@ -7046,6 +7090,144 @@ fn finalize_threshold_seal(
     }
     .publish(env);
     stored
+}
+
+fn cmp_canonical_bytes(a: &Bytes, b: &Bytes) -> core::cmp::Ordering {
+    let min_len = a.len().min(b.len());
+    let mut i = 0u32;
+    while i < min_len {
+        let ba = a.get(i).unwrap_or(0);
+        let bb = b.get(i).unwrap_or(0);
+        if ba != bb {
+            return ba.cmp(&bb);
+        }
+        i += 1;
+    }
+    a.len().cmp(&b.len())
+}
+
+fn insert_sorted_unique_xdr(list: &mut Vec<Bytes>, item: Bytes) {
+    let len = list.len();
+    let mut out = Vec::new(&item.env().clone());
+    let mut inserted = false;
+    let mut i = 0u32;
+    while i < len {
+        let cur = list.get(i).unwrap();
+        if !inserted {
+            match cmp_canonical_bytes(&item, &cur) {
+                core::cmp::Ordering::Less => {
+                    out.push_back(item.clone());
+                    inserted = true;
+                    out.push_back(cur);
+                }
+                core::cmp::Ordering::Equal => {
+                    inserted = true;
+                    out.push_back(cur);
+                }
+                core::cmp::Ordering::Greater => {
+                    out.push_back(cur);
+                }
+            }
+        } else {
+            out.push_back(cur);
+        }
+        i += 1;
+    }
+    if !inserted {
+        out.push_back(item);
+    }
+    *list = out;
+}
+
+fn append_opt_address_xdr(env: &Env, buf: &mut Bytes, addr: &Option<Address>) {
+    match addr {
+        None => buf.push_back(0u8),
+        Some(a) => {
+            buf.push_back(1u8);
+            let xdr = a.clone().to_xdr(env);
+            buf.extend_from_array(&xdr.len().to_be_bytes());
+            buf.append(&xdr);
+        }
+    }
+}
+
+fn build_role_policy_digest(env: &Env) -> RolePolicyDigest {
+    let schema_version = HarpocratesRegistry::get_schema_version(env.clone());
+    let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+    let pending_admin: Option<Address> = env.storage().persistent().get(&DataKey::PendingAdmin);
+    let guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
+    let timelock_min_delay = get_timelock_min_delay(env);
+
+    let now = env.ledger().timestamp();
+    let mut paused_domains = 0u32;
+    for bit in PAUSE_DOMAIN_SINGLE_BITS {
+        if domain_is_paused(env, bit, now) {
+            paused_domains |= bit;
+        }
+    }
+
+    let mut preimage = Bytes::from_slice(env, b"harpocrates:role-policy:v1");
+    preimage.extend_from_array(&ROLE_POLICY_DIGEST_V1.to_be_bytes());
+    preimage.extend_from_array(&schema_version.to_be_bytes());
+    append_opt_address_xdr(env, &mut preimage, &admin);
+    append_opt_address_xdr(env, &mut preimage, &pending_admin);
+    append_opt_address_xdr(env, &mut preimage, &guardian);
+    preimage.extend_from_array(&paused_domains.to_be_bytes());
+    preimage.extend_from_array(&timelock_min_delay.to_be_bytes());
+
+    let active_council = HarpocratesRegistry::get_admin_council(env.clone());
+    let council_active = active_council.is_some();
+    match active_council {
+        None => preimage.push_back(0u8),
+        Some(council) => {
+            preimage.push_back(1u8);
+            preimage.extend_from_array(&council.threshold.to_be_bytes());
+            let mut sorted_members: Vec<Bytes> = Vec::new(env);
+            for m in council.members.iter() {
+                insert_sorted_unique_xdr(&mut sorted_members, m.to_xdr(env));
+            }
+            preimage.extend_from_array(&sorted_members.len().to_be_bytes());
+            for xdr in sorted_members.iter() {
+                preimage.extend_from_array(&xdr.len().to_be_bytes());
+                preimage.append(&xdr);
+            }
+        }
+    }
+
+    let active_seal_policy = HarpocratesRegistry::get_active_seal_policy(env.clone());
+    let seal_policy_active = active_seal_policy.is_some();
+    match active_seal_policy {
+        None => preimage.push_back(0u8),
+        Some(policy) => {
+            preimage.push_back(1u8);
+            preimage.extend_from_array(&policy.required_approvals.to_be_bytes());
+            preimage.extend_from_array(&policy.max_signers.to_be_bytes());
+            preimage.extend_from_array(&policy.approval_ttl.to_be_bytes());
+            preimage.extend_from_array(&policy.expires_at.to_be_bytes());
+            let mut sorted_signers: Vec<Bytes> = Vec::new(env);
+            for s in policy.signers.iter() {
+                if HarpocratesRegistry::is_issuer(env.clone(), s.clone()) {
+                    insert_sorted_unique_xdr(&mut sorted_signers, s.to_xdr(env));
+                }
+            }
+            preimage.extend_from_array(&sorted_signers.len().to_be_bytes());
+            for xdr in sorted_signers.iter() {
+                preimage.extend_from_array(&xdr.len().to_be_bytes());
+                preimage.append(&xdr);
+            }
+        }
+    }
+
+    let digest: BytesN<32> = env.crypto().sha256(&preimage).into();
+    RolePolicyDigest {
+        encoding_version: ROLE_POLICY_DIGEST_V1,
+        digest,
+        schema_version,
+        paused_domains,
+        has_guardian: guardian.is_some(),
+        council_active,
+        seal_policy_active,
+    }
 }
 
 fn require_initialized(env: &Env) {
@@ -9107,6 +9289,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_role_policy_digest;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]

@@ -272,6 +272,8 @@ get_pending_admin
 get_schema_version
 is_admin
 is_issuer
+get_role_policy_digest
+verify_role_policy_digest
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -383,6 +385,26 @@ metadata, witness, proof, or key material is included.
 `is_admin(address)` and `is_issuer(address)` expose the effective role without
 requiring authorization. They are read-only and accept arbitrary public
 addresses. `get_schema_version()` returns the storage schema version.
+
+### Canonical public role-policy digest (`#1192`)
+
+`get_role_policy_digest()` returns a `RolePolicyDigest` (`encoding_version = 1`,
+`ROLE_POLICY_DIGEST_V1`) whose SHA-256 `digest` commits to a domain-separated
+canonical encoding (`"harpocrates:role-policy:v1"`) over the registry's bounded,
+effective role and governance policy fields:
+
+1. `schema_version` (`u32`, big-endian)
+2. `admin`, `pending_admin`, and `guardian` (`Option<Address>` encoded via canonical XDR)
+3. `paused_domains` (`u32` bitmask of unexpired paused registration domains)
+4. `timelock_min_delay_secs` (`u64`, big-endian)
+5. Active `AdminCouncil` (`threshold` and lexicographically sorted unique member XDRs, omitting creation/activation timestamps; pending or cancelled councils normalize to `0u8`)
+6. Active `SealPolicy` (`required_approvals`, `max_signers`, `approval_ttl`, `expires_at`, and lexicographically sorted effective active-issuer signer XDRs, omitting monotonic `version` and `created_at`; cancelled or expired policies normalize to `0u8`)
+
+Equivalent effective policy states therefore return the exact same `digest`
+regardless of member/signer insertion order, cleared pauses/guardians, or prior
+cancelled policy versions. `verify_role_policy_digest(expected_version, expected_digest)`
+checks both the encoding version and digest in a single read-only call and fails
+closed (`false`) on unknown versions.
 
 ### V1-to-V2 migration
 
