@@ -21,12 +21,21 @@ from db import (
 from envelope import canonical_metadata_hash
 from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
+try:
+    from registration_reconcile import (
+        default_min_confirmations,
+        process_verify_tx_job,
+        reconcile_pending_registrations,
+    )
+except ImportError:
+    default_min_confirmations = None
+    process_verify_tx_job = None
+    reconcile_pending_registrations = None
 from tracing import traced_job
 from chain_indexer import run_indexer_loop
 
@@ -40,7 +49,14 @@ LOGGER.setLevel(logging.INFO)
 WORKER_ID = f"worker-{os.getpid()}"
 
 @traced_job("job.media.embed")
-def process_embed(job: dict) -> dict:
+def process_embed(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        message_path = job["message_path"]
+        output_path = job["output_path"]
+        message = Path(message_path).read_text()
+        meta = embed_metadata(input_path, message, output_path)
+        return {"output_path": output_path, "message": message, **(meta if isinstance(meta, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     metadata = payload["metadata"]
@@ -87,7 +103,12 @@ def process_embed(job: dict) -> dict:
     }
 
 @traced_job("job.media.extract")
-def process_extract(job: dict) -> dict:
+def process_extract(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = extract_metadata(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     filename = payload["filename"]
@@ -121,7 +142,12 @@ def process_extract(job: dict) -> dict:
     }
 
 @traced_job("job.proof.noir")
-def process_silent_witness(job: dict) -> dict:
+def process_silent_witness(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = generate_silent_witness(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
 
     video_hash = payload["video_hash"]
@@ -139,9 +165,21 @@ def process_silent_witness(job: dict) -> dict:
     
     return {"proof": proof}
 
-def process_verify_tx(job: dict) -> dict:
+def process_verify_tx(job: dict, storage: object | None = None) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
+    if storage is not None or ("input_path" in job and "payload" not in job):
+        import json
+        data = json.loads(Path(job["input_path"]).read_text())
+        status = verify_transaction_status(data["tx_id"])
+        output_path = job["output_path"]
+        Path(output_path).write_text(json.dumps(status))
+        return {"output_path": output_path, **(status if isinstance(status, dict) else {"status": status})}
     return process_verify_tx_job(job.get("payload") or {})
+
+
+def is_fatal(job_type: str, err: BaseException) -> bool:
+    """Classify whether a job failure is non-retryable."""
+    return isinstance(err, ValueError) and job_type != "verify_tx"
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
@@ -269,6 +307,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -311,12 +350,23 @@ def run_worker(
                     complete_job(job_id, res)
                     LOGGER.info(f"Completed job {job_id}")
                 except Exception as err:
-                    LOGGER.error(f"Failed job {job_id}: {err}")
-                    LOGGER.error(traceback.format_exc())
-                    is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
+                    err_class = type(err).__name__
+                    LOGGER.error("Failed job %s with error_type=%s", job_id, err_class)
+                    fatal = isinstance(err, ValueError) and job_type != "verify_tx"
                     if job_type == "verify_tx":
-                        is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                        fatal = isinstance(err, ValueError)
+                    reason: str | None = None
+                    if isinstance(err, StegoLimitExceededError):
+                        reason = "stego_limit_exceeded"
+                    elif isinstance(err, ValueError):
+                        reason = "validation_error" if fatal else "retryable_error"
+                    fail_job(
+                        job_id,
+                        str(err),
+                        is_fatal=fatal,
+                        reason=reason,
+                        error_type=err_class,
+                    )
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -335,7 +385,12 @@ def run_worker(
                             f"Job {job_id} did not finish within grace period of {grace_period_seconds}s; releasing job"
                         )
                         hb_stop_event.set()
-                        fail_job(job_id, "Worker shutdown grace period exceeded", is_fatal=False)
+                        fail_job(
+                            job_id,
+                            "Worker shutdown grace period exceeded",
+                            is_fatal=False,
+                            reason="grace_period_exceeded",
+                        )
                     break
 
         except Exception as e:

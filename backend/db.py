@@ -5,7 +5,10 @@ import binascii
 import hashlib
 import logging
 import os
+import re
+import threading
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
@@ -1171,39 +1174,279 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
+
+JOB_ATTEMPT_HISTORY_DEFAULT_MAX = 10
+JOB_ATTEMPT_HISTORY_HARD_CAP = 100
+JOB_ATTEMPT_MAX_PHASES = 16
+JOB_WORKER_ID_MAX_LENGTH = 64
+
+ALLOWED_TERMINAL_REASONS: frozenset[str] = frozenset(
+    {
+        "completed",
+        "cancelled",
+        "grace_period_exceeded",
+        "stego_limit_exceeded",
+        "missing_input",
+        "validation_error",
+        "retryable_error",
+        "fatal_error",
+        "lease_expired",
+    }
+)
+
+_SAFE_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_SAFE_ERROR_CLASS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_SAFE_STAGE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_STELLAR_SECRET_LIKE_RE = re.compile(r"\bS[A-Z2-7]{55}\b")
+
+
+def job_attempt_history_max_entries() -> int:
+    """Return bounded worker attempt history size from ``JOB_ATTEMPT_HISTORY_MAX_ENTRIES``."""
+    raw = os.getenv("JOB_ATTEMPT_HISTORY_MAX_ENTRIES")
+    if raw is None or not raw.strip():
+        return JOB_ATTEMPT_HISTORY_DEFAULT_MAX
+    try:
+        parsed = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError("JOB_ATTEMPT_HISTORY_MAX_ENTRIES must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("JOB_ATTEMPT_HISTORY_MAX_ENTRIES must be a positive integer")
+    return min(parsed, JOB_ATTEMPT_HISTORY_HARD_CAP)
+
+
+def _sanitize_worker_id(worker_id: Any) -> str | None:
+    if worker_id is None:
+        return None
+    if isinstance(worker_id, (bytes, bytearray, memoryview)):
+        return "redacted-worker"
+    text = str(worker_id).strip()
+    if not text:
+        return None
+    if (
+        "/" in text
+        or "\\" in text
+        or ":" in text
+        or _STELLAR_SECRET_LIKE_RE.search(text)
+        or "secret" in text.lower()
+        or "witness" in text.lower()
+    ):
+        return "redacted-worker"
+    clipped = text[:JOB_WORKER_ID_MAX_LENGTH]
+    if _SAFE_WORKER_ID_RE.match(clipped):
+        return clipped
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", clipped).strip("-")
+    return cleaned[:JOB_WORKER_ID_MAX_LENGTH] or "redacted-worker"
+
+
+def _sanitize_error_class(error_type: Any) -> str | None:
+    if not isinstance(error_type, str):
+        return None
+    candidate = error_type.strip()
+    if _SAFE_ERROR_CLASS_RE.match(candidate):
+        return candidate
+    return None
+
+
+def _sanitize_phase_token(phase: Any) -> str | None:
+    if not isinstance(phase, str):
+        return None
+    cleaned = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+    if not cleaned:
+        return None
+    if "/" in cleaned or "\\" in cleaned or ":" in cleaned or _STELLAR_SECRET_LIKE_RE.search(cleaned):
+        return "redacted_phase"
+    if _SAFE_STAGE_RE.match(cleaned):
+        return cleaned
+    normalized = re.sub(r"[^A-Za-z0-9._-]", "_", cleaned).strip("_")
+    return normalized[:JOB_PROGRESS_PHASE_MAX_LENGTH] or "redacted_phase"
+
+
+def classify_attempt_terminal_reason(
+    error: Any = None,
+    *,
+    is_fatal: bool = False,
+    reason: str | None = None,
+) -> str:
+    """Map a job termination outcome onto a fixed privacy-safe reason code.
+
+    Raw exception messages, filesystem paths, media bytes, and witness secrets
+    are never copied into the returned token.
+    """
+    if isinstance(reason, str) and reason in ALLOWED_TERMINAL_REASONS:
+        return reason
+    if isinstance(error, str):
+        lowered = error.lower()
+        if "grace period" in lowered:
+            return "grace_period_exceeded"
+        if "exceeded memory limit" in lowered or "exceeded cpu limit" in lowered or (
+            "stego" in lowered and "limit" in lowered
+        ):
+            return "stego_limit_exceeded"
+        if "input video file missing" in lowered or "missing for job" in lowered:
+            return "missing_input"
+        if is_fatal and any(k in lowered for k in ("must be", "invalid", "bad input", "unknown job type")):
+            return "validation_error"
+    return "fatal_error" if is_fatal else "retryable_error"
+
+
+def sanitize_attempt_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a bounded, privacy-safe copy of one worker attempt record."""
+    raw_progress = entry.get("last_progress")
+    safe_progress: dict[str, Any] | None = None
+    if isinstance(raw_progress, Mapping):
+        phase_tok = _sanitize_phase_token(raw_progress.get("phase"))
+        pct_raw = raw_progress.get("percent")
+        pct_val: float | None = None
+        if isinstance(pct_raw, (int, float)) and not isinstance(pct_raw, bool) and pct_raw == pct_raw:
+            pct_val = round(min(100.0, max(0.0, float(pct_raw))), 1)
+        if phase_tok is not None:
+            safe_progress = {"phase": phase_tok, "percent": pct_val}
+
+    raw_phases = entry.get("phases")
+    safe_phases: list[str] = []
+    if isinstance(raw_phases, list):
+        for item in raw_phases[-JOB_ATTEMPT_MAX_PHASES:]:
+            tok = _sanitize_phase_token(item)
+            if tok is not None and (not safe_phases or safe_phases[-1] != tok):
+                safe_phases.append(tok)
+
+    raw_status = entry.get("status")
+    status = raw_status if raw_status in {"running", "completed", "failed", "requeued", "cancelled"} else "running"
+
+    raw_reason = entry.get("terminal_reason")
+    terminal_reason = raw_reason if raw_reason in ALLOWED_TERMINAL_REASONS else None
+
+    lease_sec_raw = entry.get("lease_duration_seconds")
+    lease_sec = int(lease_sec_raw) if isinstance(lease_sec_raw, int) and not isinstance(lease_sec_raw, bool) and lease_sec_raw > 0 else None
+
+    attempt_num = entry.get("attempt")
+    safe_attempt = int(attempt_num) if isinstance(attempt_num, int) and not isinstance(attempt_num, bool) and attempt_num >= 1 else 1
+
+    def _iso_or_none(val: Any) -> str | None:
+        return val if isinstance(val, str) and len(val) <= 64 and "/" not in val and "\\" not in val else None
+
+    return {
+        "attempt": safe_attempt,
+        "worker_id": _sanitize_worker_id(entry.get("worker_id")),
+        "status": status,
+        "leased_at": _iso_or_none(entry.get("leased_at")),
+        "lease_duration_seconds": lease_sec,
+        "heartbeat_at": _iso_or_none(entry.get("heartbeat_at")),
+        "last_progress": safe_progress,
+        "phases": safe_phases,
+        "ended_at": _iso_or_none(entry.get("ended_at")),
+        "terminal_reason": terminal_reason,
+        "error_type": _sanitize_error_class(entry.get("error_type")),
+    }
+
+
+def _append_bounded_attempt(job: dict[str, Any], entry: Mapping[str, Any]) -> dict[str, Any]:
+    history: list[dict[str, Any]] = job.setdefault("attempt_history", [])
+    clean = sanitize_attempt_entry(entry)
+    history.append(clean)
+    max_entries = job_attempt_history_max_entries()
+    if len(history) > max_entries:
+        overflow = len(history) - max_entries
+        del history[:overflow]
+        job["attempts_evicted"] = int(job.get("attempts_evicted", 0)) + overflow
+    return clean
+
+
+def _active_or_new_attempt(job: dict[str, Any], *, now_iso: str) -> dict[str, Any]:
+    history: list[dict[str, Any]] = job.setdefault("attempt_history", [])
+    if history and history[-1].get("status") == "running":
+        return history[-1]
+    attempt_num = int(job.get("attempt_count", 0)) + 1
+    job["attempt_count"] = attempt_num
+    return _append_bounded_attempt(
+        job,
+        {
+            "attempt": attempt_num,
+            "worker_id": job.get("worker_id"),
+            "status": "running",
+            "leased_at": now_iso,
+            "lease_duration_seconds": None,
+            "heartbeat_at": None,
+            "last_progress": None,
+            "phases": [],
+            "ended_at": None,
+            "terminal_reason": None,
+            "error_type": None,
+        },
+    )
+
+
+def get_job_attempt_history(job_id: int) -> list[dict[str, Any]]:
+    """Return a sanitized copy of the bounded attempt history for ``job_id``."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return []
+        history = job.get("attempt_history")
+        if not isinstance(history, list):
+            return []
+        return [sanitize_attempt_entry(item) for item in history if isinstance(item, Mapping)]
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "attempt_count": 0,
+            "attempts_evicted": 0,
+            "attempt_history": [],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
 def get_job(job_id: int) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
 def cancel_job(job_id: int) -> bool:
     """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
-        return True
-    return False
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job["status"] == "pending":
+            now_iso = datetime.now(timezone.utc).isoformat()
+            job["status"] = "cancelled"
+            job["cancelled_at"] = now_iso
+            job["terminal_reason"] = "cancelled"
+            attempt_num = int(job.get("attempt_count", 0)) + 1
+            job["attempt_count"] = attempt_num
+            _append_bounded_attempt(
+                job,
+                {
+                    "attempt": attempt_num,
+                    "worker_id": None,
+                    "status": "cancelled",
+                    "leased_at": None,
+                    "lease_duration_seconds": None,
+                    "heartbeat_at": None,
+                    "last_progress": None,
+                    "phases": [],
+                    "ended_at": now_iso,
+                    "terminal_reason": "cancelled",
+                    "error_type": None,
+                },
+            )
+            return True
+        return False
 
 
 def lease_job(
@@ -1212,13 +1455,44 @@ def lease_job(
     lease_duration: int = 300,
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
-    return None
+    safe_lease = max(1, int(lease_duration))
+    safe_worker = _sanitize_worker_id(worker_id)
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                history: list[dict[str, Any]] = job.setdefault("attempt_history", [])
+                if history and history[-1].get("status") == "running":
+                    history[-1]["status"] = "requeued"
+                    history[-1]["ended_at"] = now_iso
+                    history[-1]["terminal_reason"] = "lease_expired"
+                attempt_num = int(job.get("attempt_count", 0)) + 1
+                job["attempt_count"] = attempt_num
+                job["status"] = "running"
+                job["worker_id"] = safe_worker
+                job["leased_at"] = now_iso
+                _append_bounded_attempt(
+                    job,
+                    {
+                        "attempt": attempt_num,
+                        "worker_id": safe_worker,
+                        "status": "running",
+                        "leased_at": now_iso,
+                        "lease_duration_seconds": safe_lease,
+                        "heartbeat_at": None,
+                        "last_progress": None,
+                        "phases": [],
+                        "ended_at": None,
+                        "terminal_reason": None,
+                        "error_type": None,
+                    },
+                )
+                snapshot = dict(job)
+                snapshot["attempt_history"] = [
+                    sanitize_attempt_entry(item) for item in job["attempt_history"]
+                ]
+                return snapshot
+        return None
 
 
 def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
@@ -1228,10 +1502,16 @@ def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: in
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    del progress
+    safe_lease = max(1, int(lease_duration))
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running":
+            now_iso = datetime.now(timezone.utc).isoformat()
+            job["heartbeat_at"] = now_iso
+            attempt = _active_or_new_attempt(job, now_iso=now_iso)
+            attempt["heartbeat_at"] = now_iso
+            attempt["lease_duration_seconds"] = safe_lease
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1255,51 +1535,91 @@ def report_job_progress(
     ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
     updated. Returns True when the update was stored.
     """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("progress phase must be a non-empty string")
+        phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        current = time.monotonic() if now is None else now
+        last = job.get("_progress_at")
+        if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+            return False
+        safe_phase = _sanitize_phase_token(phase) or "redacted_phase"
+        job["_progress_at"] = current
+        job["progress"] = {"phase": safe_phase, "percent": percent}
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        attempt = _active_or_new_attempt(job, now_iso=now_iso)
+        attempt["last_progress"] = {"phase": safe_phase, "percent": percent}
+        phases: list[str] = attempt.setdefault("phases", [])
+        if not phases or phases[-1] != safe_phase:
+            phases.append(safe_phase)
+            if len(phases) > JOB_ATTEMPT_MAX_PHASES:
+                del phases[: len(phases) - JOB_ATTEMPT_MAX_PHASES]
+        return True
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
     """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        attempt = _active_or_new_attempt(job, now_iso=now_iso)
+        attempt["status"] = "completed"
+        attempt["ended_at"] = now_iso
+        attempt["terminal_reason"] = "completed"
+        attempt["error_type"] = None
+        job["status"] = "completed"
+        job["result"] = result
+        job["terminal_reason"] = "completed"
+        job["completed_at"] = now_iso
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
+def fail_job(
+    job_id: int,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    reason: str | None = None,
+    error_type: str | None = None,
+) -> None:
     """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        terminal_reason = classify_attempt_terminal_reason(
+            error, is_fatal=is_fatal, reason=reason
+        )
+        safe_err_type = _sanitize_error_class(error_type)
+        attempt = _active_or_new_attempt(job, now_iso=now_iso)
+        attempt["status"] = "failed" if is_fatal else "requeued"
+        attempt["ended_at"] = now_iso
+        attempt["terminal_reason"] = terminal_reason
+        attempt["error_type"] = safe_err_type
+        # Store only the canonical privacy-safe terminal reason so raw paths,
+        # media bytes, or proof secrets in exception strings never persist.
+        job["error"] = terminal_reason
+        job["terminal_reason"] = terminal_reason
+        job["failed_at"] = now_iso
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

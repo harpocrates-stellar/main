@@ -70,10 +70,12 @@ from db import (
     make_idempotency_key,
     upsert_register_event,
     set_legal_hold,
+    ALLOWED_TERMINAL_REASONS,
     ConflictError,
     enqueue_job,
     get_job,
     cancel_job,
+    sanitize_attempt_entry,
 )
 try:
     from registration_reconcile import (
@@ -112,7 +114,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -2502,13 +2504,26 @@ def public_job_view(job: dict) -> dict:
     """Public shape of a job for ``GET /api/jobs/<id>``.
 
     Always includes ``progress``: ``{"phase": str, "percent": float | None}``
-    while a processor reports it, otherwise ``null``.
+    while a processor reports it, otherwise ``null``. Worker ``attempt_history``
+    entries are scrubbed so uploaded media bytes, private paths, and proof
+    secrets are never exposed.
     """
     view = {
         key: value
         for key, value in job.items()
-        if key not in JOB_PRIVATE_FIELDS and not str(key).startswith("_")
+        if key not in JOB_PRIVATE_FIELDS
+        and not str(key).startswith("_")
+        and not isinstance(value, (bytes, bytearray, memoryview))
     }
+    if "error" in view and view["error"] not in ALLOWED_TERMINAL_REASONS:
+        view["error"] = "fatal_error" if job.get("status") == "failed" else "retryable_error"
+    raw_history = job.get("attempt_history")
+    if isinstance(raw_history, list):
+        view["attempt_history"] = [
+            sanitize_attempt_entry(entry)
+            for entry in raw_history
+            if isinstance(entry, dict)
+        ]
     progress = job.get("progress")
     if isinstance(progress, dict) and isinstance(progress.get("phase"), str):
         view["progress"] = {"phase": progress["phase"], "percent": progress.get("percent")}
