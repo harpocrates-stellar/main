@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 
@@ -261,3 +262,19 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def get_consent_window_bounds(
+        self, account_tag: str
+    ) -> Optional[Tuple[float, Optional[float]]]:
+        """Return (granted_at_epoch_seconds, effective_end_epoch_seconds) for an account if recorded."""
+        with self._lock:
+            state = self._consent_states.get(account_tag)
+            if state is None:
+                return None
+            candidates = [
+                ts
+                for ts in (state.expires_at_epoch_seconds, state.withdrawal_epoch_seconds)
+                if ts is not None and ts > 0
+            ]
+            end_bound = min(candidates) if candidates else None
+            return (state.granted_at_epoch_seconds, end_bound)

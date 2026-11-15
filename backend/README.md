@@ -342,6 +342,17 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Export Date Range Bounds
+
+`ExportManager.create_export()` validates `start_time` and `end_time` via
+`validate_export_date_range()` **before** querying storage or reading processor
+buffers. Contradictory intervals (`end_time < start_time`), single-sided ranges,
+timezone-ambiguous timestamps, intervals outside recorded consent windows, or
+spans exceeding `ExportPolicy.max_export_range_seconds` (default `2592000`
+seconds / 30 days) raise `ExportDateRangeError` with deterministic ISO-8601 UTC
+(`...Z`) boundary attributes (`start_utc`, `end_utc`, `allowed_start_utc`,
+`allowed_end_utc`).
+
 ## Test
 
 ```powershell

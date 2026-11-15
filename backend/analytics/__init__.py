@@ -122,11 +122,17 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        DEFAULT_MAX_EXPORT_RANGE_SECONDS,
         EXPORT_FORMAT_VERSION,
         ExportArtifact,
+        ExportDateRange,
+        ExportDateRangeError,
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        format_utc_iso8601,
+        parse_utc_timestamp,
+        validate_export_date_range,
     )
 except Exception:
     pass
@@ -221,11 +227,17 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "DEFAULT_MAX_EXPORT_RANGE_SECONDS",
     "EXPORT_FORMAT_VERSION",
     "ExportArtifact",
+    "ExportDateRange",
+    "ExportDateRangeError",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "format_utc_iso8601",
+    "parse_utc_timestamp",
+    "validate_export_date_range",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",
