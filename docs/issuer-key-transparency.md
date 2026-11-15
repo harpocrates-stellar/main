@@ -112,3 +112,11 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Bounded consistency verification work
+
+Verifiers ingesting untrusted or large transparency logs should call `verify_directory_consistency_bounded` with `ConsistencyWorkBudget` (`max_events`, `max_total_bytes`, `max_single_event_bytes`) in `backend/issuer_key_transparency.py`:
+
+- Event-count and serialized byte limits are enforced **before** `rebuild_directory` executes, including over lazy iterables/streams.
+- When limits are exceeded or the supplied event log is shorter than `checkpoint.event_count`, verification returns an explicit `BoundedConsistencyResult` with `status: "incomplete_proof"`, `consistent: false`, `incomplete: true`, and a deterministic `reason_code` (`event_count_limit_exceeded`, `byte_budget_exceeded`, `single_event_byte_limit_exceeded`, or `checkpoint_ahead_of_supplied_events`) rather than hanging or timing out silently.
+

@@ -23,6 +23,10 @@ MAX_ACTIVE_KEYS = 8
 MAX_EVENTS = 10_000
 MAX_MANIFEST_BYTES = 8_192
 MAX_CHECKPOINT_BYTES = 16_384
+DEFAULT_MAX_CONSISTENCY_EVENTS = 1_024
+DEFAULT_MAX_CONSISTENCY_BYTES = 262_144
+DEFAULT_MAX_SINGLE_EVENT_BYTES = 2_048
+CONSISTENCY_WORK_SCHEMA = "harpocrates-transparency-consistency-work/v1"
 DEFAULT_FRESHNESS_SECONDS = 86_400  # 24h
 HIGH_ASSURANCE_FRESHNESS_SECONDS = 3_600  # 1h fail-closed window
 
@@ -513,6 +517,259 @@ def verify_checkpoint_consistency(
             errors.append("conflicting manifests at same tree head")
     # Rollback: a previously observed higher sequence must not shrink with different head
     return errors
+
+
+@dataclass(frozen=True)
+class ConsistencyWorkBudget:
+    """Explicit event-count and byte bounds enforced before rebuilding a directory."""
+
+    max_events: int = DEFAULT_MAX_CONSISTENCY_EVENTS
+    max_total_bytes: int = DEFAULT_MAX_CONSISTENCY_BYTES
+    max_single_event_bytes: int = DEFAULT_MAX_SINGLE_EVENT_BYTES
+
+    def __post_init__(self) -> None:
+        for name, val in (
+            ("max_events", self.max_events),
+            ("max_total_bytes", self.max_total_bytes),
+            ("max_single_event_bytes", self.max_single_event_bytes),
+        ):
+            if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+                raise TransparencyError(f"{name} must be a positive integer")
+        if self.max_events > MAX_EVENTS:
+            raise TransparencyError(f"max_events cannot exceed MAX_EVENTS ({MAX_EVENTS})")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "maxEvents": self.max_events,
+            "maxSingleEventBytes": self.max_single_event_bytes,
+            "maxTotalBytes": self.max_total_bytes,
+        }
+
+
+@dataclass(frozen=True)
+class BoundedConsistencyResult:
+    """Explicit result of bounded consistency verification (never silently times out)."""
+
+    status: str  # "consistent" | "inconsistent" | "incomplete_proof"
+    consistent: bool
+    incomplete: bool
+    reason_code: str | None
+    errors: tuple[str, ...]
+    inspected_events: int
+    inspected_bytes: int
+    budget: ConsistencyWorkBudget
+    directory: IssuerDirectory | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "budget": self.budget.to_dict(),
+            "consistent": self.consistent,
+            "errors": list(self.errors),
+            "incomplete": self.incomplete,
+            "inspectedBytes": self.inspected_bytes,
+            "inspectedEvents": self.inspected_events,
+            "reasonCode": self.reason_code,
+            "schema": CONSISTENCY_WORK_SCHEMA,
+            "status": self.status,
+        }
+
+
+def verify_directory_consistency_bounded(
+    organization_identity_hash: str,
+    events: Iterable[DirectoryEvent | dict[str, Any]],
+    checkpoint: DirectoryCheckpoint | dict[str, Any],
+    *,
+    manifests: Iterable[IssuerManifest | dict[str, Any]] | None = None,
+    budget: ConsistencyWorkBudget | None = None,
+) -> BoundedConsistencyResult:
+    """Bound event-count and byte work before rebuilding a directory.
+
+    Returns an explicit ``incomplete_proof`` result instead of exhausting CPU or
+    memory or timing out silently when the log exceeds configured bounds or omits
+    events required by the checkpoint.
+    """
+    active_budget = budget if budget is not None else ConsistencyWorkBudget()
+    org_hash = _require_hex("organizationIdentityHash", organization_identity_hash)
+
+    cp_raw_dict = checkpoint.to_dict() if isinstance(checkpoint, DirectoryCheckpoint) else checkpoint
+    if not isinstance(cp_raw_dict, dict):
+        raise TransparencyError("checkpoint must be a DirectoryCheckpoint or dict")
+    cp_bytes = len(_canonical_json(cp_raw_dict))
+    total_bytes = cp_bytes
+    if total_bytes > active_budget.max_total_bytes or cp_bytes > MAX_CHECKPOINT_BYTES:
+        return BoundedConsistencyResult(
+            status="incomplete_proof",
+            consistent=False,
+            incomplete=True,
+            reason_code="byte_budget_exceeded",
+            errors=("checkpoint payload exceeds consistency byte budget",),
+            inspected_events=0,
+            inspected_bytes=total_bytes,
+            budget=active_budget,
+        )
+    parsed_checkpoint = (
+        checkpoint
+        if isinstance(checkpoint, DirectoryCheckpoint)
+        else DirectoryCheckpoint.from_dict(cp_raw_dict)
+    )
+
+    # Pull at most max_events + 1 items so unbounded iterables cannot hang before rebuild.
+    bounded_raw_events: list[DirectoryEvent | dict[str, Any]] = []
+    for item in events:
+        if len(bounded_raw_events) >= active_budget.max_events:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="event_count_limit_exceeded",
+                errors=(
+                    f"event log exceeds max_events bound ({active_budget.max_events}) before rebuild",
+                ),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes,
+                budget=active_budget,
+            )
+        raw_ev_dict = item.to_dict() if isinstance(item, DirectoryEvent) else item
+        if not isinstance(raw_ev_dict, dict):
+            return BoundedConsistencyResult(
+                status="inconsistent",
+                consistent=False,
+                incomplete=False,
+                reason_code="invalid_directory_log",
+                errors=("directory event entry must be an object",),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes,
+                budget=active_budget,
+            )
+        ev_bytes = len(_canonical_json(raw_ev_dict))
+        if ev_bytes > active_budget.max_single_event_bytes:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="single_event_byte_limit_exceeded",
+                errors=(
+                    f"single event ({ev_bytes} bytes) exceeds max_single_event_bytes ({active_budget.max_single_event_bytes})",
+                ),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes + ev_bytes,
+                budget=active_budget,
+            )
+        total_bytes += ev_bytes
+        if total_bytes > active_budget.max_total_bytes:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="byte_budget_exceeded",
+                errors=(
+                    f"cumulative transparency payload exceeds max_total_bytes ({active_budget.max_total_bytes}) before rebuild",
+                ),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes,
+                budget=active_budget,
+            )
+        bounded_raw_events.append(item)
+
+    parsed_manifests: list[IssuerManifest] = []
+    for mf in manifests or ():
+        mf_dict = mf.to_dict() if isinstance(mf, IssuerManifest) else mf
+        if not isinstance(mf_dict, dict):
+            return BoundedConsistencyResult(
+                status="inconsistent",
+                consistent=False,
+                incomplete=False,
+                reason_code="invalid_directory_log",
+                errors=("manifest entry must be an object",),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes,
+                budget=active_budget,
+            )
+        mf_bytes = len(_canonical_json(mf_dict))
+        total_bytes += mf_bytes
+        if total_bytes > active_budget.max_total_bytes or mf_bytes > MAX_MANIFEST_BYTES:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="byte_budget_exceeded",
+                errors=("manifest payload exceeds consistency byte budget before rebuild",),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes,
+                budget=active_budget,
+            )
+        try:
+            parsed_manifests.append(
+                mf if isinstance(mf, IssuerManifest) else IssuerManifest.from_dict(mf_dict)
+            )
+        except (TransparencyError, KeyError, ValueError, TypeError) as exc:
+            return BoundedConsistencyResult(
+                status="inconsistent",
+                consistent=False,
+                incomplete=False,
+                reason_code="invalid_directory_log",
+                errors=(str(exc),),
+                inspected_events=len(bounded_raw_events),
+                inspected_bytes=total_bytes,
+                budget=active_budget,
+            )
+
+    if parsed_checkpoint.event_count > len(bounded_raw_events):
+        return BoundedConsistencyResult(
+            status="incomplete_proof",
+            consistent=False,
+            incomplete=True,
+            reason_code="checkpoint_ahead_of_supplied_events",
+            errors=(
+                "supplied event sequence is incomplete for the target checkpoint eventCount",
+            ),
+            inspected_events=len(bounded_raw_events),
+            inspected_bytes=total_bytes,
+            budget=active_budget,
+        )
+
+    try:
+        parsed_events = [
+            ev if isinstance(ev, DirectoryEvent) else DirectoryEvent.from_dict(ev)
+            for ev in bounded_raw_events
+        ]
+        directory = rebuild_directory(org_hash, parsed_events, parsed_manifests)
+    except (TransparencyError, KeyError, ValueError, TypeError) as exc:
+        return BoundedConsistencyResult(
+            status="inconsistent",
+            consistent=False,
+            incomplete=False,
+            reason_code="invalid_directory_log",
+            errors=(str(exc),),
+            inspected_events=len(bounded_raw_events),
+            inspected_bytes=total_bytes,
+            budget=active_budget,
+        )
+
+    consistency_errors = verify_checkpoint_consistency(directory, parsed_checkpoint)
+    if consistency_errors:
+        return BoundedConsistencyResult(
+            status="inconsistent",
+            consistent=False,
+            incomplete=False,
+            reason_code="consistency_verification_failed",
+            errors=tuple(consistency_errors),
+            inspected_events=len(parsed_events),
+            inspected_bytes=total_bytes,
+            budget=active_budget,
+        )
+
+    return BoundedConsistencyResult(
+        status="consistent",
+        consistent=True,
+        incomplete=False,
+        reason_code=None,
+        errors=(),
+        inspected_events=len(parsed_events),
+        inspected_bytes=total_bytes,
+        budget=active_budget,
+        directory=directory,
+    )
 
 
 def detect_rollback(
