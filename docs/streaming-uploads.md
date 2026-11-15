@@ -24,6 +24,13 @@ destination artifact is retained.
 | `UPLOAD_STREAM_THRESHOLD_BYTES` | `1048576` | Content-Length above which embed/extract wrap uploads |
 | `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream size ceiling |
 | `UPLOAD_TEMP_DIR` | OS temp | Optional temp directory for stream scratch files |
+| `UPLOAD_SESSION_TTL_SECONDS` | `3600` | Inactivity TTL (clamped 60s–7d) before upload sessions become reclaimable |
+
+## Upload Session Expiry & Operator Retention Preview
+
+- `POST /api/stego/upload-session` records session creation/activity timestamps (`ttlSeconds`, `expiresAt`), refreshed on each accepted chunk (`touch_upload_session`).
+- `GET /api/stego/upload-sessions/retention-preview` and `streaming_upload.preview_expired_upload_sessions()` list expired sessions (`expired_sessions`, bounded to 200 items) and bounded reclaimable storage (`storage.reclaimable_bytes`, `unit: "bytes"`) without exposing server filesystem paths.
+- `AdmissionController.session_worker_lease()` and `streaming_upload.active_upload_session_worker()` track active chunk writers and commit workers so `sweep_expired_upload_sessions()` never deletes chunks referenced by an active worker, even if the session's original TTL elapsed mid-processing.
 
 ## Trust boundary, privacy, migration, rollback
 
