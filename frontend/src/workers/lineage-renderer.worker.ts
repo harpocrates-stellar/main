@@ -41,24 +41,13 @@ function computeLayout(nodes: LineageNode[]): Record<string, { x: number; y: num
 
 self.onmessage = function(e: MessageEvent<RenderRequest>): void {
   try {
-    const { nodeIds, viewport } = e.data;
-    
-    // In a real implementation, we would fetch nodes from IndexedDB or state
-    // For this demo, we assume nodes are passed or available in scope
-    // Here we simulate fetching and processing
-    
-    // Privacy note: We only process node IDs and metadata hashes
-    // No sensitive data (keys, secrets, witness values) is ever transmitted
-    
+    const { nodeIds: _nodeIds, viewport: _viewport } = e.data;
     const response: RenderResponse = {
       nodes: [],
-      layout: {},
+      layout: computeLayout([]),
       error: undefined
     };
 
-    // Simulate processing
-    // In production: fetch nodes, validate, compute layout
-    
     self.postMessage(response);
   } catch (error) {
     const response: RenderResponse = {
@@ -68,9 +57,4 @@ self.onmessage = function(e: MessageEvent<RenderRequest>): void {
     };
     self.postMessage(response);
   }
-};
-
-// Handle cancellation
-self.onmessage = function(e: MessageEvent): void {
-  // No-op for now, but structure allows for cancellation tokens
 };

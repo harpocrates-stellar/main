@@ -1,6 +1,11 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import {
+  CONCEALED_WITNESS_PLACEHOLDER,
+  PROOF_PREPARATION_POLICY_VERSION,
+  buildProofPreparationPreview,
+  useEvidence,
+} from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -230,6 +235,80 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('builds a read-only proof preparation preview with canonical public inputs and concealed witnesses without submitting transactions', () => {
+    const missing = buildProofPreparationPreview({ proof: null, tier: 'silent' })
+    expect(missing).toEqual({
+      ok: false,
+      readOnly: true,
+      code: 'MISSING_EVIDENCE',
+      policyVersion: PROOF_PREPARATION_POLICY_VERSION,
+      inputSchemaVersion: 1,
+      message: 'Upload and embed evidence before previewing proof preparation.',
+    })
+
+    const malformed = buildProofPreparationPreview({
+      proof: {
+        fileName: 'clip.mp4',
+        sourceHash: 'a'.repeat(64),
+        videoHash: 'not-hex',
+        metadataHash: 'c'.repeat(64),
+        proofId: 'd'.repeat(64),
+        timestamp: '2026-01-01T00:00:00.000Z',
+        tier: 'silent',
+      },
+      tier: 'silent',
+    })
+    expect(malformed).toMatchObject({ ok: false, code: 'INVALID_PUBLIC_INPUT' })
+
+    const secretCred = '12345678901234567890'
+    const secretNullifier = '98765432109876543210'
+    const preview = buildProofPreparationPreview({
+      proof: {
+        fileName: 'clip.mp4',
+        sourceHash: 'a'.repeat(64),
+        videoHash: '0'.repeat(31) + '1' + '0'.repeat(31) + '2',
+        metadataHash: 'c'.repeat(64),
+        proofId: 'd'.repeat(64),
+        timestamp: '2026-01-01T00:00:00.000Z',
+        tier: 'silent',
+      },
+      tier: 'silent',
+      credentialSeed: secretCred,
+      nullifierSeed: secretNullifier,
+      verifierScope: '7',
+      epoch: 20454,
+    })
+
+    expect(preview.ok).toBe(true)
+    if (!preview.ok) return
+    expect(preview.policyVersion).toBe(PROOF_PREPARATION_POLICY_VERSION)
+    expect(preview.inputSchemaVersion).toBe(1)
+    expect(preview.publicInputs).toEqual([
+      { name: 'video_hash_hi', encoding: 'bn254_field_dec', value: '1' },
+      { name: 'video_hash_lo', encoding: 'bn254_field_dec', value: '2' },
+      { name: 'verifier_scope', encoding: 'bn254_field_dec', value: '7' },
+      { name: 'epoch', encoding: 'bn254_field_dec', value: '20454' },
+      { name: 'metadata_hash', encoding: 'sha256_hex', value: 'c'.repeat(64) },
+      { name: 'proof_id', encoding: 'sha256_hex', value: 'd'.repeat(64) },
+    ])
+    expect(preview.concealedWitnesses).toEqual([
+      {
+        name: 'credential_secret',
+        displayValue: CONCEALED_WITNESS_PLACEHOLDER,
+        configured: true,
+        validFieldScalar: true,
+      },
+      {
+        name: 'nullifier_secret',
+        displayValue: CONCEALED_WITNESS_PLACEHOLDER,
+        configured: true,
+        validFieldScalar: true,
+      },
+    ])
+    expect(JSON.stringify(preview)).not.toContain(secretCred)
+    expect(JSON.stringify(preview)).not.toContain(secretNullifier)
   })
 })
 

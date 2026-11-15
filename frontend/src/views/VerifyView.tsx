@@ -175,6 +175,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
 
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
+          htmlFor="verify-video-input"
           className="dropzone"
           role="button"
           tabIndex={isVerifying ? -1 : 0}
@@ -209,28 +210,31 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           ) : (
             <Upload size={20} aria-hidden="true" />
           )}
-          <span aria-hidden="true">{isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video'}</span>
+          <output aria-hidden="true">{isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video'}</output>
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             MP4, WebM, or MOV · up to 100 MB
           </span>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              void verifyEvidence(f, wallet || undefined)
-              // allow re-selecting the same file
-              event.target.value = ''
-            }}
-          />
         </label>
+        <input
+          id="verify-video-input"
+          ref={inputRef}
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ display: 'none' }}
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            void verifyEvidence(f, wallet || undefined)
+            // allow re-selecting the same file
+            event.target.value = ''
+          }}
+        />
 
         {/* Manifest Dropzone — keyboard: Tab focuses label, Enter/Space opens manifest file picker */}
         <label
+          htmlFor="verify-manifest-input"
           className="dropzone manifest-dropzone"
           role="button"
           tabIndex={isVerifying ? -1 : 0}
@@ -258,24 +262,26 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           ) : (
             <FileText size={20} aria-hidden="true" />
           )}
-          <span aria-hidden="true">{isVerifying ? 'Verification in progress…' : 'Drop or choose a proof manifest JSON'}</span>
+          <output aria-hidden="true">{isVerifying ? 'Verification in progress…' : 'Drop or choose a proof manifest JSON'}</output>
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             Portable manifest receipt · max 64 KB
           </span>
-          <input
-            ref={manifestInputRef}
-            type="file"
-            accept=".json,application/json"
-            tabIndex={-1}
-            aria-label="Drop or choose a proof manifest JSON"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              if (f) void handleManifestFile(f)
-              event.target.value = ''
-            }}
-          />
         </label>
+        <input
+          id="verify-manifest-input"
+          ref={manifestInputRef}
+          type="file"
+          accept=".json,application/json"
+          tabIndex={-1}
+          aria-label="Drop or choose a proof manifest JSON"
+          style={{ display: 'none' }}
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            if (f) void handleManifestFile(f)
+            event.target.value = ''
+          }}
+        />
 
         {/* Verification form — prefilled by manifest or manual typing */}
         <form

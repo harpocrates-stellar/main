@@ -1,6 +1,5 @@
 import type { BatchItemResult } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
-import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
   fileName: string
