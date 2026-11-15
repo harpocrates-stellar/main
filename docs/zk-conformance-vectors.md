@@ -396,6 +396,25 @@ errors, so the on-chain error surface discloses nothing new.
   corpus parses as zero cases, which `corpus_is_non_empty_and_versioned`
   rejects.
 
+## Circuit-level protocol domain separation compatibility suite
+
+Beyond wire-level framing for the active deployment, `zk/vectors/domain_separation_compatibility_v1.json` (generated and verified by `zk/tools/domain_separation_suite.py`) publishes independently derived synthetic statements across every supported protocol domain tuple:
+
+- **Networks:** `testnet` (active deployment), `mainnet`, and `local`
+- **Protocol versions:** `v1` (active deployment) and `v2`
+- **Verifier scopes:** global unscoped (`0`) and canonical scoped identifiers (`v:verifier-alpha:p:default`, `v:verifier-alpha:p:attestation`, `v:verifier-beta:p:default`)
+- **Statement schemas:** `silent_witness/v2`, `silent_witness/v1`, `revocation_witness/v1`, and `redacted_ancestry/v1`
+
+The suite evaluates both wire-frame classification (`domain_mismatch`, `version_mismatch`, `length`, `padding`, `non_canonical_field`, `zero_field`, `malformed_hex`, `unknown_schema`) and circuit-level constraint binding (`scope_mismatch`, `epoch_mismatch`, `nullifier_binding_mismatch`, `operation_mismatch`) so neither an unmodified frame nor a spliced nullifier can be replayed across networks, verifier scopes, epochs, or protocol versions.
+
+```bash
+# Regenerate the domain-separation compatibility vector corpus
+python zk/tools/domain_separation_suite.py
+
+# Verify committed vectors and run all pairwise cross-domain rejection invariants
+python zk/tools/domain_separation_suite.py --check
+```
+
 ## Protocol regression suite
 
 See `zk/regression/` for the protocol-level proof regression runner that reuses this corpus without introducing a second protocol truth.

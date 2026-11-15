@@ -257,6 +257,15 @@ See [docs/zk-benchmarks.md](../../docs/zk-benchmarks.md).
 
 The public-input codec shared by the backend, browser, and Soroban registry is
 pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_conformance_v1.json).
+Circuit-level and verifier-boundary domain separation across networks (`testnet`,
+`mainnet`, `local`), verifier scopes, epochs, and protocol versions is pinned by
+[`zk/vectors/domain_separation_compatibility_v1.json`](../vectors/domain_separation_compatibility_v1.json)
+and verified via [`zk/tools/domain_separation_suite.py`](../tools/domain_separation_suite.py):
+
+```bash
+python zk/tools/domain_separation_suite.py --check
+```
+
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
