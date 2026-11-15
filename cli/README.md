@@ -99,12 +99,7 @@ Harpocrates CLI environment variables:
 Explicit flags always take precedence over environment values. Contract-id
 validation still applies to environment values.
 
-The CLI accepts at most 1 MiB of manifest/metadata JSON. It rejects unknown
-manifest fields and unsupported versions, and writes fixed, privacy-safe
-error messages rather than raw RPC or file errors. Do not pass private
-witnesses, seeds, credentials, media, or secrets in a manifest. The receipt
-contains only public manifest and registry fields, but hashes and addresses
-can still be sensitive in context; restrict receipt access accordingly.
+The CLI accepts at most 1 MiB of manifest/metadata JSON. Commands that write output files (`manifest --output` and `c2pa --output`) resolve symbolic links, symlinked parent directories, relative path aliases, and hardlink identities before opening `--output` for writing; if `--output` resolves to the same file as any input (`--input`, `--manifest`, or `--receipt`), the CLI exits `8` without opening or truncating the file, preserving source metadata and manifest bytes untouched. It rejects unknown manifest fields and unsupported versions, and writes fixed, privacy-safe error messages rather than raw RPC or file errors. Do not pass private witnesses, seeds, credentials, media, or secrets in a manifest. The receipt contains only public manifest and registry fields, but hashes and addresses can still be sensitive in context; restrict receipt access accordingly.
 
 Manifest v2 adds `verifierScope` and `epoch`, matching the frontend. V1 input
 remains readable, without silently upgrading its version. Existing v1 receipt

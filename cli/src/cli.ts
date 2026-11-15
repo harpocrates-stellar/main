@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { createReadStream } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import process from 'node:process'
@@ -35,13 +34,21 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  SameFileCollisionError,
+  assertDistinctInputOutputPaths,
+  writeDistinctOutputFile,
+} from './path-safety.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -116,8 +123,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -227,6 +235,15 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
     exit(2, '--input is required for manifest creation')
   }
 
+  if (outputPath) {
+    try {
+      await assertDistinctInputOutputPaths([inputPath], outputPath)
+    } catch (err) {
+      if (err instanceof SameFileCollisionError) exit(8, err.message)
+      exit(8, 'invalid output path')
+    }
+  }
+
   let metadata: HarpocratesMetadata
   try {
     let raw: string
@@ -276,7 +293,12 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
   const serialized = serializeManifest(manifest)
 
   if (outputPath) {
-    await writeFile(outputPath, serialized, 'utf-8')
+    try {
+      await writeDistinctOutputFile([inputPath], outputPath, serialized)
+    } catch (err) {
+      if (err instanceof SameFileCollisionError) exit(8, err.message)
+      exit(8, 'failed to write manifest')
+    }
     printText(`Manifest written to ${outputPath}`)
   } else {
     if (outputFormat === 'text') {
@@ -394,6 +416,15 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
     exit(2, '--manifest is required for c2pa export')
   }
 
+  if (outputPath) {
+    try {
+      await assertDistinctInputOutputPaths([inputPath, receiptPath], outputPath)
+    } catch (err) {
+      if (err instanceof SameFileCollisionError) exit(8, err.message)
+      exit(8, 'invalid output path')
+    }
+  }
+
   let manifest: ReturnType<typeof parseManifest>
   try {
     const raw = await readText(inputPath)
@@ -426,7 +457,12 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
   const serialized = serializeC2paExport(exported)
 
   if (outputPath) {
-    await writeFile(outputPath, serialized, 'utf-8')
+    try {
+      await writeDistinctOutputFile([inputPath, receiptPath], outputPath, serialized)
+    } catch (err) {
+      if (err instanceof SameFileCollisionError) exit(8, err.message)
+      exit(8, 'failed to write c2pa export')
+    }
     printText(`C2PA assertions written to ${outputPath}`)
   } else {
     printText(serialized)
@@ -639,7 +675,7 @@ Lineage verification options:
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).
   --receipt        Optional verification receipt JSON; adds a verification assertion.
-  --output, -o     File path to write the exported assertions to.
+  --output, -o     File path to write the exported assertions to (must not resolve to --manifest or --receipt).
   --title          Optional human-readable title carried by the exported claim.
   Prerequisite: install deps and build first (cd cli && npm ci && npm run build).
   The output is deterministic, unsigned C2PA JSON. It never contains media,
@@ -670,7 +706,7 @@ Manifest options:
   --contract-id     Contract ID on Stellar (required).
   --video-hash      32-byte hex video hash (required).
   --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
-  --output, -o      File path to write the manifest to.
+  --output, -o      File path to write the manifest to (must not resolve to --input).
   --format          Output format when printing to stdout: "json" (default) or "text".
 
 Hash options:

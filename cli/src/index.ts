@@ -79,3 +79,10 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  SameFileCollisionError,
+  resolveCanonicalTargetPath,
+  pathsResolveToSameFile,
+  assertDistinctInputOutputPaths,
+  writeDistinctOutputFile,
+} from './path-safety.js'

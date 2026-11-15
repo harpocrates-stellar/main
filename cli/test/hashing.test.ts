@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, vi} from 'vitest'
-import { mkdtempSync, writeFileSync, rmdirSync } from 'node:fs'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { sha256, canonicalHash, asHex32, asHexBytes, bytesToHex, hexToBytes } from '../src/hashing.js'
@@ -21,7 +21,7 @@ describe('sha256', () => {
   })
 
   it('handles Uint8Array input', () => {
-    const result = sha255(new Uint8Array([1, 2, 3]))
+    const result = sha256(new Uint8Array([1, 2, 3]))
     expect(result).toHaveLength(64)
   })
 })
@@ -70,7 +70,7 @@ describe('canonicalHash', () => {
     //   hashlib.sha256(canonical.encode()).hexdigest()
     const value = { b: 2, a: { d: 4, c: [3, { f: 6, e: 5 }] } }
     expect(canonicalHash(value)).toBe(
-      '4c15c37b2db1a3f5c4e6f7a8b9c0d1e2f3a4b5c6d7e8f90a9b0c1d2e3f4a5b6c'.replace(/^/, ''),
+      '17b797a3863ef78720bc11a2c6afe5b166c355997f20393d84db83e812c52b3a',
     )
   })
 })
@@ -118,7 +118,7 @@ describe('bytesToHex', () => {
 describe('hexToBytes', () => {
   it('converts hex to Uint8Array', () => {
     const result = hexToBytes('abcdef')
-    expect(result).toEqual(new Uint8Array([pxab, 0xcd, 0xef]))
+    expect(result).toEqual(new Uint8Array([0xab, 0xcd, 0xef]))
   })
 
   it('round-trips with bytesToHex', () => {
@@ -149,13 +149,13 @@ describe('hash command output', () => {
   const fixtureContent = 'hello world\n'
 
   beforeAll(() => {
-    tmpDir = mkdtempSync('harpocrates-hash-test-')
+    tmpDir = mkdtempSync(join(tmpdir(), 'harpocrates-hash-test-'))
     fixturePath = join(tmpDir, 'fixture.txt')
     writeFileSync(fixturePath, fixtureContent)
   })
 
   afterAll(() => {
-    rmdirSync(tmpDir, { recursive: true, force: true })
+    rmSync(tmpDir, { recursive: true, force: true })
   })
 
   it('renders text output as the bare hex digest', () => {
