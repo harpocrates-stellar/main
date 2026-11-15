@@ -79,3 +79,12 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Issuer trust versus cryptographic signature standing
+
+`explainTrustVsSignatureStanding` (`src/services/verificationFlow.ts`) and
+`TrustStandingNotice` (`src/components/TrustStandingNotice.tsx`) map stable
+trust reason codes (`ISSUER_UNKNOWN_UNREGISTERED`, `SIGNATURE_OR_PROOF_INVALID`,
+`ISSUER_REVOKED_AFTER_ISSUANCE`, `ISSUER_TRUSTED_REGISTERED`,
+`ANONYMOUS_TIER_NO_ISSUER`, etc.) to screen-reader-accessible copy while keeping
+the underlying proof verification result visible alongside directory standing.

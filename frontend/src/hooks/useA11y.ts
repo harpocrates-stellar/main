@@ -31,7 +31,16 @@ export function useLiveRegion() {
   return { message, announce }
 }
 
-export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error' | 'cancelled'
+export type Stage =
+  | 'idle'
+  | 'hashing'
+  | 'embedding'
+  | 'proving'
+  | 'ready'
+  | 'registering'
+  | 'registered'
+  | 'error'
+  | 'cancelled'
 
 const STAGE_LABELS: Record<Stage, string> = {
   idle: 'Ready',

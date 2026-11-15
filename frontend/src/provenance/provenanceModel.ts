@@ -67,6 +67,7 @@ type BuildProvenanceInput = {
   rpcUrl: string
   transactionHash: string | null
   method: string
+  circuitVersion?: number | string | null
   /** Result of `get_open_dispute_count`; `null`/omitted when unknown. */
   openDisputeCount?: number | null
   fetchedAt?: Date
@@ -115,10 +116,11 @@ export function buildProvenanceRecord(input: BuildProvenanceInput): ProvenanceRe
       sourceHash: input.manifest.sourceHash,
     },
     links: {
-      transaction: input.transactionHash
-        ? transactionExplorerUrl(network, input.transactionHash)
-        : null,
-      contract: contractExplorerUrl(network, input.manifest.contractId),
+      transaction:
+        network && input.transactionHash
+          ? transactionExplorerUrl(network, input.transactionHash)
+          : null,
+      contract: contractExplorerUrl(network ?? 'testnet', input.manifest.contractId),
     },
     mismatches,
     staleness,

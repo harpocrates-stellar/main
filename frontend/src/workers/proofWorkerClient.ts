@@ -8,7 +8,37 @@ import type {
 } from './proofWorker.types'
 import { assessWorkerSupport } from './multiBrowserWorkerSupport'
 
-const PROOF_TIMEOUT_MS = 60_000
+const DEFAULT_FALLBACK_LIMITS = {
+  timeoutMs: 60_000,
+  maxSecretBytes: 256,
+} as const
+
+type FallbackLimits = {
+  timeoutMs: number
+  maxSecretBytes: number
+}
+
+type FallbackProver = (input: GenerateSilentWitnessInput) => Promise<SilentWitnessProof>
+
+type FallbackPendingJob = {
+  requestId: string
+  reject: (err: ProofWorkerError) => void
+}
+
+export type ProofWorkerClientOptions = {
+  runtime?: 'auto' | 'worker' | 'main'
+  enableFallback?: boolean
+  timeoutMs?: number
+  maxSecretBytes?: number
+  prover?: FallbackProver
+  workerFactory?: () => Worker | null
+}
+
+function toFallbackError(err: unknown): ProofWorkerError {
+  if (err instanceof ProofWorkerError) return err
+  return new ProofWorkerError('PROOF_GENERATION_FAILED', err instanceof Error ? err.message : 'proof_generation_failed')
+}
+
 const HEX64 = /^[0-9a-fA-F]{64}$/
 const MAX_SECRET_BYTES = 256
 
@@ -74,6 +104,8 @@ export class ProofWorkerClient {
   private pending: Map<string, PendingJob> = new Map()
   private fallbackPending: FallbackPendingJob | null = null
   private fallbackActive = false
+  private destroyed = false
+  private generation = 0
   private readonly allowFallback: boolean
   private readonly fallbackLimits: FallbackLimits
   private readonly prover: FallbackProver
@@ -90,7 +122,7 @@ export class ProofWorkerClient {
     }
     this.prover =
       options.prover ??
-      (async (input) => {
+      (async (input: GenerateSilentWitnessInput) => {
         const { generateSilentWitnessProof } = await import('../noirClient')
         return generateSilentWitnessProof(input)
       })
@@ -118,22 +150,31 @@ export class ProofWorkerClient {
     this.runtimeMode = 'unavailable'
   }
 
-  private spawn(): Worker {
-    const worker = new Worker(new URL('./proofWorker.ts', import.meta.url), { type: 'module' })
-    const generation = this.generation
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      if (generation !== this.generation) return
-      this.handleMessage(event.data)
+  private spawnWorker(): Worker | null {
+    try {
+      const worker = this.workerFactory()
+      if (!worker) return null
+      const generation = this.generation
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        if (generation !== this.generation) return
+        this.handleMessage(event.data)
+      }
+      worker.onerror = () => {
+        if (generation !== this.generation) return
+        this.handleCrash()
+      }
+      worker.onmessageerror = () => {
+        if (generation !== this.generation) return
+        this.handleCrash()
+      }
+      return worker
+    } catch {
+      return null
     }
-    worker.onerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    worker.onmessageerror = () => {
-      if (generation !== this.generation) return
-      this.handleCrash()
-    }
-    return worker
+  }
+
+  private spawn(): Worker | null {
+    return this.spawnWorker()
   }
 
   private handleMessage(msg: WorkerResponse) {
@@ -173,7 +214,7 @@ export class ProofWorkerClient {
   private respawnWorker() {
     this.generation += 1
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }
@@ -380,7 +421,7 @@ export class ProofWorkerClient {
 
     try {
       const msg: WorkerRequest = { type: 'CANCEL', requestId }
-      this.worker.postMessage(msg)
+      this.worker?.postMessage(msg)
     } catch {
       // Worker may already be dead; terminate path below still settles.
     }
@@ -398,7 +439,7 @@ export class ProofWorkerClient {
     this.rejectAll('CANCELLED', 'Proof generation was cancelled.')
     this.generation += 1
     try {
-      this.worker.terminate()
+      this.worker?.terminate()
     } catch {
       // ignore
     }
