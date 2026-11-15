@@ -79,3 +79,15 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Staged Credential Vault Format Migration
+
+`CredentialVault.migrateFormat()` (`src/credentialVault.ts`) upgrades stored
+vault envelopes (legacy `v0` -> `v1` or `v1` -> `v2` with version-bound AES-GCM
+AAD) through four isolated stages backed by `createIsolatedMigrationWorkspace()`
+(`src/safeStorage.ts`):
+
+1. **Snapshot**: reads the existing encrypted envelope without altering browser storage.
+2. **Isolated decrypt & validate**: decrypts and validates `SeedPair` fields inside ephemeral buffers that are zeroed on exit.
+3. **Isolated encrypt & verify**: generates a fresh salt/IV candidate envelope in memory and performs a full round-trip WebCrypto decryption and seed-equality check.
+4. **Atomic storage commit**: replaces `harpocrates:credential-vault` only after Stage 3 verification passes and confirms storage was not modified concurrently.

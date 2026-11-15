@@ -272,7 +272,7 @@ export function useVerification(): UseVerificationReturn {
       // Compare the on-chain metadata envelope (if bound) with the extracted
       // metadata hash. An absent envelope is not an error and preserves the
       // existing behaviour. A mismatch is a distinct, tamper-signalling error.
-      const proofId = onChain?.proofId ?? onChain ? onChain.prooofId : undefined
+      const proofId = onChain?.proofId
       const envelope = proofId
         ? await (async () => {
             try {
@@ -378,12 +378,13 @@ export function useVerification(): UseVerificationReturn {
     }
     // Offline mode is a separate code path that never touches the network.
     if (offlineRef.current) {
-      const { runOfflineVerification } = await import('../offlineVerification')
-      const result = await runOfflineVerification(file)
-      setVerifyHash(result.videoHash)
+      const { verifyOffline } = await import('../offlineVerification')
+      const result = await verifyOffline(file)
+      const ok = result.outcome === 'verified-local'
+      setVerifyHash(result.fileHash)
       setVerifyResult(result.message)
-      setStatus(result.ok ? 'success' : 'error')
-      setErrorCode(result.ok ? null : result.code)
+      setStatus(ok ? 'success' : 'error')
+      setErrorCode(ok ? null : result.errorCode)
       return
     }
     abortRef.current?.abort()

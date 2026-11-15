@@ -78,3 +78,90 @@ function createSafeStorage(name: StorageName) {
 
 export const safeLocalStorage = createSafeStorage('localStorage')
 export const safeSessionStorage = createSafeStorage('sessionStorage')
+
+export interface IsolatedMigrationWorkspace {
+  stagePlaintextBuffer(source: ArrayBuffer | Uint8Array): Uint8Array
+  stageCandidateEnvelope(serializedEnvelope: string): void
+  readCandidateEnvelope(): string | null
+  disposeAndZero(): void
+  isDisposed(): boolean
+}
+
+/**
+ * Ephemeral in-memory workspace used during staged vault format migrations so
+ * plaintext bytes and unverified candidate envelopes never touch Web Storage
+ * and are deterministically zeroed on completion or failure.
+ */
+export function createIsolatedMigrationWorkspace(): IsolatedMigrationWorkspace {
+  const trackedBuffers: Uint8Array[] = []
+  const state: { candidateEnvelope: string | null; disposed: boolean } = {
+    candidateEnvelope: null,
+    disposed: false,
+  }
+
+  function ensureActive(): void {
+    if (state.disposed) {
+      throw new Error('Isolated migration workspace has already been disposed')
+    }
+  }
+
+  return {
+    stagePlaintextBuffer(source: ArrayBuffer | Uint8Array): Uint8Array {
+      ensureActive()
+      const view = source instanceof Uint8Array ? source : new Uint8Array(source)
+      const isolatedCopy = new Uint8Array(view.byteLength)
+      isolatedCopy.set(view)
+      trackedBuffers.push(isolatedCopy)
+      return isolatedCopy
+    },
+
+    stageCandidateEnvelope(serializedEnvelope: string): void {
+      ensureActive()
+      state.candidateEnvelope = serializedEnvelope
+    },
+
+    readCandidateEnvelope(): string | null {
+      ensureActive()
+      return state.candidateEnvelope
+    },
+
+    disposeAndZero(): void {
+      for (const buf of trackedBuffers) {
+        buf.fill(0)
+      }
+      trackedBuffers.length = 0
+      state.candidateEnvelope = null
+      state.disposed = true
+    },
+
+    isDisposed(): boolean {
+      return state.disposed
+    },
+  }
+}
+
+/**
+ * Replaces `key` in browser storage only if its current raw value still matches
+ * `expectedPreviousRaw`, preserving the previous encrypted value on write errors.
+ */
+export function commitVerifiedStorageReplacement(
+  name: StorageName,
+  key: string,
+  expectedPreviousRaw: string,
+  verifiedNewRaw: string,
+): void {
+  const storage = browserStorage(name)
+  const currentRaw = storage.getItem(key)
+  if (currentRaw !== expectedPreviousRaw) {
+    throw new Error(
+      'Vault storage changed concurrently during migration; aborting commit to preserve state',
+    )
+  }
+
+  storage.setItem(key, verifiedNewRaw)
+  const readBack = storage.getItem(key)
+  if (readBack !== verifiedNewRaw) {
+    storage.setItem(key, expectedPreviousRaw)
+    throw new Error('Post-write storage verification failed; previous envelope restored')
+  }
+}
