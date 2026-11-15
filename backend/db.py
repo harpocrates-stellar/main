@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -440,7 +441,13 @@ def insert_proof_event(
     metadata: dict[str, Any] | None = None,
     time_attestation: dict[str, Any] | None = None,
     claimed_capture_time: str | None = None,
+    job_id: int | str | None = None,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
 ) -> dict[str, Any] | None:
+    if job_id is not None and (worker_id is not None or lease_epoch is not None):
+        assert_active_job_lease(job_id, worker_id=worker_id, lease_epoch=lease_epoch)
+
     if not database_url():
         return None
 
@@ -1170,68 +1177,197 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
     return receipts
 
 
-_JOBS: dict[int, dict[str, Any]] = {}
+_JOBS: dict[int | str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
+
+
+class StaleWorkerLeaseError(RuntimeError):
+    """Raised when a superseded or expired worker lease attempts to mutate job state."""
+
+    def __init__(
+        self,
+        job_id: int | str,
+        *,
+        worker_id: str | None = None,
+        lease_epoch: int | None = None,
+        active_worker_id: str | None = None,
+        active_lease_epoch: int | None = None,
+    ) -> None:
+        super().__init__(
+            f"stale worker lease rejected for job {job_id} "
+            f"(epoch={lease_epoch}, active_epoch={active_lease_epoch})"
+        )
+        self.job_id = job_id
+        self.worker_id = worker_id
+        self.lease_epoch = lease_epoch
+        self.active_worker_id = active_worker_id
+        self.active_lease_epoch = active_lease_epoch
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
-def get_job(job_id: int) -> dict[str, Any] | None:
+def get_job(job_id: int | str) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
-def cancel_job(job_id: int) -> bool:
+def cancel_job(job_id: int | str) -> bool:
     """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job["status"] == "pending":
+            job["status"] = "cancelled"
+            return True
+        return False
+
+
+def _lease_matches_locked(
+    job: dict[str, Any],
+    *,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
+) -> bool:
+    if job.get("status") != "running":
+        return False
+    if worker_id is not None and job.get("worker_id") != worker_id:
+        return False
+    if lease_epoch is not None and job.get("lease_epoch") != lease_epoch:
+        return False
+    return True
+
+
+def verify_active_job_lease(
+    job_id: int | str,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Return True iff *job_id* is actively leased by ``(worker_id, lease_epoch)``."""
+    current_mono = time.monotonic() if now is None else float(now)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or not _lease_matches_locked(job, worker_id=worker_id, lease_epoch=lease_epoch):
+            return False
+        expires_at = job.get("_lease_expires_at")
+        if (worker_id is not None or lease_epoch is not None) and expires_at is not None:
+            if current_mono >= float(expires_at):
+                return False
         return True
-    return False
+
+
+def assert_active_job_lease(
+    job_id: int | str,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
+    *,
+    now: float | None = None,
+) -> None:
+    """Fail closed with :class:`StaleWorkerLeaseError` if the caller's lease is no longer active."""
+    with _JOBS_LOCK:
+        if not verify_active_job_lease(job_id, worker_id=worker_id, lease_epoch=lease_epoch, now=now):
+            job = _JOBS.get(job_id) or {}
+            raise StaleWorkerLeaseError(
+                job_id,
+                worker_id=worker_id,
+                lease_epoch=lease_epoch,
+                active_worker_id=job.get("worker_id"),
+                active_lease_epoch=job.get("lease_epoch"),
+            )
+
+
+def reclaim_expired_job_leases(*, now: float | None = None) -> list[int | str]:
+    """Return running jobs with expired leases back to ``pending`` while preserving epoch counters."""
+    current_mono = time.monotonic() if now is None else float(now)
+    reclaimed: list[int | str] = []
+    with _JOBS_LOCK:
+        for jid, job in _JOBS.items():
+            if job.get("status") != "running":
+                continue
+            expires_at = job.get("_lease_expires_at")
+            if expires_at is not None and current_mono >= float(expires_at):
+                job["status"] = "pending"
+                job.pop("worker_id", None)
+                job.pop("_lease_expires_at", None)
+                reclaimed.append(jid)
+    return reclaimed
 
 
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: float | None = None,
 ) -> dict[str, Any] | None:
-    """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
+    """Lease the next pending or lease-expired job matching ``job_types`` with a monotonic fencing epoch."""
+    if lease_duration <= 0:
+        raise ValueError("lease_duration must be positive")
+    current_mono = time.monotonic() if now is None else float(now)
+    with _JOBS_LOCK:
+        reclaim_expired_job_leases(now=current_mono)
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                next_epoch = int(job.get("lease_epoch", 0)) + 1
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                job["lease_epoch"] = next_epoch
+                job["reassigned_count"] = next_epoch - 1
+                job["_lease_duration"] = float(lease_duration)
+                job["_lease_expires_at"] = current_mono + float(lease_duration)
+                return dict(job)
     return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(
+    job_id: int | str,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
+    now: float | None = None,
+) -> bool:
     """Record a heartbeat against an in-memory job lease.
 
-    The heartbeat only extends the lease. Progress is reported separately via
-    :func:`report_job_progress`; ``progress`` is accepted for backwards
-    compatibility and ignored so a heartbeat never overwrites real progress.
+    The heartbeat only extends the lease when the caller still owns the active
+    lease epoch. Progress is reported separately via :func:`report_job_progress`;
+    ``progress`` is accepted for backwards compatibility and ignored so a
+    heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
+    del progress
+    current_mono = time.monotonic() if now is None else float(now)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or not _lease_matches_locked(job, worker_id=worker_id, lease_epoch=lease_epoch):
+            return False
+        if (worker_id is not None or lease_epoch is not None) and job.get("_lease_expires_at") is not None:
+            if current_mono >= float(job["_lease_expires_at"]):
+                return False
         job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        if lease_duration > 0:
+            job["_lease_duration"] = float(lease_duration)
+            job["_lease_expires_at"] = current_mono + float(lease_duration)
+        return True
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1241,65 +1377,98 @@ JOB_PROGRESS_PHASE_MAX_LENGTH = 64
 
 
 def report_job_progress(
-    job_id: int,
+    job_id: int | str,
     phase: str,
     percent: float | None = None,
     *,
     now: float | None = None,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
 ) -> bool:
     """Record ``{"phase", "percent"}`` progress for a running job.
 
     ``phase`` is a short machine-readable step name (for example
     ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
     measurable fraction. Updates are throttled to at most one per
-    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
-    updated. Returns True when the update was stored.
+    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs owned
+    by the active lease epoch are updated. Returns True when stored.
     """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or not _lease_matches_locked(job, worker_id=worker_id, lease_epoch=lease_epoch):
+            return False
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("progress phase must be a non-empty string")
+        phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        current = time.monotonic() if now is None else now
+        if (worker_id is not None or lease_epoch is not None) and job.get("_lease_expires_at") is not None:
+            if current >= float(job["_lease_expires_at"]):
+                return False
+        last = job.get("_progress_at")
+        if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+            return False
+        job["_progress_at"] = current
+        job["progress"] = {"phase": phase, "percent": percent}
+        return True
 
 
-def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+def complete_job(
+    job_id: int | str,
+    result: Any = None,
+    *,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
+    now: float | None = None,
+) -> bool:
+    """Mark an in-memory job completed, rejecting stale lease epochs."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        if worker_id is not None or lease_epoch is not None:
+            assert_active_job_lease(job_id, worker_id=worker_id, lease_epoch=lease_epoch, now=now)
+            job["committed_lease_epoch"] = job.get("lease_epoch")
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
+        job.pop("_lease_expires_at", None)
+        return True
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+def fail_job(
+    job_id: int | str,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
+    now: float | None = None,
+) -> bool:
+    """Mark an in-memory job failed (fatal) or pending for retry unless fenced out."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return False
+        if worker_id is not None or lease_epoch is not None:
+            if not verify_active_job_lease(job_id, worker_id=worker_id, lease_epoch=lease_epoch, now=now):
+                return False
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        job.pop("_lease_expires_at", None)
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+        return True
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

@@ -342,6 +342,22 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Multi-Worker Lease Fencing and Crash Recovery
+
+`db.py` and `worker.py` assign a monotonically increasing `lease_epoch` fencing
+token whenever `lease_job` claims a pending job or reclaims an expired running
+lease (`reclaim_expired_job_leases`):
+
+- **Stage fencing:** `process_embed`, `process_extract`, `process_silent_witness`,
+  `heartbeat_job`, `report_job_progress`, `insert_proof_event`, `complete_job`,
+  and `fail_job` verify active `(worker_id, lease_epoch)` ownership before
+  persisting progress, promoting epoch-staged output files, recording proof
+  metadata, or committing terminal job state (`StaleWorkerLeaseError`).
+- **Deterministic simulation:** `run_deterministic_crash_recovery_scenario`
+  exercises multi-worker crash, lease expiration, reassignment, and zombie
+  stale-worker fencing across `hashing`, `proving`, and `metadata_write` stages
+  using synthetic fixtures and isolated temporary directories.
+
 ## Test
 
 ```powershell
