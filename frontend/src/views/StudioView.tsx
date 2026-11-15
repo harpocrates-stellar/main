@@ -9,7 +9,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
@@ -92,6 +91,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           className="dropzone"
           role="button"
           tabIndex={0}
+          htmlFor="studio-evidence-input"
           aria-label={file ? `Evidence file: ${file.name}. Press Enter or Space to choose a different file` : 'Drop or choose a video file. Press Enter or Space to open file picker'}
           aria-disabled={isBusy}
           onKeyDown={(e) => {
@@ -103,15 +103,17 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
         >
           <Upload size={20} aria-hidden="true" />
           <span aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</span>
-          <input
-            ref={studioInputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
-          />
         </label>
+        <input
+          ref={studioInputRef}
+          id="studio-evidence-input"
+          className="sr-only"
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+        />
 
         {stage === 'hashing' && hashProgress ? (
           <div className="hash-progress">

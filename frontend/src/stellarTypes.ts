@@ -89,6 +89,7 @@ export type ChainVerifierState = {
 }
 
 export type ChainProofRecord = {
+  proofId?: string
   videoHash: string
   metadataHash: string
   tier: number
@@ -123,7 +124,10 @@ export type ProofHistoryResult = {
  * rather than inferred from the proof record.
  */
 export type IssuerRecord = {
-  metadataHash: string
+  address?: string
+  tier?: number
+  registeredAt?: number | null
+  metadataHash?: string
   active: boolean
 }
 
@@ -149,6 +153,7 @@ export type RegistryMethod =
   | 'register_anonymous_verified'
   | 'register_source'
   | 'register_seal'
+  | 'get_proof'
   | 'get_by_video'
   | 'get_issuer'
   | 'get_proof_history_at'
@@ -158,7 +163,13 @@ export type RegistryMethod =
   | 'add_schema'
   | 'get_schema'
   | 'get_verifier_state'
+  | 'open_dispute'
+  | 'respond_dispute'
+  | 'get_dispute'
   | 'get_open_dispute_count'
+  | 'correct_proof'
+  | 'expire_proof'
+  | 'verify_proof'
 
 export type ScopedProofScope = {
   /** Field element derived from the scope string (SHA-256 mod BN254). */

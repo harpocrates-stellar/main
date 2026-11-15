@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Result tabs and statement digest binding
+
+`VerificationResultTabs` (`src/components/VerificationResultTabs.tsx`) and
+`resolveVerifiedStatementIdentity` (`src/services/verificationFlow.ts`) bind the
+canonical verified statement digest and matching proof identifier across the
+`Summary`, `Chain binding`, and `Event corroboration` result tabs. Switching
+tabs preserves the exact statement identity across panels, while changing the
+underlying statement digest automatically resets active tab selection and
+dependent commitment/event inspection views.
