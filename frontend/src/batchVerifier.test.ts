@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   BatchVerifier,
   computeChunkedSha256,
+  inspectBatchPreflight,
   tryParseManifest,
   type BatchConfig,
 } from './batchVerifier'
@@ -178,6 +179,89 @@ describe('batchVerifier', () => {
       const { items } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+    })
+
+    it('produces a preflight report showing duplicate inputs, total bytes, and unsupported formats before any hashing or network calls', async () => {
+      const validVideo = new File(['abcde'], 'clip.mp4', { type: 'video/mp4', lastModified: 1700000000000 })
+      const duplicateVideo = new File(['abcde'], 'clip.mp4', { type: 'video/mp4', lastModified: 1700000000000 })
+      const unsupportedDoc = new File(['not-media-payload'], 'notes.pdf', {
+        type: 'application/pdf',
+        lastModified: 1700000000001,
+      })
+      const validManifest = new File(['{"protocol":"harpocrates","version":1,"videoHash":"aa","metadataHash":"bb"}'], 'receipt.json', {
+        type: 'application/json',
+        lastModified: 1700000000002,
+      })
+
+      const arrayBufferSpy = vi.spyOn(File.prototype, 'arrayBuffer')
+      const textSpy = vi.spyOn(File.prototype, 'text')
+      const digestSpy = vi.spyOn(crypto.subtle, 'digest')
+      arrayBufferSpy.mockClear()
+      textSpy.mockClear()
+      digestSpy.mockClear()
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+
+      const report = inspectBatchPreflight([validVideo, duplicateVideo, unsupportedDoc, validManifest])
+      expect(report.totalFiles).toBe(4)
+      expect(report.totalBytes).toBe(
+        validVideo.size + duplicateVideo.size + unsupportedDoc.size + validManifest.size,
+      )
+      expect(report.eligibleCount).toBe(2)
+      expect(report.duplicateInputs).toEqual([
+        expect.objectContaining({
+          index: 1,
+          fileName: 'clip.mp4',
+          duplicateOfIndex: 0,
+          duplicateOfFileName: 'clip.mp4',
+        }),
+      ])
+      expect(report.unsupportedFormats).toEqual([
+        expect.objectContaining({
+          index: 2,
+          fileName: 'notes.pdf',
+          mimeType: 'application/pdf',
+        }),
+      ])
+      expect(report.canProceed).toBe(true)
+
+      // Zero byte reads, hashing, or proving/network calls occurred during preflight
+      expect(arrayBufferSpy).not.toHaveBeenCalled()
+      expect(textSpy).not.toHaveBeenCalled()
+      expect(digestSpy).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+
+      // Also verify runBatch onPreflight gate executes before any hashing or proving starts
+      const verifier = new BatchVerifier({ apiBase: 'http://127.0.0.1:5050' })
+      let hashCallsDuringPreflightHook = -1
+      const halted = await verifier.runBatch(
+        [validVideo, duplicateVideo, unsupportedDoc],
+        undefined,
+        {
+          onPreflight: () => {
+            hashCallsDuringPreflightHook = digestSpy.mock.calls.length + fetchSpy.mock.calls.length
+            return false
+          },
+        },
+      )
+
+      expect(hashCallsDuringPreflightHook).toBe(0)
+      expect(digestSpy).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(halted.items[0].status).toBe('cancelled')
+      expect(halted.items[1].status).toBe('duplicate')
+      expect(halted.items[2].status).toBe('malformed')
+
+      // Boundary: batch containing only unsupported formats reports canProceed=false and performs zero hashing
+      const allUnsupported = await verifier.runBatch([unsupportedDoc])
+      expect(allUnsupported.preflight.canProceed).toBe(false)
+      expect(allUnsupported.items[0].status).toBe('malformed')
+      expect(digestSpy).not.toHaveBeenCalled()
+
+      arrayBufferSpy.mockRestore()
+      textSpy.mockRestore()
+      digestSpy.mockRestore()
+      vi.unstubAllGlobals()
     })
   })
 })
