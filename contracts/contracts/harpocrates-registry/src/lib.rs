@@ -1843,6 +1843,41 @@ pub struct SealFinalized {
     pub approval_count: u32,
 }
 
+/// Maximum concurrent unfinalized threshold seal approvals indexed per signer (#1193).
+pub const MAX_TRACKED_SIGNER_APPROVALS: u32 = 32;
+
+/// Maximum recent council or timelock proposals scanned in a readiness query (#1193).
+pub const MAX_READINESS_PROPOSAL_SCAN: u32 = 32;
+
+/// Read-only institutional role revocation readiness report (#1193).
+///
+/// Summarizes the subject's active roles, governance standing, and any
+/// outstanding approvals or delegations that would be invalidated or left
+/// below quorum if the subject's institutional authority were revoked.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleRevocationReadiness {
+    pub subject: Address,
+    pub is_active_issuer: bool,
+    pub has_rotation_grace: bool,
+    pub in_active_seal_policy: bool,
+    pub seal_quorum_at_risk: bool,
+    pub in_admin_council: bool,
+    pub council_quorum_at_risk: bool,
+    pub is_guardian: bool,
+    pub is_pending_admin: bool,
+    pub requires_council_approval: bool,
+    pub active_delegation_count: u32,
+    pub expired_delegation_count: u32,
+    pub active_delegates: Vec<Address>,
+    pub pending_seal_approvals: u32,
+    pub pending_seal_proof_ids: Vec<BytesN<32>>,
+    pub pending_council_approvals: u32,
+    pub pending_council_prop_ids: Vec<u32>,
+    pub pending_timelock_targets: u32,
+    pub ready_for_clean_revoke: bool,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -1963,6 +1998,10 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Bounded delegate address index per grantor for revocation readiness (#1193).
+    GrantorDelegates(Address),
+    /// Bounded unfinalized threshold seal proof IDs per signer (#1193).
+    SignerSealProofs(Address),
 }
 
 #[contracterror]
@@ -4285,6 +4324,7 @@ impl HarpocratesRegistry {
                 .persistent()
                 .set(&DataKey::DelegationCount(grantor.clone()), &(count + 1));
         }
+        record_grantor_delegate(&env, &grantor, &delegate);
 
         let granted_at = env.ledger().timestamp();
         let expires_at = granted_at.saturating_add(duration_secs);
@@ -4347,6 +4387,7 @@ impl HarpocratesRegistry {
             &DataKey::DelegationCount(grantor.clone()),
             &count.saturating_sub(1),
         );
+        remove_grantor_delegate(&env, &grantor, &delegate);
 
         DelegationRevoked {
             grantor,
@@ -6309,6 +6350,192 @@ impl HarpocratesRegistry {
             .unwrap_or(false)
     }
 
+    /// Read-only institutional role revocation readiness report (#1193).
+    ///
+    /// Identifies active and expired delegations issued by `subject`, pending
+    /// threshold-seal and admin-council approvals cast by `subject`, pending
+    /// timelock proposals targeting `subject`, and quorum impact on active
+    /// governance/seal policies without mutating storage or altering the
+    /// approved revocation policy.
+    pub fn get_role_revocation_report(env: Env, subject: Address) -> RoleRevocationReadiness {
+        let now = env.ledger().timestamp();
+        let is_active_issuer = Self::is_issuer(env.clone(), subject.clone());
+        let has_rotation_grace = env
+            .storage()
+            .persistent()
+            .get::<DataKey, IssuerRotationRecord>(&DataKey::IssuerRotation(subject.clone()))
+            .map(|r| now < r.grace_expires_at)
+            .unwrap_or(false);
+        let is_guardian = Self::get_guardian(env.clone()).as_ref() == Some(&subject);
+        let is_pending_admin = Self::get_pending_admin(env.clone()).as_ref() == Some(&subject);
+        let requires_council_approval = is_council_active(&env);
+
+        let mut active_delegation_count = 0u32;
+        let mut expired_delegation_count = 0u32;
+        let mut active_delegates = Vec::new(&env);
+        let indexed_delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GrantorDelegates(subject.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        for delegate in indexed_delegates.iter() {
+            if let Some(rec) =
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, DelegationRecord>(&DataKey::Delegation(
+                        subject.clone(),
+                        delegate.clone(),
+                    ))
+            {
+                if now < rec.expires_at {
+                    active_delegation_count = active_delegation_count.saturating_add(1);
+                    active_delegates.push_back(delegate);
+                } else {
+                    expired_delegation_count = expired_delegation_count.saturating_add(1);
+                }
+            }
+        }
+
+        let mut in_active_seal_policy = false;
+        let mut seal_quorum_at_risk = false;
+        let mut pending_seal_approvals = 0u32;
+        let mut pending_seal_proof_ids = Vec::new(&env);
+        if let Some(policy) = Self::get_active_seal_policy(env.clone()) {
+            let mut active_policy_signers = 0u32;
+            for s in policy.signers.iter() {
+                if s == subject {
+                    in_active_seal_policy = true;
+                }
+                if Self::is_issuer(env.clone(), s) {
+                    active_policy_signers = active_policy_signers.saturating_add(1);
+                }
+            }
+            if in_active_seal_policy && is_active_issuer {
+                if active_policy_signers.saturating_sub(1) < policy.required_approvals {
+                    seal_quorum_at_risk = true;
+                }
+                let tracked: Vec<BytesN<32>> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SignerSealProofs(subject.clone()))
+                    .unwrap_or_else(|| Vec::new(&env));
+                for pid in tracked.iter() {
+                    if env.storage().persistent().has(&DataKey::Proof(pid.clone())) {
+                        continue;
+                    }
+                    if let Some(app) = env.storage().persistent().get::<DataKey, SealApproval>(
+                        &DataKey::SealApproval(pid.clone(), subject.clone()),
+                    ) {
+                        if app.policy_version == policy.version && now < app.expires_at {
+                            pending_seal_approvals = pending_seal_approvals.saturating_add(1);
+                            pending_seal_proof_ids.push_back(pid);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut in_admin_council = false;
+        let mut council_quorum_at_risk = false;
+        let mut pending_council_approvals = 0u32;
+        let mut pending_council_prop_ids = Vec::new(&env);
+        if let Some(council) = Self::get_admin_council(env.clone()) {
+            for m in council.members.iter() {
+                if m == subject {
+                    in_admin_council = true;
+                    break;
+                }
+            }
+            if in_admin_council && council.members.len().saturating_sub(1) < council.threshold {
+                council_quorum_at_risk = true;
+            }
+            let cseq: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::CouncilProposalSeq)
+                .unwrap_or(0u32);
+            if cseq > 0 {
+                let start = cseq
+                    .saturating_sub(MAX_READINESS_PROPOSAL_SCAN - 1)
+                    .max(1u32);
+                let mut id = start;
+                while id <= cseq {
+                    if let Some(prop) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, CouncilProposal>(&DataKey::CouncilProposal(id))
+                    {
+                        if !prop.executed && !prop.cancelled && now <= prop.expires_at {
+                            for approver in prop.approvals.iter() {
+                                if approver == subject {
+                                    pending_council_approvals =
+                                        pending_council_approvals.saturating_add(1);
+                                    pending_council_prop_ids.push_back(id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    id = id.saturating_add(1);
+                }
+            }
+        }
+
+        let mut pending_timelock_targets = 0u32;
+        let tseq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalSeq)
+            .unwrap_or(0u32);
+        if tseq > 0 {
+            let start = tseq
+                .saturating_sub(MAX_READINESS_PROPOSAL_SCAN - 1)
+                .max(1u32);
+            let mut id = start;
+            while id <= tseq {
+                if let Some(prop) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, TimelockProposal>(&DataKey::Proposal(id))
+                {
+                    if !prop.executed && !prop.cancelled && prop.target == subject {
+                        pending_timelock_targets = pending_timelock_targets.saturating_add(1);
+                    }
+                }
+                id = id.saturating_add(1);
+            }
+        }
+
+        let ready_for_clean_revoke = active_delegation_count == 0
+            && pending_seal_approvals == 0
+            && pending_council_approvals == 0
+            && !seal_quorum_at_risk
+            && !council_quorum_at_risk
+            && !has_rotation_grace;
+
+        RoleRevocationReadiness {
+            subject,
+            is_active_issuer,
+            has_rotation_grace,
+            in_active_seal_policy,
+            seal_quorum_at_risk,
+            in_admin_council,
+            council_quorum_at_risk,
+            is_guardian,
+            is_pending_admin,
+            requires_council_approval,
+            active_delegation_count,
+            expired_delegation_count,
+            active_delegates,
+            pending_seal_approvals,
+            pending_seal_proof_ids,
+            pending_council_approvals,
+            pending_council_prop_ids,
+            pending_timelock_targets,
+            ready_for_clean_revoke,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Per-issuer / per-source registration quotas (#806)
     // -----------------------------------------------------------------------
@@ -6882,6 +7109,7 @@ impl HarpocratesRegistry {
             );
             true
         } else {
+            track_signer_seal_approval(&env, &signer, &proof_id, policy.version);
             false
         }
     }
@@ -7039,6 +7267,9 @@ fn finalize_threshold_seal(
     env.storage()
         .persistent()
         .set(&DataKey::SealSigners(proof_id.clone()), valid_signers);
+    for s in valid_signers.iter() {
+        prune_signer_seal_approval(env, &s, proof_id);
+    }
     SealFinalized {
         proof_id: proof_id.clone(),
         policy_version: policy.version,
@@ -7046,6 +7277,106 @@ fn finalize_threshold_seal(
     }
     .publish(env);
     stored
+}
+
+fn record_grantor_delegate(env: &Env, grantor: &Address, delegate: &Address) {
+    let key = DataKey::GrantorDelegates(grantor.clone());
+    let mut list: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    for existing in list.iter() {
+        if &existing == delegate {
+            return;
+        }
+    }
+    if list.len() < MAX_DELEGATIONS_PER_GRANTOR {
+        list.push_back(delegate.clone());
+        env.storage().persistent().set(&key, &list);
+    }
+}
+
+fn remove_grantor_delegate(env: &Env, grantor: &Address, delegate: &Address) {
+    let key = DataKey::GrantorDelegates(grantor.clone());
+    let Some(list) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<Address>>(&key)
+    else {
+        return;
+    };
+    let mut updated = Vec::new(env);
+    for existing in list.iter() {
+        if &existing != delegate {
+            updated.push_back(existing);
+        }
+    }
+    if updated.is_empty() {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &updated);
+    }
+}
+
+fn track_signer_seal_approval(
+    env: &Env,
+    signer: &Address,
+    proof_id: &BytesN<32>,
+    active_policy_version: u32,
+) {
+    let key = DataKey::SignerSealProofs(signer.clone());
+    let existing: Vec<BytesN<32>> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    let now = env.ledger().timestamp();
+    let mut pruned = Vec::new(env);
+    let mut already_present = false;
+    for pid in existing.iter() {
+        if env.storage().persistent().has(&DataKey::Proof(pid.clone())) {
+            continue;
+        }
+        if let Some(app) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, SealApproval>(&DataKey::SealApproval(pid.clone(), signer.clone()))
+        {
+            if app.policy_version == active_policy_version && now < app.expires_at {
+                if &pid == proof_id {
+                    already_present = true;
+                }
+                pruned.push_back(pid);
+            }
+        }
+    }
+    if !already_present && pruned.len() < MAX_TRACKED_SIGNER_APPROVALS {
+        pruned.push_back(proof_id.clone());
+    }
+    env.storage().persistent().set(&key, &pruned);
+}
+
+fn prune_signer_seal_approval(env: &Env, signer: &Address, proof_id: &BytesN<32>) {
+    let key = DataKey::SignerSealProofs(signer.clone());
+    let Some(existing) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<BytesN<32>>>(&key)
+    else {
+        return;
+    };
+    let mut updated = Vec::new(env);
+    for pid in existing.iter() {
+        if &pid != proof_id && !env.storage().persistent().has(&DataKey::Proof(pid.clone())) {
+            updated.push_back(pid);
+        }
+    }
+    if updated.is_empty() {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &updated);
+    }
 }
 
 fn require_initialized(env: &Env) {
@@ -9107,6 +9438,8 @@ mod test_receipt;
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_role_revocation_readiness;
 #[cfg(test)]
 mod test_roles;
 #[cfg(test)]

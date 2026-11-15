@@ -272,6 +272,7 @@ get_pending_admin
 get_schema_version
 is_admin
 is_issuer
+get_role_revocation_report
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -383,6 +384,30 @@ metadata, witness, proof, or key material is included.
 `is_admin(address)` and `is_issuer(address)` expose the effective role without
 requiring authorization. They are read-only and accept arbitrary public
 addresses. `get_schema_version()` returns the storage schema version.
+
+### Institutional role revocation readiness (`#1193`)
+
+`get_role_revocation_report(subject)` returns a read-only `RoleRevocationReadiness`
+summary so operators and governance tooling can inspect downstream effects before
+revoking institutional standing:
+
+- **Delegations**: counts live (`active_delegation_count`, `active_delegates`) and
+  lapsed (`expired_delegation_count`) delegations granted by `subject` (bounded by
+  `MAX_DELEGATIONS_PER_GRANTOR = 32`) without mutating or pruning stored records.
+- **Threshold seal approvals & quorum**: counts unfinalized, unexpired
+  `SealApproval` entries cast by `subject` under the active `SealPolicy`
+  (`pending_seal_approvals`, `pending_seal_proof_ids`, bounded by
+  `MAX_TRACKED_SIGNER_APPROVALS = 32`) and sets `seal_quorum_at_risk` when
+  removing `subject` would leave active policy signers below `required_approvals`.
+- **Admin council & timelock governance**: inspects up to the most recent
+  `MAX_READINESS_PROPOSAL_SCAN = 32` council and timelock proposals to surface
+  unexecuted council approvals (`pending_council_approvals`,
+  `pending_council_prop_ids`), `council_quorum_at_risk`, pending timelock actions
+  targeting `subject` (`pending_timelock_targets`), and whether an active council
+  gates revocation (`requires_council_approval`).
+- **Policy preservation**: `get_role_revocation_report` emits no events, requires
+  no authorization, writes nothing to storage, and leaves existing `revoke_issuer`,
+  `remove_seal_policy_signer`, and `revoke_delegation` authorization rules intact.
 
 ### V1-to-V2 migration
 
