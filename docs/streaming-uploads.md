@@ -15,6 +15,7 @@ destination artifact is retained.
 | Size limit | Enforced mid-stream; raises `RequestEntityTooLarge` without logging payload bytes |
 | Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`) |
 | Streaming trigger | Multipart bodies larger than `UPLOAD_STREAM_THRESHOLD_BYTES` (default 1 MiB) wrap `FileStorage` |
+| Hashing progress | `GET /api/stego/upload-session/<session_id>/progress` publishes bounded byte/chunk counters and `pending`/`hashing`/`completed`/`failed` state without exposing temporary filesystem paths |
 
 ## Configuration
 

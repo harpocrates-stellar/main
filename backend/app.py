@@ -154,6 +154,7 @@ from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream,
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
+    UploadProgressTracker,
     create_streaming_file_storage,
     hash_paths_concat,
 )
@@ -404,6 +405,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -428,6 +431,10 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    upload_progress_tracker = UploadProgressTracker(
+        max_counter_bytes=max(1, int(getattr(config, "upload_max_bytes", config.max_video_bytes))),
+    )
+    app.extensions["upload_progress_tracker"] = upload_progress_tracker
 
     @app.before_request
     def start_request_context():
@@ -930,10 +937,37 @@ def create_app() -> Flask:
     @app.post("/api/stego/upload-session")
     @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
+        expected_bytes = None
+        raw_expected = (request.headers.get("X-Upload-Declared-Size") or "").strip()
+        if not raw_expected and request.is_json:
+            payload = request.get_json(silent=True)
+            if isinstance(payload, dict) and payload.get("expectedBytes") is not None:
+                raw_expected = str(payload.get("expectedBytes")).strip()
+        if raw_expected:
+            try:
+                parsed_expected = int(raw_expected)
+            except ValueError:
+                return jsonify({"error": "expectedBytes must be a non-negative integer"}), 400
+            if parsed_expected < 0:
+                return jsonify({"error": "expectedBytes must be a non-negative integer"}), 400
+            expected_bytes = parsed_expected
+
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         session_dir.mkdir(parents=True, exist_ok=True)
+        upload_progress_tracker.start_session(session_id, expected_bytes=expected_bytes)
         return jsonify({"sessionId": session_id})
+
+    @app.get("/api/stego/upload-session/<session_id>/progress")
+    @limiter.limit(config.ratelimit_upload_session)
+    def get_upload_session_progress(session_id: str):
+        snapshot = upload_progress_tracker.get(session_id)
+        if snapshot is None:
+            session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+            if not session_dir.exists():
+                return jsonify({"error": "session not found"}), 404
+            snapshot = upload_progress_tracker.start_session(session_id)
+        return jsonify(snapshot.to_public_dict())
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
@@ -950,7 +984,14 @@ def create_app() -> Flask:
 
         # Persist each session chunk with bounded-chunk hashing for integrity.
         g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
+        reporter = upload_progress_tracker.make_stream_reporter(
+            session_id,
+            ceiling_bytes=getattr(config, "upload_max_bytes", config.max_video_bytes),
+        )
+        streaming_chunk = create_streaming_file_storage(
+            chunk,
+            progress_callback=reporter,
+        )
         chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
             streaming_chunk.save(str(chunk_path))
@@ -996,11 +1037,18 @@ def create_app() -> Flask:
             return jsonify({"error": "session has no chunks"}), 400
 
         # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
+        commit_reporter = upload_progress_tracker.make_stream_reporter(
+            session_id,
+            ceiling_bytes=getattr(config, "upload_max_bytes", config.max_video_bytes),
+            reset_base=True,
+            finalize_session=True,
+        )
         source_hash, _written = hash_paths_concat(
             chunk_files,
             combined_path,
             chunk_size=getattr(config, "upload_chunk_bytes", None),
             max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+            progress_callback=commit_reporter,
         )
 
         # Sniff assembled file before handing it to ffmpeg.
