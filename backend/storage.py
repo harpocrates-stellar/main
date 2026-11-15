@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -9,6 +10,9 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 default_storage_dir = "/tmp/harpocrates_jobs"
+ENVELOPE_METADATA_SCHEMA = "hpx-evidence-envelope/1"
+ENVELOPE_SIDECAR_SUFFIX = ".envelope.json"
+_CONTENT_HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def _log_warning(message: str) -> None:
@@ -180,6 +184,99 @@ def sweep_job_files(
         LOGGER.info("Purged %d stale job files", purged_count)
 
     return purged_count
+
+
+def get_envelope_metadata_path(artifact_path: Path | str) -> Path:
+    """Return the sidecar metadata path associated with an encrypted artifact."""
+    base = Path(artifact_path)
+    return base.with_name(f"{base.name}{ENVELOPE_SIDECAR_SUFFIX}")
+
+
+def write_envelope_metadata(
+    artifact_path: Path | str,
+    *,
+    envelope_version: str,
+    content_hash: str | None = None,
+    size_bytes: int | None = None,
+) -> Path:
+    """Persist privacy-safe encryption envelope version metadata next to an artifact."""
+    from evidence_storage import (
+        LEGACY_ENVELOPE_VERSION,
+        SUPPORTED_ENVELOPE_VERSIONS,
+        UnsupportedEnvelopeError,
+    )
+
+    if not isinstance(envelope_version, str) or envelope_version not in SUPPORTED_ENVELOPE_VERSIONS:
+        raise UnsupportedEnvelopeError(
+            f"Unsupported encryption envelope version: {envelope_version}"
+        )
+    if content_hash is not None and not _CONTENT_HASH_RE.fullmatch(content_hash):
+        raise ValueError("content_hash must be a 64-character hex SHA-256 digest.")
+    if size_bytes is not None and (not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0):
+        raise ValueError("size_bytes must be a non-negative integer.")
+
+    record: dict[str, Any] = {
+        "schema": ENVELOPE_METADATA_SCHEMA,
+        "envelope_version": envelope_version,
+        "is_legacy_envelope": envelope_version == LEGACY_ENVELOPE_VERSION,
+    }
+    if content_hash is not None:
+        record["content_hash"] = content_hash.lower()
+    if size_bytes is not None:
+        record["size_bytes"] = size_bytes
+
+    sidecar_path = get_envelope_metadata_path(artifact_path)
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    return sidecar_path
+
+
+def read_envelope_metadata(artifact_path: Path | str) -> dict[str, Any] | None:
+    """Read and fail-closed validate persisted envelope metadata for an artifact."""
+    from evidence_storage import (
+        LEGACY_ENVELOPE_VERSION,
+        MalformedEnvelopeError,
+        SUPPORTED_ENVELOPE_VERSIONS,
+        UnsupportedEnvelopeError,
+    )
+
+    sidecar_path = get_envelope_metadata_path(artifact_path)
+    if not sidecar_path.exists():
+        return None
+
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise MalformedEnvelopeError("Malformed stored envelope metadata JSON.") from exc
+
+    if not isinstance(payload, dict) or payload.get("schema") != ENVELOPE_METADATA_SCHEMA:
+        raise MalformedEnvelopeError("Invalid stored envelope metadata schema.")
+
+    version = payload.get("envelope_version")
+    if not isinstance(version, str):
+        raise MalformedEnvelopeError("Missing envelope_version in stored metadata.")
+    if version not in SUPPORTED_ENVELOPE_VERSIONS:
+        raise UnsupportedEnvelopeError(
+            f"Unsupported encryption envelope version: {version}"
+        )
+
+    result: dict[str, Any] = {
+        "schema": ENVELOPE_METADATA_SCHEMA,
+        "envelope_version": version,
+        "is_legacy_envelope": version == LEGACY_ENVELOPE_VERSION,
+    }
+    if "content_hash" in payload:
+        content_hash = payload["content_hash"]
+        if not isinstance(content_hash, str) or not _CONTENT_HASH_RE.fullmatch(content_hash):
+            raise MalformedEnvelopeError("Invalid content_hash in stored envelope metadata.")
+        result["content_hash"] = content_hash.lower()
+    if "size_bytes" in payload:
+        size_bytes = payload["size_bytes"]
+        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+            raise MalformedEnvelopeError("Invalid size_bytes in stored envelope metadata.")
+        result["size_bytes"] = size_bytes
+
+    return result
 
 
 purge_stale_job_files = sweep_job_files

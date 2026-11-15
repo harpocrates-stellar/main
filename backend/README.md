@@ -325,6 +325,19 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Evidence Encryption Envelope Versioning
+
+`evidence_storage.py` and `storage.py` record explicit encryption envelope versions alongside encrypted DEKs and stored artifact sidecars:
+
+- **`hpx-fernet-v1`** (`CURRENT_ENVELOPE_VERSION`): Explicit versioned Fernet envelope (`hpx-fernet-v1:<base64url-fernet-token>`) used for new wrapped DEKs and encrypted evidence payloads.
+- **`legacy-fernet-v0`** (`LEGACY_ENVELOPE_VERSION`): Known unprefixed legacy Fernet tokens whose base64url framing, `0x80` version marker, and 16-byte AES-CBC block alignment match canonical Fernet tokens.
+
+Envelope validation fails closed before invoking any cipher routine:
+
+- Unknown or mismatched version prefixes raise `UnsupportedEnvelopeError` (`reason_code="UNSUPPORTED_ENVELOPE_VERSION"` or `"ENVELOPE_VERSION_MISMATCH"`).
+- Truncated, non-ASCII, non-canonical base64url, non-block-aligned, or corrupted ciphertexts raise `MalformedEnvelopeError` (`reason_code="MALFORMED_ENVELOPE"`) without guessing a decryption algorithm.
+- `storage.write_envelope_metadata()` and `storage.read_envelope_metadata()` persist privacy-safe `hpx-evidence-envelope/1` sidecar records without storing plaintext keys, witness data, or raw file paths.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative
