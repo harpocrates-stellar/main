@@ -56,12 +56,38 @@ describe('batchExport', () => {
     expect((sanitized[0] as Record<string, unknown>).file).toBeUndefined()
   })
 
-  it('exportBatchJSON produces valid privacy-safe JSON', () => {
+  it('exportBatchJSON produces valid privacy-safe JSON with completeness summary', () => {
     const jsonStr = exportBatchJSON(mockItems)
-    const parsed = JSON.parse(jsonStr) as Record<string, unknown>
+    const parsed = JSON.parse(jsonStr) as {
+      protocol: string
+      totalCount: number
+      completeness: {
+        verified: number
+        failed: number
+        cancelled: number
+        incomplete: number
+        unresolvedChecks: number
+        isComplete: boolean
+      }
+    }
     expect(parsed.protocol).toBe('harpocrates-batch-report')
     expect(parsed.totalCount).toBe(2)
+    expect(parsed.completeness).toMatchObject({
+      verified: 1,
+      failed: 1,
+      cancelled: 0,
+      incomplete: 0,
+      unresolvedChecks: 0,
+      isComplete: true,
+    })
     expect(jsonStr).not.toContain('media bytes')
+
+    const interruptedJson = JSON.parse(exportBatchJSON(mockItems, { isInterrupted: true })) as {
+      completeness: { isComplete: boolean; isInterrupted: boolean; runState: string }
+    }
+    expect(interruptedJson.completeness.isInterrupted).toBe(true)
+    expect(interruptedJson.completeness.isComplete).toBe(false)
+    expect(interruptedJson.completeness.runState).toBe('interrupted')
   })
 
   it('exportBatchCSV produces properly formatted CSV with headers', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   BatchVerifier,
+  computeBatchCompleteness,
   computeChunkedSha256,
   tryParseManifest,
   type BatchConfig,
@@ -168,16 +169,80 @@ describe('batchVerifier', () => {
       vi.unstubAllGlobals()
     })
 
-    it('supports batch cancellation', async () => {
+    it('supports batch cancellation and never treats an interrupted batch as complete', async () => {
       const verifier = new BatchVerifier({ maxConcurrency: 1 })
       const f1 = new File(['content 1'], 'f1.mp4')
       const f2 = new File(['content 2'], 'f2.mp4')
 
       const promise = verifier.runBatch([f1, f2])
       verifier.cancel()
-      const { items } = await promise
+      const { items, summary } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+      expect(summary.completeness?.isInterrupted).toBe(true)
+      expect(summary.completeness?.isComplete).toBe(false)
+      expect(summary.completeness?.runState).toBe('interrupted')
+      expect(summary.completeness?.cancelled).toBeGreaterThan(0)
+      expect(summary.completeness?.unresolvedChecks).toBeGreaterThan(0)
+    })
+
+    it('reports verified, failed, cancelled, and incomplete counts separately in computeBatchCompleteness', () => {
+      const mixed = computeBatchCompleteness([
+        { status: 'confirmed' },
+        { status: 'manifest-valid' },
+        { status: 'revoked' },
+        { status: 'malformed' },
+        { status: 'cancelled' },
+        { status: 'unavailable' },
+        { status: 'metadata-only' },
+        { status: 'duplicate' },
+      ])
+
+      expect(mixed).toEqual({
+        totalItems: 8,
+        verified: 2,
+        failed: 2,
+        cancelled: 1,
+        incomplete: 2,
+        duplicates: 1,
+        unresolvedChecks: 3,
+        isInterrupted: true,
+        isComplete: false,
+        runState: 'interrupted',
+      })
+
+      const interruptedEvenWithTerminalRows = computeBatchCompleteness(
+        [{ status: 'confirmed' }, { status: 'revoked' }],
+        { isInterrupted: true },
+      )
+      expect(interruptedEvenWithTerminalRows.isComplete).toBe(false)
+      expect(interruptedEvenWithTerminalRows.runState).toBe('interrupted')
+
+      const unresolvedOnly = computeBatchCompleteness([
+        { status: 'confirmed' },
+        { status: 'unavailable' },
+      ])
+      expect(unresolvedOnly.isInterrupted).toBe(false)
+      expect(unresolvedOnly.isComplete).toBe(false)
+      expect(unresolvedOnly.unresolvedChecks).toBe(1)
+      expect(unresolvedOnly.runState).toBe('incomplete')
+
+      const fullyResolved = computeBatchCompleteness([
+        { status: 'confirmed' },
+        { status: 'revoked' },
+        { status: 'duplicate' },
+      ])
+      expect(fullyResolved.verified).toBe(1)
+      expect(fullyResolved.failed).toBe(1)
+      expect(fullyResolved.cancelled).toBe(0)
+      expect(fullyResolved.incomplete).toBe(0)
+      expect(fullyResolved.unresolvedChecks).toBe(0)
+      expect(fullyResolved.isComplete).toBe(true)
+      expect(fullyResolved.runState).toBe('complete')
+
+      const empty = computeBatchCompleteness([])
+      expect(empty.isComplete).toBe(false)
+      expect(empty.runState).toBe('empty')
     })
   })
 })

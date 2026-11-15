@@ -1,4 +1,8 @@
-import type { BatchItemResult } from './batchVerifier'
+import {
+  computeBatchCompleteness,
+  type BatchCompletenessSummary,
+  type BatchItemResult,
+} from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
@@ -45,16 +49,28 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
   }))
 }
 
+export type BatchExportCompletenessOptions = {
+  isInterrupted?: boolean
+}
+
 /**
- * Export privacy-safe JSON representation of batch results.
+ * Export privacy-safe JSON representation of batch results, including an
+ * explicit completeness and unresolved-check summary.
  */
-export function exportBatchJSON(results: BatchItemResult[]): string {
+export function exportBatchJSON(
+  results: BatchItemResult[],
+  options?: BatchExportCompletenessOptions,
+): string {
   const clean = sanitizeBatchResults(results)
+  const completeness: BatchCompletenessSummary = computeBatchCompleteness(results, {
+    isInterrupted: options?.isInterrupted,
+  })
   const report = {
     protocol: 'harpocrates-batch-report',
     version: 1,
     exportedAt: new Date().toISOString(),
     totalCount: clean.length,
+    completeness,
     results: clean,
   }
   return JSON.stringify(report, null, 2)
