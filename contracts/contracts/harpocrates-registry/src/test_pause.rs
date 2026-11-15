@@ -216,10 +216,9 @@ fn clear_guardian_admin_succeeds() {
     assert_eq!(client.get_guardian(), Some(guardian));
 
     client.clear_guardian(&admin);
-    assert_eq!(client.get_guardian(), None);
-
     let events = env.events().all();
     assert_eq!(events.events().len(), 1);
+    assert_eq!(client.get_guardian(), None);
 
     // Admin can still pause after guardian is cleared.
     client.pause(&admin, &PAUSE_DOMAIN_TIER1_REGISTRATION, &3600u64);
