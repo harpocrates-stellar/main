@@ -161,6 +161,7 @@ class _Reason:
     RECURSION_DETECTED = "recursion_detected"
     EMBEDDED_BINDING_MISMATCH = "embedded_binding_mismatch"
     EMBEDDED_BINDING_DUPLICATE = "embedded_binding_duplicate"
+    REMOTE_REFERENCE_PROHIBITED = "remote_reference_prohibited"
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +240,71 @@ class C2paHashCorroboration:
     ok: bool
     compared_fields: tuple[str, ...] = ()
     mismatches: tuple[str, ...] = ()
+
+
+_PROHIBITED_REMOTE_SCHEMES: tuple[str, ...] = (
+    "http://",
+    "https://",
+    "ftp://",
+    "ftps://",
+    "ws://",
+    "wss://",
+    "file://",
+    "ipfs://",
+    "data:",
+)
+
+_PROHIBITED_REMOTE_KEYS: frozenset[str] = frozenset(
+    {
+        "url",
+        "uri",
+        "href",
+        "manifest_url",
+        "manifestUrl",
+        "remote_url",
+        "remoteUrl",
+        "trust_url",
+        "trustUrl",
+        "fetch_url",
+        "fetchUrl",
+        "ingredient_url",
+        "ingredientUrl",
+        "active_manifest_uri",
+        "claim_uri",
+    }
+)
+
+
+@dataclass(frozen=True)
+class C2paPortableTrustReference:
+    """
+    Canonical offline trust reference extracted from a C2PA manifest for
+    inclusion in a portable Harpocrates lineage verification bundle.
+
+    ``c2pa_trust_status`` is always kept separate from on-chain and ZK
+    verification verdicts.
+    """
+
+    subject_id: str
+    video_hash: str
+    metadata_hash: str
+    tier: str
+    network: str
+    contract_id: str
+    manifest_digest: str
+    c2pa_trust_status: str = C2paTrustStatus.SIGNATURE_NOT_CHECKED.value
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "subject_id": self.subject_id,
+            "video_hash": self.video_hash,
+            "metadata_hash": self.metadata_hash,
+            "tier": self.tier,
+            "network": self.network,
+            "contract_id": self.contract_id,
+            "manifest_digest": self.manifest_digest,
+            "c2pa_trust_status": self.c2pa_trust_status,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +623,51 @@ def corroborate_binding(
     )
 
 
+def extract_c2pa_portable_trust_reference(
+    manifest: C2paExportedManifest | bytes | str | dict[str, Any],
+) -> C2paPortableTrustReference:
+    """
+    Validate a C2PA manifest offline and produce a canonical
+    ``C2paPortableTrustReference`` for a portable lineage bundle.
+
+    Rejects any external URL or remote-fetch field with
+    ``C2paParseError(REMOTE_REFERENCE_PROHIBITED)`` without performing network
+    I/O or echoing URL values.
+    """
+    if isinstance(manifest, C2paExportedManifest):
+        raw_bytes = _canonical_json(manifest.manifest)
+        parsed = parse_c2pa_manifest(raw_bytes)
+        data_obj = manifest.manifest
+    elif isinstance(manifest, dict):
+        try:
+            raw_bytes = _canonical_json(manifest)
+        except (TypeError, ValueError):
+            raise C2paParseError(_Reason.NOT_JSON)
+        parsed = parse_c2pa_manifest(raw_bytes)
+        data_obj = manifest
+    elif isinstance(manifest, (bytes, str)):
+        parsed = parse_c2pa_manifest(manifest)
+        raw_in = manifest.encode("utf-8") if isinstance(manifest, str) else manifest
+        data_obj = json.loads(raw_in.decode("utf-8"))
+        raw_bytes = _canonical_json(data_obj)
+    else:
+        raise C2paParseError(_Reason.INVALID_TYPE, "manifest")
+
+    _reject_remote_references(data_obj, path="manifest")
+    manifest_digest = hashlib.sha256(raw_bytes).hexdigest()
+
+    return C2paPortableTrustReference(
+        subject_id=parsed.binding.proof_id,
+        video_hash=parsed.binding.video_hash,
+        metadata_hash=parsed.binding.metadata_hash,
+        tier=parsed.binding.tier,
+        network=parsed.binding.network,
+        contract_id=parsed.binding.contract_id,
+        manifest_digest=manifest_digest,
+        c2pa_trust_status=parsed.trust_status.value,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -657,3 +768,20 @@ def _check_depth(obj: Any, limit: int, _current: int = 0) -> None:
     elif isinstance(obj, list):
         for item in obj:
             _check_depth(item, limit, _current + 1)
+
+
+def _reject_remote_references(obj: Any, *, path: str) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            key_str = str(k)
+            child_path = f"{path}.{key_str}"
+            if key_str in _PROHIBITED_REMOTE_KEYS:
+                raise C2paParseError(_Reason.REMOTE_REFERENCE_PROHIBITED, child_path)
+            _reject_remote_references(v, path=child_path)
+    elif isinstance(obj, list):
+        for idx, item in enumerate(obj):
+            _reject_remote_references(item, path=f"{path}[{idx}]")
+    elif isinstance(obj, str):
+        lowered = obj.strip().lower()
+        if any(lowered.startswith(scheme) for scheme in _PROHIBITED_REMOTE_SCHEMES):
+            raise C2paParseError(_Reason.REMOTE_REFERENCE_PROHIBITED, path)

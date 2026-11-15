@@ -352,6 +352,19 @@ binding and should not be acted upon by callers.
 This allows consuming existing C2PA manifests that carry standard C2PA
 assertions (e.g., `c2pa.actions`, `c2pa.thumbnail`) without rejecting them.
 
+### Portable lineage bundle trust references (#1094)
+
+`extract_c2pa_portable_trust_reference()` validates a C2PA manifest offline,
+rejects any remote URL or external URI fields with
+`remote_reference_prohibited` (without performing network I/O or echoing URL
+values), and emits a canonical `C2paPortableTrustReference` for inclusion in
+`lineage.build_portable_lineage_bundle(..., c2pa_manifests=...)`.
+
+Inside `harpocrates.lineage.bundle/v1`, C2PA references are recorded with
+`kind: "c2pa_manifest"` and `c2pa_trust_status: "signature_not_checked"`,
+corroborated against closure root/ancestry bindings while remaining strictly
+separate from Soroban on-chain verification.
+
 ---
 
 ## Rollback

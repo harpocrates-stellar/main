@@ -90,9 +90,11 @@ except ImportError:
 from idempotency import idempotent
 from lineage import (
     LineageValidationError,
+    build_portable_lineage_bundle,
     canonical_lineage_manifest,
     lineage_manifest_digest,
     validate_lineage_graph,
+    verify_portable_lineage_bundle,
 )
 from storage import get_job_output_path
 from retention import init_retention_worker
@@ -112,7 +114,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1222,6 +1224,113 @@ def create_app() -> Flask:
             )
 
         return jsonify({"ok": True, "events": find_lineage_by_actor(validated_actor_address, parsed_limit)})
+
+    @app.post("/api/lineage/bundle/export")
+    def export_portable_lineage_bundle_endpoint():
+        if _enforce_json_size() > config.max_json_bytes:
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+
+        target_digest = payload.get("targetDigest")
+        if target_digest is None:
+            target_digest = payload.get("target_id")
+        if not is_hex_32(target_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="targetDigest must be a 32-byte hex string",
+                status=400,
+            )
+
+        lineage_source = (
+            payload["lineageRecords"]
+            if "lineageRecords" in payload
+            else find_lineage_by_output_digest
+        )
+
+        def _db_root_lookup(digest_hex: str):
+            events = find_proof_events_by_proof_id(digest_hex)
+            if not events:
+                events, _ = find_proof_events_by_video(digest_hex)
+            if not events:
+                return None
+            confirmed = [
+                ev
+                for ev in events
+                if ev.get("tx_status") == "confirmed"
+                and ev.get("event_type") != "revoke"
+            ]
+            if not confirmed:
+                return None
+            ev = confirmed[0]
+            meta = ev.get("metadata") if isinstance(ev.get("metadata"), dict) else {}
+            return {
+                "proof_id": ev.get("proof_id"),
+                "video_hash": ev.get("video_hash"),
+                "metadata_hash": ev.get("metadata_hash"),
+                "tier": ev.get("tier"),
+                "network": meta.get("network") or "testnet",
+                "contract_id": ev.get("contract_id"),
+            }
+
+        root_source = (
+            payload["rootStatements"]
+            if "rootStatements" in payload
+            else _db_root_lookup
+        )
+
+        try:
+            bundle = build_portable_lineage_bundle(
+                target_digest,
+                lineage_records=lineage_source,
+                root_statements=root_source,
+                trust_references=payload.get("trustReferences"),
+                c2pa_manifests=payload.get("c2paManifests"),
+            )
+        except LineageValidationError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response({"bundle": bundle})
+
+    @app.post("/api/lineage/bundle/verify")
+    def verify_portable_lineage_bundle_endpoint():
+        if _enforce_json_size() > config.max_json_bytes:
+            return error_response(
+                code=PAYLOAD_TOO_LARGE,
+                message="JSON payload exceeds size limit",
+                status=413,
+            )
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or "bundle" not in payload:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body with a bundle field is required",
+                status=400,
+            )
+
+        try:
+            report = verify_portable_lineage_bundle(payload["bundle"])
+        except LineageValidationError as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        return ok_response({"verification": report.to_dict()})
 
     @app.get("/api/lineage/<output_digest>")
     def lineage_by_output_digest(output_digest: str):

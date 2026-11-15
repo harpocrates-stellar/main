@@ -91,6 +91,17 @@ Response: 200 OK
 }
 ```
 
+#### Portable Lineage Verification Bundle (#1094)
+```
+POST /api/lineage/bundle/export
+POST /api/lineage/bundle/verify
+```
+
+`build_portable_lineage_bundle()` and `verify_portable_lineage_bundle()` package and verify self-contained `harpocrates.lineage.bundle/v1` provenance bundles offline:
+
+- **Canonical closure packaging**: Collects only reachable `root_statements`, `ancestry_statements` (with derived `depth` and `SHA-256("harp_lin_pc" || binding_a || binding_b)` `parent_commitments`), and `trust_references` (`soroban_registry` and `c2pa_manifest`) up to `MAX_LINEAGE_DEPTH = 4`, `MAX_LINEAGE_FANOUT = 4`, `MAX_PORTABLE_BUNDLE_NODES = 32`, and `MAX_PORTABLE_BUNDLE_BYTES = 131072`.
+- **Fail-closed offline verification**: Rejects missing parents, direct or transitive cycles, understated/overstated depths, unreferenced orphan statements, tampered `bundle_digest` / `manifest_digest` / `parent_commitments`, silent-tier identity leaks, contradictory roots (conflicting root digests, root-vs-derivative role collisions, cross-network/contract mismatches, or contradicting trust references), and any embedded external URL or remote-fetch field without performing network I/O.
+
 ### Database Schema
 
 #### lineage_events table
