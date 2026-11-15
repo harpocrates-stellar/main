@@ -325,6 +325,13 @@ GET /ready    database, ffmpeg/ffprobe, and local worker readiness
 GET /metrics  privacy-safe Prometheus metrics endpoint
 ```
 
+## Fail-Safe Evidence Garbage Collection
+
+`evidence_storage.collect_unreferenced_blobs()` and `evidence_storage.run_garbage_collection_cycle()` preserve encrypted evidence on disk whenever a metadata deletion or database commit fails:
+
+- Candidate files are staged with a preservation link/copy (`storage.stage_blob_preservation`) and deleted from `blobs` with a guarded `WHERE NOT EXISTS (...)` reference check so physical ciphertext is finalized for removal only after `conn.commit()` succeeds.
+- If `DELETE FROM blobs` or `conn.commit()` fails, staged encrypted blobs are atomically restored (`storage.restore_preserved_blob`) and a bounded `RetryableStorageError` (`code="GC_METADATA_UPDATE_FAILED"`, `retryable=True`, `retry_after_seconds` clamped to `[1, 300]`, with zero hashes or filesystem paths) is raised or returned via `run_garbage_collection_cycle()`.
+
 ## Verifier Proof Cache
 
 `verifier_cache.py` memoizes Noir verifier results with positive and negative

@@ -1,7 +1,9 @@
 import logging
 import os
 import re
+import shutil
 import stat
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,76 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 default_storage_dir = "/tmp/harpocrates_jobs"
+MIN_RETRY_AFTER_SECONDS = 1
+MAX_RETRY_AFTER_SECONDS = 300
+DEFAULT_GC_RETRY_AFTER_SECONDS = 5
+
+
+class RetryableStorageError(RuntimeError):
+    """Bounded, privacy-safe retryable storage error envelope."""
+
+    def __init__(
+        self,
+        *,
+        code: str = "GC_METADATA_UPDATE_FAILED",
+        message: str = (
+            "Evidence garbage-collection metadata update failed; "
+            "encrypted artifacts were preserved and collection may be retried."
+        ),
+        retryable: bool = True,
+        retry_after_seconds: int = DEFAULT_GC_RETRY_AFTER_SECONDS,
+        preserved_count: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.retryable = bool(retryable)
+        self.retry_after_seconds = max(
+            MIN_RETRY_AFTER_SECONDS,
+            min(int(retry_after_seconds), MAX_RETRY_AFTER_SECONDS),
+        )
+        self.preserved_count = max(0, int(preserved_count))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "retryable": self.retryable,
+            "retry_after_seconds": self.retry_after_seconds,
+            "preserved_count": self.preserved_count,
+        }
+
+
+def stage_blob_preservation(storage_path: Path | str) -> Path | None:
+    """Create a preservation link/copy so encrypted bytes survive until DB commit."""
+    target = Path(storage_path)
+    if not target.exists():
+        return None
+    staged = target.with_name(f".{target.name}.gc-preserve-{uuid.uuid4().hex[:12]}")
+    try:
+        os.link(target, staged)
+    except OSError:
+        shutil.copy2(target, staged)
+    return staged
+
+
+def restore_preserved_blob(staged_path: Path | None, storage_path: Path | str) -> None:
+    """Atomically restore preserved encrypted evidence when metadata commit aborts."""
+    if staged_path is None or not staged_path.exists():
+        return
+    target = Path(storage_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(staged_path, target)
+
+
+def finalize_preserved_blob(staged_path: Path | None) -> None:
+    """Release the staged preservation link only after DB commit succeeds."""
+    if staged_path is None:
+        return
+    try:
+        staged_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _log_warning(message: str) -> None:
