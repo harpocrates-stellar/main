@@ -14,10 +14,16 @@ import { FlowCancelledError, throwIfAborted } from '../utils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
+export type UploadAdmissionTelemetry = {
+  state: 'admitted' | 'queued'
+  queuePosition: number | null
+}
+
 export type EmbedResult = {
   embeddedBlob: Blob
   embeddedHash: string
   metadataHash: string
+  admission?: UploadAdmissionTelemetry
 }
 
 /**
@@ -76,7 +82,18 @@ export async function embedVideo(
     throw new Error('Steganography service returned an invalid evidence package.')
   }
 
-  return { embeddedBlob, embeddedHash, metadataHash }
+  const rawQueuePos = response.headers.get('X-Harpocrates-Queue-Position')
+  const parsedQueuePos =
+    rawQueuePos && /^\d+$/.test(rawQueuePos.trim())
+      ? Number.parseInt(rawQueuePos.trim(), 10)
+      : null
+  const rawState = response.headers.get('X-Harpocrates-Admission-State')?.toLowerCase()
+  const admission: UploadAdmissionTelemetry = {
+    state: rawState === 'queued' || (parsedQueuePos !== null && parsedQueuePos > 0) ? 'queued' : 'admitted',
+    queuePosition: parsedQueuePos,
+  }
+
+  return { embeddedBlob, embeddedHash, metadataHash, admission }
 }
 
 type RegistrationPayload = {

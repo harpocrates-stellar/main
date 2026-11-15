@@ -19,6 +19,7 @@ import {
   ProofWorkerError,
 } from '../workers/proofWorkerClient'
 import { hashFileInWorker } from '../workers/fileHashWorkerClient'
+import { ApiClientError } from '../services/apiError'
 import { appConfig } from '../config'
 
 export const TIERS = [
@@ -60,6 +61,123 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   cancelled: 'Request cancelled.',
 }
 
+export type UploadAdmissionStatus =
+  | 'idle'
+  | 'local_hashing'
+  | 'requesting_admission'
+  | 'queued'
+  | 'admitted'
+  | 'deferred_queue'
+  | 'rejected_capacity'
+  | 'invalid_evidence'
+
+export type UploadFailureCategory = 'admission_rejected' | 'invalid_evidence' | null
+
+export type UploadAdmissionState = {
+  status: UploadAdmissionStatus
+  category: UploadFailureCategory
+  reasonCode: string | null
+  queuePosition: number | null
+  retryAfterSeconds: number | null
+  retryable: boolean
+  summary: string
+  nextStep: string
+}
+
+export function classifyUploadFailure(
+  error: unknown,
+  stageAtFailure: 'hashing' | 'embedding',
+): UploadAdmissionState {
+  if (error instanceof ApiClientError) {
+    if (
+      error.code === 'UNSUPPORTED_MEDIA_TYPE' ||
+      error.code === 'PAYLOAD_TOO_LARGE' ||
+      error.code === 'VALIDATION_ERROR'
+    ) {
+      const nextStep =
+        error.code === 'PAYLOAD_TOO_LARGE'
+          ? 'Choose a smaller video within the server limit. Retrying this file unchanged will fail again.'
+          : error.code === 'UNSUPPORTED_MEDIA_TYPE'
+            ? 'Convert or replace the artifact with an MP4, WebM, or MOV video before uploading.'
+            : 'Verify the video file integrity and metadata fields before selecting a replacement.'
+      return {
+        status: 'invalid_evidence',
+        category: 'invalid_evidence',
+        reasonCode: error.code,
+        queuePosition: null,
+        retryAfterSeconds: null,
+        retryable: false,
+        summary: error.message,
+        nextStep,
+      }
+    }
+
+    if (error.code === 'QUEUE_FULL' || error.code === 'ADMISSION_DEFERRED') {
+      const posNote = error.queuePosition ? ` (queue position ${error.queuePosition})` : ''
+      const waitNote = error.retryAfterSeconds
+        ? ` Retry after ${error.retryAfterSeconds}s.`
+        : ' Retry once active queue slots drain.'
+      return {
+        status: 'deferred_queue',
+        category: 'admission_rejected',
+        reasonCode: error.code,
+        queuePosition: error.queuePosition,
+        retryAfterSeconds: error.retryAfterSeconds,
+        retryable: true,
+        summary: `Upload deferred by admission queue${posNote}.`,
+        nextStep: `Your evidence file passed local checks and does not need to be replaced.${waitNote}`,
+      }
+    }
+
+    const waitHint = error.retryAfterSeconds
+      ? `Wait ${error.retryAfterSeconds}s and retry the same file.`
+      : 'Keep your selected file and retry when worker capacity frees up.'
+    return {
+      status: 'rejected_capacity',
+      category: 'admission_rejected',
+      reasonCode: error.code,
+      queuePosition: error.queuePosition,
+      retryAfterSeconds: error.retryAfterSeconds,
+      retryable: true,
+      summary:
+        error.code === 'RATE_LIMITED'
+          ? 'Upload temporarily rate-limited by admission controller.'
+          : 'Upload rejected due to temporary worker capacity saturation.',
+      nextStep: `${waitHint} Your evidence file remains valid.`,
+    }
+  }
+
+  const rawMessage = error instanceof Error ? error.message : 'Evidence processing failed.'
+  if (
+    stageAtFailure === 'hashing' ||
+    /invalid evidence package|unsupported|malformed|corrupt/i.test(rawMessage)
+  ) {
+    return {
+      status: 'invalid_evidence',
+      category: 'invalid_evidence',
+      reasonCode:
+        stageAtFailure === 'hashing' ? 'LOCAL_HASH_FAILED' : 'INVALID_EVIDENCE_PACKAGE',
+      queuePosition: null,
+      retryAfterSeconds: null,
+      retryable: false,
+      summary: rawMessage,
+      nextStep:
+        'Inspect or replace the source video file before attempting another upload.',
+    }
+  }
+
+  return {
+    status: 'rejected_capacity',
+    category: 'admission_rejected',
+    reasonCode: 'ADMISSION_UNREACHABLE',
+    queuePosition: null,
+    retryAfterSeconds: null,
+    retryable: true,
+    summary: 'Upload admission service could not be reached.',
+    nextStep: 'Keep your selected file and retry once connectivity recovers.',
+  }
+}
+
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
   setSelectedTier: (tier: IdentityTier) => void
@@ -67,6 +185,7 @@ export type UseEvidenceReturn = {
   stage: Stage
   /** Byte-level progress of the current source-file hashing run (null when idle). */
   hashProgress: HashProgress | null
+  uploadAdmission?: UploadAdmissionState
   file: File | null
   proof: ProofPackage | null
   processedVideoUrl: string
@@ -79,6 +198,7 @@ export type UseEvidenceReturn = {
   networkMismatch: string | null
   isCancellable: boolean
   handleEvidence: (nextFile: File | null) => Promise<void>
+  retryUploadAdmission?: () => Promise<boolean>
   registerProof: (wallet: string) => Promise<void>
   cancelEvidence: () => void
   /** Cancel an in-flight Silent Witness proof generation (no-op if idle). */
@@ -92,10 +212,23 @@ type PendingRegistration = {
   wallet: string
 }
 
+const IDLE_ADMISSION_STATE: UploadAdmissionState = {
+  status: 'idle',
+  category: null,
+  reasonCode: null,
+  queuePosition: null,
+  retryAfterSeconds: null,
+  retryable: false,
+  summary: 'No upload in progress.',
+  nextStep: '',
+}
+
 export function useEvidence(): UseEvidenceReturn {
   const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
   const [stage, setStage] = useState<Stage>('idle')
   const [hashProgress, setHashProgress] = useState<HashProgress | null>(null)
+  const [uploadAdmission, setUploadAdmission] =
+    useState<UploadAdmissionState>(IDLE_ADMISSION_STATE)
   const [file, setFile] = useState<File | null>(null)
   const [proof, setProof] = useState<ProofPackage | null>(null)
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
@@ -192,6 +325,7 @@ export function useEvidence(): UseEvidenceReturn {
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
+    let activeUploadStage: 'hashing' | 'embedding' = 'hashing'
     setFile(nextFile)
 
     const cached = cachedFileHashRef.current
@@ -204,6 +338,16 @@ export function useEvidence(): UseEvidenceReturn {
 
     if (!isCacheHit) {
       cachedFileHashRef.current = null
+      setUploadAdmission({
+        status: 'local_hashing',
+        category: null,
+        reasonCode: null,
+        queuePosition: null,
+        retryAfterSeconds: null,
+        retryable: false,
+        summary: 'Hashing video locally before requesting upload admission.',
+        nextStep: '',
+      })
       setHashProgress({
         processedBytes: 0,
         totalBytes: nextFile.size,
@@ -250,12 +394,23 @@ export function useEvidence(): UseEvidenceReturn {
       const timestamp = new Date().toISOString()
       if (!isCurrentFlow()) return
 
+      activeUploadStage = 'embedding'
+      setUploadAdmission({
+        status: 'requesting_admission',
+        category: null,
+        reasonCode: null,
+        queuePosition: null,
+        retryAfterSeconds: null,
+        retryable: false,
+        summary: 'Requesting upload admission from steganography service.',
+        nextStep: '',
+      })
       setStage('embedding')
       setMessage('Embedding portable Harpocrates metadata into the video.')
 
       const { embedVideo } = await import('../services/evidenceService')
       if (!isCurrentFlow()) return
-      const { embeddedBlob, embeddedHash, metadataHash } = await embedVideo(
+      const embedResult = await embedVideo(
         nextFile,
         selectedTier,
         sourceHash,
@@ -264,6 +419,7 @@ export function useEvidence(): UseEvidenceReturn {
         controller.signal,
       )
       if (!isCurrentFlow()) return
+      const { embeddedBlob, embeddedHash, metadataHash, admission } = embedResult
 
       if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
       setProcessedVideoUrl(URL.createObjectURL(embeddedBlob))
@@ -276,10 +432,36 @@ export function useEvidence(): UseEvidenceReturn {
         timestamp,
         tier: selectedTier,
       })
+      if (admission?.state === 'queued') {
+        setUploadAdmission({
+          status: 'queued',
+          category: null,
+          reasonCode: 'QUEUED_ADMITTED',
+          queuePosition: admission.queuePosition,
+          retryAfterSeconds: null,
+          retryable: false,
+          summary: admission.queuePosition
+            ? `Admitted via upload queue (position ${admission.queuePosition}) and embedded.`
+            : 'Admitted via upload queue and embedded.',
+          nextStep: '',
+        })
+      } else {
+        setUploadAdmission({
+          status: 'admitted',
+          category: null,
+          reasonCode: null,
+          queuePosition: null,
+          retryAfterSeconds: null,
+          retryable: false,
+          summary: 'Upload admitted and embedded.',
+          nextStep: '',
+        })
+      }
       setStage('ready')
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
       if (!isCurrentFlow()) return
+      setUploadAdmission(classifyUploadFailure(error, activeUploadStage))
       setStage('error')
       setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
     } finally {
@@ -287,6 +469,14 @@ export function useEvidence(): UseEvidenceReturn {
         evidenceFlowAbortRef.current = null
       }
     }
+  }
+
+  async function retryUploadAdmission(): Promise<boolean> {
+    if (!file || uploadAdmission.category !== 'admission_rejected' || !uploadAdmission.retryable) {
+      return false
+    }
+    await handleEvidence(file)
+    return true
   }
 
   async function registerProof(wallet: string) {
@@ -444,7 +634,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -469,6 +659,7 @@ export function useEvidence(): UseEvidenceReturn {
     }
     resetFlow()
     setHashProgress(null)
+    setUploadAdmission(IDLE_ADMISSION_STATE)
     setStage('cancelled')
     setMessage(CANCELLED_MESSAGES[currentStage])
   }
@@ -479,6 +670,7 @@ export function useEvidence(): UseEvidenceReturn {
     selectedTierMeta,
     stage,
     hashProgress,
+    uploadAdmission,
     file,
     proof,
     processedVideoUrl,
@@ -491,6 +683,7 @@ export function useEvidence(): UseEvidenceReturn {
     networkMismatch,
     isCancellable,
     handleEvidence,
+    retryUploadAdmission,
     registerProof,
     cancelEvidence,
     cancelProving,

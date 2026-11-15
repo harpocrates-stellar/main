@@ -25,6 +25,12 @@ export type BackendErrorCode =
   | 'NOT_FOUND'
   | 'INTERNAL_ERROR'
   | 'UNSUPPORTED_MEDIA_TYPE'
+  | 'RATE_LIMITED'
+  | 'QUEUE_FULL'
+  | 'CAPACITY_EXCEEDED'
+  | 'STEGO_LIMIT_EXCEEDED'
+  | 'ADMISSION_DEFERRED'
+  | 'DEPENDENCY_UNAVAILABLE'
   | 'REPORTER_ON_COOLDOWN'
   | 'TOO_MANY_OPEN_DISPUTES'
   | 'DISPUTE_WINDOW_EXPIRED'
@@ -53,6 +59,8 @@ export type ActionableApiError = {
   action: ActionHint
   retryable: boolean
   status: number
+  retryAfterSeconds?: number | null
+  queuePosition?: number | null
 }
 
 const KNOWN_CODES: ReadonlySet<string> = new Set([
@@ -61,6 +69,12 @@ const KNOWN_CODES: ReadonlySet<string> = new Set([
   'NOT_FOUND',
   'INTERNAL_ERROR',
   'UNSUPPORTED_MEDIA_TYPE',
+  'RATE_LIMITED',
+  'QUEUE_FULL',
+  'CAPACITY_EXCEEDED',
+  'STEGO_LIMIT_EXCEEDED',
+  'ADMISSION_DEFERRED',
+  'DEPENDENCY_UNAVAILABLE',
   'REPORTER_ON_COOLDOWN',
   'TOO_MANY_OPEN_DISPUTES',
   'DISPUTE_WINDOW_EXPIRED',
@@ -102,6 +116,36 @@ const CODE_GUIDANCE: Record<Exclude<BackendErrorCode, 'UNKNOWN'>, CodeGuidance> 
     action: 'use_supported_format',
     retryable: false,
     fallbackMessage: 'Unsupported file type. Use an MP4, WebM, or MOV video.',
+  },
+  RATE_LIMITED: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'Upload rate limit reached. Wait briefly and retry the same file.',
+  },
+  QUEUE_FULL: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'Upload processing queue is full. Wait for an open slot and retry.',
+  },
+  CAPACITY_EXCEEDED: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'Processing capacity is currently saturated. Retry in a moment.',
+  },
+  STEGO_LIMIT_EXCEEDED: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'Steganography worker capacity limit reached. Retry when capacity frees up.',
+  },
+  ADMISSION_DEFERRED: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'Upload admission was deferred due to active queue load. Retry shortly.',
+  },
+  DEPENDENCY_UNAVAILABLE: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'Upload processing service is temporarily unavailable. Retry shortly.',
   },
   REPORTER_ON_COOLDOWN: {
     action: 'retry',
@@ -163,8 +207,10 @@ function isKnownCode(value: string): value is Exclude<BackendErrorCode, 'UNKNOWN
 function codeFromStatus(status: number): BackendErrorCode {
   if (status === 413) return 'PAYLOAD_TOO_LARGE'
   if (status === 415) return 'UNSUPPORTED_MEDIA_TYPE'
+  if (status === 429) return 'RATE_LIMITED'
   if (status === 404) return 'NOT_FOUND'
   if (status === 400 || status === 422) return 'VALIDATION_ERROR'
+  if (status === 503) return 'DEPENDENCY_UNAVAILABLE'
   if (status >= 500) return 'INTERNAL_ERROR'
   return 'UNKNOWN'
 }
@@ -193,13 +239,34 @@ function buildActionableMessage(code: BackendErrorCode, detail: string | null): 
     : 'Something went wrong. Retry or choose a different artifact.'
 }
 
+function parseBoundedPositiveInt(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return Math.min(Math.floor(raw), 86400)
+  }
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    const parsed = Number.parseInt(raw.trim(), 10)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(parsed, 86400)
+    }
+  }
+  return null
+}
+
 function extractEnvelope(body: unknown): {
   code: string | null
   message: string | null
   requestId: string | null
+  retryAfterSeconds: number | null
+  queuePosition: number | null
 } {
   if (body == null || typeof body !== 'object') {
-    return { code: null, message: null, requestId: null }
+    return {
+      code: null,
+      message: null,
+      requestId: null,
+      retryAfterSeconds: null,
+      queuePosition: null,
+    }
   }
   const record = body as Record<string, unknown>
   const raw = record.error
@@ -207,6 +274,8 @@ function extractEnvelope(body: unknown): {
   let message: string | null = null
   let requestId: string | null =
     typeof record.request_id === 'string' ? record.request_id : null
+  let retryAfterSeconds = parseBoundedPositiveInt(record.retry_after_seconds)
+  let queuePosition = parseBoundedPositiveInt(record.queue_position)
 
   if (typeof raw === 'string') {
     message = raw
@@ -215,9 +284,12 @@ function extractEnvelope(body: unknown): {
     if (typeof inner.code === 'string') code = inner.code
     if (typeof inner.message === 'string') message = inner.message
     if (typeof inner.request_id === 'string') requestId = inner.request_id
+    retryAfterSeconds =
+      parseBoundedPositiveInt(inner.retry_after_seconds) ?? retryAfterSeconds
+    queuePosition = parseBoundedPositiveInt(inner.queue_position) ?? queuePosition
   }
 
-  return { code, message, requestId }
+  return { code, message, requestId, retryAfterSeconds, queuePosition }
 }
 
 /**
@@ -228,6 +300,10 @@ export async function parseActionableApiError(
   fallback: string,
 ): Promise<ActionableApiError> {
   const status = typeof response.status === 'number' ? response.status : 0
+  const headerRetryAfter = parseBoundedPositiveInt(response.headers?.get?.('Retry-After'))
+  const headerQueuePosition = parseBoundedPositiveInt(
+    response.headers?.get?.('X-Harpocrates-Queue-Position'),
+  )
   let body: unknown
   try {
     body = await response.json()
@@ -242,6 +318,8 @@ export async function parseActionableApiError(
       action: guidance?.action ?? (status >= 500 ? 'retry' : 'none'),
       retryable: guidance?.retryable ?? status >= 500,
       status,
+      retryAfterSeconds: headerRetryAfter,
+      queuePosition: headerQueuePosition,
     }
   }
 
@@ -263,6 +341,8 @@ export async function parseActionableApiError(
     action: guidance?.action ?? 'none',
     retryable: guidance?.retryable ?? false,
     status,
+    retryAfterSeconds: extracted.retryAfterSeconds ?? headerRetryAfter,
+    queuePosition: extracted.queuePosition ?? headerQueuePosition,
   }
 }
 
@@ -286,6 +366,8 @@ export class ApiClientError extends Error {
   readonly requestId: string | null
   readonly status: number
   readonly detail: string | null
+  readonly retryAfterSeconds: number | null
+  readonly queuePosition: number | null
 
   constructor(actionable: ActionableApiError) {
     super(actionable.message)
@@ -296,6 +378,8 @@ export class ApiClientError extends Error {
     this.requestId = actionable.requestId
     this.status = actionable.status
     this.detail = actionable.detail
+    this.retryAfterSeconds = actionable.retryAfterSeconds ?? null
+    this.queuePosition = actionable.queuePosition ?? null
   }
 }
 

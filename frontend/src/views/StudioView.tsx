@@ -31,6 +31,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     selectedTierMeta,
     stage,
     hashProgress,
+    uploadAdmission,
     file,
     proof,
     processedVideoUrl,
@@ -43,6 +44,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     networkMismatch,
     isCancellable,
     handleEvidence,
+    retryUploadAdmission,
     registerProof,
     cancelEvidence,
     cancelProving,
@@ -129,6 +131,68 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
               max={Math.max(hashProgress.totalBytes, 1)}
               aria-label="File hashing progress"
             />
+          </div>
+        ) : null}
+
+        {uploadAdmission && uploadAdmission.status !== 'idle' ? (
+          <div
+            className="rail-block"
+            role="region"
+            aria-labelledby="studio-upload-admission-heading"
+            data-admission-status={uploadAdmission.status}
+            data-failure-category={uploadAdmission.category ?? 'none'}
+          >
+            <h3 id="studio-upload-admission-heading">Upload admission &amp; queue status</h3>
+            <p>
+              <strong>
+                {uploadAdmission.status === 'local_hashing'
+                  ? 'Local pre-check'
+                  : uploadAdmission.status === 'requesting_admission'
+                    ? 'Requesting admission'
+                    : uploadAdmission.status === 'queued'
+                      ? 'Queued & admitted'
+                      : uploadAdmission.status === 'admitted'
+                        ? 'Admitted'
+                        : uploadAdmission.status === 'deferred_queue'
+                          ? 'Upload queue full (retryable)'
+                          : uploadAdmission.status === 'rejected_capacity'
+                            ? 'Admission capacity rejected (retryable)'
+                            : 'Invalid evidence (replace file)'}
+                :
+              </strong>{' '}
+              {uploadAdmission.summary}
+            </p>
+            {uploadAdmission.queuePosition !== null ? (
+              <p>Queue position: #{uploadAdmission.queuePosition}</p>
+            ) : null}
+            {uploadAdmission.retryAfterSeconds !== null ? (
+              <p>Suggested retry window: {uploadAdmission.retryAfterSeconds}s</p>
+            ) : null}
+            {uploadAdmission.nextStep ? <p>{uploadAdmission.nextStep}</p> : null}
+            {uploadAdmission.category === 'admission_rejected' && uploadAdmission.retryable ? (
+              <div className="verify-actions" role="group" aria-label="Upload admission actions">
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={isBusy || !file}
+                  onClick={() => void retryUploadAdmission?.()}
+                >
+                  Retry upload admission
+                </button>
+              </div>
+            ) : null}
+            {uploadAdmission.category === 'invalid_evidence' ? (
+              <div className="verify-actions" role="group" aria-label="Invalid evidence actions">
+                <button
+                  type="button"
+                  className="hero-secondary verify-action-btn"
+                  disabled={isBusy}
+                  onClick={() => studioInputRef.current?.click()}
+                >
+                  Choose a different video file
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 

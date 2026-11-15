@@ -157,6 +157,32 @@ describe('parseActionableApiError', () => {
     expect(err.code).toBe('PAYLOAD_TOO_LARGE')
     expect(err.action).toBe('reduce_file_size')
   })
+
+  it('extracts queue position and retry-after window from admission rejection responses', async () => {
+    const res = new Response(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: 'QUEUE_FULL',
+          message: 'worker queue full',
+          request_id: 'q-123',
+        },
+      }),
+      {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json',
+          'Retry-After': '18',
+          'X-Harpocrates-Queue-Position': '5',
+        },
+      },
+    )
+    const err = await parseActionableApiError(res, 'fallback')
+    expect(err.code).toBe('QUEUE_FULL')
+    expect(err.retryable).toBe(true)
+    expect(err.retryAfterSeconds).toBe(18)
+    expect(err.queuePosition).toBe(5)
+  })
 })
 
 describe('ApiClientError / toVerificationErrorCode', () => {

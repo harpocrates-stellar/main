@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import { ApiClientError } from '../services/apiError'
+import { classifyUploadFailure, useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -230,6 +231,92 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('maps backend queue and capacity rejections to retryable admission states distinct from invalid evidence', async () => {
+    const queueFullErr = new ApiClientError({
+      code: 'QUEUE_FULL',
+      message: 'Upload processing queue is full.',
+      detail: 'queue depth exceeded',
+      requestId: 'req-q1',
+      action: 'retry',
+      retryable: true,
+      status: 503,
+      queuePosition: 7,
+      retryAfterSeconds: 12,
+    })
+    const capacityClassified = classifyUploadFailure(queueFullErr, 'embedding')
+    expect(capacityClassified.status).toBe('deferred_queue')
+    expect(capacityClassified.category).toBe('admission_rejected')
+    expect(capacityClassified.queuePosition).toBe(7)
+    expect(capacityClassified.retryAfterSeconds).toBe(12)
+    expect(capacityClassified.retryable).toBe(true)
+
+    const unsupportedErr = new ApiClientError({
+      code: 'UNSUPPORTED_MEDIA_TYPE',
+      message: 'Unsupported file type. Use an MP4, WebM, or MOV video.',
+      detail: null,
+      requestId: 'req-inv1',
+      action: 'use_supported_format',
+      retryable: false,
+      status: 415,
+    })
+    const invalidClassified = classifyUploadFailure(unsupportedErr, 'embedding')
+    expect(invalidClassified.status).toBe('invalid_evidence')
+    expect(invalidClassified.category).toBe('invalid_evidence')
+    expect(invalidClassified.retryable).toBe(false)
+
+    // Hook end-to-end: retryUploadAdmission succeeds for admission_rejected and refuses invalid_evidence.
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock
+      .mockRejectedValueOnce(queueFullErr)
+      .mockResolvedValueOnce({
+        embeddedBlob: new Blob(['embedded']),
+        embeddedHash: 'b'.repeat(64),
+        metadataHash: 'c'.repeat(64),
+        admission: { state: 'queued', queuePosition: 2 },
+      })
+      .mockRejectedValueOnce(unsupportedErr)
+
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    const validFile = new File(['video-bytes'], 'clip.mp4', { type: 'video/mp4' })
+
+    await act(async () => {
+      await result.current.handleEvidence(validFile)
+    })
+    expect(result.current.uploadAdmission?.status).toBe('deferred_queue')
+    expect(result.current.uploadAdmission?.category).toBe('admission_rejected')
+
+    let retried = false
+    await act(async () => {
+      retried = (await result.current.retryUploadAdmission?.()) ?? false
+    })
+    expect(retried).toBe(true)
+    expect(result.current.stage).toBe('ready')
+    expect(result.current.uploadAdmission?.status).toBe('queued')
+    expect(result.current.uploadAdmission?.queuePosition).toBe(2)
+
+    const badFile = new File(['corrupt'], 'corrupt.avi', { type: 'video/x-msvideo' })
+    await act(async () => {
+      await result.current.handleEvidence(badFile)
+    })
+    expect(result.current.uploadAdmission?.status).toBe('invalid_evidence')
+    expect(result.current.uploadAdmission?.category).toBe('invalid_evidence')
+
+    let retriedInvalid = true
+    await act(async () => {
+      retriedInvalid = (await result.current.retryUploadAdmission?.()) ?? true
+    })
+    expect(retriedInvalid).toBe(false)
   })
 })
 
