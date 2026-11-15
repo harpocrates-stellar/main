@@ -342,6 +342,27 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Two-Phase Retained Evidence Deletion Receipts
+
+`evidence_storage.py` and `storage.py` emit cryptographic two-phase deletion
+receipts (`DeletionReceipt` / `DeletionReceiptLedger`) whenever retained
+evidence blobs or expired job artifacts are collected:
+
+1. **Phase 1 (`selection_approved`):** Records the approved selection commitment
+   (`selectionDigest` under `harpocrates:deletion-receipt:phase1:v1:`) and a
+   one-way audit reference (`auditRef` under `harpocrates:deletion-audit-ref:v1:`)
+   before any physical storage unlink runs.
+2. **Phase 2 (`completed` / `storage_failed`):** Records completed physical file
+   removal (`fileDeleted`) and database metadata removal (`metadataDeleted`)
+   chained into `completionDigest` (`harpocrates:deletion-receipt:phase2:v1:`)
+   only after commit. Storage unlink failures mark `storage_failed` without
+   completing Phase 2 so retries stay auditable.
+
+Receipts never retain media bytes, storage paths, filenames, raw content hashes,
+tenant identifiers, or plaintext/wrapped encryption keys. Configure optional
+durable atomic persistence with `DELETION_RECEIPT_LOG_PATH` and bound memory
+capacity with `DELETION_RECEIPT_MAX_ENTRIES` (default `4096`).
+
 ## Test
 
 ```powershell
