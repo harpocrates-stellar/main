@@ -441,7 +441,9 @@ fn on_chain_classification_never_panics_on_a_mutant() {
 
                 // A rejected classification must leave no trace: the entry
                 // point is read-only and must never consume a nullifier.
-                assert!(!client.has_nullifier(&client.get_verifier().unwrap(), &BytesN::from_array(&env, &[0x02u8; 32])));
+                assert!(
+                    !client.has_nullifier(&contract_id, &BytesN::from_array(&env, &[0x02u8; 32]))
+                );
             }
         }
     }

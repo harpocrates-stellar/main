@@ -233,7 +233,7 @@ fn quota_rejects_the_registration_over_the_limit() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #88)")] // IssuerQuotaExhausted
+#[should_panic(expected = "Error(Contract, #95)")] // IssuerQuotaExhausted
 fn exceeding_the_seal_quota_reverts_with_the_stable_code() {
     let (env, contract_id, admin, issuer) = setup(1_000);
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
