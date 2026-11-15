@@ -12,15 +12,18 @@ from __future__ import annotations
 
 import difflib
 import re
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import aggregation_bound as ab  # noqa: E402
-import revocation_depth as rd  # noqa: E402
+try:
+    from zk.tools import aggregation_bound as ab
+    from zk.tools import disclosure_witness as dw
+    from zk.tools import revocation_depth as rd
+except ImportError:
+    import aggregation_bound as ab  # type: ignore[no-redef]
+    import disclosure_witness as dw  # type: ignore[no-redef]
+    import revocation_depth as rd  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIB_RS_PATH = (
@@ -32,6 +35,7 @@ LIB_RS_PATH = (
     / "lib.rs"
 )
 NOIR_DIR = REPO_ROOT / "zk" / "noir"
+FRONTEND_SCHEMA_TS_PATH = REPO_ROOT / "frontend" / "src" / "types" / "schema.ts"
 
 NOIR_GLOBAL_RE = re.compile(
     r"^\s*global\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=]+=\s*([0-9][0-9_]*|0x[0-9a-fA-F][0-9a-fA-F_]*)\s*;",
@@ -43,12 +47,20 @@ RUST_PUB_CONST_RE = re.compile(
     re.MULTILINE,
 )
 
+TS_SCHEMA_CONST_RE = re.compile(
+    r"^\s*([A-Z_][A-Z0-9_]*)\s*:\s*([0-9][0-9_]*)\s*,",
+    re.MULTILINE,
+)
+
 # Canonical Python bounds
 PYTHON_BOUND_CONSTANTS: dict[str, int] = {
     "MAX_AGGREGATION_SIZE": ab.MAX_AGGREGATION_SIZE,
     "MIN_AGGREGATION_SIZE": ab.MIN_AGGREGATION_SIZE,
     "MAX_REVOCATION_WITNESS_DEPTH": rd.MAX_REVOCATION_WITNESS_DEPTH,
     "MAX_REVOCATION_LEAVES": rd.MAX_REVOCATION_LEAVES,
+    "MAX_ATTRIBUTES": dw.MAX_ATTRIBUTES,
+    "MAX_PREDICATES": dw.MAX_PREDICATES,
+    "MAX_SET_MEMBERS": dw.MAX_SET_MEMBERS,
 }
 
 
@@ -162,6 +174,28 @@ def test_silent_witness_aggregator_circuits_constants_sync(rel_path: str):
         "MAX_AGGREGATION_SIZE": ab.MAX_AGGREGATION_SIZE,
     }
     assert_constants_sync(actual, expected, rel_path)
+
+
+def test_selective_disclosure_constants_sync():
+    """Verify selective_disclosure Noir globals and frontend schema constants match."""
+    noir_rel = "zk/noir/selective_disclosure/src/main.nr"
+    noir_path = REPO_ROOT / noir_rel
+    assert noir_path.is_file(), f"Circuit file not found at {noir_path}"
+    expected = {
+        "MAX_ATTRIBUTES": dw.MAX_ATTRIBUTES,
+        "MAX_PREDICATES": dw.MAX_PREDICATES,
+        "MAX_SET_MEMBERS": dw.MAX_SET_MEMBERS,
+    }
+    assert_constants_sync(parse_noir_globals(noir_path), expected, noir_rel)
+
+    assert FRONTEND_SCHEMA_TS_PATH.is_file()
+    ts_consts = {
+        name: int(val.replace("_", ""), 10)
+        for name, val in TS_SCHEMA_CONST_RE.findall(
+            FRONTEND_SCHEMA_TS_PATH.read_text(encoding="utf-8")
+        )
+    }
+    assert_constants_sync(ts_consts, expected, "frontend/src/types/schema.ts")
 
 
 def test_all_circuits_no_tracked_constant_drift():

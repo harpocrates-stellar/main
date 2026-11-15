@@ -1,11 +1,18 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { SelectiveDisclosureInput, Predicate } from './types/schema'
 import { SCHEMA_CONSTANTS } from './types/schema'
+import {
+  DisclosureWitnessError,
+  encodePredicateType,
+  generateSelectiveDisclosureProof,
+  padPredicates,
+  prepareSelectiveDisclosureWitness,
+} from './selectiveDisclosure'
 
 const mockPredicate: Predicate = {
   predicateType: 'Equality',
   attrIndex: 0,
-  publicValue: '18',
+  publicValue: '12',
   setValues: Array(SCHEMA_CONSTANTS.MAX_SET_MEMBERS).fill('0'),
   setLen: 0,
   lowerBound: '0',
@@ -25,8 +32,8 @@ const VALID_INPUT: SelectiveDisclosureInput = {
   evidenceDigest: 'ff'.repeat(32),
   predicateCommitment: '00'.repeat(32),
   numAttributes: 2,
-  attrValues: ['18', 'US'],
-  attrBlindings: ['111111', '222222'],
+  attrValues: ['0x12', '0xbc614e'],
+  attrBlindings: ['0x1b207', '0x3640e'],
   numPredicates: 1,
   predicates: [mockPredicate],
 }
@@ -48,35 +55,98 @@ describe('SelectiveDisclosureInput', () => {
     expect(VALID_INPUT.predicates.length).toBeGreaterThanOrEqual(VALID_INPUT.numPredicates)
   })
 
-  it('rejects too many attributes', () => {
+  it('rejects too many attributes in witness preparation', () => {
     const bad = {
       ...VALID_INPUT,
       numAttributes: SCHEMA_CONSTANTS.MAX_ATTRIBUTES + 1,
+      attrValues: Array(SCHEMA_CONSTANTS.MAX_ATTRIBUTES + 1).fill('0x01'),
+      attrBlindings: Array(SCHEMA_CONSTANTS.MAX_ATTRIBUTES + 1).fill('0x02'),
     }
-    expect(bad.numAttributes).toBeGreaterThan(SCHEMA_CONSTANTS.MAX_ATTRIBUTES)
+    expect(() => prepareSelectiveDisclosureWitness(bad)).toThrowError(DisclosureWitnessError)
   })
 
-  it('rejects too many predicates', () => {
-    const bad = {
+  it('rejects oversized predicate lists before circuit fetch or proving', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const oversizedPredicates = Array.from(
+      { length: SCHEMA_CONSTANTS.MAX_PREDICATES + 1 },
+      () => ({ ...mockPredicate }),
+    )
+    const bad: SelectiveDisclosureInput = {
       ...VALID_INPUT,
       numPredicates: SCHEMA_CONSTANTS.MAX_PREDICATES + 1,
+      predicates: oversizedPredicates,
     }
-    expect(bad.numPredicates).toBeGreaterThan(SCHEMA_CONSTANTS.MAX_PREDICATES)
+
+    expect(() => padPredicates(oversizedPredicates)).toThrowError(DisclosureWitnessError)
+    await expect(generateSelectiveDisclosureProof(bad)).rejects.toMatchObject({
+      code: 'predicates_oversize',
+      field: 'predicates',
+    })
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
   })
 
-  it('accepts all predicate types', () => {
-    const types: Array<Predicate['predicateType']> = ['Equality', 'SetMembership', 'Range']
-    for (const pt of types) {
-      const p: Predicate = {
-        predicateType: pt,
-        attrIndex: 0,
-        publicValue: pt === 'Equality' ? '18' : undefined,
-        setValues: pt === 'SetMembership' ? ['US', 'CA'] : [],
-        setLen: pt === 'SetMembership' ? 2 : 0,
-        lowerBound: pt === 'Range' ? '18' : undefined,
-        upperBound: pt === 'Range' ? '99' : undefined,
-      }
-      expect(p.predicateType).toBe(pt)
+  it('preserves supported predicate order and canonical type encoding up to MAX_PREDICATES', () => {
+    const ordered: Predicate[] = [
+      { predicateType: 'Range', attrIndex: 0, lowerBound: '0x12', upperBound: '0x63' },
+      {
+        predicateType: 'SetMembership',
+        attrIndex: 1,
+        setValues: ['0xbc614e', '0x5397fb1'],
+        setLen: 2,
+      },
+      { predicateType: 'Equality', attrIndex: 0, publicValue: '0x12' },
+    ]
+    const prepared = prepareSelectiveDisclosureWitness({
+      ...VALID_INPUT,
+      numPredicates: ordered.length,
+      predicates: ordered,
+    })
+
+    expect(prepared.num_predicates).toBe('3')
+    expect(prepared.predicates).toHaveLength(SCHEMA_CONSTANTS.MAX_PREDICATES)
+    expect(prepared.predicates[0].predicate_type).toBe('2')
+    expect(prepared.predicates[0].lower_bound).toBe('18')
+    expect(prepared.predicates[0].upper_bound).toBe('99')
+    expect(prepared.predicates[1].predicate_type).toBe('1')
+    expect(prepared.predicates[1].attr_index).toBe('1')
+    expect(prepared.predicates[1].set_len).toBe('2')
+    expect(prepared.predicates[1].set_values.slice(0, 2)).toEqual(['12345678', '87654321'])
+    expect(prepared.predicates[2].predicate_type).toBe('0')
+    expect(prepared.predicates[2].public_value).toBe('18')
+    // Trailing padding slots remain zeroed Equality entries
+    for (let idx = 3; idx < SCHEMA_CONSTANTS.MAX_PREDICATES; idx++) {
+      expect(prepared.predicates[idx].predicate_type).toBe('0')
+      expect(prepared.predicates[idx].public_value).toBe('0')
+      expect(prepared.predicates[idx].set_len).toBe('0')
+    }
+  })
+
+  it('rejects oversized setValues and unsupported predicate types without leaking values', () => {
+    expect(encodePredicateType('Equality')).toBe('0')
+    expect(encodePredicateType('SetMembership')).toBe('1')
+    expect(encodePredicateType('Range')).toBe('2')
+    expect(() =>
+      encodePredicateType('RegexMatch' as unknown as Predicate['predicateType']),
+    ).toThrowError(DisclosureWitnessError)
+
+    const oversizedSet: Predicate = {
+      predicateType: 'SetMembership',
+      attrIndex: 1,
+      setValues: Array(SCHEMA_CONSTANTS.MAX_SET_MEMBERS + 1).fill('0xdeadbeef'),
+      setLen: SCHEMA_CONSTANTS.MAX_SET_MEMBERS + 1,
+    }
+    try {
+      prepareSelectiveDisclosureWitness({
+        ...VALID_INPUT,
+        numPredicates: 1,
+        predicates: [oversizedSet],
+      })
+      expect.unreachable('expected oversized setValues to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(DisclosureWitnessError)
+      expect((err as DisclosureWitnessError).code).toBe('set_members_oversize')
+      expect(String(err)).not.toContain('deadbeef')
     }
   })
 })

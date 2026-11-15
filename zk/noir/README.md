@@ -179,6 +179,10 @@ replayed against the registry.
 Statement, public/private inputs, predicate encoding, schema-binding limits,
 and a reproducible age/country example:
 [Selective Disclosure specification](../../docs/zk-selective-disclosure-spec.md).
+Host and browser witness preparation (`zk/tools/disclosure_witness.py` and
+`frontend/src/selectiveDisclosure.ts`) bound predicate (`MAX_PREDICATES = 8`),
+set-member (`MAX_SET_MEMBERS = 8`), and attribute (`MAX_ATTRIBUTES = 16`) list
+sizes before padded witness allocation and proving.
 
 ## Constant-time comparisons
 

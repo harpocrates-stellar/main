@@ -42,6 +42,8 @@ Encode each version as a `u32` preceded by 28 zero bytes. `parse_selective_discl
 
 Arrays have their full declared lengths. The example fills unused entries with zero; `main` permits other padding values.
 
+Before allocating `[Predicate; 8]` or `[Field; 16]` padded witness arrays, computing Pedersen commitments, or invoking Noir witness execution / UltraHonk proving, host and browser witness preparation (`zk/tools/disclosure_witness.py` and `prepareSelectiveDisclosureWitness` in `frontend/src/selectiveDisclosure.ts`) enforce `0 <= len(predicates) <= MAX_PREDICATES` (`8`), `1 <= len(attr_values) <= MAX_ATTRIBUTES` (`16`), and `len(set_values) <= MAX_SET_MEMBERS` (`8`), rejecting oversized lists with `predicates_oversize`, `set_members_oversize`, or `attributes_oversize` while preserving the caller's exact active predicate order and type codes (`0`, `1`, `2`).
+
 ### 2.3 Predicate structure and encoding
 
 | Member | Type | Use |
