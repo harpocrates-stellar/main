@@ -74,6 +74,27 @@ class DecodedLifecycleEvent:
     created_at: datetime | None = None
 
 
+class EventPageContractIdentityError(ValueError):
+    """Raised when an event page contains a mismatched or changing contract identity."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str,
+        expected_contract_id: str | None = None,
+        observed_contract_id: str | None = None,
+        event_position: int | None = None,
+        tx_hash: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.expected_contract_id = expected_contract_id
+        self.observed_contract_id = observed_contract_id
+        self.event_position = event_position
+        self.tx_hash = tx_hash
+
+
 # ---------------------------------------------------------------------------
 # ScVal / XDR Decoder
 # ---------------------------------------------------------------------------
@@ -140,6 +161,149 @@ def _normalize_hex(val: Any) -> str | None:
     return text
 
 
+def normalize_contract_identity(raw: Any) -> str:
+    """Normalize a Soroban contract identifier (strkey or base64 XDR SCV_ADDRESS)."""
+    if isinstance(raw, bool) or raw is None:
+        raise ValueError("contract identity must be a non-empty string")
+    decoded = decode_scval(raw) if isinstance(raw, str) else raw
+    if not isinstance(decoded, str):
+        raise ValueError("contract identity must decode to a string")
+    cleaned = decoded.strip()
+    if not cleaned:
+        raise ValueError("contract identity must be non-empty")
+    if len(cleaned) == 56 and cleaned[0] in ("C", "c"):
+        return cleaned.upper()
+    return cleaned
+
+
+def _require_explicit_contract_id_default() -> bool:
+    raw = (os.getenv("INDEXER_REQUIRE_EXPLICIT_CONTRACT_ID") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def validate_event_page_contract_identity(
+    events: list[dict[str, Any]],
+    *,
+    expected_contract_id: str | None = None,
+    require_explicit: bool | None = None,
+) -> str | None:
+    """Validate that every event in *events* originates from one consistent contract.
+
+    Runs prior to projection so a conflicting or mixed-contract page is rejected
+    atomically before any database writes, webhook deliveries, or cursor updates.
+    """
+    if not isinstance(events, (list, tuple)):
+        raise EventPageContractIdentityError(
+            "event page must be a sequence of event objects",
+            reason="malformed_event_page",
+        )
+
+    must_be_explicit = (
+        _require_explicit_contract_id_default()
+        if require_explicit is None
+        else bool(require_explicit)
+    )
+
+    normalized_expected: str | None = None
+    if expected_contract_id is not None:
+        try:
+            normalized_expected = normalize_contract_identity(expected_contract_id)
+        except ValueError as exc:
+            raise EventPageContractIdentityError(
+                f"invalid expected_contract_id: {exc}",
+                reason="invalid_expected_contract_id",
+            ) from exc
+
+    active_page_contract: str | None = normalized_expected
+    saw_explicit_contract = False
+    saw_implicit_contract = False
+
+    for idx, raw in enumerate(events):
+        if not isinstance(raw, dict):
+            raise EventPageContractIdentityError(
+                f"event at position {idx} must be a mapping",
+                reason="malformed_event_entry",
+                expected_contract_id=active_page_contract,
+                event_position=idx,
+            )
+
+        ev_tx = raw.get("txHash") or raw.get("transactionHash") or raw.get("tx_hash")
+        norm_tx = _normalize_hex(ev_tx) if isinstance(ev_tx, str) else None
+
+        has_explicit_key = (
+            "contractId" in raw or "contract_id" in raw or "sourceContractId" in raw
+        )
+        if has_explicit_key:
+            raw_cid = (
+                raw["contractId"]
+                if "contractId" in raw
+                else (
+                    raw["contract_id"]
+                    if "contract_id" in raw
+                    else raw.get("sourceContractId")
+                )
+            )
+            try:
+                observed = normalize_contract_identity(raw_cid)
+            except ValueError as exc:
+                raise EventPageContractIdentityError(
+                    f"event at position {idx} carries an invalid contractId",
+                    reason="invalid_event_contract_id",
+                    expected_contract_id=active_page_contract,
+                    observed_contract_id=str(raw_cid) if raw_cid is not None else None,
+                    event_position=idx,
+                    tx_hash=norm_tx,
+                ) from exc
+
+            if saw_implicit_contract and normalized_expected is None:
+                raise EventPageContractIdentityError(
+                    f"event page mixes unbound and explicit contract identities at position {idx}",
+                    reason="ambiguous_mixed_contract_identity",
+                    expected_contract_id=active_page_contract,
+                    observed_contract_id=observed,
+                    event_position=idx,
+                    tx_hash=norm_tx,
+                )
+
+            if active_page_contract is None:
+                active_page_contract = observed
+            elif observed != active_page_contract:
+                reason = (
+                    "mid_page_contract_change"
+                    if saw_explicit_contract or idx > 0
+                    else "contract_identity_mismatch"
+                )
+                raise EventPageContractIdentityError(
+                    f"event at position {idx} has contractId {observed}, expected {active_page_contract}",
+                    reason=reason,
+                    expected_contract_id=active_page_contract,
+                    observed_contract_id=observed,
+                    event_position=idx,
+                    tx_hash=norm_tx,
+                )
+            saw_explicit_contract = True
+        else:
+            if must_be_explicit:
+                raise EventPageContractIdentityError(
+                    f"event at position {idx} is missing explicit contractId",
+                    reason="missing_event_contract_id",
+                    expected_contract_id=active_page_contract,
+                    event_position=idx,
+                    tx_hash=norm_tx,
+                )
+            if saw_explicit_contract and normalized_expected is None:
+                raise EventPageContractIdentityError(
+                    f"event page drops explicit contractId at position {idx}",
+                    reason="ambiguous_mixed_contract_identity",
+                    expected_contract_id=active_page_contract,
+                    event_position=idx,
+                    tx_hash=norm_tx,
+                )
+            saw_implicit_contract = True
+
+    return active_page_contract
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle Topic Classifier
 # ---------------------------------------------------------------------------
@@ -186,11 +350,23 @@ def classify_and_decode_event(
         except (ValueError, TypeError):
             event_index = 0
 
-    contract_id = (
+    raw_cid = (
         event.get("contractId")
-        or event.get("contract_id")
-        or default_contract_id
+        if "contractId" in event
+        else (
+            event.get("contract_id")
+            if "contract_id" in event
+            else (
+                event.get("sourceContractId")
+                if "sourceContractId" in event
+                else default_contract_id
+            )
+        )
     )
+    try:
+        contract_id = normalize_contract_identity(raw_cid) if raw_cid is not None else None
+    except ValueError:
+        return None
     ledger = event.get("ledger")
 
     # Decode topics
@@ -354,12 +530,20 @@ def classify_and_decode_event(
 def process_events_batch(
     events: list[dict[str, Any]],
     contract_id: str | None = None,
+    *,
+    require_explicit_contract_id: bool | None = None,
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
-    Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    Pre-validates the entire page's contract identity before projecting any row
+    so a conflicting page never partially mutates ``proof_events``.
     """
+    resolved_contract_id = validate_event_page_contract_identity(
+        events,
+        expected_contract_id=contract_id,
+        require_explicit=require_explicit_contract_id,
+    )
+
     summary = {
         "scanned": 0,
         "indexed": 0,
@@ -369,7 +553,7 @@ def process_events_batch(
 
     for raw in events:
         summary["scanned"] += 1
-        decoded = classify_and_decode_event(raw, default_contract_id=contract_id)
+        decoded = classify_and_decode_event(raw, default_contract_id=resolved_contract_id)
 
         if decoded is None:
             collector.record_indexer_unknown_topic()
@@ -491,11 +675,14 @@ def poll_indexer_once(
     rpc_url: str | None = None,
     limit: int = INDEXER_DEFAULT_PAGE_SIZE,
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    *,
+    require_explicit_contract_id: bool | None = None,
 ) -> dict[str, Any]:
-    """Execute one indexing cycle: fetch, ingest, and persist cursor."""
-    active_contract_id = contract_id or os.getenv("HARPOCRATES_REGISTRY_CONTRACT_ID") or os.getenv("CONTRACT_ID")
-    if not active_contract_id:
+    """Execute one indexing cycle: fetch, validate source contract, ingest, and persist cursor."""
+    raw_contract_id = contract_id or os.getenv("HARPOCRATES_REGISTRY_CONTRACT_ID") or os.getenv("CONTRACT_ID")
+    if not raw_contract_id:
         return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0, "reason": "no_contract_id"}
+    active_contract_id = normalize_contract_identity(raw_contract_id)
 
     active_rpc_url = rpc_url or os.getenv("SOROBAN_RPC_URL") or os.getenv("STELLAR_RPC_URL") or DEFAULT_SOROBAN_RPC_URL
 
@@ -519,7 +706,13 @@ def poll_indexer_once(
     )
 
     events = rpc_result.get("events") or []
-    summary = process_events_batch(events, contract_id=active_contract_id)
+    # Pre-validate the full page before projection or cursor commit; raises
+    # EventPageContractIdentityError and leaves the committed cursor unchanged on conflict.
+    summary = process_events_batch(
+        events,
+        contract_id=active_contract_id,
+        require_explicit_contract_id=require_explicit_contract_id,
+    )
 
     new_cursor = rpc_result.get("cursor")
     latest_ledger = rpc_result.get("latestLedger")
@@ -535,6 +728,55 @@ def poll_indexer_once(
             summary["new_cursor"] = str(last_id)
 
     return summary
+
+
+def scan_contract_event_pages(
+    contract_id: str,
+    *,
+    rpc_url: str | None = None,
+    max_pages: int = 10,
+    limit: int = INDEXER_DEFAULT_PAGE_SIZE,
+    timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    require_explicit_contract_id: bool | None = None,
+) -> dict[str, Any]:
+    """Scan up to *max_pages* event pages locked to a single *contract_id*.
+
+    Validates each page's event contract identities before projecting rows or
+    advancing the committed cursor. If page ``k`` carries a conflicting contract
+    identity, pages ``0..k-1`` keep their committed cursor and page ``k`` raises
+    ``EventPageContractIdentityError`` without projecting any row from page ``k``.
+    """
+    locked_contract_id = normalize_contract_identity(contract_id)
+    bounded_pages = max(1, min(int(max_pages), 100))
+    totals = {
+        "pages": 0,
+        "scanned": 0,
+        "indexed": 0,
+        "skipped": 0,
+        "duplicates": 0,
+        "contract_id": locked_contract_id,
+    }
+
+    for _ in range(bounded_pages):
+        before_cursor = get_indexer_cursor()
+        page_summary = poll_indexer_once(
+            contract_id=locked_contract_id,
+            rpc_url=rpc_url,
+            limit=limit,
+            timeout=timeout,
+            require_explicit_contract_id=require_explicit_contract_id,
+        )
+        totals["pages"] += 1
+        totals["scanned"] += int(page_summary.get("scanned", 0))
+        totals["indexed"] += int(page_summary.get("indexed", 0))
+        totals["skipped"] += int(page_summary.get("skipped", 0))
+        totals["duplicates"] += int(page_summary.get("duplicates", 0))
+
+        after_cursor = page_summary.get("new_cursor") or get_indexer_cursor()
+        if page_summary.get("scanned", 0) == 0 or after_cursor == before_cursor:
+            break
+
+    return totals
 
 
 def run_indexer_loop(

@@ -351,3 +351,15 @@ python -m unittest test_app.py test_stego.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+## Event Page Contract Identity Validation
+
+Before projecting any Soroban RPC event page into `proof_events` or advancing
+`indexer_state`, `chain_indexer.py` validates every event's source contract
+identity (`validate_event_page_contract_identity` /
+`EventPageContractIdentityError`). Pages containing a foreign `contractId`,
+a mid-page contract identity switch, or malformed source fields (and pages
+missing explicit `contractId` when `INDEXER_REQUIRE_EXPLICIT_CONTRACT_ID=true`)
+are rejected atomically prior to projection so zero rows are written from the
+conflicting page and the committed cursor remains unchanged.
+
+
