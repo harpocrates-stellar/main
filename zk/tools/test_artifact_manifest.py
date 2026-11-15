@@ -1195,3 +1195,178 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+# ── Two-build reproducibility comparison report ──────────────────────────────
+
+
+def test_reproducibility_report_distinguishes_metadata_from_executable_drift():
+    first = _manifest(
+        [
+            _artifact("zk/noir/a/target/a.json", "1" * 64, raw="1" * 64),
+            _artifact("zk/noir/b/target/b.json", "2" * 64, raw="a" * 64),
+        ]
+    )
+    second_meta_only = _manifest(
+        [
+            _artifact("zk/noir/a/target/a.json", "1" * 64, raw="1" * 64),
+            _artifact("zk/noir/b/target/b.json", "2" * 64, raw="b" * 64),
+        ]
+    )
+
+    report = am.build_reproducibility_report(
+        first,
+        second_meta_only,
+        isolated_directories=True,
+    )
+    assert report["format"] == am.COMPARISON_REPORT_FORMAT
+    assert report["version"] == am.COMPARISON_REPORT_VERSION
+    assert report["builds"]["isolated_directories"] is True
+    assert report["reproducible"] is True
+    assert report["verdict"] == "reproducible_with_metadata_variance"
+    assert report["summary"]["identical"] == 1
+    assert report["summary"]["nondeterministic_metadata"] == 1
+    assert report["summary"]["changed_executable"] == 0
+
+    passed, fatal, notices = am.evaluate_reproducibility_report(report)
+    assert passed is True
+    assert fatal == []
+    assert len(notices) == 1
+    assert "nondeterministic metadata only" in notices[0]
+
+    strict_passed, strict_fatal, _ = am.evaluate_reproducibility_report(
+        report,
+        strict_raw=True,
+    )
+    assert strict_passed is False
+    assert len(strict_fatal) == 1
+
+    second_exec_changed = _manifest(
+        [
+            _artifact("zk/noir/a/target/a.json", "1" * 64, raw="1" * 64),
+            _artifact("zk/noir/b/target/b.json", "9" * 64, raw="9" * 64),
+        ]
+    )
+    drift_report = am.build_reproducibility_report(first, second_exec_changed)
+    assert drift_report["reproducible"] is False
+    assert drift_report["verdict"] == "executable_or_provenance_drift"
+    assert drift_report["summary"]["changed_executable"] == 1
+    drift_passed, drift_fatal, _ = am.evaluate_reproducibility_report(drift_report)
+    assert drift_passed is False
+    assert any("executable/canonical digest changed" in item for item in drift_fatal)
+
+
+def test_reproducibility_report_tracks_missing_unexpected_and_declaration_changes():
+    role_changed_before = _artifact("zk/noir/c/target/c.json", "3" * 64)
+    role_changed_after = {**role_changed_before, "role": "published_acir"}
+    first = _manifest(
+        [
+            _artifact("zk/noir/only_first/target/only_first.json", "1" * 64),
+            role_changed_before,
+        ]
+    )
+    second = _manifest(
+        [
+            _artifact("zk/noir/only_second/target/only_second.json", "2" * 64),
+            role_changed_after,
+        ]
+    )
+
+    report = am.build_reproducibility_report(first, second)
+    assert report["reproducible"] is False
+    assert report["summary"]["missing_in_second"] == 1
+    assert report["summary"]["unexpected_in_second"] == 1
+    assert report["summary"]["declaration_changed"] == 1
+
+
+def test_compare_and_compare_report_cli_handle_metadata_vs_executable_drift(
+    tmp_path: Path,
+    capsys,
+):
+    first_path = tmp_path / "first.json"
+    second_meta_path = tmp_path / "second_meta.json"
+    second_exec_path = tmp_path / "second_exec.json"
+    report_path = tmp_path / "report.json"
+
+    first_path.write_text(
+        am.serialize_manifest(_manifest([_artifact("x.json", "c" * 64, raw="1" * 64)])),
+        encoding="utf-8",
+    )
+    second_meta_path.write_text(
+        am.serialize_manifest(_manifest([_artifact("x.json", "c" * 64, raw="2" * 64)])),
+        encoding="utf-8",
+    )
+    second_exec_path.write_text(
+        am.serialize_manifest(_manifest([_artifact("x.json", "d" * 64, raw="2" * 64)])),
+        encoding="utf-8",
+    )
+
+    assert (
+        am.main(
+            [
+                "compare",
+                str(first_path),
+                str(second_meta_path),
+                "--isolated",
+                "--report",
+                str(report_path),
+            ]
+        )
+        == am.EXIT_OK
+    )
+    saved = json.loads(report_path.read_text(encoding="utf-8"))
+    assert saved["verdict"] == "reproducible_with_metadata_variance"
+    assert saved["builds"]["isolated_directories"] is True
+    assert str(tmp_path) not in report_path.read_text(encoding="utf-8")
+
+    assert (
+        am.main(["compare", str(first_path), str(second_meta_path), "--strict-raw"])
+        == am.EXIT_DRIFT
+    )
+    capsys.readouterr()
+
+    assert (
+        am.main(["compare-report", str(first_path), str(second_exec_path), "--isolated"])
+        == am.EXIT_DRIFT
+    )
+    captured = capsys.readouterr()
+    stdout_report = json.loads(captured.out)
+    assert stdout_report["reproducible"] is False
+    assert stdout_report["summary"]["changed_executable"] == 1
+
+
+def test_isolated_root_write_preserves_repo_relative_provenance_keys(tmp_path: Path):
+    isolated = tmp_path / "isolated_build_1"
+    src_dir = isolated / "zk" / "noir" / "demo" / "src"
+    tgt_dir = isolated / "zk" / "noir" / "demo" / "target"
+    src_dir.mkdir(parents=True)
+    tgt_dir.mkdir(parents=True)
+    (isolated / "zk" / "noir" / "demo" / "Nargo.toml").write_text(
+        '[package]\nname = "demo"\ntype = "bin"\n',
+        encoding="utf-8",
+    )
+    (src_dir / "main.nr").write_text("fn main(x: pub Field) { assert(x == x); }\n", encoding="utf-8")
+    (tgt_dir / "demo.json").write_text(
+        json.dumps({"bytecode": "DEMO_ACIR", "file_map": {"0": str(src_dir / "main.nr")}}),
+        encoding="utf-8",
+    )
+    lock = _lock_for(isolated, [_acir_entry("demo")])
+    manifest_out = tmp_path / "isolated.manifest.json"
+
+    rc = am.main(
+        [
+            "--lock",
+            str(isolated / "lock.json"),
+            "--root",
+            str(isolated),
+            "write",
+            "--output",
+            str(manifest_out),
+        ]
+    )
+    assert rc == am.EXIT_OK
+    doc = json.loads(manifest_out.read_text(encoding="utf-8"))
+    assert "zk/noir/demo/src/main.nr" in doc["provenance"]
+    assert "zk/noir/demo/Nargo.toml" in doc["provenance"]
+    assert len(lock.artifacts) == 1
+    assert str(isolated) not in manifest_out.read_text(encoding="utf-8")

@@ -7,7 +7,8 @@ All actions enforce toolchain versions pinned in ``zk/toolchain.lock.json``.
 
 Subcommands:
     build           Compile circuits, generate verification keys, and optionally prove/verify.
-                    Supports single-circuit builds or double-build reproducibility checks across all circuits.
+                    Supports single-circuit builds or isolated double-build reproducibility checks.
+    compare-report  Emit a structured two-build artifact reproducibility comparison report.
     generate        Generate witness and proof for a specific circuit (e.g. silent_witness or aggregator).
     export          Export proof, public inputs, and verification key as hex JSON for any circuit.
     prepare-soroban Convert bb UltraHonk verification key into Soroban big-endian verifier format.
@@ -24,9 +25,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+try:
+    import artifact_manifest as _am
+except ImportError:
+    from zk.tools import artifact_manifest as _am
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -318,16 +326,273 @@ def compile_circuit(
         signal("proof.verified", detail=circuit)
 
 
+IGNORED_ISOLATED_STAGE_PATTERNS = shutil.ignore_patterns(
+    "target",
+    "Prover.toml",
+    "Verifier.toml",
+    "*.gz",
+    "proof",
+    "public_inputs",
+    "__pycache__",
+)
+
+_PRIVATE_STAGE_NAMES = frozenset({"Prover.toml", "Verifier.toml", "proof", "public_inputs"})
+
+
 def build_all_circuits(
     label: str,
     toolchain: ToolchainInfo,
     repo_root: Path = REPO_ROOT,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    circuits: Sequence[str] = DEFAULT_CIRCUITS,
 ) -> None:
     signal("build.start", detail=label)
-    for circuit in DEFAULT_CIRCUITS:
+    for circuit in circuits:
         compile_circuit(circuit, toolchain, repo_root=repo_root, runner=runner)
     signal("build.done", detail=label)
+
+
+def stage_isolated_workspace(
+    repo_root: Path,
+    isolated_root: Path,
+    lock_path: Path,
+) -> Path:
+    """Stage clean circuit sources and lock metadata into an isolated directory.
+
+    Excludes pre-existing ``target/`` directories and private witness inputs
+    (``Prover.toml``, ``Verifier.toml``, ``*.gz``, ``proof``, ``public_inputs``)
+    so each isolated build compiles from clean source only.
+    """
+    try:
+        lock = _am.load_lock(lock_path)
+    except _am.BuildError as exc:
+        raise BuildError(str(exc), exit_code=EXIT_FATAL) from exc
+
+    resolved_repo = repo_root.resolve()
+    resolved_isolated = isolated_root.resolve()
+    circuit_root_dir = (resolved_repo / lock.circuit_root).resolve()
+
+    if resolved_isolated == resolved_repo or resolved_isolated in resolved_repo.parents:
+        raise BuildError(
+            "isolated build directory must not equal or contain repository root",
+            exit_code=EXIT_USAGE,
+        )
+    if resolved_isolated == circuit_root_dir or circuit_root_dir in resolved_isolated.parents:
+        raise BuildError(
+            "isolated build directory must not reside inside circuit source root",
+            exit_code=EXIT_USAGE,
+        )
+
+    if resolved_isolated.exists():
+        shutil.rmtree(resolved_isolated)
+    resolved_isolated.mkdir(parents=True, exist_ok=True)
+
+    staged_lock = resolved_isolated / "zk" / "toolchain.lock.json"
+    staged_lock.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(lock_path, staged_lock)
+    try:
+        rel_lock = lock_path.resolve().relative_to(resolved_repo)
+        custom_staged_lock = resolved_isolated / rel_lock
+        if custom_staged_lock != staged_lock:
+            custom_staged_lock.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(lock_path, custom_staged_lock)
+            staged_lock = custom_staged_lock
+    except ValueError:
+        pass
+
+    src_circuits = resolved_repo / lock.circuit_root
+    if src_circuits.is_dir():
+        dst_circuits = resolved_isolated / lock.circuit_root
+        shutil.copytree(
+            src_circuits,
+            dst_circuits,
+            ignore=IGNORED_ISOLATED_STAGE_PATTERNS,
+            dirs_exist_ok=True,
+        )
+
+    for pattern in lock.provenance_globs:
+        for src_file in sorted(resolved_repo.glob(pattern)):
+            if not src_file.is_file():
+                continue
+            rel_file = src_file.resolve().relative_to(resolved_repo)
+            if (
+                "target" in rel_file.parts
+                or rel_file.name in _PRIVATE_STAGE_NAMES
+                or rel_file.suffix == ".gz"
+            ):
+                continue
+            dst_file = resolved_isolated / rel_file
+            if not dst_file.exists():
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src_file, dst_file)
+
+    for decl in lock.artifacts:
+        rel_str = str(decl.get("path", ""))
+        if not rel_str or rel_str.startswith("/") or ".." in rel_str.split("/"):
+            continue
+        if "target" in Path(rel_str).parts:
+            continue
+        src_art = resolved_repo / rel_str
+        if src_art.is_file():
+            dst_art = resolved_isolated / rel_str
+            dst_art.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src_art, dst_art)
+
+    return staged_lock
+
+
+def _promote_isolated_targets(
+    isolated_root: Path,
+    repo_root: Path,
+    circuits: Sequence[str] = DEFAULT_CIRCUITS,
+    circuit_root: str = "zk/noir",
+) -> None:
+    base_rel = Path(circuit_root)
+    for circuit in circuits:
+        src_target = isolated_root / base_rel / circuit / "target"
+        if not src_target.is_dir():
+            continue
+        dst_target = repo_root / base_rel / circuit / "target"
+        if dst_target.exists():
+            shutil.rmtree(dst_target)
+        dst_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src_target, dst_target)
+
+
+def _digest_isolated_build(
+    isolated_root: Path,
+    staged_lock_path: Path,
+    label: str,
+) -> dict[str, Any]:
+    lock = _am.load_lock(staged_lock_path)
+    manifest_doc, run = _am.build_manifest(lock, isolated_root)
+    for entry in run.fatal:
+        _am.signal("run.fatal", path=entry.path, state=entry.state)
+    for entry in run.missing_required:
+        _am.signal("run.fatal", path=entry.path, state=entry.state)
+    if run.fatal or run.missing_required:
+        raise BuildError(f"manifest write failed on {label} build", exit_code=EXIT_FATAL)
+    (isolated_root / "artifacts.manifest.json").write_text(
+        _am.serialize_manifest(manifest_doc),
+        encoding="utf-8",
+    )
+    return manifest_doc
+
+
+def run_isolated_double_build(
+    toolchain: ToolchainInfo,
+    *,
+    repo_root: Path = REPO_ROOT,
+    lock_path: Path | None = None,
+    manifest_path: Path | None = None,
+    report_path: Path | None = None,
+    work_dir: Path | None = None,
+    strict_raw: bool = False,
+    circuits: Sequence[str] = DEFAULT_CIRCUITS,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[int, dict[str, Any]]:
+    """Run two full builds in isolated directories and compare canonical digests."""
+    resolved_lock = lock_path or (repo_root / "zk" / "toolchain.lock.json")
+    try:
+        lock = _am.load_lock(resolved_lock)
+    except _am.BuildError as exc:
+        raise BuildError(str(exc), exit_code=EXIT_FATAL) from exc
+
+    if work_dir is not None:
+        resolved_repo = repo_root.resolve()
+        resolved_work = work_dir.resolve()
+        circuit_root_dir = (resolved_repo / lock.circuit_root).resolve()
+        if resolved_work == resolved_repo or resolved_work in resolved_repo.parents:
+            raise BuildError(
+                "work directory must not equal or contain repository root",
+                exit_code=EXIT_USAGE,
+            )
+        if resolved_work == circuit_root_dir or circuit_root_dir in resolved_work.parents:
+            raise BuildError(
+                "work directory must not reside inside circuit source root",
+                exit_code=EXIT_USAGE,
+            )
+        work_dir.mkdir(parents=True, exist_ok=True)
+        work_ctx: Any = nullcontext(str(work_dir))
+    else:
+        work_ctx = tempfile.TemporaryDirectory(prefix="harpocrates-repro-")
+
+    with work_ctx as raw_work:
+        work = Path(raw_work)
+        isolated_1 = work / "build_1"
+        isolated_2 = work / "build_2"
+
+        staged_lock_1 = stage_isolated_workspace(repo_root, isolated_1, resolved_lock)
+        staged_lock_2 = stage_isolated_workspace(repo_root, isolated_2, resolved_lock)
+        signal("reproducibility.isolated.staged", builds=2)
+
+        build_all_circuits(
+            "first",
+            toolchain,
+            repo_root=isolated_1,
+            runner=runner,
+            circuits=circuits,
+        )
+        first_doc = _digest_isolated_build(isolated_1, staged_lock_1, "first")
+
+        build_all_circuits(
+            "second",
+            toolchain,
+            repo_root=isolated_2,
+            runner=runner,
+            circuits=circuits,
+        )
+        second_doc = _digest_isolated_build(isolated_2, staged_lock_2, "second")
+
+        report = _am.build_reproducibility_report(
+            first_doc,
+            second_doc,
+            first_label="build_1",
+            second_label="build_2",
+            isolated_directories=True,
+        )
+        if report_path is not None:
+            _am.write_reproducibility_report(report, report_path)
+
+        passed, fatal_findings, metadata_notices = _am.evaluate_reproducibility_report(
+            report,
+            strict_raw=strict_raw,
+        )
+        for notice in metadata_notices:
+            _am.signal("reproducibility.metadata_only", detail=notice)
+
+        if not passed:
+            for finding in fatal_findings:
+                _am.signal("drift.finding", detail=finding)
+            _am.signal(
+                "compare.failed",
+                findings=len(fatal_findings),
+                verdict=report["verdict"],
+            )
+            signal(
+                "run.failed",
+                detail="builds are not reproducible",
+                verdict=report["verdict"],
+            )
+            return EXIT_DRIFT, report
+
+        _am.signal(
+            "compare.ok",
+            artifacts=report["summary"]["total_artifacts"],
+            nondeterministic_metadata=report["summary"]["nondeterministic_metadata"],
+            verdict=report["verdict"],
+        )
+        _promote_isolated_targets(
+            isolated_2,
+            repo_root,
+            circuits=circuits,
+            circuit_root=lock.circuit_root,
+        )
+        if manifest_path is not None:
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(_am.serialize_manifest(second_doc), encoding="utf-8")
+        signal("run.ok", detail="reproducible; manifest written", verdict=report["verdict"])
+        return EXIT_OK, report
 
 
 def run_manifest_tool(
@@ -356,7 +621,7 @@ def cmd_build(
 
     # If check-coverage requested
     if args.check_coverage:
-        return run_manifest_tool(["--lock", str(lock_path), "check-coverage"], repo_root=repo_root, runner=runner)
+        return _am.main(["--lock", str(lock_path), "--root", str(repo_root), "check-coverage"])
 
     circuit = args.circuit or "all"
     if args.all:
@@ -364,7 +629,7 @@ def cmd_build(
 
     # For builds, check coverage gate first when building all
     if circuit == "all":
-        cov_status = run_manifest_tool(["--lock", str(lock_path), "check-coverage"], repo_root=repo_root, runner=runner)
+        cov_status = _am.main(["--lock", str(lock_path), "--root", str(repo_root), "check-coverage"])
         if cov_status != 0:
             raise BuildError("circuit coverage check failed; see drift.finding above", exit_code=cov_status)
 
@@ -392,10 +657,8 @@ def cmd_build(
 
     if mode == "single":
         build_all_circuits("single", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(manifest_path)],
-            repo_root=repo_root,
-            runner=runner,
+        status = _am.main(
+            ["--lock", str(lock_path), "--root", str(repo_root), "write", "--output", str(manifest_path)]
         )
         if status != 0:
             raise BuildError("manifest write failed", exit_code=status)
@@ -404,49 +667,43 @@ def cmd_build(
 
     if mode == "verify":
         build_all_circuits("verify", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "verify", "--manifest", str(manifest_path)],
-            repo_root=repo_root,
-            runner=runner,
+        return _am.main(
+            ["--lock", str(lock_path), "--root", str(repo_root), "verify", "--manifest", str(manifest_path)]
         )
-        return status
 
-    # Double build
-    with tempfile.TemporaryDirectory() as work_dir:
-        work = Path(work_dir)
-        first_manifest = work / "first.json"
-        second_manifest = work / "second.json"
+    # Isolated double build with canonical digest comparison report
+    report_path = Path(args.report) if getattr(args, "report", None) else None
+    work_dir = Path(args.work_dir) if getattr(args, "work_dir", None) else None
+    strict_raw = bool(getattr(args, "strict_raw", False))
+    declared_circuits = tuple(sorted(_am.declared_circuit_names(_am.load_lock(lock_path))))
+    active_circuits = declared_circuits or DEFAULT_CIRCUITS
+    status, _ = run_isolated_double_build(
+        toolchain,
+        repo_root=repo_root,
+        lock_path=lock_path,
+        manifest_path=manifest_path,
+        report_path=report_path,
+        work_dir=work_dir,
+        strict_raw=strict_raw,
+        circuits=active_circuits,
+        runner=runner,
+    )
+    return status
 
-        build_all_circuits("first", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(first_manifest)],
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if status != 0:
-            raise BuildError("manifest write failed on first build", exit_code=status)
 
-        build_all_circuits("second", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(second_manifest)],
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if status != 0:
-            raise BuildError("manifest write failed on second build", exit_code=status)
-
-        compare_status = run_manifest_tool(
-            ["--lock", str(lock_path), "compare", str(first_manifest), str(second_manifest)],
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if compare_status != 0:
-            signal("run.failed", detail="builds are not reproducible")
-            return compare_status
-
-        shutil.copyfile(second_manifest, manifest_path)
-        signal("run.ok", detail="reproducible; manifest written")
-        return EXIT_OK
+def cmd_compare_report(args: argparse.Namespace) -> int:
+    cli_args: list[str] = ["compare-report", args.first, args.second]
+    if args.output:
+        cli_args.extend(["--output", args.output])
+    if args.first_label:
+        cli_args.extend(["--first-label", args.first_label])
+    if args.second_label:
+        cli_args.extend(["--second-label", args.second_label])
+    if args.isolated:
+        cli_args.append("--isolated")
+    if args.strict_raw:
+        cli_args.append("--strict-raw")
+    return _am.main(cli_args)
 
 
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
@@ -1051,6 +1308,46 @@ def create_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--clean", action="store_true", default=True, help="Clean target before build")
     p_build.add_argument("--manifest", default=None, help="Path to manifest file")
     p_build.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_build.add_argument(
+        "--report",
+        default=None,
+        help="Optional path to write structured two-build reproducibility comparison report JSON",
+    )
+    p_build.add_argument(
+        "--work-dir",
+        default=None,
+        help="Optional parent directory for isolated build_1 and build_2 workspaces",
+    )
+    p_build.add_argument(
+        "--strict-raw",
+        action="store_true",
+        help="Treat nondeterministic raw metadata differences as fatal drift",
+    )
+
+    # --- compare-report ---
+    p_report = subparsers.add_parser(
+        "compare-report",
+        help="Emit a structured two-build reproducibility comparison report from two manifests",
+    )
+    p_report.add_argument("first", help="First build manifest path")
+    p_report.add_argument("second", help="Second build manifest path")
+    p_report.add_argument(
+        "--output",
+        default=None,
+        help="Optional path to write report JSON (prints to stdout when omitted)",
+    )
+    p_report.add_argument("--first-label", default="build_1", help="Label for first build")
+    p_report.add_argument("--second-label", default="build_2", help="Label for second build")
+    p_report.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Record that both manifests came from isolated output directories",
+    )
+    p_report.add_argument(
+        "--strict-raw",
+        action="store_true",
+        help="Treat nondeterministic raw metadata differences as fatal drift",
+    )
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate proof and public inputs for a circuit")
@@ -1104,6 +1401,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.subcommand == "build":
             return cmd_build(args)
+        if args.subcommand == "compare-report":
+            return cmd_compare_report(args)
         if args.subcommand == "export":
             return cmd_export(args)
         if args.subcommand == "prepare-soroban":

@@ -7,6 +7,8 @@ match their source and the pinned toolchain in ``zk/toolchain.lock.json``.
     write           normalize every declared artifact, digest it, and emit a manifest
     verify          re-digest the working tree and fail on any drift from a manifest
     compare         diff two manifests (the double-build reproducibility check)
+    compare-report  emit a structured two-build comparison report distinguishing
+                    nondeterministic metadata from changed executable artifacts
     check-coverage  fail when the lock and the source tree disagree about which
                     circuits exist, so no circuit can ship unpinned
     write-browser   digest published browser ACIR and emit the browser manifest
@@ -49,17 +51,21 @@ See docs/zk-reproducible-builds.md.
 from __future__ import annotations
 
 import argparse
-import re
 import hashlib
 import json
 import os
+import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 MANIFEST_FORMAT = "harpocrates.zk-artifact-manifest"
 MANIFEST_VERSION = 1
+
+COMPARISON_REPORT_FORMAT = "harpocrates.zk-reproducibility-report"
+COMPARISON_REPORT_VERSION = 1
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -79,6 +85,17 @@ EXIT_OK = 0
 EXIT_DRIFT = 1
 EXIT_USAGE = 2
 EXIT_FATAL = 3
+
+
+class ComparisonClassification:
+    """Per-artifact outcome in a two-build reproducibility comparison report."""
+
+    IDENTICAL = "identical"
+    NONDETERMINISTIC_METADATA = "nondeterministic_metadata"
+    CHANGED_EXECUTABLE = "changed_executable"
+    MISSING_IN_SECOND = "missing_in_second"
+    UNEXPECTED_IN_SECOND = "unexpected_in_second"
+    DECLARATION_CHANGED = "declaration_changed"
 
 
 class ArtifactState:
@@ -295,10 +312,11 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _rel(path: Path) -> str:
-    """Repo-relative, forward-slashed path — the only path form ever logged."""
+def _rel(path: Path, root: Path | None = None) -> str:
+    """Root-relative, forward-slashed path — the only path form ever logged."""
+    base = (root or REPO_ROOT).resolve()
     try:
-        return path.resolve().relative_to(REPO_ROOT).as_posix()
+        return path.resolve().relative_to(base).as_posix()
     except ValueError:
         return path.name
 
@@ -388,16 +406,17 @@ def collect_provenance(lock: Lock, root: Path) -> dict[str, str]:
     Sorted and bounded so the result is stable across filesystems with
     different directory iteration order.
     """
+    resolved_root = root.resolve()
     found: dict[str, str] = {}
     for pattern in lock.provenance_globs:
-        for path in sorted(root.glob(pattern)):
+        for path in sorted(resolved_root.glob(pattern)):
             if not path.is_file():
                 continue
             if len(found) >= lock.limits.max_provenance_files:
                 raise BuildError(
                     f"provenance set exceeds {lock.limits.max_provenance_files} files"
                 )
-            found[_rel(path)] = sha256_hex(path.read_bytes())
+            found[_rel(path, resolved_root)] = sha256_hex(path.read_bytes())
     return dict(sorted(found.items()))
 
 
@@ -531,6 +550,244 @@ def _short(digest: str | None) -> str:
     if digest is None:
         return "absent"
     return digest[:16]
+
+
+def build_reproducibility_report(
+    first: dict,
+    second: dict,
+    *,
+    first_label: str = "build_1",
+    second_label: str = "build_2",
+    isolated_directories: bool = False,
+) -> dict:
+    """Compare two build manifests and classify canonical vs metadata differences.
+
+    Distinguishes volatile host/path metadata (``nondeterministic_metadata``:
+    raw SHA-256 differs, canonical normalized SHA-256 matches) from changed
+    executable circuit/verifier artifacts (``changed_executable``: canonical
+    normalized SHA-256 differs). Never embeds artifact or source contents or
+    host filesystem paths.
+    """
+    header_mismatches: list[dict[str, Any]] = []
+    for key in ("format", "version"):
+        if first.get(key) != second.get(key):
+            header_mismatches.append(
+                {
+                    "field": key,
+                    "first": first.get(key),
+                    "second": second.get(key),
+                }
+            )
+
+    first_tc = first.get("toolchain", {})
+    second_tc = second.get("toolchain", {})
+    toolchain_drift: list[dict[str, Any]] = []
+    for key in sorted(set(first_tc) | set(second_tc)):
+        if first_tc.get(key) != second_tc.get(key):
+            toolchain_drift.append(
+                {
+                    "field": key,
+                    "first": first_tc.get(key),
+                    "second": second_tc.get(key),
+                }
+            )
+
+    normalization_policy_match = first.get("normalization_policy_sha256") == second.get(
+        "normalization_policy_sha256"
+    )
+
+    first_prov = first.get("provenance", {})
+    second_prov = second.get("provenance", {})
+    provenance_drift: list[dict[str, str]] = []
+    for path in sorted(set(first_prov) | set(second_prov)):
+        if first_prov.get(path) != second_prov.get(path):
+            provenance_drift.append(
+                {
+                    "path": path,
+                    "first_sha256_prefix": _short(first_prov.get(path)),
+                    "second_sha256_prefix": _short(second_prov.get(path)),
+                }
+            )
+
+    first_artifacts = {entry["path"]: entry for entry in first.get("artifacts", [])}
+    second_artifacts = {entry["path"]: entry for entry in second.get("artifacts", [])}
+
+    counts = {
+        ComparisonClassification.IDENTICAL: 0,
+        ComparisonClassification.NONDETERMINISTIC_METADATA: 0,
+        ComparisonClassification.CHANGED_EXECUTABLE: 0,
+        ComparisonClassification.MISSING_IN_SECOND: 0,
+        ComparisonClassification.UNEXPECTED_IN_SECOND: 0,
+        ComparisonClassification.DECLARATION_CHANGED: 0,
+    }
+    artifact_entries: list[dict[str, Any]] = []
+
+    for path in sorted(set(first_artifacts) | set(second_artifacts)):
+        before = first_artifacts.get(path)
+        after = second_artifacts.get(path)
+        if before is None and after is not None:
+            classification = ComparisonClassification.UNEXPECTED_IN_SECOND
+            canonical_match = False
+            raw_match = False
+            kind = after.get("kind", "unknown")
+            role = after.get("role", "unknown")
+        elif after is None and before is not None:
+            classification = ComparisonClassification.MISSING_IN_SECOND
+            canonical_match = False
+            raw_match = False
+            kind = before.get("kind", "unknown")
+            role = before.get("role", "unknown")
+        else:
+            assert before is not None and after is not None
+            kind = before.get("kind", "unknown")
+            role = before.get("role", "unknown")
+            if before.get("kind") != after.get("kind") or before.get("role") != after.get(
+                "role"
+            ):
+                classification = ComparisonClassification.DECLARATION_CHANGED
+                canonical_match = False
+                raw_match = False
+            else:
+                first_norm = before.get("normalized_sha256")
+                second_norm = after.get("normalized_sha256")
+                canonical_match = bool(first_norm) and first_norm == second_norm
+                first_raw = before.get("raw_sha256") or first_norm
+                second_raw = after.get("raw_sha256") or second_norm
+                raw_match = bool(first_raw) and first_raw == second_raw
+                if not canonical_match:
+                    classification = ComparisonClassification.CHANGED_EXECUTABLE
+                elif not raw_match:
+                    classification = ComparisonClassification.NONDETERMINISTIC_METADATA
+                else:
+                    classification = ComparisonClassification.IDENTICAL
+
+        counts[classification] += 1
+        artifact_entries.append(
+            {
+                "path": path,
+                "kind": kind,
+                "role": role,
+                "classification": classification,
+                "canonical_match": canonical_match,
+                "raw_match": raw_match,
+                "first_normalized_sha256": before.get("normalized_sha256") if before else None,
+                "second_normalized_sha256": after.get("normalized_sha256") if after else None,
+                "first_raw_sha256": before.get("raw_sha256") if before else None,
+                "second_raw_sha256": after.get("raw_sha256") if after else None,
+                "first_normalized_bytes": before.get("normalized_bytes") if before else None,
+                "second_normalized_bytes": after.get("normalized_bytes") if after else None,
+                "first_raw_bytes": before.get("raw_bytes") if before else None,
+                "second_raw_bytes": after.get("raw_bytes") if after else None,
+            }
+        )
+
+    reproducible = (
+        not header_mismatches
+        and not toolchain_drift
+        and normalization_policy_match
+        and not provenance_drift
+        and counts[ComparisonClassification.CHANGED_EXECUTABLE] == 0
+        and counts[ComparisonClassification.MISSING_IN_SECOND] == 0
+        and counts[ComparisonClassification.UNEXPECTED_IN_SECOND] == 0
+        and counts[ComparisonClassification.DECLARATION_CHANGED] == 0
+    )
+
+    if not reproducible:
+        verdict = "executable_or_provenance_drift"
+    elif counts[ComparisonClassification.NONDETERMINISTIC_METADATA] > 0:
+        verdict = "reproducible_with_metadata_variance"
+    else:
+        verdict = "reproducible_identical"
+
+    return {
+        "format": COMPARISON_REPORT_FORMAT,
+        "version": COMPARISON_REPORT_VERSION,
+        "builds": {
+            "first": first_label,
+            "second": second_label,
+            "isolated_directories": bool(isolated_directories),
+        },
+        "reproducible": reproducible,
+        "verdict": verdict,
+        "normalization_policy_match": normalization_policy_match,
+        "manifest_header_mismatches": header_mismatches,
+        "toolchain_drift": toolchain_drift,
+        "provenance_drift": provenance_drift,
+        "summary": {
+            "total_artifacts": len(artifact_entries),
+            "identical": counts[ComparisonClassification.IDENTICAL],
+            "nondeterministic_metadata": counts[
+                ComparisonClassification.NONDETERMINISTIC_METADATA
+            ],
+            "changed_executable": counts[ComparisonClassification.CHANGED_EXECUTABLE],
+            "missing_in_second": counts[ComparisonClassification.MISSING_IN_SECOND],
+            "unexpected_in_second": counts[ComparisonClassification.UNEXPECTED_IN_SECOND],
+            "declaration_changed": counts[ComparisonClassification.DECLARATION_CHANGED],
+            "provenance_drift_count": len(provenance_drift),
+            "toolchain_drift_count": len(toolchain_drift),
+        },
+        "artifacts": artifact_entries,
+    }
+
+
+def evaluate_reproducibility_report(
+    report: dict,
+    *,
+    strict_raw: bool = False,
+) -> tuple[bool, list[str], list[str]]:
+    """Evaluate a comparison report into ``(passed, fatal_findings, metadata_notices)``."""
+    fatal_findings: list[str] = []
+    metadata_notices: list[str] = []
+
+    for item in report.get("manifest_header_mismatches", []):
+        fatal_findings.append(
+            f"manifest {item['field']}: expected {item['first']!r}, got {item['second']!r}"
+        )
+
+    for item in report.get("toolchain_drift", []):
+        fatal_findings.append(
+            f"toolchain.{item['field']}: expected {item['first']!r}, got {item['second']!r}"
+        )
+
+    if not report.get("normalization_policy_match", True):
+        fatal_findings.append(
+            "normalization policy changed; artifacts digested under different rules"
+        )
+
+    for item in report.get("provenance_drift", []):
+        fatal_findings.append(
+            f"source {item['path']}: {item['first_sha256_prefix']} -> {item['second_sha256_prefix']}"
+        )
+
+    for entry in report.get("artifacts", []):
+        path = entry["path"]
+        cls = entry["classification"]
+        if cls == ComparisonClassification.CHANGED_EXECUTABLE:
+            fatal_findings.append(
+                f"artifact {path}: executable/canonical digest changed "
+                f"{_short(entry.get('first_normalized_sha256'))} -> "
+                f"{_short(entry.get('second_normalized_sha256'))}"
+            )
+        elif cls == ComparisonClassification.MISSING_IN_SECOND:
+            fatal_findings.append(f"artifact {path}: missing from the second build")
+        elif cls == ComparisonClassification.UNEXPECTED_IN_SECOND:
+            fatal_findings.append(f"artifact {path}: unexpected in the second build")
+        elif cls == ComparisonClassification.DECLARATION_CHANGED:
+            fatal_findings.append(
+                f"artifact {path}: kind or role changed between builds"
+            )
+        elif cls == ComparisonClassification.NONDETERMINISTIC_METADATA:
+            notice = (
+                f"artifact {path}: nondeterministic metadata only "
+                f"(raw {_short(entry.get('first_raw_sha256'))} -> "
+                f"{_short(entry.get('second_raw_sha256'))}; canonical digest matched)"
+            )
+            if strict_raw:
+                fatal_findings.append(notice)
+            else:
+                metadata_notices.append(notice)
+
+    return (len(fatal_findings) == 0), fatal_findings, metadata_notices
 
 
 
@@ -1070,8 +1327,9 @@ def check_coverage(lock: Lock, root: Path) -> list[str]:
 
 
 def command_check_coverage(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
     lock = load_lock(Path(args.lock))
-    findings = check_coverage(lock, REPO_ROOT)
+    findings = check_coverage(lock, root)
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
@@ -1097,9 +1355,15 @@ def _fail_on_fatal(run: ManifestRun) -> None:
         )
 
 
+def _selected_root(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "root", None)
+    return Path(raw).resolve() if raw is not None else REPO_ROOT
+
+
 def command_write(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
     lock = load_lock(Path(args.lock))
-    manifest, run = build_manifest(lock, REPO_ROOT)
+    manifest, run = build_manifest(lock, root)
     _fail_on_fatal(run)
 
     output = Path(args.output)
@@ -1108,7 +1372,7 @@ def command_write(args: argparse.Namespace) -> int:
 
     signal(
         "manifest.written",
-        path=_rel(output),
+        path=_rel(output, root),
         artifacts=len(manifest["artifacts"]),
         skipped=len(manifest["skipped"]),
         sources=len(manifest["provenance"]),
@@ -1117,9 +1381,10 @@ def command_write(args: argparse.Namespace) -> int:
 
 
 def command_verify(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
     lock = load_lock(Path(args.lock))
     expected = _load_manifest(Path(args.manifest))
-    actual, run = build_manifest(lock, REPO_ROOT)
+    actual, run = build_manifest(lock, root)
     _fail_on_fatal(run)
 
     findings = compare_manifests(expected, actual)
@@ -1145,18 +1410,96 @@ def _load_manifest(path: Path) -> dict:
     return manifest
 
 
+def write_reproducibility_report(report: dict, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(serialize_manifest(report), encoding="utf-8")
+    signal(
+        "reproducibility.report.written",
+        path=_rel(output_path),
+        verdict=report["verdict"],
+        total_artifacts=report["summary"]["total_artifacts"],
+        identical=report["summary"]["identical"],
+        nondeterministic_metadata=report["summary"]["nondeterministic_metadata"],
+        changed_executable=report["summary"]["changed_executable"],
+    )
+
+
 def command_compare(args: argparse.Namespace) -> int:
     first = _load_manifest(Path(args.first))
     second = _load_manifest(Path(args.second))
 
-    findings = compare_manifests(first, second)
-    if findings:
-        for finding in findings:
+    report = build_reproducibility_report(
+        first,
+        second,
+        isolated_directories=bool(getattr(args, "isolated", False)),
+    )
+    if getattr(args, "report", None):
+        write_reproducibility_report(report, Path(args.report))
+
+    passed, fatal_findings, metadata_notices = evaluate_reproducibility_report(
+        report,
+        strict_raw=bool(getattr(args, "strict_raw", False)),
+    )
+    for notice in metadata_notices:
+        signal("reproducibility.metadata_only", detail=notice)
+
+    if not passed:
+        for finding in fatal_findings:
             signal("drift.finding", detail=finding)
-        signal("compare.failed", findings=len(findings))
+        signal(
+            "compare.failed",
+            findings=len(fatal_findings),
+            verdict=report["verdict"],
+        )
         return EXIT_DRIFT
 
-    signal("compare.ok", artifacts=len(first.get("artifacts", [])))
+    signal(
+        "compare.ok",
+        artifacts=report["summary"]["total_artifacts"],
+        nondeterministic_metadata=report["summary"]["nondeterministic_metadata"],
+        verdict=report["verdict"],
+    )
+    return EXIT_OK
+
+
+def command_compare_report(args: argparse.Namespace) -> int:
+    first = _load_manifest(Path(args.first))
+    second = _load_manifest(Path(args.second))
+    report = build_reproducibility_report(
+        first,
+        second,
+        first_label=args.first_label,
+        second_label=args.second_label,
+        isolated_directories=bool(args.isolated),
+    )
+    serialized = serialize_manifest(report)
+    if args.output:
+        write_reproducibility_report(report, Path(args.output))
+    else:
+        sys.stdout.write(serialized)
+
+    passed, fatal_findings, metadata_notices = evaluate_reproducibility_report(
+        report,
+        strict_raw=bool(args.strict_raw),
+    )
+    for notice in metadata_notices:
+        signal("reproducibility.metadata_only", detail=notice)
+    if not passed:
+        for finding in fatal_findings:
+            signal("drift.finding", detail=finding)
+        signal(
+            "compare.failed",
+            findings=len(fatal_findings),
+            verdict=report["verdict"],
+        )
+        return EXIT_DRIFT
+
+    signal(
+        "compare.ok",
+        artifacts=report["summary"]["total_artifacts"],
+        nondeterministic_metadata=report["summary"]["nondeterministic_metadata"],
+        verdict=report["verdict"],
+    )
     return EXIT_OK
 
 
@@ -1165,20 +1508,59 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lock", default=str(DEFAULT_LOCK), help="path to zk/toolchain.lock.json"
     )
+    parser.add_argument(
+        "--root",
+        default=None,
+        help="working tree or isolated build root (defaults to repository root)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     write = subparsers.add_parser("write", help="write a manifest from the working tree")
     write.add_argument("--output", default=str(DEFAULT_MANIFEST))
+    write.add_argument("--root", default=argparse.SUPPRESS)
     write.set_defaults(handler=command_write)
 
     verify = subparsers.add_parser("verify", help="fail on drift from a manifest")
     verify.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    verify.add_argument("--root", default=argparse.SUPPRESS)
     verify.set_defaults(handler=command_verify)
 
     compare = subparsers.add_parser("compare", help="diff two manifests (double build)")
     compare.add_argument("first")
     compare.add_argument("second")
+    compare.add_argument(
+        "--report",
+        default=None,
+        help="optional path to write a structured two-build comparison report JSON",
+    )
+    compare.add_argument(
+        "--isolated",
+        action="store_true",
+        help="record that the two manifests came from isolated output directories",
+    )
+    compare.add_argument(
+        "--strict-raw",
+        action="store_true",
+        help="treat nondeterministic raw metadata differences as drift",
+    )
     compare.set_defaults(handler=command_compare)
+
+    compare_report = subparsers.add_parser(
+        "compare-report",
+        help="emit a structured two-build reproducibility comparison report",
+    )
+    compare_report.add_argument("first")
+    compare_report.add_argument("second")
+    compare_report.add_argument(
+        "--output",
+        default=None,
+        help="write comparison report JSON to path (prints to stdout when omitted)",
+    )
+    compare_report.add_argument("--first-label", default="build_1")
+    compare_report.add_argument("--second-label", default="build_2")
+    compare_report.add_argument("--isolated", action="store_true")
+    compare_report.add_argument("--strict-raw", action="store_true")
+    compare_report.set_defaults(handler=command_compare_report)
 
     coverage = subparsers.add_parser(
         "check-coverage",

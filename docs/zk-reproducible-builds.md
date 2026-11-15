@@ -161,9 +161,13 @@ bbup   --version 0.87.0
 Then:
 
 ```bash
-# Full double build: build twice from clean, compare, write the manifest.
-python zk/tools/build_circuits.py build
-zk/noir/scripts/reproducible-build.sh
+# Full double build: build twice in isolated workspaces, compare canonical digests, write manifest + optional report.
+python zk/tools/build_circuits.py build --report zk/reproducibility-report.json
+zk/noir/scripts/reproducible-build.sh --report zk/reproducibility-report.json
+
+# Emit or inspect a structured comparison report from two existing manifests.
+python zk/tools/artifact_manifest.py compare-report first.manifest.json second.manifest.json --isolated --output report.json
+python zk/tools/build_circuits.py compare-report first.manifest.json second.manifest.json --isolated
 
 # One build, write a manifest.
 python zk/tools/build_circuits.py build --single
@@ -227,7 +231,10 @@ Both the script and the tool emit single-line JSON on **stderr**:
 | `manifest.written` | `path`, `artifacts`, `skipped`, `sources` | Success |
 | `drift.finding` | `detail` | One drift finding |
 | `verify.ok` / `verify.failed` | `artifacts` / `findings` | Verdict |
-| `compare.ok` / `compare.failed` | `artifacts` / `findings` | Double-build verdict |
+| `compare.ok` / `compare.failed` | `artifacts`, `nondeterministic_metadata`, `verdict` / `findings`, `verdict` | Double-build verdict |
+| `reproducibility.isolated.staged` | `builds` | Clean isolated `build_1` and `build_2` workspaces staged |
+| `reproducibility.metadata_only` | `detail` | Raw bytes differed across builds while canonical normalized digest matched |
+| `reproducibility.report.written` | `path`, `verdict`, `total_artifacts`, `identical`, `nondeterministic_metadata`, `changed_executable` | Structured comparison report written |
 | `coverage.ok` / `coverage.failed` | `circuits` / `findings` | Circuit-coverage verdict |
 | `run.fatal` / `run.error` / `run.cancelled` | `path`, `state`, `reason` | Terminal failure |
 
@@ -238,6 +245,38 @@ digests, never as a content diff — dumping proving-system bytes into a CI log 
 the leak this pipeline exists to prevent. This is pinned by
 `test_drift_findings_never_contain_artifact_content` and
 `test_manifest_never_embeds_artifact_bytes`.
+
+## Two-build reproducibility comparison report
+
+Double-build mode (`build_circuits.py build` / `reproducible-build.sh`) stages
+two clean isolated output workspaces (`build_1` and `build_2` under a temporary
+directory or `--work-dir <dir>`), excluding pre-existing `target/` artifacts and
+private witness inputs (`Prover.toml`, `Verifier.toml`, `*.gz`, `proof`,
+`public_inputs`). Each pass compiles in its own isolated directory, digests the
+normalized artifacts, and compares the two resulting manifests before touching
+the working tree.
+
+Pass `--report <path>` to `build_circuits.py build` (or run
+`artifact_manifest.py compare-report <first> <second>` /
+`artifact_manifest.py compare <first> <second> --report <path>`) to emit a
+machine-readable JSON document (`format: "harpocrates.zk-reproducibility-report"`,
+`version: 1`):
+
+| Classification | Canonical digest (`normalized_sha256`) | Raw digest (`raw_sha256`) | Default exit outcome |
+| --- | --- | --- | --- |
+| `identical` | Matches | Matches | Pass (`reproducible_identical`) |
+| `nondeterministic_metadata` | Matches | Differs (e.g., isolated directory paths in `file_map`/`debug_symbols` or stripped WASM custom sections) | Pass (`reproducible_with_metadata_variance`), or `EXIT_DRIFT` under `--strict-raw` |
+| `changed_executable` | Differs (circuit bytecode, non-stripped WASM code/type/export section, or binary verification key changed) | Differs | Fail (`EXIT_DRIFT`, `executable_or_provenance_drift`) |
+| `missing_in_second` | Absent in second build | Absent in second build | Fail (`EXIT_DRIFT`) |
+| `unexpected_in_second` | Absent in first build | Absent in first build | Fail (`EXIT_DRIFT`) |
+| `declaration_changed` | Artifact `kind` or `role` changed | — | Fail (`EXIT_DRIFT`) |
+
+When any executable, provenance, toolchain, or normalization-policy drift is
+detected, the report is still written to `--report` for diagnosis, while target
+promotion into `zk/noir/*/target` and `zk/artifacts.manifest.json` are skipped
+so a non-reproducible build never contaminates the working tree. Reports contain
+repo-relative paths, byte sizes, and SHA-256 digests only — never host
+filesystem paths, circuit source contents, or proving material.
 
 ## Exit codes
 

@@ -384,3 +384,248 @@ class TestBuildWorkflows:
         assert commands_run[3] == ["nargo", "execute", "witness"]
         assert commands_run[4][:2] == ["bb", "prove"]
         assert commands_run[5][:2] == ["bb", "verify"]
+
+    def test_build_report_and_compare_report_flags(self):
+        parser = bc.create_parser()
+        build_args = parser.parse_args(
+            [
+                "build",
+                "--report",
+                "out/report.json",
+                "--work-dir",
+                "out/work",
+                "--strict-raw",
+            ]
+        )
+        assert build_args.report == "out/report.json"
+        assert build_args.work_dir == "out/work"
+        assert build_args.strict_raw is True
+
+        cmp_args = parser.parse_args(
+            [
+                "compare-report",
+                "first.json",
+                "second.json",
+                "--output",
+                "cmp.json",
+                "--isolated",
+                "--strict-raw",
+            ]
+        )
+        assert cmp_args.subcommand == "compare-report"
+        assert cmp_args.first == "first.json"
+        assert cmp_args.second == "second.json"
+        assert cmp_args.output == "cmp.json"
+        assert cmp_args.isolated is True
+        assert cmp_args.strict_raw is True
+
+
+def _write_isolated_repo_fixture(repo_root: Path) -> Path:
+    circuit_dir = repo_root / "zk" / "noir" / "silent_witness"
+    (circuit_dir / "src").mkdir(parents=True)
+    (circuit_dir / "Nargo.toml").write_text(
+        '[package]\nname = "silent_witness"\ntype = "bin"\n',
+        encoding="utf-8",
+    )
+    (circuit_dir / "src" / "main.nr").write_text(
+        "fn main(pub_in: pub Field) { assert(pub_in == pub_in); }\n",
+        encoding="utf-8",
+    )
+    (circuit_dir / "Prover.toml").write_text(
+        'credential_secret = "999999999"\n',
+        encoding="utf-8",
+    )
+    stale_target = circuit_dir / "target"
+    stale_target.mkdir()
+    (stale_target / "stale.bin").write_bytes(b"STALE_PREEXISTING_ARTIFACT")
+
+    pub_dir = repo_root / "frontend" / "public" / "noir"
+    pub_dir.mkdir(parents=True)
+    (pub_dir / "silent_witness.json").write_text(
+        json.dumps({"bytecode": "PUBLISHED_ACIR_V1"}),
+        encoding="utf-8",
+    )
+
+    raw_lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    raw_lock["artifacts"] = [
+        {
+            "path": "zk/noir/silent_witness/target/silent_witness.json",
+            "kind": "json",
+            "role": "acir",
+            "required": True,
+        },
+        {
+            "path": "zk/noir/silent_witness/target/vk",
+            "kind": "binary",
+            "role": "verification_key",
+            "required": True,
+        },
+        {
+            "path": "frontend/public/noir/silent_witness.json",
+            "kind": "json",
+            "role": "published_acir",
+            "required": False,
+        },
+    ]
+    lock_file = repo_root / "zk" / "toolchain.lock.json"
+    lock_file.write_text(json.dumps(raw_lock, indent=2), encoding="utf-8")
+    return lock_file
+
+
+class TestIsolatedDoubleBuild:
+    def test_stage_isolated_workspace_excludes_targets_and_private_inputs(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        lock_file = _write_isolated_repo_fixture(repo)
+        isolated = tmp_path / "isolated_1"
+
+        staged_lock = bc.stage_isolated_workspace(repo, isolated, lock_file)
+        assert staged_lock.is_file()
+        assert (isolated / "zk" / "noir" / "silent_witness" / "src" / "main.nr").is_file()
+        assert (isolated / "frontend" / "public" / "noir" / "silent_witness.json").is_file()
+        assert not (isolated / "zk" / "noir" / "silent_witness" / "target").exists()
+        assert not (isolated / "zk" / "noir" / "silent_witness" / "Prover.toml").exists()
+
+        with pytest.raises(bc.BuildError):
+            bc.stage_isolated_workspace(repo, repo, lock_file)
+        with pytest.raises(bc.BuildError):
+            bc.stage_isolated_workspace(repo, repo / "zk" / "noir" / "nested", lock_file)
+
+    def test_isolated_double_build_succeeds_with_metadata_variance_and_promotes_targets(
+        self,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        lock_file = _write_isolated_repo_fixture(repo)
+        manifest_out = repo / "zk" / "artifacts.manifest.json"
+        report_out = tmp_path / "repro-report.json"
+        work_dir = tmp_path / "work"
+        observed_compile_cwds: list[Path] = []
+
+        def fake_runner(cmd, **kwargs):
+            if cmd[:2] == ["nargo", "--version"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="nargo version = 1.0.0-beta.9\n", stderr=""
+                )
+            if cmd[:2] == ["bb", "--version"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0.87.0\n", stderr="")
+            cwd = Path(kwargs["cwd"]).resolve()
+            if cmd == ["nargo", "compile"]:
+                observed_compile_cwds.append(cwd)
+                target = cwd / "target"
+                target.mkdir(parents=True, exist_ok=True)
+                # Embed the isolated build cwd inside volatile metadata!
+                (target / "silent_witness.json").write_text(
+                    json.dumps(
+                        {
+                            "bytecode": "DETERMINISTIC_ACIR_BYTECODE",
+                            "file_map": {"0": str(cwd / "src" / "main.nr")},
+                            "debug_symbols": f"compiled-at-{cwd}",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            elif cmd[:2] == ["bb", "write_vk"]:
+                target = cwd / "target"
+                (target / "vk").write_bytes(b"\x11" * 64)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        args = bc.create_parser().parse_args(
+            [
+                "build",
+                "--lock",
+                str(lock_file),
+                "--manifest",
+                str(manifest_out),
+                "--report",
+                str(report_out),
+                "--work-dir",
+                str(work_dir),
+            ]
+        )
+        rc = bc.cmd_build(args, repo_root=repo, runner=fake_runner)
+        assert rc == bc.EXIT_OK
+
+        # Verify two distinct isolated workspaces outside repo_root were used.
+        assert len(observed_compile_cwds) == 2
+        assert observed_compile_cwds[0] != observed_compile_cwds[1]
+        assert repo.resolve() not in observed_compile_cwds[0].parents
+        assert repo.resolve() not in observed_compile_cwds[1].parents
+
+        # Report distinguishes nondeterministic metadata from changed executable artifacts.
+        report = json.loads(report_out.read_text(encoding="utf-8"))
+        assert report["reproducible"] is True
+        assert report["verdict"] == "reproducible_with_metadata_variance"
+        assert report["builds"]["isolated_directories"] is True
+        assert report["summary"]["nondeterministic_metadata"] == 1
+        assert report["summary"]["identical"] == 2
+        assert report["summary"]["changed_executable"] == 0
+
+        # Targets were promoted cleanly into repo_root, replacing stale.bin.
+        promoted_target = repo / "zk" / "noir" / "silent_witness" / "target"
+        assert (promoted_target / "silent_witness.json").is_file()
+        assert (promoted_target / "vk").read_bytes() == b"\x11" * 64
+        assert not (promoted_target / "stale.bin").exists()
+        assert manifest_out.is_file()
+
+        # Under --strict-raw, metadata variance exits with EXIT_DRIFT.
+        strict_args = bc.create_parser().parse_args(
+            [
+                "build",
+                "--lock",
+                str(lock_file),
+                "--manifest",
+                str(tmp_path / "strict.manifest.json"),
+                "--strict-raw",
+            ]
+        )
+        assert bc.cmd_build(strict_args, repo_root=repo, runner=fake_runner) == bc.EXIT_DRIFT
+
+    def test_isolated_double_build_fails_closed_on_executable_drift(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        lock_file = _write_isolated_repo_fixture(repo)
+        manifest_out = repo / "zk" / "artifacts.manifest.json"
+        report_out = tmp_path / "drift-report.json"
+        pass_counter = {"compile": 0}
+
+        def drifting_runner(cmd, **kwargs):
+            if cmd[:2] == ["nargo", "--version"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="nargo version = 1.0.0-beta.9\n", stderr=""
+                )
+            if cmd[:2] == ["bb", "--version"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0.87.0\n", stderr="")
+            cwd = Path(kwargs["cwd"]).resolve()
+            if cmd == ["nargo", "compile"]:
+                pass_counter["compile"] += 1
+                target = cwd / "target"
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "silent_witness.json").write_text(
+                    json.dumps({"bytecode": f"ACIR_PASS_{pass_counter['compile']}"}),
+                    encoding="utf-8",
+                )
+            elif cmd[:2] == ["bb", "write_vk"]:
+                target = cwd / "target"
+                (target / "vk").write_bytes(b"\x22" * 64)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        args = bc.create_parser().parse_args(
+            [
+                "build",
+                "--lock",
+                str(lock_file),
+                "--manifest",
+                str(manifest_out),
+                "--report",
+                str(report_out),
+            ]
+        )
+        rc = bc.cmd_build(args, repo_root=repo, runner=drifting_runner)
+        assert rc == bc.EXIT_DRIFT
+        assert not manifest_out.exists()
+        # Pre-existing repo target directory was NOT overwritten on failure.
+        assert (repo / "zk" / "noir" / "silent_witness" / "target" / "stale.bin").is_file()
+
+        report = json.loads(report_out.read_text(encoding="utf-8"))
+        assert report["reproducible"] is False
+        assert report["verdict"] == "executable_or_provenance_drift"
+        assert report["summary"]["changed_executable"] == 1
