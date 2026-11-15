@@ -228,3 +228,198 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+export type SessionBufferKind = 'witness' | 'proof' | 'transfer'
+
+export type SessionBufferCleanupSummary = {
+  readonly operationId: string
+  readonly clearedSlots: number
+  readonly zeroedBytes: number
+  readonly detachedSlotsSkipped: number
+  readonly referencesReleased: true
+  readonly reusable: true
+}
+
+export class WorkerSessionReuseError extends Error {
+  readonly code = 'UNCLEARED_SESSION_BUFFERS' as const
+
+  constructor(message = 'Cannot reuse proof worker session before completed buffers are cleared.') {
+    super(message)
+    this.name = 'WorkerSessionReuseError'
+  }
+}
+
+type TrackedBufferSlot = {
+  slotId: string
+  kind: SessionBufferKind
+  target: ArrayBuffer | ArrayBufferView | null
+  released: boolean
+}
+
+const VALID_SESSION_OP_ID = /^[A-Za-z0-9._:-]{1,128}$/
+
+function zeroBufferTarget(target: ArrayBuffer | ArrayBufferView): {
+  zeroedBytes: number
+  detached: boolean
+} {
+  if (target instanceof ArrayBuffer) {
+    if (target.byteLength === 0) {
+      return { zeroedBytes: 0, detached: true }
+    }
+    const view = new Uint8Array(target)
+    view.fill(0)
+    return { zeroedBytes: view.byteLength, detached: false }
+  }
+  const backing = target.buffer
+  if (backing.byteLength === 0 || target.byteLength === 0) {
+    return { zeroedBytes: 0, detached: backing.byteLength === 0 }
+  }
+  const view = new Uint8Array(backing, target.byteOffset, target.byteLength)
+  view.fill(0)
+  return { zeroedBytes: view.byteLength, detached: false }
+}
+
+/**
+ * Guards reusable worker sessions by tracking witness, transfer, and proof
+ * buffers for the active operation, zeroing non-detached memory, dropping
+ * object references after transfer/export, and blocking session reuse until
+ * cleanup completes.
+ */
+export class WorkerSessionBufferGuard {
+  private activeOperationId: string | null = null
+  private slots: Map<string, TrackedBufferSlot> = new Map()
+  private nextSlotSeq = 1
+  private cumulativeZeroedBytes = 0
+  private cumulativeDetachedSkipped = 0
+
+  beginOperation(operationId: string): void {
+    if (typeof operationId !== 'string' || !VALID_SESSION_OP_ID.test(operationId)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (this.activeOperationId !== null || this.slots.size > 0) {
+      throw new WorkerSessionReuseError()
+    }
+    this.activeOperationId = operationId
+    this.cumulativeZeroedBytes = 0
+    this.cumulativeDetachedSkipped = 0
+  }
+
+  registerBuffer(
+    operationId: string,
+    kind: SessionBufferKind,
+    buffer: ArrayBuffer | ArrayBufferView,
+  ): string {
+    if (this.activeOperationId === null) {
+      this.beginOperation(operationId)
+    } else if (this.activeOperationId !== operationId) {
+      throw new WorkerSessionReuseError()
+    }
+    if (kind !== 'witness' && kind !== 'proof' && kind !== 'transfer') {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!(buffer instanceof ArrayBuffer) && !ArrayBuffer.isView(buffer)) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    const slotId = `slot_${this.nextSlotSeq++}`
+    this.slots.set(slotId, {
+      slotId,
+      kind,
+      target: buffer,
+      released: false,
+    })
+    return slotId
+  }
+
+  releaseAfterTransferOrExport(
+    operationId: string,
+    slotId: string,
+  ): { zeroedBytes: number; detached: boolean; released: true } {
+    if (this.activeOperationId !== operationId) {
+      throw new CircuitInputError('invalid_input')
+    }
+    const slot = this.slots.get(slotId)
+    if (!slot) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (slot.released || slot.target === null) {
+      this.slots.delete(slotId)
+      return Object.freeze({ zeroedBytes: 0, detached: false, released: true as const })
+    }
+
+    const scrubbed = zeroBufferTarget(slot.target)
+    slot.target = null
+    slot.released = true
+    this.slots.delete(slotId)
+    this.cumulativeZeroedBytes += scrubbed.zeroedBytes
+    if (scrubbed.detached) {
+      this.cumulativeDetachedSkipped += 1
+    }
+
+    return Object.freeze({
+      zeroedBytes: scrubbed.zeroedBytes,
+      detached: scrubbed.detached,
+      released: true as const,
+    })
+  }
+
+  clearCompletedOperation(operationId: string): SessionBufferCleanupSummary {
+    if (this.activeOperationId !== operationId) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    let clearedSlots = 0
+    for (const [slotId, slot] of [...this.slots.entries()]) {
+      if (slot.target !== null && !slot.released) {
+        const scrubbed = zeroBufferTarget(slot.target)
+        this.cumulativeZeroedBytes += scrubbed.zeroedBytes
+        if (scrubbed.detached) {
+          this.cumulativeDetachedSkipped += 1
+        }
+      }
+      slot.target = null
+      slot.released = true
+      this.slots.delete(slotId)
+      clearedSlots += 1
+    }
+
+    const zeroedBytes = this.cumulativeZeroedBytes
+    const detachedSlotsSkipped = this.cumulativeDetachedSkipped
+    this.activeOperationId = null
+    this.cumulativeZeroedBytes = 0
+    this.cumulativeDetachedSkipped = 0
+
+    return Object.freeze({
+      operationId,
+      clearedSlots,
+      zeroedBytes,
+      detachedSlotsSkipped,
+      referencesReleased: true as const,
+      reusable: true as const,
+    })
+  }
+
+  isReadyForReuse(): boolean {
+    return this.activeOperationId === null && this.slots.size === 0
+  }
+
+  assertReadyForReuse(): void {
+    if (!this.isReadyForReuse()) {
+      throw new WorkerSessionReuseError()
+    }
+  }
+
+  forceClearAll(): void {
+    for (const slot of this.slots.values()) {
+      if (slot.target !== null && !slot.released) {
+        zeroBufferTarget(slot.target)
+      }
+      slot.target = null
+      slot.released = true
+    }
+    this.slots.clear()
+    this.activeOperationId = null
+    this.cumulativeZeroedBytes = 0
+    this.cumulativeDetachedSkipped = 0
+  }
+}

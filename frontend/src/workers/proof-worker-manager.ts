@@ -1,6 +1,19 @@
 import type { ProofWorkerMessage, ProofWorkerResponse, WorkerStatus } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
 import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import {
+  WorkerSessionBufferGuard,
+  WorkerSessionReuseError,
+  type SessionBufferCleanupSummary,
+  type SessionBufferKind,
+} from '../proofWorkerMemory';
+
+export {
+  WorkerSessionBufferGuard,
+  WorkerSessionReuseError,
+  type SessionBufferCleanupSummary,
+  type SessionBufferKind,
+};
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -9,6 +22,7 @@ export class ProofWorkerManager {
   private cspConfig: ReturnType<typeof validateCSPPolicy>;
   private messageHandlers: Map<string, (response: ProofWorkerResponse) => void> = new Map();
   private isInitialized = false;
+  private sessionBuffers = new WorkerSessionBufferGuard();
 
   constructor(config?: Partial<ReturnType<typeof validateCSPPolicy>>) {
     this.cspConfig = validateCSPPolicy(config || {});
@@ -71,8 +85,7 @@ export class ProofWorkerManager {
       };
 
       logger.info('Sending verify message', { id: messageId });
-      // In a real implementation, this would post to the actual worker
-      // this.worker?.postMessage(message);
+      void message;
     });
   }
 
@@ -89,8 +102,7 @@ export class ProofWorkerManager {
     };
 
     logger.info('Sending cancel message', { id: messageId });
-    // In a real implementation, this would post to the actual worker
-    // this.worker?.postMessage(message);
+    void message;
   }
 
   getStatus(): WorkerStatus {
@@ -105,12 +117,40 @@ export class ProofWorkerManager {
     return createCSPHeaders(this.cspConfig);
   }
 
+  beginWorkerSessionOperation(operationId: string): void {
+    this.sessionBuffers.beginOperation(operationId);
+  }
+
+  registerSessionBuffer(
+    operationId: string,
+    kind: SessionBufferKind,
+    buffer: ArrayBuffer | ArrayBufferView
+  ): string {
+    return this.sessionBuffers.registerBuffer(operationId, kind, buffer);
+  }
+
+  releaseSessionBufferAfterExport(
+    operationId: string,
+    slotId: string
+  ): { zeroedBytes: number; detached: boolean; released: true } {
+    return this.sessionBuffers.releaseAfterTransferOrExport(operationId, slotId);
+  }
+
+  clearCompletedSessionBuffers(operationId: string): SessionBufferCleanupSummary {
+    return this.sessionBuffers.clearCompletedOperation(operationId);
+  }
+
+  isSessionReadyForReuse(): boolean {
+    return this.sessionBuffers.isReadyForReuse();
+  }
+
   destroy(): void {
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
     }
     this.messageHandlers.clear();
+    this.sessionBuffers.forceClearAll();
     this.isInitialized = false;
     logger.info('Worker manager destroyed');
   }

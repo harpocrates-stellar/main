@@ -211,3 +211,20 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Session buffer clearing before worker reuse
+
+`WorkerSessionBufferGuard` (in `src/proofWorkerMemory.ts`, integrated into
+`ProofWorkerManager` and `proofWorker.ts`) ensures no private witness or proof
+buffers survive across operations on a reused worker session:
+
+- **Immediate post-transfer/export release:** `releaseAfterTransferOrExport`
+  zeroes any non-detached `ArrayBuffer` / `ArrayBufferView` bytes and drops its
+  object reference as soon as transfer or export finishes.
+- **Mandatory pre-reuse sweep:** `clearCompletedOperation` zeroes and clears any
+  remaining operation slots in `finally` before returning the worker session to
+  `idle`.
+- **Fail-closed reuse gate:** attempting to start a new operation before the
+  previous operation's buffers have been cleared throws
+  `WorkerSessionReuseError` (`UNCLEARED_SESSION_BUFFERS`).
+
+

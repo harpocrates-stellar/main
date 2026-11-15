@@ -1,11 +1,13 @@
 /// <reference lib="webworker" />
 import { generateSilentWitnessProof } from '../noirClient'
 import { CircuitInputError } from '../circuitInputSchema'
+import { WorkerSessionBufferGuard } from '../proofWorkerMemory'
 import type { WorkerRequest, WorkerResponse, TransferableProofInput } from './proofWorker.types'
 import { resolveThreadCount } from './threadCount'
 
 let activeRequestId: string | null = null
 let cancelRequestedFor: string | null = null
+const sessionGuard = new WorkerSessionBufferGuard()
 
 function post(msg: WorkerResponse) {
   ;(self as unknown as Worker).postMessage(msg)
@@ -15,8 +17,9 @@ function bufToStr(buf: ArrayBuffer): string {
   return new TextDecoder().decode(buf)
 }
 
-function zero(buf: ArrayBuffer) {
-  new Uint8Array(buf).fill(0)
+function zeroInput(input: TransferableProofInput) {
+  new Uint8Array(input.credentialSecret).fill(0)
+  new Uint8Array(input.nullifierSecret).fill(0)
 }
 
 async function handleGenerate(requestId: string, input: TransferableProofInput) {
@@ -26,13 +29,17 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
   }
   activeRequestId = requestId
   cancelRequestedFor = null
+  sessionGuard.beginOperation(requestId)
+  const credSlot = sessionGuard.registerBuffer(requestId, 'transfer', input.credentialSecret)
+  const nullSlot = sessionGuard.registerBuffer(requestId, 'transfer', input.nullifierSecret)
 
   try {
     const credentialSecret = bufToStr(input.credentialSecret)
     const nullifierSecret = bufToStr(input.nullifierSecret)
-    // Zero transferable buffers as soon as strings are materialised so a later
-    // terminate()/cancel cannot leave secret bytes resident in the ArrayBuffers.
-    zeroInput(input)
+    // Zero transferable buffers and drop references as soon as strings are
+    // materialised so a later operation or crash cannot read secret bytes.
+    sessionGuard.releaseAfterTransferOrExport(requestId, credSlot)
+    sessionGuard.releaseAfterTransferOrExport(requestId, nullSlot)
 
     if (cancelRequestedFor === requestId) {
       post({ type: 'CANCELLED', requestId })
@@ -77,6 +84,7 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
     })
   } finally {
     zeroInput(input)
+    sessionGuard.clearCompletedOperation(requestId)
     if (activeRequestId === requestId) {
       activeRequestId = null
     }
