@@ -9,7 +9,14 @@ import { fileURLToPath } from 'node:url'
 import { StrKey } from '@stellar/stellar-sdk'
 import { asHex32 } from './hashing.js'
 import { createProofManifest, parseManifest, serializeManifest } from './manifest.js'
-import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMetadata } from './metadata.js'
+import {
+  validateMetadata,
+  fileHash,
+  canonicalMetadataHash,
+  ALLOWED_TIERS,
+  type HarpocratesMetadata,
+  type IdentityTier,
+} from './metadata.js'
 import {
   lookupByVideoHash,
   lookupProofStatus,
@@ -35,13 +42,21 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  inspectBundleCompatibility,
+  compatibilityExitCode,
+  formatCompatibilityReport,
+} from './inspect-compatibility.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -116,8 +131,11 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'inspect-compatibility':
+      return await handleInspectCompatibility(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -585,6 +603,71 @@ export async function handleStatus(
   exit(STATUS_EXIT_CODES[status] ?? 8)
 }
 
+async function handleInspectCompatibility(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const bundlePath = flags.bundle || flags.b || flags.manifest || flags.m
+  const contractId = flags['contract-id'] || flags.contractId
+  const network = flags.network
+  const tier = flags.tier
+  const verifierScope = flags['verifier-scope'] || flags.verifierScope
+  const circuitVersion = flags['circuit-version'] || flags.circuitVersion
+  const outputFormat = flags.output || flags.o || 'text'
+
+  if (!bundlePath) {
+    exit(2, '--bundle (or --manifest) is required for compatibility inspection')
+  }
+  if (!network || network.trim() === '') {
+    exit(2, '--network is required for compatibility inspection')
+  }
+  if (!contractId) {
+    exit(2, '--contract-id is required for compatibility inspection')
+  }
+  if (outputFormat !== 'text' && outputFormat !== 'json') {
+    exit(2, 'invalid --output: expected "text" or "json"')
+  }
+  if (tier !== undefined && !ALLOWED_TIERS.has(tier)) {
+    exit(2, 'invalid --tier: expected "silent", "source", or "seal"')
+  }
+  if (verifierScope !== undefined && !/^(0|[1-9][0-9]*)$/.test(verifierScope)) {
+    exit(2, 'invalid --verifier-scope: expected a non-negative integer')
+  }
+  if (circuitVersion !== undefined && circuitVersion.trim() === '') {
+    exit(2, 'invalid --circuit-version: expected a non-empty string')
+  }
+  if (!StrKey.isValidContract(contractId)) {
+    exit(8, 'invalid contract ID')
+  }
+
+  let report: ReturnType<typeof inspectBundleCompatibility>
+  try {
+    const raw = await readText(bundlePath)
+    report = inspectBundleCompatibility(raw, {
+      network,
+      contractId,
+      ...(tier !== undefined ? { tier: tier as IdentityTier } : {}),
+      ...(verifierScope !== undefined ? { verifierScope } : {}),
+      ...(circuitVersion !== undefined ? { circuitVersion } : {}),
+    })
+  } catch {
+    exit(8, 'invalid or unreadable bundle')
+  }
+
+  debugLog({
+    event: 'inspect-compatibility.report',
+    report: redactSensitive(report),
+  })
+
+  if (outputFormat === 'json') {
+    printJson(report)
+  } else {
+    printText(formatCompatibilityReport(report))
+  }
+
+  exit(compatibilityExitCode(report))
+}
+
 export function helpText(): string {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -597,6 +680,7 @@ Commands:
   verify         Verify a proof against the Stellar network.
   status         Report the on-chain lifecycle status of a proof by proof ID.
   verify-lineage Verify a derivative's full lineage back to registered originals.
+  inspect-compatibility Inspect bundle/manifest compatibility with selected network and contract (read-only).
   register       Register a source or seal proof using a local signing key.
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
@@ -635,6 +719,17 @@ Lineage verification options:
   --source-address Source address for simulation.
   --network        Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --output, -o     Output format: "text" (default) or "json".
+
+Compatibility inspection options:
+  --bundle, -b       Path to a verification bundle, manifest, or receipt JSON (use "-" for stdin).
+  --manifest, -m     Alias for --bundle when inspecting a standalone manifest.
+  --network          Explicit target network passphrase or alias (required).
+  --contract-id      Explicit target Stellar contract ID (required).
+  --tier             Optional expected identity tier ("silent", "source", or "seal").
+  --verifier-scope   Optional expected non-negative verifier scope integer.
+  --circuit-version  Optional expected circuit version string.
+  --output, -o       Output format: "text" (default) or "json".
+  Performs no signing, no RPC calls, and no chain writes.
 
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).

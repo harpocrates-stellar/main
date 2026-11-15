@@ -79,3 +79,19 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  inspectBundleCompatibility,
+  compatibilityExitCode,
+  formatCompatibilityReport,
+   validateSelectedConfig,
+  COMPATIBILITY_REPORT_PROTOCOL,
+  COMPATIBILITY_REPORT_VERSION,
+  MAX_COMPATIBILITY_BUNDLE_BYTES,
+} from './inspect-compatibility.js'
+export type {
+  BundleInputKind,
+  CompatibilityCheckName,
+  CompatibilityCheckEntry,
+  SelectedCompatibilityConfig,
+  CompatibilityInspectionReport,
+} from './inspect-compatibility.js'
