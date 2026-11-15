@@ -184,8 +184,12 @@ python zk/tools/build_circuits.py build silent_witness --prove
 python zk/tools/build_circuits.py generate silent_witness <hash> <cred_secret> <null_secret>
 
 # Export hex artifacts or prepare for Soroban
-python zk/tools/build_circuits.py export silent_witness
-python zk/tools/build_circuits.py prepare-soroban silent_witness
+python zk/tools/build_circuits.py export silent_witness --check-stale
+python zk/tools/build_circuits.py prepare-soroban silent_witness --check-stale
+
+# Inspect the circuit build dependency graph and verify no stale derived artifacts exist
+python zk/tools/artifact_manifest.py dependency-graph --check-stale
+python zk/tools/build_circuits.py dependency-graph --packaging --output zk/dependency-graph.json
 
 # Tooling only — no toolchain required.
 python -m pytest zk/tools -q
@@ -228,6 +232,8 @@ Both the script and the tool emit single-line JSON on **stderr**:
 | `drift.finding` | `detail` | One drift finding |
 | `verify.ok` / `verify.failed` | `artifacts` / `findings` | Verdict |
 | `compare.ok` / `compare.failed` | `artifacts` / `findings` | Double-build verdict |
+| `dependency_graph.written` | `path`, `artifacts`, `stale_artifacts`, `ready_for_packaging` | Dependency graph JSON emitted |
+| `dependency_graph.ok` / `dependency_graph.failed` | `artifacts`, `stale_artifacts`, `ready_for_packaging` / `findings`, `stale_artifacts` | Stale-artifact / pre-packaging verdict |
 | `coverage.ok` / `coverage.failed` | `circuits` / `findings` | Circuit-coverage verdict |
 | `run.fatal` / `run.error` / `run.cancelled` | `path`, `state`, `reason` | Terminal failure |
 
@@ -238,6 +244,48 @@ digests, never as a content diff — dumping proving-system bytes into a CI log 
 the leak this pipeline exists to prevent. This is pinned by
 `test_drift_findings_never_contain_artifact_content` and
 `test_manifest_never_embeds_artifact_bytes`.
+
+## Circuit build dependency graph
+
+Before packaging release bundles, browser ACIR copies, or Soroban verifier keys,
+operators and CI can inspect the full artifact dependency DAG
+(`format: "harpocrates.zk-dependency-graph"`, `version: 1`):
+
+```bash
+python zk/tools/artifact_manifest.py dependency-graph --check-stale
+python zk/tools/build_circuits.py dependency-graph --packaging --output zk/dependency-graph.json
+```
+
+Each artifact node records:
+
+- **`source_dependencies`** — sorted repo-relative paths and SHA-256 digests of
+  the circuit's own `Nargo.toml` and `src/**/*.nr`.
+- **`helper_dependencies`** — transitive local Noir libraries (`noir_library`,
+  such as `harpocrates_common`) and companion witness helper circuits
+  (`companion_helper_circuit`, such as `silent_witness_helper`) with their source
+  digests.
+- **`upstream_artifacts`** — upstream build targets for derived artifacts
+  (`zk/noir/<circuit>/target/<circuit>.json` for `vk`, `vk_fields.json`, and
+  `frontend/public/noir/<circuit>.json`; plus `vk` for `vk_soroban`).
+- **`toolchain_dependencies`** — `zk/toolchain.lock.json` digest, pinned tool
+  versions (`nargo`, `barretenberg`, `prepare-soroban`), proving scheme, oracle
+  hash, and `normalization_policy_sha256`.
+
+Derived artifacts are evaluated in topological order so staleness propagates
+downstream (`stale_artifacts`):
+
+| Reason code | Meaning |
+| --- | --- |
+| `missing_upstream_artifact` | Derived artifact exists on disk while its upstream `acir` or `vk` is absent (or `published_acir` lacks its build target under `--packaging`) |
+| `upstream_artifact_stale` | Upstream `acir` or `vk` is itself stale relative to circuit/helper/lock inputs |
+| `upstream_digest_mismatch` | `published_acir` normalized digest disagrees with its upstream `target/<circuit>.json` |
+| `soroban_vk_mismatch` | `vk_soroban` bytes disagree with the deterministic Soroban transform of `target/vk` |
+| `older_than_upstream_artifact` | Derived `vk`, `vk_fields.json`, or `vk_soroban` predates a newer upstream rebuild |
+| `older_than_source_dependency` | Circuit `Nargo.toml` or `.nr` source was modified after the artifact was built |
+| `older_than_helper_dependency` | Shared library (`harpocrates_common`) or companion `*_helper` source was modified after the artifact was built |
+| `older_than_toolchain_lock` | `zk/toolchain.lock.json` was modified after the artifact was built |
+| `source_drifted_from_manifest` / `artifact_drifted_from_manifest` | Current source or artifact digest disagrees with the baseline manifest |
+| `browser_manifest_digest_mismatch` | `published_acir` disagrees with `zk/browser.artifacts.manifest.json` |
 
 ## Exit codes
 

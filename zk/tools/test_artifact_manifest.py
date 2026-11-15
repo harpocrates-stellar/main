@@ -12,6 +12,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -1195,3 +1196,171 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+# ── Circuit build dependency graph ───────────────────────────────────────────
+
+
+def test_repo_dependency_graph_lists_sources_helpers_and_toolchain(capsys):
+    rc = am.main(["dependency-graph", "--check-stale"])
+    assert rc == am.EXIT_OK
+
+    captured = capsys.readouterr()
+    graph = json.loads(captured.out)
+    assert graph["format"] == am.DEPENDENCY_GRAPH_FORMAT
+    assert graph["version"] == am.DEPENDENCY_GRAPH_VERSION
+    assert graph["summary"]["total_packages"] >= 10
+    assert graph["summary"]["stale_artifacts"] == 0
+
+    by_path = {entry["path"]: entry for entry in graph["artifacts"]}
+    sw_vk = by_path["zk/noir/silent_witness/target/vk"]
+    assert sw_vk["is_derived"] is True
+    assert sw_vk["upstream_artifacts"] == [
+        "zk/noir/silent_witness/target/silent_witness.json"
+    ]
+    assert any(
+        src["path"] == "zk/noir/silent_witness/src/main.nr"
+        for src in sw_vk["source_dependencies"]
+    )
+    helper_names = {h["name"]: h["relationship"] for h in sw_vk["helper_dependencies"]}
+    assert helper_names["harpocrates_common"] == "noir_library"
+    assert helper_names["silent_witness_helper"] == "companion_helper_circuit"
+    tool_names = [t["name"] for t in sw_vk["toolchain_dependencies"]["tools"]]
+    assert tool_names == ["nargo", "barretenberg"]
+
+
+def test_dependency_graph_flags_stale_derived_artifacts_before_packaging(tmp_path: Path):
+    # Create shared library + helper + primary circuit
+    common = tmp_path / "zk" / "noir" / "harpocrates_common"
+    (common / "src").mkdir(parents=True)
+    (common / "Nargo.toml").write_text(
+        '[package]\nname = "harpocrates_common"\ntype = "lib"\n',
+        encoding="utf-8",
+    )
+    (common / "src" / "lib.nr").write_text("pub fn tag() -> Field { 1 }\n", encoding="utf-8")
+
+    helper = tmp_path / "zk" / "noir" / "demo_helper"
+    (helper / "src").mkdir(parents=True)
+    (helper / "Nargo.toml").write_text(
+        '[package]\nname = "demo_helper"\ntype = "bin"\n\n[dependencies]\n'
+        'harpocrates_common = { path = "../harpocrates_common" }\n',
+        encoding="utf-8",
+    )
+    (helper / "src" / "main.nr").write_text("fn main() {}\n", encoding="utf-8")
+
+    demo = tmp_path / "zk" / "noir" / "demo"
+    (demo / "src").mkdir(parents=True)
+    (demo / "Nargo.toml").write_text(
+        '[package]\nname = "demo"\ntype = "bin"\n\n[dependencies]\n'
+        'harpocrates_common = { path = "../harpocrates_common" }\n',
+        encoding="utf-8",
+    )
+    (demo / "src" / "main.nr").write_text("fn main() {}\n", encoding="utf-8")
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            _acir_entry("demo"),
+            _acir_entry("demo_helper"),
+            {
+                "path": "zk/noir/demo/target/vk",
+                "kind": "binary",
+                "role": "verification_key",
+                "required": True,
+            },
+            {
+                "path": "frontend/public/noir/demo.json",
+                "kind": "json",
+                "role": "published_acir",
+                "required": False,
+            },
+        ],
+    )
+    lock_path = tmp_path / "lock.json"
+
+    # Build fresh targets at T=2000 (sources at T=1000).
+    for src in tmp_path.rglob("*"):
+        if src.is_file():
+            os.utime(src, ns=(1_000_000_000, 1_000_000_000))
+
+    (demo / "target").mkdir(parents=True)
+    (helper / "target").mkdir(parents=True)
+    (tmp_path / "frontend" / "public" / "noir").mkdir(parents=True)
+
+    acir_v1 = b'{"bytecode":"V1"}'
+    vk_bytes = b"\x00\x00\x00\x00" + (b"\x11" * 1760)
+    soroban_ok = am.transform_vk_for_soroban(vk_bytes)
+    assert soroban_ok is not None
+
+    acir_file = demo / "target" / "demo.json"
+    helper_acir_file = helper / "target" / "demo_helper.json"
+    vk_file = demo / "target" / "vk"
+    soroban_file = demo / "target" / "vk_soroban"
+    pub_file = tmp_path / "frontend" / "public" / "noir" / "demo.json"
+
+    acir_file.write_bytes(acir_v1)
+    helper_acir_file.write_bytes(acir_v1)
+    vk_file.write_bytes(vk_bytes)
+    soroban_file.write_bytes(soroban_ok)
+    pub_file.write_bytes(acir_v1)
+
+    os.utime(acir_file, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(helper_acir_file, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(vk_file, ns=(2_100_000_000, 2_100_000_000))
+    os.utime(soroban_file, ns=(2_200_000_000, 2_200_000_000))
+    os.utime(pub_file, ns=(2_300_000_000, 2_300_000_000))
+
+    fresh_graph = am.build_dependency_graph(
+        lock,
+        tmp_path,
+        lock_path=lock_path,
+        packaging=True,
+    )
+    assert fresh_graph["ready_for_packaging"] is True
+    assert fresh_graph["stale_artifacts"] == []
+
+    # Recompile demo ACIR at T=3000 with V2 bytecode without regenerating vk, vk_soroban, or published_acir!
+    acir_file.write_bytes(b'{"bytecode":"V2"}')
+    os.utime(acir_file, ns=(3_000_000_000, 3_000_000_000))
+    # Also corrupt vk_soroban bytes relative to vk
+    soroban_file.write_bytes(b"\xff" * 1760)
+    os.utime(soroban_file, ns=(2_200_000_000, 2_200_000_000))
+
+    stale_graph = am.build_dependency_graph(
+        lock,
+        tmp_path,
+        lock_path=lock_path,
+        packaging=True,
+    )
+    assert stale_graph["ready_for_packaging"] is False
+    stale_by_path = {item["path"]: item["reasons"] for item in stale_graph["stale_artifacts"]}
+    assert "older_than_upstream_artifact" in stale_by_path["zk/noir/demo/target/vk"]
+    assert "upstream_digest_mismatch" in stale_by_path["frontend/public/noir/demo.json"]
+    assert "soroban_vk_mismatch" in stale_by_path["zk/noir/demo/target/vk_soroban"]
+    assert "upstream_artifact_stale" in stale_by_path["zk/noir/demo/target/vk_soroban"]
+
+
+def test_dependency_graph_rejects_cyclic_and_escaping_local_dependencies(tmp_path: Path):
+    pkg_a = _package(tmp_path, "pkg_a")
+    pkg_b = _package(tmp_path, "pkg_b")
+    pkg_a.joinpath("Nargo.toml").write_text(
+        '[package]\nname = "pkg_a"\ntype = "bin"\n\n[dependencies]\n'
+        'pkg_b = { path = "../pkg_b" }\n',
+        encoding="utf-8",
+    )
+    pkg_b.joinpath("Nargo.toml").write_text(
+        '[package]\nname = "pkg_b"\ntype = "bin"\n\n[dependencies]\n'
+        'pkg_a = { path = "../pkg_a" }\n',
+        encoding="utf-8",
+    )
+    lock = _lock_for(tmp_path, [_acir_entry("pkg_a"), _acir_entry("pkg_b")])
+    with pytest.raises(am.BuildError, match="cyclic Noir package dependency"):
+        am.build_dependency_graph(lock, tmp_path)
+
+    pkg_b.joinpath("Nargo.toml").write_text(
+        '[package]\nname = "pkg_b"\ntype = "bin"\n\n[dependencies]\n'
+        'escape = { path = "../../../../outside" }\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(am.BuildError, match="escapes workspace root"):
+        am.build_dependency_graph(lock, tmp_path)

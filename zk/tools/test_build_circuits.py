@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -384,3 +385,99 @@ class TestBuildWorkflows:
         assert commands_run[3] == ["nargo", "execute", "witness"]
         assert commands_run[4][:2] == ["bb", "prove"]
         assert commands_run[5][:2] == ["bb", "verify"]
+
+
+class TestDependencyGraph:
+    def test_dependency_graph_cli_flags(self):
+        parser = bc.create_parser()
+        dg_args = parser.parse_args(
+            [
+                "dependency-graph",
+                "--output",
+                "graph.json",
+                "--check-stale",
+                "--packaging",
+            ]
+        )
+        assert dg_args.subcommand == "dependency-graph"
+        assert dg_args.output == "graph.json"
+        assert dg_args.check_stale is True
+        assert dg_args.packaging is True
+
+        exp_args = parser.parse_args(["export", "silent_witness", "--check-stale"])
+        assert exp_args.check_stale is True
+        sor_args = parser.parse_args(["prepare-soroban", "silent_witness", "--check-stale"])
+        assert sor_args.check_stale is True
+
+    def test_export_and_dependency_graph_block_stale_derived_vk(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        sw = repo / "zk" / "noir" / "silent_witness"
+        (sw / "src").mkdir(parents=True)
+        (sw / "Nargo.toml").write_text(
+            '[package]\nname = "silent_witness"\ntype = "bin"\n',
+            encoding="utf-8",
+        )
+        (sw / "src" / "main.nr").write_text("fn main() {}\n", encoding="utf-8")
+
+        raw_lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        raw_lock["artifacts"] = [
+            {
+                "path": "zk/noir/silent_witness/target/silent_witness.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            },
+            {
+                "path": "zk/noir/silent_witness/target/vk",
+                "kind": "binary",
+                "role": "verification_key",
+                "required": True,
+            },
+        ]
+        lock_file = repo / "zk" / "toolchain.lock.json"
+        lock_file.write_text(json.dumps(raw_lock, indent=2), encoding="utf-8")
+
+        for f in repo.rglob("*"):
+            if f.is_file():
+                os.utime(f, ns=(1_000_000_000, 1_000_000_000))
+
+        target = sw / "target"
+        target.mkdir(parents=True)
+        acir_file = target / "silent_witness.json"
+        vk_file = target / "vk"
+        acir_file.write_text('{"bytecode":"ACIR_NEW"}', encoding="utf-8")
+        vk_file.write_bytes(b"\x22" * 64)
+        (target / "proof").write_bytes(b"\x01")
+        (target / "public_inputs").write_bytes(b"\x02")
+
+        # Derived VK is older than rebuilt ACIR -> stale!
+        os.utime(vk_file, ns=(1_500_000_000, 1_500_000_000))
+        os.utime(acir_file, ns=(2_500_000_000, 2_500_000_000))
+
+        graph_out = tmp_path / "graph.json"
+        dg_args = bc.create_parser().parse_args(
+            [
+                "dependency-graph",
+                "--lock",
+                str(lock_file),
+                "--output",
+                str(graph_out),
+                "--check-stale",
+            ]
+        )
+        assert bc.cmd_dependency_graph(dg_args, repo_root=repo) == bc.EXIT_DRIFT
+        saved_graph = json.loads(graph_out.read_text(encoding="utf-8"))
+        assert saved_graph["summary"]["stale_derived_artifacts"] == 1
+
+        exp_args = bc.create_parser().parse_args(
+            [
+                "export",
+                "silent_witness",
+                "--target-dir",
+                str(target),
+                "--check-stale",
+            ]
+        )
+        with pytest.raises(bc.BuildError, match=r"Stale artifacts detected for silent_witness") as exc:
+            bc.cmd_export(exp_args, repo_root=repo)
+        assert exc.value.exit_code == bc.EXIT_DRIFT

@@ -6,11 +6,12 @@ UltraHonk proofs, exporting proof hex artifacts, and preparing Soroban verifier 
 All actions enforce toolchain versions pinned in ``zk/toolchain.lock.json``.
 
 Subcommands:
-    build           Compile circuits, generate verification keys, and optionally prove/verify.
-                    Supports single-circuit builds or double-build reproducibility checks across all circuits.
-    generate        Generate witness and proof for a specific circuit (e.g. silent_witness or aggregator).
-    export          Export proof, public inputs, and verification key as hex JSON for any circuit.
-    prepare-soroban Convert bb UltraHonk verification key into Soroban big-endian verifier format.
+    build             Compile circuits, generate verification keys, and optionally prove/verify.
+                      Supports single-circuit builds or double-build reproducibility checks across all circuits.
+    dependency-graph  Emit source, helper, and toolchain dependency graph and flag stale derived artifacts.
+    generate          Generate witness and proof for a specific circuit (e.g. silent_witness or aggregator).
+    export            Export proof, public inputs, and verification key as hex JSON for any circuit.
+    prepare-soroban   Convert bb UltraHonk verification key into Soroban big-endian verifier format.
 """
 
 from __future__ import annotations
@@ -24,9 +25,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+try:
+    import artifact_manifest as _am
+except ImportError:
+    from zk.tools import artifact_manifest as _am
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -390,6 +397,8 @@ def cmd_build(
     elif args.verify:
         mode = "verify"
 
+    dep_graph_out = getattr(args, "dependency_graph", None)
+
     if mode == "single":
         build_all_circuits("single", toolchain, repo_root=repo_root, runner=runner)
         status = run_manifest_tool(
@@ -399,6 +408,21 @@ def cmd_build(
         )
         if status != 0:
             raise BuildError("manifest write failed", exit_code=status)
+        if dep_graph_out:
+            dg_status = _am.main(
+                [
+                    "--lock",
+                    str(lock_path),
+                    "--root",
+                    str(repo_root),
+                    "dependency-graph",
+                    "--output",
+                    str(dep_graph_out),
+                    "--check-stale",
+                ]
+            )
+            if dg_status != 0:
+                return dg_status
         signal("run.ok", detail="manifest written")
         return EXIT_OK
 
@@ -409,6 +433,19 @@ def cmd_build(
             repo_root=repo_root,
             runner=runner,
         )
+        if status == 0 and dep_graph_out:
+            return _am.main(
+                [
+                    "--lock",
+                    str(lock_path),
+                    "--root",
+                    str(repo_root),
+                    "dependency-graph",
+                    "--output",
+                    str(dep_graph_out),
+                    "--check-stale",
+                ]
+            )
         return status
 
     # Double build
@@ -445,12 +482,78 @@ def cmd_build(
             return compare_status
 
         shutil.copyfile(second_manifest, manifest_path)
+        if dep_graph_out:
+            dg_status = _am.main(
+                [
+                    "--lock",
+                    str(lock_path),
+                    "--root",
+                    str(repo_root),
+                    "dependency-graph",
+                    "--output",
+                    str(dep_graph_out),
+                    "--check-stale",
+                ]
+            )
+            if dg_status != 0:
+                return dg_status
         signal("run.ok", detail="reproducible; manifest written")
         return EXIT_OK
 
 
+def ensure_circuit_not_stale(
+    circuit: str,
+    *,
+    repo_root: Path = REPO_ROOT,
+    lock_path: Path | None = None,
+) -> None:
+    """Fail closed with ``EXIT_DRIFT`` if any derived artifact for ``circuit`` is stale."""
+    resolved_lock = lock_path or (repo_root / "zk" / "toolchain.lock.json")
+    try:
+        lock = _am.load_lock(resolved_lock)
+        graph = _am.build_dependency_graph(lock, repo_root, lock_path=resolved_lock)
+    except _am.BuildError as exc:
+        raise BuildError(str(exc), exit_code=EXIT_FATAL) from exc
+
+    stale_for_circuit = [
+        item for item in graph["stale_artifacts"] if item.get("circuit") == circuit
+    ]
+    if stale_for_circuit:
+        summary = "; ".join(
+            f"{item['path']} ({', '.join(item['reasons'])})" for item in stale_for_circuit
+        )
+        raise BuildError(
+            f"Stale artifacts detected for {circuit} before packaging: {summary}",
+            exit_code=EXIT_DRIFT,
+        )
+
+
+def cmd_dependency_graph(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
+    lock_path = Path(args.lock) if args.lock else (repo_root / "zk" / "toolchain.lock.json")
+    cli_args: list[str] = [
+        "--lock",
+        str(lock_path),
+        "--root",
+        str(repo_root),
+        "dependency-graph",
+    ]
+    if args.output:
+        cli_args.extend(["--output", args.output])
+    if args.manifest:
+        cli_args.extend(["--manifest", args.manifest])
+    if args.browser_manifest:
+        cli_args.extend(["--browser-manifest", args.browser_manifest])
+    if args.check_stale:
+        cli_args.append("--check-stale")
+    if args.packaging:
+        cli_args.append("--packaging")
+    return _am.main(cli_args)
+
+
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
+    if getattr(args, "check_stale", False):
+        ensure_circuit_not_stale(circuit, repo_root=repo_root)
     target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
 
     files = {
@@ -480,6 +583,8 @@ def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
 
 def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
+    if getattr(args, "check_stale", False):
+        ensure_circuit_not_stale(circuit, repo_root=repo_root)
     target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
     vk_path = target_dir / "vk"
     soroban_vk_path = target_dir / "vk_soroban"
@@ -1051,6 +1156,31 @@ def create_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--clean", action="store_true", default=True, help="Clean target before build")
     p_build.add_argument("--manifest", default=None, help="Path to manifest file")
     p_build.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_build.add_argument(
+        "--dependency-graph",
+        default=None,
+        help="Optional path to write the circuit build dependency graph JSON and check for stale outputs",
+    )
+
+    # --- dependency-graph ---
+    p_dep = subparsers.add_parser(
+        "dependency-graph",
+        help="Emit source, helper, and toolchain dependency graph and flag stale derived artifacts",
+    )
+    p_dep.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_dep.add_argument("--output", default=None, help="Optional JSON output path (stdout when omitted)")
+    p_dep.add_argument("--manifest", default=None, help="Optional artifact manifest baseline path")
+    p_dep.add_argument("--browser-manifest", default=None, help="Optional browser manifest baseline path")
+    p_dep.add_argument(
+        "--check-stale",
+        action="store_true",
+        help="Fail with EXIT_DRIFT if any on-disk artifact is stale relative to its dependencies",
+    )
+    p_dep.add_argument(
+        "--packaging",
+        action="store_true",
+        help="Pre-packaging gate: fail on any stale artifact or missing required/upstream target",
+    )
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate proof and public inputs for a circuit")
@@ -1070,6 +1200,11 @@ def create_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_exp.add_argument("--target-dir", default=None, help="Circuit target directory")
     p_exp.add_argument("--output", default=None, help="Output JSON file path")
+    p_exp.add_argument(
+        "--check-stale",
+        action="store_true",
+        help="Verify derived artifacts for the circuit are not stale before exporting",
+    )
 
     # --- prepare-soroban ---
     p_soroban = subparsers.add_parser("prepare-soroban", help="Prepare VK artifact for Soroban verifier")
@@ -1077,6 +1212,11 @@ def create_parser() -> argparse.ArgumentParser:
     p_soroban.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_soroban.add_argument("--target-dir", default=None, help="Circuit target directory")
     p_soroban.add_argument("--output", default=None, help="Output JSON file path")
+    p_soroban.add_argument(
+        "--check-stale",
+        action="store_true",
+        help="Verify upstream circuit artifacts are not stale before preparing Soroban VK",
+    )
 
     return parser
 
@@ -1104,6 +1244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.subcommand == "build":
             return cmd_build(args)
+        if args.subcommand == "dependency-graph":
+            return cmd_dependency_graph(args)
         if args.subcommand == "export":
             return cmd_export(args)
         if args.subcommand == "prepare-soroban":

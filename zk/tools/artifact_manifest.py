@@ -4,14 +4,16 @@
 Guarantees that generated ACIR bundles, verification keys, and WASM artifacts
 match their source and the pinned toolchain in ``zk/toolchain.lock.json``.
 
-    write           normalize every declared artifact, digest it, and emit a manifest
-    verify          re-digest the working tree and fail on any drift from a manifest
-    compare         diff two manifests (the double-build reproducibility check)
-    check-coverage  fail when the lock and the source tree disagree about which
-                    circuits exist, so no circuit can ship unpinned
-    write-browser   digest published browser ACIR and emit the browser manifest
-    verify-browser  fail if published ACIR drifts from the browser manifest or
-                    from the matching build-target ACIR when both are on disk
+    write             normalize every declared artifact, digest it, and emit a manifest
+    verify            re-digest the working tree and fail on any drift from a manifest
+    compare           diff two manifests (the double-build reproducibility check)
+    check-coverage    fail when the lock and the source tree disagree about which
+                      circuits exist, so no circuit can ship unpinned
+    dependency-graph  emit the source, helper, upstream-artifact, and toolchain
+                      dependency graph and flag stale derived artifacts before packaging
+    write-browser     digest published browser ACIR and emit the browser manifest
+    verify-browser    fail if published ACIR drifts from the browser manifest or
+                      from the matching build-target ACIR when both are on disk
     write-provenance  digest lock-declared circuit sources and emit published provenance
     verify-provenance fail if circuit sources drift from the committed provenance
 
@@ -49,17 +51,26 @@ See docs/zk-reproducible-builds.md.
 from __future__ import annotations
 
 import argparse
-import re
 import hashlib
 import json
 import os
+import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback
+    tomllib = None  # type: ignore[assignment]
 
 MANIFEST_FORMAT = "harpocrates.zk-artifact-manifest"
 MANIFEST_VERSION = 1
+
+DEPENDENCY_GRAPH_FORMAT = "harpocrates.zk-dependency-graph"
+DEPENDENCY_GRAPH_VERSION = 1
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -71,6 +82,7 @@ PROVENANCE_FORMAT = "harpocrates.zk-circuit-provenance"
 DEFAULT_PROVENANCE = REPO_ROOT / "zk" / "circuit.provenance.json"
 PUBLISHED_ACIR_ROLE = "published_acir"
 ACIR_ROLE = "acir"
+SOROBAN_VK_ROLE = "soroban_verification_key"
 
 DEFAULT_CIRCUIT_ROOT = "zk/noir"
 DEFAULT_PACKAGE_FILE = "Nargo.toml"
@@ -295,10 +307,11 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _rel(path: Path) -> str:
-    """Repo-relative, forward-slashed path — the only path form ever logged."""
+def _rel(path: Path, root: Path | None = None) -> str:
+    """Root-relative, forward-slashed path — the only path form ever logged."""
+    base = (root or REPO_ROOT).resolve()
     try:
-        return path.resolve().relative_to(REPO_ROOT).as_posix()
+        return path.resolve().relative_to(base).as_posix()
     except ValueError:
         return path.name
 
@@ -388,16 +401,17 @@ def collect_provenance(lock: Lock, root: Path) -> dict[str, str]:
     Sorted and bounded so the result is stable across filesystems with
     different directory iteration order.
     """
+    resolved_root = root.resolve()
     found: dict[str, str] = {}
     for pattern in lock.provenance_globs:
-        for path in sorted(root.glob(pattern)):
+        for path in sorted(resolved_root.glob(pattern)):
             if not path.is_file():
                 continue
             if len(found) >= lock.limits.max_provenance_files:
                 raise BuildError(
                     f"provenance set exceeds {lock.limits.max_provenance_files} files"
                 )
-            found[_rel(path)] = sha256_hex(path.read_bytes())
+            found[_rel(path, resolved_root)] = sha256_hex(path.read_bytes())
     return dict(sorted(found.items()))
 
 
@@ -1070,8 +1084,9 @@ def check_coverage(lock: Lock, root: Path) -> list[str]:
 
 
 def command_check_coverage(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
     lock = load_lock(Path(args.lock))
-    findings = check_coverage(lock, REPO_ROOT)
+    findings = check_coverage(lock, root)
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
@@ -1080,6 +1095,628 @@ def command_check_coverage(args: argparse.Namespace) -> int:
 
     signal("coverage.ok", circuits=len(declared_circuit_names(lock)))
     return EXIT_OK
+
+
+# ── Circuit build dependency graph ───────────────────────────────────────────
+
+
+def transform_vk_for_soroban(vk: bytes) -> bytes | None:
+    """Deterministic Soroban UltraHonk VK transformation (1764 -> 1760 bytes)."""
+    if len(vk) == 1764:
+        stripped = bytearray(vk[4:])
+        for offset in range(0, 32, 8):
+            first = stripped[offset : offset + 4]
+            second = stripped[offset + 4 : offset + 8]
+            stripped[offset : offset + 4] = second
+            stripped[offset + 4 : offset + 8] = first
+        return bytes(stripped)
+    if len(vk) == 1760:
+        return vk
+    return None
+
+
+def _parse_nargo_manifest(package_toml: Path, root: Path) -> dict[str, Any]:
+    """Parse ``[package]`` and local ``[dependencies]`` from a ``Nargo.toml``."""
+    try:
+        raw_text = package_toml.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BuildError(
+            f"unreadable Noir package manifest: {_rel(package_toml, root)}"
+        ) from exc
+
+    if tomllib is not None:
+        try:
+            parsed = tomllib.loads(raw_text)
+        except ValueError as exc:
+            raise BuildError(
+                f"invalid Noir package manifest: {_rel(package_toml, root)}"
+            ) from exc
+        pkg_table = parsed.get("package") or {}
+        deps_table = parsed.get("dependencies") or {}
+        local_deps: dict[str, str] = {}
+        if isinstance(deps_table, dict):
+            for dep_name, dep_spec in sorted(deps_table.items()):
+                if isinstance(dep_spec, dict) and isinstance(dep_spec.get("path"), str):
+                    local_deps[str(dep_name)] = str(dep_spec["path"])
+        return {
+            "name": str(pkg_table.get("name") or package_toml.parent.name),
+            "package_type": str(pkg_table.get("type") or "bin"),
+            "compiler_version": (
+                str(pkg_table["compiler_version"])
+                if pkg_table.get("compiler_version") is not None
+                else None
+            ),
+            "local_dep_paths": local_deps,
+        }
+
+    # Line-based fallback when tomllib is unavailable
+    section = ""
+    pkg_name = package_toml.parent.name
+    pkg_type = "bin"
+    compiler_ver: str | None = None
+    fallback_deps: dict[str, str] = {}
+    for raw_line in raw_text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if section == "package":
+            m_str = re.fullmatch(r'([A-Za-z0-9_]+)\s*=\s*["\']([^"\']*)["\']', line)
+            if m_str:
+                k, v = m_str.group(1), m_str.group(2)
+                if k == "name" and v:
+                    pkg_name = v
+                elif k == "type" and v:
+                    pkg_type = v
+                elif k == "compiler_version":
+                    compiler_ver = v
+        elif section == "dependencies":
+            m_dep = re.search(
+                r'^([A-Za-z0-9_-]+)\s*=\s*\{[^}]*path\s*=\s*["\']([^"\']+)["\']',
+                line,
+            )
+            if m_dep:
+                fallback_deps[m_dep.group(1)] = m_dep.group(2)
+
+    return {
+        "name": pkg_name,
+        "package_type": pkg_type,
+        "compiler_version": compiler_ver,
+        "local_dep_paths": dict(sorted(fallback_deps.items())),
+    }
+
+
+def discover_noir_package_graph(
+    lock: Lock,
+    root: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Discover Noir binary and library packages, their sources, and local DAG edges."""
+    resolved_root = root.resolve()
+    base = resolved_root / lock.circuit_root
+    packages: dict[str, dict[str, Any]] = {}
+    file_mtimes_ns: dict[str, int] = {}
+
+    if not base.is_dir():
+        return packages, file_mtimes_ns
+
+    source_count = 0
+    max_packages = max(lock.limits.max_circuits * 2, lock.limits.max_circuits)
+
+    for pkg_dir in sorted(base.iterdir()):
+        package_toml = pkg_dir / lock.package_file
+        if not (pkg_dir.is_dir() and package_toml.is_file()):
+            continue
+        if len(packages) >= max_packages:
+            raise BuildError(
+                f"Noir package count exceeds {max_packages}; refusing to continue"
+            )
+
+        meta = _parse_nargo_manifest(package_toml, resolved_root)
+        dir_name = pkg_dir.name
+        src_files: list[Path] = [package_toml]
+        src_dir = pkg_dir / "src"
+        if src_dir.is_dir():
+            src_files.extend(sorted(p for p in src_dir.rglob("*.nr") if p.is_file()))
+
+        source_entries: list[dict[str, str]] = []
+        for src_path in src_files:
+            source_count += 1
+            if source_count > lock.limits.max_provenance_files:
+                raise BuildError(
+                    f"dependency source set exceeds {lock.limits.max_provenance_files} files"
+                )
+            rel_src = _rel(src_path, resolved_root)
+            stat = src_path.stat()
+            file_mtimes_ns[rel_src] = stat.st_mtime_ns
+            source_entries.append(
+                {
+                    "path": rel_src,
+                    "sha256": sha256_hex(src_path.read_bytes()),
+                }
+            )
+
+        local_dep_dirs: list[str] = []
+        for dep_alias, dep_rel in sorted(meta["local_dep_paths"].items()):
+            dep_dir = (pkg_dir / dep_rel).resolve()
+            try:
+                dep_dir.relative_to(resolved_root)
+            except ValueError as exc:
+                raise BuildError(
+                    f"Noir dependency path for {dep_alias!r} in {dir_name} escapes workspace root"
+                ) from exc
+            if not (dep_dir / lock.package_file).is_file():
+                raise BuildError(
+                    f"Noir package {dir_name} declares missing local dependency {dep_alias!r}"
+                )
+            local_dep_dirs.append(dep_dir.name)
+
+        packages[dir_name] = {
+            "name": dir_name,
+            "declared_name": meta["name"],
+            "package_type": meta["package_type"],
+            "compiler_version": meta["compiler_version"],
+            "manifest_path": _rel(package_toml, resolved_root),
+            "source_entries": source_entries,
+            "local_dependencies": sorted(set(local_dep_dirs)),
+        }
+
+    # Resolve transitive local package dependencies and reject cycles.
+    resolved_transitive: dict[str, list[str]] = {}
+    visiting: list[str] = []
+
+    def _dfs(pkg_key: str) -> list[str]:
+        if pkg_key in resolved_transitive:
+            return resolved_transitive[pkg_key]
+        if pkg_key in visiting:
+            cycle_start = visiting.index(pkg_key)
+            chain = " -> ".join([*visiting[cycle_start:], pkg_key])
+            raise BuildError(f"cyclic Noir package dependency detected: {chain}")
+        visiting.append(pkg_key)
+        ordered: list[str] = []
+        for dep_key in packages[pkg_key]["local_dependencies"]:
+            if dep_key not in packages:
+                raise BuildError(
+                    f"Noir package {pkg_key} references undiscovered local package {dep_key!r}"
+                )
+            for sub in _dfs(dep_key):
+                if sub not in ordered:
+                    ordered.append(sub)
+            if dep_key not in ordered:
+                ordered.append(dep_key)
+        visiting.pop()
+        resolved_transitive[pkg_key] = ordered
+        return ordered
+
+    for pkg_key in sorted(packages):
+        packages[pkg_key]["transitive_dependencies"] = _dfs(pkg_key)
+        companion: str | None = None
+        if (
+            packages[pkg_key]["package_type"] != "lib"
+            and not pkg_key.endswith("_helper")
+            and f"{pkg_key}_helper" in packages
+        ):
+            companion = f"{pkg_key}_helper"
+        packages[pkg_key]["companion_helper"] = companion
+
+    return packages, file_mtimes_ns
+
+
+def _classify_artifact_dependencies(
+    declaration: dict,
+    lock: Lock,
+) -> tuple[str | None, bool, list[str], list[dict[str, Any]], int]:
+    """Return ``(circuit, is_derived, upstream_paths, tools, topo_tier)``."""
+    rel_path = str(declaration["path"])
+    role = str(declaration.get("role", "unknown"))
+    kind = str(declaration.get("kind", "unknown"))
+
+    nargo_tool = {
+        "name": "nargo",
+        "version": lock.toolchain["nargo"]["version"],
+    }
+    bb_tool = {
+        "name": "barretenberg",
+        "version": lock.toolchain["barretenberg"]["version"],
+        "proving_scheme": lock.toolchain["proving_scheme"],
+        "oracle_hash": lock.toolchain["oracle_hash"],
+    }
+    soroban_tool = {
+        "name": "prepare-soroban",
+        "driver": "zk/tools/build_circuits.py",
+    }
+
+    if role == PUBLISHED_ACIR_ROLE:
+        target_acir = published_to_build_target(rel_path)
+        circuit_name = target_acir[len(lock.circuit_root) + 1 :].split("/", 1)[0]
+        return circuit_name, True, [target_acir], [nargo_tool], 1
+
+    prefix = f"{lock.circuit_root}/"
+    if rel_path.startswith(prefix):
+        parts = rel_path[len(prefix) :].split("/")
+        if len(parts) == 3 and parts[1] == "target":
+            circuit_name = parts[0]
+            filename = parts[2]
+            primary_acir = f"{lock.circuit_root}/{circuit_name}/target/{circuit_name}.json"
+            if role == ACIR_ROLE and filename == f"{circuit_name}.json":
+                return circuit_name, False, [], [nargo_tool], 0
+            if role == SOROBAN_VK_ROLE or filename == "vk_soroban":
+                vk_path = f"{lock.circuit_root}/{circuit_name}/target/vk"
+                return (
+                    circuit_name,
+                    True,
+                    [vk_path, primary_acir],
+                    [nargo_tool, bb_tool, soroban_tool],
+                    2,
+                )
+            tools = [nargo_tool, bb_tool] if kind in ("binary", "json", "wasm") else [nargo_tool]
+            return circuit_name, True, [primary_acir], tools, 1
+
+    return None, False, [], [nargo_tool, bb_tool], 0
+
+
+def build_dependency_graph(
+    lock: Lock,
+    root: Path,
+    *,
+    lock_path: Path | None = None,
+    manifest: dict | None = None,
+    browser_manifest: dict | None = None,
+    packaging: bool = False,
+) -> dict[str, Any]:
+    """Build a deterministic release dependency graph and surface stale artifacts.
+
+    Lists per-artifact source, helper (shared Noir libraries + companion
+    ``*_helper`` circuits), upstream artifact, and pinned toolchain
+    dependencies, and identifies stale derived artifacts before packaging.
+    """
+    resolved_root = root.resolve()
+    effective_lock_path = (lock_path or (resolved_root / "zk" / "toolchain.lock.json")).resolve()
+    lock_rel = _rel(effective_lock_path, resolved_root)
+    lock_sha256 = (
+        sha256_hex(effective_lock_path.read_bytes())
+        if effective_lock_path.is_file()
+        else sha256_hex(
+            json.dumps(lock.raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+    )
+    lock_mtime_ns = (
+        effective_lock_path.stat().st_mtime_ns if effective_lock_path.is_file() else None
+    )
+    norm_policy_sha256 = sha256_hex(
+        json.dumps(lock.raw["normalization"], sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+
+    packages, file_mtimes_ns = discover_noir_package_graph(lock, resolved_root)
+
+    # Combine lock-declared artifacts with any on-disk derived Soroban VK files.
+    declarations: list[dict[str, Any]] = [
+        {**entry, "_declared_in_lock": True} for entry in lock.artifacts
+    ]
+    declared_paths = {str(entry["path"]) for entry in declarations}
+    for circuit_name in sorted(declared_circuit_names(lock)):
+        soroban_rel = f"{lock.circuit_root}/{circuit_name}/target/vk_soroban"
+        if soroban_rel not in declared_paths and (resolved_root / soroban_rel).is_file():
+            declarations.append(
+                {
+                    "path": soroban_rel,
+                    "kind": "binary",
+                    "role": SOROBAN_VK_ROLE,
+                    "required": False,
+                    "_declared_in_lock": False,
+                }
+            )
+
+    manifest_prov = (manifest or {}).get("provenance") or {}
+    manifest_arts = {
+        entry["path"]: entry for entry in ((manifest or {}).get("artifacts") or [])
+    }
+    browser_arts = {
+        entry["path"]: entry for entry in ((browser_manifest or {}).get("artifacts") or [])
+    }
+
+    raw_nodes: list[dict[str, Any]] = []
+    artifact_mtimes_ns: dict[str, int] = {}
+
+    for decl in declarations:
+        rel_path = str(decl["path"])
+        circuit_name, is_derived, upstream_paths, tools, topo_tier = (
+            _classify_artifact_dependencies(decl, lock)
+        )
+        digest_res = digest_artifact(decl, lock, resolved_root)
+        if digest_res.state in FATAL_STATES:
+            signal("run.fatal", path=digest_res.path, state=digest_res.state)
+            raise BuildError(
+                f"artifact {digest_res.path} is in fatal state {digest_res.state}"
+            )
+
+        target_file = resolved_root / rel_path
+        is_present = digest_res.state == ArtifactState.DIGESTED
+        if is_present and target_file.is_file():
+            artifact_mtimes_ns[rel_path] = target_file.stat().st_mtime_ns
+
+        source_deps: list[dict[str, str]] = []
+        helper_deps: list[dict[str, Any]] = []
+        pkg = packages.get(circuit_name) if circuit_name else None
+        if pkg is not None:
+            source_deps = list(pkg["source_entries"])
+            for dep_pkg_name in pkg["transitive_dependencies"]:
+                dep_pkg = packages[dep_pkg_name]
+                helper_deps.append(
+                    {
+                        "name": dep_pkg_name,
+                        "relationship": (
+                            "noir_library"
+                            if dep_pkg["package_type"] == "lib"
+                            else "noir_package"
+                        ),
+                        "manifest_path": dep_pkg["manifest_path"],
+                        "sources": list(dep_pkg["source_entries"]),
+                    }
+                )
+            companion_name = pkg.get("companion_helper")
+            if companion_name and companion_name in packages:
+                comp_pkg = packages[companion_name]
+                helper_deps.append(
+                    {
+                        "name": companion_name,
+                        "relationship": "companion_helper_circuit",
+                        "manifest_path": comp_pkg["manifest_path"],
+                        "target_acir": (
+                            f"{lock.circuit_root}/{companion_name}/target/{companion_name}.json"
+                        ),
+                        "sources": list(comp_pkg["source_entries"]),
+                    }
+                )
+
+        raw_nodes.append(
+            {
+                "_tier": topo_tier,
+                "path": rel_path,
+                "circuit": circuit_name,
+                "kind": str(decl["kind"]),
+                "role": str(decl.get("role", "unknown")),
+                "required": bool(decl.get("required", False)),
+                "declared_in_lock": bool(decl.get("_declared_in_lock", True)),
+                "is_derived": is_derived,
+                "present": is_present,
+                "state": "present" if is_present else "missing",
+                "stale": False,
+                "stale_reasons": [],
+                "raw_bytes": digest_res.raw_bytes,
+                "normalized_bytes": digest_res.normalized_bytes,
+                "normalized_sha256": digest_res.normalized_sha256,
+                "upstream_artifacts": upstream_paths,
+                "source_dependencies": source_deps,
+                "helper_dependencies": helper_deps,
+                "toolchain_dependencies": {
+                    "lock_path": lock_rel,
+                    "lock_sha256": lock_sha256,
+                    "tools": tools,
+                    "normalization_policy_sha256": norm_policy_sha256,
+                },
+            }
+        )
+
+    nodes_by_path = {node["path"]: node for node in raw_nodes}
+
+    # Evaluate staleness in topological tier order so upstream staleness propagates.
+    for node in sorted(raw_nodes, key=lambda item: (item["_tier"], item["path"])):
+        if not node["present"]:
+            continue
+
+        path = node["path"]
+        role = node["role"]
+        art_mtime = artifact_mtimes_ns.get(path)
+        reasons: list[str] = []
+
+        def _add_reason(code: str, target: list[str] = reasons) -> None:
+            if code not in target:
+                target.append(code)
+
+        # Published browser ACIR may come from git checkout when browser_manifest
+        # is committed and build targets are absent; apply direct mtime checks to
+        # build targets unconditionally and to published_acir when unpinned by
+        # browser_manifest and without an on-disk upstream build target.
+        upstream_present_any = any(
+            nodes_by_path.get(up, {}).get("present", False)
+            for up in node["upstream_artifacts"]
+        )
+        check_direct_mtime = role != PUBLISHED_ACIR_ROLE or (
+            browser_manifest is None and not upstream_present_any
+        )
+
+        if check_direct_mtime and art_mtime is not None:
+            if any(
+                file_mtimes_ns.get(src["path"], 0) > art_mtime
+                for src in node["source_dependencies"]
+            ):
+                _add_reason("older_than_source_dependency")
+
+            if any(
+                file_mtimes_ns.get(hsrc["path"], 0) > art_mtime
+                for hdep in node["helper_dependencies"]
+                for hsrc in hdep.get("sources", [])
+            ):
+                _add_reason("older_than_helper_dependency")
+
+            if lock_mtime_ns is not None and lock_mtime_ns > art_mtime:
+                _add_reason("older_than_toolchain_lock")
+
+        if manifest is not None:
+            dep_digests = {
+                src["path"]: src["sha256"] for src in node["source_dependencies"]
+            }
+            for hdep in node["helper_dependencies"]:
+                for hsrc in hdep.get("sources", []):
+                    dep_digests[hsrc["path"]] = hsrc["sha256"]
+            dep_digests[lock_rel] = lock_sha256
+            for dep_path, current_sha in sorted(dep_digests.items()):
+                recorded_sha = manifest_prov.get(dep_path)
+                if recorded_sha is not None and recorded_sha != current_sha:
+                    _add_reason("source_drifted_from_manifest")
+                    break
+
+            recorded_art = manifest_arts.get(path)
+            if (
+                recorded_art is not None
+                and recorded_art.get("normalized_sha256") != node["normalized_sha256"]
+            ):
+                _add_reason("artifact_drifted_from_manifest")
+
+        if role == PUBLISHED_ACIR_ROLE and browser_manifest is not None:
+            recorded_browser = browser_arts.get(path)
+            if (
+                recorded_browser is None
+                or recorded_browser.get("normalized_sha256") != node["normalized_sha256"]
+            ):
+                _add_reason("browser_manifest_digest_mismatch")
+
+        if node["is_derived"]:
+            for up_path in node["upstream_artifacts"]:
+                up_node = nodes_by_path.get(up_path)
+                up_present = bool(up_node and up_node["present"])
+                if not up_present:
+                    up_file = resolved_root / up_path
+                    if up_file.is_file():
+                        up_present = True
+                if not up_present:
+                    if role != PUBLISHED_ACIR_ROLE or packaging:
+                        _add_reason("missing_upstream_artifact")
+                    continue
+
+                if up_node is not None and up_node["stale"]:
+                    _add_reason("upstream_artifact_stale")
+
+                if role == PUBLISHED_ACIR_ROLE:
+                    if (
+                        up_node is not None
+                        and up_node["normalized_sha256"] != node["normalized_sha256"]
+                    ):
+                        _add_reason("upstream_digest_mismatch")
+                else:
+                    up_mtime = artifact_mtimes_ns.get(up_path)
+                    if up_mtime is None and (resolved_root / up_path).is_file():
+                        up_mtime = (resolved_root / up_path).stat().st_mtime_ns
+                    if art_mtime is not None and up_mtime is not None and art_mtime < up_mtime:
+                        _add_reason("older_than_upstream_artifact")
+
+                    if role == SOROBAN_VK_ROLE and up_path.endswith("/target/vk"):
+                        vk_file = resolved_root / up_path
+                        soroban_file = resolved_root / path
+                        if vk_file.is_file() and soroban_file.is_file():
+                            expected_soroban = transform_vk_for_soroban(vk_file.read_bytes())
+                            if (
+                                expected_soroban is None
+                                or soroban_file.read_bytes() != expected_soroban
+                            ):
+                                _add_reason("soroban_vk_mismatch")
+
+        if reasons:
+            node["stale"] = True
+            node["state"] = "stale"
+            node["stale_reasons"] = reasons
+
+    serialized_artifacts: list[dict[str, Any]] = []
+    stale_summary: list[dict[str, Any]] = []
+    missing_required: list[str] = []
+
+    for node in raw_nodes:
+        clean_node = {k: v for k, v in node.items() if not k.startswith("_")}
+        serialized_artifacts.append(clean_node)
+        if clean_node["stale"]:
+            stale_summary.append(
+                {
+                    "path": clean_node["path"],
+                    "circuit": clean_node["circuit"],
+                    "role": clean_node["role"],
+                    "is_derived": clean_node["is_derived"],
+                    "reasons": clean_node["stale_reasons"],
+                }
+            )
+        if clean_node["required"] and not clean_node["present"]:
+            missing_required.append(clean_node["path"])
+
+    serialized_packages = [
+        {
+            "name": pkg["name"],
+            "package_type": pkg["package_type"],
+            "compiler_version": pkg["compiler_version"],
+            "manifest_path": pkg["manifest_path"],
+            "sources": [entry["path"] for entry in pkg["source_entries"]],
+            "local_dependencies": pkg["local_dependencies"],
+            "transitive_dependencies": pkg["transitive_dependencies"],
+            "companion_helper": pkg["companion_helper"],
+        }
+        for _, pkg in sorted(packages.items())
+    ]
+
+    env_clean = {
+        k: v for k, v in sorted(lock.environment.items()) if k != "description"
+    }
+    ready_for_packaging = len(stale_summary) == 0 and len(missing_required) == 0
+
+    return {
+        "format": DEPENDENCY_GRAPH_FORMAT,
+        "version": DEPENDENCY_GRAPH_VERSION,
+        "packaging_mode": bool(packaging),
+        "ready_for_packaging": ready_for_packaging,
+        "toolchain": {
+            "lock_path": lock_rel,
+            "lock_sha256": lock_sha256,
+            "nargo": lock.toolchain["nargo"]["version"],
+            "barretenberg": lock.toolchain["barretenberg"]["version"],
+            "proving_scheme": lock.toolchain["proving_scheme"],
+            "oracle_hash": lock.toolchain["oracle_hash"],
+            "normalization_policy_sha256": norm_policy_sha256,
+            "environment": env_clean,
+        },
+        "packages": serialized_packages,
+        "artifacts": serialized_artifacts,
+        "stale_artifacts": stale_summary,
+        "missing_required_artifacts": missing_required,
+        "summary": {
+            "total_packages": len(serialized_packages),
+            "total_artifacts": len(serialized_artifacts),
+            "derived_artifacts": sum(
+                1 for item in serialized_artifacts if item["is_derived"]
+            ),
+            "present_artifacts": sum(
+                1 for item in serialized_artifacts if item["present"]
+            ),
+            "stale_artifacts": len(stale_summary),
+            "stale_derived_artifacts": sum(
+                1 for item in stale_summary if item["is_derived"]
+            ),
+            "missing_required_artifacts": len(missing_required),
+        },
+    }
+
+
+def evaluate_dependency_graph(
+    graph: dict[str, Any],
+    *,
+    check_stale: bool = False,
+    packaging: bool = False,
+) -> tuple[bool, list[str]]:
+    """Return ``(passed, findings)`` for stale or missing-before-packaging checks."""
+    findings: list[str] = []
+    if check_stale or packaging:
+        for item in graph.get("stale_artifacts", []):
+            reasons_str = ", ".join(item.get("reasons", []))
+            kind_label = "derived artifact" if item.get("is_derived") else "artifact"
+            findings.append(
+                f"stale {kind_label} {item['path']} ({item['role']}): {reasons_str}"
+            )
+    if packaging:
+        for missing_path in graph.get("missing_required_artifacts", []):
+            findings.append(
+                f"missing required artifact before packaging: {missing_path}"
+            )
+    return (len(findings) == 0), findings
 
 
 # ── Commands ────────────────────────────────────────────────────────────────
@@ -1097,9 +1734,15 @@ def _fail_on_fatal(run: ManifestRun) -> None:
         )
 
 
+def _selected_root(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "root", None)
+    return Path(raw).resolve() if raw is not None else REPO_ROOT
+
+
 def command_write(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
     lock = load_lock(Path(args.lock))
-    manifest, run = build_manifest(lock, REPO_ROOT)
+    manifest, run = build_manifest(lock, root)
     _fail_on_fatal(run)
 
     output = Path(args.output)
@@ -1108,7 +1751,7 @@ def command_write(args: argparse.Namespace) -> int:
 
     signal(
         "manifest.written",
-        path=_rel(output),
+        path=_rel(output, root),
         artifacts=len(manifest["artifacts"]),
         skipped=len(manifest["skipped"]),
         sources=len(manifest["provenance"]),
@@ -1117,9 +1760,10 @@ def command_write(args: argparse.Namespace) -> int:
 
 
 def command_verify(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
     lock = load_lock(Path(args.lock))
     expected = _load_manifest(Path(args.manifest))
-    actual, run = build_manifest(lock, REPO_ROOT)
+    actual, run = build_manifest(lock, root)
     _fail_on_fatal(run)
 
     findings = compare_manifests(expected, actual)
@@ -1160,19 +1804,94 @@ def command_compare(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def command_dependency_graph(args: argparse.Namespace) -> int:
+    root = _selected_root(args)
+    lock_path = Path(args.lock)
+    lock = load_lock(lock_path)
+
+    manifest_doc: dict | None = None
+    if args.manifest is not None:
+        manifest_doc = _load_manifest(Path(args.manifest))
+    else:
+        default_manifest = root / "zk" / "artifacts.manifest.json"
+        if default_manifest.is_file():
+            manifest_doc = _load_manifest(default_manifest)
+
+    browser_doc: dict | None = None
+    if args.browser_manifest is not None:
+        browser_doc = _load_browser_manifest(Path(args.browser_manifest))
+    else:
+        default_browser = root / "zk" / "browser.artifacts.manifest.json"
+        if default_browser.is_file():
+            browser_doc = _load_browser_manifest(default_browser)
+
+    graph = build_dependency_graph(
+        lock,
+        root,
+        lock_path=lock_path,
+        manifest=manifest_doc,
+        browser_manifest=browser_doc,
+        packaging=bool(args.packaging),
+    )
+    serialized = serialize_manifest(graph)
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(serialized, encoding="utf-8")
+        signal(
+            "dependency_graph.written",
+            path=_rel(out_path, root),
+            artifacts=graph["summary"]["total_artifacts"],
+            stale_artifacts=graph["summary"]["stale_artifacts"],
+            ready_for_packaging=graph["ready_for_packaging"],
+        )
+    else:
+        sys.stdout.write(serialized)
+
+    passed, findings = evaluate_dependency_graph(
+        graph,
+        check_stale=bool(args.check_stale),
+        packaging=bool(args.packaging),
+    )
+    if not passed:
+        for finding in findings:
+            signal("drift.finding", detail=finding)
+        signal(
+            "dependency_graph.failed",
+            findings=len(findings),
+            stale_artifacts=graph["summary"]["stale_artifacts"],
+        )
+        return EXIT_DRIFT
+
+    signal(
+        "dependency_graph.ok",
+        artifacts=graph["summary"]["total_artifacts"],
+        stale_artifacts=graph["summary"]["stale_artifacts"],
+        ready_for_packaging=graph["ready_for_packaging"],
+    )
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--lock", default=str(DEFAULT_LOCK), help="path to zk/toolchain.lock.json"
     )
+    parser.add_argument(
+        "--root",
+        default=None,
+        help="working tree root (defaults to repository root)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     write = subparsers.add_parser("write", help="write a manifest from the working tree")
     write.add_argument("--output", default=str(DEFAULT_MANIFEST))
+    write.add_argument("--root", default=argparse.SUPPRESS)
     write.set_defaults(handler=command_write)
 
     verify = subparsers.add_parser("verify", help="fail on drift from a manifest")
     verify.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    verify.add_argument("--root", default=argparse.SUPPRESS)
     verify.set_defaults(handler=command_verify)
 
     compare = subparsers.add_parser("compare", help="diff two manifests (double build)")
@@ -1184,7 +1903,40 @@ def build_parser() -> argparse.ArgumentParser:
         "check-coverage",
         help="fail when the lock and the source tree disagree about which circuits exist",
     )
+    coverage.add_argument("--root", default=argparse.SUPPRESS)
     coverage.set_defaults(handler=command_check_coverage)
+
+    dep_graph = subparsers.add_parser(
+        "dependency-graph",
+        help="emit source, helper, and toolchain dependency graph and flag stale artifacts",
+    )
+    dep_graph.add_argument(
+        "--output",
+        default=None,
+        help="write dependency graph JSON to path (prints to stdout when omitted)",
+    )
+    dep_graph.add_argument(
+        "--manifest",
+        default=None,
+        help="optional artifact manifest baseline path",
+    )
+    dep_graph.add_argument(
+        "--browser-manifest",
+        default=None,
+        help="optional browser artifact manifest baseline path",
+    )
+    dep_graph.add_argument(
+        "--check-stale",
+        action="store_true",
+        help="exit non-zero if any on-disk artifact is stale relative to its dependencies",
+    )
+    dep_graph.add_argument(
+        "--packaging",
+        action="store_true",
+        help="pre-packaging gate: fail on any stale artifact or missing required/upstream target",
+    )
+    dep_graph.add_argument("--root", default=argparse.SUPPRESS)
+    dep_graph.set_defaults(handler=command_dependency_graph)
 
     write_browser = subparsers.add_parser(
         "write-browser",
