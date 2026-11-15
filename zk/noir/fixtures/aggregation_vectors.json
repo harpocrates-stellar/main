@@ -6,6 +6,15 @@
   "maxBatchSize": 8,
   "_max_aggregation_size": 8,
   "_min_aggregation_size": 1,
+  "fixture_provenance": {
+    "format": "harpocrates.proof-fixture-provenance",
+    "provenance_version": 1,
+    "circuit": "silent_witness_aggregator",
+    "vector_generator": "harpocrates.zk-fixture-generator/silent_witness_aggregator",
+    "vector_generator_version": "1.0.0",
+    "statement_schema": "silent_witness_aggregator/v1",
+    "statement_schema_version": 1
+  },
   "fixtures": [
     {
       "name": "full_batch_8",

@@ -260,6 +260,23 @@ pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_confor
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
+## Proof fixture provenance and statement schemas
+
+Committed Noir proof fixtures under `zk/noir/fixtures/` and exported/generated
+fixture manifests carry a top-level `fixture_provenance` envelope recording:
+
+- `vector_generator` and `vector_generator_version`
+- `circuit`, `statement_schema`, and `statement_schema_version`
+
+Provenance metadata is kept strictly outside secret witness containers
+(`witness`, `private_inputs`), and loading a fixture for a selected circuit
+rejects any conflicting `statement_schema` or `statement_schema_version`:
+
+```bash
+python zk/tools/proof_fixture_provenance.py --check-all
+python zk/tools/proof_fixture_provenance.py --circuit redacted_ancestry zk/noir/fixtures/redacted_ancestry_vectors.json
+```
+
 ## Build
 
 For the full local build with the checked-in prover file:

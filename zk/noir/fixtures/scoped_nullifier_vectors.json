@@ -5,6 +5,15 @@
   "_domain_separator_bytes": "00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631",
   "_public_input_layout_v2": "6 x BN254 field elements (192 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier, verifier_scope, epoch]",
   "_public_input_layout_v1": "4 x BN254 field elements (128 bytes): [video_hash_hi, video_hash_lo, credential_root, nullifier]",
+  "fixture_provenance": {
+    "format": "harpocrates.proof-fixture-provenance",
+    "provenance_version": 1,
+    "circuit": "silent_witness",
+    "vector_generator": "harpocrates.zk-fixture-generator/scoped_nullifier",
+    "vector_generator_version": "2.0.0",
+    "statement_schema": "silent_witness/v2",
+    "statement_schema_version": 2
+  },
 
   "witness": {
     "credential_secret": 12345,

@@ -24,9 +24,26 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+try:
+    from zk.tools.proof_fixture_provenance import (
+        CIRCUIT_STATEMENT_SCHEMAS,
+        FixtureProvenanceError,
+        build_fixture_provenance,
+    )
+except ImportError:
+    from proof_fixture_provenance import (  # type: ignore[no-redef]
+        CIRCUIT_STATEMENT_SCHEMAS,
+        FixtureProvenanceError,
+        build_fixture_provenance,
+    )
+
+BUILD_CIRCUITS_GENERATOR = "zk/tools/build_circuits.py"
+BUILD_CIRCUITS_GENERATOR_VERSION = "1.0.0"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -452,6 +469,21 @@ def cmd_build(
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
     target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
+    declared_schema = getattr(args, "statement_schema", None)
+    declared_schema_ver = getattr(args, "statement_schema_version", None)
+
+    provenance: dict[str, int | str] | None = None
+    if circuit in CIRCUIT_STATEMENT_SCHEMAS or declared_schema is not None or declared_schema_ver is not None:
+        try:
+            provenance = build_fixture_provenance(
+                circuit=circuit,
+                vector_generator=BUILD_CIRCUITS_GENERATOR,
+                vector_generator_version=BUILD_CIRCUITS_GENERATOR_VERSION,
+                statement_schema=declared_schema,
+                statement_schema_version=declared_schema_ver,
+            )
+        except FixtureProvenanceError as exc:
+            raise BuildError(f"fixture schema conflict ({exc})", exit_code=EXIT_USAGE) from exc
 
     files = {
         "proof": target_dir / "proof",
@@ -463,11 +495,13 @@ def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
         if not path.is_file():
             raise BuildError(f"Missing {key} artifact at {path}. Run build first.")
 
-    result = {
+    result: dict[str, Any] = {
         "proof": files["proof"].read_bytes().hex(),
         "publicInputs": files["publicInputs"].read_bytes().hex(),
         "verificationKey": files["verificationKey"].read_bytes().hex(),
     }
+    if provenance is not None:
+        result["fixture_provenance"] = provenance
 
     output_str = json.dumps(result, indent=2)
     print(output_str)
@@ -639,6 +673,11 @@ def _generate_silent_witness(
         public_inputs_bytes = dst_public_inputs.read_bytes()
 
         manifest = {
+            "fixture_provenance": build_fixture_provenance(
+                circuit="silent_witness",
+                vector_generator=BUILD_CIRCUITS_GENERATOR,
+                vector_generator_version=BUILD_CIRCUITS_GENERATOR_VERSION,
+            ),
             "videoHash": video_hash.lower(),
             "credentialRoot": credential_root.removeprefix("0x"),
             "nullifier": nullifier.removeprefix("0x"),
@@ -821,6 +860,11 @@ def _generate_aggregator(
         public_inputs_bytes = dst_public_inputs.read_bytes()
 
         manifest = {
+            "fixture_provenance": build_fixture_provenance(
+                circuit="silent_witness_aggregator",
+                vector_generator=BUILD_CIRCUITS_GENERATOR,
+                vector_generator_version=BUILD_CIRCUITS_GENERATOR_VERSION,
+            ),
             "protocol": "harpocrates",
             "version": 1,
             "type": "aggregated_batch",
@@ -837,7 +881,7 @@ def _generate_aggregator(
         }
         print(json.dumps(manifest))
         return EXIT_OK
-    except Exception as exc:
+    except (BuildError, OSError, ValueError, subprocess.SubprocessError) as exc:
         err = {
             "protocol": "harpocrates",
             "version": 1,
@@ -904,7 +948,7 @@ def _generate_generic_circuit(
     proof_bytes = dst_proof.read_bytes()
     public_inputs_bytes = dst_public_inputs.read_bytes()
 
-    manifest = {
+    manifest: dict[str, Any] = {
         "circuit": circuit,
         "proof": proof_bytes.hex(),
         "publicInputs": public_inputs_bytes.hex(),
@@ -913,6 +957,12 @@ def _generate_generic_circuit(
         "proofPath": str(dst_proof),
         "publicInputsPath": str(dst_public_inputs),
     }
+    if circuit in CIRCUIT_STATEMENT_SCHEMAS:
+        manifest["fixture_provenance"] = build_fixture_provenance(
+            circuit=circuit,
+            vector_generator=BUILD_CIRCUITS_GENERATOR,
+            vector_generator_version=BUILD_CIRCUITS_GENERATOR_VERSION,
+        )
     print(json.dumps(manifest))
     return EXIT_OK
 
@@ -1070,6 +1120,8 @@ def create_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_exp.add_argument("--target-dir", default=None, help="Circuit target directory")
     p_exp.add_argument("--output", default=None, help="Output JSON file path")
+    p_exp.add_argument("--statement-schema", default=None, help="Expected statement schema identifier")
+    p_exp.add_argument("--statement-schema-version", type=int, default=None, help="Expected statement schema version")
 
     # --- prepare-soroban ---
     p_soroban = subparsers.add_parser("prepare-soroban", help="Prepare VK artifact for Soroban verifier")

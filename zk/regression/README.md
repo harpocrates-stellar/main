@@ -60,7 +60,7 @@ Outputs:
 - `proof_tampered.bin` (flipped proof byte)
 - `vk_soroban.bin` (1,760-byte Soroban UltraHonk verification key)
 - `video_hash.bin`, `metadata_hash.bin`, `proof_id.bin`, `credential_root.bin`, `memo.bin`
-- `metadata.json` (hex strings and summary)
+- `metadata.json` (hex strings, summary, and `fixture_provenance` recording `vector_generator`, `vector_generator_version`, `statement_schema: "silent_witness/browser_v1"`, and `statement_schema_version: 1` outside secret witness inputs; validated against the selected circuit via `validateFixtureSchemaForCircuit` and `zk/tools/proof_fixture_provenance.py`)
 
 #### 2. Run full on-chain test harness (Linux / CI / WSL)
 

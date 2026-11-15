@@ -22,16 +22,76 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../..');
 
-// Import Noir & bb.js from frontend/node_modules
-let Noir, UltraHonkBackend;
-try {
-  ({ Noir } = await import('@noir-lang/noir_js'));
-  ({ UltraHonkBackend } = await import('@aztec/bb.js'));
-} catch {
-  const noirPath = path.join(repoRoot, 'frontend/node_modules/@noir-lang/noir_js/lib/index.mjs');
-  const bbPath = path.join(repoRoot, 'frontend/node_modules/@aztec/bb.js/dest/node/index.js');
-  ({ Noir } = await import(`file://${noirPath.replace(/\\/g, '/')}`));
-  ({ UltraHonkBackend } = await import(`file://${bbPath.replace(/\\/g, '/')}`));
+async function loadNoirBackend() {
+  try {
+    const [{ Noir }, { UltraHonkBackend }] = await Promise.all([
+      import('@noir-lang/noir_js'),
+      import('@aztec/bb.js'),
+    ]);
+    return { Noir, UltraHonkBackend };
+  } catch {
+    const noirPath = path.join(repoRoot, 'frontend/node_modules/@noir-lang/noir_js/lib/index.mjs');
+    const bbPath = path.join(repoRoot, 'frontend/node_modules/@aztec/bb.js/dest/node/index.js');
+    const [{ Noir }, { UltraHonkBackend }] = await Promise.all([
+      import(`file://${noirPath.replace(/\\/g, '/')}`),
+      import(`file://${bbPath.replace(/\\/g, '/')}`),
+    ]);
+    return { Noir, UltraHonkBackend };
+  }
+}
+
+export const BROWSER_FIXTURE_GENERATOR = 'zk/regression/generate_browser_proof_fixture.mjs';
+export const BROWSER_FIXTURE_GENERATOR_VERSION = '1.0.0';
+
+const CIRCUIT_ALLOWED_SCHEMAS = Object.freeze({
+  silent_witness: Object.freeze({
+    'silent_witness/browser_v1': 1,
+    'silent_witness/v1': 1,
+    'silent_witness/v2': 2,
+  }),
+  silent_witness_aggregator: Object.freeze({ 'silent_witness_aggregator/v1': 1 }),
+  revocation_witness: Object.freeze({ 'revocation_witness/v1': 1 }),
+  selective_disclosure: Object.freeze({ 'selective_disclosure/v1': 1 }),
+  redacted_ancestry: Object.freeze({ 'redacted_ancestry/v1': 1 }),
+});
+
+/**
+ * Validates that provenance metadata stays outside witness inputs and that the
+ * fixture's declared statement schema matches the selected circuit.
+ */
+export function validateFixtureSchemaForCircuit(fixture, selectedCircuit) {
+  const allowed = CIRCUIT_ALLOWED_SCHEMAS[selectedCircuit];
+  if (!allowed) {
+    throw new Error('unknown_circuit:selected_circuit');
+  }
+  const witness = fixture?.witness ?? fixture?.private_inputs;
+  if (witness && typeof witness === 'object') {
+    for (const forbidden of [
+      'fixture_provenance',
+      'vector_generator',
+      'vector_generator_version',
+      'statement_schema',
+      'statement_schema_version',
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(witness, forbidden)) {
+        throw new Error(`provenance_in_witness:witness.${forbidden}`);
+      }
+    }
+  }
+  const prov = fixture?.fixture_provenance;
+  if (!prov || typeof prov !== 'object') {
+    throw new Error('missing_provenance:fixture_provenance');
+  }
+  if (!(prov.statement_schema in allowed)) {
+    throw new Error('schema_circuit_conflict:fixture_provenance.statement_schema');
+  }
+  if (prov.circuit !== selectedCircuit) {
+    throw new Error('circuit_mismatch:fixture_provenance.circuit');
+  }
+  if (prov.statement_schema_version !== allowed[prov.statement_schema]) {
+    throw new Error('schema_version_conflict:fixture_provenance.statement_schema_version');
+  }
+  return prov;
 }
 
 /**
@@ -69,6 +129,7 @@ function parseArgs() {
 }
 
 export async function generateFixture(outDir) {
+  const { Noir, UltraHonkBackend } = await loadNoirBackend();
   await mkdir(outDir, { recursive: true });
 
   const helperJsonPath = path.join(repoRoot, 'frontend/public/noir/silent_witness_helper.json');
@@ -175,6 +236,15 @@ export async function generateFixture(outDir) {
   const nullifierHex = piBuffer.subarray(96, 128).toString('hex');
 
   const metadata = {
+    fixture_provenance: {
+      format: 'harpocrates.proof-fixture-provenance',
+      provenance_version: 1,
+      circuit: 'silent_witness',
+      vector_generator: BROWSER_FIXTURE_GENERATOR,
+      vector_generator_version: BROWSER_FIXTURE_GENERATOR_VERSION,
+      statement_schema: 'silent_witness/browser_v1',
+      statement_schema_version: 1,
+    },
     video_hash: videoHashHex,
     metadata_hash: metadataHashHex,
     proof_id: proofIdHex,
@@ -198,6 +268,8 @@ export async function generateFixture(outDir) {
       memo: 'memo.bin',
     },
   };
+
+  validateFixtureSchemaForCircuit(metadata, 'silent_witness');
 
   const metadataPath = path.join(outDir, 'metadata.json');
   await writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');

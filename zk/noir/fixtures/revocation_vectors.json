@@ -1,5 +1,14 @@
 {
   "_description": "Shared conformance vectors for the revocation_witness Noir circuit and the HarpocratesRegistry Soroban contract (#98, #357). Both the Noir tests (nargo test) and the Rust contract tests use these same fixtures to prevent drift. Merkle depth is protocol-bounded at MAX_REVOCATION_WITNESS_DEPTH = 16 (MAX_REVOCATION_LEAVES = 65536).",
+  "fixture_provenance": {
+    "format": "harpocrates.proof-fixture-provenance",
+    "provenance_version": 1,
+    "circuit": "revocation_witness",
+    "vector_generator": "harpocrates.zk-fixture-generator/revocation_witness",
+    "vector_generator_version": "1.0.0",
+    "statement_schema": "revocation_witness/v1",
+    "statement_schema_version": 1
+  },
   "circuit_constants": {
     "domain_separator_tag": "HPX_REV_V1",
     "pedersen_hash": "bn254_grumpkin_pedersen",
