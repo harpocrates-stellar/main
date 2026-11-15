@@ -60,6 +60,32 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   cancelled: 'Request cancelled.',
 }
 
+export type StageFocusTarget =
+  | 'cancel-action'
+  | 'register-action'
+  | 'dropzone'
+  | 'status-heading'
+
+export function resolveStageFocusTarget(
+  prevStage: Stage,
+  nextStage: Stage,
+  options: { canRegister: boolean; isCancellable: boolean },
+): StageFocusTarget | null {
+  if (prevStage === nextStage) {
+    return null
+  }
+  if (nextStage === 'hashing' || nextStage === 'embedding' || nextStage === 'proving') {
+    return options.isCancellable ? 'cancel-action' : 'status-heading'
+  }
+  if (nextStage === 'ready') {
+    return options.canRegister ? 'register-action' : 'status-heading'
+  }
+  if (nextStage === 'cancelled' || nextStage === 'idle') {
+    return 'dropzone'
+  }
+  return 'status-heading'
+}
+
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
   setSelectedTier: (tier: IdentityTier) => void
@@ -444,7 +470,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {

@@ -1,7 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
-import { TIERS } from '../hooks/useEvidence'
+import { resolveStageFocusTarget, TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
@@ -56,6 +56,60 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const headingRef = useRef<HTMLHeadingElement | null>(null)
+  const dropzoneRef = useRef<HTMLLabelElement | null>(null)
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null)
+  const registerButtonRef = useRef<HTMLButtonElement | null>(null)
+  const prevStageRef = useRef(stage)
+
+  const canRegister = Boolean(proof) && !networkMismatch && !isBusy
+  const canRegisterRef = useRef(canRegister)
+  const isCancellableRef = useRef(isCancellable)
+
+  useEffect(() => {
+    canRegisterRef.current = canRegister
+    isCancellableRef.current = isCancellable
+  }, [canRegister, isCancellable])
+
+  useEffect(() => {
+    const prevStage = prevStageRef.current
+    if (prevStage === stage) return
+    prevStageRef.current = stage
+
+    const active = document.activeElement
+    if (
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active instanceof HTMLSelectElement
+    ) {
+      if (!active.disabled) return
+    }
+
+    const target = resolveStageFocusTarget(prevStage, stage, {
+      canRegister: canRegisterRef.current,
+      isCancellable: isCancellableRef.current,
+    })
+    if (!target) return
+
+    if (target === 'cancel-action') {
+      ;(cancelButtonRef.current ?? headingRef.current)?.focus()
+      return
+    }
+    if (target === 'register-action') {
+      const btn = registerButtonRef.current
+      if (btn && !btn.disabled) {
+        btn.focus()
+      } else {
+        headingRef.current?.focus()
+      }
+      return
+    }
+    if (target === 'dropzone') {
+      ;(dropzoneRef.current ?? headingRef.current)?.focus()
+      return
+    }
+    headingRef.current?.focus()
+  }, [stage])
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -71,12 +125,12 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
   }, [proof, registration?.hash])
 
   return (
-    <section className="workspace app-page" id="studio" aria-busy={isBusy || undefined} aria-label="Evidence Studio workspace">
+    <section className="workspace app-page" id="studio" aria-label="Evidence Studio workspace">
       <div className="studio">
         <header className="page-header">
-          <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
-          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
-          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
+          <h2 id="studio-heading" ref={headingRef} tabIndex={-1}>Evidence Studio</h2>
+          <p id="studio-stage-message">{message}</p>
+          <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{statusLabel}</div>
         </header>
 
         {networkMismatch ? (
@@ -88,6 +142,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
+          id="studio-evidence-dropzone"
+          ref={dropzoneRef}
           htmlFor="studio-evidence-input"
           className="dropzone"
           role="button"
@@ -176,6 +232,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
         {isCancellable ? (
           <div className="verify-actions" role="group" aria-label="Evidence studio actions">
             <button
+              ref={cancelButtonRef}
               type="button"
               className="hero-secondary verify-action-btn"
               onClick={cancelEvidence}
@@ -248,6 +305,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <button
+            ref={registerButtonRef}
             className="primary-action"
             type="button"
             disabled={!proof || !!networkMismatch || isBusy}

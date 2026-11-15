@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import { resolveStageFocusTarget, useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -230,6 +230,33 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('resolves surviving stage focus targets without moving focus during intra-stage progress updates', () => {
+    expect(
+      resolveStageFocusTarget('hashing', 'hashing', { canRegister: false, isCancellable: true }),
+    ).toBeNull()
+    expect(
+      resolveStageFocusTarget('idle', 'hashing', { canRegister: false, isCancellable: true }),
+    ).toBe('cancel-action')
+    expect(
+      resolveStageFocusTarget('embedding', 'ready', { canRegister: true, isCancellable: false }),
+    ).toBe('register-action')
+    expect(
+      resolveStageFocusTarget('embedding', 'ready', { canRegister: false, isCancellable: false }),
+    ).toBe('status-heading')
+    expect(
+      resolveStageFocusTarget('hashing', 'cancelled', { canRegister: false, isCancellable: false }),
+    ).toBe('dropzone')
+    expect(
+      resolveStageFocusTarget('proving', 'error', { canRegister: false, isCancellable: false }),
+    ).toBe('status-heading')
+    expect(
+      resolveStageFocusTarget('registering', 'registered', {
+        canRegister: false,
+        isCancellable: false,
+      }),
+    ).toBe('status-heading')
   })
 })
 
