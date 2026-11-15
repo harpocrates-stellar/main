@@ -70,6 +70,14 @@ cd zk/noir/redacted_ancestry_helper && nargo test
 python -m pytest zk/tools -q
 ```
 
+To compare two `redacted_ancestry` public statements (256-byte wire hex frames
+or JSON statement envelopes) across circuit versions without revealing private
+witness openings or lineage paths:
+
+```bash
+python zk/tools/redacted_ancestry_compare.py left_statement.json right_statement.json --format markdown
+```
+
 ### `silent_witness_aggregator` (NEW)
 
 Bounded aggregation circuit that bundles up to **8** individual Silent Witness

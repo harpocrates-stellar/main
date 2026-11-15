@@ -128,7 +128,16 @@ parent-proof relations above.
 - **Migration:** none for existing callers. New callers may opt in by proving
   `redacted_ancestry` and registering the resulting statement.
 - **Version:** `CIRCUIT_VERSION = 1` is folded into `ancestry_root`, so a future
-  version produces a distinct root.
+  version produces a distinct root. Use
+  `zk/tools/redacted_ancestry_compare.py` to compare canonical original
+  (`parent_commitment`) and derivative (`derivative_digest`,
+  `parameters_digest`, `operation_type`, `depth`, `domain_tag`) public bindings
+  across circuit versions (`redacted_ancestry/v1`, `v2`, ...) and surface
+  incompatible public-input changes (`original_binding_changed`,
+  `derivative_digest_changed`, `parameters_digest_changed`, `depth_changed`,
+  `domain_tag_changed`, `cross_version_ancestry_root_reused`,
+  `public_input_layout_changed`, etc.) without accepting or echoing private
+  lineage paths or witness openings.
 - **Browser adapter:** `frontend/src/redactedAncestry.ts` loads the versioned
   helper/main ACIRs, checks the helper-derived eight-field statement against
   the generated proof frame, and locally verifies before returning a proof.
