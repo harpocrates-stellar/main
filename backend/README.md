@@ -342,6 +342,23 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Storage Quota Exhaustion vs. Evidence Corruption
+
+`storage.py`, `evidence_storage.py`, and `errors.py` separate operational disk
+capacity limits from cryptographic or digest corruption using stable machine
+reason codes:
+
+- `STORAGE_QUOTA_EXHAUSTED` (`retryable: true`, `quarantined: false`): Returned
+  when `ENOSPC`, `EDQUOT`, Windows disk-full errors, `HARPOCRATES_STORAGE_QUOTA_BYTES`,
+  or `HARPOCRATES_STORAGE_MIN_FREE_BYTES` prevent writing or staging bytes.
+  Existing valid evidence is **never** quarantined or overwritten on capacity
+  exhaustion and succeeds once free space is restored.
+- `EVIDENCE_CORRUPTED` (`retryable: false`, `quarantined: true`): Returned only
+  when Fernet AEAD authentication (`InvalidToken`) or canonical SHA-256 digest
+  verification fails.
+- `STORAGE_IO_UNAVAILABLE` (`retryable: true`, `quarantined: false`): Returned
+  for transient non-quota filesystem I/O errors without quarantining valid blobs.
+
 ## Test
 
 ```powershell

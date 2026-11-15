@@ -84,6 +84,12 @@ FORBIDDEN = "FORBIDDEN"
 DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
 """A required backing service failed; the request was rejected, not applied (503)."""
 
+STORAGE_QUOTA_EXHAUSTED = "STORAGE_QUOTA_EXHAUSTED"
+"""Storage capacity or configured byte quota is exhausted; retryable operational condition (507)."""
+
+EVIDENCE_CORRUPTED = "EVIDENCE_CORRUPTED"
+"""Stored evidence failed cryptographic authentication or digest verification (422)."""
+
 FORBIDDEN_ORIGIN = "FORBIDDEN_ORIGIN"
 """The request's Origin is not on the configured CORS allow-list (403).
 
