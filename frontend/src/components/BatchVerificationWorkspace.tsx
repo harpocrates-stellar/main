@@ -24,7 +24,12 @@ import {
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  exportBatchCSV,
+  exportBatchJSON,
+  exportReceiptCollection,
+  type BatchExportPrivacyProfile,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -49,6 +54,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const [concurrency, setConcurrency] = useState(3)
   const [maxFileMb, setMaxFileMb] = useState(100)
   const [maxTotalMb, setMaxTotalMb] = useState(500)
+  const [privacyProfile, setPrivacyProfile] = useState<BatchExportPrivacyProfile>('public')
 
   // File drag state
   const [isDragging, setIsDragging] = useState(false)
@@ -211,10 +217,24 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     URL.revokeObjectURL(url)
   }
 
-  const exportJSON = () => triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
-  const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
+  const exportJSON = () =>
+    triggerDownload(
+      exportBatchJSON(items, { privacyProfile }),
+      `harpocrates-batch-report-${privacyProfile}.json`,
+      'application/json',
+    )
+  const exportCSV = () =>
+    triggerDownload(
+      exportBatchCSV(items, { privacyProfile }),
+      `harpocrates-batch-report-${privacyProfile}.csv`,
+      'text/csv',
+    )
   const exportReceipts = () =>
-    triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+    triggerDownload(
+      exportReceiptCollection(items, { privacyProfile }),
+      `harpocrates-receipt-collection-${privacyProfile}.json`,
+      'application/json',
+    )
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
@@ -369,6 +389,18 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
             </button>
 
             <div className="export-group">
+              <label htmlFor="batch-export-privacy-profile" className="export-profile-label">
+                Export privacy profile
+              </label>
+              <select
+                id="batch-export-privacy-profile"
+                value={privacyProfile}
+                onChange={(e) => setPrivacyProfile(e.target.value as BatchExportPrivacyProfile)}
+                disabled={isRunning}
+              >
+                <option value="public">Public (redacted)</option>
+                <option value="owner-only">Owner-only (full)</option>
+              </select>
               <button
                 className="icon-button secondary"
                 type="button"

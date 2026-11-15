@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { verifyArtifact, type VerificationEvent } from './verificationFlow'
+import { MalformedEvidenceError, verifyArtifact, type VerificationEvent } from './verificationFlow'
 import type { ProofManifest } from './proofManifest'
 import { appConfig } from './config'
 
@@ -47,6 +47,7 @@ export type BatchItemResult = {
   manifest: ProofManifest | null
   durationMs: number | null
   failureReason: string | null
+  issuerNotes?: string | null
 }
 
 export type BatchProgress = {
@@ -395,30 +396,66 @@ export class BatchVerifier {
       item.message = 'Extracting stego metadata and checking Stellar registry...'
       this.notifyProgress(false, false)
 
+      let extractedMetadataObj: Record<string, unknown> | null = null
       const result = await verifyArtifact({
         apiBase: this.config.apiBase,
         contractId: this.config.contractId,
         wallet: this.config.wallet,
         file: item.file,
+        videoHash,
         signal,
-        onEvent: (event) => {
-          item.events.push(event)
-          if (event.message) {
-            item.message = event.message
+        extractMetadataOverride: async (apiBase, file, reqSignal) => {
+          const form = new FormData()
+          form.append('video', file)
+          const response = await fetch(`${apiBase}/api/stego/extract`, {
+            method: 'POST',
+            body: form,
+            signal: reqSignal,
+          })
+          if (!response.ok) {
+            if (response.status >= 400 && response.status < 500) {
+              throw new MalformedEvidenceError()
+            }
+            throw new Error(`Stego extraction failed (${response.status})`)
           }
-          this.notifyProgress(false, false)
+          const payload = (await response.json()) as { metadata?: unknown }
+          if (payload?.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)) {
+            extractedMetadataObj = payload.metadata as Record<string, unknown>
+          }
+          return payload?.metadata ?? null
         },
       })
 
-      item.videoHash = result.videoHash ?? item.videoHash
-      item.metadataHash = result.metadataHash ?? null
-      item.sourceHash = result.sourceHash ?? null
-      item.tier = result.tier ?? null
-      item.chainProof = result.chainProof ?? null
-      item.chainStatus = result.chainStatus ?? null
-      item.status = result.status
+      item.events = result.events
+      item.chainProof = result.chainProof
+      item.metadataHash =
+        result.chainProof?.metadataHash ??
+        (typeof extractedMetadataObj?.['metadataHash'] === 'string'
+          ? (extractedMetadataObj['metadataHash'] as string)
+          : null)
+      item.sourceHash =
+        typeof extractedMetadataObj?.['sourceHash'] === 'string'
+          ? (extractedMetadataObj['sourceHash'] as string)
+          : null
+      item.tier =
+        result.chainProof !== null
+          ? (result.chainProof.tier === 0 ? 'silent' : result.chainProof.tier === 2 ? 'seal' : 'source')
+          : typeof extractedMetadataObj?.['tier'] === 'string'
+            ? (extractedMetadataObj['tier'] as string)
+            : (result.events[0]?.tier ?? null)
+      item.chainStatus = result.chainProof
+        ? result.chainProof.status === 2
+          ? 'Revoked'
+          : 'Active'
+        : null
+      item.status = result.outcome
       item.message = result.message
-      item.failureReason = result.failureReason ?? null
+      item.failureReason =
+        result.outcome === 'confirmed' ||
+        result.outcome === 'metadata-only' ||
+        result.outcome === 'database-only'
+          ? null
+          : result.message
       item.durationMs = performance.now() - itemStart
     } catch (err) {
       if (signal.aborted) {
