@@ -90,6 +90,9 @@ _BINDING_TEXT_FIELDS: tuple[str, ...] = ("tier", "network", "contract_id")
 # Hex-32 pattern (64 lower-case hex chars).
 _HEX32_RE = re.compile(r"^[0-9a-f]{64}$")
 
+# Safe synthetic/instance identifier pattern (never echoes paths or URLs).
+_SAFE_INGREDIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+
 # ---------------------------------------------------------------------------
 # Trust status — MUST be kept separate from on-chain / ZK status
 # ---------------------------------------------------------------------------
@@ -161,6 +164,8 @@ class _Reason:
     RECURSION_DETECTED = "recursion_detected"
     EMBEDDED_BINDING_MISMATCH = "embedded_binding_mismatch"
     EMBEDDED_BINDING_DUPLICATE = "embedded_binding_duplicate"
+    MISSING_HARPOCRATES_BINDING = "missing_harpocrates_binding"
+    EXTERNAL_REFERENCE_NOT_FETCHED = "external_reference_not_fetched"
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +244,35 @@ class C2paHashCorroboration:
     ok: bool
     compared_fields: tuple[str, ...] = ()
     mismatches: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class C2paIngredientEvaluation:
+    """
+    Deterministic offline classification of a single C2PA ingredient entry.
+
+    Supported ingredients carry a valid Harpocrates binding (parsed under the
+    same size, depth, algorithm, and dual-copy consistency invariants as a
+    top-level manifest). Unsupported ingredients report a stable machine-readable
+    ``reason`` without exposing raw ingredient payload fields.
+    """
+
+    ingredient_id: str
+    supported: bool
+    reason: str | None = None
+    proof_id: str | None = None
+    video_hash: str | None = None
+    trust_status: C2paTrustStatus = C2paTrustStatus.PARSE_FAILED
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ingredient_id": self.ingredient_id,
+            "supported": self.supported,
+            "reason": self.reason,
+            "proof_id": self.proof_id,
+            "video_hash": self.video_hash,
+            "trust_status": self.trust_status.value,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +588,118 @@ def corroborate_binding(
         ok=not mismatches,
         compared_fields=tuple(compared),
         mismatches=tuple(mismatches),
+    )
+
+
+def evaluate_c2pa_ingredient(
+    raw_ingredient: Any,
+    *,
+    index: int = 0,
+) -> C2paIngredientEvaluation:
+    """Classify a C2PA ingredient entry offline as supported or unsupported.
+
+    Never fetches external URLs and never echoes raw ingredient payload values.
+    """
+    fallback_id = f"ingredient[{index}]"
+    if not isinstance(raw_ingredient, dict):
+        return C2paIngredientEvaluation(
+            ingredient_id=fallback_id,
+            supported=False,
+            reason=_Reason.NOT_OBJECT,
+            trust_status=C2paTrustStatus.PARSE_FAILED,
+        )
+
+    raw_id = raw_ingredient.get("ingredient_id") or raw_ingredient.get("instance_id")
+    safe_id = (
+        raw_id
+        if isinstance(raw_id, str) and _SAFE_INGREDIENT_ID_RE.match(raw_id)
+        else fallback_id
+    )
+
+    # Never fetch remote ingredient manifests over the network.
+    if (
+        "remote_url" in raw_ingredient or "manifest_url" in raw_ingredient
+    ) and "manifest" not in raw_ingredient:
+        return C2paIngredientEvaluation(
+            ingredient_id=safe_id,
+            supported=False,
+            reason=_Reason.EXTERNAL_REFERENCE_NOT_FETCHED,
+            trust_status=C2paTrustStatus.PARSE_FAILED,
+        )
+
+    candidate = raw_ingredient["manifest"] if "manifest" in raw_ingredient else raw_ingredient
+    if not isinstance(candidate, dict):
+        return C2paIngredientEvaluation(
+            ingredient_id=safe_id,
+            supported=False,
+            reason=_Reason.INVALID_TYPE,
+            trust_status=C2paTrustStatus.PARSE_FAILED,
+        )
+
+    for alg_source in (raw_ingredient, candidate):
+        if "alg" in alg_source:
+            alg_val = alg_source["alg"]
+            if not isinstance(alg_val, str):
+                return C2paIngredientEvaluation(
+                    ingredient_id=safe_id,
+                    supported=False,
+                    reason=_Reason.INVALID_TYPE,
+                    trust_status=C2paTrustStatus.PARSE_FAILED,
+                )
+            if alg_val.lower() not in _SUPPORTED_ALGORITHMS:
+                return C2paIngredientEvaluation(
+                    ingredient_id=safe_id,
+                    supported=False,
+                    reason=_Reason.UNSUPPORTED_ALGORITHM,
+                    trust_status=C2paTrustStatus.UNSUPPORTED_ALGORITHM,
+                )
+
+    assertions = candidate.get("assertions")
+    has_binding_assertion = isinstance(assertions, list) and any(
+        isinstance(item, dict) and item.get("label") == _MAPPING_LABEL
+        for item in assertions
+    )
+    if "harpocrates_binding" not in candidate and not has_binding_assertion:
+        return C2paIngredientEvaluation(
+            ingredient_id=safe_id,
+            supported=False,
+            reason=_Reason.MISSING_HARPOCRATES_BINDING,
+            trust_status=C2paTrustStatus.SIGNATURE_NOT_CHECKED,
+        )
+
+    try:
+        serialized = _canonical_json(candidate)
+    except (TypeError, ValueError):
+        return C2paIngredientEvaluation(
+            ingredient_id=safe_id,
+            supported=False,
+            reason=_Reason.INVALID_TYPE,
+            trust_status=C2paTrustStatus.PARSE_FAILED,
+        )
+
+    try:
+        parsed = parse_c2pa_manifest(serialized)
+    except C2paParseError as exc:
+        if exc.reason == _Reason.UNSUPPORTED_ALGORITHM:
+            status = C2paTrustStatus.UNSUPPORTED_ALGORITHM
+        elif exc.reason == _Reason.EMBEDDED_BINDING_MISMATCH:
+            status = C2paTrustStatus.BINDING_MISMATCH
+        else:
+            status = C2paTrustStatus.PARSE_FAILED
+        return C2paIngredientEvaluation(
+            ingredient_id=safe_id,
+            supported=False,
+            reason=exc.reason,
+            trust_status=status,
+        )
+
+    return C2paIngredientEvaluation(
+        ingredient_id=safe_id,
+        supported=True,
+        reason=None,
+        proof_id=parsed.binding.proof_id,
+        video_hash=parsed.binding.video_hash,
+        trust_status=parsed.trust_status,
     )
 
 

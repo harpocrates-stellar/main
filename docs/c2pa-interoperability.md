@@ -393,6 +393,26 @@ Existing proof events, on-chain records, and ZK artifacts are unchanged.
 
 ---
 
+## Offline C2PA and lineage interoperability corpus
+
+`backend/fixtures/c2pa_lineage_corpus.json` provides a deterministic, synthetic,
+offline-only interoperability corpus exercising mixed C2PA ingredients and
+Harpocrates lineage manifests without network access or real media footage.
+
+- `c2pa.evaluate_c2pa_ingredient(raw_ingredient)` classifies each ingredient
+  offline into supported Harpocrates-bound ingredients (`supported: true`,
+  preserving `proof_id`, `video_hash`, and `trust_status`) versus unsupported
+  external or malformed ingredients (`missing_harpocrates_binding`,
+  `unsupported_algorithm`, `mapping_version_mismatch`,
+  `external_reference_not_fetched`). Unsafe ingredient identifiers (local paths
+  or URLs) are replaced with `ingredient[index]` and never echoed.
+- `lineage.run_interoperability_corpus()` evaluates every corpus scenario
+  against pinned canonical SHA-256 manifest digests, ingredient support counts,
+  and parent/output binding checks between supported C2PA ingredients and
+  `lineage_manifest` edges.
+
+---
+
 ## Running the tests
 
 ```bash
@@ -401,6 +421,9 @@ cd backend && python -m pytest test_c2pa.py -v
 
 # Backend — endpoint-level hash verification on /api/c2pa/export|import
 cd backend && python -m pytest test_c2pa_hashes_api.py -v
+
+# Backend — offline C2PA + lineage interoperability corpus
+cd backend && python -m pytest test_c2pa_lineage_corpus.py -v
 
 # Frontend
 cd frontend && npx vitest run src/c2pa.test.ts

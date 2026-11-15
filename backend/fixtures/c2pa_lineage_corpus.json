@@ -1,0 +1,571 @@
+{
+  "cases": [
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "3232323232323232323232323232323232323232323232323232323232323232",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+              "tier": "source",
+              "video_hash": "3131313131313131313131313131313131313131313131313131313131313131"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "actions": [
+                {
+                  "action": "c2pa.cropped"
+                }
+              ]
+            },
+            "label": "c2pa.actions"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+          "mapping_version": 1,
+          "metadata_hash": "3232323232323232323232323232323232323232323232323232323232323232",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "tier": "source",
+          "video_hash": "3131313131313131313131313131313131313131313131313131313131313131"
+        },
+        "spec_version": "1.3"
+      },
+      "case_id": "supported_single_parent_crop",
+      "expected": {
+        "c2pa_trust_status": "signature_not_checked",
+        "lineage_digest": "00294e91e27061f7a36860920ba21fc5ac19d569acb76e93b4d8940f9d61076c",
+        "lineage_status": "valid",
+        "manifest_digest": "828d754fd0bc8ccf7b0745f49fa13aa0003850e5f09f11de72672abd3c273352",
+        "ok": true,
+        "supported_ingredient_count": 1,
+        "unsupported_ingredient_count": 0,
+        "unsupported_reasons": []
+      },
+      "ingredients": [
+        {
+          "ingredient_id": "ing-parent-a",
+          "manifest": {
+            "alg": "sha256",
+            "assertions": [
+              {
+                "data": {
+                  "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+                  "mapping_version": 1,
+                  "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+                  "network": "Test SDF Network ; September 2015",
+                  "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  "tier": "source",
+                  "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "label": "harpocrates.binding/v1"
+              }
+            ],
+            "claim_generator": "harpocrates",
+            "harpocrates_binding": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              "tier": "source",
+              "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "spec_version": "1.3"
+          }
+        }
+      ],
+      "lineage_manifest": {
+        "actorAddress": "GCCHDCX2JTLB6FDKHGIAAQPS6JHBDETFXTCQRETJUP5BWBVT6G4LQKOQ",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "crop",
+        "outputDigest": "3131313131313131313131313131313131313131313131313131313131313131",
+        "parametersDigest": "4141414141414141414141414141414141414141414141414141414141414141",
+        "parentProofIds": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "5252525252525252525252525252525252525252525252525252525252525252",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+              "tier": "seal",
+              "video_hash": "5151515151515151515151515151515151515151515151515151515151515151"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "actions": [
+                {
+                  "action": "c2pa.placed"
+                }
+              ]
+            },
+            "label": "c2pa.actions"
+          },
+          {
+            "data": {
+              "relationship": "componentOf"
+            },
+            "label": "c2pa.ingredient"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+          "mapping_version": 1,
+          "metadata_hash": "5252525252525252525252525252525252525252525252525252525252525252",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "tier": "seal",
+          "video_hash": "5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "spec_version": "1.3"
+      },
+      "case_id": "mixed_supported_and_unsupported_ingredients",
+      "expected": {
+        "c2pa_trust_status": "signature_not_checked",
+        "lineage_digest": "e4376da56a70aca888829e4e31e76955d1e4d6485d951f90ab514449488f0b6e",
+        "lineage_status": "valid",
+        "manifest_digest": "d5078dc9874e6461ef94c623fad6e4b46018f09cfaba22ea9f06373e998c1d3a",
+        "ok": true,
+        "supported_ingredient_count": 2,
+        "unsupported_ingredient_count": 3,
+        "unsupported_reasons": [
+          "missing_harpocrates_binding",
+          "unsupported_algorithm",
+          "external_reference_not_fetched"
+        ]
+      },
+      "ingredients": [
+        {
+          "ingredient_id": "ing-parent-a",
+          "manifest": {
+            "alg": "sha256",
+            "assertions": [
+              {
+                "data": {
+                  "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+                  "mapping_version": 1,
+                  "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+                  "network": "Test SDF Network ; September 2015",
+                  "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  "tier": "source",
+                  "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "label": "harpocrates.binding/v1"
+              }
+            ],
+            "claim_generator": "harpocrates",
+            "harpocrates_binding": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              "tier": "source",
+              "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "spec_version": "1.3"
+          }
+        },
+        {
+          "ingredient_id": "ing-ext-stock",
+          "manifest": {
+            "assertions": [
+              {
+                "data": {
+                  "actions": []
+                },
+                "label": "c2pa.actions"
+              }
+            ],
+            "claim_generator": "external-camera/1.0"
+          }
+        },
+        {
+          "ingredient_id": "ing-parent-b",
+          "manifest": {
+            "alg": "sha256",
+            "assertions": [
+              {
+                "data": {
+                  "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+                  "mapping_version": 1,
+                  "metadata_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+                  "network": "Test SDF Network ; September 2015",
+                  "proof_id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+                  "tier": "seal",
+                  "video_hash": "2121212121212121212121212121212121212121212121212121212121212121"
+                },
+                "label": "harpocrates.binding/v1"
+              }
+            ],
+            "claim_generator": "harpocrates",
+            "harpocrates_binding": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+              "tier": "seal",
+              "video_hash": "2121212121212121212121212121212121212121212121212121212121212121"
+            },
+            "spec_version": "1.3"
+          }
+        },
+        {
+          "alg": "sha512",
+          "ingredient_id": "ing-sha512",
+          "manifest": {
+            "alg": "sha256",
+            "assertions": [
+              {
+                "data": {
+                  "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+                  "mapping_version": 1,
+                  "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+                  "network": "Test SDF Network ; September 2015",
+                  "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  "tier": "source",
+                  "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "label": "harpocrates.binding/v1"
+              }
+            ],
+            "claim_generator": "harpocrates",
+            "harpocrates_binding": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              "tier": "source",
+              "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "spec_version": "1.3"
+          }
+        },
+        {
+          "ingredient_id": "ing-remote-ref",
+          "manifest_url": "urn:c2pa:offline-blocked-reference"
+        }
+      ],
+      "lineage_manifest": {
+        "actorAddress": "GCCHDCX2JTLB6FDKHGIAAQPS6JHBDETFXTCQRETJUP5BWBVT6G4LQKOQ",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "compose",
+        "outputDigest": "5151515151515151515151515151515151515151515151515151515151515151",
+        "parametersDigest": "6161616161616161616161616161616161616161616161616161616161616161",
+        "parentProofIds": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        ],
+        "toolIdentity": "harpocrates-composer",
+        "toolVersion": "2.1.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "7272727272727272727272727272727272727272727272727272727272727272",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+              "tier": "silent",
+              "video_hash": "7171717171717171717171717171717171717171717171717171717171717171"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+          "mapping_version": 1,
+          "metadata_hash": "7272727272727272727272727272727272727272727272727272727272727272",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+          "tier": "silent",
+          "video_hash": "7171717171717171717171717171717171717171717171717171717171717171"
+        },
+        "spec_version": "1.3"
+      },
+      "case_id": "all_unsupported_external_ingredients",
+      "expected": {
+        "c2pa_trust_status": "signature_not_checked",
+        "lineage_digest": null,
+        "lineage_status": "not_applicable",
+        "manifest_digest": "6d150678f417e053964be618cd0651ed2be9444321e605b895397498268eecd2",
+        "ok": true,
+        "supported_ingredient_count": 0,
+        "unsupported_ingredient_count": 2,
+        "unsupported_reasons": [
+          "missing_harpocrates_binding",
+          "mapping_version_mismatch"
+        ]
+      },
+      "ingredients": [
+        {
+          "ingredient_id": "ing-unmapped",
+          "manifest": {
+            "assertions": [],
+            "claim_generator": "third-party-nle/4.2"
+          }
+        },
+        {
+          "ingredient_id": "ing-future-mapping",
+          "manifest": {
+            "alg": "sha256",
+            "assertions": [
+              {
+                "data": {
+                  "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+                  "mapping_version": 1,
+                  "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+                  "network": "Test SDF Network ; September 2015",
+                  "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  "tier": "source",
+                  "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "label": "harpocrates.binding/v1"
+              }
+            ],
+            "claim_generator": "harpocrates",
+            "harpocrates_binding": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 99,
+              "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              "tier": "source",
+              "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "spec_version": "1.3"
+          }
+        }
+      ],
+      "lineage_manifest": null
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "8282828282828282828282828282828282828282828282828282828282828282",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+              "tier": "source",
+              "video_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+          "mapping_version": 1,
+          "metadata_hash": "8282828282828282828282828282828282828282828282828282828282828282",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+          "tier": "source",
+          "video_hash": "8181818181818181818181818181818181818181818181818181818181818181"
+        },
+        "spec_version": "1.3"
+      },
+      "case_id": "contradictory_embedded_binding_rejected",
+      "expected": {
+        "c2pa_error_field": "video_hash",
+        "c2pa_error_reason": "embedded_binding_mismatch",
+        "c2pa_trust_status": "parse_failed",
+        "lineage_digest": null,
+        "lineage_status": "not_applicable",
+        "manifest_digest": null,
+        "ok": false,
+        "supported_ingredient_count": 0,
+        "unsupported_ingredient_count": 0,
+        "unsupported_reasons": []
+      },
+      "ingredients": [],
+      "lineage_manifest": null
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "9292929292929292929292929292929292929292929292929292929292929292",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tier": "source",
+              "video_hash": "9191919191919191919191919191919191919191919191919191919191919191"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+          "mapping_version": 1,
+          "metadata_hash": "9292929292929292929292929292929292929292929292929292929292929292",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tier": "source",
+          "video_hash": "9191919191919191919191919191919191919191919191919191919191919191"
+        },
+        "spec_version": "1.3"
+      },
+      "case_id": "unsupported_lineage_operation_rejected",
+      "expected": {
+        "c2pa_trust_status": "signature_not_checked",
+        "lineage_digest": null,
+        "lineage_status": "invalid",
+        "manifest_digest": "7534eaac2d8bc63c53ad41693ce6df053e0e8198d42dc217915fe7205cc3f5d9",
+        "ok": false,
+        "supported_ingredient_count": 1,
+        "unsupported_ingredient_count": 0,
+        "unsupported_reasons": []
+      },
+      "ingredients": [
+        {
+          "ingredient_id": "ing-parent-a",
+          "manifest": {
+            "alg": "sha256",
+            "assertions": [
+              {
+                "data": {
+                  "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+                  "mapping_version": 1,
+                  "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+                  "network": "Test SDF Network ; September 2015",
+                  "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                  "tier": "source",
+                  "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "label": "harpocrates.binding/v1"
+              }
+            ],
+            "claim_generator": "harpocrates",
+            "harpocrates_binding": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "1212121212121212121212121212121212121212121212121212121212121212",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              "tier": "source",
+              "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "spec_version": "1.3"
+          }
+        }
+      ],
+      "lineage_manifest": {
+        "actorAddress": "GCCHDCX2JTLB6FDKHGIAAQPS6JHBDETFXTCQRETJUP5BWBVT6G4LQKOQ",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "ai_upscale",
+        "outputDigest": "9191919191919191919191919191919191919191919191919191919191919191",
+        "parametersDigest": "9393939393939393939393939393939393939393939393939393939393939393",
+        "parentProofIds": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+              "mapping_version": 1,
+              "metadata_hash": "9696969696969696969696969696969696969696969696969696969696969696",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "abababababababababababababababababababababababababababababababab",
+              "tier": "source",
+              "video_hash": "9595959595959595959595959595959595959595959595959595959595959595"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+          "mapping_version": 1,
+          "metadata_hash": "9696969696969696969696969696969696969696969696969696969696969696",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "abababababababababababababababababababababababababababababababab",
+          "tier": "source",
+          "video_hash": "9595959595959595959595959595959595959595959595959595959595959595"
+        },
+        "spec_version": "1.3"
+      },
+      "case_id": "lineage_parent_not_in_supported_ingredients",
+      "expected": {
+        "c2pa_trust_status": "signature_not_checked",
+        "lineage_digest": "430332563d03c32ab451e550a71744722af1027a416c55841502a467c4d81704",
+        "lineage_status": "parent_binding_mismatch",
+        "manifest_digest": "69db19cd149e76bd752381182d1eb5aca252783d5b44e32fd45401c1d9c524f8",
+        "ok": false,
+        "supported_ingredient_count": 0,
+        "unsupported_ingredient_count": 1,
+        "unsupported_reasons": [
+          "missing_harpocrates_binding"
+        ]
+      },
+      "ingredients": [
+        {
+          "ingredient_id": "ing-unmapped-only",
+          "manifest": {
+            "assertions": [],
+            "claim_generator": "external-camera/1.0"
+          }
+        }
+      ],
+      "lineage_manifest": {
+        "actorAddress": "GCCHDCX2JTLB6FDKHGIAAQPS6JHBDETFXTCQRETJUP5BWBVT6G4LQKOQ",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "transcode",
+        "outputDigest": "9595959595959595959595959595959595959595959595959595959595959595",
+        "parametersDigest": "9797979797979797979797979797979797979797979797979797979797979797",
+        "parentProofIds": [
+          "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    }
+  ],
+  "corpus_version": 1,
+  "description": "Synthetic offline C2PA and Harpocrates lineage interoperability corpus.",
+  "offline_only": true
+}
