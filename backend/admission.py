@@ -127,3 +127,45 @@ def require_capacity(controller: AdmissionController):
                 controller.release(identity)
         return wrapped
     return decorator
+
+
+def enqueue_admitted_job(
+    controller: AdmissionController,
+    identity: str,
+    job_type: str,
+    payload: dict,
+    *,
+    deadline_seconds: float | None = None,
+    now: float | None = None,
+) -> Tuple[bool, str, int | None]:
+    """Admit and enqueue a job while preserving existing admission controls.
+
+    Checks ``controller.acquire(identity)`` first so request-level concurrency,
+    queue, and per-identity admission bounds remain authoritative, then enqueues
+    the job into the per-tenant fair scheduler with its own independent
+    processing deadline.
+
+    Returns ``(True, "ok", job_id)`` when admitted and queued, or
+    ``(False, reason, None)`` when rejected by either ``AdmissionController``
+    (``identity_limit``, ``queue_full``, ``timeout``) or per-tenant queue bounds
+    (``tenant_queue_limit``).
+    """
+    from db import TenantQuotaExceededError, enqueue_job
+
+    acquired, reason = controller.acquire(identity)
+    if not acquired:
+        return False, reason, None
+    try:
+        job_id = enqueue_job(
+            job_type,
+            payload,
+            tenant_id=identity,
+            deadline_seconds=deadline_seconds,
+            now=now,
+        )
+        return True, "ok", job_id
+    except TenantQuotaExceededError as exc:
+        return False, exc.reason, None
+    finally:
+        controller.release(identity)
+

@@ -7,6 +7,9 @@ import traceback
 from pathlib import Path
 
 from db import (
+    JobDeadlineExceededError,
+    check_job_deadline,
+    expire_overdue_jobs,
     lease_job,
     heartbeat_job,
     report_job_progress,
@@ -21,12 +24,21 @@ from db import (
 from envelope import canonical_metadata_hash
 from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
+try:
+    from registration_reconcile import (
+        default_min_confirmations,
+        process_verify_tx_job,
+        reconcile_pending_registrations,
+    )
+except ImportError:
+    default_min_confirmations = None
+    process_verify_tx_job = None
+    reconcile_pending_registrations = None
 from tracing import traced_job
 from chain_indexer import run_indexer_loop
 
@@ -40,7 +52,14 @@ LOGGER.setLevel(logging.INFO)
 WORKER_ID = f"worker-{os.getpid()}"
 
 @traced_job("job.media.embed")
-def process_embed(job: dict) -> dict:
+def process_embed(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        message_path = job["message_path"]
+        output_path = job["output_path"]
+        message = Path(message_path).read_text()
+        meta = embed_metadata(input_path, message, output_path)
+        return {"output_path": output_path, "message": message, **(meta if isinstance(meta, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     metadata = payload["metadata"]
@@ -51,20 +70,29 @@ def process_embed(job: dict) -> dict:
     
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
-        
+
+    check_job_deadline(job_id)
     report_job_progress(job_id, "hashing_source")
     source_hash = sha256_file(input_path)
 
     def on_frame(frames_done: int, frames_total: int | None) -> None:
+        check_job_deadline(job_id)
         percent = (frames_done / frames_total * 100.0) if frames_total else None
         report_job_progress(job_id, "embedding", percent)
 
-    embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
+    try:
+        embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
+        check_job_deadline(job_id)
+    except JobDeadlineExceededError:
+        input_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+        raise
 
     report_job_progress(job_id, "hashing_output")
     embedded_hash = sha256_file(output_path)
     metadata_hash = canonical_metadata_hash(metadata)
 
+    check_job_deadline(job_id)
     report_job_progress(job_id, "recording")
     db_event = insert_proof_event(
         event_type="embed",
@@ -87,7 +115,12 @@ def process_embed(job: dict) -> dict:
     }
 
 @traced_job("job.media.extract")
-def process_extract(job: dict) -> dict:
+def process_extract(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = extract_metadata(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     filename = payload["filename"]
@@ -96,11 +129,18 @@ def process_extract(job: dict) -> dict:
     
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
-        
-    metadata = extract_metadata(input_path)
-    video_hash = sha256_file(input_path)
-    metadata_hash = canonical_metadata_hash(metadata) if metadata else None
-    
+
+    try:
+        check_job_deadline(job_id)
+        metadata = extract_metadata(input_path)
+        check_job_deadline(job_id)
+        video_hash = sha256_file(input_path)
+        metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+        check_job_deadline(job_id)
+    except JobDeadlineExceededError:
+        input_path.unlink(missing_ok=True)
+        raise
+
     db_event = insert_proof_event(
         event_type="extract",
         file_name=normalize_filename(filename),
@@ -121,7 +161,12 @@ def process_extract(job: dict) -> dict:
     }
 
 @traced_job("job.proof.noir")
-def process_silent_witness(job: dict) -> dict:
+def process_silent_witness(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = generate_silent_witness(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
 
     video_hash = payload["video_hash"]
@@ -130,18 +175,34 @@ def process_silent_witness(job: dict) -> dict:
 
     # Phase names only: proof generation runs as one external command and
     # reports no measurable fraction, so percent stays None.
+    check_job_deadline(job["id"])
     report_job_progress(job["id"], "generating_proof")
     proof = generate_silent_witness(
         video_hash,
         credential_secret,
         nullifier_secret,
     )
-    
+    check_job_deadline(job["id"])
+
     return {"proof": proof}
 
-def process_verify_tx(job: dict) -> dict:
+def process_verify_tx(job: dict, storage: object | None = None) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
+    if storage is not None or ("input_path" in job and "payload" not in job):
+        import json
+        data = json.loads(Path(job["input_path"]).read_text())
+        status = verify_transaction_status(data["tx_id"])
+        output_path = job["output_path"]
+        Path(output_path).write_text(json.dumps(status))
+        return {"output_path": output_path, **(status if isinstance(status, dict) else {"status": status})}
     return process_verify_tx_job(job.get("payload") or {})
+
+
+def is_fatal(job_type: str, err: BaseException) -> bool:
+    """Classify whether a job failure is non-retryable."""
+    if isinstance(err, JobDeadlineExceededError):
+        return True
+    return isinstance(err, ValueError) and job_type != "verify_tx"
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
@@ -269,6 +330,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -278,6 +340,8 @@ def run_worker(
                     sweep_job_files()
                 except Exception as e:
                     LOGGER.error("Job file sweep failed: %s", type(e).__name__)
+
+            expire_overdue_jobs()
 
             job = lease_job(
                 WORKER_ID,
@@ -298,6 +362,7 @@ def run_worker(
 
             def _execute_job():
                 try:
+                    check_job_deadline(job_id)
                     if job_type == "embed":
                         res = process_embed(job)
                     elif job_type == "extract":
@@ -308,15 +373,15 @@ def run_worker(
                         res = process_verify_tx(job)
                     else:
                         raise ValueError(f"Unknown job type {job_type}")
+                    check_job_deadline(job_id)
                     complete_job(job_id, res)
                     LOGGER.info(f"Completed job {job_id}")
                 except Exception as err:
-                    LOGGER.error(f"Failed job {job_id}: {err}")
-                    LOGGER.error(traceback.format_exc())
-                    is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
-                    if job_type == "verify_tx":
-                        is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                    LOGGER.error(f"Failed job {job_id}: {type(err).__name__}")
+                    fatal = is_fatal(job_type, err)
+                    if job_type == "verify_tx" and isinstance(err, ValueError):
+                        fatal = True
+                    fail_job(job_id, str(err), is_fatal=fatal)
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -327,6 +392,17 @@ def run_worker(
 
             while work_thread.is_alive():
                 work_thread.join(timeout=0.1)
+                if work_thread.is_alive():
+                    try:
+                        check_job_deadline(job_id)
+                    except JobDeadlineExceededError as deadline_err:
+                        LOGGER.warning(
+                            "Job %s exceeded independent processing deadline; releasing slot",
+                            job_id,
+                        )
+                        hb_stop_event.set()
+                        fail_job(job_id, str(deadline_err), is_fatal=True)
+                        break
                 if stop_event.is_set() and work_thread.is_alive():
                     # Stop event received while processing job: give it until grace period expires
                     work_thread.join(timeout=grace_period_seconds)

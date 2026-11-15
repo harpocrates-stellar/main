@@ -85,6 +85,9 @@ class AppConfig:
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
     retention_dry_run: bool = False
+    tenant_video_max_concurrent: int = 2
+    tenant_video_max_queued: int = 16
+    video_job_deadline_seconds: float = 600.0
 
 
 
@@ -165,6 +168,9 @@ def load_config() -> AppConfig:
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        tenant_video_max_concurrent=_int_env("TENANT_VIDEO_MAX_CONCURRENT", 2),
+        tenant_video_max_queued=_int_env("TENANT_VIDEO_MAX_QUEUED", 16),
+        video_job_deadline_seconds=_float_env("VIDEO_JOB_DEADLINE_SECONDS", 600.0),
     )
 
 
