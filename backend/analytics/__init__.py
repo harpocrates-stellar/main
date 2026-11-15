@@ -122,14 +122,51 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        ALLOWED_TENANT_EXPORT_CLASSES,
+        DEFAULT_EXCLUDED_SENSITIVE_CATEGORIES,
         EXPORT_FORMAT_VERSION,
-        ExportArtifact,
-        ExportManager,
-        ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        ExportArtifact,
+        ExportedRecordClassBinding,
+        ExportManager,
+        ExportMaterialExclusionError,
+        ExportPolicy,
+        ManifestVerificationError,
+        RedactionPolicyBinding,
+        TENANT_CLASS_FIELD_ALLOWLISTS,
+        TENANT_EXPORT_MANIFEST_DOMAIN_TAG,
+        TENANT_MANIFEST_SCHEMA_VERSION,
+        TenantExportBundle,
+        TenantExportManifest,
+        assert_class_records_safe_by_construction,
+        build_tenant_export_manifest,
+        verify_tenant_export_manifest,
     )
 except Exception:
-    pass
+    try:
+        from backend.analytics.export_manager import (
+            ALLOWED_TENANT_EXPORT_CLASSES,
+            DEFAULT_EXCLUDED_SENSITIVE_CATEGORIES,
+            EXPORT_FORMAT_VERSION,
+            EXPORT_POLICY_DEFAULT,
+            ExportArtifact,
+            ExportedRecordClassBinding,
+            ExportManager,
+            ExportMaterialExclusionError,
+            ExportPolicy,
+            ManifestVerificationError,
+            RedactionPolicyBinding,
+            TENANT_CLASS_FIELD_ALLOWLISTS,
+            TENANT_EXPORT_MANIFEST_DOMAIN_TAG,
+            TENANT_MANIFEST_SCHEMA_VERSION,
+            TenantExportBundle,
+            TenantExportManifest,
+            assert_class_records_safe_by_construction,
+            build_tenant_export_manifest,
+            verify_tenant_export_manifest,
+        )
+    except Exception:
+        pass
 
 try:
     from analytics.analytics_engine import (
@@ -221,11 +258,25 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "ALLOWED_TENANT_EXPORT_CLASSES",
+    "DEFAULT_EXCLUDED_SENSITIVE_CATEGORIES",
     "EXPORT_FORMAT_VERSION",
     "ExportArtifact",
+    "ExportedRecordClassBinding",
     "ExportManager",
+    "ExportMaterialExclusionError",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "ManifestVerificationError",
+    "RedactionPolicyBinding",
+    "TENANT_CLASS_FIELD_ALLOWLISTS",
+    "TENANT_EXPORT_MANIFEST_DOMAIN_TAG",
+    "TENANT_MANIFEST_SCHEMA_VERSION",
+    "TenantExportBundle",
+    "TenantExportManifest",
+    "assert_class_records_safe_by_construction",
+    "build_tenant_export_manifest",
+    "verify_tenant_export_manifest",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",

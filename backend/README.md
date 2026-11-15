@@ -342,6 +342,28 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Verifiable Tenant Data Export Manifest
+
+`analytics/export_manager.py` and `analytics/consent.py` provide a domain-separated,
+fail-closed tenant data export manifest (`TenantExportManifest`) via
+`ExportManager.create_tenant_export_bundle`, `build_tenant_export_manifest`, and
+`verify_tenant_export_manifest`:
+
+- **Exclusion by construction:** Only explicitly allowlisted record classes
+  (`consent_posture`, `operational_telemetry`, `export_audit_metadata`) and
+  per-class allowlisted scalar/safe-map fields (`TENANT_CLASS_FIELD_ALLOWLISTS`)
+  are projected. Sensitive evidence bytes, proof witnesses, `consent_token`,
+  raw tenant/account tags, media filenames, Stellar addresses/seeds, PEM keys,
+  Bearer/JWT tokens, and database URLs are rejected with `ExportMaterialExclusionError`.
+- **Cryptographic binding:** Each exported record class (`ExportedRecordClassBinding`)
+  and the active redaction policy (`RedactionPolicyBinding`) are bound with
+  length-prefixed SHA-256 framing under `harpocrates:tenant-export-manifest:v1`
+  into `manifest_digest`, alongside a domain-separated `tenant_tag_digest`.
+- **Fail-closed verification:** `verify_tenant_export_manifest` recomputes every
+  class digest, schema allowlist, policy digest, and top-level `manifest_digest`
+  in constant time (`hmac.compare_digest`), rejecting tampered payloads,
+  substituted tenant tags, or policy mismatches.
+
 ## Test
 
 ```powershell

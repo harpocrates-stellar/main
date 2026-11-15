@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 CONSENT_SCHEMA_VERSION = "1.0.0"
@@ -261,3 +261,30 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def project_safe_tenant_consent_records(
+        self,
+        authorized_tenant_tag: str,
+    ) -> List[Dict[str, Any]]:
+        """Project a tenant's consent posture excluding consent_token and raw identifiers by construction."""
+        if not isinstance(authorized_tenant_tag, str) or not authorized_tenant_tag.strip():
+            raise ValueError("authorized_tenant_tag must be a non-empty string")
+        with self._lock:
+            state = self._consent_states.get(authorized_tenant_tag)
+            if state is None:
+                return []
+            return [
+                {
+                    "schema_version": state.version,
+                    "status": state.status,
+                    "source": state.source,
+                    "granted_scopes": sorted(str(s) for s in state.granted_scopes),
+                    "granted_at_epoch_seconds": float(state.granted_at_epoch_seconds),
+                    "expires_at_epoch_seconds": float(state.expires_at_epoch_seconds),
+                    "withdrawal_epoch_seconds": (
+                        float(state.withdrawal_epoch_seconds)
+                        if state.withdrawal_epoch_seconds is not None
+                        else None
+                    ),
+                }
+            ]
