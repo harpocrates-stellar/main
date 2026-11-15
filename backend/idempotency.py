@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import datetime
 import functools
 import hashlib
+import threading
 from typing import Any, Optional, Tuple
 
 from flask import Response, jsonify, request
@@ -79,8 +81,82 @@ def get_idempotency_record(request_digest: str, request_type: str) -> Optional[d
             return None
 
 
-def store_response(record_id: int, payload: Any) -> None:
-    """Store a successful response payload and mark record as COMPLETED."""
+MAX_TRACKED_IDEMPOTENCY_ATTEMPTS = 4096
+_ATTEMPT_LOCK = threading.Lock()
+_RECORD_ATTEMPT_GENERATIONS: OrderedDict[int, int] = OrderedDict()
+
+
+def _validate_attempt_generation(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("attempt_generation must be an integer >= 1")
+    return value
+
+
+def begin_idempotency_attempt(record_id: int, *, min_generation: int | None = None) -> int:
+    """Advance and return the authoritative processing attempt generation for ``record_id``."""
+    if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id < 1:
+        raise ValueError("record_id must be an integer >= 1")
+    floor = _validate_attempt_generation(min_generation) if min_generation is not None else 1
+    with _ATTEMPT_LOCK:
+        current = _RECORD_ATTEMPT_GENERATIONS.get(record_id, 0)
+        next_gen = max(current + 1, floor)
+        _RECORD_ATTEMPT_GENERATIONS[record_id] = next_gen
+        _RECORD_ATTEMPT_GENERATIONS.move_to_end(record_id)
+        while len(_RECORD_ATTEMPT_GENERATIONS) > MAX_TRACKED_IDEMPOTENCY_ATTEMPTS:
+            _RECORD_ATTEMPT_GENERATIONS.popitem(last=False)
+        return next_gen
+
+
+def current_idempotency_attempt(record_id: int) -> int:
+    """Return the latest registered attempt generation for ``record_id`` (0 if untracked)."""
+    with _ATTEMPT_LOCK:
+        return _RECORD_ATTEMPT_GENERATIONS.get(record_id, 0)
+
+
+def _check_idempotency_generation(
+    record_id: int,
+    attempt_generation: int | None,
+    current_generation: int | None,
+) -> bool:
+    if attempt_generation is None:
+        return True
+    candidate = _validate_attempt_generation(attempt_generation)
+    explicit_current = (
+        _validate_attempt_generation(current_generation)
+        if current_generation is not None
+        else 0
+    )
+    with _ATTEMPT_LOCK:
+        tracked = _RECORD_ATTEMPT_GENERATIONS.get(record_id, 0)
+        authoritative = max(tracked, explicit_current)
+        if candidate < authoritative:
+            return False
+        _RECORD_ATTEMPT_GENERATIONS[record_id] = candidate
+        _RECORD_ATTEMPT_GENERATIONS.move_to_end(record_id)
+        while len(_RECORD_ATTEMPT_GENERATIONS) > MAX_TRACKED_IDEMPOTENCY_ATTEMPTS:
+            _RECORD_ATTEMPT_GENERATIONS.popitem(last=False)
+        return True
+
+
+def reset_idempotency_attempts_for_tests() -> None:
+    with _ATTEMPT_LOCK:
+        _RECORD_ATTEMPT_GENERATIONS.clear()
+
+
+def store_response(
+    record_id: int,
+    payload: Any,
+    *,
+    attempt_generation: int | None = None,
+    current_generation: int | None = None,
+) -> bool:
+    """Store a successful response payload and mark record as COMPLETED.
+
+    Returns ``False`` without mutating persistence when ``attempt_generation``
+    belongs to an obsolete attempt superseded by a newer generation.
+    """
+    if not _check_idempotency_generation(record_id, attempt_generation, current_generation):
+        return False
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -92,10 +168,19 @@ def store_response(record_id: int, payload: Any) -> None:
                 (Jsonb(payload), record_id),
             )
             conn.commit()
+    return True
 
 
-def store_error(record_id: int, error: dict) -> None:
-    """Store an error payload and mark record as FAILED."""
+def store_error(
+    record_id: int,
+    error: dict,
+    *,
+    attempt_generation: int | None = None,
+    current_generation: int | None = None,
+) -> bool:
+    """Store an error payload and mark record as FAILED unless the attempt is obsolete."""
+    if not _check_idempotency_generation(record_id, attempt_generation, current_generation):
+        return False
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -107,6 +192,7 @@ def store_error(record_id: int, error: dict) -> None:
                 (Jsonb(error), record_id),
             )
             conn.commit()
+    return True
 
 
 def clear_idempotency_record(record_id: int) -> None:

@@ -13,8 +13,10 @@ transaction hash prefixes.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import logging
 import os
+import threading
 from typing import Any
 
 from db import list_pending_registration_txs, update_tx_status
@@ -34,6 +36,172 @@ LOGGER.setLevel(logging.INFO)
 
 MAX_RECONCILE_BATCH = 50
 DEFAULT_MIN_CONFIRMATIONS = 1
+MAX_TRACKED_ATTEMPTS = 4096
+CALLBACK_ALLOWED_STATUSES = frozenset({"pending", "confirmed", "failed", "missing"})
+
+
+def parse_attempt_generation(value: object) -> int:
+    """Validate that an attempt generation is a positive integer (>= 1)."""
+    if isinstance(value, bool):
+        raise ValueError("attemptGeneration must be an integer >= 1")
+    if isinstance(value, float):
+        raise ValueError("attemptGeneration must be an integer >= 1")
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError("attemptGeneration must be an integer >= 1") from None
+    if parsed < 1:
+        raise ValueError("attemptGeneration must be an integer >= 1")
+    return parsed
+
+
+class RegistrationAttemptTracker:
+    """Bounded, thread-safe tracker enforcing monotonic registration attempt generations."""
+
+    def __init__(self, max_entries: int = MAX_TRACKED_ATTEMPTS) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be >= 1")
+        self._lock = threading.Lock()
+        self._max_entries = max_entries
+        self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def _evict_if_needed(self) -> None:
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+
+    def begin_attempt(
+        self,
+        tx_hash: object,
+        *,
+        proof_id: str | None = None,
+        min_generation: int | None = None,
+    ) -> int:
+        normalized = normalize_tx_hash(tx_hash)
+        floor = parse_attempt_generation(min_generation) if min_generation is not None else 1
+        with self._lock:
+            entry = self._entries.get(normalized)
+            if entry is None:
+                generation = floor
+                self._entries[normalized] = {
+                    "generation": generation,
+                    "status": "pending",
+                    "ledger": None,
+                    "confirmations": None,
+                    "proof_id": proof_id,
+                }
+            else:
+                generation = max(int(entry["generation"]) + 1, floor)
+                entry["generation"] = generation
+                if proof_id is not None:
+                    entry["proof_id"] = proof_id
+            self._entries.move_to_end(normalized)
+            self._evict_if_needed()
+            return generation
+
+    def get_state(self, tx_hash: object) -> dict[str, Any] | None:
+        normalized = normalize_tx_hash(tx_hash)
+        with self._lock:
+            entry = self._entries.get(normalized)
+            return dict(entry) if entry is not None else None
+
+    def check_generation(
+        self,
+        tx_hash: object,
+        attempt_generation: object,
+        *,
+        current_generation: object = None,
+    ) -> tuple[bool, int, dict[str, Any] | None]:
+        normalized = normalize_tx_hash(tx_hash)
+        candidate = parse_attempt_generation(attempt_generation)
+        explicit_current = (
+            parse_attempt_generation(current_generation)
+            if current_generation is not None
+            else 0
+        )
+        with self._lock:
+            entry = self._entries.get(normalized)
+            tracked = int(entry["generation"]) if entry is not None else 0
+            authoritative = max(tracked, explicit_current)
+            snapshot = dict(entry) if entry is not None else None
+            if candidate < authoritative:
+                return False, authoritative, snapshot
+            if entry is None:
+                self._entries[normalized] = {
+                    "generation": candidate,
+                    "status": "pending",
+                    "ledger": None,
+                    "confirmations": None,
+                    "proof_id": None,
+                }
+            else:
+                entry["generation"] = candidate
+            self._entries.move_to_end(normalized)
+            self._evict_if_needed()
+            return True, candidate, snapshot
+
+    def commit_attempt_state(
+        self,
+        tx_hash: object,
+        *,
+        attempt_generation: object,
+        status: str,
+        ledger: int | None = None,
+        confirmations: int | None = None,
+        proof_id: str | None = None,
+        current_generation: object = None,
+    ) -> tuple[bool, int, dict[str, Any] | None]:
+        normalized = normalize_tx_hash(tx_hash)
+        candidate = parse_attempt_generation(attempt_generation)
+        explicit_current = (
+            parse_attempt_generation(current_generation)
+            if current_generation is not None
+            else 0
+        )
+        with self._lock:
+            entry = self._entries.get(normalized)
+            tracked = int(entry["generation"]) if entry is not None else 0
+            authoritative = max(tracked, explicit_current)
+            if candidate < authoritative:
+                return False, authoritative, (dict(entry) if entry is not None else None)
+            updated_entry = {
+                "generation": candidate,
+                "status": status,
+                "ledger": ledger,
+                "confirmations": confirmations,
+                "proof_id": proof_id if proof_id is not None else (entry.get("proof_id") if entry else None),
+            }
+            self._entries[normalized] = updated_entry
+            self._entries.move_to_end(normalized)
+            self._evict_if_needed()
+            return True, candidate, dict(updated_entry)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_ATTEMPT_TRACKER = RegistrationAttemptTracker()
+
+
+def begin_registration_attempt(
+    tx_hash: object,
+    *,
+    proof_id: str | None = None,
+    min_generation: int | None = None,
+) -> int:
+    """Register and return the next authoritative processing attempt generation."""
+    return _ATTEMPT_TRACKER.begin_attempt(
+        tx_hash, proof_id=proof_id, min_generation=min_generation
+    )
+
+
+def get_registration_attempt_state(tx_hash: object) -> dict[str, Any] | None:
+    """Return the latest tracked attempt state for ``tx_hash``."""
+    return _ATTEMPT_TRACKER.get_state(tx_hash)
+
+
+def reset_registration_attempts_for_tests() -> None:
+    _ATTEMPT_TRACKER.clear()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -93,6 +261,44 @@ def _result_payload(
     return payload
 
 
+def _obsolete_attempt_payload(
+    *,
+    tx_hash: str,
+    previous_status: str | None,
+    preserved_state: dict[str, Any] | None,
+    attempt_generation: int,
+    current_generation: int,
+    proof_id: str | None,
+    event_id: int | None,
+    min_conf: int,
+) -> dict[str, Any]:
+    preserved_status = (
+        str(preserved_state["status"])
+        if preserved_state and preserved_state.get("status")
+        else (previous_status or "pending")
+    )
+    verification = TxVerificationResult(
+        status=preserved_status,
+        reason="obsolete_attempt_generation",
+        ledger=preserved_state.get("ledger") if preserved_state else None,
+        confirmations=preserved_state.get("confirmations") if preserved_state else None,
+    )
+    payload = _result_payload(
+        tx_hash=tx_hash,
+        previous_status=previous_status,
+        verification=verification,
+        updated=False,
+        proof_id=proof_id,
+        event_id=event_id,
+    )
+    payload["minConfirmationsApplied"] = min_conf
+    payload["accepted"] = False
+    payload["obsoleteAttempt"] = True
+    payload["attemptGeneration"] = attempt_generation
+    payload["currentAttemptGeneration"] = current_generation
+    return payload
+
+
 def reconcile_registration(
     tx_hash: object,
     *,
@@ -101,6 +307,8 @@ def reconcile_registration(
     event_id: int | None = None,
     min_confirmations: int | None = None,
     force: bool = False,
+    attempt_generation: object = None,
+    current_attempt_generation: object = None,
 ) -> dict[str, Any]:
     """
     Reconcile a single registration transaction hash against Horizon.
@@ -108,6 +316,7 @@ def reconcile_registration(
     - Malformed hashes → status ``failed`` / reason ``malformed_tx_hash``
     - Horizon dependency failures → status ``error`` (no durable write)
     - Terminal rows are left unchanged unless ``force`` is true
+    - Obsolete ``attempt_generation`` values are rejected before applying updates
     """
     min_conf = (
         default_min_confirmations()
@@ -116,6 +325,13 @@ def reconcile_registration(
     )
     if min_conf < 1:
         raise ValueError("minConfirmations must be >= 1")
+
+    parsed_attempt: int | None = None
+    if attempt_generation is not None:
+        parsed_attempt = parse_attempt_generation(attempt_generation)
+    parsed_current: int | None = None
+    if current_attempt_generation is not None:
+        parsed_current = parse_attempt_generation(current_attempt_generation)
 
     try:
         normalized = normalize_tx_hash(tx_hash)
@@ -135,6 +351,30 @@ def reconcile_registration(
         payload["error"] = "malformed_tx_hash"
         return payload
 
+    if parsed_attempt is not None:
+        allowed, authoritative_gen, preserved = _ATTEMPT_TRACKER.check_generation(
+            normalized,
+            parsed_attempt,
+            current_generation=parsed_current,
+        )
+        if not allowed:
+            LOGGER.info(
+                "registration_reconcile_rejected reason=obsolete_attempt_generation tx=%s attempt=%s current=%s",
+                _short_hash(normalized),
+                parsed_attempt,
+                authoritative_gen,
+            )
+            return _obsolete_attempt_payload(
+                tx_hash=normalized,
+                previous_status=previous_status,
+                preserved_state=preserved,
+                attempt_generation=parsed_attempt,
+                current_generation=authoritative_gen,
+                proof_id=proof_id,
+                event_id=event_id,
+                min_conf=min_conf,
+            )
+
     if (
         previous_status in TERMINAL_STATUSES
         and not force
@@ -144,7 +384,7 @@ def reconcile_registration(
             status=previous_status,
             reason="already_terminal",
         )
-        return _result_payload(
+        payload = _result_payload(
             tx_hash=normalized,
             previous_status=previous_status,
             verification=verification,
@@ -152,9 +392,42 @@ def reconcile_registration(
             proof_id=proof_id,
             event_id=event_id,
         )
+        if parsed_attempt is not None:
+            payload["accepted"] = True
+            payload["obsoleteAttempt"] = False
+            payload["attemptGeneration"] = parsed_attempt
+        return payload
 
     verification = verify_transaction(normalized, min_confirmations=min_conf)
     updated = False
+
+    if parsed_attempt is not None:
+        allowed_commit, authoritative_gen, preserved = _ATTEMPT_TRACKER.commit_attempt_state(
+            normalized,
+            attempt_generation=parsed_attempt,
+            status=verification.status,
+            ledger=verification.ledger,
+            confirmations=verification.confirmations,
+            proof_id=proof_id,
+            current_generation=parsed_current,
+        )
+        if not allowed_commit:
+            LOGGER.info(
+                "registration_reconcile_rejected reason=obsolete_attempt_generation tx=%s attempt=%s current=%s",
+                _short_hash(normalized),
+                parsed_attempt,
+                authoritative_gen,
+            )
+            return _obsolete_attempt_payload(
+                tx_hash=normalized,
+                previous_status=previous_status,
+                preserved_state=preserved,
+                attempt_generation=parsed_attempt,
+                current_generation=authoritative_gen,
+                proof_id=proof_id,
+                event_id=event_id,
+                min_conf=min_conf,
+            )
 
     if verification.status in TERMINAL_STATUSES:
         updated = bool(update_tx_status(normalized, verification.status, force=force))
@@ -188,6 +461,110 @@ def reconcile_registration(
         event_id=event_id,
     )
     payload["minConfirmationsApplied"] = min_conf
+    if parsed_attempt is not None:
+        payload["accepted"] = True
+        payload["obsoleteAttempt"] = False
+        payload["attemptGeneration"] = parsed_attempt
+        state_after = _ATTEMPT_TRACKER.get_state(normalized)
+        payload["currentAttemptGeneration"] = (
+            int(state_after["generation"]) if state_after else parsed_attempt
+        )
+    return payload
+
+
+def apply_registration_callback(
+    *,
+    tx_hash: object,
+    attempt_generation: object,
+    status: object,
+    proof_id: str | None = None,
+    ledger: int | None = None,
+    confirmations: int | None = None,
+    min_confirmations: int | None = None,
+    current_attempt_generation: object = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Apply an asynchronous worker registration callback if its attempt is current.
+
+    Checks ``attempt_generation`` against the current generation before mutating
+    any state. Callbacks from superseded attempts return ``accepted=False`` and
+    preserve the newer attempt's state untouched.
+    """
+    normalized = normalize_tx_hash(tx_hash)
+    parsed_attempt = parse_attempt_generation(attempt_generation)
+    parsed_current = (
+        parse_attempt_generation(current_attempt_generation)
+        if current_attempt_generation is not None
+        else None
+    )
+    if not isinstance(status, str) or status.strip().lower() not in CALLBACK_ALLOWED_STATUSES:
+        raise ValueError("status must be one of: pending, confirmed, failed, missing")
+    normalized_status = status.strip().lower()
+
+    min_conf = (
+        default_min_confirmations()
+        if min_confirmations is None
+        else int(min_confirmations)
+    )
+    if min_conf < 1:
+        raise ValueError("minConfirmations must be >= 1")
+
+    effective_status = normalized_status
+    reason = f"callback_{normalized_status}"
+    if normalized_status == "confirmed" and confirmations is not None and int(confirmations) < min_conf:
+        # Fail closed: never mark confirmed when reported depth is below policy.
+        effective_status = "pending"
+        reason = "awaiting_confirmations"
+
+    allowed, authoritative_gen, state_snapshot = _ATTEMPT_TRACKER.commit_attempt_state(
+        normalized,
+        attempt_generation=parsed_attempt,
+        status=effective_status,
+        ledger=ledger,
+        confirmations=confirmations,
+        proof_id=proof_id,
+        current_generation=parsed_current,
+    )
+    if not allowed:
+        LOGGER.info(
+            "registration_callback_rejected reason=obsolete_attempt_generation tx=%s attempt=%s current=%s",
+            _short_hash(normalized),
+            parsed_attempt,
+            authoritative_gen,
+        )
+        return _obsolete_attempt_payload(
+            tx_hash=normalized,
+            previous_status=state_snapshot.get("status") if state_snapshot else "pending",
+            preserved_state=state_snapshot,
+            attempt_generation=parsed_attempt,
+            current_generation=authoritative_gen,
+            proof_id=proof_id,
+            event_id=None,
+            min_conf=min_conf,
+        )
+
+    updated = False
+    if effective_status in TERMINAL_STATUSES:
+        updated = bool(update_tx_status(normalized, effective_status, force=force))
+
+    verification = TxVerificationResult(
+        status=effective_status,
+        reason=reason,
+        ledger=ledger,
+        confirmations=confirmations,
+    )
+    payload = _result_payload(
+        tx_hash=normalized,
+        previous_status="pending",
+        verification=verification,
+        updated=updated,
+        proof_id=proof_id,
+    )
+    payload["minConfirmationsApplied"] = min_conf
+    payload["accepted"] = True
+    payload["obsoleteAttempt"] = False
+    payload["attemptGeneration"] = parsed_attempt
+    payload["currentAttemptGeneration"] = authoritative_gen
     return payload
 
 
@@ -252,11 +629,23 @@ def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
     tx_hash = payload.get("tx_hash") or payload.get("txHash")
     proof_id = payload.get("proof_id") or payload.get("proofId")
     min_confirmations = payload.get("min_confirmations") or payload.get("minConfirmations")
+    attempt_generation = (
+        payload.get("attempt_generation")
+        if "attempt_generation" in payload
+        else payload.get("attemptGeneration")
+    )
+    current_attempt_generation = (
+        payload.get("current_attempt_generation")
+        if "current_attempt_generation" in payload
+        else payload.get("currentAttemptGeneration")
+    )
     result = reconcile_registration(
         tx_hash,
         previous_status="pending",
         proof_id=proof_id if isinstance(proof_id, str) else None,
         min_confirmations=int(min_confirmations) if min_confirmations is not None else None,
+        attempt_generation=attempt_generation,
+        current_attempt_generation=current_attempt_generation,
     )
     if result.get("status") == "error":
         # Surface dependency failures so the worker can retry non-fatally.

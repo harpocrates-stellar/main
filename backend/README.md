@@ -342,6 +342,23 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Registration Attempt-Generation Callback Fencing
+
+Registration reconciliation attempts and idempotency completions carry monotonic
+`attemptGeneration` counters (`>= 1`):
+
+- `begin_registration_attempt()` assigns each `verify_tx` job attempt a monotonic
+  generation. `apply_registration_callback()`, `reconcile_registration()`, and
+  `POST /api/proofs/reconcile/callback` check the incoming `attemptGeneration`
+  against the authoritative generation before applying any state update.
+- Callbacks or late worker completions from an obsolete attempt
+  (`attemptGeneration < currentAttemptGeneration`) are rejected (`409`,
+  `reason: "obsolete_attempt_generation"`) without mutating database rows,
+  preserving the newer attempt's state even when `force: true` is supplied.
+- `store_response()` and `store_error()` in `idempotency.py` enforce matching
+  `attempt_generation` checks so superseded attempts cannot overwrite newer
+  idempotency records.
+
 ## Test
 
 ```powershell

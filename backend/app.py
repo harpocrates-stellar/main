@@ -77,12 +77,16 @@ from db import (
 )
 try:
     from registration_reconcile import (
+        apply_registration_callback,
+        begin_registration_attempt,
         clamp_reconcile_limit,
         default_min_confirmations,
         reconcile_pending_registrations,
         reconcile_registration,
     )
 except ImportError:
+    apply_registration_callback = None
+    begin_registration_attempt = None
     clamp_reconcile_limit = None
     default_min_confirmations = None
     reconcile_pending_registrations = None
@@ -112,7 +116,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1538,7 +1542,20 @@ def create_app() -> Flask:
             app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
+                attempt_gen = (
+                    begin_registration_attempt(normalized_tx_hash, proof_id=proof_id)
+                    if begin_registration_attempt is not None
+                    else 1
+                )
+                enqueue_job(
+                    "verify_tx",
+                    {
+                        "proof_id": proof_id,
+                        "tx_hash": normalized_tx_hash,
+                        "contract_id": validated_contract_id,
+                        "attempt_generation": attempt_gen,
+                    },
+                )
 
         status = 201 if created else 200
         return jsonify({"ok": True, "db_event": db_event, "created": created}), status
@@ -1599,6 +1616,8 @@ def create_app() -> Flask:
                     previous_status=None if force else "pending",
                     min_confirmations=min_confirmations,
                     force=force,
+                    attempt_generation=payload.get("attemptGeneration"),
+                    current_attempt_generation=payload.get("currentAttemptGeneration"),
                 )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
@@ -1609,6 +1628,12 @@ def create_app() -> Flask:
                     message="txHash must be a 32-byte hex string",
                     status=400,
                 )
+            if result.get("obsoleteAttempt"):
+                return jsonify({
+                    "ok": False,
+                    "error": "obsolete_attempt_generation",
+                    "result": result,
+                }), 409
             if result.get("status") == "error":
                 return jsonify({
                     "ok": False,
@@ -1631,6 +1656,56 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         return jsonify(report)
+
+    @app.post("/api/proofs/reconcile/callback")
+    def receive_registration_callback():
+        """Apply a worker registration callback fenced by ``attemptGeneration``."""
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body must be an object",
+                status=400,
+            )
+        if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > config.max_metadata_bytes:
+            return jsonify({"error": "callback payload is too large"}), 413
+
+        try:
+            result = apply_registration_callback(
+                tx_hash=payload.get("txHash"),
+                attempt_generation=payload.get("attemptGeneration"),
+                status=payload.get("status"),
+                proof_id=payload.get("proofId") if isinstance(payload.get("proofId"), str) else None,
+                ledger=int(payload["ledger"]) if payload.get("ledger") is not None else None,
+                confirmations=(
+                    int(payload["confirmations"])
+                    if payload.get("confirmations") is not None
+                    else None
+                ),
+                min_confirmations=(
+                    int(payload["minConfirmations"])
+                    if payload.get("minConfirmations") is not None
+                    else None
+                ),
+                current_attempt_generation=payload.get("currentAttemptGeneration"),
+                force=bool(payload.get("force", False)),
+            )
+        except (TypeError, ValueError) as exc:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=str(exc),
+                status=400,
+            )
+
+        if result.get("obsoleteAttempt"):
+            return jsonify({
+                "ok": False,
+                "error": "obsolete_attempt_generation",
+                "result": result,
+            }), 409
+        return jsonify({"ok": True, "result": result})
 
     @app.post("/api/time-attestation/create")
     def create_time_attestation_endpoint():
