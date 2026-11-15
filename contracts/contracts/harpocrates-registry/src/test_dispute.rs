@@ -791,7 +791,13 @@ fn reporter_cap_reached_then_dismiss_releases_slot_and_reopen_succeeds() {
 
     let mut disputes = std::vec::Vec::new();
     for i in 0..MAX_OPEN_DISPUTES_PER_REPORTER {
-        disputes.push(open_tagged(&env, &client, &reporter, &proofs[i as usize], i as u8));
+        disputes.push(open_tagged(
+            &env,
+            &client,
+            &reporter,
+            &proofs[i as usize],
+            i as u8,
+        ));
     }
     assert_eq!(
         client.get_reporter_open_dispute_count(&reporter),
@@ -843,7 +849,13 @@ fn reporter_cap_released_on_resolve_and_supersede() {
 
     let mut disputes = std::vec::Vec::new();
     for i in 0..MAX_OPEN_DISPUTES_PER_REPORTER {
-        disputes.push(open_tagged(&env, &client, &reporter, &proofs[i as usize], i as u8));
+        disputes.push(open_tagged(
+            &env,
+            &client,
+            &reporter,
+            &proofs[i as usize],
+            i as u8,
+        ));
     }
 
     // Resolve path: respond then resolve.
