@@ -9108,6 +9108,8 @@ mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
 #[cfg(test)]
+mod test_role_migration_fixtures;
+#[cfg(test)]
 mod test_roles;
 #[cfg(test)]
 mod test_schema;

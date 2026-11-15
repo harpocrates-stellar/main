@@ -408,6 +408,28 @@ that older artifact does not enforce disjoint roles and can grant the admin an
 issuer record again. Re-upgrade and revoke that issuer record before resuming
 issuer operations.
 
+### Role migration compatibility fixture set (`#1191`)
+
+`contracts/fixtures/role_migration_compat_v1.tsv` (`hpx-role-migration-fixture/v1`)
+defines a deterministic synthetic fixture corpus covering approved institutional
+role transitions across simulated contract upgrades (`V1 -> V2` conflict
+remediation, two-step `PendingAdmin` transfers spanning an upgrade, issuer key
+rotation grace windows with delegated seal/source keys, threshold `SealPolicy`
+revocations, `AdminCouncil`-governed `UpgradeStorage`, and timelocked
+`UpgradeWasm` bytecode replacement).
+
+`contracts/harpocrates-registry/src/test_role_migration_fixtures.rs` parses every
+row of the corpus at test time and probes both write-side and read-side entry
+points (`add_credential_root`, `register_seal`, `is_issuer_verifiable`, `pause`,
+`register_seal_delegated`, `register_source_delegated`, `approve_seal`,
+`accept_admin`, and `propose_council_action`) to verify each actor retains only
+its intended capabilities after upgrade:
+
+```bash
+cd contracts
+cargo test -p harpocrates-registry role_migration -- --nocapture
+```
+
 ## Timelocked Administration
 
 High-impact registry administrative actions (such as setting the primary verifier, revoking an issuer, setting proof TTL, and revoking credential roots) can be governed through a timelock mechanism to ensure transparency and community notice before execution. The workflow supports advance notice, admin cancellation, open execution after delay expiry, and admin emergency execution when immediate remediation is required.
