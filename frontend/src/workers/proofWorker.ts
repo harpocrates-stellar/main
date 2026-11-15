@@ -15,8 +15,9 @@ function bufToStr(buf: ArrayBuffer): string {
   return new TextDecoder().decode(buf)
 }
 
-function zero(buf: ArrayBuffer) {
-  new Uint8Array(buf).fill(0)
+function zeroInput(input: TransferableProofInput) {
+  new Uint8Array(input.credentialSecret).fill(0)
+  new Uint8Array(input.nullifierSecret).fill(0)
 }
 
 async function handleGenerate(requestId: string, input: TransferableProofInput) {
