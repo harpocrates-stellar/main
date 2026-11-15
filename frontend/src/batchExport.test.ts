@@ -77,4 +77,15 @@ describe('batchExport', () => {
     expect(parsed.protocol).toBe('harpocrates-receipt-collection')
     expect(parsed.totalItems).toBe(1)
   })
+
+  it('orders exported batch results by original inputIndex instead of async completion order', () => {
+    const outOfOrder: BatchItemResult[] = [
+      { ...mockItems[1], inputIndex: 1, inputIdentity: 'input-1:200000000:0:large.mp4' },
+      { ...mockItems[0], inputIndex: 0, inputIdentity: 'input-0:1024:0:evidence1.mp4' },
+    ]
+    const sanitized = sanitizeBatchResults(outOfOrder)
+    expect(sanitized.map((r) => r.inputIndex)).toEqual([0, 1])
+    expect(sanitized.map((r) => r.fileName)).toEqual(['evidence1.mp4', 'large.mp4'])
+    expect(sanitized[0].inputIdentity).toBe('input-0:1024:0:evidence1.mp4')
+  })
 })

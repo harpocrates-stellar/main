@@ -189,9 +189,21 @@ export function getHighestAssuranceTime(attestation: TimeAttestation): {
   source: string
   assurance: 'high' | 'medium' | 'low'
 } {
+  const stellarAnchors = Array.isArray(attestation?.stellarAnchors)
+    ? attestation.stellarAnchors.filter(
+        (anchor) =>
+          anchor !== null &&
+          typeof anchor === 'object' &&
+          typeof anchor.ledgerTimestamp === 'number' &&
+          Number.isFinite(anchor.ledgerTimestamp) &&
+          typeof anchor.ledgerSequence === 'number' &&
+          Number.isFinite(anchor.ledgerSequence),
+      )
+    : []
+
   // Highest assurance: Stellar anchor
-  if (attestation.stellarAnchors.length > 0) {
-    const anchor = attestation.stellarAnchors[0]
+  if (stellarAnchors.length > 0) {
+    const anchor = stellarAnchors[0]
     return {
       timestamp: anchor.ledgerTimestamp * 1000,
       source: `Stellar Ledger #${anchor.ledgerSequence}`,
@@ -200,7 +212,17 @@ export function getHighestAssuranceTime(attestation: TimeAttestation): {
   }
 
   // High assurance: Valid RFC 3161 token
-  const validRFC3161 = attestation.rfc3161Anchors.find((a) => a.verificationStatus === 'valid')
+  const rfc3161Anchors = Array.isArray(attestation?.rfc3161Anchors)
+    ? attestation.rfc3161Anchors
+    : []
+  const validRFC3161 = rfc3161Anchors.find(
+    (a) =>
+      a !== null &&
+      typeof a === 'object' &&
+      a.verificationStatus === 'valid' &&
+      typeof a.genTime === 'number' &&
+      Number.isFinite(a.genTime),
+  )
   if (validRFC3161) {
     return {
       timestamp: validRFC3161.genTime,
@@ -210,7 +232,11 @@ export function getHighestAssuranceTime(attestation: TimeAttestation): {
   }
 
   // Medium assurance: Observed time
-  if (attestation.observedTime) {
+  if (
+    attestation?.observedTime &&
+    typeof attestation.observedTime.unixMs === 'number' &&
+    Number.isFinite(attestation.observedTime.unixMs)
+  ) {
     return {
       timestamp: attestation.observedTime.unixMs,
       source: `Backend: ${attestation.observedTime.sourceLabel}`,
@@ -219,7 +245,11 @@ export function getHighestAssuranceTime(attestation: TimeAttestation): {
   }
 
   // Low assurance: Claimed time
-  if (attestation.claimedTime) {
+  if (
+    attestation?.claimedTime &&
+    typeof attestation.claimedTime.unixMs === 'number' &&
+    Number.isFinite(attestation.claimedTime.unixMs)
+  ) {
     return {
       timestamp: attestation.claimedTime.unixMs,
       source: `Device: ${attestation.claimedTime.sourceLabel}`,
@@ -234,7 +264,13 @@ export function getHighestAssuranceTime(attestation: TimeAttestation): {
  * Check if an attestation has independent anchors.
  */
 export function hasIndependentAnchor(attestation: TimeAttestation): boolean {
-  return attestation.stellarAnchors.length > 0 || attestation.rfc3161Anchors.length > 0
+  const stellarCount = Array.isArray(attestation?.stellarAnchors)
+    ? attestation.stellarAnchors.length
+    : 0
+  const rfc3161Count = Array.isArray(attestation?.rfc3161Anchors)
+    ? attestation.rfc3161Anchors.length
+    : 0
+  return stellarCount > 0 || rfc3161Count > 0
 }
 
 /**
@@ -249,22 +285,46 @@ export function summarizeTimeSources(attestation: TimeAttestation): {
     anchors: [],
   }
 
-  if (attestation.claimedTime) {
+  if (
+    attestation?.claimedTime &&
+    typeof attestation.claimedTime.unixMs === 'number' &&
+    Number.isFinite(attestation.claimedTime.unixMs)
+  ) {
     summary.claimed = formatTimestamp(attestation.claimedTime.unixMs)
   }
 
-  if (attestation.observedTime) {
+  if (
+    attestation?.observedTime &&
+    typeof attestation.observedTime.unixMs === 'number' &&
+    Number.isFinite(attestation.observedTime.unixMs)
+  ) {
     summary.observed = formatTimestamp(attestation.observedTime.unixMs)
   }
 
-  for (const anchor of attestation.stellarAnchors) {
-    summary.anchors.push(
-      `Stellar: ${formatTimestamp(anchor.ledgerTimestamp * 1000)} (Ledger #${anchor.ledgerSequence})`,
-    )
+  const stellarAnchors = Array.isArray(attestation?.stellarAnchors)
+    ? attestation.stellarAnchors
+    : []
+  for (const anchor of stellarAnchors) {
+    if (
+      anchor &&
+      typeof anchor.ledgerTimestamp === 'number' &&
+      Number.isFinite(anchor.ledgerTimestamp)
+    ) {
+      summary.anchors.push(
+        `Stellar: ${formatTimestamp(anchor.ledgerTimestamp * 1000)} (Ledger #${anchor.ledgerSequence})`,
+      )
+    }
   }
 
-  for (const anchor of attestation.rfc3161Anchors) {
-    summary.anchors.push(`RFC 3161: ${formatTimestamp(anchor.genTime)} (${anchor.verificationStatus})`)
+  const rfc3161Anchors = Array.isArray(attestation?.rfc3161Anchors)
+    ? attestation.rfc3161Anchors
+    : []
+  for (const anchor of rfc3161Anchors) {
+    if (anchor && typeof anchor.genTime === 'number' && Number.isFinite(anchor.genTime)) {
+      summary.anchors.push(
+        `RFC 3161: ${formatTimestamp(anchor.genTime)} (${anchor.verificationStatus})`,
+      )
+    }
   }
 
   return summary

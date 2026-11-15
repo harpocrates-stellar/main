@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { verifyArtifact, type VerificationEvent } from './verificationFlow'
+import { MalformedEvidenceError, verifyArtifact, type VerificationEvent } from './verificationFlow'
 import type { ProofManifest } from './proofManifest'
 import { appConfig } from './config'
 
@@ -31,6 +31,8 @@ export type BatchConfig = {
 
 export type BatchItemResult = {
   id: string
+  inputIndex?: number
+  inputIdentity?: string
   file: File
   fileName: string
   fileSizeBytes: number
@@ -78,6 +80,33 @@ export const DEFAULT_BATCH_CONFIG: BatchConfig = {
   maxTotalSizeBytes: 500 * 1024 * 1024, // 500 MB
   apiBase: appConfig.apiBase,
   contractId: appConfig.registryId,
+}
+
+/**
+ * Derives a deterministic selected-input identity binding original selection slot
+ * and non-secret file descriptor attributes.
+ */
+export function deriveSelectedInputIdentity(
+  file: Pick<File, 'name' | 'size'> & { lastModified?: number },
+  inputIndex: number,
+): string {
+  const safeModified = typeof file.lastModified === 'number' && Number.isFinite(file.lastModified) ? file.lastModified : 0
+  return `input-${inputIndex}:${file.size}:${safeModified}:${file.name}`
+}
+
+/**
+ * Returns a copy of batch items ordered deterministically by original `inputIndex`
+ * rather than asynchronous worker completion order.
+ */
+export function orderBatchItemsBySelection<T extends { inputIndex?: number }>(items: ReadonlyArray<T>): T[] {
+  return items
+    .map((item, fallbackIndex) => ({
+      item,
+      sortKey: typeof item.inputIndex === 'number' ? item.inputIndex : fallbackIndex,
+      fallbackIndex,
+    }))
+    .sort((a, b) => (a.sortKey !== b.sortKey ? a.sortKey - b.sortKey : a.fallbackIndex - b.fallbackIndex))
+    .map((entry) => entry.item)
 }
 
 /**
@@ -191,7 +220,7 @@ export class BatchVerifier {
   }
 
   public getItems(): BatchItemResult[] {
-    return [...this.items]
+    return orderBatchItemsBySelection(this.items)
   }
 
   public setOnProgress(cb: (progress: BatchProgress, items: BatchItemResult[]) => void): void {
@@ -229,9 +258,12 @@ export class BatchVerifier {
     this.accumulatedTotalBytes = 0
 
     this.items = files.map((file, idx) => {
+      const inputIdentity = deriveSelectedInputIdentity(file, idx)
       const id = `item-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
       return {
         id,
+        inputIndex: idx,
+        inputIdentity,
         file,
         fileName: file.name,
         fileSizeBytes: file.size,
@@ -290,7 +322,7 @@ export class BatchVerifier {
         if (!item) break
 
         await this.processItem(item, signal)
-        this.notifyProgress(false, queue.length === 0)
+        this.notifyProgress(false, false)
       }
     }
 
@@ -306,13 +338,72 @@ export class BatchVerifier {
           item.failureReason = 'Batch execution was aborted by user request.'
         }
       }
+    } else {
+      this.canonicalizeConcurrentDuplicates()
     }
 
+    this.items = orderBatchItemsBySelection(this.items)
     const endTime = performance.now()
     const summary = this.computeSummary(endTime - startTime)
     this.notifyProgress(signal.aborted, true)
 
-    return { items: [...this.items], summary }
+    return { items: orderBatchItemsBySelection(this.items), summary }
+  }
+
+  private canonicalizeConcurrentDuplicates(): void {
+    const ordered = orderBatchItemsBySelection(this.items)
+    const groups = new Map<string, BatchItemResult[]>()
+
+    for (const item of ordered) {
+      if (!item.videoHash || item.manifest) continue
+      const list = groups.get(item.videoHash)
+      if (list) {
+        list.push(item)
+      } else {
+        groups.set(item.videoHash, [item])
+      }
+    }
+
+    for (const group of groups.values()) {
+      if (group.length < 2) continue
+      const evaluated = group.find((entry) => entry.status !== 'duplicate')
+      const earliest = group[0]
+      if (!evaluated || evaluated === earliest) {
+        for (let i = 1; i < group.length; i += 1) {
+          if (group[i].status === 'duplicate') {
+            group[i].duplicateOf = earliest.fileName
+            group[i].message = `Duplicate file detected (identical hash to ${earliest.fileName}).`
+          }
+        }
+        continue
+      }
+
+      // Promote verification outcome onto the earliest selected input slot
+      earliest.status = evaluated.status
+      earliest.metadataHash = evaluated.metadataHash
+      earliest.sourceHash = evaluated.sourceHash
+      earliest.tier = evaluated.tier
+      earliest.chainStatus = evaluated.chainStatus
+      earliest.message = evaluated.message
+      earliest.events = evaluated.events
+      earliest.chainProof = evaluated.chainProof
+      earliest.failureReason = evaluated.failureReason
+      earliest.duplicateOf = null
+
+      for (let i = 1; i < group.length; i += 1) {
+        const dup = group[i]
+        dup.status = 'duplicate'
+        dup.metadataHash = null
+        dup.sourceHash = null
+        dup.tier = null
+        dup.chainStatus = null
+        dup.events = []
+        dup.chainProof = null
+        dup.failureReason = null
+        dup.duplicateOf = earliest.fileName
+        dup.message = `Duplicate file detected (identical hash to ${earliest.fileName}).`
+      }
+    }
   }
 
   private async processItem(item: BatchItemResult, signal: AbortSignal): Promise<void> {
@@ -395,30 +486,66 @@ export class BatchVerifier {
       item.message = 'Extracting stego metadata and checking Stellar registry...'
       this.notifyProgress(false, false)
 
+      let extractedMetadataObj: Record<string, unknown> | null = null
       const result = await verifyArtifact({
         apiBase: this.config.apiBase,
         contractId: this.config.contractId,
         wallet: this.config.wallet,
         file: item.file,
+        videoHash,
         signal,
-        onEvent: (event) => {
-          item.events.push(event)
-          if (event.message) {
-            item.message = event.message
+        extractMetadataOverride: async (apiBase, file, reqSignal) => {
+          const form = new FormData()
+          form.append('video', file)
+          const response = await fetch(`${apiBase}/api/stego/extract`, {
+            method: 'POST',
+            body: form,
+            signal: reqSignal,
+          })
+          if (!response.ok) {
+            if (response.status >= 400 && response.status < 500) {
+              throw new MalformedEvidenceError()
+            }
+            throw new Error(`Stego extraction failed (${response.status})`)
           }
-          this.notifyProgress(false, false)
+          const payload = (await response.json()) as { metadata?: unknown }
+          if (payload?.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)) {
+            extractedMetadataObj = payload.metadata as Record<string, unknown>
+          }
+          return payload?.metadata ?? null
         },
       })
 
-      item.videoHash = result.videoHash ?? item.videoHash
-      item.metadataHash = result.metadataHash ?? null
-      item.sourceHash = result.sourceHash ?? null
-      item.tier = result.tier ?? null
-      item.chainProof = result.chainProof ?? null
-      item.chainStatus = result.chainStatus ?? null
-      item.status = result.status
+      item.events = result.events
+      item.chainProof = result.chainProof
+      item.metadataHash =
+        result.chainProof?.metadataHash ??
+        (typeof extractedMetadataObj?.['metadataHash'] === 'string'
+          ? (extractedMetadataObj['metadataHash'] as string)
+          : null)
+      item.sourceHash =
+        typeof extractedMetadataObj?.['sourceHash'] === 'string'
+          ? (extractedMetadataObj['sourceHash'] as string)
+          : null
+      item.tier =
+        result.chainProof !== null
+          ? (result.chainProof.tier === 0 ? 'silent' : result.chainProof.tier === 2 ? 'seal' : 'source')
+          : typeof extractedMetadataObj?.['tier'] === 'string'
+            ? (extractedMetadataObj['tier'] as string)
+            : (result.events[0]?.tier ?? null)
+      item.chainStatus = result.chainProof
+        ? result.chainProof.status === 2
+          ? 'Revoked'
+          : 'Active'
+        : null
+      item.status = result.outcome
       item.message = result.message
-      item.failureReason = result.failureReason ?? null
+      item.failureReason =
+        result.outcome === 'confirmed' ||
+        result.outcome === 'metadata-only' ||
+        result.outcome === 'database-only'
+          ? null
+          : result.message
       item.durationMs = performance.now() - itemStart
     } catch (err) {
       if (signal.aborted) {
@@ -457,7 +584,7 @@ export class BatchVerifier {
         isCancelled,
         isDone,
       },
-      [...this.items],
+      orderBatchItemsBySelection(this.items),
     )
   }
 

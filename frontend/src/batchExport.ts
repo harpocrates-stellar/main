@@ -1,8 +1,13 @@
-import type { BatchItemResult } from './batchVerifier'
+import {
+  deriveSelectedInputIdentity,
+  orderBatchItemsBySelection,
+  type BatchItemResult,
+} from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
-import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
+  inputIndex: number
+  inputIdentity: string
   fileName: string
   fileSizeBytes: number
   status: string
@@ -27,23 +32,36 @@ export type ReceiptCollection = {
 
 /**
  * Strips raw File handles and sensitive memory states, returning a clean,
- * privacy-safe serializable representation of batch verification results.
+ * privacy-safe serializable representation of batch verification results
+ * ordered deterministically by original selected `inputIndex`.
  */
 export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchReportItem[] {
-  return results.map((item) => ({
-    fileName: item.fileName,
-    fileSizeBytes: item.fileSizeBytes,
-    status: item.status,
-    videoHash: item.videoHash,
-    metadataHash: item.metadataHash,
-    sourceHash: item.sourceHash,
-    tier: item.tier,
-    chainStatus: item.chainStatus,
-    message: item.message,
-    duplicateOf: item.duplicateOf,
-    failureReason: item.failureReason,
-    durationMs: item.durationMs ? Math.round(item.durationMs) : null,
-  }))
+  const ordered = orderBatchItemsBySelection(results)
+  return ordered.map((item, fallbackIndex) => {
+    const inputIndex = typeof item.inputIndex === 'number' ? item.inputIndex : fallbackIndex
+    const inputIdentity =
+      item.inputIdentity ??
+      deriveSelectedInputIdentity(
+        item.file ?? { name: item.fileName, size: item.fileSizeBytes },
+        inputIndex,
+      )
+    return {
+      inputIndex,
+      inputIdentity,
+      fileName: item.fileName,
+      fileSizeBytes: item.fileSizeBytes,
+      status: item.status,
+      videoHash: item.videoHash,
+      metadataHash: item.metadataHash,
+      sourceHash: item.sourceHash,
+      tier: item.tier,
+      chainStatus: item.chainStatus,
+      message: item.message,
+      duplicateOf: item.duplicateOf,
+      failureReason: item.failureReason,
+      durationMs: item.durationMs ? Math.round(item.durationMs) : null,
+    }
+  })
 }
 
 /**
@@ -103,9 +121,10 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
  * Export standalone collection of valid ProofManifest receipts from the batch.
  */
 export function exportReceiptCollection(results: BatchItemResult[]): string {
+  const ordered = orderBatchItemsBySelection(results)
   const manifests: ProofManifest[] = []
 
-  for (const item of results) {
+  for (const item of ordered) {
     if (item.manifest) {
       manifests.push(item.manifest)
     } else if (item.status === 'confirmed' && item.videoHash && item.metadataHash && item.tier) {

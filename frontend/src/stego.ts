@@ -62,10 +62,10 @@ async function unpackPayload(data: Uint8Array): Promise<unknown | null> {
   if (!bytesEqual(checksum, actualChecksum)) return null
 
   try {
-    const decompressed = inflate(body)
-    const jsonStr = new TextDecoder('utf-8').decode(decompressed)
+    const decompressed = pako.inflate(body)
+    const jsonStr = new TextDecoder('utf-8', { fatal: true }).decode(decompressed)
     const value = JSON.parse(jsonStr)
-    return typeof value === 'object' && value !== null ? value : null
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null
   } catch {
     return null
   }
@@ -107,7 +107,76 @@ function getBorderPositions(width: number, height: number): [number, number][] {
   return positions
 }
 
-export async function extractMetadata(file: File): Promise<unknown> {
+const MAX_JSON_DEPTH = 64
+
+function exceedsJsonDepth(value: unknown, maxDepth: number): boolean {
+  const stack: Array<{ node: unknown; depth: number }> = [{ node: value, depth: 0 }]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (current.depth > maxDepth) return true
+    if (current.node && typeof current.node === 'object') {
+      if (Array.isArray(current.node)) {
+        for (const child of current.node) {
+          stack.push({ node: child, depth: current.depth + 1 })
+        }
+      } else {
+        for (const child of Object.values(current.node as Record<string, unknown>)) {
+          stack.push({ node: child, depth: current.depth + 1 })
+        }
+      }
+    }
+  }
+  return false
+}
+
+function extractMetadataFromBytes(buffer: Uint8Array): Record<string, unknown> {
+  if (!(buffer instanceof Uint8Array) || buffer.byteLength < 16) {
+    throw new MalformedEvidenceError()
+  }
+
+  for (let i = 0; i < MAGIC.length; i++) {
+    if (buffer[i] !== MAGIC[i]) {
+      throw new MalformedEvidenceError()
+    }
+  }
+
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  const declaredLen = view.getUint32(12, true)
+  if (declaredLen === 0 || declaredLen > MAX_PAYLOAD_BYTES || 16 + declaredLen !== buffer.byteLength) {
+    throw new MalformedEvidenceError()
+  }
+
+  const payload = buffer.subarray(16, 16 + declaredLen)
+  let jsonText: string
+  try {
+    jsonText = new TextDecoder('utf-8', { fatal: true }).decode(payload)
+  } catch {
+    throw new MalformedEvidenceError()
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch {
+    throw new MalformedEvidenceError()
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MalformedEvidenceError()
+  }
+  if (exceedsJsonDepth(parsed, MAX_JSON_DEPTH)) {
+    throw new MalformedEvidenceError()
+  }
+  return parsed as Record<string, unknown>
+}
+
+export function extractMetadata(buffer: Uint8Array): Record<string, unknown>
+export function extractMetadata(file: File): Promise<unknown>
+export function extractMetadata(input: File | Uint8Array): Promise<unknown> | Record<string, unknown> {
+  if (input instanceof Uint8Array) {
+    return extractMetadataFromBytes(input)
+  }
+  const file = input
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
     video.src = URL.createObjectURL(file)
