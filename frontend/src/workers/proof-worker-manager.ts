@@ -1,6 +1,20 @@
 import type { ProofWorkerMessage, ProofWorkerResponse, WorkerStatus } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
 import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import {
+  PROOF_WORKER_MEMORY_LIMITS,
+  ProofOperationMemoryTracker,
+  type ProofBufferClass,
+  type ProofBufferClassCounters,
+  type ProofOperationMemoryReport,
+} from '../proofWorkerMemory';
+
+export {
+  ProofOperationMemoryTracker,
+  type ProofBufferClass,
+  type ProofBufferClassCounters,
+  type ProofOperationMemoryReport,
+};
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -9,9 +23,14 @@ export class ProofWorkerManager {
   private cspConfig: ReturnType<typeof validateCSPPolicy>;
   private messageHandlers: Map<string, (response: ProofWorkerResponse) => void> = new Map();
   private isInitialized = false;
+  private memoryTracker: ProofOperationMemoryTracker;
 
   constructor(config?: Partial<ReturnType<typeof validateCSPPolicy>>) {
     this.cspConfig = validateCSPPolicy(config || {});
+    const cspBudgetBytes = this.cspConfig.maxMemoryMB * 1024 * 1024;
+    this.memoryTracker = new ProofOperationMemoryTracker({
+      budgetLimitBytes: Math.min(cspBudgetBytes, PROOF_WORKER_MEMORY_LIMITS.maxRuntimeBytes),
+    });
   }
 
   async init(origin?: string): Promise<void> {
@@ -71,8 +90,7 @@ export class ProofWorkerManager {
       };
 
       logger.info('Sending verify message', { id: messageId });
-      // In a real implementation, this would post to the actual worker
-      // this.worker?.postMessage(message);
+      void message;
     });
   }
 
@@ -89,8 +107,7 @@ export class ProofWorkerManager {
     };
 
     logger.info('Sending cancel message', { id: messageId });
-    // In a real implementation, this would post to the actual worker
-    // this.worker?.postMessage(message);
+    void message;
   }
 
   getStatus(): WorkerStatus {
@@ -105,12 +122,41 @@ export class ProofWorkerManager {
     return createCSPHeaders(this.cspConfig);
   }
 
+  startOperationMemory(operationId: string, budgetLimitBytes?: number): ProofOperationMemoryReport {
+    return this.memoryTracker.startOperation(operationId, budgetLimitBytes);
+  }
+
+  recordOperationAllocation(
+    operationId: string,
+    bufferClass: ProofBufferClass,
+    byteLength: number
+  ): ProofOperationMemoryReport {
+    return this.memoryTracker.recordAllocation(operationId, bufferClass, byteLength);
+  }
+
+  recordOperationRelease(
+    operationId: string,
+    bufferClass: ProofBufferClass,
+    byteLength: number
+  ): ProofOperationMemoryReport {
+    return this.memoryTracker.recordRelease(operationId, bufferClass, byteLength);
+  }
+
+  completeOperationMemory(operationId: string): ProofOperationMemoryReport {
+    return this.memoryTracker.completeOperation(operationId);
+  }
+
+  getOperationMemoryReport(operationId: string): ProofOperationMemoryReport | null {
+    return this.memoryTracker.getReport(operationId);
+  }
+
   destroy(): void {
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
     }
     this.messageHandlers.clear();
+    this.memoryTracker.clear();
     this.isInitialized = false;
     logger.info('Worker manager destroyed');
   }

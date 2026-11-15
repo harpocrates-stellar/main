@@ -211,3 +211,30 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Per-operation memory accounting
+
+`ProofOperationMemoryTracker` (in `src/proofWorkerMemory.ts`, exposed via
+`ProofWorkerManager`) tracks per-operation buffer lifecycles across five bounded
+buffer classes:
+
+- `artifact` — published browser ACIR payloads
+- `witness` — witness input containers
+- `proof` — serialized proof bytes
+- `public_input` — canonical public-input frames
+- `transfer` — transferable secret/input buffers crossing the worker boundary
+
+Accounting properties:
+
+- **Bounded counters:** every class and operation total tracks `allocatedBytes`,
+  `releasedBytes`, `activeBytes`, `peakBytes`, `allocationCount`, and
+  `releaseCount`. Allocations exceeding class budgets, operation budgets,
+  counter ceilings, or allocation-event ceilings fail closed with
+  `CircuitInputError('proof_worker_memory_exceeded')` without mutating counters.
+  Completed operation history is bounded (`maxTrackedOperations`).
+- **Privacy-preserving:** the tracker accepts integer byte counts only and never
+  stores or logs witness values, secrets, or proof payloads.
+- **Explicit precision boundary:** reports set
+  `measurementScope: 'tracked-operation-buffers'` and `browserHeapPrecise: false`
+  so diagnostics never claim browser-wide or WASM linear-memory precision.
+
+

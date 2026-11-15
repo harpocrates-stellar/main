@@ -228,3 +228,332 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+export const PROOF_BUFFER_CLASSES = Object.freeze([
+  'artifact',
+  'witness',
+  'proof',
+  'public_input',
+  'transfer',
+] as const)
+
+export type ProofBufferClass = (typeof PROOF_BUFFER_CLASSES)[number]
+
+export type ProofBufferClassCounters = {
+  readonly allocatedBytes: number
+  readonly releasedBytes: number
+  readonly activeBytes: number
+  readonly peakBytes: number
+  readonly allocationCount: number
+  readonly releaseCount: number
+}
+
+export const PROOF_MEMORY_PRECISION_NOTE =
+  'Counts explicit proof-worker buffer allocations and releases only; does not measure total browser or WASM linear-memory heap usage.' as const
+
+export type ProofOperationMemoryReport = {
+  readonly operationId: string
+  readonly status: 'active' | 'completed'
+  readonly measurementScope: 'tracked-operation-buffers'
+  readonly browserHeapPrecise: false
+  readonly precisionNote: typeof PROOF_MEMORY_PRECISION_NOTE
+  readonly budgetLimitBytes: number
+  readonly totals: ProofBufferClassCounters
+  readonly classes: Readonly<Record<ProofBufferClass, ProofBufferClassCounters>>
+}
+
+export type ProofOperationMemoryTrackerOptions = {
+  budgetLimitBytes?: number
+  classLimits?: Partial<Record<ProofBufferClass, number>>
+  maxTrackedOperations?: number
+  maxAllocationEventsPerOperation?: number
+  counterCeilingBytes?: number
+}
+
+type MutableCounters = {
+  allocatedBytes: number
+  releasedBytes: number
+  activeBytes: number
+  peakBytes: number
+  allocationCount: number
+  releaseCount: number
+}
+
+type MutableOperationEntry = {
+  operationId: string
+  status: 'active' | 'completed'
+  budgetLimitBytes: number
+  totals: MutableCounters
+  classes: Record<ProofBufferClass, MutableCounters>
+}
+
+const DEFAULT_MAX_TRACKED_OPERATIONS = 64
+const DEFAULT_MAX_ALLOCATION_EVENTS = 4_096
+const SAFE_OPERATION_ID = /^[A-Za-z0-9._:-]{1,128}$/
+
+const DEFAULT_CLASS_LIMITS: Readonly<Record<ProofBufferClass, number>> = Object.freeze({
+  artifact: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes,
+  witness: PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes,
+  proof: PROOF_WORKER_MEMORY_LIMITS.maxProofBytes,
+  public_input: PROOF_WORKER_MEMORY_LIMITS.maxPublicInputBytes,
+  transfer: PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes,
+})
+
+function emptyCounters(): MutableCounters {
+  return {
+    allocatedBytes: 0,
+    releasedBytes: 0,
+    activeBytes: 0,
+    peakBytes: 0,
+    allocationCount: 0,
+    releaseCount: 0,
+  }
+}
+
+function freezeCounters(counters: MutableCounters): ProofBufferClassCounters {
+  return Object.freeze({
+    allocatedBytes: counters.allocatedBytes,
+    releasedBytes: counters.releasedBytes,
+    activeBytes: counters.activeBytes,
+    peakBytes: counters.peakBytes,
+    allocationCount: counters.allocationCount,
+    releaseCount: counters.releaseCount,
+  })
+}
+
+function assertOperationId(operationId: string): string {
+  if (typeof operationId !== 'string' || !SAFE_OPERATION_ID.test(operationId)) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return operationId
+}
+
+function isProofBufferClass(value: string): value is ProofBufferClass {
+  return (PROOF_BUFFER_CLASSES as readonly string[]).includes(value)
+}
+
+function assertPositiveCap(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return value
+}
+
+/**
+ * Per-operation buffer memory accountant with bounded counters.
+ *
+ * Accepts byte counts only (never raw witness/secret buffers) and explicitly
+ * marks reports as tracked-buffer estimates rather than browser heap totals.
+ */
+export class ProofOperationMemoryTracker {
+  private readonly operations: Map<string, MutableOperationEntry> = new Map()
+  private readonly defaultBudgetLimitBytes: number
+  private readonly classLimits: Readonly<Record<ProofBufferClass, number>>
+  private readonly maxTrackedOperations: number
+  private readonly maxAllocationEvents: number
+  private readonly counterCeilingBytes: number
+
+  constructor(options: ProofOperationMemoryTrackerOptions = {}) {
+    this.defaultBudgetLimitBytes = assertPositiveCap(
+      options.budgetLimitBytes,
+      PROOF_WORKER_MEMORY_LIMITS.maxRuntimeBytes,
+    )
+    this.maxTrackedOperations = assertPositiveCap(
+      options.maxTrackedOperations,
+      DEFAULT_MAX_TRACKED_OPERATIONS,
+    )
+    this.maxAllocationEvents = assertPositiveCap(
+      options.maxAllocationEventsPerOperation,
+      DEFAULT_MAX_ALLOCATION_EVENTS,
+    )
+    this.counterCeilingBytes = assertPositiveCap(
+      options.counterCeilingBytes,
+      Math.min(Number.MAX_SAFE_INTEGER, this.defaultBudgetLimitBytes * 8),
+    )
+
+    const resolvedLimits: Record<ProofBufferClass, number> = {
+      artifact: DEFAULT_CLASS_LIMITS.artifact,
+      witness: DEFAULT_CLASS_LIMITS.witness,
+      proof: DEFAULT_CLASS_LIMITS.proof,
+      public_input: DEFAULT_CLASS_LIMITS.public_input,
+      transfer: DEFAULT_CLASS_LIMITS.transfer,
+    }
+    if (options.classLimits) {
+      for (const bufferClass of PROOF_BUFFER_CLASSES) {
+        const custom = options.classLimits[bufferClass]
+        if (custom !== undefined) {
+          resolvedLimits[bufferClass] = assertPositiveCap(custom, DEFAULT_CLASS_LIMITS[bufferClass])
+        }
+      }
+    }
+    this.classLimits = Object.freeze(resolvedLimits)
+  }
+
+  startOperation(operationId: string, budgetLimitBytes?: number): ProofOperationMemoryReport {
+    const id = assertOperationId(operationId)
+    if (this.operations.has(id)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    const resolvedBudget = assertPositiveCap(budgetLimitBytes, this.defaultBudgetLimitBytes)
+    if (resolvedBudget > this.counterCeilingBytes) {
+      failMemoryLimit()
+    }
+    this.evictIfNeeded()
+    const entry: MutableOperationEntry = {
+      operationId: id,
+      status: 'active',
+      budgetLimitBytes: resolvedBudget,
+      totals: emptyCounters(),
+      classes: {
+        artifact: emptyCounters(),
+        witness: emptyCounters(),
+        proof: emptyCounters(),
+        public_input: emptyCounters(),
+        transfer: emptyCounters(),
+      },
+    }
+    this.operations.set(id, entry)
+    return this.snapshot(entry)
+  }
+
+  recordAllocation(
+    operationId: string,
+    bufferClass: ProofBufferClass,
+    byteLength: number,
+  ): ProofOperationMemoryReport {
+    const id = assertOperationId(operationId)
+    if (!isProofBufferClass(bufferClass)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    let entry = this.operations.get(id)
+    if (!entry) {
+      this.startOperation(id)
+      entry = this.operations.get(id)!
+    }
+    if (entry.status !== 'active') {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    const classCounters = entry.classes[bufferClass]
+    const nextClassActive = classCounters.activeBytes + byteLength
+    const nextTotalActive = entry.totals.activeBytes + byteLength
+    const nextClassAllocated = classCounters.allocatedBytes + byteLength
+    const nextTotalAllocated = entry.totals.allocatedBytes + byteLength
+    const nextTotalEvents = entry.totals.allocationCount + 1
+
+    if (
+      nextClassActive > this.classLimits[bufferClass] ||
+      nextTotalActive > entry.budgetLimitBytes ||
+      nextClassAllocated > this.counterCeilingBytes ||
+      nextTotalAllocated > this.counterCeilingBytes ||
+      nextTotalEvents > this.maxAllocationEvents
+    ) {
+      failMemoryLimit()
+    }
+
+    classCounters.allocatedBytes = nextClassAllocated
+    classCounters.activeBytes = nextClassActive
+    if (nextClassActive > classCounters.peakBytes) {
+      classCounters.peakBytes = nextClassActive
+    }
+    classCounters.allocationCount += 1
+
+    entry.totals.allocatedBytes = nextTotalAllocated
+    entry.totals.activeBytes = nextTotalActive
+    if (nextTotalActive > entry.totals.peakBytes) {
+      entry.totals.peakBytes = nextTotalActive
+    }
+    entry.totals.allocationCount = nextTotalEvents
+
+    return this.snapshot(entry)
+  }
+
+  recordRelease(
+    operationId: string,
+    bufferClass: ProofBufferClass,
+    byteLength: number,
+  ): ProofOperationMemoryReport {
+    const id = assertOperationId(operationId)
+    if (!isProofBufferClass(bufferClass)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    const entry = this.operations.get(id)
+    if (!entry || entry.status !== 'active') {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    const classCounters = entry.classes[bufferClass]
+    if (byteLength > classCounters.activeBytes || byteLength > entry.totals.activeBytes) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    classCounters.activeBytes -= byteLength
+    classCounters.releasedBytes += byteLength
+    classCounters.releaseCount += 1
+
+    entry.totals.activeBytes -= byteLength
+    entry.totals.releasedBytes += byteLength
+    entry.totals.releaseCount += 1
+
+    return this.snapshot(entry)
+  }
+
+  completeOperation(operationId: string): ProofOperationMemoryReport {
+    const id = assertOperationId(operationId)
+    const entry = this.operations.get(id)
+    if (!entry) {
+      throw new CircuitInputError('invalid_input')
+    }
+    entry.status = 'completed'
+    return this.snapshot(entry)
+  }
+
+  getReport(operationId: string): ProofOperationMemoryReport | null {
+    const id = assertOperationId(operationId)
+    const entry = this.operations.get(id)
+    return entry ? this.snapshot(entry) : null
+  }
+
+  clear(): void {
+    this.operations.clear()
+  }
+
+  private evictIfNeeded(): void {
+    if (this.operations.size < this.maxTrackedOperations) return
+    for (const [key, item] of this.operations.entries()) {
+      if (item.status === 'completed') {
+        this.operations.delete(key)
+        if (this.operations.size < this.maxTrackedOperations) return
+      }
+    }
+    failMemoryLimit()
+  }
+
+  private snapshot(entry: MutableOperationEntry): ProofOperationMemoryReport {
+    return Object.freeze({
+      operationId: entry.operationId,
+      status: entry.status,
+      measurementScope: 'tracked-operation-buffers' as const,
+      browserHeapPrecise: false as const,
+      precisionNote: PROOF_MEMORY_PRECISION_NOTE,
+      budgetLimitBytes: entry.budgetLimitBytes,
+      totals: freezeCounters(entry.totals),
+      classes: Object.freeze({
+        artifact: freezeCounters(entry.classes.artifact),
+        witness: freezeCounters(entry.classes.witness),
+        proof: freezeCounters(entry.classes.proof),
+        public_input: freezeCounters(entry.classes.public_input),
+        transfer: freezeCounters(entry.classes.transfer),
+      }),
+    })
+  }
+}
