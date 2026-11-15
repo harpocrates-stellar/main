@@ -14,6 +14,26 @@ contracts/harpocrates-registry
 - Tier 2 Consistent Source: Stellar account signed source.
 - Tier 3 Public Seal: approved institutional issuer.
 
+### Tier-Bound Proof Pagination (#1198)
+
+Registered proofs are indexed per identity tier (`1..=3`) in deterministic
+registration order and queried through tier-scoped cursors:
+
+```text
+get_tier_proof_count(tier: u32) -> u32
+list_proofs_by_tier(tier: u32, cursor: Option<TierProofCursor>, limit: u32) -> TierProofPage
+```
+
+- `limit` must be in `1..=MAX_TIER_PROOFS_PAGE` (`50`), else `ListLimitExceeded` (`#91`).
+- `tier` must be `1`, `2`, or `3`, else `InvalidPublicInputs` (`#10`).
+- `TierProofCursor { tier, next_seq }` binds each continuation token to the
+  selected identity tier (`TierProofPage` exposes `has_more`, `next_cursor_tier`,
+  and `next_cursor_seq`). Passing a cursor issued for one tier to a query for a
+  different tier — or passing `next_seq == 0` or `next_seq > total + 1` — fails
+  closed with `InvalidCursor` (`#90`).
+- Storage keys `TierProofSeq(tier)` and `TierProofIndex(tier, seq)` are purely
+  additive; existing `ProofRecord` reads and registrations stay compatible.
+
 For `add_schema` and `verify_selective_disclosure`, see the
 [Selective Disclosure specification](../docs/zk-selective-disclosure-spec.md)
 for the circuit statement, 352-byte public-input layout, schema/version checks,

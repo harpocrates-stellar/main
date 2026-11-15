@@ -536,6 +536,44 @@ pub const MAX_CREDENTIAL_ROOTS_PAGE: u32 = 25;
 /// Maximum number of credential roots backfilled in a single `upgrade_storage` call (#731).
 pub const MAX_ROOTS_BACKFILL_BATCH: u32 = 25;
 
+/// Maximum number of proof IDs returned in a single `list_proofs_by_tier` page (#1198).
+pub const MAX_TIER_PROOFS_PAGE: u32 = 50;
+
+/// Pagination cursor explicitly bound to a selected identity tier (#1198).
+///
+/// Reusing a cursor produced for one identity tier against a different `tier`
+/// query fails closed with [`RegistryError::InvalidCursor`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TierProofCursor {
+    /// Selected identity tier (`1` = Silent Witness, `2` = Consistent Source, `3` = Public Seal).
+    pub tier: u32,
+    /// 1-based sequence index of the next proof entry inside `tier`.
+    pub next_seq: u32,
+}
+
+/// Deterministic, bounded page of proof IDs for a selected identity tier (#1198).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TierProofPage {
+    pub proof_ids: Vec<BytesN<32>>,
+    pub has_more: bool,
+    pub next_cursor_tier: Option<u32>,
+    pub next_cursor_seq: Option<u32>,
+    pub total: u32,
+    pub tier: u32,
+}
+
+impl TierProofPage {
+    /// Reconstruct the tier-bound continuation cursor when `has_more` is `true`.
+    pub fn next_cursor(&self) -> Option<TierProofCursor> {
+        match (self.has_more, self.next_cursor_tier, self.next_cursor_seq) {
+            (true, Some(tier), Some(next_seq)) => Some(TierProofCursor { tier, next_seq }),
+            _ => None,
+        }
+    }
+}
+
 /// An entry in a `CredentialRootPage` (#731).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1963,6 +2001,10 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Sequential count of proofs indexed under a given identity tier (#1198).
+    TierProofSeq(u32),
+    /// Proof ID at 1-based sequence index `(tier, seq)` (#1198).
+    TierProofIndex(u32, u32),
 }
 
 #[contracterror]
@@ -6969,6 +7011,95 @@ impl HarpocratesRegistry {
         };
         collect_valid_seal_signers(&env, &policy, &proof_id, None).len()
     }
+
+    /// Return the number of proofs indexed under `tier` (`1..=3`) (#1198).
+    pub fn get_tier_proof_count(env: Env, tier: u32) -> u32 {
+        require_valid_identity_tier(&env, tier);
+        env.storage()
+            .persistent()
+            .get(&DataKey::TierProofSeq(tier))
+            .unwrap_or(0)
+    }
+
+    /// Paginate registered proof IDs for a selected identity `tier` (`1..=3`)
+    /// using a tier-bound cursor (#1198).
+    ///
+    /// - `limit` must be in `1..=MAX_TIER_PROOFS_PAGE`, else `ListLimitExceeded`.
+    /// - `cursor = None` starts from the first entry in `tier`.
+    /// - Passing a cursor whose `cursor.tier != tier` or whose `next_seq` is
+    ///   zero or past `total + 1` reverts with `InvalidCursor` so cursors can
+    ///   never be mixed across identity tiers.
+    pub fn list_proofs_by_tier(
+        env: Env,
+        tier: u32,
+        cursor: Option<TierProofCursor>,
+        limit: u32,
+    ) -> TierProofPage {
+        require_valid_identity_tier(&env, tier);
+        if limit == 0 || limit > MAX_TIER_PROOFS_PAGE {
+            panic_with_error!(&env, RegistryError::ListLimitExceeded);
+        }
+
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TierProofSeq(tier))
+            .unwrap_or(0);
+
+        let start_seq: u32 = match cursor {
+            None => 1,
+            Some(c) => {
+                if c.tier != tier {
+                    panic_with_error!(&env, RegistryError::InvalidCursor);
+                }
+                if c.next_seq == 0 || c.next_seq > total.saturating_add(1) {
+                    panic_with_error!(&env, RegistryError::InvalidCursor);
+                }
+                c.next_seq
+            }
+        };
+
+        let mut proof_ids = Vec::new(&env);
+        if total == 0 || start_seq > total {
+            return TierProofPage {
+                proof_ids,
+                has_more: false,
+                next_cursor_tier: None,
+                next_cursor_seq: None,
+                total,
+                tier,
+            };
+        }
+
+        let end_seq = total.min(start_seq.saturating_add(limit - 1));
+        let mut seq = start_seq;
+        while seq <= end_seq {
+            if let Some(proof_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, BytesN<32>>(&DataKey::TierProofIndex(tier, seq))
+            {
+                proof_ids.push_back(proof_id);
+            }
+            seq += 1;
+        }
+
+        let has_more = end_seq < total;
+        let (next_cursor_tier, next_cursor_seq) = if has_more {
+            (Some(tier), Some(end_seq + 1))
+        } else {
+            (None, None)
+        };
+
+        TierProofPage {
+            proof_ids,
+            has_more,
+            next_cursor_tier,
+            next_cursor_seq,
+            total,
+            tier,
+        }
+    }
 }
 
 pub fn version(env: Env) -> soroban_sdk::String {
@@ -7562,6 +7693,22 @@ fn append_proof_dispute(env: &Env, proof_id: &BytesN<32>, dispute_id: &BytesN<32
     env.storage().persistent().set(&seq_key, &next);
 }
 
+fn require_valid_identity_tier(env: &Env, tier: u32) {
+    if !(TIER_SILENT_WITNESS..=TIER_PUBLIC_SEAL).contains(&tier) {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+}
+
+fn append_tier_proof_index(env: &Env, tier: u32, proof_id: &BytesN<32>) {
+    let seq_key = DataKey::TierProofSeq(tier);
+    let current: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+    let next = current.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TierProofIndex(tier, next), proof_id);
+    env.storage().persistent().set(&seq_key, &next);
+}
+
 fn save_record(
     env: &Env,
     proof_id: &BytesN<32>,
@@ -7574,6 +7721,7 @@ fn save_record(
     env.storage()
         .persistent()
         .set(&DataKey::Video(record.video_hash.clone()), proof_id);
+    append_tier_proof_index(env, record.tier, proof_id);
     ProofRegistered {
         proof_id: proof_id.clone(),
         video_hash: record.video_hash.clone(),
@@ -9119,6 +9267,8 @@ mod test_selective_disclosure;
 mod test_state_machine;
 #[cfg(test)]
 mod test_threshold_seal;
+#[cfg(test)]
+mod test_tier_pagination;
 #[cfg(test)]
 pub mod test_timelock;
 #[cfg(test)]
