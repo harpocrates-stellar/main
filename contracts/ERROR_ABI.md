@@ -139,6 +139,30 @@ call can succeed.
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
 | 88 | `ReporterDisputesSaturated` | resource | no | The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`. |
 | 89 | `InsufficientApprovals` | auth | no | The action requires admin council threshold approvals. |
+| 90 | `InvalidCursor` | malformed | no | The pagination cursor is malformed, out of range, or bound to a different query scope. |
+| 91 | `ListLimitExceeded` | oversized | no | The `limit` supplied to a paginated list method is zero or exceeds its maximum page cap. |
+| 92 | `ExpiredCredentialRoot` | expired | no | The credential root has expired and can no longer anchor new proofs. |
+| 93 | `RoleConflict` | conflict | no | Admin and active issuer roles are mutually exclusive for the same address. |
+| 94 | `InvalidInclusionProof` | malformed | no | The Tier 2 source batch Merkle inclusion proof failed validation. |
+| 95 | `IssuerQuotaExhausted` | resource | yes | The key reached `max_registrations` in the current ledger-time window bucket; retry after rollover. |
+| 96 | `LineageDepthMismatch` | malformed | no | The caller-supplied lineage depth does not match the depth derived from its parents. |
+| 97 | `LineageFanOutSaturated` | resource | no | A lineage parent already reached its `MAX_LINEAGE_FANOUT` derivative out-degree cap. |
+| 98 | `ReceiptProofNotFound` | state | no | No proof exists for the requested receipt commitment. |
+| 99 | `ReceiptProofNotActive` | revoked | no | A receipt digest cannot be committed for a revoked or expired proof. |
+| 100 | `ReceiptAlreadyCommitted` | conflict | no | A different receipt digest is already committed for this proof. |
+| 101 | `InvalidReceiptDigest` | malformed | no | The receipt digest is all-zero or structurally invalid. |
+| 102 | `UnknownReceiptSigner` | unsupported | no | The receipt-signing public key is not registered in the allowlist. |
+| 103 | `RevokedReceiptSigner` | revoked | no | The receipt-signing public key has been revoked. |
+| 104 | `ReceiptSignersSaturated` | resource | no | The registry reached `MAX_RECEIPT_SIGNERS` active receipt-signing keys. |
+| 105 | `SchemaAlreadyActive` | state | no | `reactivate_schema` was called on a schema that is already active. |
+| 106 | `NoActiveSealPolicy` | state | no | No active threshold seal policy is configured. |
+| 107 | `SealPolicyCancelled` | state | no | The referenced threshold seal policy is cancelled, expired, or absent. |
+| 108 | `UnknownPolicySigner` | auth | no | The caller is not in the threshold seal policy signer set. |
+| 109 | `SealThresholdNotMet` | state | no | Valid unexpired seal approvals do not meet the required threshold. |
+| 110 | `InvalidSealThreshold` | malformed | no | `required_approvals` is zero or exceeds `max_signers`. |
+| 111 | `SealSignerSetTooLarge` | oversized | no | `max_signers` or the signer set exceeds the configured limit. |
+| 112 | `SealAlreadyFinalized` | conflict | no | The threshold seal for this proof has already been finalized. |
+| 113 | `RoleIntentDigestMismatch` | conflict | no | The privileged transition parameters or target role do not match the bound role-change intent digest. |
 
 ## Privacy Rules
 
