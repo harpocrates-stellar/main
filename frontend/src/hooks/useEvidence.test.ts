@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiClientError } from '../services/apiError'
 import { useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ vi.mock('../services/evidenceService', () => ({
 describe('useEvidence hashing progress', () => {
   afterEach(() => {
     vi.clearAllMocks()
+    localStorage.clear()
   })
 
   it('exposes byte progress and updates the Evidence Studio message', async () => {
@@ -230,6 +232,122 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('keeps interrupted upload recovery choices visible after navigation and separates resumable, expired, and unrecoverable sessions', async () => {
+    let clockMs = 1_700_000_000_000
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockRejectedValueOnce(new Error('Temporary network outage.'))
+
+    const originalFile = new File(['video-bytes'], 'clip.mp4', {
+      type: 'video/mp4',
+      lastModified: 1_700_000_000_000,
+    })
+
+    const firstMount = renderHook(() =>
+      useEvidence({ now: () => clockMs, recoveryTtlMs: 60_000 }),
+    )
+    await act(async () => {
+      await firstMount.result.current.handleEvidence(originalFile)
+    })
+
+    expect(firstMount.result.current.interruptedSession?.status).toBe('resumable')
+    expect(firstMount.result.current.interruptedSession?.hasInMemoryFile).toBe(true)
+    firstMount.unmount()
+
+    // Simulate returning to Studio after navigation (fresh mount, still within TTL).
+    embedVideoMock.mockClear()
+    hashFileInWorkerMock.mockClear()
+    clockMs += 10_000
+    const secondMount = renderHook(() =>
+      useEvidence({ now: () => clockMs, recoveryTtlMs: 60_000 }),
+    )
+    expect(secondMount.result.current.interruptedSession?.status).toBe('resumable')
+    expect(secondMount.result.current.interruptedSession?.hasInMemoryFile).toBe(false)
+    // Never automatically retries on navigation remount.
+    expect(hashFileInWorkerMock).not.toHaveBeenCalled()
+    expect(embedVideoMock).not.toHaveBeenCalled()
+
+    // Advance past recovery TTL and navigate again -> expired session.
+    clockMs += 120_000
+    act(() => {
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    expect(secondMount.result.current.interruptedSession?.status).toBe('expired')
+    let resumedExpired = true
+    await act(async () => {
+      resumedExpired = (await secondMount.result.current.resumeInterruptedUpload?.(originalFile)) ?? true
+    })
+    expect(resumedExpired).toBe(false)
+    expect(hashFileInWorkerMock).not.toHaveBeenCalled()
+    secondMount.unmount()
+
+    // Unrecoverable media validation error -> unrecoverable session.
+    localStorage.clear()
+    embedVideoMock.mockRejectedValueOnce(
+      new ApiClientError({
+        code: 'UNSUPPORTED_MEDIA_TYPE',
+        message: 'Unsupported file type. Use an MP4, WebM, or MOV video.',
+        detail: null,
+        requestId: null,
+        action: 'use_supported_format',
+        retryable: false,
+        status: 415,
+      }),
+    )
+    const thirdMount = renderHook(() =>
+      useEvidence({ now: () => clockMs, recoveryTtlMs: 60_000 }),
+    )
+    await act(async () => {
+      await thirdMount.result.current.handleEvidence(originalFile)
+    })
+    expect(thirdMount.result.current.interruptedSession?.status).toBe('unrecoverable')
+  })
+
+  it('prevents automatic retry when a changed source file is supplied during recovery', async () => {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock
+      .mockRejectedValueOnce(new Error('Temporary network outage.'))
+      .mockResolvedValueOnce({
+        embeddedBlob: new Blob(['embedded']),
+        embeddedHash: 'b'.repeat(64),
+        metadataHash: 'c'.repeat(64),
+      })
+
+    const originalFile = new File(['original-bytes'], 'clip.mp4', {
+      type: 'video/mp4',
+      lastModified: 1_700_000_000_000,
+    })
+    const changedFile = new File(['modified-bytes-different-length'], 'clip.mp4', {
+      type: 'video/mp4',
+      lastModified: 1_700_000_050_000,
+    })
+
+    const firstMount = renderHook(() => useEvidence())
+    await act(async () => {
+      await firstMount.result.current.handleEvidence(originalFile)
+    })
+    expect(firstMount.result.current.interruptedSession?.status).toBe('resumable')
+    firstMount.unmount()
+
+    hashFileInWorkerMock.mockClear()
+    embedVideoMock.mockClear()
+
+    const remounted = renderHook(() => useEvidence())
+    expect(remounted.result.current.interruptedSession?.status).toBe('resumable')
+
+    let resumedWithChanged = true
+    await act(async () => {
+      resumedWithChanged =
+        (await remounted.result.current.resumeInterruptedUpload?.(changedFile)) ?? true
+    })
+
+    expect(resumedWithChanged).toBe(false)
+    expect(remounted.result.current.interruptedSession?.status).toBe('unrecoverable')
+    expect(remounted.result.current.interruptedSession?.sourceChanged).toBe(true)
+    expect(remounted.result.current.message).toMatch(/automatic retry is blocked/i)
+    expect(hashFileInWorkerMock).not.toHaveBeenCalled()
+    expect(embedVideoMock).not.toHaveBeenCalled()
   })
 })
 

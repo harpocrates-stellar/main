@@ -38,11 +38,14 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    interruptedSession,
     message,
     registration,
     networkMismatch,
     isCancellable,
     handleEvidence,
+    resumeInterruptedUpload,
+    dismissInterruptedSession,
     registerProof,
     cancelEvidence,
     cancelProving,
@@ -56,6 +59,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const recoveryInputRef = useRef<HTMLInputElement | null>(null)
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -83,6 +87,103 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           <div className="network-mismatch-banner" role="alert">
             <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
             <span>{networkMismatch}</span>
+          </div>
+        ) : null}
+
+        {interruptedSession ? (
+          <div
+            className="rail-block"
+            role="region"
+            aria-labelledby="studio-upload-recovery-heading"
+            data-session-status={interruptedSession.status}
+          >
+            <h3 id="studio-upload-recovery-heading">Interrupted upload recovery</h3>
+            <p>
+              <strong>
+                {interruptedSession.status === 'resumable'
+                  ? 'Resumable session'
+                  : interruptedSession.status === 'expired'
+                    ? 'Expired session'
+                    : 'Unrecoverable session'}
+                :
+              </strong>{' '}
+              {interruptedSession.status === 'resumable'
+                ? `Interrupted during ${interruptedSession.stageAtInterruption} for ${interruptedSession.sourceIdentity.fileName} (${interruptedSession.sourceIdentity.sizeBytes.toLocaleString('en-US')} bytes).`
+                : interruptedSession.status === 'expired'
+                  ? `Recovery window expired for ${interruptedSession.sourceIdentity.fileName}. Start a fresh upload to continue.`
+                  : interruptedSession.reason}
+            </p>
+            <div className="verify-actions" role="group" aria-label="Interrupted upload recovery choices">
+              {interruptedSession.status === 'resumable' ? (
+                <>
+                  {interruptedSession.hasInMemoryFile ? (
+                    <button
+                      type="button"
+                      className="primary-action"
+                      disabled={isBusy}
+                      onClick={() => void resumeInterruptedUpload?.()}
+                    >
+                      Resume upload
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="primary-action"
+                        disabled={isBusy}
+                        onClick={() => recoveryInputRef.current?.click()}
+                      >
+                        Verify source file to resume
+                      </button>
+                      <input
+                        id="studio-recovery-file-input"
+                        ref={recoveryInputRef}
+                        type="file"
+                        accept="video/*"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        style={{ display: 'none' }}
+                        onChange={(event) => {
+                          const picked = event.target.files?.[0] ?? null
+                          event.target.value = ''
+                          void resumeInterruptedUpload?.(picked)
+                        }}
+                      />
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="hero-secondary verify-action-btn"
+                    disabled={isBusy}
+                    onClick={() => dismissInterruptedSession?.()}
+                  >
+                    Discard interrupted session
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="hero-secondary verify-action-btn"
+                    disabled={isBusy}
+                    onClick={() => {
+                      dismissInterruptedSession?.()
+                      studioInputRef.current?.click()
+                    }}
+                  >
+                    Start fresh upload
+                  </button>
+                  <button
+                    type="button"
+                    className="hero-secondary verify-action-btn"
+                    disabled={isBusy}
+                    onClick={() => dismissInterruptedSession?.()}
+                  >
+                    Dismiss recovery notice
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         ) : null}
 

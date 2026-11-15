@@ -9,7 +9,7 @@
  * docs/proof-worker.md).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, Fingerprint, KeyRound } from 'lucide-react'
 import type { IdentityTier, ProofPackage, SilentWitnessProof, Stage } from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
@@ -19,6 +19,8 @@ import {
   ProofWorkerError,
 } from '../workers/proofWorkerClient'
 import { hashFileInWorker } from '../workers/fileHashWorkerClient'
+import { CheckpointStorage } from '../lib/checkpointStorage'
+import { ApiClientError } from '../services/apiError'
 import { appConfig } from '../config'
 
 export const TIERS = [
@@ -60,6 +62,142 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   cancelled: 'Request cancelled.',
 }
 
+export const UPLOAD_RECOVERY_TTL_MS = 15 * 60 * 1000
+const UPLOAD_RECOVERY_WORKFLOW_ID = 'studio-upload-recovery'
+const UPLOAD_RECOVERY_STEP_ID = 'active'
+
+export type InterruptedSessionStatus = 'resumable' | 'expired' | 'unrecoverable'
+
+export type SourceFileFingerprint = {
+  fileName: string
+  sizeBytes: number
+  lastModified: number
+  mimeType: string
+  fingerprint: string
+}
+
+export type InterruptedUploadRecord = {
+  version: 1
+  tier: IdentityTier
+  interruptedAt: number
+  stageAtInterruption: 'hashing' | 'embedding'
+  reason: string
+  recoverable: boolean
+  sourceIdentity: SourceFileFingerprint
+  sourceChanged?: boolean
+}
+
+export type InterruptedUploadSession = {
+  status: InterruptedSessionStatus
+  tier: IdentityTier
+  interruptedAt: number
+  stageAtInterruption: 'hashing' | 'embedding'
+  reason: string
+  sourceIdentity: SourceFileFingerprint
+  hasInMemoryFile: boolean
+  sourceChanged: boolean
+}
+
+export function computeSourceFileFingerprint(file: File): SourceFileFingerprint {
+  const safeName = file.name.split(/[/\\]/).pop() ?? 'evidence.mp4'
+  const mimeType = file.type || 'application/octet-stream'
+  const raw = `${safeName}|${file.size}|${file.lastModified}|${mimeType}`
+  let h = 0x811c9dc5
+  for (let i = 0; i < raw.length; i += 1) {
+    h ^= raw.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return {
+    fileName: safeName,
+    sizeBytes: file.size,
+    lastModified: file.lastModified,
+    mimeType,
+    fingerprint: `src-${(h >>> 0).toString(16).padStart(8, '0')}`,
+  }
+}
+
+function sourceFingerprintsEqual(a: SourceFileFingerprint, b: SourceFileFingerprint): boolean {
+  return (
+    a.fingerprint === b.fingerprint &&
+    a.fileName === b.fileName &&
+    a.sizeBytes === b.sizeBytes &&
+    a.lastModified === b.lastModified &&
+    a.mimeType === b.mimeType
+  )
+}
+
+function isUnrecoverableUploadError(error: unknown): boolean {
+  if (error instanceof ApiClientError) {
+    return (
+      error.code === 'UNSUPPORTED_MEDIA_TYPE' ||
+      error.code === 'PAYLOAD_TOO_LARGE' ||
+      error.code === 'VALIDATION_ERROR'
+    )
+  }
+  if (error instanceof Error) {
+    return /invalid evidence package|unsupported|too large/i.test(error.message)
+  }
+  return false
+}
+
+export function classifyInterruptedUploadSession(params: {
+  record: InterruptedUploadRecord
+  activeFile: File | null
+  nowMs?: number
+  ttlMs?: number
+}): InterruptedUploadSession {
+  const { record, activeFile, nowMs = Date.now(), ttlMs = UPLOAD_RECOVERY_TTL_MS } = params
+  const matchesActive =
+    activeFile !== null &&
+    sourceFingerprintsEqual(computeSourceFileFingerprint(activeFile), record.sourceIdentity)
+  const sourceChanged = Boolean(record.sourceChanged) || (activeFile !== null && !matchesActive)
+
+  if (!record.recoverable || sourceChanged) {
+    return {
+      status: 'unrecoverable',
+      tier: record.tier,
+      interruptedAt: record.interruptedAt,
+      stageAtInterruption: record.stageAtInterruption,
+      reason: sourceChanged
+        ? 'Selected source file differs from the interrupted session. Automatic retry is blocked.'
+        : record.reason,
+      sourceIdentity: record.sourceIdentity,
+      hasInMemoryFile: false,
+      sourceChanged,
+    }
+  }
+
+  if (nowMs - record.interruptedAt > ttlMs) {
+    return {
+      status: 'expired',
+      tier: record.tier,
+      interruptedAt: record.interruptedAt,
+      stageAtInterruption: record.stageAtInterruption,
+      reason: 'Interrupted upload recovery window has expired. Start a fresh upload.',
+      sourceIdentity: record.sourceIdentity,
+      hasInMemoryFile: matchesActive,
+      sourceChanged: false,
+    }
+  }
+
+  return {
+    status: 'resumable',
+    tier: record.tier,
+    interruptedAt: record.interruptedAt,
+    stageAtInterruption: record.stageAtInterruption,
+    reason: record.reason,
+    sourceIdentity: record.sourceIdentity,
+    hasInMemoryFile: matchesActive,
+    sourceChanged: false,
+  }
+}
+
+export type UseEvidenceOptions = {
+  now?: () => number
+  recoveryTtlMs?: number
+  recoveryStorage?: CheckpointStorage<InterruptedUploadRecord>
+}
+
 export type UseEvidenceReturn = {
   selectedTier: IdentityTier
   setSelectedTier: (tier: IdentityTier) => void
@@ -74,11 +212,15 @@ export type UseEvidenceReturn = {
   setCredentialSeed: (v: string) => void
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
+  interruptedSession?: InterruptedUploadSession | null
   message: string
   registration: RegisterProofResult | null
   networkMismatch: string | null
   isCancellable: boolean
   handleEvidence: (nextFile: File | null) => Promise<void>
+  resumeInterruptedUpload?: (candidateFile?: File | null) => Promise<boolean>
+  dismissInterruptedSession?: () => void
+  refreshInterruptedSession?: () => void
   registerProof: (wallet: string) => Promise<void>
   cancelEvidence: () => void
   /** Cancel an in-flight Silent Witness proof generation (no-op if idle). */
@@ -92,8 +234,50 @@ type PendingRegistration = {
   wallet: string
 }
 
-export function useEvidence(): UseEvidenceReturn {
-  const [selectedTier, setSelectedTier] = useState<IdentityTier>('silent')
+function isValidStoredRecoveryRecord(val: unknown): val is InterruptedUploadRecord {
+  if (!val || typeof val !== 'object') return false
+  const rec = val as Record<string, unknown>
+  const src = rec.sourceIdentity as Record<string, unknown> | undefined
+  return (
+    rec.version === 1 &&
+    (rec.tier === 'silent' || rec.tier === 'source' || rec.tier === 'seal') &&
+    typeof rec.interruptedAt === 'number' &&
+    (rec.stageAtInterruption === 'hashing' || rec.stageAtInterruption === 'embedding') &&
+    typeof rec.reason === 'string' &&
+    typeof rec.recoverable === 'boolean' &&
+    !!src &&
+    typeof src.fileName === 'string' &&
+    typeof src.sizeBytes === 'number' &&
+    typeof src.lastModified === 'number' &&
+    typeof src.mimeType === 'string' &&
+    typeof src.fingerprint === 'string'
+  )
+}
+
+const defaultNow = () => Date.now()
+
+export function useEvidence(options: UseEvidenceOptions = {}): UseEvidenceReturn {
+  const nowFn = options.now ?? defaultNow
+  const ttlMs = options.recoveryTtlMs ?? UPLOAD_RECOVERY_TTL_MS
+  const [recoveryStorage] = useState<CheckpointStorage<InterruptedUploadRecord>>(
+    () => options.recoveryStorage ?? new CheckpointStorage<InterruptedUploadRecord>(),
+  )
+  const [initialStoredRecord] = useState<InterruptedUploadRecord | null>(() => {
+    const raw = recoveryStorage.load(
+      UPLOAD_RECOVERY_WORKFLOW_ID,
+      UPLOAD_RECOVERY_STEP_ID,
+    )
+    if (!raw) return null
+    if (!isValidStoredRecoveryRecord(raw)) {
+      recoveryStorage.remove(UPLOAD_RECOVERY_WORKFLOW_ID, UPLOAD_RECOVERY_STEP_ID)
+      return null
+    }
+    return raw
+  })
+
+  const [selectedTier, setSelectedTier] = useState<IdentityTier>(
+    initialStoredRecord?.tier ?? 'silent',
+  )
   const [stage, setStage] = useState<Stage>('idle')
   const [hashProgress, setHashProgress] = useState<HashProgress | null>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -101,6 +285,17 @@ export function useEvidence(): UseEvidenceReturn {
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string>('')
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
+  const [interruptedSession, setInterruptedSession] = useState<InterruptedUploadSession | null>(
+    () =>
+      initialStoredRecord
+        ? classifyInterruptedUploadSession({
+            record: initialStoredRecord,
+            activeFile: null,
+            nowMs: nowFn(),
+            ttlMs,
+          })
+        : null,
+  )
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
@@ -108,6 +303,90 @@ export function useEvidence(): UseEvidenceReturn {
   const registrationInFlightedRef = useRef<boolean>(false)
   const completedRegistrationRef = useRef<string | null>(null)
   const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
+  const fileRef = useRef<File | null>(null)
+  const interruptedRecordRef = useRef<InterruptedUploadRecord | null>(initialStoredRecord)
+  const selectedTierRef = useRef<IdentityTier>(selectedTier)
+  const nowFnRef = useRef(nowFn)
+
+  useEffect(() => {
+    selectedTierRef.current = selectedTier
+  }, [selectedTier])
+
+  useEffect(() => {
+    nowFnRef.current = nowFn
+  }, [nowFn])
+
+  function updateFile(next: File | null) {
+    fileRef.current = next
+    setFile(next)
+  }
+
+  function updateStage(next: Stage) {
+    stageRef.current = next
+    setStage(next)
+  }
+
+  function persistInterruptedUpload(
+    targetFile: File,
+    stageAtInterruption: 'hashing' | 'embedding',
+    reason: string,
+    recoverable: boolean,
+    retainInMemoryFile: boolean,
+  ) {
+    const record: InterruptedUploadRecord = {
+      version: 1,
+      tier: selectedTier,
+      interruptedAt: nowFn(),
+      stageAtInterruption,
+      reason,
+      recoverable,
+      sourceIdentity: computeSourceFileFingerprint(targetFile),
+    }
+    interruptedRecordRef.current = record
+    recoveryStorage.save(
+      UPLOAD_RECOVERY_WORKFLOW_ID,
+      UPLOAD_RECOVERY_STEP_ID,
+      record,
+    )
+    setInterruptedSession(
+      classifyInterruptedUploadSession({
+        record,
+        activeFile: retainInMemoryFile ? targetFile : null,
+        nowMs: record.interruptedAt,
+        ttlMs,
+      }),
+    )
+  }
+
+  const refreshInterruptedSession = useCallback(() => {
+    const record = interruptedRecordRef.current
+    if (!record) return
+    const next = classifyInterruptedUploadSession({
+      record,
+      activeFile: fileRef.current,
+      nowMs: nowFnRef.current(),
+      ttlMs,
+    })
+    setInterruptedSession((prev) => {
+      if (
+        prev &&
+        prev.status === next.status &&
+        prev.reason === next.reason &&
+        prev.hasInMemoryFile === next.hasInMemoryFile &&
+        prev.sourceChanged === next.sourceChanged &&
+        prev.interruptedAt === next.interruptedAt
+      ) {
+        return prev
+      }
+      return next
+    })
+  }, [ttlMs])
+
+  function dismissInterruptedSession() {
+    interruptedRecordRef.current = null
+    recoveryStorage.remove(UPLOAD_RECOVERY_WORKFLOW_ID, UPLOAD_RECOVERY_STEP_ID)
+    setInterruptedSession(null)
+  }
 
   // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber a
   // newer flow or a reset caused by cancellation.
@@ -127,11 +406,40 @@ export function useEvidence(): UseEvidenceReturn {
   } | null>(null)
 
   useEffect(() => {
+    const onNavigateOrFocus = () => {
+      refreshInterruptedSession()
+    }
+    window.addEventListener('hashchange', onNavigateOrFocus)
+    window.addEventListener('popstate', onNavigateOrFocus)
+    document.addEventListener('visibilitychange', onNavigateOrFocus)
+    return () => {
+      window.removeEventListener('hashchange', onNavigateOrFocus)
+      window.removeEventListener('popstate', onNavigateOrFocus)
+      document.removeEventListener('visibilitychange', onNavigateOrFocus)
+    }
+  }, [refreshInterruptedSession])
+
+  useEffect(() => {
     stageRef.current = stage
   }, [stage])
 
   useEffect(() => {
     return () => {
+      const currentStage = stageRef.current
+      const activeFile = fileRef.current
+      if ((currentStage === 'hashing' || currentStage === 'embedding') && activeFile) {
+        const record: InterruptedUploadRecord = {
+          version: 1,
+          tier: selectedTierRef.current,
+          interruptedAt: nowFnRef.current(),
+          stageAtInterruption: currentStage,
+          reason: 'Upload was interrupted before completion.',
+          recoverable: true,
+          sourceIdentity: computeSourceFileFingerprint(activeFile),
+        }
+        interruptedRecordRef.current = record
+        recoveryStorage.save(UPLOAD_RECOVERY_WORKFLOW_ID, UPLOAD_RECOVERY_STEP_ID, record)
+      }
       // Cancel any in-flight evidence flow (hashing → embedding) on unmount.
       evidenceFlowAbortRef.current?.abort()
       evidenceFlowAbortRef.current = null
@@ -141,7 +449,7 @@ export function useEvidence(): UseEvidenceReturn {
       proofClientRef.current?.destroy()
       proofClientRef.current = null
     }
-  }, [])
+  }, [recoveryStorage])
 
   const selectedTierMeta = useMemo(
     () => TIERS.find((t) => t.id === selectedTier) ?? TIERS[0],
@@ -163,7 +471,7 @@ export function useEvidence(): UseEvidenceReturn {
     if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
     setProcessedVideoUrl('')
     setProof(null)
-    setFile(null)
+    updateFile(null)
     setRegistration(null)
   }
 
@@ -192,7 +500,8 @@ export function useEvidence(): UseEvidenceReturn {
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
-    setFile(nextFile)
+    let activeUploadStage: 'hashing' | 'embedding' = 'hashing'
+    updateFile(nextFile)
 
     const cached = cachedFileHashRef.current
     const isCacheHit =
@@ -209,7 +518,7 @@ export function useEvidence(): UseEvidenceReturn {
         totalBytes: nextFile.size,
         percentage: nextFile.size === 0 ? 100 : 0,
       })
-      setStage('hashing')
+      updateStage('hashing')
       setMessage('Hashing video locally in the browser: 0%.')
     } else {
       setHashProgress({
@@ -250,7 +559,8 @@ export function useEvidence(): UseEvidenceReturn {
       const timestamp = new Date().toISOString()
       if (!isCurrentFlow()) return
 
-      setStage('embedding')
+      activeUploadStage = 'embedding'
+      updateStage('embedding')
       setMessage('Embedding portable Harpocrates metadata into the video.')
 
       const { embedVideo } = await import('../services/evidenceService')
@@ -276,17 +586,86 @@ export function useEvidence(): UseEvidenceReturn {
         timestamp,
         tier: selectedTier,
       })
-      setStage('ready')
+      dismissInterruptedSession()
+      updateStage('ready')
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
       if (!isCurrentFlow()) return
-      setStage('error')
-      setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
+      const errMsg = error instanceof Error ? error.message : 'Evidence processing failed.'
+      const recoverable = !isUnrecoverableUploadError(error)
+      persistInterruptedUpload(nextFile, activeUploadStage, errMsg, recoverable, recoverable)
+      updateStage('error')
+      setMessage(errMsg)
     } finally {
       if (evidenceFlowAbortRef.current === controller) {
         evidenceFlowAbortRef.current = null
       }
     }
+  }
+
+  async function resumeInterruptedUpload(candidateFile?: File | null): Promise<boolean> {
+    const record = interruptedRecordRef.current
+    if (!record) return false
+
+    const targetFile = candidateFile !== undefined ? candidateFile : fileRef.current
+    const classified = classifyInterruptedUploadSession({
+      record,
+      activeFile: targetFile,
+      nowMs: nowFn(),
+      ttlMs,
+    })
+
+    if (classified.status === 'expired') {
+      setInterruptedSession(classified)
+      setMessage(classified.reason)
+      return false
+    }
+
+    if (classified.status === 'unrecoverable') {
+      setInterruptedSession(classified)
+      setMessage(classified.reason)
+      return false
+    }
+
+    if (!targetFile) {
+      setInterruptedSession(classified)
+      setMessage('Re-select the original source video file to verify its identity before resuming.')
+      return false
+    }
+
+    if (!sourceFingerprintsEqual(computeSourceFileFingerprint(targetFile), record.sourceIdentity)) {
+      const blockedReason =
+        'Selected source file differs from the interrupted session. Automatic retry is blocked.'
+      const updatedRecord: InterruptedUploadRecord = {
+        ...record,
+        recoverable: false,
+        sourceChanged: true,
+        reason: blockedReason,
+      }
+      interruptedRecordRef.current = updatedRecord
+      recoveryStorage.save(
+        UPLOAD_RECOVERY_WORKFLOW_ID,
+        UPLOAD_RECOVERY_STEP_ID,
+        updatedRecord,
+      )
+      const blocked: InterruptedUploadSession = {
+        ...classified,
+        status: 'unrecoverable',
+        hasInMemoryFile: false,
+        sourceChanged: true,
+        reason: blockedReason,
+      }
+      setInterruptedSession(blocked)
+      setMessage(blocked.reason)
+      return false
+    }
+
+    if (selectedTier !== record.tier) {
+      setSelectedTier(record.tier)
+    }
+    dismissInterruptedSession()
+    await handleEvidence(targetFile)
+    return true
   }
 
   async function registerProof(wallet: string) {
@@ -444,7 +823,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -462,14 +841,20 @@ export function useEvidence(): UseEvidenceReturn {
     if (currentStage !== 'hashing' && currentStage !== 'embedding' && currentStage !== 'proving') {
       return
     }
+    const activeFile = fileRef.current
     evidenceFlowAbortRef.current?.abort()
     evidenceFlowAbortRef.current = null
     if (currentStage === 'proving') {
       cancelProving()
     }
     resetFlow()
+    if ((currentStage === 'hashing' || currentStage === 'embedding') && activeFile) {
+      fileRef.current = activeFile
+      setFile(activeFile)
+      persistInterruptedUpload(activeFile, currentStage, CANCELLED_MESSAGES[currentStage], true, true)
+    }
     setHashProgress(null)
-    setStage('cancelled')
+    updateStage('cancelled')
     setMessage(CANCELLED_MESSAGES[currentStage])
   }
 
@@ -486,11 +871,15 @@ export function useEvidence(): UseEvidenceReturn {
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    interruptedSession,
     message,
     registration,
     networkMismatch,
     isCancellable,
     handleEvidence,
+    resumeInterruptedUpload,
+    dismissInterruptedSession,
+    refreshInterruptedSession,
     registerProof,
     cancelEvidence,
     cancelProving,
