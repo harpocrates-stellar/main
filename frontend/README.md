@@ -79,3 +79,12 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Synthetic vault recovery rehearsal
+
+`runVaultRecoveryRehearsal()` (and `CredentialVault.prototype.rehearseRecovery`
+in `src/credentialVault.ts`) exercises a full vault setup, encrypted envelope
+export, isolated import, and AES-GCM unlock cycle using one-time synthetic
+credentials inside `createIsolatedVaultStateContainer()` (`src/safeStorage.ts`).
+It never reads, mutates, or clears the user's live `localStorage` vault or
+in-memory witness seeds, and wipes all synthetic rehearsal containers on exit.

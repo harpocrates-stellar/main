@@ -78,3 +78,37 @@ function createSafeStorage(name: StorageName) {
 
 export const safeLocalStorage = createSafeStorage('localStorage')
 export const safeSessionStorage = createSafeStorage('sessionStorage')
+
+export interface IsolatedVaultStateContainer {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+  clear(): void
+  size(): number
+}
+
+/**
+ * Ephemeral, strictly in-memory state container for isolated vault rehearsals
+ * and sandboxes. Never reads or writes browser `localStorage` or `sessionStorage`.
+ */
+export function createIsolatedVaultStateContainer(): IsolatedVaultStateContainer {
+  const entries = new Map<string, string>()
+
+  return {
+    getItem(key: string): string | null {
+      return entries.has(key) ? (entries.get(key) ?? null) : null
+    },
+    setItem(key: string, value: string): void {
+      entries.set(String(key), String(value))
+    },
+    removeItem(key: string): void {
+      entries.delete(key)
+    },
+    clear(): void {
+      entries.clear()
+    },
+    size(): number {
+      return entries.size
+    },
+  }
+}
