@@ -301,6 +301,10 @@ get_proof_status
 get_proof_history
 get_proof_history_at
 get_proof_history_count
+get_statement_digest
+get_transition_receipt
+get_latest_transition_rcpt
+verify_lifecycle_continuity
 open_dispute
 respond_dispute
 resolve_dispute
@@ -533,10 +537,20 @@ TtlUpdated  = 6
 ```text
 get_proof_history(proof_id, offset, limit) -> Vec<ProofHistoryEntry>
 get_proof_history_count(proof_id) -> u32
+get_statement_digest(proof_id) -> Option<BytesN<32>>
+get_transition_receipt(proof_id, revision) -> Option<LifecycleTransitionReceipt>
+get_latest_transition_rcpt(proof_id) -> Option<LifecycleTransitionReceipt>
+verify_lifecycle_continuity(proof_id, from_revision, limit) -> ContinuityVerifyReport
 ```
 
 `offset` is zero-based. `limit` must be `<= MAX_HISTORY_LIMIT`. Entries are
-returned in chronological order.
+returned in chronological order. Each transition also records a versioned
+`LifecycleTransitionReceipt` (`TRANSITION_RECEIPT_V1 = 1`) chaining
+`previous_revision`, `previous_receipt_hash`, and a privacy-safe
+`statement_digest` (`SHA-256("hpx:stmt:v1" || proof_id || video_hash || tier)`),
+enabling `verify_lifecycle_continuity` to verify hash-chain and revision
+continuity across bounded windows without disclosing private witness values or
+nullifiers.
 
 ### State Transitions
 

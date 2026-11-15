@@ -392,13 +392,12 @@ fn test_set_scope_epoch_increase_succeeds_and_emits_event() {
 
     // Increase from 1 to 5
     client.set_scope_epoch(&admin, &scope, &5);
-    assert_eq!(client.get_scope_epoch(&scope), 5);
-
     assert_ne!(
-        env.events().all(),
-        [].as_slice(),
+        env.events().all().events().len(),
+        0,
         "expected ScopeEpochSet event"
     );
+    assert_eq!(client.get_scope_epoch(&scope), 5);
 }
 
 // ===========================================================================
@@ -508,7 +507,7 @@ fn test_scoped_registration_enveloped_version_accepted() {
     assert_eq!(record.tier, TIER_SILENT_WITNESS);
     assert_eq!(record.video_hash, video_hash);
     assert_eq!(record.nullifier, Some(nullifier.clone()));
-    assert!(client.has_nullifier(&nullifier));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
 }
 
 /// A 256-byte envelope declaring a stale circuit version is rejected with
