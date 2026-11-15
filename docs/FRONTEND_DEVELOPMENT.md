@@ -20,3 +20,8 @@ Verify the application compiles and bundles successfully for production:
 npm run build
 ```
 (This performs TypeScript type-checking and Vite compilation. It will fail if there are any TypeScript or bundling errors).
+
+## 4. Guided Network Mismatch Recovery in Evidence Studio
+When registration detects a wallet passphrase mismatch, `useEvidence` populates `networkRecovery` (`StudioNetworkRecoveryState`) and `StudioView` renders an accessible recovery banner:
+- Displays both the required contract network and the current wallet network alongside the selected evidence intent (`tier` and digest summary).
+- Blocks resuming registration until `revalidateNetworkRecovery` performs a fresh wallet network check and verifies that the selected file digests, identity tier, and wallet match the prepared evidence package (`resumeAfterNetworkRecovery`).

@@ -11,6 +11,7 @@ import { StudioView } from './StudioView'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
+import { expectNoA11yViolations, runAxe } from '../test/axeA11y'
 
 function makeVerification(): UseVerificationReturn {
   return {
@@ -41,6 +42,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
       description: 'Noir ZK proof.',
     },
     stage: 'idle',
+    hashProgress: null,
     file: null,
     proof: null,
     processedVideoUrl: '',
@@ -51,10 +53,14 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     message: 'Upload evidence to begin.',
     registration: null,
     networkMismatch: null,
+    networkRecovery: null,
     isCancellable: false,
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
+    revalidateNetworkRecovery: vi.fn(),
+    resumeAfterNetworkRecovery: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +127,88 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders guided network mismatch recovery showing required vs wallet network and gates resume on fresh validation', async () => {
+    const user = userEvent.setup()
+    const revalidateNetworkRecovery = vi.fn().mockResolvedValue(true)
+    const resumeAfterNetworkRecovery = vi.fn().mockResolvedValue(undefined)
+
+    const { container, rerender } = renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        networkMismatch: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+        networkRecovery: {
+          requiredNetwork: 'Testnet',
+          requiredPassphrase: 'Test SDF Network ; September 2015',
+          walletNetwork: 'Mainnet',
+          walletPassphrase: 'Public Global Stellar Network ; September 2015',
+          reason: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+          remediation: 'Open Freighter, switch to Testnet, then reconnect your wallet.',
+          blockedIntent: {
+            proofId: proof.proofId,
+            sourceHash: proof.sourceHash,
+            videoHash: proof.videoHash,
+            metadataHash: proof.metadataHash,
+            tier: 'silent',
+            wallet: 'GSOURCEGAUTH',
+          },
+          canResume: false,
+          validationError: null,
+          isRevalidating: false,
+        },
+        revalidateNetworkRecovery,
+        resumeAfterNetworkRecovery,
+      }),
+    )
+
+    expect(screen.getByTestId('required-network-label')).toHaveTextContent('Testnet')
+    expect(screen.getByTestId('wallet-network-label')).toHaveTextContent('Mainnet')
+    expect(screen.getByRole('button', { name: /resume registration/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /register proof/i })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: /verify network & intent/i }))
+    expect(revalidateNetworkRecovery).toHaveBeenCalledWith('GSOURCEGAUTH')
+
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          stage: 'ready',
+          proof,
+          networkMismatch: null,
+          networkRecovery: {
+            requiredNetwork: 'Testnet',
+            requiredPassphrase: 'Test SDF Network ; September 2015',
+            walletNetwork: 'Testnet',
+            walletPassphrase: 'Test SDF Network ; September 2015',
+            reason: 'Wallet connected to Testnet.',
+            remediation: 'Evidence intent validated. You may now resume registration.',
+            blockedIntent: {
+              proofId: proof.proofId,
+              sourceHash: proof.sourceHash,
+              videoHash: proof.videoHash,
+              metadataHash: proof.metadataHash,
+              tier: 'silent',
+              wallet: 'GSOURCEGAUTH',
+            },
+            canResume: true,
+            validationError: null,
+            isRevalidating: false,
+          },
+          revalidateNetworkRecovery,
+          resumeAfterNetworkRecovery,
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    const resumeBtn = screen.getByRole('button', { name: /resume registration/i })
+    expect(resumeBtn).toBeEnabled()
+    await user.click(resumeBtn)
+    expect(resumeAfterNetworkRecovery).toHaveBeenCalledWith('GSOURCEGAUTH')
+    expectNoA11yViolations(await runAxe(container), 'studio guided network mismatch recovery')
   })
 })

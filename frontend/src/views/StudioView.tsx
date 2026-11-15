@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react'
-import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
+import { BadgeCheck, CheckCircle2, Loader2, RefreshCw, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
@@ -9,11 +9,11 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
+import { networkName } from '../networkGuard'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
@@ -42,9 +42,12 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     message,
     registration,
     networkMismatch,
+    networkRecovery,
     isCancellable,
     handleEvidence,
     registerProof,
+    revalidateNetworkRecovery,
+    resumeAfterNetworkRecovery,
     cancelEvidence,
     cancelProving,
   } = evidence
@@ -80,15 +83,73 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
         </header>
 
-        {networkMismatch ? (
-          <div className="network-mismatch-banner" role="alert">
-            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
-            <span>{networkMismatch}</span>
-          </div>
+        {networkRecovery || networkMismatch ? (
+          <section
+            className="network-mismatch-banner studio-network-recovery"
+            aria-labelledby="studio-network-recovery-heading"
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+                <h3 id="studio-network-recovery-heading" style={{ margin: 0, fontSize: '0.95rem' }}>
+                  Network Mismatch Recovery
+                </h3>
+              </div>
+              <p role="alert" style={{ margin: 0 }}>
+                {networkRecovery?.validationError ??
+                  (networkRecovery
+                    ? `${networkRecovery.reason} ${networkRecovery.remediation}`
+                    : networkMismatch)}
+              </p>
+              <dl className="data-list" aria-label="Network mismatch details">
+                <div>
+                  <dt>Required Network</dt>
+                  <dd data-testid="required-network-label">
+                    {networkRecovery?.requiredNetwork ?? networkName(CONTRACT_NETWORK_PASSPHRASE)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Current Wallet Network</dt>
+                  <dd data-testid="wallet-network-label">
+                    {networkRecovery?.walletNetwork ?? 'Unverified'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Selected Evidence Intent</dt>
+                  <dd data-testid="recovery-intent-label">
+                    {selectedTierMeta.title} · {shortHash(proof?.videoHash ?? '')}
+                  </dd>
+                </div>
+              </dl>
+              {revalidateNetworkRecovery ? (
+                <div className="action-row" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    disabled={isBusy || !!networkRecovery?.isRevalidating}
+                    onClick={() => void revalidateNetworkRecovery(wallet)}
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                    Verify network &amp; intent
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-action"
+                    disabled={isBusy || !networkRecovery?.canResume}
+                    onClick={() => void resumeAfterNetworkRecovery?.(wallet)}
+                  >
+                    <BadgeCheck size={14} aria-hidden="true" />
+                    Resume registration
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </section>
         ) : null}
 
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
+          htmlFor="studio-evidence-input"
           className="dropzone"
           role="button"
           tabIndex={0}
@@ -102,16 +163,18 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         >
           <Upload size={20} aria-hidden="true" />
-          <span aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</span>
-          <input
-            ref={studioInputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
-          />
+          <output aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</output>
         </label>
+        <input
+          id="studio-evidence-input"
+          ref={studioInputRef}
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ display: 'none' }}
+          onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+        />
 
         {stage === 'hashing' && hashProgress ? (
           <div className="hash-progress">
@@ -248,7 +311,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           <button
             className="primary-action"
             type="button"
-            disabled={!proof || !!networkMismatch || isBusy}
+            disabled={!proof || !!networkMismatch || (!!networkRecovery && !networkRecovery.canResume) || isBusy}
             aria-busy={isBusy || undefined}
             onClick={() => void registerProof(wallet)}
           >
@@ -260,7 +323,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             Register proof
           </button>
 
-          {isProving ? (
+          {isProving && !isCancellable ? (
             <button
               className="secondary-action"
               type="button"
