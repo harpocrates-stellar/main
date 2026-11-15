@@ -342,6 +342,16 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Export Filesystem Safety
+
+`analytics/export_manager.py` allocates export filenames strictly on the server
+(`harpocrates-analytics-export-<32-hex>.json` or `.json.gz`) using CSPRNG bytes.
+User-supplied filenames are never concatenated into filesystem paths, symlink
+destination directories are rejected via `ExportDestinationError`, and any
+caller-requested `display_label` is sanitized, byte-capped, and preserved only
+inside authorized export output envelopes (`export_token_verified=True` and, when
+a `ConsentManager` is attached, active `analytics:export` consent).
+
 ## Test
 
 ```powershell

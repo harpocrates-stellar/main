@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 CONSENT_SCHEMA_VERSION = "1.0.0"
 CONSENT_GRACE_PERIOD_SECONDS = 1800
+ANALYTICS_EXPORT_SCOPE = "analytics:export"
 
 
 class ConsentStatus:
@@ -261,3 +262,21 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def is_export_authorized(
+        self,
+        account_tag: Optional[str],
+        scope: str = ANALYTICS_EXPORT_SCOPE,
+        now_epoch_seconds: float | None = None,
+    ) -> bool:
+        if not account_tag or not isinstance(account_tag, str):
+            return False
+        now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+        with self._lock:
+            state = self._consent_states.get(account_tag)
+            if state is None or state.status != ConsentStatus.GRANTED:
+                return False
+            if state.expires_at_epoch_seconds > 0 and now > state.expires_at_epoch_seconds:
+                return False
+            allowed_scopes = {scope, "export", "*"}
+            return any(granted in allowed_scopes for granted in state.granted_scopes)

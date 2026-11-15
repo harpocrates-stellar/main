@@ -37,6 +37,7 @@ except Exception:
 
 try:
     from analytics.consent import (
+        ANALYTICS_EXPORT_SCOPE,
         CONSENT_GRACE_PERIOD_SECONDS,
         CONSENT_SCHEMA_VERSION,
         ConsentDecision,
@@ -124,9 +125,14 @@ try:
     from analytics.export_manager import (
         EXPORT_FORMAT_VERSION,
         ExportArtifact,
+        ExportDestinationError,
         ExportManager,
         ExportPolicy,
         EXPORT_POLICY_DEFAULT,
+        MAX_DISPLAY_LABEL_BYTES,
+        SAFE_EXPORT_FILENAME_PREFIX,
+        allocate_server_export_filename,
+        sanitize_display_label,
     )
 except Exception:
     pass
@@ -172,6 +178,7 @@ __all__ = [
     "create_event",
     "event_is_allowed",
     "transition_event_state",
+    "ANALYTICS_EXPORT_SCOPE",
     "CONSENT_GRACE_PERIOD_SECONDS",
     "CONSENT_SCHEMA_VERSION",
     "ConsentDecision",
@@ -223,9 +230,14 @@ __all__ = [
     "operational_collector",
     "EXPORT_FORMAT_VERSION",
     "ExportArtifact",
+    "ExportDestinationError",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "MAX_DISPLAY_LABEL_BYTES",
+    "SAFE_EXPORT_FILENAME_PREFIX",
+    "allocate_server_export_filename",
+    "sanitize_display_label",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",
