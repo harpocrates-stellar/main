@@ -9094,6 +9094,8 @@ mod test_issuer_rotation;
 #[cfg(test)]
 mod test_lifecycle;
 #[cfg(test)]
+mod test_lifecycle_event_corpus;
+#[cfg(test)]
 mod test_lineage;
 #[cfg(test)]
 mod test_list_credential_roots;
