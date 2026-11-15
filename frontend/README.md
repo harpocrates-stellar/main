@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Timeline observation freshness and source disagreements
+
+`VerificationTimeline` (`src/components/VerificationTimeline.tsx`) and
+`analyzeTimelineObservations` (`src/services/verificationFlow.ts`) extend the
+five-stage verification timeline (`input`, `hash`, `database`, `chain`,
+`decision`) with per-stage observation sources and Stellar ledger bounds while
+preserving existing stage semantics. Aged snapshots are surfaced as `stale`
+observations without conflating staleness with contradictory observations across
+local digests, NeonDB events, manifests, and Soroban registry records.

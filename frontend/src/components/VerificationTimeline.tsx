@@ -1,11 +1,18 @@
+import { useMemo } from 'react'
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
 import type { VerificationErrorCode, VerificationStatus } from '../hooks/useVerification'
+import {
+  analyzeTimelineObservations,
+  type TimelineLedgerBounds,
+  type TimelineProvenanceDiscrepancy,
+  type TimelineStageId,
+} from '../services/verificationFlow'
 
 type TimelineState = 'pending' | 'active' | 'complete' | 'failed'
 
 type TimelineStep = {
-  id: string
+  id: TimelineStageId
   label: string
   detail: string
   state: TimelineState
@@ -17,6 +24,13 @@ type Props = {
   events: ProofEvent[]
   chainProof: ChainProofRecord | null
   errorCode: VerificationErrorCode | null
+  offline?: boolean
+  ledgerBounds?: TimelineLedgerBounds | null
+  observedAtIso?: string | null
+  isStaleObservation?: boolean
+  maxObservationAgeMs?: number
+  nowMs?: number
+  provenanceMismatches?: readonly TimelineProvenanceDiscrepancy[]
 }
 
 function markerLabel(state: TimelineState): string {
@@ -26,12 +40,57 @@ function markerLabel(state: TimelineState): string {
   return 'Pending'
 }
 
-export function VerificationTimeline({ status, verifyHash, events, chainProof, errorCode }: Props) {
+export function VerificationTimeline({
+  status,
+  verifyHash,
+  events,
+  chainProof,
+  errorCode,
+  offline = false,
+  ledgerBounds = null,
+  observedAtIso = null,
+  isStaleObservation = false,
+  maxObservationAgeMs,
+  nowMs,
+  provenanceMismatches,
+}: Props) {
   const hasRun = status !== 'idle' || Boolean(verifyHash) || events.length > 0 || Boolean(chainProof)
   const isBusy = status === 'validating' || status === 'hashing' || status === 'verifying'
   const failed = status === 'error' || status === 'cancelled'
   const chainFailed = failed && (errorCode === 'REVOKED_EVIDENCE' || errorCode === 'EXPIRED_EVIDENCE')
   const decisionComplete = status === 'success'
+
+  const observationAnalysis = useMemo(
+    () =>
+      analyzeTimelineObservations({
+        status,
+        verifyHash,
+        events,
+        chainProof,
+        errorCode,
+        offline,
+        ledgerBounds,
+        observedAtIso,
+        isStaleObservation,
+        maxObservationAgeMs,
+        nowMs,
+        provenanceMismatches,
+      }),
+    [
+      status,
+      verifyHash,
+      events,
+      chainProof,
+      errorCode,
+      offline,
+      ledgerBounds,
+      observedAtIso,
+      isStaleObservation,
+      maxObservationAgeMs,
+      nowMs,
+      provenanceMismatches,
+    ],
+  )
 
   const steps: TimelineStep[] = [
     {
@@ -76,21 +135,72 @@ export function VerificationTimeline({ status, verifyHash, events, chainProof, e
         <span className="verification-timeline__privacy">No raw evidence</span>
       </div>
       <ol className="verification-timeline__list">
-        {steps.map((step) => (
-          <li className={`verification-timeline__step verification-timeline__step--${step.state}`} key={step.id}>
-            <span className="verification-timeline__marker" aria-hidden="true">
-              {step.state === 'complete' ? '✓' : step.state === 'failed' ? '!' : step.state === 'active' ? '•' : '·'}
-            </span>
-            <div className="verification-timeline__content">
-              <div className="verification-timeline__title-row">
-                <strong>{step.label}</strong>
-                <span>{markerLabel(step.state)}</span>
+        {steps.map((step) => {
+          const annotation = observationAnalysis.stageAnnotations[step.id]
+          return (
+            <li className={`verification-timeline__step verification-timeline__step--${step.state}`} key={step.id}>
+              <span className="verification-timeline__marker" aria-hidden="true">
+                {step.state === 'complete' ? '✓' : step.state === 'failed' ? '!' : step.state === 'active' ? '•' : '·'}
+              </span>
+              <div className="verification-timeline__content">
+                <div className="verification-timeline__title-row">
+                  <strong>{step.label}</strong>
+                  <span>{markerLabel(step.state)}</span>
+                </div>
+                <p>{step.detail}</p>
+                <p
+                  className="muted verification-timeline__meta"
+                  data-testid={`timeline-meta-${step.id}`}
+                  style={{ fontSize: 11, marginTop: 2 }}
+                >
+                  Source: {annotation.observationSource} · Bounds: {annotation.ledgerBoundsLabel}
+                </p>
               </div>
-              <p>{step.detail}</p>
-            </div>
-          </li>
-        ))}
+            </li>
+          )
+        })}
       </ol>
+
+      {hasRun ? (
+        <div className="verification-timeline__diagnostics" style={{ marginTop: 10 }}>
+          <div
+            data-testid="timeline-freshness-status"
+            data-freshness-state={observationAnalysis.freshness.state}
+            role="status"
+            style={{ fontSize: 12 }}
+          >
+            <strong>Observation freshness ({observationAnalysis.freshness.state}):</strong>{' '}
+            {observationAnalysis.freshness.summary}
+          </div>
+
+          {observationAnalysis.hasContradiction ? (
+            <div
+              data-testid="timeline-source-disagreements"
+              role="status"
+              aria-live="polite"
+              style={{ marginTop: 8, fontSize: 12 }}
+            >
+              <strong>
+                Source disagreements ({observationAnalysis.disagreements.length}):
+              </strong>
+              <ul aria-label="Source disagreements" style={{ marginTop: 4 }}>
+                {observationAnalysis.disagreements.map((item) => (
+                  <li key={item.id}>
+                    [{item.sources[0]} vs {item.sources[1]}] {item.summary}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : observationAnalysis.freshness.state === 'stale' ? (
+            <p
+              data-testid="timeline-no-contradiction-note"
+              style={{ marginTop: 6, fontSize: 12 }}
+            >
+              Source agreement: No contradictory observations detected across sources (observation is aged, not conflicting).
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   )
 }

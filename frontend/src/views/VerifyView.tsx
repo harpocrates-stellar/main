@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
@@ -13,6 +13,7 @@ import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
+import type { TimelineLedgerBounds } from '../services/verificationFlow'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const MAX_MANIFEST_SIZE_BYTES = 64 * 1024 // 64 KB cap
@@ -22,6 +23,7 @@ type Props = {
   networkMismatch?: string | null
   verification: UseVerificationReturn
   provenanceRecord: ProvenanceRecord | null
+  ledgerBounds?: TimelineLedgerBounds | null
 }
 
 function statusLabel(status: UseVerificationReturn['status'], offline: boolean): string {
@@ -36,7 +38,13 @@ function statusLabel(status: UseVerificationReturn['status'], offline: boolean):
   }
 }
 
-export function VerifyView({ wallet, networkMismatch, verification, provenanceRecord }: Props) {
+export function VerifyView({
+  wallet,
+  networkMismatch,
+  verification,
+  provenanceRecord,
+  ledgerBounds = null,
+}: Props) {
   const {
     verifyHash,
     verifyResult,
@@ -58,15 +66,17 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const inputRef = useRef<HTMLInputElement | null>(null)
   const manifestInputRef = useRef<HTMLInputElement | null>(null)
   const [videoHashInput, setVideoHashInput] = useState('')
+  const [prevVerifyHash, setPrevVerifyHash] = useState(verifyHash)
   const [proofIdInput, setProofIdInput] = useState('')
   const [manifestError, setManifestError] = useState<string | null>(null)
 
   // Keep videoHashInput synced when verifyHash updates externally
-  useEffect(() => {
+  if (verifyHash !== prevVerifyHash) {
+    setPrevVerifyHash(verifyHash)
     if (verifyHash && !videoHashInput) {
       setVideoHashInput(verifyHash)
     }
-  }, [verifyHash, videoHashInput])
+  }
 
   const handleManifestFile = async (file: File) => {
     if (file.size > MAX_MANIFEST_SIZE_BYTES) {
@@ -178,6 +188,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           className="dropzone"
           role="button"
           tabIndex={isVerifying ? -1 : 0}
+          htmlFor="verify-video-input"
           aria-label={isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video. Press Enter or Space to open file picker'}
           aria-busy={isVerifying}
           aria-disabled={isVerifying}
@@ -213,24 +224,26 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             MP4, WebM, or MOV · up to 100 MB
           </span>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              void verifyEvidence(f, wallet || undefined)
-              // allow re-selecting the same file
-              event.target.value = ''
-            }}
-          />
         </label>
+        <input
+          ref={inputRef}
+          id="verify-video-input"
+          className="sr-only"
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            void verifyEvidence(f, wallet || undefined)
+            // allow re-selecting the same file
+            event.target.value = ''
+          }}
+        />
 
-        {/* Manifest Dropzone — keyboard: Tab focuses label, Enter/Space opens manifest file picker */}
-        <label
+        {/* Manifest Dropzone — keyboard: Tab focuses control, Enter/Space opens manifest file picker */}
+        <div
           className="dropzone manifest-dropzone"
           role="button"
           tabIndex={isVerifying ? -1 : 0}
@@ -238,6 +251,11 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           aria-busy={isVerifying}
           aria-disabled={isVerifying}
           style={{ minHeight: 100 }}
+          onClick={() => {
+            if (!isVerifying) {
+              manifestInputRef.current?.click()
+            }
+          }}
           onKeyDown={(e) => {
             if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) {
               e.preventDefault()
@@ -262,20 +280,22 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             Portable manifest receipt · max 64 KB
           </span>
-          <input
-            ref={manifestInputRef}
-            type="file"
-            accept=".json,application/json"
-            tabIndex={-1}
-            aria-label="Drop or choose a proof manifest JSON"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              if (f) void handleManifestFile(f)
-              event.target.value = ''
-            }}
-          />
-        </label>
+        </div>
+        <input
+          ref={manifestInputRef}
+          id="verify-manifest-input"
+          className="sr-only"
+          type="file"
+          accept=".json,application/json"
+          tabIndex={-1}
+          aria-label="Drop or choose a proof manifest JSON"
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            if (f) void handleManifestFile(f)
+            event.target.value = ''
+          }}
+        />
 
         {/* Verification form — prefilled by manifest or manual typing */}
         <form
@@ -318,13 +338,15 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               aria-label="Proof ID"
             />
           </div>
-          <button
-            type="submit"
-            className="hero-secondary"
-            disabled={isVerifying || !videoHashInput.trim()}
-          >
-            Verify On-Chain
-          </button>
+          <div>
+            <button
+              type="submit"
+              className="hero-secondary"
+              disabled={isVerifying || !videoHashInput.trim()}
+            >
+              Verify On-Chain
+            </button>
+          </div>
         </form>
 
         {/* Verification mode — offline runs entirely in the browser, online uses backend + registry */}
@@ -391,45 +413,56 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           events={events}
           chainProof={chainProof}
           errorCode={errorCode}
+          offline={offline}
+          ledgerBounds={ledgerBounds}
+          observedAtIso={provenanceRecord?.fetchedAt ?? null}
+          isStaleObservation={Boolean(provenanceRecord?.staleness.stale)}
+          provenanceMismatches={provenanceRecord?.mismatches}
         />
 
         {/* Action row — reachable on mobile, adequate touch targets */}
         <div className="verify-actions" role="group" aria-label="Verification actions">
           {isVerifying ? (
-            <button
-              type="button"
-              className="hero-secondary verify-action-btn"
-              onClick={cancel}
-              aria-label="Cancel verification"
-            >
-              Cancel
-            </button>
+            <div>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={cancel}
+                aria-label="Cancel verification"
+              >
+                Cancel
+              </button>
+            </div>
           ) : null}
           {effectiveRetry ? (
-            <button
-              type="button"
-              className="hero-secondary verify-action-btn"
-              onClick={() => void retry()}
-              aria-label="Retry verification"
-            >
-              <RefreshCw size={14} aria-hidden="true" />
-              <span>Retry</span>
-            </button>
+            <div>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={() => void retry()}
+                aria-label="Retry verification"
+              >
+                <RefreshCw size={14} aria-hidden="true" />
+                <span>Retry</span>
+              </button>
+            </div>
           ) : null}
           {!isVerifying && (verifyHash || verifyResult || videoHashInput || proofIdInput || manifestError) ? (
-            <button
-              type="button"
-              className="hero-secondary verify-action-btn"
-              onClick={() => {
-                setVideoHashInput('')
-                setProofIdInput('')
-                setManifestError(null)
-                clear()
-              }}
-              aria-label="Clear verification result"
-            >
-              Clear
-            </button>
+            <div>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={() => {
+                  setVideoHashInput('')
+                  setProofIdInput('')
+                  setManifestError(null)
+                  clear()
+                }}
+                aria-label="Clear verification result"
+              >
+                Clear
+              </button>
+            </div>
           ) : null}
           {/* Hidden retry helper for tests / keyboard users */}
           {showRetry ? null : null}
