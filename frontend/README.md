@@ -79,3 +79,13 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Verification receipt comparison
+
+`VerificationReceiptComparisonPanel` (`src/components/VerificationReceiptComparisonPanel.tsx`)
+and `compareVerificationReceipts` / `createReceiptComparisonShareUrl`
+(`src/services/verificationFlow.ts`) compare two signed or portable verification
+receipts, highlighting changed trust and chain observations alongside exact
+ISO-8601 timestamps while stripping private evidence metadata (`fileName`,
+`issuerNotes`, `sourcePath`, witness material) from both the comparison view and
+sanitized `#verify?compare=` share URLs.
