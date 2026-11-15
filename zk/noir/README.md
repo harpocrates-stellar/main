@@ -171,11 +171,15 @@ parameters for the depth-bounded revocation tree (same `MAX_REVOCATION_WITNESS_D
 
 Attribute-selective circuit behind `frontend/src/selectiveDisclosure.ts`
 (`/noir/selective_disclosure.json`) and the registry's
-`verify_selective_disclosure`. Bounded at **MAX_ATTRIBUTES = 16** with predicate
-types restricted to eq / set-membership / range, and bound to
-`CURRENT_CIRCUIT_VERSION` so a proof from another circuit version cannot be
-replayed against the registry.
+`verify_selective_disclosure`. Bounded at **MAX_ATTRIBUTES = 16** and
+**MAX_INTERVAL_CLAUSES = 4**, with predicate types restricted to equality (`0`),
+set-membership (`1`), single range (`2`), and canonical issuer-certified interval
+intersection (`3`), and bound to `CURRENT_CIRCUIT_VERSION` so a proof from
+another circuit version cannot be replayed against the registry.
 
+Synthetic interval-intersection vectors:
+[`fixtures/selective_disclosure_interval_vectors.json`](fixtures/selective_disclosure_interval_vectors.json)
+(`python zk/tools/selective_disclosure_intervals.py --check`).
 Statement, public/private inputs, predicate encoding, schema-binding limits,
 and a reproducible age/country example:
 [Selective Disclosure specification](../../docs/zk-selective-disclosure-spec.md).

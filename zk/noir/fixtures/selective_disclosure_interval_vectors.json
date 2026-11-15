@@ -1,0 +1,1786 @@
+{
+  "_description": "Synthetic conformance vectors for selective_disclosure issuer-certified interval intersection predicates (#1209). Public statements bind the canonical reduced interval conjunction without revealing certified attribute values or blindings.",
+  "_circuit": "selective_disclosure/v1",
+  "_version": "1.0.0",
+  "_compiler": ">=1.0.0",
+  "_predicate_type_id": 3,
+  "_predicate_type_name": "IntervalIntersection",
+  "_max_interval_clauses": 4,
+  "_commitment_model": "reference_sha256_bn254_v1",
+  "privacy_notes": [
+    "Public statements carry only the 11 wire fields (352 bytes); certified attribute values and blindings never appear in public_statement or encoded_predicate.",
+    "predicate_commitment hashes the canonical reduced interval packing L* + U* * 2^64 + canonical_flags * 2^128, making commitments invariant to clause order and hidden attribute values.",
+    "All prover_only_synthetic_opening entries use small deterministic test integers and never represent real credentials or media."
+  ],
+  "positive_cases": [
+    {
+      "id": "sd-int-pos-001-half-open-lower-interior",
+      "description": "[10, 30] intersect (18, 25] -> (18, 25] satisfied at minimum integer 19",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 25]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927387917816706275213330",
+        "packed_public_value_hex": "0x200000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 19,
+        "max_valid_u64": 25
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "680564733841876927387917816706275213330",
+        "set_values": [
+          "10",
+          "30",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 2818,
+        "lower_bound": "18",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x09eb242582d024e354ed85b449f2a8e874ebb09c39488cedf98308b32426abfa",
+          "nullifier": "0x15b905113618f721bf17585e86d4e1de91a2f5714ac280647ae9f386cadcc8df",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000109eb242582d024e354ed85b449f2a8e874ebb09c39488cedf98308b32426abfa15b905113618f721bf17585e86d4e1de91a2f5714ac280647ae9f386cadcc8df00000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 19,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-002-half-open-upper-boundary",
+      "description": "[10, 30] intersect (18, 25] -> (18, 25] satisfied at inclusive upper bound 25",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 25]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927387917816706275213330",
+        "packed_public_value_hex": "0x200000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 19,
+        "max_valid_u64": 25
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "680564733841876927387917816706275213330",
+        "set_values": [
+          "10",
+          "30",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 2818,
+        "lower_bound": "18",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x2f11f9648d6099c7760e3e25aeff62446ef93d88ceb2c54df1245610d4b79245",
+          "nullifier": "0x1e3ad6e186cba7f5de84f7a0c32251f392211f7416452128dc63bfd1fa3ff398",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000012f11f9648d6099c7760e3e25aeff62446ef93d88ceb2c54df1245610d4b792451e3ad6e186cba7f5de84f7a0c32251f392211f7416452128dc63bfd1fa3ff39800000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 25,
+        "certified_attr_blinding": 111112,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-003-closed-singleton-touching",
+      "description": "[10, 18] intersect [18, 30] -> [18, 18] satisfied at singleton 18",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 18,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 18]"
+        },
+        {
+          "lower": 18,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[18, 30]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 18,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[18, 18]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1020847100762815390722165215622076563474",
+        "packed_public_value_hex": "0x300000000000000120000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 18,
+        "max_valid_u64": 18
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390722165215622076563474",
+        "set_values": [
+          "10",
+          "18",
+          "18",
+          "30",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3842,
+        "lower_bound": "18",
+        "upper_bound": "18"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x02a239cf8095b603da29fe7c0388e90c235568ad9e579aa0528a80bca43e119d",
+          "nullifier": "0x284c767bac3eb8af18f834a91acae64706f4772cdd9ac0830989997e95ee2722",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x0283268d94b7d7b844636388ecdc2bb2ec6d4cd7cecb95942edda10b667c8b73"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000102a239cf8095b603da29fe7c0388e90c235568ad9e579aa0528a80bca43e119d284c767bac3eb8af18f834a91acae64706f4772cdd9ac0830989997e95ee272200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f0283268d94b7d7b844636388ecdc2bb2ec6d4cd7cecb95942edda10b667c8b73"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111113,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-004-open-singleton-interior",
+      "description": "(17, 25] intersect [10, 19) -> (17, 19) satisfied at unique integer 18",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 17,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(17, 25]"
+        },
+        {
+          "lower": 10,
+          "upper": 19,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[10, 19)"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 17,
+        "upper": 19,
+        "lower_inclusive": false,
+        "upper_inclusive": false,
+        "notation": "(17, 19)",
+        "canonical_flags": 0,
+        "packed_public_value_dec": "350488137400481480721",
+        "packed_public_value_hex": "0x130000000000000011",
+        "is_empty": false,
+        "min_valid_u64": 18,
+        "max_valid_u64": 18
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "350488137400481480721",
+        "set_values": [
+          "17",
+          "25",
+          "10",
+          "19",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 1538,
+        "lower_bound": "17",
+        "upper_bound": "19"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0562c6db5ac6173d17c4e53613868082bd68fcef81ca9c6f9d38195542f59f99",
+          "nullifier": "0x01f48df96fe7031066727d6eefef539fc0a872c77cf1895cea9041425ea055e4",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x1f10288bb1edff968a7819f4a4928381881c6f74a6ee7e92037f0ef4c6f01446"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010562c6db5ac6173d17c4e53613868082bd68fcef81ca9c6f9d38195542f59f9901f48df96fe7031066727d6eefef539fc0a872c77cf1895cea9041425ea055e400000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f1f10288bb1edff968a7819f4a4928381881c6f74a6ee7e92037f0ef4c6f01446"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111114,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-005-four-clause-order-a-hidden-min",
+      "description": "4-clause intersection [10, 100] & (20, 80] & [15, 60) & [20, 70] -> (20, 60) at 21",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 100,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 100]"
+        },
+        {
+          "lower": 20,
+          "upper": 80,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(20, 80]"
+        },
+        {
+          "lower": 15,
+          "upper": 60,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[15, 60)"
+        },
+        {
+          "lower": 20,
+          "upper": 70,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[20, 70]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 20,
+        "upper": 60,
+        "lower_inclusive": false,
+        "upper_inclusive": false,
+        "notation": "(20, 60)",
+        "canonical_flags": 0,
+        "packed_public_value_dec": "1106804644422573096980",
+        "packed_public_value_hex": "0x3c0000000000000014",
+        "is_empty": false,
+        "min_valid_u64": 21,
+        "max_valid_u64": 59
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1106804644422573096980",
+        "set_values": [
+          "10",
+          "100",
+          "20",
+          "80",
+          "15",
+          "60",
+          "20",
+          "70"
+        ],
+        "set_len": 56068,
+        "lower_bound": "20",
+        "upper_bound": "60"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x165972b517ba65bc81c9f2ff14caeae515160308a99dbcf4259826059b644263",
+          "nullifier": "0x09ab6d32802491a8474b9925369541fdeb4385e4ccd811008450bf768ef3adfa",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x147a414a2e6e3e42d5e4067b241b4876c461f20eb15d21bcb8c3cc6d2e72eecb"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef11111111111111111111111111111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000001165972b517ba65bc81c9f2ff14caeae515160308a99dbcf4259826059b64426309ab6d32802491a8474b9925369541fdeb4385e4ccd811008450bf768ef3adfa00000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f147a414a2e6e3e42d5e4067b241b4876c461f20eb15d21bcb8c3cc6d2e72eecb"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 21,
+        "certified_attr_blinding": 313371,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-006-four-clause-order-b-hidden-max",
+      "description": "Permuted 4-clause intersection -> identical predicate_commitment with distinct hidden value 59",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 20,
+          "upper": 70,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[20, 70]"
+        },
+        {
+          "lower": 15,
+          "upper": 60,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[15, 60)"
+        },
+        {
+          "lower": 10,
+          "upper": 100,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 100]"
+        },
+        {
+          "lower": 20,
+          "upper": 80,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(20, 80]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 20,
+        "upper": 60,
+        "lower_inclusive": false,
+        "upper_inclusive": false,
+        "notation": "(20, 60)",
+        "canonical_flags": 0,
+        "packed_public_value_dec": "1106804644422573096980",
+        "packed_public_value_hex": "0x3c0000000000000014",
+        "is_empty": false,
+        "min_valid_u64": 21,
+        "max_valid_u64": 59
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1106804644422573096980",
+        "set_values": [
+          "20",
+          "70",
+          "15",
+          "60",
+          "10",
+          "100",
+          "20",
+          "80"
+        ],
+        "set_len": 46852,
+        "lower_bound": "20",
+        "upper_bound": "60"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x2e06646b76ad3f8a7151848d834e176b03363646bf7a1f691dd7c66791917c18",
+          "nullifier": "0x10c62202033d0f18625cdf8ee2901ed424910330e46de839554bf5086b166f10",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x147a414a2e6e3e42d5e4067b241b4876c461f20eb15d21bcb8c3cc6d2e72eecb"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000012e06646b76ad3f8a7151848d834e176b03363646bf7a1f691dd7c66791917c1810c62202033d0f18625cdf8ee2901ed424910330e46de839554bf5086b166f1000000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f147a414a2e6e3e42d5e4067b241b4876c461f20eb15d21bcb8c3cc6d2e72eecb"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 59,
+        "certified_attr_blinding": 919191,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-007-u64-zero-lower-boundary",
+      "description": "[0, 100) intersect [0, 10] -> [0, 10] satisfied at u64 minimum 0",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 0,
+          "upper": 100,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[0, 100)"
+        },
+        {
+          "lower": 0,
+          "upper": 10,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[0, 10]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 0,
+        "upper": 10,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[0, 10]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1020847100762815390574591263032400150528",
+        "packed_public_value_hex": "0x3000000000000000a0000000000000000",
+        "is_empty": false,
+        "min_valid_u64": 0,
+        "max_valid_u64": 10
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390574591263032400150528",
+        "set_values": [
+          "0",
+          "100",
+          "0",
+          "10",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3330,
+        "lower_bound": "0",
+        "upper_bound": "10"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0452f7c955759309dac53894b2bfca6eb555ed90d2fc45e81ad98d1d66232745",
+          "nullifier": "0x157d65d19e3edb63f2363f469f6fa3f756a72fdc0e208bfd89e0fbd62d112119",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x1bb7078b05b18c00db6d7a128fbd96d2bc2f33242ea42d94c3d218d6db3d1bd7"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010452f7c955759309dac53894b2bfca6eb555ed90d2fc45e81ad98d1d66232745157d65d19e3edb63f2363f469f6fa3f756a72fdc0e208bfd89e0fbd62d11211900000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f1bb7078b05b18c00db6d7a128fbd96d2bc2f33242ea42d94c3d218d6db3d1bd7"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 0,
+        "certified_attr_blinding": 444444,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    },
+    {
+      "id": "sd-int-pos-008-u64-max-upper-boundary",
+      "description": "(U64_MAX - 10, U64_MAX] intersect [U64_MAX - 5, U64_MAX] satisfied at U64_MAX",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 18446744073709551605,
+          "upper": 18446744073709551615,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18446744073709551605, 18446744073709551615]"
+        },
+        {
+          "lower": 18446744073709551610,
+          "upper": 18446744073709551615,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[18446744073709551610, 18446744073709551615]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18446744073709551610,
+        "upper": 18446744073709551615,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[18446744073709551610, 18446744073709551615]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1361129467683753853853498429727072845818",
+        "packed_public_value_hex": "0x3fffffffffffffffffffffffffffffffa",
+        "is_empty": false,
+        "min_valid_u64": 18446744073709551610,
+        "max_valid_u64": 18446744073709551615
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1361129467683753853853498429727072845818",
+        "set_values": [
+          "18446744073709551605",
+          "18446744073709551615",
+          "18446744073709551610",
+          "18446744073709551615",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3586,
+        "lower_bound": "18446744073709551610",
+        "upper_bound": "18446744073709551615"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x16f204a0b4ae0aae3f755d6b5b5e0df722cd8f510121545a2801b00cdcd60c3c",
+          "nullifier": "0x2b2216cfde17520451979a4476a5a24db7ffffdeee35d7ccf7ccb44f4bfe1747",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x2e7fd1ac5f79e679589dea4957975ed3b9ef47d858b49cfc2b826e5142e79554"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000116f204a0b4ae0aae3f755d6b5b5e0df722cd8f510121545a2801b00cdcd60c3c2b2216cfde17520451979a4476a5a24db7ffffdeee35d7ccf7ccb44f4bfe174700000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f2e7fd1ac5f79e679589dea4957975ed3b9ef47d858b49cfc2b826e5142e79554"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18446744073709551615,
+        "certified_attr_blinding": 555555,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect": "pass"
+    }
+  ],
+  "negative_cases": [
+    {
+      "id": "sd-int-neg-001-excluded-lower-boundary",
+      "description": "Reject certified value 18 on half-open intersection [10, 30] & (18, 25] -> (18, 25]",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 25]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927387917816706275213330",
+        "packed_public_value_hex": "0x200000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 19,
+        "max_valid_u64": 25
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "680564733841876927387917816706275213330",
+        "set_values": [
+          "10",
+          "30",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 2818,
+        "lower_bound": "18",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x23fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd",
+          "nullifier": "0x0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e2062",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000123fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e206200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "interval bound unsatisfied"
+    },
+    {
+      "id": "sd-int-neg-002-excluded-upper-boundary",
+      "description": "Reject certified value 25 on half-open intersection [10, 25) & [18, 30] -> [18, 25)",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 25,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[10, 25)"
+        },
+        {
+          "lower": 18,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[18, 30]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": true,
+        "upper_inclusive": false,
+        "notation": "[18, 25)",
+        "canonical_flags": 1,
+        "packed_public_value_dec": "340282366920938463924543209274507001874",
+        "packed_public_value_hex": "0x100000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 18,
+        "max_valid_u64": 24
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "340282366920938463924543209274507001874",
+        "set_values": [
+          "10",
+          "25",
+          "18",
+          "30",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3330,
+        "lower_bound": "18",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x027ef85ea52469abb5efbe34eb48ff87783bddc9b0db40c493e519d4b784d0e4",
+          "nullifier": "0x29de01d6f7df0f39163f7d6a3e7d64ae43026d34be5ca50dc3eee394cab9c6a0",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x2bab874d44e6801f8e89f80d27798e2c947aa93e4acb4aa85d28b8ceab89a1f9"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef11111111111111111111111111111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000001027ef85ea52469abb5efbe34eb48ff87783bddc9b0db40c493e519d4b784d0e429de01d6f7df0f39163f7d6a3e7d64ae43026d34be5ca50dc3eee394cab9c6a000000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f2bab874d44e6801f8e89f80d27798e2c947aa93e4acb4aa85d28b8ceab89a1f9"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 25,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "interval bound unsatisfied"
+    },
+    {
+      "id": "sd-int-neg-003-outside-tighter-third-clause",
+      "description": "Reject certified value 22 satisfying [10, 50] & [20, 40] but failing [25, 35]",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 50,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 50]"
+        },
+        {
+          "lower": 20,
+          "upper": 40,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[20, 40]"
+        },
+        {
+          "lower": 25,
+          "upper": 35,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[25, 35]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 25,
+        "upper": 35,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[25, 35]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1020847100762815391035759864875138940953",
+        "packed_public_value_hex": "0x300000000000000230000000000000019",
+        "is_empty": false,
+        "min_valid_u64": 25,
+        "max_valid_u64": 35
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815391035759864875138940953",
+        "set_values": [
+          "10",
+          "50",
+          "20",
+          "40",
+          "25",
+          "35",
+          "0",
+          "0"
+        ],
+        "set_len": 16131,
+        "lower_bound": "25",
+        "upper_bound": "35"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x10476ee3b99297282a6a4527f1c75de7071aa224335dff519d08f5c8baf11d1b",
+          "nullifier": "0x083c7e06f510930f0b529dfbb459090f506febeb13b0b6529862aef7a1de695d",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x293756ac578f6f0b737b2be9fbfb2743e06ccdac41754dd6039131233340ce65"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000110476ee3b99297282a6a4527f1c75de7071aa224335dff519d08f5c8baf11d1b083c7e06f510930f0b529dfbb459090f506febeb13b0b6529862aef7a1de695d00000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f293756ac578f6f0b737b2be9fbfb2743e06ccdac41754dd6039131233340ce65"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 22,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "interval bound unsatisfied"
+    },
+    {
+      "id": "sd-int-neg-004-empty-disjoint-intervals",
+      "description": "Reject disjoint intervals [10, 15] & [20, 25] -> [20, 15]",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 15,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 15]"
+        },
+        {
+          "lower": 20,
+          "upper": 25,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[20, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 20,
+        "upper": 15,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[20, 15]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1020847100762815390666824983400947908628",
+        "packed_public_value_hex": "0x3000000000000000f0000000000000014",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390666824983400947908628",
+        "set_values": [
+          "10",
+          "15",
+          "20",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3842,
+        "lower_bound": "20",
+        "upper_bound": "15"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x23fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd",
+          "nullifier": "0x0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e2062",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x149f4406fdf477e77593aea78471a519f274bd31479af3cb61693eb389b09944"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000123fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e206200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f149f4406fdf477e77593aea78471a519f274bd31479af3cb61693eb389b09944"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-005-empty-touching-right-open",
+      "description": "Reject touching intervals [10, 18) & [18, 25] -> [18, 18)",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 18,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[10, 18)"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 18,
+        "lower_inclusive": true,
+        "upper_inclusive": false,
+        "notation": "[18, 18)",
+        "canonical_flags": 1,
+        "packed_public_value_dec": "340282366920938463795416000758540140562",
+        "packed_public_value_hex": "0x100000000000000120000000000000012",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "340282366920938463795416000758540140562",
+        "set_values": [
+          "10",
+          "18",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3330,
+        "lower_bound": "18",
+        "upper_bound": "18"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x23fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd",
+          "nullifier": "0x0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e2062",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x1be18a0c02b79ed6723a6ab220773ffa4f38070837596c0f9cfd654e0d1730bc"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000123fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e206200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f1be18a0c02b79ed6723a6ab220773ffa4f38070837596c0f9cfd654e0d1730bc"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-006-empty-touching-left-open",
+      "description": "Reject touching intervals (18, 25] & [10, 18] -> (18, 18]",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        },
+        {
+          "lower": 10,
+          "upper": 18,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 18]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 18,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 18]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927258790608190308352018",
+        "packed_public_value_hex": "0x200000000000000120000000000000012",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "680564733841876927258790608190308352018",
+        "set_values": [
+          "18",
+          "25",
+          "10",
+          "18",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3586,
+        "lower_bound": "18",
+        "upper_bound": "18"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x23fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd",
+          "nullifier": "0x0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e2062",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x0c2de4f07a34b209e6e72946df9279bca316cabe4e53f98e11e28dd28d8934bc"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000123fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e206200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f0c2de4f07a34b209e6e72946df9279bca316cabe4e53f98e11e28dd28d8934bc"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-007-empty-open-singleton",
+      "description": "Reject open singleton (18, 25) & (10, 30) & [18, 18] -> (18, 18)",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": false,
+          "notation": "(18, 25)"
+        },
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": false,
+          "upper_inclusive": false,
+          "notation": "(10, 30)"
+        },
+        {
+          "lower": 18,
+          "upper": 18,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[18, 18]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 18,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 18]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927258790608190308352018",
+        "packed_public_value_hex": "0x200000000000000120000000000000012",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "680564733841876927258790608190308352018",
+        "set_values": [
+          "18",
+          "25",
+          "10",
+          "30",
+          "18",
+          "18",
+          "0",
+          "0"
+        ],
+        "set_len": 12291,
+        "lower_bound": "18",
+        "upper_bound": "18"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x23fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd",
+          "nullifier": "0x0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e2062",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x0c2de4f07a34b209e6e72946df9279bca316cabe4e53f98e11e28dd28d8934bc"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000123fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e206200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f0c2de4f07a34b209e6e72946df9279bca316cabe4e53f98e11e28dd28d8934bc"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-008-empty-adjacent-open-integers",
+      "description": "Reject open unit integer interval (18, 25] & [10, 19) -> (18, 19) with no u64 member",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        },
+        {
+          "lower": 10,
+          "upper": 19,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[10, 19)"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 19,
+        "lower_inclusive": false,
+        "upper_inclusive": false,
+        "notation": "(18, 19)",
+        "canonical_flags": 0,
+        "packed_public_value_dec": "350488137400481480722",
+        "packed_public_value_hex": "0x130000000000000012",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "350488137400481480722",
+        "set_values": [
+          "18",
+          "25",
+          "10",
+          "19",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 1538,
+        "lower_bound": "18",
+        "upper_bound": "19"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x23fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd",
+          "nullifier": "0x0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e2062",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x03732d5cf9de7f2016cb46f84e7827232db8956ca90e977a056680ae5107a527"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000123fffee25f131fb11ef5ade6afeaec5e6f10243a7a8da57e0f2d945fd5dedffd0c721cf84e978582290cf483dd478a387b9da950dee32dae80e73d928b8e206200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f03732d5cf9de7f2016cb46f84e7827232db8956ca90e977a056680ae5107a527"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-009-empty-zero-upper-exclusive",
+      "description": "Reject u64 domain underflow interval [0, 0)",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 0,
+          "upper": 0,
+          "lower_inclusive": true,
+          "upper_inclusive": false,
+          "notation": "[0, 0)"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 0,
+        "upper": 0,
+        "lower_inclusive": true,
+        "upper_inclusive": false,
+        "notation": "[0, 0)",
+        "canonical_flags": 1,
+        "packed_public_value_dec": "340282366920938463463374607431768211456",
+        "packed_public_value_hex": "0x100000000000000000000000000000000",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "340282366920938463463374607431768211456",
+        "set_values": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 257,
+        "lower_bound": "0",
+        "upper_bound": "0"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x2eb38b409e8c23e6e1d6c53cc3dca066abd489f576381957e09d1955f7e0884f",
+          "nullifier": "0x2b05f2b34881bd5e0ab38c029230012784e84f7774009779b9e67bc220d38538",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x22a74e85b01932c581baa4d0c8e034ed2692bbf3baff41bcd81ff43a6930899a"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000012eb38b409e8c23e6e1d6c53cc3dca066abd489f576381957e09d1955f7e0884f2b05f2b34881bd5e0ab38c029230012784e84f7774009779b9e67bc220d3853800000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f22a74e85b01932c581baa4d0c8e034ed2692bbf3baff41bcd81ff43a6930899a"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 0,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-010-empty-u64-max-lower-exclusive",
+      "description": "Reject u64 domain overflow interval (U64_MAX, U64_MAX]",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 18446744073709551615,
+          "upper": 18446744073709551615,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18446744073709551615, 18446744073709551615]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18446744073709551615,
+        "upper": 18446744073709551615,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18446744073709551615, 18446744073709551615]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "1020847100762815390390123822295304634367",
+        "packed_public_value_hex": "0x2ffffffffffffffffffffffffffffffff",
+        "is_empty": true,
+        "min_valid_u64": null,
+        "max_valid_u64": null
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390390123822295304634367",
+        "set_values": [
+          "18446744073709551615",
+          "18446744073709551615",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 513,
+        "lower_bound": "18446744073709551615",
+        "upper_bound": "18446744073709551615"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x14373dc274bd3ce2e10b755873957585801a906fc3528f25a72ac3bd262b8fa6",
+          "nullifier": "0x2e2d228fd6aabc15dd69ac8dfe87824633650e7f0e31dd3c225d4eee802bd6ab",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x2cf18d67776b95b40a39ed742b808e3f6c4271f42d118af604e86f801b1ff4ab"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000114373dc274bd3ce2e10b755873957585801a906fc3528f25a72ac3bd262b8fa62e2d228fd6aabc15dd69ac8dfe87824633650e7f0e31dd3c225d4eee802bd6ab00000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f2cf18d67776b95b40a39ed742b808e3f6c4271f42d118af604e86f801b1ff4ab"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18446744073709551615,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "empty interval intersection"
+    },
+    {
+      "id": "sd-int-neg-011-non-canonical-inclusivity-claim",
+      "description": "Reject forged inclusive public_value [18, 25] when clauses reduce to (18, 25]",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 25]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927387917816706275213330",
+        "packed_public_value_hex": "0x200000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 19,
+        "max_valid_u64": 25
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390851292424138043424786",
+        "set_values": [
+          "10",
+          "30",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 2818,
+        "lower_bound": "18",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f41",
+          "nullifier": "0x2310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd92",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x253db15a6995a1c7c05b03c1095e15b35e2d33db97b4a4ba1b0563106076deda"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f412310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd9200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f253db15a6995a1c7c05b03c1095e15b35e2d33db97b4a4ba1b0563106076deda"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 20,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "non-canonical interval bounds"
+    },
+    {
+      "id": "sd-int-neg-012-non-canonical-widened-bound",
+      "description": "Reject non-canonical lower_bound 10 when clauses [10, 30] & [18, 25] reduce to 18",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[18, 25]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1020847100762815390851292424138043424786",
+        "packed_public_value_hex": "0x300000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 18,
+        "max_valid_u64": 25
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390851292424138043424786",
+        "set_values": [
+          "10",
+          "30",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 3842,
+        "lower_bound": "10",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f41",
+          "nullifier": "0x2310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd92",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x253db15a6995a1c7c05b03c1095e15b35e2d33db97b4a4ba1b0563106076deda"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f412310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd9200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f253db15a6995a1c7c05b03c1095e15b35e2d33db97b4a4ba1b0563106076deda"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 20,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "non-canonical interval bounds"
+    },
+    {
+      "id": "sd-int-neg-013-oversized-clause-count",
+      "description": "Reject num_clauses = 5 above MAX_INTERVAL_CLAUSES = 4",
+      "attr_index": 0,
+      "clauses": [],
+      "canonical_conjunction": null,
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390832845680064333873168",
+        "set_values": [
+          "10",
+          "30",
+          "12",
+          "28",
+          "14",
+          "26",
+          "16",
+          "24"
+        ],
+        "set_len": 65285,
+        "lower_bound": "16",
+        "upper_bound": "24"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f41",
+          "nullifier": "0x2310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd92",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x21b352edaba0a7a99f2d8197ec5b51e2d7df71240430995ab76bf9d0979d30ac"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f412310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd9200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f21b352edaba0a7a99f2d8197ec5b51e2d7df71240430995ab76bf9d0979d30ac"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 20,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "oversized"
+    },
+    {
+      "id": "sd-int-neg-014-zero-clause-count",
+      "description": "Reject num_clauses = 0 on active IntervalIntersection predicate",
+      "attr_index": 0,
+      "clauses": [],
+      "canonical_conjunction": null,
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "0",
+        "set_values": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 0,
+        "lower_bound": "0",
+        "upper_bound": "0"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f41",
+          "nullifier": "0x2310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd92",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x10de0e945802a0fc4cb97c48ecb27bc692d6deedf97951b49df97c05b2dcfde0"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f412310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd9200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f10de0e945802a0fc4cb97c48ecb27bc692d6deedf97951b49df97c05b2dcfde0"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 20,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "malformed"
+    },
+    {
+      "id": "sd-int-neg-015-nonzero-inactive-clause-slot",
+      "description": "Reject non-zero bound in inactive clause slot j >= num_clauses",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 10,
+        "upper": 30,
+        "lower_inclusive": true,
+        "upper_inclusive": true,
+        "notation": "[10, 30]",
+        "canonical_flags": 3,
+        "packed_public_value_dec": "1020847100762815390943526144506591182858",
+        "packed_public_value_hex": "0x3000000000000001e000000000000000a",
+        "is_empty": false,
+        "min_valid_u64": 10,
+        "max_valid_u64": 30
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "1020847100762815390943526144506591182858",
+        "set_values": [
+          "10",
+          "30",
+          "99",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 769,
+        "lower_bound": "10",
+        "upper_bound": "30"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x0d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f41",
+          "nullifier": "0x2310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd92",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x0b0d2629ca295c9a2f68f9528ef4f656477fd8c1d45e4a9501d70c03efaf60bf"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000010d78f05cf535ded6f424acbd62b15b5c751fa42a892dd481bf2d0f6fc8199f412310629a449a5a0bda27e94e4fc4a999f903d2e7d0cb83307d02f5159ea0bd9200000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f0b0d2629ca295c9a2f68f9528ef4f656477fd8c1d45e4a9501d70c03efaf60bf"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 20,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "malformed"
+    },
+    {
+      "id": "sd-int-neg-016-field-overflow-certified-value",
+      "description": "Reject certified Field value 2^64 + 20 that would wrap modulo 2^64 without non-truncation check",
+      "attr_index": 0,
+      "clauses": [
+        {
+          "lower": 10,
+          "upper": 30,
+          "lower_inclusive": true,
+          "upper_inclusive": true,
+          "notation": "[10, 30]"
+        },
+        {
+          "lower": 18,
+          "upper": 25,
+          "lower_inclusive": false,
+          "upper_inclusive": true,
+          "notation": "(18, 25]"
+        }
+      ],
+      "canonical_conjunction": {
+        "lower": 18,
+        "upper": 25,
+        "lower_inclusive": false,
+        "upper_inclusive": true,
+        "notation": "(18, 25]",
+        "canonical_flags": 2,
+        "packed_public_value_dec": "680564733841876927387917816706275213330",
+        "packed_public_value_hex": "0x200000000000000190000000000000012",
+        "is_empty": false,
+        "min_valid_u64": 19,
+        "max_valid_u64": 25
+      },
+      "encoded_predicate": {
+        "predicate_type": "3",
+        "attr_index": 0,
+        "public_value": "680564733841876927387917816706275213330",
+        "set_values": [
+          "10",
+          "30",
+          "18",
+          "25",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "set_len": 2818,
+        "lower_bound": "18",
+        "upper_bound": "25"
+      },
+      "public_statement": {
+        "fields_hex": {
+          "schema_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "issuer_namespace": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "schema_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "credential_root": "0x103e293854032176cc38b0bc1789d520ccd53285a14dc73fbb1d041ada7b57cf",
+          "nullifier": "0x12a4351b00094500b8d5237aa708ff37fd6871244a6c98dc767863e8735bec91",
+          "video_hash_hi": "0x00000000000000000000000000000000000000000000000000000000000004d2",
+          "video_hash_lo": "0x000000000000000000000000000000000000000000000000000000000000162e",
+          "verifier_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "circuit_version": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "evidence_digest": "0x000000000000000000000000000000000000000000000000000000000000270f",
+          "predicate_commitment": "0x27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+        },
+        "wire_public_inputs_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef11111111111111111111111111111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000001103e293854032176cc38b0bc1789d520ccd53285a14dc73fbb1d041ada7b57cf12a4351b00094500b8d5237aa708ff37fd6871244a6c98dc767863e8735bec9100000000000000000000000000000000000000000000000000000000000004d2000000000000000000000000000000000000000000000000000000000000162e000000000000000000000000000000000000000000000000000000000000002a0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000270f27dc7be705c315a80c81cf908e20aabd2b6e2adc660accd71204ce5e1560b182"
+      },
+      "prover_only_synthetic_opening": {
+        "certified_attr_value": 18446744073709551636,
+        "certified_attr_blinding": 111111,
+        "secondary_attr_value": 12345678,
+        "secondary_attr_blinding": 222222
+      },
+      "expect_fail_with": "malformed"
+    }
+  ]
+}

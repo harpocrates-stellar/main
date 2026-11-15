@@ -1,4 +1,15 @@
-export type PredicateType = 'Equality' | 'SetMembership' | 'Range'
+export type PredicateType =
+  | 'Equality'
+  | 'SetMembership'
+  | 'Range'
+  | 'IntervalIntersection'
+
+export type IntervalClause = {
+  lower: string
+  upper: string
+  lowerInclusive?: boolean
+  upperInclusive?: boolean
+}
 
 export type AttributeDef = {
   name: string
@@ -23,6 +34,7 @@ export type Predicate = {
   setLen?: number
   lowerBound?: string
   upperBound?: string
+  intervals?: IntervalClause[]
 }
 
 export type SelectiveDisclosureInput = {
@@ -55,6 +67,7 @@ export const SCHEMA_CONSTANTS = {
   MAX_ATTRIBUTES: 16,
   MAX_PREDICATES: 8,
   MAX_SET_MEMBERS: 8,
+  MAX_INTERVAL_CLAUSES: 4,
   CURRENT_CIRCUIT_VERSION: 1,
   PUBLIC_INPUT_BYTE_LENGTH: SELECTIVE_DISCLOSURE_PUBLIC_INPUT_COUNT * 32,
 } as const

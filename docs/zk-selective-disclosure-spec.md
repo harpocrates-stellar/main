@@ -4,7 +4,7 @@ This specification is based on [selective_disclosure/src/main.nr](../zk/noir/sel
 
 ## 1. Summary
 
-The Noir circuit `selective_disclosure` checks equality, set-membership, and range conditions on hidden `attr_values` and matches those values to a public `credential_root`. A caller submits the resulting `proof` and encoded `public_inputs` to `verify_selective_disclosure`, a function on the `HarpocratesRegistry` smart contract. That function checks stored schema and credential records, then calls the configured proof verifier. This specification describes the circuit statement, those contract checks, and an age/country example.
+The Noir circuit `selective_disclosure` checks equality, set-membership, range, and issuer-certified interval-intersection conditions on hidden `attr_values` and matches those values to a public `credential_root`. A caller submits the resulting `proof` and encoded `public_inputs` to `verify_selective_disclosure`, a function on the `HarpocratesRegistry` smart contract. That function checks stored schema and credential records, then calls the configured proof verifier. This specification describes the circuit statement, those contract checks, canonical interval conjunction rules, and an age/country example.
 
 ## 2. Inputs and representations
 
@@ -46,15 +46,32 @@ Arrays have their full declared lengths. The example fills unused entries with z
 
 | Member | Type | Use |
 | --- | --- | --- |
-| `predicate_type` | `Field` | `0` = equality; `1` = set membership; `2` = range. |
+| `predicate_type` | `Field` | `0` = equality; `1` = set membership; `2` = range; `3` = interval intersection. |
 | `attr_index` | `u32` | Selects `attr_values[attr_index]`. |
-| `public_value` | `Field` | Equality target; included in `compute_predicate_commitment` for every type. |
-| `set_values` | `[Field; 8]` | Set-membership candidates. |
-| `set_len` | `u32` | Number of entries from the start of `set_values` eligible for a match. |
-| `lower_bound` | `Field` | Inclusive range lower bound. |
-| `upper_bound` | `Field` | Inclusive range upper bound. |
+| `public_value` | `Field` | Equality target (`0`), or canonical packed conjunction for type `3`; included in `compute_predicate_commitment` for every type. |
+| `set_values` | `[Field; 8]` | Set-membership candidates (`1`), or up to 4 `[lo_j, hi_j]` clause pairs (`3`). |
+| `set_len` | `u32` | Candidate count (`1`), or `num_clauses \| (clause_mask << 8)` (`3`). |
+| `lower_bound` | `Field` | Inclusive range lower bound (`2`), or canonical reduced lower bound `L*` (`3`). |
+| `upper_bound` | `Field` | Inclusive range upper bound (`2`), or canonical reduced upper bound `U*` (`3`). |
 
 `public_value` is private because it belongs to `predicates`. Applications supply the numeric encoding of `attr_values`; `age-and-country.json` defines attribute names and indices but leaves country-code encoding to the application.
+
+### 2.4 Canonical interval intersection conjunction (`predicate_type == 3`)
+
+Predicate type `3` (`IntervalIntersection`) proves that a hidden `u64` certified attribute value `attr_values[attr_index]` simultaneously satisfies `1 <= num_clauses <= MAX_INTERVAL_CLAUSES` (`4`) inclusive or exclusive interval bounds without revealing the certified value:
+
+- **Clause layout:** Slot `j` (`0 <= j < num_clauses`) stores `(lo_j, hi_j)` in `(set_values[2 * j], set_values[2 * j + 1])` (`0 <= lo_j, hi_j <= 2^64 - 1`). Inactive slots `j >= num_clauses` must contain `(0, 0)` and zero inclusivity flags.
+- **Inclusivity mask:** `set_len = num_clauses | (clause_mask << 8)` with `clause_mask < 256`, where bit `2 * j` is `lower_inclusive_j` and bit `2 * j + 1` is `upper_inclusive_j`.
+- **Order-independent canonical reduction:**
+  - `L* = max_{0 <= j < num_clauses} lo_j`
+  - `lower_inclusive* = AND_{lo_j == L*} lower_inclusive_j`
+  - `U* = min_{0 <= j < num_clauses} hi_j`
+  - `upper_inclusive* = AND_{hi_j == U*} upper_inclusive_j`
+- **Bijective field packing:** With `canonical_flags = (lower_inclusive* ? 1 : 0) + (upper_inclusive* ? 2 : 0)`, the circuit requires `lower_bound == L*`, `upper_bound == U*`, and `public_value == L* + U* * 2^64 + canonical_flags * 2^128` (`"non-canonical interval bounds"`). Because `public_value < 2^130 < p_BN254`, `compute_predicate_commitment` binds the exact canonical conjunction independently of clause ordering and hidden attribute values.
+- **Discrete `u64` non-emptiness:** Let `min_valid = lower_inclusive* ? L* : L* + 1` and `max_valid = upper_inclusive* ? U* : U* - 1`. Intersections with `(!lower_inclusive* & L* == 2^64 - 1)`, `(!upper_inclusive* & U* == 0)`, or `min_valid > max_valid` (including disjoint intervals, `[x, x)`, `(x, x]`, `(x, x)`, and adjacent open integer intervals `(x, x + 1)`) fail with `"empty interval intersection"`.
+- **Certified value check:** The circuit enforces canonical `u64` non-truncation (`(x_u64 as Field) == x`) and asserts `min_valid <= attr_u64 <= max_valid` together with per-clause membership (`"interval bound unsatisfied"`).
+
+Reference tooling and conformance vectors live in [selective_disclosure_intervals.py](../zk/tools/selective_disclosure_intervals.py) and [selective_disclosure_interval_vectors.json](../zk/noir/fixtures/selective_disclosure_interval_vectors.json).
 
 ## 3. Circuit statement
 
@@ -263,9 +280,9 @@ The lookups and comparisons in §4.1 check that the submitted `schema_hash`, `sc
 | `verifier_digest` and `schema_hash` / `circuit_version` | `main` computes `derived_verifier_digest` from these three values but never checks its result. Its only assertion on `verifier_digest` is that it is nonzero. |
 | `evidence_digest` and `video_hash_hi` / `video_hash_lo` | All three enter `derived_nullifier` as supplied; `main` does not derive `evidence_digest` from the video-hash components. |
 | `video_hash_hi` / `video_hash_lo` and 128-bit values | Both parameters have type `Field`; there is no additional 128-bit bound. |
-| `predicate_commitment` and the complete contents of `predicates` | `derived_pred_commitment` omits `set_values`, `set_len`, `lower_bound`, and `upper_bound`. |
+| `predicate_commitment` and the complete contents of `predicates` | `derived_pred_commitment` hashes `predicate_type`, `attr_index`, and `public_value`, omitting raw `set_values`, `set_len`, `lower_bound`, and `upper_bound`. |
 
-For example, the range checks test `lower_bound` and `upper_bound`, but changing those bounds does not change `derived_pred_commitment`. A verifier that expects a particular age range cannot identify that range from `predicate_commitment` alone.
+For single-range predicates (`predicate_type == 2`), `public_value` is `0`, so changing `lower_bound` and `upper_bound` does not change `derived_pred_commitment`. By contrast, interval-intersection predicates (`predicate_type == 3`) pack the canonical reduced conjunction `(L*, U*, lower_inclusive*, upper_inclusive*)` into `public_value`, so `predicate_commitment` binds the exact effective intersection while keeping redundant wider clauses and the certified attribute value private.
 
 ### 4.4 Schema and circuit versions
 
