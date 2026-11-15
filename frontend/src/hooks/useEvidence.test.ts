@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useEvidence } from './useEvidence'
+import { computeBoundedProgressMilestone, useEvidence } from './useEvidence'
 
 const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
   hashFileInWorkerMock: vi.fn(),
@@ -230,6 +230,144 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+
+  it('avoids repeated live-region messages for unchanged percentages and bounds progress to 25% milestones', async () => {
+    expect(computeBoundedProgressMilestone(0)).toBe(0)
+    expect(computeBoundedProgressMilestone(24)).toBe(0)
+    expect(computeBoundedProgressMilestone(25)).toBe(25)
+    expect(computeBoundedProgressMilestone(49)).toBe(25)
+    expect(computeBoundedProgressMilestone(50)).toBe(50)
+    expect(computeBoundedProgressMilestone(100)).toBe(100)
+
+    let emitProgress!: (p: { processedBytes: number; totalBytes: number; percentage: number }) => void
+    let finishHash!: (hash: string) => void
+    hashFileInWorkerMock.mockImplementation((_file, onProgress) => {
+      emitProgress = onProgress
+      return new Promise<string>((resolve) => {
+        finishHash = resolve
+      })
+    })
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    let op!: Promise<void>
+    act(() => {
+      op = result.current.handleEvidence(new File(['video'], 'clip.mp4'))
+    })
+
+    expect(result.current.announcementHistory).toEqual(['Hashing video: 0% complete.'])
+
+    // Repeated unchanged percentages (10%, 10%, 10%) and non-milestone steps (12%, 24%) must not emit
+    act(() => {
+      emitProgress({ processedBytes: 100, totalBytes: 1000, percentage: 10 })
+      emitProgress({ processedBytes: 104, totalBytes: 1000, percentage: 10 })
+      emitProgress({ processedBytes: 109, totalBytes: 1000, percentage: 10 })
+      emitProgress({ processedBytes: 120, totalBytes: 1000, percentage: 12 })
+      emitProgress({ processedBytes: 240, totalBytes: 1000, percentage: 24 })
+    })
+    expect(result.current.announcementHistory).toEqual(['Hashing video: 0% complete.'])
+
+    // Reaching 25% milestone announces once; repeated 25% chunks do not repeat
+    act(() => {
+      emitProgress({ processedBytes: 250, totalBytes: 1000, percentage: 25 })
+      emitProgress({ processedBytes: 255, totalBytes: 1000, percentage: 25 })
+      emitProgress({ processedBytes: 490, totalBytes: 1000, percentage: 49 })
+      emitProgress({ processedBytes: 500, totalBytes: 1000, percentage: 50 })
+      emitProgress({ processedBytes: 505, totalBytes: 1000, percentage: 50 })
+      emitProgress({ processedBytes: 750, totalBytes: 1000, percentage: 75 })
+      emitProgress({ processedBytes: 1000, totalBytes: 1000, percentage: 100 })
+      emitProgress({ processedBytes: 1000, totalBytes: 1000, percentage: 100 })
+    })
+
+    expect(result.current.announcementHistory).toEqual([
+      'Hashing video: 0% complete.',
+      'Hashing video: 25% complete.',
+      'Hashing video: 50% complete.',
+      'Hashing video: 75% complete.',
+      'Hashing video: 100% complete.',
+    ])
+
+    await act(async () => {
+      finishHash('a'.repeat(64))
+      await op
+    })
+
+    // Terminal success ('ready') announced exactly once
+    expect(result.current.announcementHistory).toEqual([
+      'Hashing video: 0% complete.',
+      'Hashing video: 25% complete.',
+      'Hashing video: 50% complete.',
+      'Hashing video: 75% complete.',
+      'Hashing video: 100% complete.',
+      'Embedding portable Harpocrates metadata into the video.',
+      'Embedded evidence package is ready for Stellar registration.',
+    ])
+  })
+
+  it('announces terminal cancellation and failure exactly once without leaking sensitive hashes', async () => {
+    let rejectHash!: (err: Error) => void
+    hashFileInWorkerMock.mockImplementation(
+      (_file, _onProgress, signal: AbortSignal) =>
+        new Promise<string>((_resolve, reject) => {
+          rejectHash = reject
+          signal.addEventListener('abort', () => reject(new Error('Aborted late')), { once: true })
+        }),
+    )
+
+    const { result } = renderHook(() => useEvidence())
+    let cancelRun!: Promise<void>
+    act(() => {
+      cancelRun = result.current.handleEvidence(new File(['video'], 'clip.mp4'))
+    })
+
+    // Cancel twice in a row — terminal cancellation must only be announced once
+    act(() => {
+      result.current.cancelEvidence()
+      result.current.cancelEvidence()
+    })
+    await act(async () => {
+      await cancelRun
+    })
+
+    expect(result.current.stage).toBe('cancelled')
+    expect(
+      result.current.announcementHistory?.filter((msg) => msg === 'Upload cancelled.'),
+    ).toHaveLength(1)
+
+    // Now test terminal failure announced once with redacted hex hash
+    hashFileInWorkerMock.mockImplementationOnce(
+      () =>
+        new Promise<string>((_resolve, reject) => {
+          rejectHash = reject
+        }),
+    )
+    let failRun!: Promise<void>
+    act(() => {
+      failRun = result.current.handleEvidence(new File(['video-2'], 'clip2.mp4'))
+    })
+    await act(async () => {
+      rejectHash(new Error(`Hash worker failed on ${'f'.repeat(64)}`))
+      await failRun
+    })
+    // Calling cancelEvidence after terminal error is a no-op and emits nothing further
+    act(() => {
+      result.current.cancelEvidence()
+    })
+
+    expect(result.current.stage).toBe('error')
+    expect(result.current.announcementHistory).toEqual([
+      'Hashing video: 0% complete.',
+      'Hash worker failed on [redacted]',
+    ])
   })
 })
 

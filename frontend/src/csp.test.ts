@@ -337,7 +337,7 @@ describe('nginx.conf – production CSP header presence', () => {
   })
 
   it('includes the always flag on the CSP header', () => {
-    expect(nginxConf).toMatch(/Content-Security-Policy[^;]+\balways\b/i)
+    expect(nginxConf).toMatch(/add_header\s+Content-Security-Policy\s+"[^"]+"\s+always\s*;/i)
   })
 
   it('references the API origin placeholder in connect-src', () => {
@@ -369,7 +369,7 @@ describe('nginx.conf – production CSP header presence', () => {
   })
 
   it('also sets X-Frame-Options DENY as belt-and-suspenders', () => {
-    expect(nginxConf).toMatch(/add_header\s+X-Frame-Options\s+DENY\b/i)
+    expect(nginxConf).toMatch(/add_header\s+X-Frame-Options\s+"?DENY"?\b/i)
   })
 })
 

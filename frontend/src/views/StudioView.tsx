@@ -9,7 +9,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
@@ -52,6 +51,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
 
   const { statusLabel, isBusy } = useA11yStage(stage)
+  const resolvedLiveAnnouncement =
+    evidence.liveAnnouncement !== undefined ? evidence.liveAnnouncement : statusLabel
   const isProving = stage === 'proving'
   const revocationProofId =
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
@@ -76,8 +77,16 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
       <div className="studio">
         <header className="page-header">
           <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
-          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
-          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
+          <p>{message}</p>
+          <div
+            className="sr-only"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            data-testid="studio-live-region"
+          >
+            {resolvedLiveAnnouncement}
+          </div>
         </header>
 
         {networkMismatch ? (
@@ -89,6 +98,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
+          htmlFor="studio-evidence-input"
           className="dropzone"
           role="button"
           tabIndex={0}
@@ -102,16 +112,18 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         >
           <Upload size={20} aria-hidden="true" />
-          <span aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</span>
-          <input
-            ref={studioInputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
-          />
+          <output aria-hidden="true">{file ? file.name : 'Drop or choose a video file'}</output>
         </label>
+        <input
+          id="studio-evidence-input"
+          ref={studioInputRef}
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ display: 'none' }}
+          onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+        />
 
         {stage === 'hashing' && hashProgress ? (
           <div className="hash-progress">
@@ -260,7 +272,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             Register proof
           </button>
 
-          {isProving ? (
+          {isProving && !isCancellable ? (
             <button
               className="secondary-action"
               type="button"

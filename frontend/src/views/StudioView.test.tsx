@@ -11,6 +11,7 @@ import { StudioView } from './StudioView'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
+import { expectNoA11yViolations, runAxe } from '../test/axeA11y'
 
 function makeVerification(): UseVerificationReturn {
   return {
@@ -41,6 +42,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
       description: 'Noir ZK proof.',
     },
     stage: 'idle',
+    hashProgress: null,
     file: null,
     proof: null,
     processedVideoUrl: '',
@@ -49,12 +51,15 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     nullifierSeed: '',
     setNullifierSeed: vi.fn(),
     message: 'Upload evidence to begin.',
+    liveAnnouncement: '',
+    announcementHistory: [],
     registration: null,
     networkMismatch: null,
     isCancellable: false,
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +126,40 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders a single bounded polite live region for Studio progress without duplicating byte updates', async () => {
+    const { container, rerender } = renderStudio(
+      makeEvidence({
+        stage: 'hashing',
+        hashProgress: { processedBytes: 250, totalBytes: 1000, percentage: 25 },
+        message: 'Hashing video locally in the browser: 25% (250 / 1,000 bytes).',
+        liveAnnouncement: 'Hashing video: 25% complete.',
+        file: new File(['abc'], 'clip.mp4'),
+      }),
+    )
+
+    const liveRegion = screen.getByTestId('studio-live-region')
+    expect(liveRegion).toHaveAttribute('aria-live', 'polite')
+    expect(liveRegion).toHaveTextContent('Hashing video: 25% complete.')
+    expect(screen.getByText(/25% \(250 \/ 1,000 bytes\)/)).not.toHaveAttribute('aria-live')
+
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          stage: 'hashing',
+          hashProgress: { processedBytes: 255, totalBytes: 1000, percentage: 25 },
+          message: 'Hashing video locally in the browser: 25% (255 / 1,000 bytes).',
+          liveAnnouncement: 'Hashing video: 25% complete.',
+          file: new File(['abc'], 'clip.mp4'),
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(screen.getByTestId('studio-live-region')).toHaveTextContent('Hashing video: 25% complete.')
+    expectNoA11yViolations(await runAxe(container), 'studio bounded progress live region')
   })
 })
