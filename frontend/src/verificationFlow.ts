@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { fetchProofEventsByVideo } from './services/verificationService'
+import { assertValidVideoHash } from './services/videoHash'
 
 export type VerificationEvent = {
   id: number
@@ -11,6 +11,7 @@ export type VerificationEvent = {
   tx_hash?: string | null
   tx_status?: string | null
   created_at: string
+  message?: string
 }
 
 export type VerificationOutcome =
@@ -35,10 +36,25 @@ type VerifyArtifactInput = {
   videoHash: string
   wallet?: string
   signal?: AbortSignal
+  extractMetadataOverride?: (apiBase: string, file: File, signal?: AbortSignal) => Promise<unknown>
 }
 
-class MalformedEvidenceError extends Error {}
+export class MalformedEvidenceError extends Error {}
 const REVOKED_CHAIN_STATUS = 2
+
+async function fetchEventsDirect(
+  apiBase: string,
+  videoHash: string,
+  signal?: AbortSignal,
+): Promise<VerificationEvent[]> {
+  const safeHash = assertValidVideoHash(videoHash)
+  const response = await fetch(`${apiBase}/api/proofs/by-video/${safeHash}`, { signal })
+  if (!response.ok) {
+    throw new Error('Database lookup failed.')
+  }
+  const data = (await response.json()) as { events?: VerificationEvent[] }
+  return data.events ?? []
+}
 
 export async function verifyArtifact({
   apiBase,
@@ -47,11 +63,13 @@ export async function verifyArtifact({
   videoHash,
   wallet,
   signal,
+  extractMetadataOverride,
 }: VerifyArtifactInput): Promise<VerificationResult> {
   try {
-    const metadata = await extractMetadata(apiBase, file)
+    const extractor = extractMetadataOverride ?? extractMetadata
+    const metadata = await extractor(apiBase, file, signal)
     const [events, chainProof] = await Promise.all([
-      fetchProofEventsByVideo(videoHash, signal, apiBase),
+      fetchEventsDirect(apiBase, videoHash, signal),
       fetchChainProof(contractId, videoHash, wallet),
     ])
 

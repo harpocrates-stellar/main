@@ -211,3 +211,20 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Offline worker capability report
+
+`buildOfflineWorkerCapabilityReport` (in `src/proofWorkerMemory.ts`, exposed via
+`ProofWorkerManager.getOfflineCapabilityReport()`) produces a deterministic
+preflight snapshot before initializing a worker or fetching circuit bundles:
+
+- **Browser feature inspection:** checks `Worker`, module-worker support,
+  `WebAssembly`, `SubtleCrypto`, `BigInt`, `ArrayBuffer`,
+  `crossOriginIsolated`, `SharedArrayBuffer`, and bounded thread count (`1..8`).
+- **Configured artifact metadata:** validates pinned entries in
+  `zk/browser.artifacts.manifest.json`, toolchain versions, input schema version,
+  supported public-input frames, and `PROOF_WORKER_MEMORY_LIMITS`.
+- **Strict offline guarantee:** runs synchronously (`networkContacted: false`,
+  `artifactsLoaded: false`) without calling `fetch`, instantiating `Worker`, or
+  compiling WASM/ACIR payloads.
+
+

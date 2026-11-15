@@ -1,7 +1,6 @@
 import type { LineageNode, VirtualizationConfig } from '../types/lineage';
 
 export class VirtualizedList {
-  private config: VirtualizationConfig;
   private items: LineageNode[];
   private scrollTop: number = 0;
   private containerHeight: number;
@@ -10,7 +9,6 @@ export class VirtualizedList {
   private threshold: number;
 
   constructor(config: VirtualizationConfig, items: LineageNode[]) {
-    this.config = config;
     this.items = items;
     this.containerHeight = config.containerHeight;
     this.itemHeight = config.itemHeight;

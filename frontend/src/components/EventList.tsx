@@ -3,9 +3,17 @@ import { useLiveRegion } from '../hooks/useA11y'
 import type { ProofEvent } from '../types'
 import { shortHash } from '../utils'
 
+export type Event = ProofEvent
+
 type Props = {
   events: ProofEvent[]
-  onRefresh: () => void | Promise<void>
+  onRefresh?: () => void | Promise<void>
+}
+
+function safeIsoTimestamp(unixMs: unknown): string {
+  return typeof unixMs === 'number' && Number.isFinite(unixMs)
+    ? new Date(unixMs).toISOString()
+    : 'invalid time'
 }
 
 function formatRefreshAnnouncement(count: number): string {
@@ -26,6 +34,7 @@ export function EventList({ events, onRefresh }: Props) {
   }, [events, announce])
 
   const handleRefresh = () => {
+    if (!onRefresh) return
     pendingRefreshRef.current = true
     const result = onRefresh()
     if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
@@ -63,13 +72,13 @@ export function EventList({ events, onRefresh }: Props) {
                     {event.time_attestation.claimedTime ? (
                       <>
                         <dt>Claimed</dt>
-                        <dd>{new Date(event.time_attestation.claimedTime.unixMs).toISOString()}</dd>
+                        <dd>{safeIsoTimestamp(event.time_attestation.claimedTime.unixMs)}</dd>
                       </>
                     ) : null}
                     {event.time_attestation.observedTime ? (
                       <>
                         <dt>Observed</dt>
-                        <dd>{new Date(event.time_attestation.observedTime.unixMs).toISOString()}</dd>
+                        <dd>{safeIsoTimestamp(event.time_attestation.observedTime.unixMs)}</dd>
                       </>
                     ) : null}
                     <dt>Stellar anchors</dt>

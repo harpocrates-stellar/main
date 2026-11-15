@@ -1,6 +1,17 @@
 import benchLock from '../../zk/bench/bench.lock.json'
 import browserArtifactManifest from '../../zk/browser.artifacts.manifest.json'
-import { CircuitInputError } from './circuitInputSchema'
+import {
+  CIRCUIT_INPUT_SCHEMA_VERSION,
+  CircuitInputError,
+  PUBLIC_FRAMES,
+} from './circuitInputSchema'
+import {
+  assessWorkerSupport,
+  detectWorkerCapabilities,
+  type WorkerCapabilityId,
+  type WorkerCapabilitySnapshot,
+  type WorkerSupportTier,
+} from './workers/multiBrowserWorkerSupport'
 
 type BrowserArtifactEntry = {
   path: string
@@ -227,4 +238,214 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
   } catch {
     throw new CircuitInputError('circuit_load_failed')
   }
+}
+
+export type ConfiguredArtifactSummary = {
+  readonly path: string
+  readonly role: string
+  readonly rawBytes: number
+  readonly normalizedBytes: number
+  readonly rawSha256: string
+  readonly normalizedSha256: string
+  readonly withinMemoryLimit: boolean
+}
+
+export type OfflineWorkerCapabilityReport = {
+  readonly reportVersion: 1
+  readonly inspectionMode: 'offline-static'
+  readonly networkContacted: false
+  readonly artifactsLoaded: false
+  readonly readyForWorkerProving: boolean
+  readonly browserSupport: {
+    readonly ok: boolean
+    readonly tier: WorkerSupportTier
+    readonly capabilities: WorkerCapabilitySnapshot
+    readonly missing: readonly WorkerCapabilityId[]
+    readonly reason: string
+    readonly crossOriginIsolated: boolean
+    readonly sharedArrayBufferAvailable: boolean
+    readonly maxRecommendedThreads: number
+  }
+  readonly configuredArtifacts: {
+    readonly manifestFormat: string
+    readonly manifestVersion: number
+    readonly toolchain: {
+      readonly nargo: string
+      readonly barretenberg: string
+      readonly provingScheme: string
+      readonly oracleHash: string
+    }
+    readonly inputSchemaVersion: number
+    readonly supportedPublicFrames: readonly string[]
+    readonly totalPublishedRawBytes: number
+    readonly artifacts: readonly ConfiguredArtifactSummary[]
+    readonly metadataValid: boolean
+    readonly metadataIssues: readonly string[]
+  }
+  readonly memoryBudgets: typeof PROOF_WORKER_MEMORY_LIMITS
+}
+
+const EXPECTED_MANIFEST_FORMAT = 'harpocrates.zk-browser-artifact-manifest'
+const SHA256_HEX = /^[0-9a-f]{64}$/
+
+type RawManifestArtifact = {
+  path?: unknown
+  role?: unknown
+  raw_bytes?: unknown
+  normalized_bytes?: unknown
+  raw_sha256?: unknown
+  normalized_sha256?: unknown
+}
+
+type RawManifestShape = {
+  format?: unknown
+  version?: unknown
+  toolchain?: {
+    nargo?: unknown
+    barretenberg?: unknown
+    proving_scheme?: unknown
+    oracle_hash?: unknown
+  }
+  artifacts?: unknown
+}
+
+/**
+ * Synchronously inspect browser proof-worker prerequisites and configured
+ * artifact metadata without loading compiled circuit artifacts, spawning a
+ * worker, or contacting any network endpoint.
+ */
+export function buildOfflineWorkerCapabilityReport(options?: {
+  globalObj?: typeof globalThis
+  manifestOverride?: unknown
+}): OfflineWorkerCapabilityReport {
+  const globalObj = options?.globalObj ?? globalThis
+  const capabilities = detectWorkerCapabilities(globalObj)
+  const support = assessWorkerSupport(globalObj)
+
+  const crossOriginIsolated = Boolean(
+    (globalObj as { crossOriginIsolated?: unknown }).crossOriginIsolated === true,
+  )
+  const sharedArrayBufferAvailable =
+    typeof (globalObj as { SharedArrayBuffer?: unknown }).SharedArrayBuffer === 'function'
+  const nav = (globalObj as { navigator?: { hardwareConcurrency?: unknown } }).navigator
+  const rawConcurrency =
+    nav && typeof nav.hardwareConcurrency === 'number' && Number.isFinite(nav.hardwareConcurrency)
+      ? Math.floor(nav.hardwareConcurrency)
+      : 1
+  const maxRecommendedThreads =
+    crossOriginIsolated && sharedArrayBufferAvailable
+      ? Math.max(1, Math.min(rawConcurrency || 1, 8))
+      : 1
+
+  const rawManifest = (options?.manifestOverride ?? browserArtifactManifest) as RawManifestShape
+  const issues: string[] = []
+
+  const manifestFormat = typeof rawManifest?.format === 'string' ? rawManifest.format : ''
+  const manifestVersion =
+    typeof rawManifest?.version === 'number' && Number.isSafeInteger(rawManifest.version)
+      ? rawManifest.version
+      : -1
+  if (manifestFormat !== EXPECTED_MANIFEST_FORMAT) {
+    issues.push('invalid_manifest_format')
+  }
+  if (manifestVersion !== 1) {
+    issues.push('unsupported_manifest_version')
+  }
+
+  const tc = rawManifest?.toolchain
+  const nargo = typeof tc?.nargo === 'string' ? tc.nargo : ''
+  const barretenberg = typeof tc?.barretenberg === 'string' ? tc.barretenberg : ''
+  const provingScheme = typeof tc?.proving_scheme === 'string' ? tc.proving_scheme : ''
+  const oracleHash = typeof tc?.oracle_hash === 'string' ? tc.oracle_hash : ''
+  if (!nargo || !barretenberg || !provingScheme || !oracleHash) {
+    issues.push('incomplete_toolchain_metadata')
+  }
+
+  const rawList = Array.isArray(rawManifest?.artifacts)
+    ? (rawManifest.artifacts as RawManifestArtifact[])
+    : []
+  if (rawList.length === 0) {
+    issues.push('missing_published_artifacts')
+  }
+
+  const summaries: ConfiguredArtifactSummary[] = []
+  let totalPublishedRawBytes = 0
+
+  for (const item of rawList) {
+    const path = typeof item?.path === 'string' ? item.path : ''
+    const role = typeof item?.role === 'string' ? item.role : ''
+    const rawBytes = safeBytes(item?.raw_bytes)
+    const normalizedBytes = safeBytes(item?.normalized_bytes)
+    const rawSha256 = typeof item?.raw_sha256 === 'string' ? item.raw_sha256 : ''
+    const normalizedSha256 =
+      typeof item?.normalized_sha256 === 'string' ? item.normalized_sha256 : ''
+
+    const withinMemoryLimit =
+      rawBytes > 0 && rawBytes <= PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes
+    if (!path || !role) {
+      issues.push('invalid_artifact_entry')
+    } else {
+      if (!SHA256_HEX.test(rawSha256) || !SHA256_HEX.test(normalizedSha256)) {
+        issues.push(`invalid_artifact_digest:${path}`)
+      }
+      if (!withinMemoryLimit) {
+        issues.push(`artifact_exceeds_memory_limit:${path}`)
+      }
+    }
+
+    totalPublishedRawBytes += rawBytes
+    summaries.push(
+      Object.freeze({
+        path,
+        role,
+        rawBytes,
+        normalizedBytes,
+        rawSha256,
+        normalizedSha256,
+        withinMemoryLimit,
+      }),
+    )
+  }
+
+  if (totalPublishedRawBytes > PROOF_WORKER_MEMORY_LIMITS.maxRuntimeBytes) {
+    issues.push('published_artifacts_exceed_runtime_budget')
+  }
+
+  const metadataValid = issues.length === 0
+  const supportedPublicFrames = Object.freeze(Object.keys(PUBLIC_FRAMES))
+
+  return Object.freeze({
+    reportVersion: 1 as const,
+    inspectionMode: 'offline-static' as const,
+    networkContacted: false as const,
+    artifactsLoaded: false as const,
+    readyForWorkerProving: support.ok && metadataValid,
+    browserSupport: Object.freeze({
+      ok: support.ok,
+      tier: support.tier,
+      capabilities,
+      missing: support.missing,
+      reason: support.reason,
+      crossOriginIsolated,
+      sharedArrayBufferAvailable,
+      maxRecommendedThreads,
+    }),
+    configuredArtifacts: Object.freeze({
+      manifestFormat,
+      manifestVersion,
+      toolchain: Object.freeze({
+        nargo,
+        barretenberg,
+        provingScheme,
+        oracleHash,
+      }),
+      inputSchemaVersion: CIRCUIT_INPUT_SCHEMA_VERSION,
+      supportedPublicFrames,
+      totalPublishedRawBytes,
+      artifacts: Object.freeze(summaries),
+      metadataValid,
+      metadataIssues: Object.freeze(issues),
+    }),
+    memoryBudgets: PROOF_WORKER_MEMORY_LIMITS,
+  })
 }

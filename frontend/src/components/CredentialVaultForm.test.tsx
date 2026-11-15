@@ -1,11 +1,11 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, expect, it, vit } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CredentialVaultForm } from './CredentialVaultForm';
 
 describe('CredentialVaultForm', () => {
   it('rejects weak passphrases with guidance', () => {
-    const onSubmit = vit.fn();
+    const onSubmit = vi.fn();
     render(<CredentialVaultForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByLabelText(/Vault passphrase/i), { target: { value: 'abc' } });
     fireEvent.click(screen.getByRole('button', { name: /save vault/i }));
@@ -14,7 +14,7 @@ describe('CredentialVaultForm', () => {
   });
 
   it('announces feedback via aria-describedby', () => {
-    render(<CredentialVaultForm onSubmit={vit.fn()} />);
+    render(<CredentialVaultForm onSubmit={vi.fn()} />);
     const input = screen.getByLabelText(/Vault passphrase/i);
     const describedBy = input.getAttribute('aria-describedby');
     expect(describedBy).toBeTruthy();
@@ -22,7 +22,7 @@ describe('CredentialVaultForm', () => {
   });
 
   it('submits a strong passphrase', () => {
-    const onSubmit = vit.fn();
+    const onSubmit = vi.fn();
     render(<CredentialVaultForm onSubmit={onSubmit} />);
     const value = 'CorrectHorseBatteryStaple';
     fireEvent.change(screen.getByLabelText(/Vault passphrase/i), { target: { value } });

@@ -1,6 +1,17 @@
 import type { ProofWorkerMessage, ProofWorkerResponse, WorkerStatus } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
 import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import {
+  buildOfflineWorkerCapabilityReport,
+  type ConfiguredArtifactSummary,
+  type OfflineWorkerCapabilityReport,
+} from '../proofWorkerMemory';
+
+export {
+  buildOfflineWorkerCapabilityReport,
+  type ConfiguredArtifactSummary,
+  type OfflineWorkerCapabilityReport,
+};
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -71,8 +82,7 @@ export class ProofWorkerManager {
       };
 
       logger.info('Sending verify message', { id: messageId });
-      // In a real implementation, this would post to the actual worker
-      // this.worker?.postMessage(message);
+      void message;
     });
   }
 
@@ -89,8 +99,7 @@ export class ProofWorkerManager {
     };
 
     logger.info('Sending cancel message', { id: messageId });
-    // In a real implementation, this would post to the actual worker
-    // this.worker?.postMessage(message);
+    void message;
   }
 
   getStatus(): WorkerStatus {
@@ -103,6 +112,13 @@ export class ProofWorkerManager {
 
   getCSPHeaders(): Record<string, string> {
     return createCSPHeaders(this.cspConfig);
+  }
+
+  getOfflineCapabilityReport(options?: {
+    globalObj?: typeof globalThis;
+    manifestOverride?: unknown;
+  }): OfflineWorkerCapabilityReport {
+    return buildOfflineWorkerCapabilityReport(options);
   }
 
   destroy(): void {
