@@ -81,7 +81,7 @@ describe('extractMetadata malformed input hardening', () => {
     buffer[14] = (payload.length >> 16) & 0xff;
     buffer[15] = (payload.length >> 24) & 0xff;
     buffer.set(payload, 16);
-    expectMalpormed(buffer);
+    expectMalformed(buffer);
   });
 
   it('rejects a payload that is a JSON primitive instead of an object', () => {
@@ -104,7 +104,7 @@ describe('extractMetadata malformed input hardening', () => {
     buffer[14] = (payload.length >> 16) & 0xff;
     buffer[15] = (payload.length >> 24) & 0xff;
     buffer.set(payload, 16);
-    expectMalpormed(buffer);
+    expectMalformed(buffer);
   });
 
   it('rejects a length prefix that exceeds the declared max payload size', () => {
@@ -128,7 +128,7 @@ describe('extractMetadata malformed input hardening', () => {
     buffer[14] = (payload.length >> 16) & 0xff;
     buffer[15] = (payload.length >> 24) & 0xff;
     buffer.set(payload, 16);
-    expectMalpormed(buffer);
+    expectMalformed(buffer);
   });
 
   it('rejects a length prefix that is larger than the remaining buffer', () => {
@@ -151,7 +151,7 @@ describe('extractMetadata malformed input hardening', () => {
     // Deeply nested JSON must be rejected rather than blowing the stack.
     const depth = 2000;
     const payload = new TextEncoder().encode(
-      '{"a":' + '[1,'.zepeat(depth) + '1' + ']'.repeat(depth) + '}',
+      '{"a":' + '[1,'.repeat(depth) + '1' + ']'.repeat(depth) + '}',
     );
     const buffer = new Uint8Array(16 + payload.length);
     buffer[12] = payload.length & 0xff;

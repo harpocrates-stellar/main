@@ -54,6 +54,7 @@ const CANCELLED_MESSAGES: Record<Stage, string> = {
   embedding: 'Upload cancelled.',
   proving: 'Proof generation cancelled.',
   ready: 'Request cancelled.',
+  registering: 'Request cancelled.',
   registered: 'Request cancelled.',
   error: 'Request cancelled.',
   cancelled: 'Request cancelled.',
@@ -229,7 +230,7 @@ export function useEvidence(): UseEvidenceReturn {
             if (!isCurrentFlow()) return
             setHashProgress(progress)
             setMessage(
-              `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
+              `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString('en-US')} / ${progress.totalBytes.toLocaleString('en-US')} bytes).`,
             )
           },
           controller.signal,
@@ -302,10 +303,10 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     try {
-      const { getWalletNetwork, CONTRACT_NETWORK_PASSTHRASE } = await import('../stellar')
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('../stellar')
       const { checkNetworkMatch } = await import('../networkGuard')
       const walletPassphrase = await getWalletNetwork()
-      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSTHRASE)
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
       if (!check.ok) {
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
@@ -358,18 +359,28 @@ export function useEvidence(): UseEvidenceReturn {
 
     setMessage(`Submitting ${selectedTierMeta.title} proof to Stellar Testnet.`)
 
+    const currentSeq = seqRef.current
     try {
       const proofForRegistration =
         selectedTier === 'silent' && !proof.silentWitness
-          ? await attachSilentWitnessProof(proof, seqRef.current, abortRef.current?.signal)
+          ? await attachSilentWitnessProof(proof, currentSeq, abortRef.current?.signal)
           : proof
-      if (seqRef.current !== seqRef.current) return
+      if (seqRef.current !== currentSeq) return
 
       const { registerProofOnStellar } = await import('../stellar')
       const result = await registerProofOnStellar({
         contractId: CONTRACT_ID,
         publicKey: wallet,
-        proof: proofForRegistration,
+        tier: proofForRegistration.tier,
+        videoHash: proofForRegistration.videoHash,
+        metadataHash: proofForRegistration.metadataHash,
+        proofId: proofForRegistration.proofId,
+        silentWitness: proofForRegistration.silentWitness
+          ? {
+              publicInputs: proofForRegistration.silentWitness.publicInputs,
+              proof: proofForRegistration.silentWitness.proof,
+            }
+          : undefined,
       })
       pendingPersistenceRef.current = {
         key: registrationKey,
@@ -398,32 +409,37 @@ export function useEvidence(): UseEvidenceReturn {
     signal?: AbortSignal,
   ): Promise<ProofPackage> {
     const client = getProofClient()
-    const requestId = crypto.randomUUID()
-    proofRequestIdRef.current = requestId
     const controller = new AbortController()
     proveAbortRef.current = controller
     if (signal) {
-      if (signal.aborted) controller.abort()
-      else signal.addEventListener('abort', () => controller.abort())
+      if (signal.aborted) {
+        controller.abort()
+      } else {
+        signal.addEventListener('abort', () => controller.abort(), { once: true })
+      }
     }
-
     setStage('proving')
     setMessage('Generating Silent Witness ZK proof locally.')
 
+    let activeRequestId = ''
     try {
-      const silentWitness: SilentWitnessProof = await client.generateProof({
-        requestId,
-        videoHash: baseProof.videoHash,
-        credentialSecret: credentialSeed,
-        nullifierSecret: nullifierSeed,
-        inputSchemaVersion: 1,
-        verifierScope: 'harpocrates',
-        epoch: Math.floor(Date.now() / 86400000),
-        signal: controller.signal,
-        onProgress: () => {
+      const generated = client.generate(
+        {
+          videoHash: baseProof.videoHash,
+          credentialSecret: credentialSeed,
+          nullifierSecret: nullifierSeed,
+          inputSchemaVersion: 1,
+          verifierScope: '0',
+          epoch: Math.floor(Date.now() / 86400000),
+        },
+        () => {
           if (seqRef.current !== seq) return
         },
-      })
+        controller.signal,
+      )
+      activeRequestId = generated.requestId
+      proofRequestIdRef.current = activeRequestId
+      const silentWitness: SilentWitnessProof = await generated.result
       if (seqRef.current !== seq) throw new Error('Stale proof result ignored.')
       return { ...baseProof, silentWitness }
     } catch (error) {
@@ -432,7 +448,7 @@ export function useEvidence(): UseEvidenceReturn {
       }
       throw error
     } finally {
-      if (proofRequestIdRef.current === requestId) {
+      if (activeRequestId && proofRequestIdRef.current === activeRequestId) {
         proofRequestIdRef.current = null
       }
       if (proveAbortRef.current === controller) {

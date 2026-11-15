@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { verifyArtifact, type VerificationEvent } from './verificationFlow'
+import { MalformedEvidenceError, verifyArtifact, type VerificationEvent } from './verificationFlow'
 import type { ProofManifest } from './proofManifest'
 import { appConfig } from './config'
 
@@ -59,6 +59,21 @@ export type BatchProgress = {
   isDone: boolean
 }
 
+export type BatchCompletenessRunState = 'empty' | 'complete' | 'interrupted' | 'incomplete'
+
+export type BatchCompletenessSummary = {
+  totalItems: number
+  verified: number
+  failed: number
+  cancelled: number
+  incomplete: number
+  duplicates: number
+  unresolvedChecks: number
+  isInterrupted: boolean
+  isComplete: boolean
+  runState: BatchCompletenessRunState
+}
+
 export type BatchSummary = {
   totalFiles: number
   confirmed: number
@@ -70,6 +85,86 @@ export type BatchSummary = {
   cancelled: number
   totalBytes: number
   durationMs: number
+  completeness?: BatchCompletenessSummary
+}
+
+/**
+ * Computes separate verified, failed, cancelled, and incomplete counts along
+ * with unresolved-check totals. Interrupted or partially unresolved runs are
+ * never reported as complete verification runs.
+ */
+export function computeBatchCompleteness(
+  items: ReadonlyArray<{ status: string }>,
+  options?: { isInterrupted?: boolean },
+): BatchCompletenessSummary {
+  let verified = 0
+  let failed = 0
+  let cancelled = 0
+  let incomplete = 0
+  let duplicates = 0
+  let hasNonTerminal = false
+
+  for (const item of items) {
+    switch (item.status) {
+      case 'confirmed':
+      case 'manifest-valid':
+        verified += 1
+        break
+      case 'revoked':
+      case 'manifest-invalid':
+      case 'malformed':
+      case 'oversized':
+      case 'error':
+        failed += 1
+        break
+      case 'cancelled':
+        cancelled += 1
+        break
+      case 'duplicate':
+        duplicates += 1
+        break
+      case 'pending':
+      case 'hashing':
+      case 'processing':
+        hasNonTerminal = true
+        incomplete += 1
+        break
+      case 'unavailable':
+      case 'metadata-only':
+      case 'database-only':
+      default:
+        incomplete += 1
+        break
+    }
+  }
+
+  const unresolvedChecks = cancelled + incomplete
+  const isInterrupted = Boolean(options?.isInterrupted) || cancelled > 0 || hasNonTerminal
+  const isComplete = items.length > 0 && !isInterrupted && unresolvedChecks === 0
+
+  let runState: BatchCompletenessRunState
+  if (items.length === 0) {
+    runState = 'empty'
+  } else if (isInterrupted) {
+    runState = 'interrupted'
+  } else if (unresolvedChecks > 0) {
+    runState = 'incomplete'
+  } else {
+    runState = 'complete'
+  }
+
+  return {
+    totalItems: items.length,
+    verified,
+    failed,
+    cancelled,
+    incomplete,
+    duplicates,
+    unresolvedChecks,
+    isInterrupted,
+    isComplete,
+    runState,
+  }
 }
 
 export const DEFAULT_BATCH_CONFIG: BatchConfig = {
@@ -395,30 +490,66 @@ export class BatchVerifier {
       item.message = 'Extracting stego metadata and checking Stellar registry...'
       this.notifyProgress(false, false)
 
+      let extractedMetadataObj: Record<string, unknown> | null = null
       const result = await verifyArtifact({
         apiBase: this.config.apiBase,
         contractId: this.config.contractId,
         wallet: this.config.wallet,
         file: item.file,
+        videoHash,
         signal,
-        onEvent: (event) => {
-          item.events.push(event)
-          if (event.message) {
-            item.message = event.message
+        extractMetadataOverride: async (apiBase, file, reqSignal) => {
+          const form = new FormData()
+          form.append('video', file)
+          const response = await fetch(`${apiBase}/api/stego/extract`, {
+            method: 'POST',
+            body: form,
+            signal: reqSignal,
+          })
+          if (!response.ok) {
+            if (response.status >= 400 && response.status < 500) {
+              throw new MalformedEvidenceError()
+            }
+            throw new Error(`Stego extraction failed (${response.status})`)
           }
-          this.notifyProgress(false, false)
+          const payload = (await response.json()) as { metadata?: unknown }
+          if (payload?.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)) {
+            extractedMetadataObj = payload.metadata as Record<string, unknown>
+          }
+          return payload?.metadata ?? null
         },
       })
 
-      item.videoHash = result.videoHash ?? item.videoHash
-      item.metadataHash = result.metadataHash ?? null
-      item.sourceHash = result.sourceHash ?? null
-      item.tier = result.tier ?? null
-      item.chainProof = result.chainProof ?? null
-      item.chainStatus = result.chainStatus ?? null
-      item.status = result.status
+      item.events = result.events
+      item.chainProof = result.chainProof
+      item.metadataHash =
+        result.chainProof?.metadataHash ??
+        (typeof extractedMetadataObj?.['metadataHash'] === 'string'
+          ? (extractedMetadataObj['metadataHash'] as string)
+          : null)
+      item.sourceHash =
+        typeof extractedMetadataObj?.['sourceHash'] === 'string'
+          ? (extractedMetadataObj['sourceHash'] as string)
+          : null
+      item.tier =
+        result.chainProof !== null
+          ? (result.chainProof.tier === 0 ? 'silent' : result.chainProof.tier === 2 ? 'seal' : 'source')
+          : typeof extractedMetadataObj?.['tier'] === 'string'
+            ? (extractedMetadataObj['tier'] as string)
+            : (result.events[0]?.tier ?? null)
+      item.chainStatus = result.chainProof
+        ? result.chainProof.status === 2
+          ? 'Revoked'
+          : 'Active'
+        : null
+      item.status = result.outcome
       item.message = result.message
-      item.failureReason = result.failureReason ?? null
+      item.failureReason =
+        result.outcome === 'confirmed' ||
+        result.outcome === 'metadata-only' ||
+        result.outcome === 'database-only'
+          ? null
+          : result.message
       item.durationMs = performance.now() - itemStart
     } catch (err) {
       if (signal.aborted) {
@@ -505,6 +636,10 @@ export class BatchVerifier {
           break
       }
     }
+
+    summary.completeness = computeBatchCompleteness(this.items, {
+      isInterrupted: Boolean(this.abortController?.signal.aborted),
+    })
 
     return summary
   }

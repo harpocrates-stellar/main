@@ -5,7 +5,7 @@ import { verifyTransactionStatus, pollTransactionStatus } from './transactionVer
 function mockEnvelopeXdr(ops: unknown[] = []) {
   return {
     toXDR: () => new Uint8Array([1, 2, 3, 4]),
-    switch: () => xdr.EnvelopeType.envelopeTypeTx(),
+    switch: () => xdr.EnvelopeType.envelopeTypeTx,
     tx: () => ({
       operations: () => ops,
     }),

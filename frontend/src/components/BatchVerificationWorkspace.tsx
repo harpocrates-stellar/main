@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import {
   BatchVerifier,
+  computeBatchCompleteness,
   type BatchItemResult,
   type BatchOutcome,
   type BatchProgress,
@@ -211,17 +212,38 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     URL.revokeObjectURL(url)
   }
 
-  const exportJSON = () => triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
+  const completeness = useMemo(
+    () =>
+      summary?.completeness ??
+      computeBatchCompleteness(items, {
+        isInterrupted: Boolean(progress?.isCancelled) || isRunning,
+      }),
+    [summary, items, progress, isRunning],
+  )
+
+  const exportJSON = () =>
+    triggerDownload(
+      exportBatchJSON(items, { isInterrupted: completeness.isInterrupted }),
+      'harpocrates-batch-report.json',
+      'application/json',
+    )
   const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
-    if (progress.isCancelled) return 'Batch verification cancelled.'
-    if (progress.isDone) return `Batch complete. Processed ${progress.completedFiles} files.`
+    if (progress.isCancelled || completeness.runState === 'interrupted') {
+      return `Batch verification interrupted. ${completeness.unresolvedChecks} unresolved checks remain.`
+    }
+    if (progress.isDone && completeness.isComplete) {
+      return `Batch complete. Verified ${completeness.verified} items with 0 unresolved checks.`
+    }
+    if (progress.isDone) {
+      return `Batch incomplete. ${completeness.unresolvedChecks} unresolved checks remain.`
+    }
     return `Processing batch: ${progress.completedFiles} of ${progress.totalFiles} files verified.`
-  }, [progress])
+  }, [progress, completeness])
 
   return (
     <div className="batch-workspace" role="region" aria-label="Evidence Batch Verification Workspace">
@@ -430,6 +452,20 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
           <div className="metric-card error">
             <span>Errors/Oversized</span>
             <strong>{summary?.errors ?? items.filter((i) => i.status === 'error' || i.status === 'malformed' || i.status === 'oversized').length}</strong>
+          </div>
+          <div className="metric-card warning">
+            <span>Unresolved Checks</span>
+            <strong>{completeness.unresolvedChecks}</strong>
+          </div>
+          <div className={`metric-card ${completeness.isComplete ? 'success' : 'warning'}`}>
+            <span>Run Status</span>
+            <strong>
+              {completeness.runState === 'complete'
+                ? 'Complete'
+                : completeness.runState === 'interrupted'
+                  ? 'Interrupted'
+                  : 'Incomplete'}
+            </strong>
           </div>
 
           <div className="progress-bar-wrapper">
