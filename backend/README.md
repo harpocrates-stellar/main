@@ -342,6 +342,24 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Read-Only Worker Recovery Plan
+
+`worker.py` and `db.py` expose a two-phase recovery workflow after an unclean
+worker shutdown:
+
+- **Read-only inspection (`build_worker_recovery_plan`):** Scans
+  `snapshot_jobs_read_only()` and the job-storage directory without mutating job
+  rows, creating directories, or unlinking files. Reports abandoned `running`
+  leases (`AbandonedLeaseFinding`) and incomplete/orphaned storage files
+  (`PartialArtifactFinding`) without leaking payload secrets or raw user
+  filenames, attaching explicit uncertainty classifications
+  (`low_safe_to_recover`, `uncertain_possible_active_writer`,
+  `uncertain_external_side_effect`, `uncertain_orphaned_without_job`).
+- **Bounded explicit execution (`apply_selected_recovery_actions`):** Requires a
+  non-empty, bounded list of explicit `action_id` values from the plan (rejecting
+  wildcards, duplicates, unknown IDs, batches exceeding `max_actions`, and
+  uncertain findings unless `allow_uncertain=True`).
+
 ## Test
 
 ```powershell

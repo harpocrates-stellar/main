@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1170,40 +1171,86 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
     return receipts
 
 
-_JOBS: dict[int, dict[str, Any]] = {}
+_JOBS: dict[int | str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
-def get_job(job_id: int) -> dict[str, Any] | None:
+def get_job(job_id: int | str) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
-def cancel_job(job_id: int) -> bool:
-    """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
+def snapshot_jobs_read_only() -> dict[int | str, dict[str, Any]]:
+    """Return a privacy-safe, read-only projection of in-memory jobs without payloads.
+
+    Never mutates ``_JOBS`` or exposes ``payload`` secrets/filenames.
+    """
+    with _JOBS_LOCK:
+        snapshots: dict[int | str, dict[str, Any]] = {}
+        for jid, job in _JOBS.items():
+            progress = job.get("progress")
+            progress_copy = dict(progress) if isinstance(progress, dict) else None
+            snapshots[jid] = {
+                "id": job.get("id", jid),
+                "type": str(job.get("type", "unknown")),
+                "status": str(job.get("status", "unknown")),
+                "worker_id": job.get("worker_id"),
+                "progress": progress_copy,
+                "created_at": job.get("created_at"),
+                "leased_at": job.get("leased_at"),
+                "heartbeat_at": job.get("heartbeat_at"),
+                "completed_at": job.get("completed_at"),
+                "failed_at": job.get("failed_at"),
+                "lease_duration": job.get("_lease_duration", 300),
+            }
+        return snapshots
+
+
+def requeue_abandoned_job(job_id: int | str) -> bool:
+    """Return an abandoned ``running`` job to ``pending`` for explicit recovery."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        job["status"] = "pending"
+        job.pop("worker_id", None)
+        job.pop("leased_at", None)
+        job.pop("heartbeat_at", None)
+        job["progress"] = None
+        job.pop("_progress_at", None)
+        job["recovered_at"] = datetime.now(timezone.utc).isoformat()
         return True
-    return False
+
+
+def cancel_job(job_id: int | str) -> bool:
+    """Cancel a pending job. Returns True on success."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job["status"] == "pending":
+            job["status"] = "cancelled"
+            return True
+        return False
 
 
 def lease_job(
@@ -1212,26 +1259,32 @@ def lease_job(
     lease_duration: int = 300,
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                job["leased_at"] = now_iso
+                job["heartbeat_at"] = now_iso
+                job["_lease_duration"] = int(lease_duration)
+                return dict(job)
     return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(job_id: int | str, progress: float | None = None, lease_duration: int = 300) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    del progress
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running":
+            job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+            job["_lease_duration"] = int(lease_duration)
 
 
 # Processors may call report_job_progress as often as they like (for example
