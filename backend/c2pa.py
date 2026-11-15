@@ -557,6 +557,29 @@ def corroborate_binding(
     )
 
 
+def extract_c2pa_endpoint_binding(
+    source: C2paParsedManifest | C2paHarpocratesBinding | dict[str, Any],
+) -> dict[str, str]:
+    """Extract normalized ``(proof_id, video_hash, network, contract_id)`` endpoint fields."""
+    if isinstance(source, C2paParsedManifest):
+        binding = source.binding
+    elif isinstance(source, C2paHarpocratesBinding):
+        binding = source
+    elif isinstance(source, dict):
+        parsed = parse_c2pa_manifest(_canonical_json(source))
+        binding = parsed.binding
+    else:
+        raise TypeError("unsupported C2PA endpoint binding source")
+
+    return {
+        "node_id": binding.proof_id,
+        "video_hash": binding.video_hash,
+        "network": binding.network,
+        "contract_id": binding.contract_id,
+        "c2pa_trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

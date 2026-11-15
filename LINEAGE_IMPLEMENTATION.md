@@ -153,6 +153,7 @@ it does not create a second protocol truth for manifests or operation codes.
 5. **Payload Size**: Maximum 4KB for manifest
 6. **Actor Requirement**: Every transformation must have an authorized actor address
 7. **Hex Validation**: All IDs must be valid 32-byte hex strings
+8. **Network & Contract Identity Compatibility**: `validate_lineage_edge_binding()`, `validate_lineage_graph()`, and `evaluate_lineage_network_bindings()` normalize Stellar network identifiers/passphrases and validate Soroban `C...` StrKey contract bindings on both parent and child endpoints, rejecting incompatible edges (`network_mismatch`, `contract_mismatch`) and tainted descendants while preserving valid unrelated branches in a bounded report
 
 ### Success Criteria
 - Lineage records survive database re-indexing from contract events

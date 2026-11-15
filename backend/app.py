@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -1270,6 +1270,8 @@ def create_app() -> Flask:
                 actor_address=actor_address,
                 output_digest=output_digest,
                 get_lineage_fn=find_lineage_by_output_digest,
+                network=str(payload.get("network", "")),
+                contract_id=payload.get("contractId") or payload.get("contract_id"),
             )
         except LineageValidationError as exc:
             return jsonify({"error": str(exc)}), 400

@@ -137,11 +137,13 @@ written to logs.
 For library callers, the same check is available without the HTTP layer:
 
 ```python
-from c2pa import corroborate_binding, parse_c2pa_manifest
+from c2pa import corroborate_binding, extract_c2pa_endpoint_binding, parse_c2pa_manifest
 
 parsed = parse_c2pa_manifest(raw_manifest)
 result = corroborate_binding(parsed, video_hash=registered_video_hash)
 # result.ok, result.compared_fields, result.mismatches — field names only
+endpoint = extract_c2pa_endpoint_binding(parsed)
+# endpoint supplies (node_id, network, contract_id) for lineage edge validation
 ```
 
 ---
