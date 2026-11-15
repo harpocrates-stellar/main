@@ -272,6 +272,9 @@ get_pending_admin
 get_schema_version
 is_admin
 is_issuer
+list_authority_history
+get_authority_history_at
+get_authority_history_count
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -579,6 +582,23 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## Bounded Institutional Authority History (#1189)
+
+`list_authority_history(cursor, limit)`, `get_authority_history_at(seq)`, and
+`get_authority_history_count()` expose a bounded, read-only audit window over
+institutional role and governance transitions (`init`, admin transfers, issuer
+additions/revocations/rotations, guardian updates, council configurations and
+executions, seal policy changes, and schema migrations):
+
+- Each entry carries a stable monotonic `seq` reference, `action` (`AUTH_HIST_*`),
+  `subject`, `actor`, ledger `timestamp`, `ledger_seq`, `proposal_ref`, and
+  pre-summarized `approver_count`.
+- `approver_count` is recorded at write time so queries read fixed-size indexed
+  entries directly (`O(limit)`) without iterating historical council approver
+  vectors or signer lists.
+- Retention is bounded to `MAX_AUTHORITY_HISTORY_ENTRIES = 256` entries with
+  `MAX_AUTHORITY_HISTORY_PAGE = 50` per page (`ListLimitExceeded` on `0` or `> 50`).
 
 ## Contract Error ABI (#344)
 

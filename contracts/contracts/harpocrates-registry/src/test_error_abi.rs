@@ -149,6 +149,29 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
         RegistryError::ReporterDisputesSaturated => "ReporterDisputesSaturated",
         RegistryError::InsufficientApprovals => "InsufficientApprovals",
+        RegistryError::InvalidCursor => "InvalidCursor",
+        RegistryError::ListLimitExceeded => "ListLimitExceeded",
+        RegistryError::ExpiredCredentialRoot => "ExpiredCredentialRoot",
+        RegistryError::RoleConflict => "RoleConflict",
+        RegistryError::InvalidInclusionProof => "InvalidInclusionProof",
+        RegistryError::IssuerQuotaExhausted => "IssuerQuotaExhausted",
+        RegistryError::LineageDepthMismatch => "LineageDepthMismatch",
+        RegistryError::LineageFanOutSaturated => "LineageFanOutSaturated",
+        RegistryError::ReceiptProofNotFound => "ReceiptProofNotFound",
+        RegistryError::ReceiptProofNotActive => "ReceiptProofNotActive",
+        RegistryError::ReceiptAlreadyCommitted => "ReceiptAlreadyCommitted",
+        RegistryError::InvalidReceiptDigest => "InvalidReceiptDigest",
+        RegistryError::UnknownReceiptSigner => "UnknownReceiptSigner",
+        RegistryError::RevokedReceiptSigner => "RevokedReceiptSigner",
+        RegistryError::ReceiptSignersSaturated => "ReceiptSignersSaturated",
+        RegistryError::SchemaAlreadyActive => "SchemaAlreadyActive",
+        RegistryError::NoActiveSealPolicy => "NoActiveSealPolicy",
+        RegistryError::SealPolicyCancelled => "SealPolicyCancelled",
+        RegistryError::UnknownPolicySigner => "UnknownPolicySigner",
+        RegistryError::SealThresholdNotMet => "SealThresholdNotMet",
+        RegistryError::InvalidSealThreshold => "InvalidSealThreshold",
+        RegistryError::SealSignerSetTooLarge => "SealSignerSetTooLarge",
+        RegistryError::SealAlreadyFinalized => "SealAlreadyFinalized",
     }
 }
 
@@ -245,6 +268,29 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::CircuitVersionMismatch,
     RegistryError::ReporterDisputesSaturated,
     RegistryError::InsufficientApprovals,
+    RegistryError::InvalidCursor,
+    RegistryError::ListLimitExceeded,
+    RegistryError::ExpiredCredentialRoot,
+    RegistryError::RoleConflict,
+    RegistryError::InvalidInclusionProof,
+    RegistryError::IssuerQuotaExhausted,
+    RegistryError::LineageDepthMismatch,
+    RegistryError::LineageFanOutSaturated,
+    RegistryError::ReceiptProofNotFound,
+    RegistryError::ReceiptProofNotActive,
+    RegistryError::ReceiptAlreadyCommitted,
+    RegistryError::InvalidReceiptDigest,
+    RegistryError::UnknownReceiptSigner,
+    RegistryError::RevokedReceiptSigner,
+    RegistryError::ReceiptSignersSaturated,
+    RegistryError::SchemaAlreadyActive,
+    RegistryError::NoActiveSealPolicy,
+    RegistryError::SealPolicyCancelled,
+    RegistryError::UnknownPolicySigner,
+    RegistryError::SealThresholdNotMet,
+    RegistryError::InvalidSealThreshold,
+    RegistryError::SealSignerSetTooLarge,
+    RegistryError::SealAlreadyFinalized,
 ];
 
 #[cfg(test)]
@@ -381,7 +427,7 @@ fn retryable_codes_require_external_condition_only() {
             retryable.push(row.code);
         }
     }
-    let expected: &[u32] = &[21, 32, 41, 66, 86, 88];
+    let expected: &[u32] = &[21, 32, 41, 66, 86, 95];
     assert_eq!(
         retryable.as_slice(),
         expected,
