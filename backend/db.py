@@ -658,11 +658,89 @@ def find_proof_events_by_video(
     return rows, next_cursor
 
 
+def canonical_proof_event_sort_key(
+    row: dict[str, Any],
+) -> tuple[int, int, int, str, int, int, str, int]:
+    """Compute canonical chain sort key for a stored proof-event row.
+
+    Orders by ``(ledger, tx_order, tx_hash, operation_order, operation_id, event_index)``
+    and intentionally excludes database insertion timestamps (``created_at``)
+    and auto-increment ``id`` values.
+    """
+    metadata = row.get("metadata")
+    order_meta = (
+        metadata.get("canonical_order")
+        if isinstance(metadata, dict) and isinstance(metadata.get("canonical_order"), dict)
+        else {}
+    )
+
+    raw_ledger = order_meta.get("ledger", row.get("ledger"))
+    try:
+        ledger = int(raw_ledger) if raw_ledger is not None and not isinstance(raw_ledger, bool) else 0
+    except (TypeError, ValueError):
+        ledger = 0
+
+    raw_tx_order = order_meta.get("tx_order", row.get("tx_index"))
+    tx_order: int | None
+    try:
+        tx_order = int(raw_tx_order) if raw_tx_order is not None and not isinstance(raw_tx_order, bool) else None
+    except (TypeError, ValueError):
+        tx_order = None
+
+    raw_tx_hash = row.get("tx_hash") or order_meta.get("tx_hash") or ""
+    tx_hash = str(raw_tx_hash).strip().lower()
+    if tx_hash.startswith("0x"):
+        tx_hash = tx_hash[2:]
+
+    raw_op_order = order_meta.get("operation_order", row.get("operation_index"))
+    op_order: int | None
+    try:
+        op_order = int(raw_op_order) if raw_op_order is not None and not isinstance(raw_op_order, bool) else None
+    except (TypeError, ValueError):
+        op_order = None
+
+    raw_op_id = order_meta.get("operation_id") or row.get("operation_id") or ""
+    op_id = str(raw_op_id).strip()
+    if not op_id and op_order is not None and tx_hash:
+        op_id = f"{tx_hash}:{op_order}"
+
+    raw_event_index = row.get("event_index", order_meta.get("event_index"))
+    try:
+        event_index = (
+            int(raw_event_index)
+            if raw_event_index is not None and not isinstance(raw_event_index, bool)
+            else 0
+        )
+    except (TypeError, ValueError):
+        event_index = 0
+
+    return (
+        ledger,
+        0 if tx_order is not None else 1,
+        tx_order if tx_order is not None else 0,
+        tx_hash,
+        0 if op_order is not None else 1,
+        op_order if op_order is not None else 0,
+        op_id,
+        event_index,
+    )
+
+
+def sort_proof_events_canonically(
+    rows: list[dict[str, Any]],
+    *,
+    descending: bool = False,
+) -> list[dict[str, Any]]:
+    """Return *rows* ordered by canonical chain identity rather than DB insertion time."""
+    return sorted(rows, key=canonical_proof_event_sort_key, reverse=descending)
+
+
 def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
     if not database_url():
-        return [
+        matched = [
             dict(r) for r in _INDEXED_EVENTS.values() if r.get("proof_id") == proof_id
         ]
+        return sort_proof_events_canonically(matched)
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -690,12 +768,12 @@ def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
                     event_index,
                     created_at
                 from proof_events
-                where proof_id = %s
-                order by id desc;
+                where proof_id = %s;
                 """,
                 (proof_id,),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+    return sort_proof_events_canonically(rows)
 
 
 def find_proof_owner(proof_id: str) -> str | None:

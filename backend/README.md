@@ -351,3 +351,15 @@ python -m unittest test_app.py test_stego.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+## Canonical Chain Event Ordering
+
+When multiple Soroban contract events share a ledger sequence, `chain_indexer.py`
+and `db.py` preserve deterministic chain order using
+`(ledger, tx_order, tx_hash, operation_order, operation_id, event_index)`
+(including 64-bit Stellar Total Order IDs decoded via `parse_stellar_toid` in
+`tx_verification.py`). Batch ingestion (`process_events_batch`) and proof-scoped
+reads (`find_proof_events_by_proof_id`, `sort_proof_events_canonically`) never
+order same-ledger lifecycle events by database insertion timestamp (`created_at`)
+or auto-increment row `id`.
+
+

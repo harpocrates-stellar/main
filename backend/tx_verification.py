@@ -12,6 +12,50 @@ class TxVerificationResult:
     confirmations: int | None = None
     successful: bool | None = None
     source: str | None = None
+    paging_token: str | None = None
+    tx_application_order: int | None = None
+
+
+_TOID_LEDGER_SHIFT = 32
+_TOID_TX_SHIFT = 12
+_TOID_TX_MASK = 0xFFFFF
+_TOID_OP_MASK = 0xFFF
+_MAX_INT64 = (1 << 63) - 1
+
+
+def parse_stellar_toid(paging_token: str | int | None) -> tuple[int, int, int] | None:
+    """Decode a 64-bit Stellar Total Order ID into ``(ledger, tx_order, op_index)``.
+
+    Returns ``None`` when *paging_token* is absent or represents a plain sequence
+    smaller than ``1 << 32``. Raises ``ValueError`` on negative, boolean, or
+    out-of-range 64-bit integer inputs.
+    """
+    if paging_token is None:
+        return None
+    if isinstance(paging_token, bool):
+        raise ValueError("paging_token must not be a boolean")
+    if isinstance(paging_token, int):
+        toid = paging_token
+    elif isinstance(paging_token, str):
+        stripped = paging_token.strip()
+        if not stripped:
+            return None
+        try:
+            toid = int(stripped, 10)
+        except ValueError as exc:
+            raise ValueError("paging_token must be a base-10 integer string") from exc
+    else:
+        raise ValueError("paging_token must be a string or integer")
+
+    if toid < 0 or toid > _MAX_INT64:
+        raise ValueError("paging_token out of signed 64-bit Stellar TOID range")
+    if toid < (1 << _TOID_LEDGER_SHIFT):
+        return None
+
+    ledger = toid >> _TOID_LEDGER_SHIFT
+    tx_order = (toid >> _TOID_TX_SHIFT) & _TOID_TX_MASK
+    op_index = toid & _TOID_OP_MASK
+    return ledger, tx_order, op_index
 
 
 def normalize_tx_hash(value: object) -> str:
@@ -135,6 +179,19 @@ def verify_transaction(
             except (TypeError, ValueError):
                 ledger = None
 
+            raw_paging_token = data.get("paging_token")
+            paging_token = str(raw_paging_token).strip() if raw_paging_token is not None else None
+            tx_application_order: int | None = None
+            if paging_token:
+                try:
+                    parsed_toid = parse_stellar_toid(paging_token)
+                except ValueError:
+                    parsed_toid = None
+                if parsed_toid is not None:
+                    if ledger is None:
+                        ledger = parsed_toid[0]
+                    tx_application_order = parsed_toid[1]
+
             if not successful:
                 return TxVerificationResult(
                     status="failed",
@@ -142,6 +199,8 @@ def verify_transaction(
                     successful=False,
                     source=rpc_url,
                     reason="tx_unsuccessful",
+                    paging_token=paging_token,
+                    tx_application_order=tx_application_order,
                 )
 
             latest = _latest_ledger(rpc_url, timeout=timeout)
@@ -158,6 +217,8 @@ def verify_transaction(
                     successful=True,
                     source=rpc_url,
                     reason="confirmations_unavailable",
+                    paging_token=paging_token,
+                    tx_application_order=tx_application_order,
                 )
 
             if confirmations < min_confirmations:
@@ -169,6 +230,8 @@ def verify_transaction(
                     successful=True,
                     source=rpc_url,
                     reason="awaiting_confirmations",
+                    paging_token=paging_token,
+                    tx_application_order=tx_application_order,
                 )
 
             return TxVerificationResult(
@@ -179,6 +242,8 @@ def verify_transaction(
                 successful=True,
                 source=rpc_url,
                 reason="confirmed",
+                paging_token=paging_token,
+                tx_application_order=tx_application_order,
             )
         except Exception as exc:
             saw_dependency_failure = True
