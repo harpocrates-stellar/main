@@ -20,10 +20,24 @@ destination artifact is retained.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UPLOAD_CHUNK_BYTES` | `65536` | Bounded read/write size for stream hashing |
-| `UPLOAD_STREAM_THRESHOLD_BYTES` | `1048576` | Content-Length above which embed/extract wrap uploads |
-| `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream size ceiling |
+| `UPLOAD_CHUNK_BYTES` | `65536` | Bounded read/write size in bytes for stream hashing |
+| `UPLOAD_STREAM_THRESHOLD_BYTES` | `1048576` | Content-Length in bytes above which embed/extract wrap uploads |
+| `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream ceiling in bytes (`0` = zero-byte allowance; `unlimited` = absent limit) |
 | `UPLOAD_TEMP_DIR` | OS temp | Optional temp directory for stream scratch files |
+
+## Normalized Upload Limit Headers and Rejection Units
+
+Every `/api/stego/*` upload response and admission/limit rejection expresses limits exclusively in `bytes`:
+
+| Header / Field | Enforced (`> 0`) | Zero-byte allowance (`0`) | Absent limit (`unlimited`) |
+|----------------|------------------|---------------------------|----------------------------|
+| `X-Upload-Limit-Unit` | `bytes` | `bytes` | `bytes` |
+| `X-Upload-Limit-Policy` | `enforced` | `zero_allowance` | `unlimited` |
+| `X-Upload-Max-Bytes` | `<int>` | `0` | *(omitted)* |
+| `X-Upload-Chunk-Bytes` | `<int>` | `<int>` | `<int>` |
+| JSON `unit` / `limit_bytes` | `"bytes"` / `<int>` | `"bytes"` / `0` | `"bytes"` / `null` |
+
+An absent limit (`None` / `UPLOAD_MAX_BYTES=unlimited`) never sets `X-Upload-Max-Bytes` and sets `limit_bytes` to `null`, whereas an explicit zero-byte allowance (`0` / `UPLOAD_MAX_BYTES=0`) emits `X-Upload-Max-Bytes: 0` with `limit_policy: "zero_allowance"`, allowing `0`-byte streams and rejecting any upload of `1` byte or more with HTTP `413` (`PAYLOAD_TOO_LARGE`).
 
 ## Trust boundary, privacy, migration, rollback
 

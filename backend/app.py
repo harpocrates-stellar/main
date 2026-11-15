@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import StegoLimitExceededError, canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -153,9 +153,14 @@ from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    LIMIT_POLICY_UNLIMITED,
     StreamingFileStorage,
+    UploadLimitExceededError,
+    apply_upload_limit_headers,
+    build_upload_limit_rejection_body,
     create_streaming_file_storage,
     hash_paths_concat,
+    resolve_upload_limit_spec,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -256,18 +261,28 @@ def _detect_worker_count() -> int:
     return 1
 
 
-def declared_upload_limit_bytes(config) -> int:
-    """Return the largest acceptable declared ``Content-Length`` for an upload.
+def declared_upload_limit_bytes(config) -> int | None:
+    """Return the largest acceptable declared ``Content-Length`` in bytes for an upload.
 
-    The per-file budget is ``UPLOAD_MAX_BYTES`` when the deployment sets it,
-    otherwise ``MAX_VIDEO_BYTES``; multipart framing is permitted on top of it.
-    The whole body must still fit under ``MAX_CONTENT_LENGTH`` when that cap is
-    the lower of the two, so the effective limit is the minimum of the two.
+    Distinguishes an absent limit (``None`` when ``upload_limit_unlimited`` is
+    active and no ``max_content_length`` ceiling is configured) from an explicit
+    zero-byte allowance (``upload_max_bytes == 0``).
     """
-    per_file = int(getattr(config, "upload_max_bytes", 0) or config.max_video_bytes)
-    limit = per_file + UPLOAD_MULTIPART_OVERHEAD_BYTES
     global_cap = int(getattr(config, "max_content_length", 0) or 0)
-    if global_cap and limit > global_cap:
+    if getattr(config, "upload_limit_unlimited", False):
+        return global_cap if global_cap > 0 else None
+
+    raw_upload_max = getattr(config, "upload_max_bytes", None)
+    if raw_upload_max is not None:
+        per_file = max(0, int(raw_upload_max))
+    else:
+        raw_video_max = getattr(config, "max_video_bytes", None)
+        if raw_video_max is None:
+            return global_cap if global_cap > 0 else None
+        per_file = max(0, int(raw_video_max))
+
+    limit = per_file + UPLOAD_MULTIPART_OVERHEAD_BYTES
+    if global_cap > 0 and limit > global_cap:
         limit = global_cap
     return limit
 
@@ -351,7 +366,11 @@ def create_app() -> Flask:
     log_structured(LOGGER, logging.INFO, {"event": "app_start", "config": config.redacted_summary()})
     # Continue setup
     CORS(app, **cors_kwargs(config.cors_origins))
-    app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
+    app.config["MAX_CONTENT_LENGTH"] = (
+        None
+        if (config.upload_limit_unlimited and os.getenv("MAX_CONTENT_LENGTH") is None)
+        else config.max_content_length
+    )
     # Propagate the request id through every response (header + JSON body).
     register_request_id_propagation(app)
     
@@ -404,6 +423,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -434,6 +455,8 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+        if request.path.startswith("/api/stego/"):
+            g.upload_config = config
 
     @app.before_request
     def initialize_trace_context():
@@ -523,6 +546,11 @@ def create_app() -> Flask:
         )
         response.headers.setdefault("X-Harpocrates-Release", config.release_id)
         response.headers.setdefault("X-Harpocrates-Network", config.release_network)
+        if request.path.startswith("/api/stego/"):
+            apply_upload_limit_headers(
+                response.headers,
+                resolve_upload_limit_spec(config=config),
+            )
 
         if config.metrics_enabled and request.path != config.metrics_path:
             start_time = getattr(g, "start_time", None)
@@ -692,6 +720,27 @@ def create_app() -> Flask:
 
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
+        if request.path.startswith("/api/stego/") or isinstance(
+            _error, UploadLimitExceededError
+        ):
+            spec = resolve_upload_limit_spec(config=config)
+            observed = (
+                _error.observed_bytes
+                if isinstance(_error, UploadLimitExceededError)
+                else request.content_length
+            )
+            return (
+                jsonify(
+                    build_upload_limit_rejection_body(
+                        spec,
+                        message="request body exceeds size limit in bytes",
+                        code=PAYLOAD_TOO_LARGE,
+                        request_id=request_id(),
+                        observed_bytes=observed,
+                    )
+                ),
+                413,
+            )
         return error_response(
             code=PAYLOAD_TOO_LARGE,
             message="request body is too large",
@@ -799,20 +848,26 @@ def create_app() -> Flask:
             }
         ), 200 if status["ok"] else 503
 
-    def _enforce_video_size(video) -> bool:
+    def _enforce_video_size(video) -> tuple[bool, int | None]:
+        spec = resolve_upload_limit_spec(config=config)
         # StreamingFileStorage enforces the limit mid-stream during save();
         # avoid seek() which can force whole-body buffering on the WSGI input.
         if isinstance(video, StreamingFileStorage):
-            if video.bytes_written > 0:
-                return video.bytes_written <= config.max_video_bytes
-            if request.content_length is not None:
-                # Content-Length includes multipart overhead; still a useful gate.
-                return request.content_length <= config.max_content_length
-            return True
+            if video.bytes_written > 0 or spec.is_zero_allowance:
+                if video.bytes_written > 0:
+                    return spec.allows_bytes(video.bytes_written), video.bytes_written
+            if spec.is_unlimited:
+                return True, None
+            if request.content_length is not None and config.max_content_length > 0:
+                return (
+                    request.content_length <= config.max_content_length,
+                    request.content_length,
+                )
+            return True, None
         video.seek(0, 2)
         size = video.tell()
         video.seek(0)
-        return size <= config.max_video_bytes
+        return spec.allows_bytes(size), size
 
     def _enable_streaming_for_large_uploads():
         """Wrap large multipart uploads with bounded-chunk stream hashing."""
@@ -851,8 +906,21 @@ def create_app() -> Flask:
         metadata_raw = request.form.get("metadata")
         if video is None or metadata_raw is None:
             return jsonify({"error": "video and metadata are required"}), 400
-        if not _enforce_video_size(video):
-            return jsonify({"error": "video payload exceeds size limit"}), 413
+        allowed_size, observed_size = _enforce_video_size(video)
+        if not allowed_size:
+            spec = resolve_upload_limit_spec(config=config)
+            return (
+                jsonify(
+                    build_upload_limit_rejection_body(
+                        spec,
+                        message="video payload exceeds size limit in bytes",
+                        code=PAYLOAD_TOO_LARGE,
+                        request_id=request_id(),
+                        observed_bytes=observed_size,
+                    )
+                ),
+                413,
+            )
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
             return metadata_error_response(
@@ -954,8 +1022,25 @@ def create_app() -> Flask:
         chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
             streaming_chunk.save(str(chunk_path))
-        except RequestEntityTooLarge:
-            return jsonify({"error": "chunk exceeds size limit"}), 413
+        except RequestEntityTooLarge as exc:
+            spec = resolve_upload_limit_spec(config=config)
+            observed = (
+                exc.observed_bytes
+                if isinstance(exc, UploadLimitExceededError)
+                else None
+            )
+            return (
+                jsonify(
+                    build_upload_limit_rejection_body(
+                        spec,
+                        message="chunk exceeds size limit in bytes",
+                        code=PAYLOAD_TOO_LARGE,
+                        request_id=request_id(),
+                        observed_bytes=observed,
+                    )
+                ),
+                413,
+            )
         return jsonify({
             "ok": True,
             "bytes": streaming_chunk.bytes_written,
@@ -996,12 +1081,36 @@ def create_app() -> Flask:
             return jsonify({"error": "session has no chunks"}), 400
 
         # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
-        source_hash, _written = hash_paths_concat(
-            chunk_files,
-            combined_path,
-            chunk_size=getattr(config, "upload_chunk_bytes", None),
-            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
-        )
+        commit_spec = resolve_upload_limit_spec(config=config)
+        try:
+            source_hash, _written = hash_paths_concat(
+                chunk_files,
+                combined_path,
+                chunk_size=commit_spec.chunk_bytes,
+                max_size=(
+                    LIMIT_POLICY_UNLIMITED
+                    if commit_spec.is_unlimited
+                    else commit_spec.limit_bytes
+                ),
+            )
+        except RequestEntityTooLarge as exc:
+            observed = (
+                exc.observed_bytes
+                if isinstance(exc, UploadLimitExceededError)
+                else None
+            )
+            return (
+                jsonify(
+                    build_upload_limit_rejection_body(
+                        commit_spec,
+                        message="committed session payload exceeds size limit in bytes",
+                        code=PAYLOAD_TOO_LARGE,
+                        request_id=request_id(),
+                        observed_bytes=observed,
+                    )
+                ),
+                413,
+            )
 
         # Sniff assembled file before handing it to ffmpeg.
         try:
@@ -1069,8 +1178,21 @@ def create_app() -> Flask:
         video = request.files.get("video")
         if video is None:
             return jsonify({"error": "video is required"}), 400
-        if not _enforce_video_size(video):
-            return jsonify({"error": "video payload exceeds size limit"}), 413
+        allowed_size, observed_size = _enforce_video_size(video)
+        if not allowed_size:
+            spec = resolve_upload_limit_spec(config=config)
+            return (
+                jsonify(
+                    build_upload_limit_rejection_body(
+                        spec,
+                        message="video payload exceeds size limit in bytes",
+                        code=PAYLOAD_TOO_LARGE,
+                        request_id=request_id(),
+                        observed_bytes=observed_size,
+                    )
+                ),
+                413,
+            )
         validate_video_upload(video)
 
         normalized_name = normalize_filename(video.filename)

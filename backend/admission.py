@@ -2,7 +2,13 @@ import threading
 from functools import wraps
 from typing import Dict, Tuple
 
-from flask import request, jsonify
+from flask import g, jsonify, request
+
+from streaming_upload import (
+    UploadLimitSpec,
+    apply_upload_limit_headers,
+    resolve_upload_limit_spec,
+)
 
 
 class AdmissionController:
@@ -93,7 +99,18 @@ def _get_client_identity() -> str:
     return request.remote_addr or "unknown"
 
 
-def require_capacity(controller: AdmissionController):
+def attach_upload_limit_headers(response, spec: UploadLimitSpec | None = None):
+    """Attach normalized byte-unit upload limit headers to a Flask response."""
+    resolved = spec if spec is not None else resolve_upload_limit_spec()
+    apply_upload_limit_headers(response.headers, resolved)
+    return response
+
+
+def require_capacity(
+    controller: AdmissionController,
+    *,
+    upload_limit_spec: UploadLimitSpec | None = None,
+):
     """
     Flask decorator to enforce admission control on a route.
     Returns 429 or 503 with a Retry-After header on rejection.
@@ -113,10 +130,22 @@ def require_capacity(controller: AdmissionController):
                 metrics_collector.record_rejection(reason, endpoint)
                 
                 status_code = 429 if reason == "identity_limit" else 503
-                response = jsonify({
-                    "error": "service overloaded", 
-                    "reason": reason
-                })
+                body = {
+                    "error": "service overloaded",
+                    "reason": reason,
+                }
+                active_upload_cfg = getattr(g, "upload_config", None)
+                if upload_limit_spec is not None or active_upload_cfg is not None:
+                    spec = (
+                        upload_limit_spec
+                        if upload_limit_spec is not None
+                        else resolve_upload_limit_spec(config=active_upload_cfg)
+                    )
+                    body.update(spec.to_rejection_fields())
+                    response = jsonify(body)
+                    apply_upload_limit_headers(response.headers, spec)
+                else:
+                    response = jsonify(body)
                 response.status_code = status_code
                 response.headers["Retry-After"] = str(int(controller.timeout_seconds * 2) or 5)
                 return response
