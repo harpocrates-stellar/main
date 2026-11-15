@@ -8,7 +8,12 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { StrKey } from '@stellar/stellar-sdk'
 import { asHex32 } from './hashing.js'
-import { createProofManifest, parseManifest, serializeManifest } from './manifest.js'
+import {
+  createProofManifest,
+  normalizeManifest,
+  parseManifest,
+  serializeManifest,
+} from './manifest.js'
 import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMetadata } from './metadata.js'
 import {
   lookupByVideoHash,
@@ -35,13 +40,16 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -116,8 +124,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -147,8 +156,11 @@ async function handleVerify(flags: Record<string, string>, debugLog: (event: Rec
     exit(8, '--manifest is required for verification')
   }
   try {
-    manifest = parseManifest(await readText(manifestPath))
-  } catch {
+    manifest = normalizeManifest(await readText(manifestPath))
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('unsupported required manifest extension')) {
+      exit(8, err.message)
+    }
     exit(8, 'invalid or unreadable manifest')
   }
 
@@ -222,9 +234,35 @@ async function handleManifest(flags: Record<string, string>, debugLog: (event: R
   const inputPath = flags.input || flags.i
   const outputPath = flags.output || flags.o
   const outputFormat = flags.format || 'json'
+  const normalizeMode = flags.normalize === 'true'
 
   if (!inputPath) {
     exit(2, '--input is required for manifest creation')
+  }
+
+  if (normalizeMode) {
+    let normalizedManifest: ReturnType<typeof normalizeManifest>
+    try {
+      const raw = await readText(inputPath)
+      normalizedManifest = normalizeManifest(raw)
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('unsupported required manifest extension')) {
+        exit(8, err.message)
+      }
+      exit(8, 'invalid or unreadable manifest')
+    }
+
+    debugLog({ event: 'manifest.normalized', manifest: redactSensitive(normalizedManifest) })
+    const serializedNormalized = serializeManifest(normalizedManifest)
+    if (outputPath) {
+      await writeFile(outputPath, serializedNormalized, 'utf-8')
+      printText(`Manifest written to ${outputPath}`)
+    } else if (outputFormat === 'text') {
+      printText(serializedNormalized)
+    } else {
+      printJson(JSON.parse(serializedNormalized))
+    }
+    return
   }
 
   let metadata: HarpocratesMetadata
@@ -665,10 +703,11 @@ Verify options:
   --timeout         RPC request timeout in milliseconds (default: 15000).
 
 Manifest options:
-  --input, -i       Path to metadata JSON file (use "-" for stdin; required).
-  --tx-hash         Transaction hash from the registration (required).
-  --contract-id     Contract ID on Stellar (required).
-  --video-hash      32-byte hex video hash (required).
+  --input, -i       Path to metadata or manifest JSON file (use "-" for stdin; required).
+  --normalize       Normalize an existing manifest while preserving compatible optional extensions.
+  --tx-hash         Transaction hash from the registration (required when creating from metadata).
+  --contract-id     Contract ID on Stellar (required when creating from metadata).
+  --video-hash      32-byte hex video hash (required when creating from metadata).
   --network         Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --output, -o      File path to write the manifest to.
   --format          Output format when printing to stdout: "json" (default) or "text".

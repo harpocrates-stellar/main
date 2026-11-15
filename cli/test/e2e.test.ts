@@ -93,15 +93,15 @@ describe('Command: hash', () => {
 
     const expectedHash = createHash('sha256').update(fixtureContent).digest('hex')
 
-    const res = runCli(['hash', '--file', fixturePath])
+    const res = runCli(['hash', '--file', fixturePath, '--output', 'json'])
     expect(res.status).toBe(0)
     expect(res.stderr).toBe('')
 
     const parsed = JSON.parse(res.stdout.trim())
     expect(parsed).toEqual({
       algorithm: 'sha256',
-      input: 'file',
-      hash: expectedHash,
+      digest: expectedHash,
+      bytes: Buffer.byteLength(fixtureContent, 'utf-8'),
     })
   })
 
@@ -114,8 +114,7 @@ describe('Command: hash', () => {
 
     const res = runCli(['hash', '-f', fixturePath])
     expect(res.status).toBe(0)
-    const parsed = JSON.parse(res.stdout.trim())
-    expect(parsed.hash).toBe(expectedHash)
+    expect(res.stdout.trim()).toBe(expectedHash)
   })
 
   it('exits 2 on missing --file argument', () => {

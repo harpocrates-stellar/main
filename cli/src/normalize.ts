@@ -1,6 +1,8 @@
 import type { VerificationResult } from './receipt.js'
-import type { ProofManifest } from './manifest.js'
+import { normalizeManifest, manifestStatementHash, type ProofManifest } from './manifest.js'
 import type { ChainProofRecord, TransactionVerification } from './stellar-lookup.js'
+
+export { normalizeManifest, manifestStatementHash }
 
 /**
  * Compute the overall verification result from a chain record's status

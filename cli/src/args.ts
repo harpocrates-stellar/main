@@ -8,6 +8,7 @@ export type Command =
   | 'verify-receipt'
   | 'c2pa'
   | 'verify-lineage'
+  | 'version'
   | 'help'
 
 export interface ParsedArgs {
@@ -72,6 +73,7 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     input: alias('i'),
     output: alias('o'),
     format: text,
+    normalize: toggle,
     'video-hash': text,
     videoHash: text,
     network: text,
@@ -109,6 +111,9 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     sourceAddress: text,
     network: text,
     output: alias('o'),
+    debug: toggle,
+  },
+  version: {
     debug: toggle,
   },
 }
@@ -170,6 +175,9 @@ function describeUsageError(command: string, err: unknown): string {
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv
+  if (command === '--version' || command === '-v') {
+    return { command: 'version', flags: {} }
+  }
   if (command === undefined || !Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
     return { command: 'help', flags: {} }
   }

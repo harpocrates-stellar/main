@@ -100,7 +100,12 @@ Explicit flags always take precedence over environment values. Contract-id
 validation still applies to environment values.
 
 The CLI accepts at most 1 MiB of manifest/metadata JSON. It rejects unknown
-manifest fields and unsupported versions, and writes fixed, privacy-safe
+top-level manifest fields and unsupported versions, while preserving compatible
+namespaced optional `extensions` during CLI normalization (`manifest --normalize`
+and `verify`) without altering critical statement identity (`manifestStatementHash`).
+Unknown required extensions (`required: true`, `critical: true`, or unrecognised
+`criticalExtensions` entries) and any secret- or witness-like extension fields
+are rejected fail-closed with exit `8`. The CLI writes fixed, privacy-safe
 error messages rather than raw RPC or file errors. Do not pass private
 witnesses, seeds, credentials, media, or secrets in a manifest. The receipt
 contains only public manifest and registry fields, but hashes and addresses
