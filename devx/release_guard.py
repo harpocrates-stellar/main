@@ -27,6 +27,7 @@ COMPONENTS = {"frontend", "backend", "circuit", "verifier", "registry"}
 ROLLOUT_STATES = {"candidate", "staged", "active", "rollback"}
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 class ManifestError(ValueError):
@@ -71,7 +72,21 @@ def required_string(value: dict[str, Any], key: str, location: str) -> str:
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
-    reject_unknown(manifest, {"schema_version", "release_id", "protocol", "network", "rollout", "components", "artifacts", "compatibility"}, "manifest")
+    reject_unknown(
+        manifest,
+        {
+            "schema_version",
+            "release_id",
+            "protocol",
+            "network",
+            "rollout",
+            "components",
+            "artifacts",
+            "total_artifact_bytes",
+            "compatibility",
+        },
+        "manifest",
+    )
     if manifest.get("schema_version") != 1:
         raise ManifestError("manifest.schema_version must be 1")
     if required_string(manifest, "release_id", "manifest") != "harpocrates-1.0.0":
@@ -119,19 +134,54 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     if not isinstance(artifacts, list) or not artifacts:
         raise ManifestError("manifest.artifacts must be a non-empty array")
     seen: set[str] = set()
+    declared_sizes: list[int] = []
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             raise ManifestError("every artifact must be an object")
-        reject_unknown(artifact, {"component", "path", "sha256"}, "artifact")
+        reject_unknown(artifact, {"component", "path", "sha256", "size_bytes", "bytes"}, "artifact")
         component = required_string(artifact, "component", "artifact")
         path = required_string(artifact, "path", "artifact")
         digest = required_string(artifact, "sha256", "artifact")
         if component not in COMPONENTS or path in seen or not HEX_256.fullmatch(digest):
             raise ManifestError("artifact component, unique path, or sha256 is invalid")
+        size_bytes = artifact.get("size_bytes")
+        alias_bytes = artifact.get("bytes")
+        if size_bytes is not None and alias_bytes is not None and size_bytes != alias_bytes:
+            raise ManifestError(
+                f"artifact {path} has inconsistent size declarations: size_bytes={size_bytes!r} vs bytes={alias_bytes!r}"
+            )
+        effective_size = size_bytes if size_bytes is not None else alias_bytes
+        if effective_size is not None:
+            if (
+                isinstance(effective_size, bool)
+                or not isinstance(effective_size, int)
+                or effective_size < 0
+                or effective_size > MAX_ARTIFACT_BYTES
+            ):
+                raise ManifestError(
+                    f"artifact {path} size declaration must be an integer within [0, {MAX_ARTIFACT_BYTES}]"
+                )
+            if (effective_size == 0) != (digest == EMPTY_SHA256):
+                raise ManifestError(
+                    f"artifact {path} size declaration ({effective_size}) conflicts with sha256"
+                )
+            declared_sizes.append(effective_size)
         candidate = (ROOT / path).resolve()
         if ROOT not in candidate.parents or candidate == ROOT:
             raise ManifestError("artifact path must stay inside the repository")
         seen.add(path)
+    if "total_artifact_bytes" in manifest and manifest["total_artifact_bytes"] is not None:
+        total_bytes = manifest["total_artifact_bytes"]
+        if isinstance(total_bytes, bool) or not isinstance(total_bytes, int) or total_bytes < 0:
+            raise ManifestError("manifest.total_artifact_bytes must be a non-negative integer")
+        if len(declared_sizes) != len(artifacts):
+            raise ManifestError(
+                "manifest.total_artifact_bytes requires every artifact to declare size_bytes"
+            )
+        if total_bytes != sum(declared_sizes):
+            raise ManifestError(
+                f"manifest.total_artifact_bytes ({total_bytes}) disagrees with sum of artifact sizes ({sum(declared_sizes)})"
+            )
     if {a["component"] for a in artifacts} != COMPONENTS:
         raise ManifestError("each component must contribute at least one artifact")
     if rollout["state"] == "active":
@@ -171,7 +221,32 @@ def validate_verifier_key_binding(manifest: dict[str, Any], binding: dict[str, A
         raise ManifestError("verifier key binding checksum does not match the release artifact")
 
 
-def verify(manifest_path: Path, require_active: bool = False) -> None:
+def record_artifact_sizes(manifest: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
+    """Return a copy of manifest with measured byte sizes recorded alongside digests."""
+    updated = json.loads(json.dumps(manifest))
+    artifacts = updated.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ManifestError("manifest.artifacts must be a non-empty array")
+    total = 0
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
+            raise ManifestError("every artifact must declare a string path")
+        target = root / artifact["path"]
+        if not target.is_file():
+            raise ManifestError(f"missing artifact: {artifact['path']}")
+        size = target.stat().st_size
+        if size > MAX_ARTIFACT_BYTES:
+            raise ManifestError(f"artifact exceeds 512 MiB limit: {artifact['path']}")
+        artifact.pop("bytes", None)
+        artifact["size_bytes"] = size
+        artifact["sha256"] = sha256_file(target)
+        total += size
+    updated["total_artifact_bytes"] = total
+    validate_manifest(updated)
+    return updated
+
+
+def verify(manifest_path: Path, require_active: bool = False, root: Path = ROOT) -> None:
     manifest = read_json(manifest_path)
     validate_manifest(manifest)
     validate_verifier_key_binding(manifest, read_json(DEFAULT_BINDING))
@@ -180,19 +255,34 @@ def verify(manifest_path: Path, require_active: bool = False) -> None:
         raise ManifestError("publication requires rollout.state=active")
     mismatches: list[str] = []
     for artifact in manifest["artifacts"]:
-        path = ROOT / artifact["path"]
+        path = root / artifact["path"]
         if not path.is_file():
             mismatches.append(f"missing artifact: {artifact['path']}")
-        elif path.stat().st_size > MAX_ARTIFACT_BYTES:
+            continue
+        actual_size = path.stat().st_size
+        if actual_size > MAX_ARTIFACT_BYTES:
             mismatches.append(f"artifact exceeds 512 MiB limit: {artifact['path']}")
-        elif sha256_file(path) != artifact["sha256"]:
+            continue
+        declared_size = (
+            artifact["size_bytes"]
+            if artifact.get("size_bytes") is not None
+            else artifact.get("bytes")
+        )
+        if declared_size is not None and actual_size != declared_size:
+            mismatches.append(
+                f"size mismatch: {artifact['path']} (expected {declared_size} bytes, got {actual_size})"
+            )
+            continue
+        if sha256_file(path) != artifact["sha256"]:
             mismatches.append(f"digest mismatch: {artifact['path']}")
-            
+
         # Secret scan the artifact
         scan_errors = secret_scanner.scan_file(path)
         if scan_errors:
-            mismatches.append(f"secret scan failed for {artifact['path']}: " + ", ".join(set(scan_errors)))
-            
+            mismatches.append(
+                f"secret scan failed for {artifact['path']}: " + ", ".join(set(scan_errors))
+            )
+
     if mismatches:
         raise ManifestError("; ".join(mismatches))
 

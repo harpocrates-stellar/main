@@ -234,8 +234,37 @@ class TestExport:
 
         saved = json.loads(out_file.read_text(encoding="utf-8"))
         assert saved["proof"] == "010203"
+        assert saved["proofBytes"] == 3
+        assert len(saved["proofSha256"]) == 64
         assert saved["publicInputs"] == "aabb"
+        assert saved["publicInputsBytes"] == 2
+        assert len(saved["publicInputsSha256"]) == 64
         assert saved["verificationKey"] == "ccdd"
+        assert saved["verificationKeyBytes"] == 2
+        assert len(saved["verificationKeySha256"]) == 64
+
+    def test_export_rejects_oversized_artifact_before_hashing(self, tmp_path: Path, monkeypatch):
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+        (target_dir / "proof").write_bytes(b"\x01" * 64)
+        (target_dir / "public_inputs").write_bytes(b"\x02")
+        (target_dir / "vk").write_bytes(b"\x03")
+
+        args = bc.create_parser().parse_args([
+            "export",
+            "dummy_circuit",
+            "--target-dir",
+            str(target_dir),
+        ])
+        args.max_artifact_bytes = 16
+
+        monkeypatch.setattr(
+            bc.hashlib,
+            "sha256",
+            lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not hash oversized file")),
+        )
+        with pytest.raises(bc.BuildError, match="exceeds max_artifact_bytes"):
+            bc.cmd_export(args, repo_root=tmp_path)
 
     def test_export_missing_file_fails(self, tmp_path: Path):
         target_dir = tmp_path / "target"

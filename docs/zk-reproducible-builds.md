@@ -134,14 +134,37 @@ succeeding.
 Each declared artifact reaches exactly one terminal state per run:
 
 ```
-DECLARED ──not on disk──▶ MISSING     (fatal when `required`, else SKIPPED)
-         ──over limit───▶ OVERSIZE    (fatal)
-         ──unreadable───▶ UNREADABLE  (fatal)
-         ──normalized───▶ DIGESTED    (success)
+DECLARED ──not on disk──▶ MISSING        (fatal when `required`, else SKIPPED)
+         ──over limit───▶ OVERSIZE       (fatal)
+         ──bad size─────▶ SIZE_MISMATCH  (fatal)
+         ──unreadable───▶ UNREADABLE     (fatal)
+         ──normalized───▶ DIGESTED       (success)
 ```
 
 `verify` and `compare` add one transition on a `DIGESTED` artifact: `MATCHED` or
 `DRIFTED`.
+
+### Byte sizes alongside digests
+
+Every manifest entry records exact integer byte counts (`raw_bytes` and
+`normalized_bytes`, plus `decompressed_bytes` when an artifact is gzip-compressed)
+alongside `raw_sha256` and `normalized_sha256`, and manifests record aggregate
+`total_raw_bytes` and `total_normalized_bytes` totals. `build_circuits.py export`
+and `prepare-soroban` likewise emit byte counts alongside SHA-256 digests, and
+`devx/release_guard.py` supports `size_bytes` and `total_artifact_bytes` in
+compatibility release manifests while remaining compatible with legacy entries.
+
+- **Pre-hash and pre-decompression checks:** On-disk `stat().st_size` is checked
+  against `max_artifact_bytes`, optional lock bounds (`min_bytes`, `max_bytes`,
+  `expected_bytes` / `byte_size`), and expected raw sizes before reading,
+  decompressing, or hashing. Compressed `.gz` streams are read in bounded chunks
+  against `max_decompressed_bytes` and `expected_decompressed_bytes`, aborting
+  before full buffering or SHA-256 hashing on overflow or mismatch.
+- **Inconsistent size rejection:** Negative or non-integer sizes, inverted bounds
+  (`min_bytes > max_bytes`), disagreeing `byte_size` vs `raw_bytes`, binary
+  `normalized_bytes != raw_bytes`, impossible WASM `normalized_bytes`, empty-size
+  vs non-empty digest contradictions, and mismatched `total_raw_bytes` /
+  `total_normalized_bytes` sums fail closed explicitly.
 
 There is no partial success. If any artifact ends in a fatal state the run exits
 non-zero and **no manifest is written**, so a half-built tree can never be

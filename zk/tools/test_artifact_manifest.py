@@ -1195,3 +1195,143 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+# ── Artifact byte sizes & pre-hash / pre-decompression validation (#1218) ───
+
+
+def test_manifest_records_artifact_and_total_byte_sizes(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    (tmp_path / "zk/noir/demo/src").mkdir(parents=True)
+    (tmp_path / "zk/noir/demo/src/main.nr").write_text("fn main() {}", encoding="utf-8")
+    (tmp_path / "zk/noir/demo/Nargo.toml").write_text('[package]\nname = "demo"\n', encoding="utf-8")
+    target = tmp_path / "zk/noir/demo/target"
+    target.mkdir(parents=True)
+    target.joinpath("demo.json").write_bytes(b'{"bytecode":"AAA","debug_symbols":"host"}')
+    target.joinpath("vk").write_bytes(b"\x11" * 32)
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            },
+            {
+                "path": "zk/noir/demo/target/vk",
+                "kind": "binary",
+                "role": "verification_key",
+                "required": True,
+                "expected_bytes": 32,
+            },
+        ],
+    )
+    manifest, run = am.build_manifest(lock, tmp_path)
+    assert not run.fatal
+    assert not run.missing_required
+    assert manifest["total_raw_bytes"] == sum(a["raw_bytes"] for a in manifest["artifacts"])
+    assert manifest["total_normalized_bytes"] == sum(
+        a["normalized_bytes"] for a in manifest["artifacts"]
+    )
+    vk_entry = next(a for a in manifest["artifacts"] if a["path"].endswith("/vk"))
+    assert vk_entry["raw_bytes"] == 32
+    assert vk_entry["normalized_bytes"] == 32
+    assert len(vk_entry["normalized_sha256"]) == 64
+
+
+def test_verify_validates_binary_size_before_hashing(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    vk_file = tmp_path / "vk"
+    vk_file.write_bytes(b"\xaa" * 32)
+    _lock_for(
+        tmp_path,
+        [{"path": "vk", "kind": "binary", "role": "verification_key", "required": True}],
+    )
+    lock_path = tmp_path / "lock.json"
+    manifest_path = tmp_path / "manifest.json"
+    assert am.main(["--lock", str(lock_path), "write", "--output", str(manifest_path)]) == am.EXIT_OK
+
+    # Truncate/grow the binary artifact on disk; verify must reject by size without hashing it.
+    vk_file.write_bytes(b"\xbb" * 64)
+    real_sha = am.sha256_hex
+    hashed_payloads: list[int] = []
+
+    def tracking_sha(data: bytes) -> str:
+        hashed_payloads.append(len(data))
+        return real_sha(data)
+
+    monkeypatch.setattr(am, "sha256_hex", tracking_sha)
+    rc = am.main(["--lock", str(lock_path), "verify", "--manifest", str(manifest_path)])
+    assert rc == am.EXIT_DRIFT
+    assert 64 not in hashed_payloads
+
+
+def test_gzip_decompression_validates_bounds_before_buffering_or_hashing(
+    tmp_path: Path, monkeypatch
+):
+    import gzip
+
+    monkeypatch.setattr(am, "REPO_ROOT", tmp_path)
+    compressed_target = tmp_path / "bundle.json.gz"
+    compressed_target.write_bytes(gzip.compress(b'{"bytecode":"' + (b"A" * 4096) + b'"}'))
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "bundle.json.gz",
+                "kind": "json",
+                "role": "acir",
+                "compression": "gzip",
+                "max_decompressed_bytes": 256,
+                "required": True,
+            }
+        ],
+    )
+
+    called_hash = False
+
+    def fail_if_hashed(_data: bytes) -> str:
+        nonlocal called_hash
+        called_hash = True
+        raise AssertionError("sha256_hex should not run when decompressed size exceeds limit")
+
+    monkeypatch.setattr(am, "sha256_hex", fail_if_hashed)
+    result = am.digest_artifact(lock.artifacts[0], lock, tmp_path)
+    assert result.state == am.ArtifactState.OVERSIZE
+    assert not called_hash
+
+
+@pytest.mark.parametrize(
+    "bad_declaration",
+    [
+        {"path": "x.bin", "kind": "binary", "min_bytes": 100, "max_bytes": 50},
+        {"path": "x.bin", "kind": "binary", "expected_bytes": 10, "byte_size": 12},
+        {"path": "x.bin", "kind": "binary", "expected_bytes": 10, "min_bytes": 20},
+        {"path": "x.bin", "kind": "binary", "expected_bytes": -1},
+        {"path": "x.bin", "kind": "binary", "max_bytes": True},
+        {"path": "x.bin", "kind": "binary", "max_bytes": 999999999},
+    ],
+)
+def test_lock_rejects_inconsistent_size_declarations(tmp_path: Path, bad_declaration: dict):
+    with pytest.raises(am.BuildError, match="inconsistent|non-negative integer|exceeds"):
+        _lock_for(tmp_path, [bad_declaration], max_artifact_bytes=1024)
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda m: m["artifacts"][0].update({"byte_size": 99}),
+        lambda m: m["artifacts"][0].update({"kind": "binary", "raw_bytes": 16, "normalized_bytes": 12}),
+        lambda m: m["artifacts"][0].update({"kind": "wasm", "raw_bytes": 16, "normalized_bytes": 32}),
+        lambda m: m["artifacts"][0].update({"raw_bytes": 0}),
+        lambda m: m["artifacts"][0].update({"raw_bytes": -5}),
+        lambda m: m.update({"total_raw_bytes": 999}),
+    ],
+)
+def test_manifest_rejects_inconsistent_size_declarations(mutator):
+    manifest = _manifest([_artifact("x.json", "c" * 64)])
+    mutator(manifest)
+    with pytest.raises(am.BuildError, match="inconsistent|non-negative integer"):
+        am.validate_manifest_sizes(manifest)

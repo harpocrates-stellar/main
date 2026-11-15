@@ -449,9 +449,43 @@ def cmd_build(
         return EXIT_OK
 
 
+DEFAULT_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
+
+
+def _configured_max_artifact_bytes(repo_root: Path = REPO_ROOT) -> int:
+    lock_path = repo_root / "zk" / "toolchain.lock.json"
+    if lock_path.is_file():
+        try:
+            lock = load_toolchain_lock(lock_path)
+            raw_limit = lock.get("limits", {}).get("max_artifact_bytes")
+            if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) and raw_limit > 0:
+                return raw_limit
+        except BuildError:
+            pass
+    return DEFAULT_MAX_ARTIFACT_BYTES
+
+
+def _read_sized_artifact(
+    path: Path,
+    *,
+    max_bytes: int,
+    label: str = "artifact",
+) -> tuple[bytes, int, str]:
+    size = path.stat().st_size
+    if size > max_bytes:
+        raise BuildError(
+            f"{label} exceeds max_artifact_bytes ({size} > {max_bytes}) before hashing"
+        )
+    data = path.read_bytes()
+    return data, len(data), hashlib.sha256(data).hexdigest()
+
+
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
     target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
+    max_bytes = getattr(args, "max_artifact_bytes", None) or _configured_max_artifact_bytes(repo_root)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise BuildError(f"inconsistent max_artifact_bytes declaration: {max_bytes!r}")
 
     files = {
         "proof": target_dir / "proof",
@@ -463,10 +497,26 @@ def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
         if not path.is_file():
             raise BuildError(f"Missing {key} artifact at {path}. Run build first.")
 
+    proof_bytes, proof_len, proof_sha = _read_sized_artifact(
+        files["proof"], max_bytes=max_bytes, label="proof"
+    )
+    pi_bytes, pi_len, pi_sha = _read_sized_artifact(
+        files["publicInputs"], max_bytes=max_bytes, label="publicInputs"
+    )
+    vk_bytes, vk_len, vk_sha = _read_sized_artifact(
+        files["verificationKey"], max_bytes=max_bytes, label="verificationKey"
+    )
+
     result = {
-        "proof": files["proof"].read_bytes().hex(),
-        "publicInputs": files["publicInputs"].read_bytes().hex(),
-        "verificationKey": files["verificationKey"].read_bytes().hex(),
+        "proof": proof_bytes.hex(),
+        "proofBytes": proof_len,
+        "proofSha256": proof_sha,
+        "publicInputs": pi_bytes.hex(),
+        "publicInputsBytes": pi_len,
+        "publicInputsSha256": pi_sha,
+        "verificationKey": vk_bytes.hex(),
+        "verificationKeyBytes": vk_len,
+        "verificationKeySha256": vk_sha,
     }
 
     output_str = json.dumps(result, indent=2)
@@ -487,6 +537,12 @@ def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -
     if not vk_path.is_file():
         raise BuildError(f"Missing VK artifact at {vk_path}. Run build first.")
 
+    vk_size = vk_path.stat().st_size
+    if vk_size not in (1760, 1764):
+        raise BuildError(
+            f"Unexpected VK length {vk_size}. Expected 1764 from bb or 1760 for Soroban verifier."
+        )
+
     vk = vk_path.read_bytes()
     if len(vk) == 1764:
         stripped = bytearray(vk[4:])
@@ -495,19 +551,19 @@ def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -
             second = stripped[offset + 4 : offset + 8]
             stripped[offset : offset + 4] = second
             stripped[offset + 4 : offset + 8] = first
-        soroban_vk_path.write_bytes(bytes(stripped))
-    elif len(vk) == 1760:
-        soroban_vk_path.write_bytes(vk)
+        soroban_vk_bytes = bytes(stripped)
+        soroban_vk_path.write_bytes(soroban_vk_bytes)
     else:
-        raise BuildError(
-            f"Unexpected VK length {len(vk)}. Expected 1764 from bb or 1760 for Soroban verifier."
-        )
+        soroban_vk_bytes = vk
+        soroban_vk_path.write_bytes(vk)
 
     result = {
         "vk": str(vk_path),
         "vkBytes": len(vk),
+        "vkSha256": hashlib.sha256(vk).hexdigest(),
         "sorobanVk": str(soroban_vk_path),
-        "sorobanVkBytes": len(soroban_vk_path.read_bytes()),
+        "sorobanVkBytes": len(soroban_vk_bytes),
+        "sorobanVkSha256": hashlib.sha256(soroban_vk_bytes).hexdigest(),
         "proof": str(target_dir / "proof"),
         "publicInputs": str(target_dir / "public_inputs"),
     }

@@ -49,17 +49,22 @@ See docs/zk-reproducible-builds.md.
 from __future__ import annotations
 
 import argparse
-import re
+import gzip
 import hashlib
+import io
 import json
 import os
+import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 MANIFEST_FORMAT = "harpocrates.zk-artifact-manifest"
 MANIFEST_VERSION = 1
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+GZIP_STREAM_CHUNK_BYTES = 64 * 1024
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -87,13 +92,20 @@ class ArtifactState:
     MISSING = "missing"
     SKIPPED = "skipped"
     OVERSIZE = "oversize"
+    SIZE_MISMATCH = "size_mismatch"
     UNREADABLE = "unreadable"
     DIGESTED = "digested"
     MATCHED = "matched"
     DRIFTED = "drifted"
 
 
-FATAL_STATES = frozenset({ArtifactState.OVERSIZE, ArtifactState.UNREADABLE})
+FATAL_STATES = frozenset(
+    {
+        ArtifactState.OVERSIZE,
+        ArtifactState.SIZE_MISMATCH,
+        ArtifactState.UNREADABLE,
+    }
+)
 
 
 class BuildError(RuntimeError):
@@ -144,6 +156,65 @@ class Lock:
         return self.raw["environment"]
 
 
+def _require_non_negative_int(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise BuildError(f"{label} must be a non-negative integer, got {value!r}")
+    return value
+
+
+def validate_lock_artifact_sizes(declaration: dict, limits: Limits) -> None:
+    """Reject inconsistent or out-of-bounds size declarations in toolchain lock entries."""
+    path = str(declaration.get("path", "<unknown>"))
+    for key in (
+        "expected_bytes",
+        "byte_size",
+        "min_bytes",
+        "max_bytes",
+        "expected_decompressed_bytes",
+        "max_decompressed_bytes",
+    ):
+        if key in declaration and declaration[key] is not None:
+            val = _require_non_negative_int(declaration[key], f"artifact {path}.{key}")
+            if val > limits.max_artifact_bytes:
+                raise BuildError(
+                    f"artifact {path}: {key} ({val}) exceeds max_artifact_bytes "
+                    f"({limits.max_artifact_bytes})"
+                )
+
+    expected_bytes = declaration.get("expected_bytes")
+    byte_size = declaration.get("byte_size")
+    if expected_bytes is not None and byte_size is not None and expected_bytes != byte_size:
+        raise BuildError(
+            f"artifact {path}: inconsistent size declaration expected_bytes ({expected_bytes}) "
+            f"!= byte_size ({byte_size})"
+        )
+
+    pinned = expected_bytes if expected_bytes is not None else byte_size
+    min_bytes = declaration.get("min_bytes")
+    max_bytes = declaration.get("max_bytes")
+    if min_bytes is not None and max_bytes is not None and min_bytes > max_bytes:
+        raise BuildError(
+            f"artifact {path}: inconsistent size bounds min_bytes ({min_bytes}) "
+            f"> max_bytes ({max_bytes})"
+        )
+    if pinned is not None and min_bytes is not None and pinned < min_bytes:
+        raise BuildError(
+            f"artifact {path}: inconsistent size declaration ({pinned}) < min_bytes ({min_bytes})"
+        )
+    if pinned is not None and max_bytes is not None and pinned > max_bytes:
+        raise BuildError(
+            f"artifact {path}: inconsistent size declaration ({pinned}) > max_bytes ({max_bytes})"
+        )
+
+    exp_dec = declaration.get("expected_decompressed_bytes")
+    max_dec = declaration.get("max_decompressed_bytes")
+    if exp_dec is not None and max_dec is not None and exp_dec > max_dec:
+        raise BuildError(
+            f"artifact {path}: inconsistent decompressed size declaration "
+            f"expected_decompressed_bytes ({exp_dec}) > max_decompressed_bytes ({max_dec})"
+        )
+
+
 def load_lock(path: Path) -> Lock:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -158,8 +229,13 @@ def load_lock(path: Path) -> Lock:
         raise BuildError(f"unsupported toolchain lock version: {raw.get('version')!r}")
 
     limits_raw = raw["limits"]
+    max_artifact_bytes = _require_non_negative_int(
+        limits_raw["max_artifact_bytes"], "limits.max_artifact_bytes"
+    )
+    if max_artifact_bytes == 0:
+        raise BuildError("limits.max_artifact_bytes must be greater than zero")
     limits = Limits(
-        max_artifact_bytes=int(limits_raw["max_artifact_bytes"]),
+        max_artifact_bytes=max_artifact_bytes,
         max_artifacts=int(limits_raw["max_artifacts"]),
         max_provenance_files=int(limits_raw["max_provenance_files"]),
         max_circuits=int(limits_raw["max_circuits"]),
@@ -170,6 +246,8 @@ def load_lock(path: Path) -> Lock:
         raise BuildError(
             f"lock declares {len(artifacts)} artifacts, above the cap of {limits.max_artifacts}"
         )
+    for declaration in artifacts:
+        validate_lock_artifact_sizes(declaration, limits)
 
     coverage = raw.get("coverage") or {}
     circuit_root = str(coverage.get("circuit_root", DEFAULT_CIRCUIT_ROOT))
@@ -311,11 +389,12 @@ class ArtifactResult:
     state: str
     raw_bytes: int | None = None
     normalized_bytes: int | None = None
+    decompressed_bytes: int | None = None
     raw_sha256: str | None = None
     normalized_sha256: str | None = None
 
     def to_entry(self) -> dict:
-        return {
+        entry = {
             "path": self.path,
             "kind": self.kind,
             "role": self.role,
@@ -324,13 +403,68 @@ class ArtifactResult:
             "raw_sha256": self.raw_sha256,
             "normalized_sha256": self.normalized_sha256,
         }
+        if self.decompressed_bytes is not None:
+            entry["decompressed_bytes"] = self.decompressed_bytes
+        return entry
 
 
-def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult:
+class _DecompressedSizeAbort(Exception):
+    def __init__(self, state: str, observed_bytes: int, limit: int) -> None:
+        super().__init__(state)
+        self.state = state
+        self.observed_bytes = observed_bytes
+        self.limit = limit
+
+
+def decompress_gzip_bounded(
+    compressed: bytes,
+    *,
+    max_bytes: int,
+    expected_bytes: int | None = None,
+    path: str = "<artifact>",
+) -> bytes:
+    """Stream-decompress a gzip payload while enforcing byte bounds before full buffering."""
+    hard_cap = max_bytes
+    if expected_bytes is not None and expected_bytes < hard_cap:
+        hard_cap = expected_bytes
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as stream:
+            while True:
+                remaining = (hard_cap - total) + 1
+                chunk = stream.read(min(GZIP_STREAM_CHUNK_BYTES, max(1, remaining)))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise _DecompressedSizeAbort(ArtifactState.OVERSIZE, total, max_bytes)
+                if expected_bytes is not None and total > expected_bytes:
+                    raise _DecompressedSizeAbort(
+                        ArtifactState.SIZE_MISMATCH, total, expected_bytes
+                    )
+                chunks.append(chunk)
+    except (OSError, EOFError) as exc:
+        raise BuildError(f"artifact {path}: invalid gzip stream") from exc
+
+    if expected_bytes is not None and total != expected_bytes:
+        raise _DecompressedSizeAbort(ArtifactState.SIZE_MISMATCH, total, expected_bytes)
+
+    return b"".join(chunks)
+
+
+def digest_artifact(
+    declaration: dict,
+    lock: Lock,
+    root: Path,
+    expected_entry: dict | None = None,
+) -> ArtifactResult:
     relative = declaration["path"]
     kind = declaration["kind"]
     role = declaration.get("role", "unknown")
     required = bool(declaration.get("required", False))
+    is_gzip = bool(declaration.get("compression") == "gzip" or str(relative).endswith(".gz"))
     target = root / relative
 
     result = ArtifactResult(path=relative, kind=kind, role=role, state=ArtifactState.MISSING)
@@ -341,7 +475,13 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
         return result
 
     size = target.stat().st_size
-    if size > lock.limits.max_artifact_bytes:
+    declared_max = declaration.get("max_bytes")
+    effective_max = (
+        min(lock.limits.max_artifact_bytes, declared_max)
+        if declared_max is not None
+        else lock.limits.max_artifact_bytes
+    )
+    if size > effective_max:
         result.state = ArtifactState.OVERSIZE
         result.raw_bytes = size
         signal(
@@ -349,9 +489,57 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
             path=relative,
             state=result.state,
             bytes=size,
-            limit=lock.limits.max_artifact_bytes,
+            limit=effective_max,
         )
         return result
+
+    declared_min = declaration.get("min_bytes")
+    if declared_min is not None and size < declared_min:
+        result.state = ArtifactState.SIZE_MISMATCH
+        result.raw_bytes = size
+        signal(
+            "artifact.state",
+            path=relative,
+            state=result.state,
+            bytes=size,
+            min_bytes=declared_min,
+        )
+        return result
+
+    pinned_size = (
+        declaration.get("expected_bytes")
+        if declaration.get("expected_bytes") is not None
+        else declaration.get("byte_size")
+    )
+    if pinned_size is not None and size != pinned_size:
+        result.state = ArtifactState.SIZE_MISMATCH
+        result.raw_bytes = size
+        signal(
+            "artifact.state",
+            path=relative,
+            state=result.state,
+            bytes=size,
+            expected_bytes=pinned_size,
+        )
+        return result
+
+    if expected_entry is not None:
+        expected_raw_bytes = expected_entry.get("raw_bytes")
+        if (
+            expected_raw_bytes is not None
+            and (kind == "binary" or is_gzip)
+            and size != expected_raw_bytes
+        ):
+            result.state = ArtifactState.DRIFTED
+            result.raw_bytes = size
+            signal(
+                "artifact.state",
+                path=relative,
+                state=result.state,
+                bytes=size,
+                expected_bytes=expected_raw_bytes,
+            )
+            return result
 
     try:
         data = target.read_bytes()
@@ -360,7 +548,41 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
         signal("artifact.state", path=relative, state=result.state)
         return result
 
-    normalized = normalize(data, kind, lock)
+    payload = data
+    if is_gzip:
+        max_decompressed = declaration.get(
+            "max_decompressed_bytes", lock.limits.max_artifact_bytes
+        )
+        expected_decompressed = declaration.get("expected_decompressed_bytes")
+        if expected_decompressed is None and expected_entry is not None:
+            expected_decompressed = expected_entry.get("decompressed_bytes")
+        try:
+            payload = decompress_gzip_bounded(
+                data,
+                max_bytes=max_decompressed,
+                expected_bytes=expected_decompressed,
+                path=relative,
+            )
+        except _DecompressedSizeAbort as abort:
+            result.state = (
+                ArtifactState.DRIFTED
+                if expected_entry is not None and abort.state == ArtifactState.SIZE_MISMATCH
+                else abort.state
+            )
+            result.raw_bytes = len(data)
+            result.decompressed_bytes = abort.observed_bytes
+            signal(
+                "artifact.state",
+                path=relative,
+                state=result.state,
+                bytes=result.raw_bytes,
+                decompressed_bytes=abort.observed_bytes,
+                limit=abort.limit,
+            )
+            return result
+        result.decompressed_bytes = len(payload)
+
+    normalized = normalize(payload, kind, lock)
 
     result.state = ArtifactState.DIGESTED
     result.raw_bytes = len(data)
@@ -416,12 +638,175 @@ class ManifestRun:
     def missing_required(self) -> list[ArtifactResult]:
         return [entry for entry in self.entries if entry.state == ArtifactState.MISSING]
 
+    @property
+    def drifted(self) -> list[ArtifactResult]:
+        return [entry for entry in self.entries if entry.state == ArtifactState.DRIFTED]
 
-def build_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
+
+def validate_manifest_sizes(manifest: dict, lock: Lock | None = None) -> None:
+    """Validate artifact byte-size declarations in a manifest and reject inconsistencies."""
+    raw_artifacts = manifest.get("artifacts", [])
+    if not isinstance(raw_artifacts, list):
+        raise BuildError("manifest.artifacts must be a list")
+
+    lock_by_path = {entry["path"]: entry for entry in lock.artifacts} if lock is not None else {}
+
+    for entry in raw_artifacts:
+        if not isinstance(entry, dict):
+            raise BuildError("manifest artifact entry must be an object")
+        path = str(entry.get("path", "<unknown>"))
+        raw_bytes = _require_non_negative_int(
+            entry.get("raw_bytes"), f"artifact {path}.raw_bytes"
+        )
+        normalized_bytes = _require_non_negative_int(
+            entry.get("normalized_bytes"), f"artifact {path}.normalized_bytes"
+        )
+
+        if "byte_size" in entry and entry["byte_size"] is not None:
+            byte_size = _require_non_negative_int(
+                entry["byte_size"], f"artifact {path}.byte_size"
+            )
+            if byte_size != raw_bytes:
+                raise BuildError(
+                    f"artifact {path}: inconsistent size declaration byte_size ({byte_size}) "
+                    f"!= raw_bytes ({raw_bytes})"
+                )
+
+        decompressed_bytes: int | None = None
+        if "decompressed_bytes" in entry and entry["decompressed_bytes"] is not None:
+            decompressed_bytes = _require_non_negative_int(
+                entry["decompressed_bytes"], f"artifact {path}.decompressed_bytes"
+            )
+
+        kind = entry.get("kind")
+        is_gzip = bool(decompressed_bytes is not None or path.endswith(".gz"))
+        if kind == "binary" and not is_gzip and normalized_bytes != raw_bytes:
+            raise BuildError(
+                f"artifact {path}: inconsistent binary size declaration "
+                f"normalized_bytes ({normalized_bytes}) != raw_bytes ({raw_bytes})"
+            )
+        if (
+            kind == "wasm"
+            and not is_gzip
+            and (normalized_bytes > raw_bytes or (raw_bytes > 0 and normalized_bytes < 8))
+        ):
+            raise BuildError(
+                f"artifact {path}: inconsistent wasm size declaration "
+                f"normalized_bytes ({normalized_bytes}) for raw_bytes ({raw_bytes})"
+            )
+        if (
+            kind == "binary"
+            and is_gzip
+            and decompressed_bytes is not None
+            and normalized_bytes != decompressed_bytes
+        ):
+            raise BuildError(
+                f"artifact {path}: inconsistent compressed binary size declaration "
+                f"normalized_bytes ({normalized_bytes}) != decompressed_bytes ({decompressed_bytes})"
+            )
+
+        raw_sha = entry.get("raw_sha256")
+        if isinstance(raw_sha, str) and ((raw_bytes == 0) != (raw_sha == EMPTY_SHA256)):
+            raise BuildError(
+                f"artifact {path}: inconsistent size declaration raw_bytes ({raw_bytes}) "
+                "conflicts with raw_sha256"
+            )
+        norm_sha = entry.get("normalized_sha256")
+        if isinstance(norm_sha, str) and (
+            (normalized_bytes == 0) != (norm_sha == EMPTY_SHA256)
+        ):
+            raise BuildError(
+                f"artifact {path}: inconsistent size declaration "
+                f"normalized_bytes ({normalized_bytes}) conflicts with normalized_sha256"
+            )
+
+        if lock is not None:
+            limit = lock.limits.max_artifact_bytes
+            for label, val in (
+                ("raw_bytes", raw_bytes),
+                ("normalized_bytes", normalized_bytes),
+            ):
+                if val > limit:
+                    raise BuildError(
+                        f"artifact {path}: declared {label} ({val}) exceeds "
+                        f"max_artifact_bytes ({limit})"
+                    )
+            if decompressed_bytes is not None and decompressed_bytes > limit:
+                raise BuildError(
+                    f"artifact {path}: declared decompressed_bytes ({decompressed_bytes}) "
+                    f"exceeds max_artifact_bytes ({limit})"
+                )
+            decl = lock_by_path.get(path)
+            if decl is not None:
+                min_b = decl.get("min_bytes")
+                max_b = decl.get("max_bytes")
+                exp_b = (
+                    decl.get("expected_bytes")
+                    if decl.get("expected_bytes") is not None
+                    else decl.get("byte_size")
+                )
+                if min_b is not None and raw_bytes < min_b:
+                    raise BuildError(
+                        f"artifact {path}: declared raw_bytes ({raw_bytes}) < lock min_bytes ({min_b})"
+                    )
+                if max_b is not None and raw_bytes > max_b:
+                    raise BuildError(
+                        f"artifact {path}: declared raw_bytes ({raw_bytes}) > lock max_bytes ({max_b})"
+                    )
+                if exp_b is not None and raw_bytes != exp_b:
+                    raise BuildError(
+                        f"artifact {path}: declared raw_bytes ({raw_bytes}) != lock expected_bytes ({exp_b})"
+                    )
+
+    if "total_raw_bytes" in manifest and manifest["total_raw_bytes"] is not None:
+        total_raw = _require_non_negative_int(
+            manifest["total_raw_bytes"], "manifest.total_raw_bytes"
+        )
+        computed_raw = sum(entry["raw_bytes"] for entry in raw_artifacts)
+        if total_raw != computed_raw:
+            raise BuildError(
+                f"inconsistent manifest.total_raw_bytes ({total_raw}) != "
+                f"sum of artifact raw_bytes ({computed_raw})"
+            )
+
+    if "total_normalized_bytes" in manifest and manifest["total_normalized_bytes"] is not None:
+        total_norm = _require_non_negative_int(
+            manifest["total_normalized_bytes"], "manifest.total_normalized_bytes"
+        )
+        computed_norm = sum(entry["normalized_bytes"] for entry in raw_artifacts)
+        if total_norm != computed_norm:
+            raise BuildError(
+                f"inconsistent manifest.total_normalized_bytes ({total_norm}) != "
+                f"sum of artifact normalized_bytes ({computed_norm})"
+            )
+
+
+def build_manifest(
+    lock: Lock,
+    root: Path,
+    expected: dict | None = None,
+) -> tuple[dict, ManifestRun]:
     run = ManifestRun()
+    expected_by_path = (
+        {entry["path"]: entry for entry in expected.get("artifacts", [])}
+        if expected is not None
+        else {}
+    )
     for declaration in lock.artifacts:
-        run.entries.append(digest_artifact(declaration, lock, root))
+        run.entries.append(
+            digest_artifact(
+                declaration,
+                lock,
+                root,
+                expected_entry=expected_by_path.get(declaration["path"]),
+            )
+        )
 
+    digested = [
+        entry.to_entry()
+        for entry in run.entries
+        if entry.state == ArtifactState.DIGESTED
+    ]
     manifest = {
         "format": MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
@@ -438,11 +823,9 @@ def build_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
             )
         ),
         "provenance": collect_provenance(lock, root),
-        "artifacts": [
-            entry.to_entry()
-            for entry in run.entries
-            if entry.state == ArtifactState.DIGESTED
-        ],
+        "artifacts": digested,
+        "total_raw_bytes": sum(entry["raw_bytes"] for entry in digested),
+        "total_normalized_bytes": sum(entry["normalized_bytes"] for entry in digested),
         "skipped": [
             entry.path
             for entry in run.entries
@@ -468,6 +851,9 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
     digests, never as a content diff — dumping artifact bytes into CI logs is
     exactly the leak this pipeline exists to prevent.
     """
+    validate_manifest_sizes(expected)
+    validate_manifest_sizes(actual)
+
     findings: list[str] = []
 
     for key in ("format", "version"):
@@ -518,10 +904,20 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
                 f"{_short(before.get('normalized_sha256'))} -> "
                 f"{_short(after.get('normalized_sha256'))}"
             )
+        elif before.get("normalized_bytes") != after.get("normalized_bytes"):
+            findings.append(
+                f"artifact {path}: normalized byte size "
+                f"{before.get('normalized_bytes')} -> {after.get('normalized_bytes')}"
+            )
         elif before.get("raw_sha256") != after.get("raw_sha256"):
             findings.append(
                 f"artifact {path}: raw bytes differ but normalize to the same digest "
                 "(host metadata only; not a semantic change)"
+            )
+        elif before.get("raw_bytes") != after.get("raw_bytes"):
+            findings.append(
+                f"artifact {path}: raw byte size "
+                f"{before.get('raw_bytes')} -> {after.get('raw_bytes')}"
             )
 
     return findings
@@ -642,11 +1038,11 @@ def compare_provenance(expected: dict, actual: dict) -> list[str]:
                 f"declared artifact {path}: missing from lock-declared artifact set"
             )
             continue
-        for field in ("kind", "role", "required"):
-            if before.get(field) != after.get(field):
+        for attr_name in ("kind", "role", "required"):
+            if before.get(attr_name) != after.get(attr_name):
                 findings.append(
-                    f"declared artifact {path}.{field}: "
-                    f"expected {before.get(field)!r}, got {after.get(field)!r}"
+                    f"declared artifact {path}.{attr_name}: "
+                    f"expected {before.get(attr_name)!r}, got {after.get(attr_name)!r}"
                 )
 
     return findings
@@ -730,12 +1126,21 @@ def published_to_build_target(published_path: str) -> str:
     return f"zk/noir/{stem}/target/{stem}.json"
 
 
-def build_browser_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
+def build_browser_manifest(
+    lock: Lock,
+    root: Path,
+    expected: dict | None = None,
+) -> tuple[dict, ManifestRun]:
     """Digest only ``published_acir`` entries for the browser trust boundary."""
     declarations = published_acir_declarations(lock)
     if not declarations:
         raise BuildError("toolchain lock declares no published_acir browser artifacts")
 
+    expected_by_path = (
+        {entry["path"]: entry for entry in expected.get("artifacts", [])}
+        if expected is not None
+        else {}
+    )
     run = ManifestRun()
     for declaration in declarations:
         # Browser publishes are optional in the general lock (required:false) so
@@ -744,13 +1149,20 @@ def build_browser_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
         # decides which digests must be present.
         softened = dict(declaration)
         softened["required"] = False
-        run.entries.append(digest_artifact(softened, lock, root))
+        run.entries.append(
+            digest_artifact(
+                softened,
+                lock,
+                root,
+                expected_entry=expected_by_path.get(declaration["path"]),
+            )
+        )
 
-    for entry in run.fatal:
-        # Oversized / unreadable published ACIR is always fatal: the browser
-        # trust boundary must not silently skip a corrupted public bundle.
-        pass
-
+    digested = [
+        entry.to_entry()
+        for entry in run.entries
+        if entry.state == ArtifactState.DIGESTED
+    ]
     manifest = {
         "format": BROWSER_MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
@@ -765,11 +1177,9 @@ def build_browser_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
                 "utf-8"
             )
         ),
-        "artifacts": [
-            entry.to_entry()
-            for entry in run.entries
-            if entry.state == ArtifactState.DIGESTED
-        ],
+        "artifacts": digested,
+        "total_raw_bytes": sum(entry["raw_bytes"] for entry in digested),
+        "total_normalized_bytes": sum(entry["normalized_bytes"] for entry in digested),
         "skipped": [
             entry.path
             for entry in run.entries
@@ -836,7 +1246,7 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
     return findings
 
 
-def _load_browser_manifest(path: Path) -> dict:
+def _load_browser_manifest(path: Path, lock: Lock | None = None) -> dict:
     if not path.is_file():
         raise BuildError(f"browser manifest not found: {_rel(path)}")
     try:
@@ -849,11 +1259,15 @@ def _load_browser_manifest(path: Path) -> dict:
         raise BuildError(
             f"unsupported browser manifest version: {manifest.get('version')!r}"
         )
+    validate_manifest_sizes(manifest, lock=lock)
     return manifest
 
 
 def compare_browser_manifests(expected: dict, actual: dict) -> list[str]:
     """Diff two browser manifests. Digests and paths only; no content."""
+    validate_manifest_sizes(expected)
+    validate_manifest_sizes(actual)
+
     findings: list[str] = []
 
     for key in ("format", "version"):
@@ -900,12 +1314,46 @@ def compare_browser_manifests(expected: dict, actual: dict) -> list[str]:
                 f"{_short(before.get('normalized_sha256'))} -> "
                 f"{_short(after.get('normalized_sha256'))}"
             )
+        elif before.get("normalized_bytes") != after.get("normalized_bytes"):
+            findings.append(
+                f"browser artifact {path}: normalized byte size "
+                f"{before.get('normalized_bytes')} -> {after.get('normalized_bytes')}"
+            )
         elif before.get("raw_sha256") != after.get("raw_sha256"):
             findings.append(
                 f"browser artifact {path}: raw bytes differ but normalize to the same digest "
                 "(host metadata only; not a semantic change)"
             )
+        elif before.get("raw_bytes") != after.get("raw_bytes"):
+            findings.append(
+                f"browser artifact {path}: raw byte size "
+                f"{before.get('raw_bytes')} -> {after.get('raw_bytes')}"
+            )
 
+    return findings
+
+
+def _prehash_size_drift_findings(
+    drifted: list[ArtifactResult],
+    expected: dict,
+    prefix: str = "artifact",
+) -> list[str]:
+    expected_by_path = {
+        entry["path"]: entry for entry in expected.get("artifacts", [])
+    }
+    findings: list[str] = []
+    for entry in sorted(drifted, key=lambda item: item.path):
+        exp = expected_by_path.get(entry.path, {})
+        if entry.decompressed_bytes is not None and exp.get("decompressed_bytes") is not None:
+            findings.append(
+                f"{prefix} {entry.path}: decompressed byte size {entry.decompressed_bytes} "
+                f"!= expected {exp.get('decompressed_bytes')} (rejected before hashing)"
+            )
+        else:
+            findings.append(
+                f"{prefix} {entry.path}: raw byte size {entry.raw_bytes} "
+                f"!= expected {exp.get('raw_bytes')} (rejected before hashing)"
+            )
     return findings
 
 
@@ -945,8 +1393,8 @@ def command_verify_browser(args: argparse.Namespace) -> int:
     than the one the reproducible-build pipeline produced.
     """
     lock = load_lock(Path(args.lock))
-    expected = _load_browser_manifest(Path(args.manifest))
-    actual, run = build_browser_manifest(lock, REPO_ROOT)
+    expected = _load_browser_manifest(Path(args.manifest), lock=lock)
+    actual, run = build_browser_manifest(lock, REPO_ROOT, expected=expected)
     if run.fatal:
         for entry in run.fatal:
             signal("run.fatal", path=entry.path, state=entry.state)
@@ -954,7 +1402,24 @@ def command_verify_browser(args: argparse.Namespace) -> int:
             f"{len(run.fatal)} browser artifact(s) in a fatal state; verify aborted"
         )
 
-    findings = compare_browser_manifests(expected, actual)
+    drifted_paths = {entry.path for entry in run.drifted}
+    filtered_expected = {
+        **expected,
+        "artifacts": [
+            entry
+            for entry in expected.get("artifacts", [])
+            if entry.get("path") not in drifted_paths
+        ],
+    }
+    if "total_raw_bytes" in filtered_expected:
+        filtered_expected.pop("total_raw_bytes")
+    if "total_normalized_bytes" in filtered_expected:
+        filtered_expected.pop("total_normalized_bytes")
+
+    findings = _prehash_size_drift_findings(
+        run.drifted, expected, prefix="browser artifact"
+    )
+    findings.extend(compare_browser_manifests(filtered_expected, actual))
     findings.extend(compare_published_to_targets(lock, REPO_ROOT))
 
     if findings:
@@ -1118,11 +1583,26 @@ def command_write(args: argparse.Namespace) -> int:
 
 def command_verify(args: argparse.Namespace) -> int:
     lock = load_lock(Path(args.lock))
-    expected = _load_manifest(Path(args.manifest))
-    actual, run = build_manifest(lock, REPO_ROOT)
+    expected = _load_manifest(Path(args.manifest), lock=lock)
+    actual, run = build_manifest(lock, REPO_ROOT, expected=expected)
     _fail_on_fatal(run)
 
-    findings = compare_manifests(expected, actual)
+    drifted_paths = {entry.path for entry in run.drifted}
+    filtered_expected = {
+        **expected,
+        "artifacts": [
+            entry
+            for entry in expected.get("artifacts", [])
+            if entry.get("path") not in drifted_paths
+        ],
+    }
+    if "total_raw_bytes" in filtered_expected:
+        filtered_expected.pop("total_raw_bytes")
+    if "total_normalized_bytes" in filtered_expected:
+        filtered_expected.pop("total_normalized_bytes")
+
+    findings = _prehash_size_drift_findings(run.drifted, expected)
+    findings.extend(compare_manifests(filtered_expected, actual))
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
@@ -1133,7 +1613,7 @@ def command_verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _load_manifest(path: Path) -> dict:
+def _load_manifest(path: Path, lock: Lock | None = None) -> dict:
     if not path.is_file():
         raise BuildError(f"manifest not found: {_rel(path)}")
     try:
@@ -1142,12 +1622,14 @@ def _load_manifest(path: Path) -> dict:
         raise BuildError(f"manifest is not valid JSON: {_rel(path)}") from exc
     if manifest.get("format") != MANIFEST_FORMAT:
         raise BuildError(f"not an artifact manifest: {_rel(path)}")
+    validate_manifest_sizes(manifest, lock=lock)
     return manifest
 
 
 def command_compare(args: argparse.Namespace) -> int:
-    first = _load_manifest(Path(args.first))
-    second = _load_manifest(Path(args.second))
+    lock = load_lock(Path(args.lock)) if args.lock and Path(args.lock).is_file() else None
+    first = _load_manifest(Path(args.first), lock=lock)
+    second = _load_manifest(Path(args.second), lock=lock)
 
     findings = compare_manifests(first, second)
     if findings:
