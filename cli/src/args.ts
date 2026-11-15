@@ -8,6 +8,8 @@ export type Command =
   | 'verify-receipt'
   | 'c2pa'
   | 'verify-lineage'
+  | 'compare-policies'
+  | 'version'
   | 'help'
 
 export interface ParsedArgs {
@@ -111,6 +113,19 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  'compare-policies': {
+    bundle: alias('b'),
+    'policy-a': alias('a'),
+    policyA: text,
+    'policy-b': alias('p'),
+    policyB: text,
+    at: text,
+    output: alias('o'),
+    debug: toggle,
+  },
+  version: {
+    debug: toggle,
+  },
 }
 
 // Environment variable defaults for flags that are otherwise required on every call.
@@ -170,6 +185,9 @@ function describeUsageError(command: string, err: unknown): string {
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv
+  if (command === '--version' || command === '-v') {
+    return { command: 'version', flags: {} }
+  }
   if (command === undefined || !Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, command)) {
     return { command: 'help', flags: {} }
   }

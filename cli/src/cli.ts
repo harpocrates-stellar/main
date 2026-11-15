@@ -35,13 +35,20 @@ import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { createRequire } from 'node:module'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
-import { handleRegister } from './register.js'
 import { DEFAULT_NETWORK_PASSPHRASE, resolveNetwork } from './network.js'
+import {
+  compareTrustPolicies,
+  formatPolicyComparisonReport,
+} from './compare-policies.js'
 
 function getCliVersion(): string {
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '1.0.0'
+  } catch {
+    return '1.0.0'
+  }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
@@ -116,8 +123,11 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       return await handleC2pa(flags, debugLog)
     case 'verify-lineage':
       return await handleVerifyLineage(flags, debugLog)
-    case 'register':
-      return await handleRegister(flags, debugLog)
+    case 'compare-policies':
+      return await handleComparePolicies(flags, debugLog)
+    case 'version':
+      printText(getCliVersion())
+      return
     case 'help':
       return printHelp()
     default:
@@ -585,6 +595,59 @@ export async function handleStatus(
   exit(STATUS_EXIT_CODES[status] ?? 8)
 }
 
+async function handleComparePolicies(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const bundlePath = flags.bundle || flags.b
+  const policyAPath = flags['policy-a'] || flags.policyA || flags.a
+  const policyBPath = flags['policy-b'] || flags.policyB || flags.p
+  const atRaw = flags.at
+  const outputFormat = flags.output || flags.o || 'text'
+
+  if (!bundlePath) exit(2, '--bundle is required for trust-policy comparison')
+  if (!policyAPath) exit(2, '--policy-a is required for trust-policy comparison')
+  if (!policyBPath) exit(2, '--policy-b is required for trust-policy comparison')
+  if (outputFormat !== 'text' && outputFormat !== 'json') {
+    exit(2, 'invalid --output: expected "text" or "json"')
+  }
+  if ([bundlePath, policyAPath, policyBPath].filter((p) => p === '-').length > 1) {
+    exit(2, 'cannot read multiple inputs from stdin')
+  }
+
+  let now: Date | undefined
+  if (atRaw !== undefined) {
+    const parsedTime = Date.parse(atRaw)
+    if (Number.isNaN(parsedTime)) {
+      exit(2, 'invalid --at: expected an ISO-8601 timestamp')
+    }
+    now = new Date(parsedTime)
+  }
+
+  let report: Awaited<ReturnType<typeof compareTrustPolicies>>
+  try {
+    const rawBundle = await readText(bundlePath)
+    const rawPolicyA = await readText(policyAPath)
+    const rawPolicyB = await readText(policyBPath)
+    report = await compareTrustPolicies(rawBundle, rawPolicyA, rawPolicyB, now ? { now } : {})
+  } catch {
+    exit(8, 'invalid or unreadable bundle or policy')
+  }
+
+  debugLog({
+    event: 'compare-policies.report',
+    report: redactSensitive(report),
+  })
+
+  if (outputFormat === 'json') {
+    printJson(report)
+  } else {
+    printText(formatPolicyComparisonReport(report))
+  }
+
+  exit(report.identicalDecisions ? 0 : 1)
+}
+
 export function helpText(): string {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -597,6 +660,7 @@ Commands:
   verify         Verify a proof against the Stellar network.
   status         Report the on-chain lifecycle status of a proof by proof ID.
   verify-lineage Verify a derivative's full lineage back to registered originals.
+  compare-policies Compare two trust-policy files against a saved verification bundle (read-only).
   register       Register a source or seal proof using a local signing key.
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
@@ -635,6 +699,14 @@ Lineage verification options:
   --source-address Source address for simulation.
   --network        Network: testnet, mainnet/public, futurenet, or a full passphrase (default: testnet).
   --output, -o     Output format: "text" (default) or "json".
+
+Compare Policies options:
+  --bundle, -b      Path to saved verification bundle JSON (use "-" for stdin; required).
+  --policy-a, -a    Path to baseline trust-policy JSON file (required).
+  --policy-b, -p    Path to candidate trust-policy JSON file (required).
+  --at              Optional ISO-8601 evaluation timestamp for maxReceiptAgeSeconds checks.
+  --output, -o      Output format: "text" (default) or "json".
+  Read-only offline evaluation: never mutates either policy or bundle file. Exits 0 when all decisions match, 1 when any trust decision changes.
 
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).

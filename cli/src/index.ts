@@ -79,3 +79,19 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  parseTrustPolicy,
+  validateTrustPolicyObject,
+  compareTrustPolicies,
+  formatPolicyComparisonReport,
+  POLICY_COMPARISON_PROTOCOL,
+  POLICY_COMPARISON_VERSION,
+} from './compare-policies.js'
+export type {
+  TrustPolicy,
+  PolicyDecisionOutcome,
+  PolicyEvaluationDecision,
+  EvidencePolicyComparisonItem,
+  PolicyComparisonReport,
+  ComparePoliciesOptions,
+} from './compare-policies.js'

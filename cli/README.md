@@ -46,6 +46,19 @@ To verify a signed verification receipt offline without hitting the RPC:
 node dist/cli.js verify-receipt --receipt receipt.json --keys trusted_keys.json
 ```
 
+To evaluate two trust-policy files against identical saved verification bundle evidence without modifying either policy or making live network calls:
+
+```sh
+node dist/cli.js compare-policies \
+  --bundle bundle.json \
+  --policy-a baseline-policy.json \
+  --policy-b candidate-policy.json \
+  [--at 2026-08-01T12:00:00.000Z] \
+  --output json
+```
+
+`compare-policies` evaluates both version-1 trust policies (`allowedNetworks`, `allowedContractIds`, `allowedTiers`, `minimumTier`, `allowedVerifierScopes`, `requireOnChainConfirmation`, `requireSignedReceipt`, `trustedKeys`, `keyValidity`, `maxReceiptAgeSeconds`, `requireLineageVerified`) against the exact same evidence and reports `changedDecisions` (`newly_trusted`, `newly_rejected`, `outcome_changed`). Identical trust decisions exit `0`; changed trust decisions exit `1`; missing flags exit `2`; malformed, oversized, or secret/private-key-bearing inputs exit `8` with clean stdout.
+
 To export C2PA authenticity assertions from a proof manifest (with an optional
 verification receipt) for signing by your own C2PA tooling and key material:
 
@@ -78,15 +91,15 @@ Script authors and CI integrations can rely on the following exit codes to deter
 
 | Code | Meaning | Emitted by |
 | :--- | :--- | :--- |
-| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
-| `1` | `expired` | `verify`, `status`, `verify-lineage` |
-| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `0` | `valid` / `registered` / `identical_decisions` / success | `verify`, `status`, `verify-receipt`, `verify-lineage`, `compare-policies` |
+| `1` | `expired` / `decisions_changed` | `verify`, `status`, `verify-lineage`, `compare-policies` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa`, `compare-policies` |
 | `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
 | `4` | `network_mismatch` | `verify` |
 | `5` | `contract_mismatch` | `verify` |
 | `6` | `pending` (offline verification) | `verify` |
 | `7` | `failed` transaction | `verify` |
-| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage`, `compare-policies` |
 
 An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
 

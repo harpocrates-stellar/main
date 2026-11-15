@@ -59,7 +59,7 @@ export function asHex32(value: string, label = 'value'): string {
  * Returns the normalised string or throws.
  */
 export function asHexBytes(value: string, label = 'value'): string {
-  if (!/^[0-9a-fA-F]{64}$/.test(value) || value.length % 2 !== 0) {
+  if (!/^[0-9a-fA-F]*$/.test(value) || value.length % 2 !== 0) {
     throw new Error(`${label} must be an even-length hex byte string`)
   }
   return value.toLowerCase()
