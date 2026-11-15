@@ -342,6 +342,23 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Deterministic Registration Race Fixtures
+
+`registration_reconcile.py` and `idempotency.py` expose deterministic in-memory
+harnesses (`InMemoryIdempotencyStore`, `SimulatedRegistrationDb`,
+`SimulatedChainObserver`, and `run_registration_race_suite()`) for testing
+proof-registration races across database idempotency and Stellar Horizon
+observations without live transactions or network I/O:
+
+- **Duplicate submission**: models concurrent HTTP retries, semantic DB upserts,
+  and tier/field conflict rejection (`ConflictError`) while ensuring at most one
+  authoritative `confirmed` record is produced.
+- **Delayed indexing**: models post-submission Horizon indexer lag, transient
+  dependency errors, and confirmation-depth progression (`minConfirmations`)
+  before committing a terminal state.
+- **Replaced workers**: fences stale API and reconciliation worker generations
+  so a late-reporting worker cannot clobber a newer worker's confirmed state.
+
 ## Test
 
 ```powershell

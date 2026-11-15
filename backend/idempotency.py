@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import threading
 from typing import Any, Optional, Tuple
 
 from flask import Response, jsonify, request
@@ -120,14 +121,167 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+def compute_canonical_request_digest(
+    method: str | bytes,
+    path: str | bytes,
+    query_string: bytes = b"",
+    body: bytes = b"",
+) -> str:
+    """Compute canonical SHA-256 request identity without requiring a Flask context."""
+    method_bytes = method.encode("utf-8") if isinstance(method, str) else method
+    path_bytes = path.encode("utf-8") if isinstance(path, str) else path
+    data = b"|".join([method_bytes, path_bytes, query_string or b"", body or b""])
+    return hashlib.sha256(data).hexdigest()
+
+
 def _canonical_digest() -> str:
     """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
-    method = request.method.encode()
-    path = request.path.encode()
-    query = request.query_string  # already bytes
-    body = request.get_data() or b""
-    data = b"|".join([method, path, query, body])
-    return hashlib.sha256(data).hexdigest()
+    return compute_canonical_request_digest(
+        request.method,
+        request.path,
+        request.query_string,
+        request.get_data() or b"",
+    )
+
+
+class InMemoryIdempotencyStore:
+    """Deterministic, thread-safe in-memory idempotency store for race simulation.
+
+    Models ``idempotency_records`` contention (duplicate submission, in-flight
+    ``PENDING`` collision, and worker replacement fencing) without requiring a
+    live PostgreSQL connection or external network calls.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_id = 1
+        self._records_by_id: dict[int, dict[str, Any]] = {}
+        self._index: dict[tuple[str, str], int] = {}
+
+    def acquire(
+        self,
+        request_digest: str,
+        request_type: str,
+        *,
+        worker_id: str | None = None,
+        expires_at: Optional[datetime.datetime] = None,
+    ) -> tuple[int, str, bool, int]:
+        """Atomically insert or inspect an idempotency record.
+
+        Returns ``(record_id, status, acquired, generation)``.
+        """
+        if expires_at is None:
+            expires_at = _default_expiry()
+        key = (request_digest, request_type)
+        with self._lock:
+            existing_id = self._index.get(key)
+            if existing_id is not None:
+                existing = self._records_by_id[existing_id]
+                return (
+                    int(existing["id"]),
+                    str(existing["status"]),
+                    False,
+                    int(existing["generation"]),
+                )
+            record_id = self._next_id
+            self._next_id += 1
+            record: dict[str, Any] = {
+                "id": record_id,
+                "request_digest": request_digest,
+                "request_type": request_type,
+                "created_at": _now(),
+                "expires_at": expires_at,
+                "status": "PENDING",
+                "response_payload": None,
+                "error_payload": None,
+                "worker_id": worker_id,
+                "generation": 1,
+            }
+            self._records_by_id[record_id] = record
+            self._index[key] = record_id
+            return record_id, "PENDING", True, 1
+
+    def replace_stalled_worker(self, record_id: int, *, new_worker_id: str) -> int:
+        """Advance attempt generation on a stalled ``PENDING`` record for a replacement worker."""
+        with self._lock:
+            record = self._records_by_id.get(record_id)
+            if record is None:
+                raise KeyError(f"unknown idempotency record: {record_id}")
+            if record["status"] != "PENDING":
+                raise ValueError("cannot replace worker on a terminal idempotency record")
+            next_gen = int(record["generation"]) + 1
+            record["generation"] = next_gen
+            record["worker_id"] = new_worker_id
+            return next_gen
+
+    def complete(
+        self,
+        record_id: int,
+        payload: Any,
+        *,
+        expected_generation: int | None = None,
+        worker_id: str | None = None,
+    ) -> bool:
+        """Mark a ``PENDING`` record ``COMPLETED`` when generation/worker fencing matches."""
+        with self._lock:
+            record = self._records_by_id.get(record_id)
+            if record is None or record["status"] != "PENDING":
+                return False
+            if expected_generation is not None and int(record["generation"]) != int(expected_generation):
+                return False
+            if worker_id is not None and record.get("worker_id") not in (None, worker_id):
+                return False
+            record["status"] = "COMPLETED"
+            record["response_payload"] = payload
+            record["error_payload"] = None
+            return True
+
+    def fail(
+        self,
+        record_id: int,
+        error: dict[str, Any],
+        *,
+        expected_generation: int | None = None,
+        worker_id: str | None = None,
+    ) -> bool:
+        """Mark a ``PENDING`` record ``FAILED`` when generation/worker fencing matches."""
+        with self._lock:
+            record = self._records_by_id.get(record_id)
+            if record is None or record["status"] != "PENDING":
+                return False
+            if expected_generation is not None and int(record["generation"]) != int(expected_generation):
+                return False
+            if worker_id is not None and record.get("worker_id") not in (None, worker_id):
+                return False
+            record["status"] = "FAILED"
+            record["error_payload"] = dict(error)
+            record["response_payload"] = None
+            return True
+
+    def clear_pending(
+        self,
+        record_id: int,
+        *,
+        expected_generation: int | None = None,
+    ) -> bool:
+        """Delete a ``PENDING`` record so a retry may re-acquire cleanly."""
+        with self._lock:
+            record = self._records_by_id.get(record_id)
+            if record is None or record["status"] != "PENDING":
+                return False
+            if expected_generation is not None and int(record["generation"]) != int(expected_generation):
+                return False
+            key = (str(record["request_digest"]), str(record["request_type"]))
+            self._index.pop(key, None)
+            self._records_by_id.pop(record_id, None)
+            return True
+
+    def get_record(self, request_digest: str, request_type: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            record_id = self._index.get((request_digest, request_type))
+            if record_id is None:
+                return None
+            return dict(self._records_by_id[record_id])
 
 
 def _extract_response_parts(result: Any) -> tuple[Any, int]:
