@@ -308,6 +308,10 @@ dismiss_dispute
 supersede_dispute
 get_dispute
 get_open_dispute_count
+get_supersession_link
+get_supersession_by_orig
+get_supersession_by_new
+get_dispute_supersession
 verify_proof
 expire_proof
 correct_proof
@@ -564,8 +568,14 @@ returns an empty vector for such proofs. The existing `ProofRecord` schema is un
 
 `open_dispute`, `respond_dispute`, `resolve_dispute`, `dismiss_dispute`,
 `supersede_dispute`, `get_dispute`, `get_open_dispute_count`,
-`get_proof_dispute_count`, and `list_proof_disputes` add a bounded,
-auditable dispute/correction state machine. Disputes never modify or delete the
+`get_proof_dispute_count`, `list_proof_disputes`, `get_supersession_link`,
+`get_supersession_by_orig`, `get_supersession_by_new`, and
+`get_dispute_supersession` add a bounded,
+auditable dispute/correction state machine. Explicit supersession link queries
+return both the original and superseding statement identities along with their
+live `ProofVerificationStatus` and identity tier, reading only persisted
+`supersede_dispute` edges and never inferring supersession from event ordering
+alone. Disputes never modify or delete the
 disputed proof and are independent of revocation - a disputed proof can still
 report `Valid` from `get_proof_status`. Reporter identity is stored only as a
 caller-supplied `reporter_hash` commitment, and events carry commitment hashes

@@ -1192,6 +1192,34 @@ pub struct DisputeRecord {
     pub superseded_by: Option<BytesN<32>>,
 }
 
+/// Persistent explicit supersession edge recorded only by `supersede_dispute` (#1197).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredSupersessionEdge {
+    pub original_proof_id: BytesN<32>,
+    pub superseding_proof_id: BytesN<32>,
+    pub dispute_id: BytesN<32>,
+    pub linked_at: u64,
+}
+
+/// Explicit supersession link connecting an original statement identity and its
+/// superseding statement identity together with live lifecycle status (#1197).
+///
+/// Returned exclusively from persisted explicit supersession edges — never
+/// inferred from registration timestamps, revocations, or event ordering alone.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupersessionLink {
+    pub original_proof_id: BytesN<32>,
+    pub original_status: ProofVerificationStatus,
+    pub original_tier: u32,
+    pub superseding_proof_id: BytesN<32>,
+    pub superseding_status: ProofVerificationStatus,
+    pub superseding_tier: u32,
+    pub dispute_id: BytesN<32>,
+    pub linked_at: u64,
+}
+
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1963,6 +1991,10 @@ pub enum DataKey {
     SealSigners(BytesN<32>),
     /// Tracks whether explicit `finalize_seal` has completed for a proof (#124).
     SealExplicitFinalized(BytesN<32>),
+    /// Explicit outgoing supersession edge keyed by original `proof_id` (#1197).
+    SupersessionOut(BytesN<32>),
+    /// Explicit incoming supersession edge keyed by `superseding_proof_id` (#1197).
+    SupersessionIn(BytesN<32>),
 }
 
 #[contracterror]
@@ -6155,8 +6187,16 @@ impl HarpocratesRegistry {
             BUMP_TARGET_LEDGERS,
         );
 
-        // Record the reverse supersession direction for cycle detection.
+        // Record the reverse supersession direction for cycle detection and
+        // persist explicit bidirectional supersession link indexes (#1197).
         record_supersession_direction(&env, &record.proof_id, &superseding_proof_id);
+        record_supersession_edge(
+            &env,
+            &record.proof_id,
+            &superseding_proof_id,
+            &dispute_id,
+            now,
+        );
 
         // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
@@ -6280,6 +6320,64 @@ impl HarpocratesRegistry {
         }
 
         disputes
+    }
+
+    /// Read the explicit supersession link involving `proof_id` (#1197).
+    ///
+    /// Resolves an explicit outgoing edge first (when `proof_id` was superseded
+    /// by a replacement statement), falling back to an explicit incoming edge
+    /// (when `proof_id` superseded an earlier statement). Returns `None` unless
+    /// an explicit `supersede_dispute` transition exists in storage; sequential
+    /// registrations, revocations, corrections, or non-superseded disputes
+    /// never imply a supersession link.
+    pub fn get_supersession_link(env: Env, proof_id: BytesN<32>) -> Option<SupersessionLink> {
+        if let Some(edge) = lookup_outgoing_supersession(&env, &proof_id) {
+            return Some(build_supersession_link(&env, edge));
+        }
+        lookup_incoming_supersession(&env, &proof_id)
+            .map(|edge| build_supersession_link(&env, edge))
+    }
+
+    /// Read the explicit supersession link where `original_proof_id` is the
+    /// superseded (original) statement (#1197).
+    pub fn get_supersession_by_orig(
+        env: Env,
+        original_proof_id: BytesN<32>,
+    ) -> Option<SupersessionLink> {
+        lookup_outgoing_supersession(&env, &original_proof_id)
+            .map(|edge| build_supersession_link(&env, edge))
+    }
+
+    /// Read the explicit supersession link where `superseding_id` is the
+    /// replacement (superseding) statement (#1197).
+    pub fn get_supersession_by_new(
+        env: Env,
+        superseding_id: BytesN<32>,
+    ) -> Option<SupersessionLink> {
+        lookup_incoming_supersession(&env, &superseding_id)
+            .map(|edge| build_supersession_link(&env, edge))
+    }
+
+    /// Read the explicit supersession link recorded on `dispute_id`, returning
+    /// `None` if the dispute does not exist or did not close as `Superseded` (#1197).
+    pub fn get_dispute_supersession(env: Env, dispute_id: BytesN<32>) -> Option<SupersessionLink> {
+        let record: DisputeRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))?;
+        if record.status != DisputeStatus::Superseded {
+            return None;
+        }
+        let superseding_proof_id = record.superseded_by?;
+        Some(build_supersession_link(
+            &env,
+            StoredSupersessionEdge {
+                original_proof_id: record.proof_id,
+                superseding_proof_id,
+                dispute_id: record.dispute_id,
+                linked_at: record.resolved_at,
+            },
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -8521,6 +8619,145 @@ fn supersession_reverse_key(env: &Env, superseding_proof_id: &BytesN<32>) -> Byt
     env.crypto().sha256(&pre_image_bytes).into()
 }
 
+fn record_supersession_edge(
+    env: &Env,
+    original_proof_id: &BytesN<32>,
+    superseding_proof_id: &BytesN<32>,
+    dispute_id: &BytesN<32>,
+    linked_at: u64,
+) {
+    let edge = StoredSupersessionEdge {
+        original_proof_id: original_proof_id.clone(),
+        superseding_proof_id: superseding_proof_id.clone(),
+        dispute_id: dispute_id.clone(),
+        linked_at,
+    };
+    let out_key = DataKey::SupersessionOut(original_proof_id.clone());
+    let in_key = DataKey::SupersessionIn(superseding_proof_id.clone());
+    env.storage().persistent().set(&out_key, &edge);
+    env.storage()
+        .persistent()
+        .extend_ttl(&out_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+    env.storage().persistent().set(&in_key, &edge);
+    env.storage()
+        .persistent()
+        .extend_ttl(&in_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+}
+
+fn lookup_outgoing_supersession(
+    env: &Env,
+    original_proof_id: &BytesN<32>,
+) -> Option<StoredSupersessionEdge> {
+    if let Some(edge) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, StoredSupersessionEdge>(&DataKey::SupersessionOut(
+            original_proof_id.clone(),
+        ))
+    {
+        return Some(edge);
+    }
+
+    // Bounded fallback for disputes superseded before #1197 storage indexes.
+    let total: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProofDisputeSeq(original_proof_id.clone()))
+        .unwrap_or(0);
+    if total == 0 {
+        return None;
+    }
+    let min_seq = total
+        .saturating_sub(MAX_PROOF_DISPUTES_PAGE)
+        .saturating_add(1);
+    let mut seq = total;
+    while seq >= min_seq {
+        if let Some(dispute_id) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BytesN<32>>(&DataKey::ProofDispute(original_proof_id.clone(), seq))
+        {
+            if let Some(rec) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, DisputeRecord>(&DataKey::Dispute(dispute_id))
+            {
+                if rec.status == DisputeStatus::Superseded {
+                    if let Some(superseding_proof_id) = rec.superseded_by {
+                        return Some(StoredSupersessionEdge {
+                            original_proof_id: rec.proof_id,
+                            superseding_proof_id,
+                            dispute_id: rec.dispute_id,
+                            linked_at: rec.resolved_at,
+                        });
+                    }
+                }
+            }
+        }
+        if seq == 1 {
+            break;
+        }
+        seq -= 1;
+    }
+    None
+}
+
+fn lookup_incoming_supersession(
+    env: &Env,
+    superseding_proof_id: &BytesN<32>,
+) -> Option<StoredSupersessionEdge> {
+    if let Some(edge) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, StoredSupersessionEdge>(&DataKey::SupersessionIn(
+            superseding_proof_id.clone(),
+        ))
+    {
+        return Some(edge);
+    }
+
+    // Bounded fallback via pre-existing reverse cycle key for pre-#1197 state.
+    let rev_key = supersession_reverse_key(env, superseding_proof_id);
+    let original_proof_id: BytesN<32> =
+        env.storage().persistent().get(&DataKey::Dispute(rev_key))?;
+    let edge = lookup_outgoing_supersession(env, &original_proof_id)?;
+    if edge.superseding_proof_id == *superseding_proof_id {
+        Some(edge)
+    } else {
+        None
+    }
+}
+
+fn build_supersession_link(env: &Env, edge: StoredSupersessionEdge) -> SupersessionLink {
+    let original_status =
+        HarpocratesRegistry::get_proof_status(env.clone(), edge.original_proof_id.clone());
+    let original_tier = env
+        .storage()
+        .persistent()
+        .get::<DataKey, ProofRecord>(&DataKey::Proof(edge.original_proof_id.clone()))
+        .map(|r| r.tier)
+        .unwrap_or(0);
+    let superseding_status =
+        HarpocratesRegistry::get_proof_status(env.clone(), edge.superseding_proof_id.clone());
+    let superseding_tier = env
+        .storage()
+        .persistent()
+        .get::<DataKey, ProofRecord>(&DataKey::Proof(edge.superseding_proof_id.clone()))
+        .map(|r| r.tier)
+        .unwrap_or(0);
+
+    SupersessionLink {
+        original_proof_id: edge.original_proof_id,
+        original_status,
+        original_tier,
+        superseding_proof_id: edge.superseding_proof_id,
+        superseding_status,
+        superseding_tier,
+        dispute_id: edge.dispute_id,
+        linked_at: edge.linked_at,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Timelock proposal helpers (#86)
 // ---------------------------------------------------------------------------
@@ -9117,6 +9354,8 @@ mod test_scoped_nullifier;
 mod test_selective_disclosure;
 #[cfg(test)]
 mod test_state_machine;
+#[cfg(test)]
+mod test_supersession_link;
 #[cfg(test)]
 mod test_threshold_seal;
 #[cfg(test)]
