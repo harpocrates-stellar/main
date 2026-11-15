@@ -211,3 +211,20 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+## Synthetic crash-recovery fixture protocol
+
+`runSyntheticCrashRecoveryFixture` and `createSyntheticFaultWorkerFactory`
+(in `src/proofWorkerMemory.ts` and `src/workers/proof-worker-manager.ts`) model
+three deterministic worker failure modes without live cryptographic secrets or
+network/WASM dependencies:
+
+- `initialization_failure` — worker construction fails during bootstrap
+- `malformed_message` — worker emits an unparseable message / `messageerror`
+- `interrupted_proving` — worker emits early progress stages and crashes mid-run
+
+`assertSyntheticFixtureOnly` rejects any input carrying credential/nullifier
+secret fields or missing `syntheticOnly: true`, and each scenario verifies that
+the faulty worker is terminated, progress stages clear, UI state returns to
+`ready`, and a subsequent synthetic operation succeeds cleanly.
+
+

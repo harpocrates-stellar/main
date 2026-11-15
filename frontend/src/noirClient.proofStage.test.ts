@@ -33,10 +33,29 @@ vi.mock('@aztec/bb.js', () => ({
 }))
 
 vi.mock('./verifierInputs', () => ({
+  EXPECTED_CIRCUIT_VERSION: 1,
+  MAX_AGGREGATION_SIZE: 4,
   encodeFieldToBytes32Hex: (value: string) => value.padStart(64, '0').slice(-64),
   encodePublicInputs: (inputs: string[]) =>
     inputs.map((value) => value.padStart(64, '0').slice(-64)).join(''),
 }))
+
+vi.mock('./circuitInputSchema', async () => {
+  const actual = await vi.importActual<typeof import('./circuitInputSchema')>('./circuitInputSchema')
+  return {
+    ...actual,
+    prepareSilentWitnessInputs: () => ({
+      credential_secret: '1',
+      nullifier_secret: '2',
+      video_hash_hi: '3',
+      video_hash_lo: '4',
+      verifier_scope: '0',
+      epoch: '0',
+    }),
+    assertArtifactPair: async () => 'unscoped_v1',
+    assertProofOutput: () => {},
+  }
+})
 
 import { PROOF_STAGE_SEQUENCE, proofStageIndex, type ProofStage } from './proofStage'
 import { generateSilentWitnessProof } from './noirClient'

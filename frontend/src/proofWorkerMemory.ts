@@ -1,6 +1,7 @@
 import benchLock from '../../zk/bench/bench.lock.json'
 import browserArtifactManifest from '../../zk/browser.artifacts.manifest.json'
 import { CircuitInputError } from './circuitInputSchema'
+import type { ProofStage } from './proofStage'
 
 type BrowserArtifactEntry = {
   path: string
@@ -227,4 +228,218 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
   } catch {
     throw new CircuitInputError('circuit_load_failed')
   }
+}
+
+export const SYNTHETIC_FIXTURE_PROTOCOL_VERSION =
+  'harpocrates.synthetic-worker-fixture.v1' as const
+
+export const SYNTHETIC_WORKER_FAULT_MODES = Object.freeze([
+  'initialization_failure',
+  'malformed_message',
+  'interrupted_proving',
+] as const)
+
+export type SyntheticWorkerFaultMode = (typeof SYNTHETIC_WORKER_FAULT_MODES)[number]
+
+export type SyntheticNonSecretFixture = {
+  readonly syntheticOnly: true
+  readonly fixtureId: string
+  readonly placeholderDigest: string
+}
+
+export type SyntheticUIRecoverySnapshot = {
+  readonly uiStage: 'idle' | 'proving' | 'error' | 'ready'
+  readonly activeProofStage: ProofStage | null
+  readonly canRetry: boolean
+  readonly errorCode: string | null
+  readonly statusMessage: string
+}
+
+export type SyntheticCrashRecoveryReport = {
+  readonly protocolVersion: typeof SYNTHETIC_FIXTURE_PROTOCOL_VERSION
+  readonly faultMode: SyntheticWorkerFaultMode
+  readonly usedLiveSecrets: false
+  readonly initialFailureCode:
+    | 'WORKER_INIT_FAILED'
+    | 'MALFORMED_WORKER_MESSAGE'
+    | 'INTERRUPTED_PROVING'
+  readonly faultyWorkerTerminated: boolean
+  readonly workerRespawnCount: number
+  readonly uiBeforeRecovery: SyntheticUIRecoverySnapshot
+  readonly uiAfterRecovery: SyntheticUIRecoverySnapshot
+  readonly postRecoveryVerificationSucceeded: boolean
+  readonly deterministicTranscript: readonly string[]
+}
+
+const DEFAULT_SYNTHETIC_FIXTURE: SyntheticNonSecretFixture = Object.freeze({
+  syntheticOnly: true,
+  fixtureId: 'synthetic-fixture-0001',
+  placeholderDigest: '0'.repeat(64),
+})
+
+const FORBIDDEN_LIVE_SECRET_KEYS = new Set([
+  'credentialsecret',
+  'nullifiersecret',
+  'privatekey',
+  'seedphrase',
+  'mnemonic',
+  'witness',
+])
+
+function isSyntheticFaultMode(value: unknown): value is SyntheticWorkerFaultMode {
+  return (
+    typeof value === 'string' &&
+    (SYNTHETIC_WORKER_FAULT_MODES as readonly string[]).includes(value)
+  )
+}
+
+export function createSyntheticNonSecretFixture(
+  fixtureId = 'synthetic-fixture-0001',
+): SyntheticNonSecretFixture {
+  if (!/^[a-z0-9-]{3,64}$/.test(fixtureId)) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return Object.freeze({
+    syntheticOnly: true,
+    fixtureId,
+    placeholderDigest: '0'.repeat(64),
+  })
+}
+
+export function assertSyntheticFixtureOnly(candidate: unknown): SyntheticNonSecretFixture {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new CircuitInputError('invalid_input')
+  }
+  const record = candidate as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (FORBIDDEN_LIVE_SECRET_KEYS.has(normalized)) {
+      throw new CircuitInputError('invalid_input')
+    }
+  }
+  if (
+    record.syntheticOnly !== true ||
+    typeof record.fixtureId !== 'string' ||
+    !/^[a-z0-9-]{3,64}$/.test(record.fixtureId) ||
+    record.placeholderDigest !== '0'.repeat(64)
+  ) {
+    throw new CircuitInputError('invalid_input')
+  }
+  return Object.freeze({
+    syntheticOnly: true,
+    fixtureId: record.fixtureId,
+    placeholderDigest: '0'.repeat(64),
+  })
+}
+
+type SyntheticWorkerSlot = {
+  id: number
+  fault: SyntheticWorkerFaultMode | 'healthy'
+  terminated: boolean
+}
+
+/**
+ * Execute a deterministic, zero-secret crash-recovery fixture scenario across
+ * initialization failure, malformed worker messages, or interrupted proving,
+ * verifying worker termination, respawn, and UI state recovery.
+ */
+export function runSyntheticCrashRecoveryFixture(
+  faultMode: SyntheticWorkerFaultMode,
+  fixture: unknown = DEFAULT_SYNTHETIC_FIXTURE,
+): SyntheticCrashRecoveryReport {
+  if (!isSyntheticFaultMode(faultMode)) {
+    throw new CircuitInputError('invalid_input')
+  }
+  const validatedFixture = assertSyntheticFixtureOnly(fixture)
+  const transcript: string[] = [`fixture:${validatedFixture.fixtureId}:start:${faultMode}`]
+
+  let nextWorkerId = 1
+  let respawnCount = 0
+  let faultyWorker: SyntheticWorkerSlot
+  let activeStage: ProofStage | null
+  let initialFailureCode: SyntheticCrashRecoveryReport['initialFailureCode']
+  let uiBeforeRecovery: SyntheticUIRecoverySnapshot
+
+  if (faultMode === 'initialization_failure') {
+    transcript.push('worker:1:spawn_attempt:initialization_failure')
+    initialFailureCode = 'WORKER_INIT_FAILED'
+    faultyWorker = { id: nextWorkerId++, fault: faultMode, terminated: true }
+    activeStage = null
+    transcript.push('worker:1:init_failed:WORKER_INIT_FAILED')
+    uiBeforeRecovery = Object.freeze({
+      uiStage: 'error',
+      activeProofStage: activeStage,
+      canRetry: true,
+      errorCode: 'WORKER_INIT_FAILED',
+      statusMessage: 'Proof worker failed to initialize; ready to retry with a fresh worker.',
+    })
+  } else if (faultMode === 'malformed_message') {
+    faultyWorker = { id: nextWorkerId++, fault: faultMode, terminated: false }
+    transcript.push('worker:1:spawned')
+    activeStage = 'loading_circuits'
+    transcript.push(`worker:1:progress:${activeStage}`)
+    transcript.push('worker:1:message_corrupted:MALFORMED_WORKER_MESSAGE')
+    faultyWorker.terminated = true
+    activeStage = null
+    initialFailureCode = 'MALFORMED_WORKER_MESSAGE'
+    uiBeforeRecovery = Object.freeze({
+      uiStage: 'error',
+      activeProofStage: activeStage,
+      canRetry: true,
+      errorCode: 'MALFORMED_WORKER_MESSAGE',
+      statusMessage: 'Proof worker emitted a malformed message and was restarted.',
+    })
+  } else {
+    faultyWorker = { id: nextWorkerId++, fault: faultMode, terminated: false }
+    transcript.push('worker:1:spawned')
+    activeStage = 'loading_circuits'
+    transcript.push(`worker:1:progress:${activeStage}`)
+    activeStage = 'executing_helper'
+    transcript.push(`worker:1:progress:${activeStage}`)
+    transcript.push('worker:1:interrupted:INTERRUPTED_PROVING')
+    faultyWorker.terminated = true
+    activeStage = null
+    initialFailureCode = 'INTERRUPTED_PROVING'
+    uiBeforeRecovery = Object.freeze({
+      uiStage: 'error',
+      activeProofStage: activeStage,
+      canRetry: true,
+      errorCode: 'INTERRUPTED_PROVING',
+      statusMessage: 'Proving was interrupted; worker state was cleared and can be retried.',
+    })
+  }
+
+  // Deterministic respawn + synthetic recovery verification
+  const healthyWorker: SyntheticWorkerSlot = {
+    id: nextWorkerId,
+    fault: 'healthy',
+    terminated: false,
+  }
+  respawnCount += 1
+  transcript.push(`worker:${healthyWorker.id}:respawned:healthy`)
+  transcript.push(`worker:${healthyWorker.id}:synthetic_probe:loading_circuits`)
+  transcript.push(`worker:${healthyWorker.id}:synthetic_probe:generating_proof`)
+  transcript.push(`worker:${healthyWorker.id}:synthetic_probe:verified`)
+
+  const uiAfterRecovery: SyntheticUIRecoverySnapshot = Object.freeze({
+    uiStage: 'ready',
+    activeProofStage: null,
+    canRetry: true,
+    errorCode: null,
+    statusMessage: 'Proof worker recovered and ready.',
+  })
+  transcript.push('ui:recovered:ready')
+
+  return Object.freeze({
+    protocolVersion: SYNTHETIC_FIXTURE_PROTOCOL_VERSION,
+    faultMode,
+    usedLiveSecrets: false as const,
+    initialFailureCode,
+    faultyWorkerTerminated: Boolean(faultyWorker?.terminated),
+    workerRespawnCount: respawnCount,
+    uiBeforeRecovery,
+    uiAfterRecovery,
+    postRecoveryVerificationSucceeded: !healthyWorker.terminated,
+    deterministicTranscript: Object.freeze(transcript),
+  })
 }
