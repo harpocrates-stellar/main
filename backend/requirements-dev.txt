@@ -1,1 +1,2 @@
 hypothesis==6.128.0
+requests==2.32.3

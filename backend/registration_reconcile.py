@@ -35,6 +35,77 @@ LOGGER.setLevel(logging.INFO)
 MAX_RECONCILE_BATCH = 50
 DEFAULT_MIN_CONFIRMATIONS = 1
 
+OPERATIONAL_PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+OPERATIONAL_TX_NOT_FOUND = "REGISTRATION_TX_NOT_FOUND"
+OPERATIONAL_TX_FAILED = "REGISTRATION_TX_FAILED"
+OPERATIONAL_TX_CONFIRMED = "REGISTRATION_CONFIRMED"
+OPERATIONAL_AWAITING_CONFIRMATIONS = "AWAITING_CONFIRMATIONS"
+OPERATIONAL_VALIDATION_ERROR = "VALIDATION_ERROR"
+
+
+class ProviderOutageError(RuntimeError):
+    """Retryable operational error raised when Stellar RPC/Horizon is unavailable."""
+
+    def __init__(self, reason: str = "horizon_dependency_failure") -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.operational_code = OPERATIONAL_PROVIDER_UNAVAILABLE
+        self.retryable = True
+
+
+def _classify_operational_outcome(
+    *,
+    verification_status: str,
+    reason: str,
+    previous_status: str | None,
+) -> tuple[str, bool, str | None, str]:
+    """Return ``(operational_code, retryable, intent_status, outcome_category)``.
+
+    Guarantees that RPC/Horizon outages preserve ``pending`` intent and surface a
+    retryable operational code rather than ``missing`` or evidence invalidity.
+    """
+    if reason == "malformed_tx_hash":
+        return (
+            OPERATIONAL_VALIDATION_ERROR,
+            False,
+            previous_status,
+            "invalid_request",
+        )
+    if verification_status == "error":
+        return (
+            OPERATIONAL_PROVIDER_UNAVAILABLE,
+            True,
+            previous_status or "pending",
+            "provider_outage",
+        )
+    if verification_status == "missing":
+        return (
+            OPERATIONAL_TX_NOT_FOUND,
+            False,
+            "missing",
+            "missing_transaction",
+        )
+    if verification_status == "failed":
+        return (
+            OPERATIONAL_TX_FAILED,
+            False,
+            "failed",
+            "transaction_failed",
+        )
+    if verification_status == "confirmed":
+        return (
+            OPERATIONAL_TX_CONFIRMED,
+            False,
+            "confirmed",
+            "confirmed",
+        )
+    return (
+        OPERATIONAL_AWAITING_CONFIRMATIONS,
+        True,
+        "pending",
+        "pending_confirmation",
+    )
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -76,10 +147,19 @@ def _result_payload(
     proof_id: str | None = None,
     event_id: int | None = None,
 ) -> dict[str, Any]:
+    operational_code, retryable, intent_status, outcome_category = _classify_operational_outcome(
+        verification_status=verification.status,
+        reason=verification.reason,
+        previous_status=previous_status,
+    )
     payload: dict[str, Any] = {
         "txHash": tx_hash,
         "previousStatus": previous_status,
         "status": verification.status,
+        "intentStatus": intent_status,
+        "operationalCode": operational_code,
+        "retryable": retryable,
+        "outcomeCategory": outcome_category,
         "updated": updated,
         "reason": verification.reason,
         "confirmations": verification.confirmations,
@@ -240,6 +320,13 @@ def reconcile_pending_registrations(
     return {
         "ok": True,
         "summary": summary,
+        "providerOutages": summary["error"],
+        "retryable": bool(summary["error"] > 0 or summary["pending"] > 0),
+        "operationalCode": (
+            OPERATIONAL_PROVIDER_UNAVAILABLE
+            if summary["scanned"] > 0 and summary["error"] == summary["scanned"]
+            else None
+        ),
         "minConfirmations": min_conf,
         "results": results,
     }
@@ -259,6 +346,6 @@ def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
         min_confirmations=int(min_confirmations) if min_confirmations is not None else None,
     )
     if result.get("status") == "error":
-        # Surface dependency failures so the worker can retry non-fatally.
-        raise RuntimeError(result.get("reason") or "horizon_dependency_failure")
+        # Surface dependency failures via a retryable operational exception (subclass of RuntimeError).
+        raise ProviderOutageError(result.get("reason") or "horizon_dependency_failure")
     return result

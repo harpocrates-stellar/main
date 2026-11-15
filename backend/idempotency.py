@@ -178,6 +178,13 @@ def _replay_stored(record: dict):
     return jsonify({"error": "duplicate request in progress"}), 409
 
 
+def is_retryable_dependency_exception(exc: BaseException) -> bool:
+    """Return True when an exception represents a transient provider/RPC outage."""
+    if getattr(exc, "retryable", False) is True:
+        return True
+    return isinstance(exc, (TimeoutError, ConnectionError))
+
+
 def idempotent(request_type: str):
     """Flask view decorator to enforce idempotent request handling.
 
@@ -215,10 +222,14 @@ def idempotent(request_type: str):
                     # Cache 2xx and stable 4xx for exact replay (no raw media/secrets).
                     store_response(record_id, {"status": code, "body": body})
                 else:
-                    # Do not cache server failures — allow a later retry to re-acquire.
+                    # Do not cache server/provider outages — allow a later retry to re-acquire.
                     clear_idempotency_record(record_id)
                 return result
-            except Exception:
+            except Exception as exc:
+                if is_retryable_dependency_exception(exc):
+                    # Preserve retryability on RPC/provider outages rather than caching FAILED.
+                    clear_idempotency_record(record_id)
+                    raise
                 # Privacy-safe: never persist exception strings (may contain paths/secrets).
                 store_error(record_id, {"error": "request processing failed", "status": 500})
                 raise

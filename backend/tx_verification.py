@@ -106,10 +106,17 @@ def verify_transaction(
     if min_confirmations < 1:
         return TxVerificationResult(status="error", reason="invalid_min_confirmations")
 
+    urls = horizon_urls()
+    if not urls:
+        return TxVerificationResult(
+            status="error",
+            reason="horizon_dependency_failure",
+        )
+
     saw_dependency_failure = False
     saw_not_found = False
 
-    for rpc_url in horizon_urls():
+    for rpc_url in urls:
         try:
             status_code, data = _fetch_json(
                 f"{rpc_url}/transactions/{normalized}",

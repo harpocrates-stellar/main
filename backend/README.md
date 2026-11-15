@@ -342,6 +342,25 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Provider Outage vs. Missing Registration Transaction
+
+Registration reconciliation strictly separates upstream Stellar Horizon/RPC
+provider outages from authoritative missing-transaction (`404`) observations:
+
+- **Provider outage (`PROVIDER_UNAVAILABLE`)**: HTTP `5xx`/`429`, timeouts,
+  connection errors, partial failover errors (`404` on primary + `503` on
+  secondary), or an empty `HORIZON_URLS` configuration return `status: "error"`,
+  `operationalCode: "PROVIDER_UNAVAILABLE"`, `retryable: true`, and
+  `intentStatus: "pending"`. No terminal database write is performed,
+  `POST /api/proofs/reconcile` responds with `503` (`code: "DEPENDENCY_UNAVAILABLE"`,
+  `Retry-After: 5`), and `@idempotent` clears any `PENDING` lock rather than
+  recording a permanent `FAILED` record.
+- **Missing transaction (`REGISTRATION_TX_NOT_FOUND`)**: Only when healthy
+  Horizon provider(s) return `404` with zero dependency failures is a
+  registration marked terminal `missing` (`operationalCode: "REGISTRATION_TX_NOT_FOUND"`,
+  `retryable: false`). Provider outages are never reported as evidence
+  invalidity (`VALIDATION_ERROR`).
+
 ## Test
 
 ```powershell
