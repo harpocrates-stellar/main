@@ -19,7 +19,7 @@ use super::*;
 #[cfg(test)]
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, testutils::Events as _, Address, Bytes, Env,
-    IntoVal, Symbol, Val, Vec as SorobanVec,
+    Vec as SorobanVec,
 };
 
 // ---------------------------------------------------------------------------
@@ -197,6 +197,7 @@ fn lifecycle_source_emits_history() {
 
     client.init(&admin);
     client.register_source(&source, &b32(&env, 0x22), &b32(&env, 0x23), &proof_id);
+    let events = env.events().all();
 
     assert_eq!(client.get_proof_history_count(&proof_id), 1);
     let history = collect_history(&env, &client, &proof_id);
@@ -209,28 +210,21 @@ fn lifecycle_source_emits_history() {
     assert_eq!(history.get(0).unwrap().reason_code, TIER_CONSISTENT_SOURCE);
 
     // Registration has one stable observable order: ProofRegistered first,
-    // then its append-only lifecycle history entry. This also guards the
-    // batch path, which uses the same save_record helper.
-    let events = env.events().all();
-    assert_eq!(events.events().len(), 2);
-    let registration_topics: SorobanVec<Val> = events.events().get(0).unwrap().1.clone();
-    let history_topics: SorobanVec<Val> = events.events().get(1).unwrap().1.clone();
-    assert_eq!(
-        registration_topics.get(0).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "proof")
-    );
-    assert_eq!(
-        registration_topics.get(1).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "reg")
-    );
-    assert_eq!(
-        history_topics.get(0).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "proof")
-    );
-    assert_eq!(
-        history_topics.get(1).unwrap().try_into_val::<Symbol>(&env).unwrap(),
-        Symbol::new(&env, "history")
-    );
+    // then its append-only lifecycle history entry, followed by its default
+    // V1 metadata envelope binding. This also guards the batch path, which
+    // uses the same save_record helper.
+    let raw_events = events.events();
+    assert_eq!(raw_events.len(), 3);
+    let registration_topics = event_test_utils::symbol_topics(&raw_events[0]);
+    let history_topics = event_test_utils::symbol_topics(&raw_events[1]);
+    let envelope_topics = event_test_utils::symbol_topics(&raw_events[2]);
+    assert_eq!(registration_topics[0].as_str(), "proof");
+    assert_eq!(registration_topics[1].as_str(), "reg");
+    assert_eq!(history_topics[0].as_str(), "proof");
+    assert_eq!(history_topics[1].as_str(), "history");
+    assert_eq!(envelope_topics[0].as_str(), "metadata");
+    assert_eq!(envelope_topics[1].as_str(), "envelope");
+    assert_eq!(envelope_topics[2].as_str(), "bound");
 }
 
 #[test]
@@ -624,7 +618,9 @@ fn history_reads_for_unknown_proof_id_fail_cleanly() {
     assert_eq!(client.get_proof_history_count(&unknown_proof_id), 0);
     assert!(client.get_proof_history_at(&unknown_proof_id, &0).is_none());
     assert!(client.get_proof_history_at(&unknown_proof_id, &1).is_none());
-    assert!(client.get_proof_history_at(&unknown_proof_id, &u32::MAX).is_none());
+    assert!(client
+        .get_proof_history_at(&unknown_proof_id, &u32::MAX)
+        .is_none());
 }
 
 #[test]
@@ -647,7 +643,9 @@ fn history_reads_at_index_equal_to_count_and_max_u32_fail_cleanly() {
     // Sequence numbers are 1-based (1..=count).
     // An index equal to count (if interpreted as 0-based offset, or beyond count):
     // index == count + 1 is beyond count:
-    assert!(client.get_proof_history_at(&proof_id, &(count + 1)).is_none());
+    assert!(client
+        .get_proof_history_at(&proof_id, &(count + 1))
+        .is_none());
     // Also index == 0 (0-indexed count or invalid 0 seq):
     assert!(client.get_proof_history_at(&proof_id, &0).is_none());
     // Large index / u32::MAX:
@@ -663,7 +661,9 @@ fn history_reads_at_index_equal_to_count_and_max_u32_fail_cleanly() {
     assert!(client.get_proof_history_at(&proof_id, &2).is_some());
 
     // Out of range:
-    assert!(client.get_proof_history_at(&proof_id, &(count2 + 1)).is_none());
+    assert!(client
+        .get_proof_history_at(&proof_id, &(count2 + 1))
+        .is_none());
     assert!(client.get_proof_history_at(&proof_id, &u32::MAX).is_none());
 }
 
@@ -691,11 +691,14 @@ fn history_reads_at_history_cap_fail_cleanly() {
 
     // First and last valid entries exist.
     assert!(client.get_proof_history_at(&proof_id, &1).is_some());
-    assert!(client.get_proof_history_at(&proof_id, &MAX_HISTORY_ENTRIES_PER_PROOF).is_some());
+    assert!(client
+        .get_proof_history_at(&proof_id, &MAX_HISTORY_ENTRIES_PER_PROOF)
+        .is_some());
 
     // Out of range at cap:
     assert!(client.get_proof_history_at(&proof_id, &0).is_none());
-    assert!(client.get_proof_history_at(&proof_id, &(MAX_HISTORY_ENTRIES_PER_PROOF + 1)).is_none());
+    assert!(client
+        .get_proof_history_at(&proof_id, &(MAX_HISTORY_ENTRIES_PER_PROOF + 1))
+        .is_none());
     assert!(client.get_proof_history_at(&proof_id, &u32::MAX).is_none());
 }
-
