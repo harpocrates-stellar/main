@@ -1389,7 +1389,7 @@ def insert_indexed_proof_event(
     event_type: str,
     tx_hash: str,
     event_index: int,
-    proof_id: str | None = None,
+    proof_id: str | int | None = None,
     contract_id: str | None = None,
     tx_status: str | None = "confirmed",
     video_hash: str | None = None,
@@ -1403,9 +1403,17 @@ def insert_indexed_proof_event(
     written and ``False`` when an existing row with the same ``(tx_hash, event_index)``
     was already present.
     """
+    from tx_verification import normalize_proof_identifier, parse_strict_uint
+
     global _mock_indexed_id
+    strict_event_index = parse_strict_uint(event_index, field="event_index")
+    normalized_proof_id = (
+        normalize_proof_identifier(proof_id, field="proof_id")
+        if proof_id is not None
+        else None
+    )
     if not database_url():
-        key = (tx_hash, event_index)
+        key = (tx_hash, strict_event_index)
         if key in _INDEXED_EVENTS:
             return dict(_INDEXED_EVENTS[key]), False
         _mock_indexed_id += 1
@@ -1413,20 +1421,20 @@ def insert_indexed_proof_event(
         row = {
             "id": _mock_indexed_id,
             "event_type": event_type,
-            "proof_id": proof_id,
+            "proof_id": normalized_proof_id,
             "video_hash": video_hash,
             "metadata_hash": metadata_hash,
             "tx_hash": tx_hash,
             "tx_status": tx_status,
             "contract_id": contract_id,
-            "event_index": event_index,
+            "event_index": strict_event_index,
             "metadata": metadata,
             "created_at": now,
         }
         _INDEXED_EVENTS[key] = row
         return dict(row), True
 
-    idempotency_key = f"indexer:{tx_hash}:{event_index}"
+    idempotency_key = f"indexer:{tx_hash}:{strict_event_index}"
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1472,13 +1480,13 @@ def insert_indexed_proof_event(
                 """,
                 (
                     event_type,
-                    proof_id,
+                    normalized_proof_id,
                     video_hash,
                     metadata_hash,
                     tx_hash,
                     tx_status,
                     contract_id,
-                    event_index,
+                    strict_event_index,
                     idempotency_key,
                     Jsonb(metadata) if metadata is not None else None,
                     created_at,
@@ -1517,7 +1525,7 @@ def insert_indexed_proof_event(
                 where tx_hash = %s and event_index = %s
                 limit 1;
                 """,
-                (tx_hash, event_index),
+                (tx_hash, strict_event_index),
             )
             existing = cursor.fetchone()
         connection.rollback()

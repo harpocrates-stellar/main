@@ -342,6 +342,21 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Exact Proof Identifier & Integer Boundaries
+
+`chain_indexer.py`, `tx_verification.py`, and `db.py` enforce lossless proof
+identifier and sequence parsing across JSON and database boundaries:
+
+- **Exact Decimal & 32-Byte Hex Identifiers:** `normalize_proof_identifier`
+  preserves full-precision `u64`/`u128` decimal identifiers (including values
+  exceeding IEEE-754 `2^53 - 1`, such as `9007199254740993` and `u128::MAX`) as
+  canonical base-10 strings alongside 64-character lowercase hex digests.
+- **No Lossy Float, Fractional, or Exponent Coercion:** RPC JSON decoding binds
+  `parse_float=Decimal` and `parse_strict_uint` / `normalize_proof_identifier`
+  reject floats, booleans, negative values, fractional strings (`"12.5"`,
+  `"42.0"`), and scientific notation (`1e5`, `"1e18"`) fail-closed before
+  projecting rows into `proof_events`.
+
 ## Test
 
 ```powershell

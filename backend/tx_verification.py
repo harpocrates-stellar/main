@@ -2,6 +2,84 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
+from decimal import Decimal
+import re
+
+_STRICT_DECIMAL_ID_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
+_STRICT_ZERO_PADDED_UINT_RE = re.compile(r"^[0-9]+$")
+_HEX32_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+class UnsafeProofIdentifierError(ValueError):
+    """Raised when a proof/event identifier or integer uses lossy, fractional, or exponent coercion."""
+
+
+def parse_strict_uint(
+    value: object,
+    *,
+    field: str = "value",
+    allow_zero_padded_str: bool = False,
+) -> int:
+    """Parse a non-negative integer without float truncation or exponent coercion."""
+    if isinstance(value, bool):
+        raise UnsafeProofIdentifierError(f"{field} must not be a boolean")
+    if isinstance(value, (float, Decimal)):
+        raise UnsafeProofIdentifierError(
+            f"{field} must be an exact integer; fractional or exponent notation is rejected"
+        )
+    if isinstance(value, int):
+        if value < 0:
+            raise UnsafeProofIdentifierError(f"{field} must be non-negative")
+        return value
+    if isinstance(value, str):
+        pattern = _STRICT_ZERO_PADDED_UINT_RE if allow_zero_padded_str else _STRICT_DECIMAL_ID_RE
+        if not pattern.fullmatch(value):
+            raise UnsafeProofIdentifierError(
+                f"{field} must be an exact base-10 non-negative integer without fractional or exponent notation"
+            )
+        return int(value, 10)
+    raise UnsafeProofIdentifierError(f"{field} must be an exact non-negative integer")
+
+
+def normalize_proof_identifier(value: object, *, field: str = "proof_id") -> str:
+    """Normalize an indexed proof/dispute ID to an exact decimal string or 32-byte hex digest.
+
+    Preserves arbitrary-precision decimal IDs (including u64/u128 values > 2^53 - 1)
+    as exact strings across JSON and database boundaries while rejecting floats,
+    booleans, fractional values, and scientific/exponent notation.
+    """
+    if isinstance(value, bool):
+        raise UnsafeProofIdentifierError(f"{field} must not be a boolean")
+    if isinstance(value, (float, Decimal)):
+        raise UnsafeProofIdentifierError(
+            f"{field} rejects float, fractional, and exponent notation"
+        )
+    if isinstance(value, int):
+        if value < 0:
+            raise UnsafeProofIdentifierError(f"{field} must be non-negative")
+        return f"{value:d}"
+    if isinstance(value, bytes):
+        if len(value) != 32:
+            raise UnsafeProofIdentifierError(f"{field} bytes must be 32 bytes")
+        return value.hex().lower()
+    if isinstance(value, str):
+        if not value or value != value.strip():
+            raise UnsafeProofIdentifierError(f"{field} must not be empty or whitespace-padded")
+        if value.startswith(("0x", "0X")):
+            body = value[2:]
+            if not _HEX32_RE.fullmatch(body):
+                raise UnsafeProofIdentifierError(
+                    f"{field} hex identifier must be a 32-byte (64-hex-char) digest"
+                )
+            return body.lower()
+        if len(value) == 64 and _HEX32_RE.fullmatch(value):
+            return value.lower()
+        if _STRICT_DECIMAL_ID_RE.fullmatch(value):
+            return value
+        raise UnsafeProofIdentifierError(
+            f"{field} must be an exact non-negative decimal ID or 32-byte hex digest"
+        )
+    raise UnsafeProofIdentifierError(f"{field} has unsupported identifier type")
 
 @dataclass
 class TxVerificationResult:
@@ -70,7 +148,10 @@ def _fetch_json(url: str, timeout: float = 10.0) -> tuple[int, dict | None]:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.status, json.loads(response.read().decode("utf-8"))
+            return response.status, json.loads(
+                response.read().decode("utf-8"),
+                parse_float=Decimal,
+            )
     except urllib.error.HTTPError as e:
         return e.code, None
 
@@ -78,7 +159,14 @@ def _fetch_json(url: str, timeout: float = 10.0) -> tuple[int, dict | None]:
 def _latest_ledger(rpc_url: str, timeout: float = 10.0) -> int | None:
     status, data = _fetch_json(f"{rpc_url}/fee_stats", timeout=timeout)
     if status == 200 and data:
-        return int(data.get("last_ledger", 0)) or None
+        raw_last = data.get("last_ledger")
+        if raw_last is None:
+            return None
+        try:
+            parsed = parse_strict_uint(raw_last, field="last_ledger")
+            return parsed or None
+        except UnsafeProofIdentifierError:
+            return None
     return None
 
 
@@ -131,8 +219,8 @@ def verify_transaction(
             successful = bool(data.get("successful", False))
             ledger_raw = data.get("ledger")
             try:
-                ledger = int(ledger_raw) if ledger_raw is not None else None
-            except (TypeError, ValueError):
+                ledger = parse_strict_uint(ledger_raw, field="ledger") if ledger_raw is not None else None
+            except UnsafeProofIdentifierError:
                 ledger = None
 
             if not successful:

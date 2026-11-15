@@ -26,6 +26,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from db import (
@@ -39,6 +40,12 @@ from strkey import (
     _VERSION_BYTE_CONTRACT,
     _VERSION_BYTE_ED25519_PUBLIC,
     make_strkey,
+)
+from tx_verification import (
+    UnsafeProofIdentifierError,
+    normalize_proof_identifier,
+    normalize_tx_hash,
+    parse_strict_uint,
 )
 from webhook import queue_webhook_deliveries
 
@@ -105,6 +112,11 @@ def decode_scval(raw: Any) -> Any:
             return struct.unpack(">I" if disc == 3 else ">i", payload[:4])[0]
         if disc in (5, 6, 7, 8):  # SCV_U64, SCV_I64, SCV_TIMEPOINT, SCV_DURATION
             return struct.unpack(">Q" if disc in (5, 7, 8) else ">q", payload[:8])[0]
+        if disc in (9, 10) and len(payload) >= 16:  # SCV_U128, SCV_I128
+            hi_fmt = ">Q" if disc == 9 else ">q"
+            hi = struct.unpack(hi_fmt, payload[:8])[0]
+            lo = struct.unpack(">Q", payload[8:16])[0]
+            return (hi << 64) | lo
         if disc in (13, 14, 15):  # SCV_BYTES, SCV_STRING, SCV_SYMBOL
             b_len = struct.unpack(">I", payload[:4])[0]
             val_bytes = payload[4 : 4 + b_len]
@@ -140,6 +152,24 @@ def _normalize_hex(val: Any) -> str | None:
     return text
 
 
+def _json_safe_metadata_value(value: Any) -> Any:
+    """Ensure metadata values preserve large integers as exact strings and reject floats/Decimals."""
+    if isinstance(value, (float, Decimal)):
+        raise UnsafeProofIdentifierError("fractional or exponent notation is rejected in indexed event payloads")
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        # Preserve exact decimal representation when outside IEEE-754 safe integer range
+        if abs(value) > 9_007_199_254_740_991:
+            return f"{value:d}"
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe_metadata_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_metadata_value(v) for v in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle Topic Classifier
 # ---------------------------------------------------------------------------
@@ -151,47 +181,68 @@ def classify_and_decode_event(
 ) -> DecodedLifecycleEvent | None:
     """Parse a Soroban RPC event and decode it if it matches a known lifecycle topic.
 
-    Returns DecodedLifecycleEvent if recognized, or None if unknown/unhandled.
+    Returns DecodedLifecycleEvent if recognized, None if unknown/unhandled, or
+    raises UnsafeProofIdentifierError when an indexed identifier or integer uses
+    unsafe float, fractional, boolean, or exponent coercion.
     """
     if not isinstance(event, dict):
         return None
 
     # Resolve tx_hash
-    tx_hash = (
+    tx_hash_raw = (
         event.get("txHash")
         or event.get("transactionHash")
         or event.get("tx_hash")
     )
-    if not tx_hash or not isinstance(tx_hash, str):
+    if tx_hash_raw is None:
         return None
-    tx_hash = _normalize_hex(tx_hash) or tx_hash
+    if isinstance(tx_hash_raw, (bool, int, float, Decimal)):
+        raise UnsafeProofIdentifierError("txHash must be a 32-byte hex string")
+    if not isinstance(tx_hash_raw, str) or not tx_hash_raw.strip():
+        return None
+    try:
+        tx_hash = normalize_tx_hash(tx_hash_raw)
+    except ValueError as exc:
+        raise UnsafeProofIdentifierError("txHash must be a 32-byte hex string") from exc
 
-    # Resolve event index
-    event_index = event.get("eventIndex")
-    if event_index is None:
-        event_index = event.get("event_index")
-    if event_index is None:
-        # Paging token format commonly: "<ledger>-<index>"
-        token = str(event.get("id") or event.get("pagingToken") or "")
-        if "-" in token:
-            try:
-                event_index = int(token.split("-")[-1])
-            except (ValueError, TypeError):
+    # Resolve event index strictly without float/exponent coercion
+    event_index_raw = event.get("eventIndex")
+    if event_index_raw is None and "event_index" in event:
+        event_index_raw = event.get("event_index")
+    if event_index_raw is None:
+        token_raw = event.get("id") or event.get("pagingToken")
+        if token_raw is not None:
+            if isinstance(token_raw, (bool, float, Decimal)):
+                raise UnsafeProofIdentifierError("paging token must not use float or boolean coercion")
+            token = str(token_raw)
+            if "-" in token:
+                event_index = parse_strict_uint(
+                    token.split("-")[-1],
+                    field="event_index",
+                    allow_zero_padded_str=True,
+                )
+            else:
                 event_index = 0
         else:
             event_index = 0
     else:
-        try:
-            event_index = int(event_index)
-        except (ValueError, TypeError):
-            event_index = 0
+        event_index = parse_strict_uint(
+            event_index_raw,
+            field="event_index",
+            allow_zero_padded_str=True,
+        )
 
     contract_id = (
         event.get("contractId")
         or event.get("contract_id")
         or default_contract_id
     )
-    ledger = event.get("ledger")
+    ledger_raw = event.get("ledger")
+    ledger = (
+        parse_strict_uint(ledger_raw, field="ledger")
+        if ledger_raw is not None
+        else None
+    )
 
     # Decode topics
     raw_topics = event.get("topic") or event.get("topics") or []
@@ -208,7 +259,8 @@ def classify_and_decode_event(
 
     # 1. Proof Revocation: topics = ["proof", "revoke", proof_id]
     if first == "proof" and second == "revoke" and len(topics) >= 3:
-        proof_id = _normalize_hex(topics[2])
+        proof_id = normalize_proof_identifier(topics[2], field="proof_id")
+        safe_val = _json_safe_metadata_value(val)
         return DecodedLifecycleEvent(
             event_type="revoke",
             proof_id=proof_id,
@@ -216,15 +268,13 @@ def classify_and_decode_event(
             event_index=event_index,
             contract_id=contract_id,
             tx_status="revoked",
-            metadata={"status": "revoked", "raw_value": val},
+            metadata={"status": "revoked", "raw_value": safe_val},
             ledger=ledger,
         )
 
     # 2. Proof History: topics = ["proof", "history", proof_id]
     if first == "proof" and second == "history" and len(topics) >= 3:
-        proof_id = _normalize_hex(topics[2])
-        # Value carries ProofHistoryEntry: action (u32), timestamp (u64), actor (Option<Address>), reason_code (u32)
-        # Action codes: 1=Registered, 2=Verified, 3=Revoked, 4=Expired, 5=Corrected, 6=TtlUpdated
+        proof_id = normalize_proof_identifier(topics[2], field="proof_id")
         action = None
         actor = None
         reason_code = None
@@ -238,13 +288,19 @@ def classify_and_decode_event(
                 actor = val[2]
             if len(val) >= 4:
                 reason_code = val[3]
-        elif isinstance(val, int):
+        elif isinstance(val, (int, float, Decimal, str)):
             action = val
 
-        try:
-            action_int = int(action) if action is not None else 0
-        except (ValueError, TypeError):
-            action_int = 0
+        action_int = (
+            parse_strict_uint(action, field="action")
+            if action is not None
+            else 0
+        )
+        safe_reason = (
+            parse_strict_uint(reason_code, field="reason_code")
+            if reason_code is not None
+            else None
+        )
 
         if action_int == 3:  # Revoked
             return DecodedLifecycleEvent(
@@ -254,7 +310,7 @@ def classify_and_decode_event(
                 event_index=event_index,
                 contract_id=contract_id,
                 tx_status="revoked",
-                metadata={"action": "revoked", "actor": actor, "reason_code": reason_code},
+                metadata={"action": "revoked", "actor": actor, "reason_code": safe_reason},
                 ledger=ledger,
             )
         if action_int == 4:  # Expired
@@ -265,7 +321,7 @@ def classify_and_decode_event(
                 event_index=event_index,
                 contract_id=contract_id,
                 tx_status="confirmed",
-                metadata={"action": "expired", "actor": actor, "reason_code": reason_code},
+                metadata={"action": "expired", "actor": actor, "reason_code": safe_reason},
                 ledger=ledger,
             )
         if action_int == 5:  # Corrected
@@ -276,71 +332,83 @@ def classify_and_decode_event(
                 event_index=event_index,
                 contract_id=contract_id,
                 tx_status="confirmed",
-                metadata={"action": "corrected", "actor": actor, "reason_code": reason_code},
+                metadata={"action": "corrected", "actor": actor, "reason_code": safe_reason},
                 ledger=ledger,
             )
 
     # 3. Dispute Lifecycle Events: topics = ["dispute", action, dispute_id, proof_id]
     if first == "dispute" and len(topics) >= 2:
         action = second
-        dispute_id = _normalize_hex(topics[2]) if len(topics) >= 3 else None
-        proof_id = _normalize_hex(topics[3]) if len(topics) >= 4 else None
-        if proof_id is None and len(topics) == 3:
-            # Fallback if dispute_id / proof_id single identifier
-            proof_id = dispute_id
+        if action in ("open", "resolve", "supersede", "dismiss"):
+            dispute_id = (
+                normalize_proof_identifier(topics[2], field="dispute_id")
+                if len(topics) >= 3
+                else None
+            )
+            proof_id = (
+                normalize_proof_identifier(topics[3], field="proof_id")
+                if len(topics) >= 4
+                else None
+            )
+            if proof_id is None and len(topics) == 3:
+                proof_id = dispute_id
 
-        if action == "open":
-            return DecodedLifecycleEvent(
-                event_type="dispute_open",
-                proof_id=proof_id,
-                tx_hash=tx_hash,
-                event_index=event_index,
-                contract_id=contract_id,
-                tx_status="confirmed",
-                metadata={"dispute_id": dispute_id, "stage": "open", "details": val},
-                ledger=ledger,
-            )
-        if action == "resolve":
-            return DecodedLifecycleEvent(
-                event_type="dispute_resolve",
-                proof_id=proof_id,
-                tx_hash=tx_hash,
-                event_index=event_index,
-                contract_id=contract_id,
-                tx_status="confirmed",
-                metadata={"dispute_id": dispute_id, "stage": "resolved", "details": val},
-                ledger=ledger,
-            )
-        if action == "supersede":
-            superseded_by = None
-            if isinstance(val, dict):
-                superseded_by = _normalize_hex(val.get("superseded_by"))
-            return DecodedLifecycleEvent(
-                event_type="dispute_supersede",
-                proof_id=proof_id,
-                tx_hash=tx_hash,
-                event_index=event_index,
-                contract_id=contract_id,
-                tx_status="confirmed",
-                metadata={
-                    "dispute_id": dispute_id,
-                    "stage": "superseded",
-                    "superseded_by": superseded_by,
-                    "details": val,
-                },
-                ledger=ledger,
-            )
-        if action == "dismiss":
-            return DecodedLifecycleEvent(
-                event_type="dispute_dismiss",
-                proof_id=proof_id,
-                tx_hash=tx_hash,
-                event_index=event_index,
-                contract_id=contract_id,
-                tx_status="confirmed",
-                metadata={"dispute_id": dispute_id, "stage": "dismissed", "details": val},
-                ledger=ledger,
-            )
+            safe_details = _json_safe_metadata_value(val)
+            if action == "open":
+                return DecodedLifecycleEvent(
+                    event_type="dispute_open",
+                    proof_id=proof_id,
+                    tx_hash=tx_hash,
+                    event_index=event_index,
+                    contract_id=contract_id,
+                    tx_status="confirmed",
+                    metadata={"dispute_id": dispute_id, "stage": "open", "details": safe_details},
+                    ledger=ledger,
+                )
+            if action == "resolve":
+                return DecodedLifecycleEvent(
+                    event_type="dispute_resolve",
+                    proof_id=proof_id,
+                    tx_hash=tx_hash,
+                    event_index=event_index,
+                    contract_id=contract_id,
+                    tx_status="confirmed",
+                    metadata={"dispute_id": dispute_id, "stage": "resolved", "details": safe_details},
+                    ledger=ledger,
+                )
+            if action == "supersede":
+                superseded_by = None
+                if isinstance(val, dict) and val.get("superseded_by") is not None:
+                    superseded_by = normalize_proof_identifier(
+                        val.get("superseded_by"),
+                        field="superseded_by",
+                    )
+                return DecodedLifecycleEvent(
+                    event_type="dispute_supersede",
+                    proof_id=proof_id,
+                    tx_hash=tx_hash,
+                    event_index=event_index,
+                    contract_id=contract_id,
+                    tx_status="confirmed",
+                    metadata={
+                        "dispute_id": dispute_id,
+                        "stage": "superseded",
+                        "superseded_by": superseded_by,
+                        "details": safe_details,
+                    },
+                    ledger=ledger,
+                )
+            if action == "dismiss":
+                return DecodedLifecycleEvent(
+                    event_type="dispute_dismiss",
+                    proof_id=proof_id,
+                    tx_hash=tx_hash,
+                    event_index=event_index,
+                    contract_id=contract_id,
+                    tx_status="confirmed",
+                    metadata={"dispute_id": dispute_id, "stage": "dismissed", "details": safe_details},
+                    ledger=ledger,
+                )
 
     # Unknown topic
     return None
@@ -357,19 +425,27 @@ def process_events_batch(
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
-    Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    Decodes lifecycle events, rejects unsafe integer/identifier coercions,
+    inserts valid events idempotently into proof_events, queues webhooks, and
+    tracks unknown topics.
     """
-    summary = {
+    summary: dict[str, Any] = {
         "scanned": 0,
         "indexed": 0,
         "skipped": 0,
         "duplicates": 0,
+        "rejected_identifiers": 0,
+        "rejection_reasons": [],
     }
 
     for raw in events:
         summary["scanned"] += 1
-        decoded = classify_and_decode_event(raw, default_contract_id=contract_id)
+        try:
+            decoded = classify_and_decode_event(raw, default_contract_id=contract_id)
+        except UnsafeProofIdentifierError as exc:
+            summary["rejected_identifiers"] += 1
+            summary["rejection_reasons"].append(str(exc))
+            continue
 
         if decoded is None:
             collector.record_indexer_unknown_topic()
@@ -423,10 +499,10 @@ def fetch_latest_ledger(rpc_url: str, timeout: float = INDEXER_DEFAULT_TIMEOUT) 
     )
     try:
         res = safe_urlopen(req, connect_timeout=min(timeout, 5.0), read_timeout=timeout)
-        data = json.loads(res.body.decode("utf-8"))
+        data = json.loads(res.body.decode("utf-8"), parse_float=Decimal)
         result = data.get("result") or {}
-        sequence = result.get("sequence") or result.get("latestLedger")
-        return int(sequence) if sequence is not None else None
+        sequence = result.get("sequence") if result.get("sequence") is not None else result.get("latestLedger")
+        return parse_strict_uint(sequence, field="sequence") if sequence is not None else None
     except Exception as exc:
         LOGGER.warning("fetch_latest_ledger_failed rpc=%s exc=%s", rpc_url, exc)
         return None
@@ -441,7 +517,8 @@ def fetch_contract_events(
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Call Soroban RPC getEvents with bounded pagination and filter."""
-    page_limit = max(1, min(int(limit), INDEXER_MAX_PAGE_SIZE))
+    strict_limit = parse_strict_uint(limit, field="limit")
+    page_limit = max(1, min(strict_limit, INDEXER_MAX_PAGE_SIZE))
     params: dict[str, Any] = {
         "filters": [
             {
@@ -458,7 +535,7 @@ def fetch_contract_events(
         params["pagination"]["cursor"] = cursor
         params["cursor"] = cursor
     elif start_ledger is not None:
-        params["startLedger"] = start_ledger
+        params["startLedger"] = parse_strict_uint(start_ledger, field="startLedger")
 
     payload = {
         "jsonrpc": "2.0",
@@ -475,7 +552,7 @@ def fetch_contract_events(
     )
 
     res = safe_urlopen(req, connect_timeout=min(timeout, 5.0), read_timeout=timeout)
-    data = json.loads(res.body.decode("utf-8"))
+    data = json.loads(res.body.decode("utf-8"), parse_float=Decimal)
     if "error" in data:
         raise RuntimeError(f"Soroban RPC error: {data['error']}")
     return data.get("result") or {}
