@@ -214,6 +214,36 @@ hostile working directory cannot turn a build check into a denial of service:
 (512), `max_circuits` (64). Exceeding any of them is a fatal, typed failure —
 never a hang.
 
+## Release directory path and alias containment
+
+Every manifest, browser manifest, provenance document, build export, and
+compatibility release check enforces containment inside a selected release
+directory (`--release-dir <dir>`, defaulting to the repository root):
+
+```bash
+python zk/tools/artifact_manifest.py --release-dir /path/to/release verify --manifest /path/to/release/zk/artifacts.manifest.json
+python zk/tools/build_circuits.py export silent_witness --release-dir /path/to/release
+python devx/release_guard.py --release-dir /path/to/release
+```
+
+1. **Lexical validation first.** Artifact, provenance, and skipped paths must be
+   relative POSIX paths (`<= 512` characters) with no control characters,
+   backslashes, drive prefixes, leading `/`, empty segments, `.`, or `..`.
+2. **Pre-read alias resolution.** Before `is_file()`, `stat()`, or `read_bytes()`
+   touches any referenced artifact, every path segment is inspected for symbolic
+   links (including dangling links via `readlink`) and Windows directory
+   junctions. Any alias that resolves outside the selected release directory is
+   rejected immediately; external files are never opened, sized, hashed, or
+   scanned. In-tree aliases whose resolved targets stay strictly inside the
+   selected release directory remain valid.
+3. **Bounded deterministic validation errors.** Rejections raise
+   `PathValidationError` (or `ManifestError` in `devx/release_guard.py`) with a
+   stable error code (`path_non_string`, `path_empty`, `path_overlong`,
+   `path_control_char`, `path_backslash`, `path_absolute`, `path_traversal`,
+   `alias_escape`, `release_dir_invalid`) and a deterministic message bounded to
+   `240` characters (path previews sanitized and capped at `96` characters),
+   never echoing resolved external host paths or file contents.
+
 ## Signals
 
 Both the script and the tool emit single-line JSON on **stderr**:

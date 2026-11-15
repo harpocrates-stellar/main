@@ -24,9 +24,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+import artifact_manifest as _am
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -69,6 +76,162 @@ class BuildError(RuntimeError):
     def __init__(self, message: str, exit_code: int = EXIT_FATAL) -> None:
         super().__init__(message)
         self.exit_code = exit_code
+
+
+class PathValidationError(BuildError):
+    """Deterministic, length-bounded error when an artifact path escapes release_dir."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        bounded = (
+            message[: _am.MAX_VALIDATION_ERROR_CHARS - 3] + "..."
+            if len(message) > _am.MAX_VALIDATION_ERROR_CHARS
+            else message
+        )
+        super().__init__(bounded, exit_code=EXIT_FATAL)
+
+
+_CIRCUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _wrap_manifest_path_error(exc: _am.PathValidationError) -> PathValidationError:
+    return PathValidationError(exc.code, str(exc))
+
+
+def _validate_circuit_name(circuit: Any) -> str:
+    if not isinstance(circuit, str) or not circuit:
+        raise PathValidationError(
+            "circuit_name_invalid",
+            "invalid manifest path [circuit_name_invalid]: circuit name must be a non-empty identifier",
+        )
+    if len(circuit) > 128 or not _CIRCUIT_NAME_RE.fullmatch(circuit):
+        preview = _am._bounded_path_preview(circuit)
+        raise PathValidationError(
+            "circuit_name_invalid",
+            f"invalid manifest path [circuit_name_invalid]: circuit name '{preview}' must match [A-Za-z0-9_]+",
+        )
+    return circuit
+
+
+def _resolve_selected_root(release_dir: Path) -> Path:
+    try:
+        return _am._resolve_release_root(release_dir)
+    except _am.PathValidationError as exc:
+        raise _wrap_manifest_path_error(exc) from exc
+
+
+def resolve_release_path(
+    raw_path: Any,
+    release_dir: Path,
+    *,
+    field_name: str = "artifact path",
+) -> Path:
+    """Resolve aliases inside ``release_dir`` before reading referenced artifacts."""
+    try:
+        return _am.resolve_release_artifact_path(
+            raw_path,
+            release_dir,
+            field_name=field_name,
+        )
+    except _am.PathValidationError as exc:
+        raise _wrap_manifest_path_error(exc) from exc
+
+
+def _resolve_contained_path(
+    raw_arg: str,
+    release_root: Path,
+    *,
+    field_name: str,
+) -> Path:
+    candidate = Path(raw_arg)
+    if not candidate.is_absolute() and not _am._DRIVE_PREFIX_RE.match(raw_arg):
+        return resolve_release_path(raw_arg, release_root, field_name=field_name)
+    resolved_root = _resolve_selected_root(release_root)
+    try:
+        rel_posix = candidate.relative_to(resolved_root).as_posix()
+    except ValueError:
+        try:
+            rel_posix = candidate.resolve(strict=False).relative_to(resolved_root).as_posix()
+        except ValueError as exc:
+            preview = _am._bounded_path_preview(candidate.name or raw_arg)
+            raise PathValidationError(
+                "alias_escape",
+                f"invalid manifest path [alias_escape]: {field_name} '{preview}' resolves outside selected release directory",
+            ) from exc
+    return resolve_release_path(rel_posix, resolved_root, field_name=field_name)
+
+
+def _resolve_target_artifacts(
+    artifact_names: Sequence[str],
+    *,
+    circuit: str,
+    target_dir_arg: str | None,
+    release_dir_arg: str | None,
+    repo_root: Path,
+) -> tuple[Path, dict[str, Path]]:
+    _validate_circuit_name(circuit)
+    if release_dir_arg is not None:
+        selected_root = _resolve_selected_root(Path(release_dir_arg))
+        if target_dir_arg is not None:
+            resolved_target_dir = _resolve_contained_path(
+                target_dir_arg,
+                selected_root,
+                field_name="target directory",
+            )
+            rel_target = resolved_target_dir.relative_to(selected_root).as_posix()
+        else:
+            rel_target = f"zk/noir/{circuit}/target"
+            resolved_target_dir = resolve_release_path(
+                rel_target,
+                selected_root,
+                field_name="target directory",
+            )
+        resolved_files = {
+            name: resolve_release_path(
+                f"{rel_target}/{name}",
+                selected_root,
+                field_name="artifact path",
+            )
+            for name in artifact_names
+        }
+        return resolved_target_dir, resolved_files
+
+    if target_dir_arg is not None:
+        raw_target = Path(target_dir_arg)
+        if _am._is_alias_entry(raw_target):
+            raise PathValidationError(
+                "alias_escape",
+                "invalid manifest path [alias_escape]: target directory must not be an external link alias",
+            )
+        if not raw_target.exists():
+            return raw_target, {name: raw_target / name for name in artifact_names}
+        selected_target = _resolve_selected_root(raw_target)
+        resolved_files = {
+            name: resolve_release_path(
+                name,
+                selected_target,
+                field_name="artifact path",
+            )
+            for name in artifact_names
+        }
+        return selected_target, resolved_files
+
+    selected_root = _resolve_selected_root(repo_root)
+    rel_target = f"zk/noir/{circuit}/target"
+    resolved_target_dir = resolve_release_path(
+        rel_target,
+        selected_root,
+        field_name="target directory",
+    )
+    resolved_files = {
+        name: resolve_release_path(
+            f"{rel_target}/{name}",
+            selected_root,
+            field_name="artifact path",
+        )
+        for name in artifact_names
+    }
+    return resolved_target_dir, resolved_files
 
 
 def signal(event: str, detail: str = "", **fields: Any) -> None:
@@ -225,12 +388,21 @@ def compile_circuit(
     write_vk_flag: bool | None = None,
     prove: bool = False,
 ) -> None:
-    circuit_dir = repo_root / "zk" / "noir" / circuit
+    _validate_circuit_name(circuit)
+    circuit_dir = resolve_release_path(
+        f"zk/noir/{circuit}",
+        repo_root,
+        field_name="circuit directory",
+    )
     if not circuit_dir.is_dir():
         signal("circuit.skipped", detail=circuit)
         return
 
-    target_dir = circuit_dir / "target"
+    target_dir = resolve_release_path(
+        f"zk/noir/{circuit}/target",
+        repo_root,
+        field_name="circuit target directory",
+    )
     if clean and target_dir.exists():
         shutil.rmtree(target_dir, ignore_errors=True)
 
@@ -351,12 +523,37 @@ def cmd_build(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> int:
     apply_umask()
-    lock_path = Path(args.lock) if args.lock else (repo_root / "zk" / "toolchain.lock.json")
-    manifest_path = Path(args.manifest) if args.manifest else (repo_root / "zk" / "artifacts.manifest.json")
+    release_dir_arg = getattr(args, "release_dir", None)
+    effective_root = (
+        _resolve_selected_root(Path(release_dir_arg))
+        if release_dir_arg is not None
+        else repo_root
+    )
+    release_tool_flags: list[str] = (
+        ["--release-dir", str(effective_root)] if release_dir_arg is not None else []
+    )
+    lock_path = (
+        _resolve_contained_path(args.lock, effective_root, field_name="lock path")
+        if (args.lock and release_dir_arg is not None)
+        else (Path(args.lock) if args.lock else (effective_root / "zk" / "toolchain.lock.json"))
+    )
+    manifest_path = (
+        _resolve_contained_path(args.manifest, effective_root, field_name="manifest path")
+        if (args.manifest and release_dir_arg is not None)
+        else (
+            Path(args.manifest)
+            if args.manifest
+            else (effective_root / "zk" / "artifacts.manifest.json")
+        )
+    )
 
     # If check-coverage requested
     if args.check_coverage:
-        return run_manifest_tool(["--lock", str(lock_path), "check-coverage"], repo_root=repo_root, runner=runner)
+        return run_manifest_tool(
+            [*release_tool_flags, "--lock", str(lock_path), "check-coverage"],
+            repo_root=effective_root,
+            runner=runner,
+        )
 
     circuit = args.circuit or "all"
     if args.all:
@@ -364,9 +561,15 @@ def cmd_build(
 
     # For builds, check coverage gate first when building all
     if circuit == "all":
-        cov_status = run_manifest_tool(["--lock", str(lock_path), "check-coverage"], repo_root=repo_root, runner=runner)
+        cov_status = run_manifest_tool(
+            [*release_tool_flags, "--lock", str(lock_path), "check-coverage"],
+            repo_root=effective_root,
+            runner=runner,
+        )
         if cov_status != 0:
             raise BuildError("circuit coverage check failed; see drift.finding above", exit_code=cov_status)
+    else:
+        _validate_circuit_name(circuit)
 
     toolchain = check_toolchain(lock_path=lock_path, runner=runner)
 
@@ -374,7 +577,7 @@ def cmd_build(
         compile_circuit(
             circuit,
             toolchain,
-            repo_root=repo_root,
+            repo_root=effective_root,
             clean=args.clean,
             runner=runner,
             write_vk_flag=args.vk if args.vk else None,
@@ -391,10 +594,10 @@ def cmd_build(
         mode = "verify"
 
     if mode == "single":
-        build_all_circuits("single", toolchain, repo_root=repo_root, runner=runner)
+        build_all_circuits("single", toolchain, repo_root=effective_root, runner=runner)
         status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(manifest_path)],
-            repo_root=repo_root,
+            [*release_tool_flags, "--lock", str(lock_path), "write", "--output", str(manifest_path)],
+            repo_root=effective_root,
             runner=runner,
         )
         if status != 0:
@@ -403,10 +606,10 @@ def cmd_build(
         return EXIT_OK
 
     if mode == "verify":
-        build_all_circuits("verify", toolchain, repo_root=repo_root, runner=runner)
+        build_all_circuits("verify", toolchain, repo_root=effective_root, runner=runner)
         status = run_manifest_tool(
-            ["--lock", str(lock_path), "verify", "--manifest", str(manifest_path)],
-            repo_root=repo_root,
+            [*release_tool_flags, "--lock", str(lock_path), "verify", "--manifest", str(manifest_path)],
+            repo_root=effective_root,
             runner=runner,
         )
         return status
@@ -417,27 +620,27 @@ def cmd_build(
         first_manifest = work / "first.json"
         second_manifest = work / "second.json"
 
-        build_all_circuits("first", toolchain, repo_root=repo_root, runner=runner)
+        build_all_circuits("first", toolchain, repo_root=effective_root, runner=runner)
         status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(first_manifest)],
-            repo_root=repo_root,
+            [*release_tool_flags, "--lock", str(lock_path), "write", "--output", str(first_manifest)],
+            repo_root=effective_root,
             runner=runner,
         )
         if status != 0:
             raise BuildError("manifest write failed on first build", exit_code=status)
 
-        build_all_circuits("second", toolchain, repo_root=repo_root, runner=runner)
+        build_all_circuits("second", toolchain, repo_root=effective_root, runner=runner)
         status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(second_manifest)],
-            repo_root=repo_root,
+            [*release_tool_flags, "--lock", str(lock_path), "write", "--output", str(second_manifest)],
+            repo_root=effective_root,
             runner=runner,
         )
         if status != 0:
             raise BuildError("manifest write failed on second build", exit_code=status)
 
         compare_status = run_manifest_tool(
-            ["--lock", str(lock_path), "compare", str(first_manifest), str(second_manifest)],
-            repo_root=repo_root,
+            [*release_tool_flags, "--lock", str(lock_path), "compare", str(first_manifest), str(second_manifest)],
+            repo_root=effective_root,
             runner=runner,
         )
         if compare_status != 0:
@@ -451,12 +654,19 @@ def cmd_build(
 
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
-    target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
+    release_dir_arg = getattr(args, "release_dir", None)
+    _, resolved_artifacts = _resolve_target_artifacts(
+        ("proof", "public_inputs", "vk"),
+        circuit=circuit,
+        target_dir_arg=args.target_dir,
+        release_dir_arg=release_dir_arg,
+        repo_root=repo_root,
+    )
 
     files = {
-        "proof": target_dir / "proof",
-        "publicInputs": target_dir / "public_inputs",
-        "verificationKey": target_dir / "vk",
+        "proof": resolved_artifacts["proof"],
+        "publicInputs": resolved_artifacts["public_inputs"],
+        "verificationKey": resolved_artifacts["vk"],
     }
 
     for key, path in files.items():
@@ -473,16 +683,33 @@ def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     print(output_str)
 
     if args.output:
-        Path(args.output).write_text(output_str, encoding="utf-8")
+        output_path = (
+            _resolve_contained_path(
+                args.output,
+                _resolve_selected_root(Path(release_dir_arg)),
+                field_name="export output path",
+            )
+            if release_dir_arg is not None
+            else Path(args.output)
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output_str, encoding="utf-8")
 
     return EXIT_OK
 
 
 def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
     circuit = args.circuit or "silent_witness"
-    target_dir = Path(args.target_dir) if args.target_dir else (repo_root / "zk" / "noir" / circuit / "target")
-    vk_path = target_dir / "vk"
-    soroban_vk_path = target_dir / "vk_soroban"
+    release_dir_arg = getattr(args, "release_dir", None)
+    _, resolved_artifacts = _resolve_target_artifacts(
+        ("vk", "vk_soroban", "proof", "public_inputs"),
+        circuit=circuit,
+        target_dir_arg=args.target_dir,
+        release_dir_arg=release_dir_arg,
+        repo_root=repo_root,
+    )
+    vk_path = resolved_artifacts["vk"]
+    soroban_vk_path = resolved_artifacts["vk_soroban"]
 
     if not vk_path.is_file():
         raise BuildError(f"Missing VK artifact at {vk_path}. Run build first.")
@@ -508,15 +735,25 @@ def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -
         "vkBytes": len(vk),
         "sorobanVk": str(soroban_vk_path),
         "sorobanVkBytes": len(soroban_vk_path.read_bytes()),
-        "proof": str(target_dir / "proof"),
-        "publicInputs": str(target_dir / "public_inputs"),
+        "proof": str(resolved_artifacts["proof"]),
+        "publicInputs": str(resolved_artifacts["public_inputs"]),
     }
 
     output_str = json.dumps(result, indent=2)
     print(output_str)
 
     if args.output:
-        Path(args.output).write_text(output_str, encoding="utf-8")
+        output_path = (
+            _resolve_contained_path(
+                args.output,
+                _resolve_selected_root(Path(release_dir_arg)),
+                field_name="soroban output path",
+            )
+            if release_dir_arg is not None
+            else Path(args.output)
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output_str, encoding="utf-8")
 
     return EXIT_OK
 
@@ -1051,6 +1288,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--clean", action="store_true", default=True, help="Clean target before build")
     p_build.add_argument("--manifest", default=None, help="Path to manifest file")
     p_build.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_build.add_argument("--release-dir", default=None, help="Selected release directory boundary")
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate proof and public inputs for a circuit")
@@ -1069,6 +1307,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("circuit", nargs="?", default="silent_witness", help="Circuit name")
     p_exp.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_exp.add_argument("--target-dir", default=None, help="Circuit target directory")
+    p_exp.add_argument("--release-dir", default=None, help="Selected release directory boundary")
     p_exp.add_argument("--output", default=None, help="Output JSON file path")
 
     # --- prepare-soroban ---
@@ -1076,6 +1315,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_soroban.add_argument("circuit", nargs="?", default="silent_witness", help="Circuit name")
     p_soroban.add_argument("--circuit", dest="circuit_opt", default=None, help="Explicit circuit name")
     p_soroban.add_argument("--target-dir", default=None, help="Circuit target directory")
+    p_soroban.add_argument("--release-dir", default=None, help="Selected release directory boundary")
     p_soroban.add_argument("--output", default=None, help="Output JSON file path")
 
     return parser

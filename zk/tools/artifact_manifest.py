@@ -49,14 +49,15 @@ See docs/zk-reproducible-builds.md.
 from __future__ import annotations
 
 import argparse
-import re
 import hashlib
 import json
 import os
+import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 MANIFEST_FORMAT = "harpocrates.zk-artifact-manifest"
 MANIFEST_VERSION = 1
@@ -74,6 +75,11 @@ ACIR_ROLE = "acir"
 
 DEFAULT_CIRCUIT_ROOT = "zk/noir"
 DEFAULT_PACKAGE_FILE = "Nargo.toml"
+
+MAX_MANIFEST_PATH_CHARS = 512
+MAX_PATH_ERROR_PREVIEW = 96
+MAX_VALIDATION_ERROR_CHARS = 240
+_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -98,6 +104,219 @@ FATAL_STATES = frozenset({ArtifactState.OVERSIZE, ArtifactState.UNREADABLE})
 
 class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
+
+
+class PathValidationError(BuildError):
+    """Deterministic, length-bounded validation error for escaping or invalid paths."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        message = f"invalid manifest path [{code}]: {detail}"
+        if len(message) > MAX_VALIDATION_ERROR_CHARS:
+            message = message[: MAX_VALIDATION_ERROR_CHARS - 3] + "..."
+        super().__init__(message)
+
+
+def _bounded_path_preview(raw_path: Any) -> str:
+    """Return a deterministic, sanitized, bounded preview of a path string."""
+    if not isinstance(raw_path, str):
+        return f"<{type(raw_path).__name__}>"
+    sanitized_chars: list[str] = []
+    for ch in raw_path:
+        codepoint = ord(ch)
+        if codepoint < 32 or codepoint == 127:
+            sanitized_chars.append(f"\\x{codepoint:02x}")
+        else:
+            sanitized_chars.append(ch)
+    sanitized = "".join(sanitized_chars)
+    if len(sanitized) <= MAX_PATH_ERROR_PREVIEW:
+        return sanitized
+    omitted = len(sanitized) - 64
+    return f"{sanitized[:64]}...<+{omitted} chars>"
+
+
+def validate_relative_manifest_path(
+    raw_path: Any,
+    *,
+    field_name: str = "artifact path",
+) -> str:
+    """Validate a manifest/lock relative path without touching the filesystem."""
+    if not isinstance(raw_path, str):
+        raise PathValidationError(
+            "path_non_string",
+            f"{field_name} must be a non-empty relative POSIX string, got {_bounded_path_preview(raw_path)}",
+        )
+    if not raw_path or not raw_path.strip():
+        raise PathValidationError(
+            "path_empty",
+            f"{field_name} must be a non-empty relative POSIX path",
+        )
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_path):
+        raise PathValidationError(
+            "path_control_char",
+            f"{field_name} '{_bounded_path_preview(raw_path)}' contains disallowed control characters",
+        )
+    if len(raw_path) > MAX_MANIFEST_PATH_CHARS:
+        raise PathValidationError(
+            "path_overlong",
+            f"{field_name} '{_bounded_path_preview(raw_path)}' exceeds {MAX_MANIFEST_PATH_CHARS} chars (len={len(raw_path)})",
+        )
+    if "\\" in raw_path:
+        raise PathValidationError(
+            "path_backslash",
+            f"{field_name} '{_bounded_path_preview(raw_path)}' must use '/' separators and stay inside release directory",
+        )
+    if raw_path.startswith("/") or _DRIVE_PREFIX_RE.match(raw_path):
+        raise PathValidationError(
+            "path_absolute",
+            f"{field_name} '{_bounded_path_preview(raw_path)}' must be relative and stay inside release directory",
+        )
+    parts = raw_path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise PathValidationError(
+            "path_traversal",
+            f"{field_name} '{_bounded_path_preview(raw_path)}' must not traverse outside release directory",
+        )
+    return "/".join(parts)
+
+
+def _validate_provenance_glob(raw_glob: Any) -> str:
+    """Validate a provenance glob pattern so it cannot traverse outside release_dir."""
+    if not isinstance(raw_glob, str) or not raw_glob or not raw_glob.strip():
+        raise PathValidationError(
+            "path_empty",
+            "provenance glob must be a non-empty relative POSIX pattern",
+        )
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_glob):
+        raise PathValidationError(
+            "path_control_char",
+            f"provenance glob '{_bounded_path_preview(raw_glob)}' contains control characters",
+        )
+    if len(raw_glob) > MAX_MANIFEST_PATH_CHARS:
+        raise PathValidationError(
+            "path_overlong",
+            f"provenance glob '{_bounded_path_preview(raw_glob)}' exceeds {MAX_MANIFEST_PATH_CHARS} chars",
+        )
+    if "\\" in raw_glob:
+        raise PathValidationError(
+            "path_backslash",
+            f"provenance glob '{_bounded_path_preview(raw_glob)}' must use '/' separators",
+        )
+    if raw_glob.startswith("/") or _DRIVE_PREFIX_RE.match(raw_glob):
+        raise PathValidationError(
+            "path_absolute",
+            f"provenance glob '{_bounded_path_preview(raw_glob)}' must be relative to release directory",
+        )
+    parts = raw_glob.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise PathValidationError(
+            "path_traversal",
+            f"provenance glob '{_bounded_path_preview(raw_glob)}' must not escape release directory",
+        )
+    return raw_glob
+
+
+def _is_alias_entry(entry: Path) -> bool:
+    """Return True if entry is a symbolic link or Windows directory junction."""
+    try:
+        if entry.is_symlink():
+            return True
+    except OSError:
+        return False
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            if isjunction(entry):
+                return True
+        except OSError:
+            return False
+    return False
+
+
+def _strip_extended_drive_prefix(raw_target: str) -> str:
+    if raw_target.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + raw_target[8:]
+    if raw_target.startswith("\\\\?\\"):
+        return raw_target[4:]
+    return raw_target
+
+
+def _is_strictly_inside(candidate: Path, resolved_root: Path) -> bool:
+    return candidate != resolved_root and candidate.is_relative_to(resolved_root)
+
+
+def _resolve_release_root(release_dir: Path) -> Path:
+    try:
+        if not release_dir.exists() or not release_dir.is_dir():
+            raise PathValidationError(
+                "release_dir_invalid",
+                "selected release directory does not exist or is not a directory",
+            )
+        return release_dir.resolve(strict=True)
+    except OSError as exc:
+        raise PathValidationError(
+            "release_dir_invalid",
+            "selected release directory cannot be resolved",
+        ) from exc
+
+
+def resolve_release_artifact_path(
+    raw_path: Any,
+    release_dir: Path,
+    *,
+    field_name: str = "artifact path",
+) -> Path:
+    """Validate and resolve aliases for ``raw_path`` inside ``release_dir``.
+
+    Every path segment is checked for symbolic links and Windows junctions
+    *before* callers stat or read any referenced artifact bytes. Any lexical
+    escape or alias resolving outside ``release_dir`` fails closed with a
+    deterministic, length-bounded ``PathValidationError`` that never echoes
+    external host paths or file contents.
+    """
+    normalized = validate_relative_manifest_path(raw_path, field_name=field_name)
+    resolved_root = _resolve_release_root(release_dir)
+
+    current = resolved_root
+    for segment in normalized.split("/"):
+        next_entry = current / segment
+        if _is_alias_entry(next_entry):
+            if next_entry.is_symlink():
+                try:
+                    raw_link = _strip_extended_drive_prefix(os.readlink(next_entry))
+                except OSError as exc:
+                    raise PathValidationError(
+                        "alias_escape",
+                        f"{field_name} '{_bounded_path_preview(normalized)}' has an unreadable link alias",
+                    ) from exc
+                link_path = Path(raw_link)
+                step_target = (
+                    link_path.resolve(strict=False)
+                    if link_path.is_absolute()
+                    else (next_entry.parent / link_path).resolve(strict=False)
+                )
+                if not _is_strictly_inside(step_target, resolved_root):
+                    raise PathValidationError(
+                        "alias_escape",
+                        f"{field_name} '{_bounded_path_preview(normalized)}' resolves outside selected release directory",
+                    )
+            resolved_step = next_entry.resolve(strict=False)
+            if not _is_strictly_inside(resolved_step, resolved_root):
+                raise PathValidationError(
+                    "alias_escape",
+                    f"{field_name} '{_bounded_path_preview(normalized)}' resolves outside selected release directory",
+                )
+            current = resolved_step
+        else:
+            current = next_entry
+
+    resolved_final = current.resolve(strict=False)
+    if not _is_strictly_inside(resolved_final, resolved_root):
+        raise PathValidationError(
+            "alias_escape",
+            f"{field_name} '{_bounded_path_preview(normalized)}' resolves outside selected release directory",
+        )
+    return resolved_final
 
 
 # ── Signals ─────────────────────────────────────────────────────────────────
@@ -165,11 +384,18 @@ def load_lock(path: Path) -> Lock:
         max_circuits=int(limits_raw["max_circuits"]),
     )
 
-    artifacts = tuple(raw["artifacts"])
+    artifacts_raw = raw["artifacts"]
+    if not isinstance(artifacts_raw, list):
+        raise BuildError("toolchain lock artifacts must be a JSON array")
+    artifacts = tuple(artifacts_raw)
     if len(artifacts) > limits.max_artifacts:
         raise BuildError(
             f"lock declares {len(artifacts)} artifacts, above the cap of {limits.max_artifacts}"
         )
+    for entry in artifacts:
+        if not isinstance(entry, dict):
+            raise BuildError("toolchain lock artifact entry must be a JSON object")
+        validate_relative_manifest_path(entry.get("path"), field_name="lock artifact path")
 
     coverage = raw.get("coverage") or {}
     circuit_root = str(coverage.get("circuit_root", DEFAULT_CIRCUIT_ROOT))
@@ -177,6 +403,16 @@ def load_lock(path: Path) -> Lock:
     for label, value in (("circuit_root", circuit_root), ("package_file", package_file)):
         if not value or value.startswith("/") or ".." in value.split("/"):
             raise BuildError(f"toolchain lock declares an unusable coverage {label}: {value!r}")
+        validate_relative_manifest_path(value, field_name=f"coverage {label}")
+    if "/" in package_file:
+        raise BuildError(
+            f"toolchain lock declares an unusable coverage package_file: {package_file!r}"
+        )
+
+    provenance_globs = tuple(
+        _validate_provenance_glob(pattern)
+        for pattern in raw["provenance_sources"]["globs"]
+    )
 
     return Lock(
         raw=raw,
@@ -186,7 +422,7 @@ def load_lock(path: Path) -> Lock:
             raw["normalization"]["wasm"]["strip_custom_sections"]
         ),
         artifacts=artifacts,
-        provenance_globs=tuple(raw["provenance_sources"]["globs"]),
+        provenance_globs=provenance_globs,
         circuit_root=circuit_root,
         package_file=package_file,
     )
@@ -295,12 +531,13 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _rel(path: Path) -> str:
-    """Repo-relative, forward-slashed path — the only path form ever logged."""
+def _rel(path: Path, root: Path | None = None) -> str:
+    """Release-relative, forward-slashed path — the only path form ever logged."""
+    base = (root or REPO_ROOT).resolve(strict=False)
     try:
-        return path.resolve().relative_to(REPO_ROOT).as_posix()
+        return path.resolve(strict=False).relative_to(base).as_posix()
     except ValueError:
-        return path.name
+        return _bounded_path_preview(path.name)
 
 
 @dataclass
@@ -327,11 +564,11 @@ class ArtifactResult:
 
 
 def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult:
-    relative = declaration["path"]
+    relative = validate_relative_manifest_path(declaration.get("path"))
+    target = resolve_release_artifact_path(relative, root)
     kind = declaration["kind"]
     role = declaration.get("role", "unknown")
     required = bool(declaration.get("required", False))
-    target = root / relative
 
     result = ArtifactResult(path=relative, kind=kind, role=role, state=ArtifactState.MISSING)
 
@@ -386,18 +623,33 @@ def collect_provenance(lock: Lock, root: Path) -> dict[str, str]:
     """Digest every source file that defines the artifacts.
 
     Sorted and bounded so the result is stable across filesystems with
-    different directory iteration order.
+    different directory iteration order. Resolves aliases inside ``root``
+    before inspecting or reading any matched source file.
     """
+    resolved_root = _resolve_release_root(root)
     found: dict[str, str] = {}
     for pattern in lock.provenance_globs:
-        for path in sorted(root.glob(pattern)):
-            if not path.is_file():
+        validated_pattern = _validate_provenance_glob(pattern)
+        for matched in sorted(resolved_root.glob(validated_pattern)):
+            try:
+                rel_posix = matched.relative_to(resolved_root).as_posix()
+            except ValueError as exc:
+                raise PathValidationError(
+                    "alias_escape",
+                    "provenance glob matched path outside selected release directory",
+                ) from exc
+            resolved_source = resolve_release_artifact_path(
+                rel_posix,
+                resolved_root,
+                field_name="provenance path",
+            )
+            if not resolved_source.is_file():
                 continue
             if len(found) >= lock.limits.max_provenance_files:
                 raise BuildError(
                     f"provenance set exceeds {lock.limits.max_provenance_files} files"
                 )
-            found[_rel(path)] = sha256_hex(path.read_bytes())
+            found[rel_posix] = sha256_hex(resolved_source.read_bytes())
     return dict(sorted(found.items()))
 
 
@@ -461,6 +713,79 @@ def serialize_manifest(manifest: dict) -> str:
 # ── Drift comparison ────────────────────────────────────────────────────────
 
 
+def _validate_artifact_entry_list(
+    entries: Any,
+    *,
+    field_name: str,
+    release_dir: Path | None = None,
+) -> dict[str, dict]:
+    if not isinstance(entries, list):
+        raise BuildError(f"{field_name} must be a JSON array")
+    indexed: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise BuildError(f"every item in {field_name} must be a JSON object")
+        normalized = validate_relative_manifest_path(
+            entry.get("path"),
+            field_name=field_name,
+        )
+        if release_dir is not None:
+            resolve_release_artifact_path(
+                normalized,
+                release_dir,
+                field_name=field_name,
+            )
+        if normalized in indexed:
+            raise BuildError(f"duplicate {field_name}: {normalized}")
+        indexed[normalized] = entry
+    return indexed
+
+
+def _validate_provenance_map(
+    mapping: Any,
+    *,
+    release_dir: Path | None = None,
+) -> dict[str, str]:
+    if not isinstance(mapping, dict):
+        raise BuildError("provenance must be a JSON object")
+    validated: dict[str, str] = {}
+    for raw_key, digest in mapping.items():
+        normalized = validate_relative_manifest_path(
+            raw_key,
+            field_name="provenance path",
+        )
+        if release_dir is not None:
+            resolve_release_artifact_path(
+                normalized,
+                release_dir,
+                field_name="provenance path",
+            )
+        validated[normalized] = digest
+    return validated
+
+
+def _validate_skipped_list(
+    skipped: Any,
+    *,
+    release_dir: Path | None = None,
+) -> None:
+    if skipped is None:
+        return
+    if not isinstance(skipped, list):
+        raise BuildError("skipped must be a JSON array")
+    for item in skipped:
+        normalized = validate_relative_manifest_path(
+            item,
+            field_name="skipped artifact path",
+        )
+        if release_dir is not None:
+            resolve_release_artifact_path(
+                normalized,
+                release_dir,
+                field_name="skipped artifact path",
+            )
+
+
 def compare_manifests(expected: dict, actual: dict) -> list[str]:
     """Return a stable, human-readable list of drift findings.
 
@@ -490,8 +815,8 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
             "normalization policy changed; artifacts digested under different rules"
         )
 
-    expected_provenance = expected.get("provenance", {})
-    actual_provenance = actual.get("provenance", {})
+    expected_provenance = _validate_provenance_map(expected.get("provenance", {}))
+    actual_provenance = _validate_provenance_map(actual.get("provenance", {}))
     for path in sorted(set(expected_provenance) | set(actual_provenance)):
         before = expected_provenance.get(path)
         after = actual_provenance.get(path)
@@ -500,8 +825,14 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
                 f"source {path}: {_short(before)} -> {_short(after)}"
             )
 
-    expected_artifacts = {entry["path"]: entry for entry in expected.get("artifacts", [])}
-    actual_artifacts = {entry["path"]: entry for entry in actual.get("artifacts", [])}
+    expected_artifacts = _validate_artifact_entry_list(
+        expected.get("artifacts", []),
+        field_name="manifest artifact path",
+    )
+    actual_artifacts = _validate_artifact_entry_list(
+        actual.get("artifacts", []),
+        field_name="manifest artifact path",
+    )
 
     for path in sorted(set(expected_artifacts) | set(actual_artifacts)):
         before = expected_artifacts.get(path)
@@ -608,27 +939,35 @@ def compare_provenance(expected: dict, actual: dict) -> list[str]:
             "normalization policy changed; provenance digested under different rules"
         )
 
-    expected_globs = list(expected.get("provenance_globs") or [])
-    actual_globs = list(actual.get("provenance_globs") or [])
+    expected_globs = [
+        _validate_provenance_glob(glob_pattern)
+        for glob_pattern in (expected.get("provenance_globs") or [])
+    ]
+    actual_globs = [
+        _validate_provenance_glob(glob_pattern)
+        for glob_pattern in (actual.get("provenance_globs") or [])
+    ]
     if expected_globs != actual_globs:
         findings.append(
             "provenance_globs changed; source set is no longer comparable under the same policy"
         )
 
-    expected_sources = expected.get("provenance", {})
-    actual_sources = actual.get("provenance", {})
+    expected_sources = _validate_provenance_map(expected.get("provenance", {}))
+    actual_sources = _validate_provenance_map(actual.get("provenance", {}))
     for path in sorted(set(expected_sources) | set(actual_sources)):
         before = expected_sources.get(path)
         after = actual_sources.get(path)
         if before != after:
             findings.append(f"source {path}: {_short(before)} -> {_short(after)}")
 
-    expected_declared = {
-        entry["path"]: entry for entry in expected.get("declared_artifacts", [])
-    }
-    actual_declared = {
-        entry["path"]: entry for entry in actual.get("declared_artifacts", [])
-    }
+    expected_declared = _validate_artifact_entry_list(
+        expected.get("declared_artifacts", []),
+        field_name="declared artifact path",
+    )
+    actual_declared = _validate_artifact_entry_list(
+        actual.get("declared_artifacts", []),
+        field_name="declared artifact path",
+    )
     for path in sorted(set(expected_declared) | set(actual_declared)):
         before = expected_declared.get(path)
         after = actual_declared.get(path)
@@ -642,42 +981,85 @@ def compare_provenance(expected: dict, actual: dict) -> list[str]:
                 f"declared artifact {path}: missing from lock-declared artifact set"
             )
             continue
-        for field in ("kind", "role", "required"):
-            if before.get(field) != after.get(field):
+        for field_key in ("kind", "role", "required"):
+            if before.get(field_key) != after.get(field_key):
                 findings.append(
-                    f"declared artifact {path}.{field}: "
-                    f"expected {before.get(field)!r}, got {after.get(field)!r}"
+                    f"declared artifact {path}.{field_key}: "
+                    f"expected {before.get(field_key)!r}, got {after.get(field_key)!r}"
                 )
 
     return findings
 
 
-def _load_provenance(path: Path) -> dict:
+def _load_provenance(path: Path, release_dir: Path | None = None) -> dict:
     if not path.is_file():
-        raise BuildError(f"circuit provenance not found: {_rel(path)}")
+        raise BuildError(f"circuit provenance not found: {_rel(path, release_dir)}")
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise BuildError(f"circuit provenance is not valid JSON: {_rel(path)}") from exc
-    if document.get("format") != PROVENANCE_FORMAT:
-        raise BuildError(f"not a circuit provenance document: {_rel(path)}")
+        raise BuildError(f"circuit provenance is not valid JSON: {_rel(path, release_dir)}") from exc
+    if not isinstance(document, dict) or document.get("format") != PROVENANCE_FORMAT:
+        raise BuildError(f"not a circuit provenance document: {_rel(path, release_dir)}")
     if document.get("version") != MANIFEST_VERSION:
         raise BuildError(
             f"unsupported circuit provenance version: {document.get('version')!r}"
         )
+    for glob_pattern in document.get("provenance_globs") or []:
+        _validate_provenance_glob(glob_pattern)
+    _validate_provenance_map(document.get("provenance", {}), release_dir=release_dir)
+    _validate_artifact_entry_list(
+        document.get("declared_artifacts", []),
+        field_name="declared artifact path",
+        release_dir=release_dir,
+    )
     return document
 
 
-def command_write_provenance(args: argparse.Namespace) -> int:
-    lock = load_lock(Path(args.lock))
-    document = build_provenance(lock, REPO_ROOT)
+def _selected_release_dir(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "release_dir", None)
+    if raw is None:
+        return REPO_ROOT
+    return _resolve_release_root(Path(raw))
 
-    output = Path(args.output)
+
+def _selected_lock_path(args: argparse.Namespace, release_dir: Path) -> Path:
+    raw_lock = getattr(args, "lock", None)
+    if raw_lock is not None:
+        return Path(raw_lock)
+    if getattr(args, "release_dir", None) is not None:
+        candidate = resolve_release_artifact_path(
+            "zk/toolchain.lock.json",
+            release_dir,
+            field_name="lock path",
+        )
+        if candidate.is_file():
+            return candidate
+    return DEFAULT_LOCK
+
+
+def command_write_provenance(args: argparse.Namespace) -> int:
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    document = build_provenance(lock, release_dir)
+
+    output = (
+        Path(args.output)
+        if args.output is not None
+        else (
+            resolve_release_artifact_path(
+                "zk/circuit.provenance.json",
+                release_dir,
+                field_name="provenance output path",
+            )
+            if getattr(args, "release_dir", None) is not None
+            else DEFAULT_PROVENANCE
+        )
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(serialize_manifest(document), encoding="utf-8")
     signal(
         "provenance.written",
-        path=_rel(output),
+        path=_rel(output, release_dir),
         sources=len(document["provenance"]),
         declared_artifacts=len(document["declared_artifacts"]),
     )
@@ -686,9 +1068,23 @@ def command_write_provenance(args: argparse.Namespace) -> int:
 
 def command_verify_provenance(args: argparse.Namespace) -> int:
     """Verify lock-declared circuit sources against committed provenance."""
-    lock = load_lock(Path(args.lock))
-    expected = _load_provenance(Path(args.manifest))
-    actual = build_provenance(lock, REPO_ROOT)
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    manifest_path = (
+        Path(args.manifest)
+        if args.manifest is not None
+        else (
+            resolve_release_artifact_path(
+                "zk/circuit.provenance.json",
+                release_dir,
+                field_name="provenance manifest path",
+            )
+            if getattr(args, "release_dir", None) is not None
+            else DEFAULT_PROVENANCE
+        )
+    )
+    expected = _load_provenance(manifest_path, release_dir=release_dir)
+    actual = build_provenance(lock, release_dir)
 
     findings = compare_provenance(expected, actual)
     if findings:
@@ -788,10 +1184,10 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
     """
     findings: list[str] = []
     for declaration in published_acir_declarations(lock):
-        published_path = declaration["path"]
+        published_path = validate_relative_manifest_path(declaration.get("path"))
         target_path = published_to_build_target(published_path)
-        published = root / published_path
-        target = root / target_path
+        published = resolve_release_artifact_path(published_path, root)
+        target = resolve_release_artifact_path(target_path, root)
         if not published.is_file() or not target.is_file():
             continue
 
@@ -836,19 +1232,25 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
     return findings
 
 
-def _load_browser_manifest(path: Path) -> dict:
+def _load_browser_manifest(path: Path, release_dir: Path | None = None) -> dict:
     if not path.is_file():
-        raise BuildError(f"browser manifest not found: {_rel(path)}")
+        raise BuildError(f"browser manifest not found: {_rel(path, release_dir)}")
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise BuildError(f"browser manifest is not valid JSON: {_rel(path)}") from exc
-    if manifest.get("format") != BROWSER_MANIFEST_FORMAT:
-        raise BuildError(f"not a browser artifact manifest: {_rel(path)}")
+        raise BuildError(f"browser manifest is not valid JSON: {_rel(path, release_dir)}") from exc
+    if not isinstance(manifest, dict) or manifest.get("format") != BROWSER_MANIFEST_FORMAT:
+        raise BuildError(f"not a browser artifact manifest: {_rel(path, release_dir)}")
     if manifest.get("version") != MANIFEST_VERSION:
         raise BuildError(
             f"unsupported browser manifest version: {manifest.get('version')!r}"
         )
+    _validate_artifact_entry_list(
+        manifest.get("artifacts", []),
+        field_name="browser artifact path",
+        release_dir=release_dir,
+    )
+    _validate_skipped_list(manifest.get("skipped"), release_dir=release_dir)
     return manifest
 
 
@@ -877,8 +1279,14 @@ def compare_browser_manifests(expected: dict, actual: dict) -> list[str]:
             "normalization policy changed; browser artifacts digested under different rules"
         )
 
-    expected_artifacts = {entry["path"]: entry for entry in expected.get("artifacts", [])}
-    actual_artifacts = {entry["path"]: entry for entry in actual.get("artifacts", [])}
+    expected_artifacts = _validate_artifact_entry_list(
+        expected.get("artifacts", []),
+        field_name="browser artifact path",
+    )
+    actual_artifacts = _validate_artifact_entry_list(
+        actual.get("artifacts", []),
+        field_name="browser artifact path",
+    )
 
     for path in sorted(set(expected_artifacts) | set(actual_artifacts)):
         before = expected_artifacts.get(path)
@@ -910,8 +1318,9 @@ def compare_browser_manifests(expected: dict, actual: dict) -> list[str]:
 
 
 def command_write_browser(args: argparse.Namespace) -> int:
-    lock = load_lock(Path(args.lock))
-    manifest, run = build_browser_manifest(lock, REPO_ROOT)
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    manifest, run = build_browser_manifest(lock, release_dir)
     if run.fatal:
         for entry in run.fatal:
             signal("run.fatal", path=entry.path, state=entry.state)
@@ -925,12 +1334,24 @@ def command_write_browser(args: argparse.Namespace) -> int:
             "browser manifest not written"
         )
 
-    output = Path(args.output)
+    output = (
+        Path(args.output)
+        if args.output is not None
+        else (
+            resolve_release_artifact_path(
+                "zk/browser.artifacts.manifest.json",
+                release_dir,
+                field_name="browser manifest output path",
+            )
+            if getattr(args, "release_dir", None) is not None
+            else DEFAULT_BROWSER_MANIFEST
+        )
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(serialize_manifest(manifest), encoding="utf-8")
     signal(
         "browser.manifest.written",
-        path=_rel(output),
+        path=_rel(output, release_dir),
         artifacts=len(manifest["artifacts"]),
         skipped=len(manifest["skipped"]),
     )
@@ -944,9 +1365,23 @@ def command_verify_browser(args: argparse.Namespace) -> int:
     normalized digest so a publish step cannot silently ship a different circuit
     than the one the reproducible-build pipeline produced.
     """
-    lock = load_lock(Path(args.lock))
-    expected = _load_browser_manifest(Path(args.manifest))
-    actual, run = build_browser_manifest(lock, REPO_ROOT)
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    manifest_path = (
+        Path(args.manifest)
+        if args.manifest is not None
+        else (
+            resolve_release_artifact_path(
+                "zk/browser.artifacts.manifest.json",
+                release_dir,
+                field_name="browser manifest path",
+            )
+            if getattr(args, "release_dir", None) is not None
+            else DEFAULT_BROWSER_MANIFEST
+        )
+    )
+    expected = _load_browser_manifest(manifest_path, release_dir=release_dir)
+    actual, run = build_browser_manifest(lock, release_dir)
     if run.fatal:
         for entry in run.fatal:
             signal("run.fatal", path=entry.path, state=entry.state)
@@ -955,7 +1390,7 @@ def command_verify_browser(args: argparse.Namespace) -> int:
         )
 
     findings = compare_browser_manifests(expected, actual)
-    findings.extend(compare_published_to_targets(lock, REPO_ROOT))
+    findings.extend(compare_published_to_targets(lock, release_dir))
 
     if findings:
         for finding in findings:
@@ -1025,14 +1460,29 @@ def discover_circuit_packages(lock: Lock, root: Path) -> list[str]:
     directory can fail the gate. The walk is sorted and capped by
     ``limits.max_circuits``.
     """
-    base = root / lock.circuit_root
+    base = resolve_release_artifact_path(
+        lock.circuit_root,
+        root,
+        field_name="coverage circuit_root",
+    )
     if not base.is_dir():
         return []
 
     names: list[str] = []
     for path in sorted(base.iterdir()):
-        package_toml = path / lock.package_file
-        if not (path.is_dir() and package_toml.is_file()):
+        resolved_pkg_dir = resolve_release_artifact_path(
+            f"{lock.circuit_root}/{path.name}",
+            root,
+            field_name="circuit package directory",
+        )
+        if not resolved_pkg_dir.is_dir():
+            continue
+        package_toml = resolve_release_artifact_path(
+            f"{lock.circuit_root}/{path.name}/{lock.package_file}",
+            root,
+            field_name="circuit package manifest",
+        )
+        if not package_toml.is_file():
             continue
         if _is_library_package(package_toml):
             continue
@@ -1070,8 +1520,9 @@ def check_coverage(lock: Lock, root: Path) -> list[str]:
 
 
 def command_check_coverage(args: argparse.Namespace) -> int:
-    lock = load_lock(Path(args.lock))
-    findings = check_coverage(lock, REPO_ROOT)
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    findings = check_coverage(lock, release_dir)
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
@@ -1098,17 +1549,30 @@ def _fail_on_fatal(run: ManifestRun) -> None:
 
 
 def command_write(args: argparse.Namespace) -> int:
-    lock = load_lock(Path(args.lock))
-    manifest, run = build_manifest(lock, REPO_ROOT)
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    manifest, run = build_manifest(lock, release_dir)
     _fail_on_fatal(run)
 
-    output = Path(args.output)
+    output = (
+        Path(args.output)
+        if args.output is not None
+        else (
+            resolve_release_artifact_path(
+                "zk/artifacts.manifest.json",
+                release_dir,
+                field_name="manifest output path",
+            )
+            if getattr(args, "release_dir", None) is not None
+            else DEFAULT_MANIFEST
+        )
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(serialize_manifest(manifest), encoding="utf-8")
 
     signal(
         "manifest.written",
-        path=_rel(output),
+        path=_rel(output, release_dir),
         artifacts=len(manifest["artifacts"]),
         skipped=len(manifest["skipped"]),
         sources=len(manifest["provenance"]),
@@ -1117,9 +1581,23 @@ def command_write(args: argparse.Namespace) -> int:
 
 
 def command_verify(args: argparse.Namespace) -> int:
-    lock = load_lock(Path(args.lock))
-    expected = _load_manifest(Path(args.manifest))
-    actual, run = build_manifest(lock, REPO_ROOT)
+    release_dir = _selected_release_dir(args)
+    lock = load_lock(_selected_lock_path(args, release_dir))
+    manifest_path = (
+        Path(args.manifest)
+        if args.manifest is not None
+        else (
+            resolve_release_artifact_path(
+                "zk/artifacts.manifest.json",
+                release_dir,
+                field_name="manifest path",
+            )
+            if getattr(args, "release_dir", None) is not None
+            else DEFAULT_MANIFEST
+        )
+    )
+    expected = _load_manifest(manifest_path, release_dir=release_dir)
+    actual, run = build_manifest(lock, release_dir)
     _fail_on_fatal(run)
 
     findings = compare_manifests(expected, actual)
@@ -1133,21 +1611,33 @@ def command_verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _load_manifest(path: Path) -> dict:
+def _load_manifest(path: Path, release_dir: Path | None = None) -> dict:
     if not path.is_file():
-        raise BuildError(f"manifest not found: {_rel(path)}")
+        raise BuildError(f"manifest not found: {_rel(path, release_dir)}")
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise BuildError(f"manifest is not valid JSON: {_rel(path)}") from exc
-    if manifest.get("format") != MANIFEST_FORMAT:
-        raise BuildError(f"not an artifact manifest: {_rel(path)}")
+        raise BuildError(f"manifest is not valid JSON: {_rel(path, release_dir)}") from exc
+    if not isinstance(manifest, dict) or manifest.get("format") != MANIFEST_FORMAT:
+        raise BuildError(f"not an artifact manifest: {_rel(path, release_dir)}")
+    _validate_artifact_entry_list(
+        manifest.get("artifacts", []),
+        field_name="manifest artifact path",
+        release_dir=release_dir,
+    )
+    _validate_provenance_map(manifest.get("provenance", {}), release_dir=release_dir)
+    _validate_skipped_list(manifest.get("skipped"), release_dir=release_dir)
     return manifest
 
 
 def command_compare(args: argparse.Namespace) -> int:
-    first = _load_manifest(Path(args.first))
-    second = _load_manifest(Path(args.second))
+    release_dir = (
+        _selected_release_dir(args)
+        if getattr(args, "release_dir", None) is not None
+        else None
+    )
+    first = _load_manifest(Path(args.first), release_dir=release_dir)
+    second = _load_manifest(Path(args.second), release_dir=release_dir)
 
     findings = compare_manifests(first, second)
     if findings:
@@ -1160,37 +1650,55 @@ def command_compare(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _add_release_dir_subarg(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument(
+        "--release-dir",
+        default=argparse.SUPPRESS,
+        help="selected release directory boundary (defaults to repository root)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--lock", default=str(DEFAULT_LOCK), help="path to zk/toolchain.lock.json"
+        "--lock", default=None, help="path to zk/toolchain.lock.json"
+    )
+    parser.add_argument(
+        "--release-dir",
+        default=None,
+        help="selected release directory boundary (defaults to repository root)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     write = subparsers.add_parser("write", help="write a manifest from the working tree")
-    write.add_argument("--output", default=str(DEFAULT_MANIFEST))
+    write.add_argument("--output", default=None)
+    _add_release_dir_subarg(write)
     write.set_defaults(handler=command_write)
 
     verify = subparsers.add_parser("verify", help="fail on drift from a manifest")
-    verify.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    verify.add_argument("--manifest", default=None)
+    _add_release_dir_subarg(verify)
     verify.set_defaults(handler=command_verify)
 
     compare = subparsers.add_parser("compare", help="diff two manifests (double build)")
     compare.add_argument("first")
     compare.add_argument("second")
+    _add_release_dir_subarg(compare)
     compare.set_defaults(handler=command_compare)
 
     coverage = subparsers.add_parser(
         "check-coverage",
         help="fail when the lock and the source tree disagree about which circuits exist",
     )
+    _add_release_dir_subarg(coverage)
     coverage.set_defaults(handler=command_check_coverage)
 
     write_browser = subparsers.add_parser(
         "write-browser",
         help="write a manifest for published browser ACIR under frontend/public/noir",
     )
-    write_browser.add_argument("--output", default=str(DEFAULT_BROWSER_MANIFEST))
+    write_browser.add_argument("--output", default=None)
+    _add_release_dir_subarg(write_browser)
     write_browser.set_defaults(handler=command_write_browser)
 
     verify_browser = subparsers.add_parser(
@@ -1198,21 +1706,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="fail if published browser ACIR drifts from the browser manifest "
         "or from matching build-target ACIR",
     )
-    verify_browser.add_argument("--manifest", default=str(DEFAULT_BROWSER_MANIFEST))
+    verify_browser.add_argument("--manifest", default=None)
+    _add_release_dir_subarg(verify_browser)
     verify_browser.set_defaults(handler=command_verify_browser)
 
     write_provenance = subparsers.add_parser(
         "write-provenance",
         help="write published circuit source provenance from the toolchain lock",
     )
-    write_provenance.add_argument("--output", default=str(DEFAULT_PROVENANCE))
+    write_provenance.add_argument("--output", default=None)
+    _add_release_dir_subarg(write_provenance)
     write_provenance.set_defaults(handler=command_write_provenance)
 
     verify_provenance = subparsers.add_parser(
         "verify-provenance",
         help="fail if circuit sources drift from the committed provenance document",
     )
-    verify_provenance.add_argument("--manifest", default=str(DEFAULT_PROVENANCE))
+    verify_provenance.add_argument("--manifest", default=None)
+    _add_release_dir_subarg(verify_provenance)
     verify_provenance.set_defaults(handler=command_verify_provenance)
 
     return parser

@@ -384,3 +384,128 @@ class TestBuildWorkflows:
         assert commands_run[3] == ["nargo", "execute", "witness"]
         assert commands_run[4][:2] == ["bb", "prove"]
         assert commands_run[5][:2] == ["bb", "verify"]
+
+
+# ==============================================================================
+# Release Directory & Alias Containment Tests
+# ==============================================================================
+
+
+def _make_dir_alias(link_path: Path, target_dir: Path) -> None:
+    try:
+        link_path.symlink_to(target_dir, target_is_directory=True)
+    except OSError:
+        import _winapi  # type: ignore[import-not-found]
+
+        _winapi.CreateJunction(str(target_dir), str(link_path))
+
+
+class TestReleaseDirContainment:
+    def test_export_rejects_target_alias_escaping_release_dir_before_reading(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        release_dir = tmp_path / "release"
+        outside_dir = tmp_path / "outside_secret"
+        release_dir.mkdir()
+        outside_dir.mkdir()
+
+        for name in ("proof", "public_inputs", "vk"):
+            (outside_dir / name).write_bytes(b"SECRET_EXTERNAL_BYTES")
+
+        (release_dir / "zk" / "noir" / "silent_witness").mkdir(parents=True)
+        _make_dir_alias(
+            release_dir / "zk" / "noir" / "silent_witness" / "target",
+            outside_dir,
+        )
+
+        reads: list[Path] = []
+        orig_read_bytes = Path.read_bytes
+
+        def spy_read_bytes(self: Path) -> bytes:
+            if self.resolve(strict=False).is_relative_to(outside_dir.resolve(strict=False)):
+                reads.append(self)
+            return orig_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+
+        args = bc.create_parser().parse_args(
+            [
+                "export",
+                "silent_witness",
+                "--release-dir",
+                str(release_dir),
+            ]
+        )
+        with pytest.raises(bc.PathValidationError) as exc_info:
+            bc.cmd_export(args, repo_root=release_dir)
+
+        assert exc_info.value.code == "alias_escape"
+        assert len(str(exc_info.value)) <= 240
+        assert "outside_secret" not in str(exc_info.value)
+        assert reads == []
+
+    def test_prepare_soroban_rejects_target_dir_outside_release_dir(self, tmp_path: Path):
+        release_dir = tmp_path / "release"
+        outside_target = tmp_path / "outside_target"
+        release_dir.mkdir()
+        outside_target.mkdir()
+        (outside_target / "vk").write_bytes(bytes([0x11] * 1760))
+
+        args = bc.create_parser().parse_args(
+            [
+                "prepare-soroban",
+                "silent_witness",
+                "--release-dir",
+                str(release_dir),
+                "--target-dir",
+                str(outside_target),
+            ]
+        )
+        with pytest.raises(bc.PathValidationError) as exc_info:
+            bc.cmd_prepare_soroban(args, repo_root=release_dir)
+
+        assert exc_info.value.code == "alias_escape"
+        assert not (outside_target / "vk_soroban").exists()
+
+    def test_export_rejects_invalid_circuit_traversal_name(self, tmp_path: Path):
+        args = bc.create_parser().parse_args(
+            [
+                "export",
+                "../outside",
+                "--release-dir",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(bc.PathValidationError) as exc_info:
+            bc.cmd_export(args, repo_root=tmp_path)
+
+        assert exc_info.value.code == "circuit_name_invalid"
+
+    def test_export_succeeds_for_contained_release_dir(self, tmp_path: Path):
+        release_dir = tmp_path / "release"
+        target_dir = release_dir / "zk" / "noir" / "silent_witness" / "target"
+        target_dir.mkdir(parents=True)
+        (target_dir / "proof").write_bytes(b"\x10\x20")
+        (target_dir / "public_inputs").write_bytes(b"\x30\x40")
+        (target_dir / "vk").write_bytes(b"\x50\x60")
+
+        out_path = release_dir / "exported" / "bundle.json"
+        args = bc.create_parser().parse_args(
+            [
+                "export",
+                "silent_witness",
+                "--release-dir",
+                str(release_dir),
+                "--output",
+                str(out_path),
+            ]
+        )
+        assert bc.cmd_export(args, repo_root=release_dir) == bc.EXIT_OK
+        saved = json.loads(out_path.read_text(encoding="utf-8"))
+        assert saved == {
+            "proof": "1020",
+            "publicInputs": "3040",
+            "verificationKey": "5060",
+        }

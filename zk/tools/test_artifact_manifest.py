@@ -1195,3 +1195,258 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+# ── Release directory path and alias containment ────────────────────────────
+
+
+def _create_dir_alias(link_path: Path, target_dir: Path) -> None:
+    """Create a directory symlink on POSIX or NTFS junction fallback on Windows."""
+    try:
+        link_path.symlink_to(target_dir, target_is_directory=True)
+    except OSError:
+        import _winapi  # type: ignore[import-not-found]
+
+        _winapi.CreateJunction(str(target_dir), str(link_path))
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "expected_code"),
+    [
+        ("../outside.json", "path_traversal"),
+        ("zk/noir/../../../outside.json", "path_traversal"),
+        ("./zk/noir/demo.json", "path_traversal"),
+        ("zk//noir/demo.json", "path_traversal"),
+        ("/etc/passwd", "path_absolute"),
+        ("C:/outside/demo.json", "path_absolute"),
+        ("zk\\noir\\demo.json", "path_backslash"),
+        ("zk/noir/bad\x00name.json", "path_control_char"),
+        ("", "path_empty"),
+        ("   ", "path_empty"),
+        (12345, "path_non_string"),
+    ],
+)
+def test_validate_relative_manifest_path_rejects_invalid_forms(
+    raw_path: object,
+    expected_code: str,
+):
+    with pytest.raises(am.PathValidationError) as exc_info:
+        am.validate_relative_manifest_path(raw_path)
+
+    err = exc_info.value
+    assert err.code == expected_code
+    assert len(str(err)) <= am.MAX_VALIDATION_ERROR_CHARS
+
+
+def test_overlong_manifest_path_preserves_bounded_deterministic_error():
+    hostile_path = "zk/noir/" + ("a" * 10_000) + "/target/demo.json"
+
+    with pytest.raises(am.PathValidationError) as first_exc:
+        am.validate_relative_manifest_path(hostile_path)
+    with pytest.raises(am.PathValidationError) as second_exc:
+        am.validate_relative_manifest_path(hostile_path)
+
+    assert first_exc.value.code == "path_overlong"
+    assert str(first_exc.value) == str(second_exc.value)
+    assert len(str(first_exc.value)) <= am.MAX_VALIDATION_ERROR_CHARS
+
+
+def test_alias_escaping_release_dir_is_rejected_before_reading(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    release_dir = tmp_path / "release_bundle"
+    outside_dir = tmp_path / "external_sensitive_dir"
+    release_dir.mkdir()
+    outside_dir.mkdir()
+
+    secret_payload = b'{"bytecode":"OUTSIDE_RELEASE_SECRET_DO_NOT_READ"}'
+    external_file = outside_dir / "demo.json"
+    external_file.write_bytes(secret_payload)
+
+    (release_dir / "zk" / "noir" / "demo").mkdir(parents=True)
+    _create_dir_alias(release_dir / "zk" / "noir" / "demo" / "target", outside_dir)
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            }
+        ],
+    )
+    lock_path = tmp_path / "lock.json"
+
+    read_attempts: list[Path] = []
+    real_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        if self.resolve(strict=False) == external_file.resolve(strict=False):
+            read_attempts.append(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    with pytest.raises(am.PathValidationError) as exc_info:
+        am.digest_artifact(lock.artifacts[0], lock, release_dir)
+
+    assert exc_info.value.code == "alias_escape"
+    assert len(str(exc_info.value)) <= am.MAX_VALIDATION_ERROR_CHARS
+    assert "external_sensitive_dir" not in str(exc_info.value)
+    assert read_attempts == [], "external artifact behind alias must never be read"
+
+    out_manifest = tmp_path / "out.manifest.json"
+    rc = am.main(
+        [
+            "--lock",
+            str(lock_path),
+            "--release-dir",
+            str(release_dir),
+            "write",
+            "--output",
+            str(out_manifest),
+        ]
+    )
+    assert rc == am.EXIT_FATAL
+    assert not out_manifest.exists()
+    assert read_attempts == []
+
+    err_output = capsys.readouterr().err
+    assert "OUTSIDE_RELEASE_SECRET_DO_NOT_READ" not in err_output
+    assert "external_sensitive_dir" not in err_output
+    assert "alias_escape" in err_output
+
+
+def test_dangling_symlink_escaping_release_dir_is_rejected(
+    tmp_path: Path,
+    monkeypatch,
+):
+    release_dir = tmp_path / "release_bundle"
+    (release_dir / "zk" / "noir" / "demo" / "target").mkdir(parents=True)
+    dangling_leaf = release_dir / "zk" / "noir" / "demo" / "target" / "demo.json"
+    resolved_leaf = dangling_leaf.resolve(strict=False)
+
+    real_is_symlink = Path.is_symlink
+    real_readlink = am.os.readlink
+
+    def fake_is_symlink(self: Path) -> bool:
+        if self == resolved_leaf:
+            return True
+        return real_is_symlink(self)
+
+    def fake_readlink(path: object) -> str:
+        if Path(str(path)) == resolved_leaf:
+            return "../../../../../outside_missing.json"
+        return real_readlink(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(am.os, "readlink", fake_readlink)
+
+    lock = _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": False,
+            }
+        ],
+    )
+    with pytest.raises(am.PathValidationError) as exc_info:
+        am.digest_artifact(lock.artifacts[0], lock, release_dir)
+
+    assert exc_info.value.code == "alias_escape"
+
+
+def test_in_tree_alias_within_release_dir_remains_supported(tmp_path: Path):
+    release_dir = tmp_path / "release_bundle"
+    real_target = release_dir / "zk" / "noir" / "demo" / "compiled_target"
+    real_target.mkdir(parents=True)
+    (real_target / "demo.json").write_bytes(b'{"bytecode":"INTREE","debug_symbols":"h"}')
+    (release_dir / "zk" / "noir" / "demo" / "src").mkdir(parents=True)
+    (release_dir / "zk" / "noir" / "demo" / "src" / "main.nr").write_text(
+        "fn main() {}\n",
+        encoding="utf-8",
+    )
+
+    _create_dir_alias(release_dir / "zk" / "noir" / "demo" / "target", real_target)
+
+    _lock_for(
+        tmp_path,
+        [
+            {
+                "path": "zk/noir/demo/target/demo.json",
+                "kind": "json",
+                "role": "acir",
+                "required": True,
+            }
+        ],
+    )
+    lock_path = tmp_path / "lock.json"
+    manifest_out = release_dir / "zk" / "artifacts.manifest.json"
+
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "write",
+                "--release-dir",
+                str(release_dir),
+                "--output",
+                str(manifest_out),
+            ]
+        )
+        == am.EXIT_OK
+    )
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "verify",
+                "--release-dir",
+                str(release_dir),
+                "--manifest",
+                str(manifest_out),
+            ]
+        )
+        == am.EXIT_OK
+    )
+
+
+def test_verify_rejects_manifest_containing_escaping_artifact_path(tmp_path: Path):
+    release_dir = tmp_path / "release_bundle"
+    (release_dir / "zk" / "noir" / "demo" / "src").mkdir(parents=True)
+    (release_dir / "zk" / "noir" / "demo" / "src" / "main.nr").write_text(
+        "fn main() {}\n",
+        encoding="utf-8",
+    )
+    _lock_for(tmp_path, [])
+    lock_path = tmp_path / "lock.json"
+
+    bad_manifest = tmp_path / "bad.manifest.json"
+    bad_manifest.write_text(
+        am.serialize_manifest(_manifest([_artifact("../escape.json", "a" * 64)])),
+        encoding="utf-8",
+    )
+
+    assert (
+        am.main(
+            [
+                "--lock",
+                str(lock_path),
+                "--release-dir",
+                str(release_dir),
+                "verify",
+                "--manifest",
+                str(bad_manifest),
+            ]
+        )
+        == am.EXIT_FATAL
+    )
