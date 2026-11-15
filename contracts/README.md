@@ -272,6 +272,8 @@ get_pending_admin
 get_schema_version
 is_admin
 is_issuer
+get_role_capabilities
+get_actor_capabilities
 add_credential_root
 revoke_credential_root
 get_credential_root
@@ -579,6 +581,18 @@ redeploy.
 
 See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
 and migration/rollback details.
+
+## Bounded Role Capability Introspection (#1185)
+
+`get_role_capabilities(role)` and `get_actor_capabilities(actor)` return a
+bounded `RoleCapabilities` summary (`role_mask`, `capability_mask`,
+`council_gated_mask`, `paused_domains`, and `max_pause_secs`) across
+`InstitutionalRole` (`Admin`, `PendingAdmin`, `ActiveIssuer`, `Guardian`,
+`CouncilMember`, and `SealPolicySigner`), reflecting active `AdminCouncil`
+gating, registration domain pauses, and active `SealPolicy` configuration.
+Introspection is strictly advisory (`O(1)` bounded reads); write-side
+authorization gates (`require_admin`, `is_council_active`, `require_pauser`,
+and tier registration checks) remain the sole source of enforcement.
 
 ## Contract Error ABI (#344)
 
