@@ -342,6 +342,24 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Stale Worker Heartbeat vs. Proof Invalidity
+
+`db.py` and `worker.py` separate operational heartbeat stalls from cryptographic
+proof verification failures:
+
+- **Retryable stale-heartbeat state:** `inspect_job_heartbeat`,
+  `mark_job_stale_heartbeat`, `sweep_stale_worker_heartbeats`, and
+  `StaleWorkerHeartbeatError` classify expired worker heartbeats with
+  `processing_state="stale_heartbeat"`, `state_reason="worker_heartbeat_stale"`,
+  `retryable=True`, `verification_status="unverified"`, and
+  `cryptographic_failure=False`.
+- **Fail-closed cryptographic separation:** Unverified or interrupted proof
+  jobs are never marked `verification_status="invalid"` or
+  `cryptographic_failure=True`. Only explicit cryptographic proof rejections
+  (`ProofCryptographicInvalidError`) record `state_reason="proof_invalid"`,
+  `retryable=False`, `verification_status="invalid"`, and
+  `cryptographic_failure=True`.
+
 ## Test
 
 ```powershell

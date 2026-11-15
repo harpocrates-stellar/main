@@ -5,8 +5,10 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
@@ -1170,68 +1172,305 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
     return receipts
 
 
-_JOBS: dict[int, dict[str, Any]] = {}
+_JOBS: dict[int | str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
+
+REASON_WORKER_HEARTBEAT_STALE = "worker_heartbeat_stale"
+REASON_PROOF_INVALID = "proof_invalid"
+REASON_INPUT_VALIDATION_FAILED = "input_validation_failed"
+REASON_WORKER_TRANSIENT_ERROR = "worker_transient_error"
+
+VERIFICATION_UNVERIFIED = "unverified"
+VERIFICATION_VERIFIED = "verified"
+VERIFICATION_INVALID = "invalid"
+
+DEFAULT_HEARTBEAT_STALE_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class JobHeartbeatStatus:
+    job_id: int | str
+    status: str
+    processing_state: str
+    state_reason: str | None
+    retryable: bool
+    verification_status: str
+    cryptographic_failure: bool
+    heartbeat_age_seconds: float | None
+    stale_threshold_seconds: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "status": self.status,
+            "processing_state": self.processing_state,
+            "state_reason": self.state_reason,
+            "retryable": self.retryable,
+            "verification_status": self.verification_status,
+            "cryptographic_failure": self.cryptographic_failure,
+            "heartbeat_age_seconds": self.heartbeat_age_seconds,
+            "stale_threshold_seconds": self.stale_threshold_seconds,
+        }
+
+
+def _coerce_utc_datetime(val: datetime | float | int | str | None) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(float(val), tz=timezone.utc)
+    if isinstance(val, str) and val.strip():
+        try:
+            dt = datetime.fromisoformat(val.strip().replace("Z", "+00:00"))
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
-    job_id = _next_job_id
-    _next_job_id += 1
-    _JOBS[job_id] = {
-        "id": job_id,
-        "type": job_type,
-        "payload": payload,
-        "_trace_context": job_trace_context(),
-        "status": "pending",
-        "result": None,
-        "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return job_id
+    with _JOBS_LOCK:
+        job_id = _next_job_id
+        _next_job_id += 1
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "payload": payload,
+            "_trace_context": job_trace_context(),
+            "status": "pending",
+            "result": None,
+            "progress": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return job_id
 
 
-def get_job(job_id: int) -> dict[str, Any] | None:
+def get_job(job_id: int | str) -> dict[str, Any] | None:
     """Return a job by id, or None."""
-    return _JOBS.get(job_id)
+    with _JOBS_LOCK:
+        return _JOBS.get(job_id)
 
 
-def cancel_job(job_id: int) -> bool:
+def cancel_job(job_id: int | str) -> bool:
     """Cancel a pending job. Returns True on success."""
-    job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
-        job["status"] = "cancelled"
-        return True
-    return False
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job["status"] == "pending":
+            job["status"] = "cancelled"
+            return True
+        return False
 
 
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: datetime | float | None = None,
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
+    now_dt = _coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                job["leased_at"] = now_iso
+                job["heartbeat_at"] = now_iso
+                job["_lease_duration"] = float(lease_duration)
+                job["processing_state"] = "active"
+                job["state_reason"] = None
+                job["retryable"] = True
+                job["verification_status"] = VERIFICATION_UNVERIFIED
+                job["cryptographic_failure"] = False
+                return dict(job)
     return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(
+    job_id: int | str,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    now: datetime | float | None = None,
+) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    del progress
+    now_dt = _coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running":
+            job["heartbeat_at"] = now_dt.isoformat()
+            job["_lease_duration"] = float(lease_duration)
+            if job.get("processing_state") == "stale_heartbeat":
+                job["processing_state"] = "active"
+                job["state_reason"] = None
+
+
+def inspect_job_heartbeat(
+    job_id: int | str,
+    *,
+    now: datetime | float | None = None,
+    stale_after_seconds: float | None = None,
+) -> JobHeartbeatStatus | None:
+    """Evaluate a job's heartbeat freshness independently of cryptographic proof validity."""
+    if stale_after_seconds is not None and stale_after_seconds <= 0:
+        raise ValueError("stale_after_seconds must be positive")
+
+    now_dt = _coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return None
+
+        threshold = (
+            float(stale_after_seconds)
+            if stale_after_seconds is not None
+            else float(job.get("_lease_duration") or DEFAULT_HEARTBEAT_STALE_SECONDS)
+        )
+        last_hb = (
+            _coerce_utc_datetime(job.get("heartbeat_at"))
+            or _coerce_utc_datetime(job.get("leased_at"))
+            or _coerce_utc_datetime(job.get("created_at"))
+        )
+        hb_age = (
+            round(max(0.0, (now_dt - last_hb).total_seconds()), 3)
+            if last_hb is not None
+            else None
+        )
+
+        status = str(job.get("status", "pending"))
+        if status == "running":
+            is_stale = hb_age is not None and hb_age >= threshold
+            if is_stale or job.get("processing_state") == "stale_heartbeat":
+                return JobHeartbeatStatus(
+                    job_id=job_id,
+                    status=status,
+                    processing_state="stale_heartbeat",
+                    state_reason=REASON_WORKER_HEARTBEAT_STALE,
+                    retryable=True,
+                    verification_status=VERIFICATION_UNVERIFIED,
+                    cryptographic_failure=False,
+                    heartbeat_age_seconds=hb_age,
+                    stale_threshold_seconds=threshold,
+                )
+            return JobHeartbeatStatus(
+                job_id=job_id,
+                status=status,
+                processing_state="active",
+                state_reason=None,
+                retryable=True,
+                verification_status=str(job.get("verification_status") or VERIFICATION_UNVERIFIED),
+                cryptographic_failure=False,
+                heartbeat_age_seconds=hb_age,
+                stale_threshold_seconds=threshold,
+            )
+
+        if status == "pending":
+            return JobHeartbeatStatus(
+                job_id=job_id,
+                status=status,
+                processing_state=str(job.get("processing_state") or "queued"),
+                state_reason=job.get("state_reason"),
+                retryable=True,
+                verification_status=VERIFICATION_UNVERIFIED,
+                cryptographic_failure=False,
+                heartbeat_age_seconds=hb_age,
+                stale_threshold_seconds=threshold,
+            )
+
+        if status == "completed":
+            return JobHeartbeatStatus(
+                job_id=job_id,
+                status=status,
+                processing_state="completed",
+                state_reason=job.get("state_reason"),
+                retryable=False,
+                verification_status=str(job.get("verification_status") or VERIFICATION_VERIFIED),
+                cryptographic_failure=False,
+                heartbeat_age_seconds=hb_age,
+                stale_threshold_seconds=threshold,
+            )
+
+        crypto_fail = bool(job.get("cryptographic_failure", False))
+        v_status = str(
+            job.get("verification_status")
+            or (VERIFICATION_INVALID if crypto_fail else VERIFICATION_UNVERIFIED)
+        )
+        return JobHeartbeatStatus(
+            job_id=job_id,
+            status=status,
+            processing_state=str(job.get("processing_state") or status),
+            state_reason=job.get("state_reason"),
+            retryable=bool(job.get("retryable", False)),
+            verification_status=v_status,
+            cryptographic_failure=crypto_fail,
+            heartbeat_age_seconds=hb_age,
+            stale_threshold_seconds=threshold,
+        )
+
+
+def mark_job_stale_heartbeat(
+    job_id: int | str,
+    *,
+    requeue: bool = True,
+    now: datetime | float | None = None,
+    stale_after_seconds: float | None = None,
+) -> dict[str, Any] | None:
+    """Record a stale worker heartbeat as a retryable unverified state, never proof invalidity."""
+    now_dt = _coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    with _JOBS_LOCK:
+        hb_status = inspect_job_heartbeat(
+            job_id,
+            now=now_dt,
+            stale_after_seconds=stale_after_seconds,
+        )
+        if hb_status is None or hb_status.processing_state != "stale_heartbeat":
+            return None
+        job = _JOBS[job_id]
+        job["processing_state"] = "stale_heartbeat"
+        job["state_reason"] = REASON_WORKER_HEARTBEAT_STALE
+        job["retryable"] = True
+        job["verification_status"] = VERIFICATION_UNVERIFIED
+        job["cryptographic_failure"] = False
+        job["stale_detected_at"] = now_dt.isoformat()
+        job["stale_heartbeat_count"] = int(job.get("stale_heartbeat_count", 0)) + 1
+        if requeue:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+        return dict(job)
+
+
+def sweep_stale_worker_heartbeats(
+    *,
+    requeue: bool = True,
+    now: datetime | float | None = None,
+    stale_after_seconds: float | None = None,
+) -> list[dict[str, Any]]:
+    """Transition all running jobs with stale heartbeats to a retryable unverified state."""
+    now_dt = _coerce_utc_datetime(now) or datetime.now(timezone.utc)
+    transitioned: list[dict[str, Any]] = []
+    with _JOBS_LOCK:
+        for jid in list(_JOBS.keys()):
+            updated = mark_job_stale_heartbeat(
+                jid,
+                requeue=requeue,
+                now=now_dt,
+                stale_after_seconds=stale_after_seconds,
+            )
+            if updated is not None:
+                transitioned.append(updated)
+    return transitioned
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1278,28 +1517,82 @@ def report_job_progress(
     return True
 
 
-def complete_job(job_id: int, result: Any = None) -> None:
+def complete_job(job_id: int | str, result: Any = None) -> None:
     """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "completed"
+        job["processing_state"] = "completed"
+        job["state_reason"] = None
+        job["retryable"] = False
+        job["cryptographic_failure"] = False
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+def fail_job(
+    job_id: int | str,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    state_reason: str | None = None,
+    verification_status: str | None = None,
+    cryptographic_failure: bool = False,
+) -> None:
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    Enforces separation between stale worker heartbeats / operational faults
+    (``verification_status='unverified'``, ``cryptographic_failure=False``) and
+    deterministic cryptographic proof rejection (``state_reason='proof_invalid'``).
+    """
+    if state_reason == REASON_WORKER_HEARTBEAT_STALE:
+        if is_fatal or cryptographic_failure or verification_status == VERIFICATION_INVALID:
+            raise ValueError(
+                "stale worker heartbeat is retryable and cannot be classified as fatal or cryptographic failure"
+            )
+    if verification_status == VERIFICATION_INVALID and not cryptographic_failure:
+        raise ValueError(
+            "unverified output cannot be marked verification_status='invalid' without cryptographic_failure=True"
+        )
+
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+
+        resolved_crypto_fail = bool(cryptographic_failure and is_fatal)
+        resolved_v_status = (
+            verification_status
+            if verification_status is not None
+            else (VERIFICATION_INVALID if resolved_crypto_fail else VERIFICATION_UNVERIFIED)
+        )
+        resolved_reason = state_reason or (
+            REASON_PROOF_INVALID
+            if resolved_crypto_fail
+            else (REASON_INPUT_VALIDATION_FAILED if is_fatal else REASON_WORKER_TRANSIENT_ERROR)
+        )
+
+        job["state_reason"] = resolved_reason
+        job["verification_status"] = resolved_v_status
+        job["cryptographic_failure"] = resolved_crypto_fail
+
+        if is_fatal:
+            job["status"] = "failed"
+            job["processing_state"] = "failed"
+            job["retryable"] = False
+        else:
+            job["status"] = "pending"
+            job["processing_state"] = (
+                "stale_heartbeat"
+                if resolved_reason == REASON_WORKER_HEARTBEAT_STALE
+                else "retrying"
+            )
+            job["retryable"] = True
+            job.pop("worker_id", None)
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

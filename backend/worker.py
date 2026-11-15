@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 import logging
 import time
 import os
@@ -7,9 +10,20 @@ import traceback
 from pathlib import Path
 
 from db import (
+    JobHeartbeatStatus,
+    REASON_INPUT_VALIDATION_FAILED,
+    REASON_PROOF_INVALID,
+    REASON_WORKER_HEARTBEAT_STALE,
+    REASON_WORKER_TRANSIENT_ERROR,
+    VERIFICATION_INVALID,
+    VERIFICATION_UNVERIFIED,
+    VERIFICATION_VERIFIED,
+    inspect_job_heartbeat,
     lease_job,
     heartbeat_job,
+    mark_job_stale_heartbeat,
     report_job_progress,
+    sweep_stale_worker_heartbeats,
     complete_job,
     fail_job,
     insert_proof_event,
@@ -21,12 +35,21 @@ from db import (
 from envelope import canonical_metadata_hash
 from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
-from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
 from config import load_config
 
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
+try:
+    from registration_reconcile import (
+        default_min_confirmations,
+        process_verify_tx_job,
+        reconcile_pending_registrations,
+    )
+except ImportError:
+    default_min_confirmations = None
+    process_verify_tx_job = None
+    reconcile_pending_registrations = None
 from tracing import traced_job
 from chain_indexer import run_indexer_loop
 
@@ -40,7 +63,14 @@ LOGGER.setLevel(logging.INFO)
 WORKER_ID = f"worker-{os.getpid()}"
 
 @traced_job("job.media.embed")
-def process_embed(job: dict) -> dict:
+def process_embed(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        message_path = job["message_path"]
+        output_path = job["output_path"]
+        message = Path(message_path).read_text()
+        meta = embed_metadata(input_path, message, output_path)
+        return {"output_path": output_path, "message": message, **(meta if isinstance(meta, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     metadata = payload["metadata"]
@@ -87,7 +117,12 @@ def process_embed(job: dict) -> dict:
     }
 
 @traced_job("job.media.extract")
-def process_extract(job: dict) -> dict:
+def process_extract(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = extract_metadata(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
     job_id = job["id"]
     filename = payload["filename"]
@@ -121,7 +156,12 @@ def process_extract(job: dict) -> dict:
     }
 
 @traced_job("job.proof.noir")
-def process_silent_witness(job: dict) -> dict:
+def process_silent_witness(job: dict, storage: object | None = None) -> dict:
+    if storage is not None or "payload" not in job:
+        input_path = job["input_path"]
+        output_path = job["output_path"]
+        res = generate_silent_witness(input_path, output_path)
+        return {"output_path": output_path, **(res if isinstance(res, dict) else {})}
     payload = job["payload"]
 
     video_hash = payload["video_hash"]
@@ -139,9 +179,74 @@ def process_silent_witness(job: dict) -> dict:
     
     return {"proof": proof}
 
-def process_verify_tx(job: dict) -> dict:
+def process_verify_tx(job: dict, storage: object | None = None) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
+    if storage is not None or ("input_path" in job and "payload" not in job):
+        import json
+        data = json.loads(Path(job["input_path"]).read_text())
+        status = verify_transaction_status(data["tx_id"])
+        output_path = job["output_path"]
+        Path(output_path).write_text(json.dumps(status))
+        return {"output_path": output_path, **(status if isinstance(status, dict) else {"status": status})}
     return process_verify_tx_job(job.get("payload") or {})
+
+
+class StaleWorkerHeartbeatError(RuntimeError):
+    """Raised when a worker lease heartbeat goes stale before proof verification finishes."""
+
+
+class ProofCryptographicInvalidError(ValueError):
+    """Raised only when cryptographic proof verification deterministically rejects a proof."""
+
+
+@dataclass(frozen=True)
+class WorkerFailureClassification:
+    is_fatal: bool
+    state_reason: str
+    retryable: bool
+    verification_status: str
+    cryptographic_failure: bool
+
+
+def classify_worker_failure(job_type: str, err: BaseException) -> WorkerFailureClassification:
+    """Classify worker failures while keeping stale heartbeats distinct from proof invalidity."""
+    if isinstance(err, StaleWorkerHeartbeatError):
+        return WorkerFailureClassification(
+            is_fatal=False,
+            state_reason=REASON_WORKER_HEARTBEAT_STALE,
+            retryable=True,
+            verification_status=VERIFICATION_UNVERIFIED,
+            cryptographic_failure=False,
+        )
+    if isinstance(err, ProofCryptographicInvalidError):
+        return WorkerFailureClassification(
+            is_fatal=True,
+            state_reason=REASON_PROOF_INVALID,
+            retryable=False,
+            verification_status=VERIFICATION_INVALID,
+            cryptographic_failure=True,
+        )
+    if isinstance(err, ValueError) and job_type != "verify_tx":
+        # Non-cryptographic input validation failure: non-retryable, but output is unverified (not invalid proof).
+        return WorkerFailureClassification(
+            is_fatal=True,
+            state_reason=REASON_INPUT_VALIDATION_FAILED,
+            retryable=False,
+            verification_status=VERIFICATION_UNVERIFIED,
+            cryptographic_failure=False,
+        )
+    return WorkerFailureClassification(
+        is_fatal=False,
+        state_reason=REASON_WORKER_TRANSIENT_ERROR,
+        retryable=True,
+        verification_status=VERIFICATION_UNVERIFIED,
+        cryptographic_failure=False,
+    )
+
+
+def is_fatal(job_type: str, err: BaseException) -> bool:
+    """Classify whether a job failure is non-retryable."""
+    return classify_worker_failure(job_type, err).is_fatal
 
 def heartbeat_loop(job_id: int, stop_event: threading.Event):
     while not stop_event.is_set():
@@ -269,12 +374,14 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
             if now_time - last_sweep_time >= 300:
                 last_sweep_time = now_time
                 try:
+                    sweep_stale_worker_heartbeats(requeue=True)
                     sweep_job_files()
                 except Exception as e:
                     LOGGER.error("Job file sweep failed: %s", type(e).__name__)
@@ -313,10 +420,28 @@ def run_worker(
                 except Exception as err:
                     LOGGER.error(f"Failed job {job_id}: {err}")
                     LOGGER.error(traceback.format_exc())
-                    is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
-                    if job_type == "verify_tx":
-                        is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                    classification = classify_worker_failure(job_type, err)
+                    if job_type == "verify_tx" and isinstance(err, ValueError) and not isinstance(
+                        err, ProofCryptographicInvalidError
+                    ):
+                        # Preserve legacy run_worker handling for verify_tx ValueError while keeping unverified status
+                        fail_job(
+                            job_id,
+                            str(err),
+                            is_fatal=True,
+                            state_reason=REASON_INPUT_VALIDATION_FAILED,
+                            verification_status=VERIFICATION_UNVERIFIED,
+                            cryptographic_failure=False,
+                        )
+                    else:
+                        fail_job(
+                            job_id,
+                            str(err),
+                            is_fatal=classification.is_fatal,
+                            state_reason=classification.state_reason,
+                            verification_status=classification.verification_status,
+                            cryptographic_failure=classification.cryptographic_failure,
+                        )
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -335,7 +460,14 @@ def run_worker(
                             f"Job {job_id} did not finish within grace period of {grace_period_seconds}s; releasing job"
                         )
                         hb_stop_event.set()
-                        fail_job(job_id, "Worker shutdown grace period exceeded", is_fatal=False)
+                        fail_job(
+                            job_id,
+                            "Worker shutdown grace period exceeded",
+                            is_fatal=False,
+                            state_reason=REASON_WORKER_HEARTBEAT_STALE,
+                            verification_status=VERIFICATION_UNVERIFIED,
+                            cryptographic_failure=False,
+                        )
                     break
 
         except Exception as e:
