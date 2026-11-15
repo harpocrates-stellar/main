@@ -19,7 +19,46 @@ from typing import BinaryIO, Iterable, Optional, Tuple, Union
 
 from flask import g
 from werkzeug.datastructures import FileStorage
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
+
+UPLOAD_PREMATURE_TERMINATION = "UPLOAD_PREMATURE_TERMINATION"
+
+
+class PrematureUploadTerminationError(Exception):
+    """Raised when an upload stream disconnects or ends short of its declared byte count."""
+
+    def __init__(
+        self,
+        *,
+        reason: str = "stream_disconnected",
+        expected_bytes: Optional[int] = None,
+        observed_bytes: int = 0,
+    ) -> None:
+        self.code = UPLOAD_PREMATURE_TERMINATION
+        self.reason = reason
+        self.expected_bytes = (
+            max(0, int(expected_bytes)) if expected_bytes is not None else None
+        )
+        self.observed_bytes = max(0, int(observed_bytes))
+        super().__init__("upload stream terminated before completion")
+
+
+def parse_expected_upload_bytes(raw: int | str | None) -> Optional[int]:
+    """Parse an optional declared byte count for truncation detection."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("expected upload bytes must be a non-negative integer")
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        parsed = int(stripped)
+    else:
+        parsed = int(raw)
+    if parsed < 0:
+        raise ValueError("expected upload bytes must be non-negative")
+    return parsed
 
 # ---------------------------------------------------------------------------
 # Bounded chunk sizing
@@ -101,17 +140,21 @@ def hash_stream_to_path(
     *,
     chunk_size: int | None = None,
     max_size: int | None = None,
+    expected_bytes: int | str | None = None,
     temp_dir: str | Path | None = None,
 ) -> Tuple[str, int]:
     """Copy *source* to *destination* in bounded chunks while hashing SHA-256.
 
     Returns ``(hex_digest, bytes_written)``.
     Raises ``RequestEntityTooLarge`` when *max_size* is exceeded mid-stream.
-    Temporary files are cleaned up on failure; destination is not left partial
-    unless an OS error occurs after the final rename.
+    Raises ``PrematureUploadTerminationError`` when *source* disconnects or ends
+    short of *expected_bytes*, while treating a clean zero-byte stream (with
+    ``expected_bytes`` absent or ``0``) as valid.
+    Temporary files are cleaned up on failure; destination is not left partial.
     """
     bounded = resolve_chunk_bytes(chunk_size)
     limit = resolve_max_bytes(max_size)
+    declared_expected = parse_expected_upload_bytes(expected_bytes)
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +170,14 @@ def hash_stream_to_path(
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as tmp_file:
             while True:
-                chunk = source.read(bounded)
+                try:
+                    chunk = source.read(bounded)
+                except (ConnectionError, EOFError, ClientDisconnected, OSError) as exc:
+                    raise PrematureUploadTerminationError(
+                        reason="stream_disconnected",
+                        expected_bytes=declared_expected,
+                        observed_bytes=bytes_written,
+                    ) from exc
                 if not chunk:
                     break
                 if limit > 0 and bytes_written + len(chunk) > limit:
@@ -135,6 +185,14 @@ def hash_stream_to_path(
                 tmp_file.write(chunk)
                 hasher.update(chunk)
                 bytes_written += len(chunk)
+
+            if declared_expected is not None and bytes_written < declared_expected:
+                raise PrematureUploadTerminationError(
+                    reason="short_read",
+                    expected_bytes=declared_expected,
+                    observed_bytes=bytes_written,
+                )
+
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
 
@@ -146,7 +204,7 @@ def hash_stream_to_path(
         if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
         if dest.exists():
-            # Do not leave a partial final artifact after a size abort.
+            # Do not leave a partial final artifact after a size or disconnect abort.
             try:
                 dest.unlink()
             except OSError:
@@ -160,10 +218,12 @@ def hash_paths_concat(
     *,
     chunk_size: int | None = None,
     max_size: int | None = None,
+    expected_bytes: int | str | None = None,
 ) -> Tuple[str, int]:
     """Concatenate *paths* into *destination* with bounded-chunk SHA-256 hashing."""
     bounded = resolve_chunk_bytes(chunk_size)
     limit = resolve_max_bytes(max_size)
+    declared_expected = parse_expected_upload_bytes(expected_bytes)
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -186,6 +246,12 @@ def hash_paths_concat(
                         out.write(chunk)
                         hasher.update(chunk)
                         bytes_written += len(chunk)
+            if declared_expected is not None and bytes_written < declared_expected:
+                raise PrematureUploadTerminationError(
+                    reason="short_read",
+                    expected_bytes=declared_expected,
+                    observed_bytes=bytes_written,
+                )
             out.flush()
             os.fsync(out.fileno())
         shutil.move(str(tmp_path), str(dest))
@@ -229,11 +295,13 @@ class StreamingFileStorage(FileStorage):
         content_type: Optional[str] = None,
         max_size: int = 0,
         chunk_size: int | None = None,
+        expected_bytes: int | str | None = None,
         temp_dir: str | Path | None = None,
     ):
         super().__init__(stream, filename, content_type=content_type)
         self._max_size = max_size
         self._chunk_size = resolve_chunk_bytes(chunk_size)
+        self._expected_bytes = parse_expected_upload_bytes(expected_bytes)
         self._temp_dir = resolve_temp_dir(temp_dir)
         self._materialized_path: Optional[Path] = None
         self._bytes_written = 0
@@ -270,6 +338,7 @@ class StreamingFileStorage(FileStorage):
             destination,
             chunk_size=self._chunk_size,
             max_size=self._max_size,
+            expected_bytes=self._expected_bytes,
             temp_dir=self._temp_dir,
         )
         self._bytes_written = written
@@ -285,7 +354,118 @@ class StreamingFileStorage(FileStorage):
             pass
 
 
-def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileStorage:
+class ObservedUploadStream:
+    """Zero-buffering WSGI input wrapper tracking bytes read and premature EOF."""
+
+    def __init__(self, wrapped: BinaryIO, declared_length: int | None) -> None:
+        self._wrapped = wrapped
+        self.declared_length = (
+            int(declared_length)
+            if declared_length is not None and int(declared_length) >= 0
+            else None
+        )
+        self.bytes_read = 0
+        self.disconnected = False
+
+    def read(self, size: int = -1) -> bytes:
+        try:
+            chunk = self._wrapped.read(size)
+        except (ClientDisconnected, ConnectionError, EOFError, OSError):
+            self.disconnected = True
+            raise
+        if chunk:
+            self.bytes_read += len(chunk)
+        elif (
+            self.declared_length is not None
+            and self.declared_length > 0
+            and size != 0
+            and self.bytes_read < self.declared_length
+        ):
+            self.disconnected = True
+        return chunk
+
+    def readline(self, size: int = -1) -> bytes:
+        readline_fn = getattr(self._wrapped, "readline", None)
+        if readline_fn is None:
+            return self.read(size)
+        try:
+            line = readline_fn(size) if size >= 0 else readline_fn()
+        except (ClientDisconnected, ConnectionError, EOFError, OSError):
+            self.disconnected = True
+            raise
+        if line:
+            self.bytes_read += len(line)
+        elif (
+            self.declared_length is not None
+            and self.declared_length > 0
+            and size != 0
+            and self.bytes_read < self.declared_length
+        ):
+            self.disconnected = True
+        return line
+
+    def __iter__(self):
+        while True:
+            line = self.readline()
+            if not line:
+                break
+            yield line
+
+    def __getattr__(self, name: str):
+        return getattr(self._wrapped, name)
+
+
+def ensure_multipart_stream_complete(
+    environ: dict | None,
+    *,
+    stream: BinaryIO | None = None,
+    observed_stream: ObservedUploadStream | None = None,
+    content_length: int | None,
+    mimetype: str | None,
+) -> None:
+    """Detect when Werkzeug's silent multipart parser aborted on a truncated body."""
+    if observed_stream is not None and observed_stream.disconnected:
+        raise PrematureUploadTerminationError(
+            reason="incomplete_multipart",
+            expected_bytes=observed_stream.declared_length,
+            observed_bytes=observed_stream.bytes_read,
+        )
+    if not content_length or content_length <= 0:
+        return
+    if (mimetype or "").lower() != "multipart/form-data":
+        return
+    candidate = stream if stream is not None else (environ.get("wsgi.input") if environ else None)
+    if candidate is None:
+        return
+    pos = getattr(candidate, "_pos", None)
+    if pos is None and callable(getattr(candidate, "tell", None)):
+        try:
+            pos = candidate.tell()
+        except (OSError, ValueError):
+            pos = None
+    limit = getattr(candidate, "limit", content_length)
+    if pos is not None and pos < limit:
+        try:
+            probe = candidate.read(1)
+        except (ClientDisconnected, ConnectionError, EOFError, OSError) as exc:
+            raise PrematureUploadTerminationError(
+                reason="incomplete_multipart",
+                expected_bytes=int(limit),
+                observed_bytes=int(pos),
+            ) from exc
+        if not probe:
+            raise PrematureUploadTerminationError(
+                reason="incomplete_multipart",
+                expected_bytes=int(limit),
+                observed_bytes=int(pos),
+            )
+
+
+def create_streaming_file_storage(
+    field_storage: FileStorage,
+    *,
+    expected_bytes: int | str | None = None,
+) -> StreamingFileStorage:
     """Wrap a Werkzeug ``FileStorage`` with bounded-chunk streaming hashing."""
     config = _upload_config()
     max_size = resolve_max_bytes(
@@ -307,5 +487,6 @@ def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileSt
         content_type=field_storage.content_type,
         max_size=max_size,
         chunk_size=chunk_size,
+        expected_bytes=expected_bytes,
         temp_dir=temp_dir,
     )

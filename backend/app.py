@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-from flask import Flask, Response, g, jsonify, request, send_file
+from flask import Flask, Request, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 
 from http_security import (
@@ -29,7 +29,7 @@ from http_security import (
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from config import load_config
@@ -131,6 +131,8 @@ from errors import (
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
     STEGO_LIMIT_EXCEEDED,
+    UNSUPPORTED_MEDIA_TYPE,
+    UPLOAD_PREMATURE_TERMINATION,
     VALIDATION_ERROR,
     error_response,
     ok_response,
@@ -153,9 +155,13 @@ from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    ObservedUploadStream,
+    PrematureUploadTerminationError,
     StreamingFileStorage,
     create_streaming_file_storage,
+    ensure_multipart_stream_complete,
     hash_paths_concat,
+    parse_expected_upload_bytes,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -328,6 +334,33 @@ def clamp_lineage_limit(value: object, *, default: int = 25, maximum: int = 100)
     return min(parsed, maximum)
 
 
+class _UploadBoundaryRequest(Request):
+    """Enforce non-silent multipart stream completion on ``/api/stego/*``."""
+
+    def make_form_data_parser(self):
+        parser = super().make_form_data_parser()
+        if self.path.startswith("/api/stego/"):
+            parser.silent = False
+        return parser
+
+    def _load_form_data(self) -> None:
+        if not self.path.startswith("/api/stego/"):
+            super()._load_form_data()
+            return
+        try:
+            super()._load_form_data()
+        except (ClientDisconnected, ConnectionError, EOFError, OSError) as exc:
+            raise PrematureUploadTerminationError(
+                reason="stream_disconnected",
+                expected_bytes=self.content_length,
+            ) from exc
+        except ValueError as exc:
+            raise PrematureUploadTerminationError(
+                reason="incomplete_multipart",
+                expected_bytes=self.content_length,
+            ) from exc
+
+
 def create_app() -> Flask:
     load_dotenv()
     config = load_config()
@@ -340,6 +373,7 @@ def create_app() -> Flask:
         service_version=config.release_id,
     )
     app = Flask(__name__)
+    app.request_class = _UploadBoundaryRequest
     # Initialize verifier cache using config
     app.extensions["verifier_cache"] = VerifierCache(
         max_size=config.verifier_cache_max_size,
@@ -404,6 +438,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -434,6 +470,14 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+        if request.path.startswith("/api/stego/") and request.environ.get("wsgi.input") is not None:
+            observed = ObservedUploadStream(
+                request.environ["wsgi.input"],
+                request.content_length,
+            )
+            request.environ["wsgi.input"] = observed
+            request.__dict__.pop("stream", None)
+            g.observed_upload_stream = observed
 
     @app.before_request
     def initialize_trace_context():
@@ -698,6 +742,22 @@ def create_app() -> Flask:
             status=413,
         )
 
+    @app.errorhandler(PrematureUploadTerminationError)
+    def premature_upload_termination(_error: PrematureUploadTerminationError):
+        return error_response(
+            code=UPLOAD_PREMATURE_TERMINATION,
+            message="upload stream terminated before completion",
+            status=400,
+        )
+
+    @app.errorhandler(ClientDisconnected)
+    def client_disconnected(_error: ClientDisconnected):
+        return error_response(
+            code=UPLOAD_PREMATURE_TERMINATION,
+            message="upload stream terminated before completion",
+            status=400,
+        )
+
     @app.errorhandler(ValueError)
     def bad_request(error: ValueError):
         # Metadata failures carry a canonical taxonomy code; serialize them
@@ -814,12 +874,28 @@ def create_app() -> Flask:
         video.seek(0)
         return size <= config.max_video_bytes
 
+    def _verify_expected_upload_bytes(video) -> None:
+        raw_expected = request.headers.get("X-Upload-Expected-Bytes")
+        expected = parse_expected_upload_bytes(raw_expected)
+        if expected is None or isinstance(video, StreamingFileStorage):
+            return
+        video.seek(0, 2)
+        size = video.tell()
+        video.seek(0)
+        if size < expected:
+            raise PrematureUploadTerminationError(
+                reason="short_read",
+                expected_bytes=expected,
+                observed_bytes=size,
+            )
+
     def _enable_streaming_for_large_uploads():
         """Wrap large multipart uploads with bounded-chunk stream hashing."""
         threshold = getattr(
             config, "upload_stream_threshold_bytes", 1_048_576
         )
-        if not request.content_length or request.content_length <= threshold:
+        raw_expected = request.headers.get("X-Upload-Expected-Bytes")
+        if (not request.content_length or request.content_length <= threshold) and not raw_expected:
             return
         if not request.files:
             return
@@ -829,8 +905,15 @@ def create_app() -> Flask:
         current = request.files
         new_items = []
         for field_name, field_storage in current.items(multi=True):
+            expected_for_part = raw_expected if field_name in {"video", "chunk"} else None
             new_items.append(
-                (field_name, create_streaming_file_storage(field_storage))
+                (
+                    field_name,
+                    create_streaming_file_storage(
+                        field_storage,
+                        expected_bytes=expected_for_part,
+                    ),
+                )
             )
         # Shadow the cached_property with stream-hashing wrappers.
         request.__dict__["files"] = ImmutableMultiDict(new_items)
@@ -850,9 +933,17 @@ def create_app() -> Flask:
         video = request.files.get("video")
         metadata_raw = request.form.get("metadata")
         if video is None or metadata_raw is None:
+            ensure_multipart_stream_complete(
+                request.environ,
+                stream=request.stream,
+                observed_stream=getattr(g, "observed_upload_stream", None),
+                content_length=request.content_length,
+                mimetype=request.mimetype,
+            )
             return jsonify({"error": "video and metadata are required"}), 400
         if not _enforce_video_size(video):
             return jsonify({"error": "video payload exceeds size limit"}), 413
+        _verify_expected_upload_bytes(video)
         validate_video_upload(video)
         if len(metadata_raw.encode("utf-8")) > config.max_metadata_bytes:
             return metadata_error_response(
@@ -944,13 +1035,23 @@ def create_app() -> Flask:
         
         chunk = request.files.get("chunk")
         if chunk is None:
+            ensure_multipart_stream_complete(
+                request.environ,
+                stream=request.stream,
+                observed_stream=getattr(g, "observed_upload_stream", None),
+                content_length=request.content_length,
+                mimetype=request.mimetype,
+            )
             return jsonify({"error": "chunk is required"}), 400
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
         # Persist each session chunk with bounded-chunk hashing for integrity.
         g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
+        streaming_chunk = create_streaming_file_storage(
+            chunk,
+            expected_bytes=request.headers.get("X-Upload-Expected-Bytes"),
+        )
         chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
             streaming_chunk.save(str(chunk_path))
@@ -972,6 +1073,13 @@ def create_app() -> Flask:
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:
+            ensure_multipart_stream_complete(
+                request.environ,
+                stream=request.stream,
+                observed_stream=getattr(g, "observed_upload_stream", None),
+                content_length=request.content_length,
+                mimetype=request.mimetype,
+            )
             return jsonify({"error": "metadata is required"}), 400
 
         try:
@@ -1001,6 +1109,7 @@ def create_app() -> Flask:
             combined_path,
             chunk_size=getattr(config, "upload_chunk_bytes", None),
             max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+            expected_bytes=request.headers.get("X-Upload-Expected-Bytes"),
         )
 
         # Sniff assembled file before handing it to ffmpeg.
@@ -1068,9 +1177,17 @@ def create_app() -> Flask:
         
         video = request.files.get("video")
         if video is None:
+            ensure_multipart_stream_complete(
+                request.environ,
+                stream=request.stream,
+                observed_stream=getattr(g, "observed_upload_stream", None),
+                content_length=request.content_length,
+                mimetype=request.mimetype,
+            )
             return jsonify({"error": "video is required"}), 400
         if not _enforce_video_size(video):
             return jsonify({"error": "video payload exceeds size limit"}), 413
+        _verify_expected_upload_bytes(video)
         validate_video_upload(video)
 
         normalized_name = normalize_filename(video.filename)

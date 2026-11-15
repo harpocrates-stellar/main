@@ -2,7 +2,10 @@ import threading
 from functools import wraps
 from typing import Dict, Tuple
 
-from flask import request, jsonify
+from flask import jsonify, request
+from werkzeug.exceptions import ClientDisconnected
+
+from streaming_upload import PrematureUploadTerminationError
 
 
 class AdmissionController:
@@ -123,6 +126,14 @@ def require_capacity(controller: AdmissionController):
                 
             try:
                 return f(*args, **kwargs)
+            except (PrematureUploadTerminationError, ClientDisconnected):
+                from metrics import collector as metrics_collector
+
+                endpoint = request.url_rule.rule if request.url_rule else request.path
+                metrics_collector.record_rejection(
+                    "upload_premature_termination", endpoint
+                )
+                raise
             finally:
                 controller.release(identity)
         return wrapped

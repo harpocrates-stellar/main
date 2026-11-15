@@ -75,6 +75,9 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 """The uploaded file has an unsupported content type (400)."""
 
+UPLOAD_PREMATURE_TERMINATION = "UPLOAD_PREMATURE_TERMINATION"
+"""The upload stream disconnected or ended before the declared byte count arrived (400)."""
+
 RATE_LIMITED = "RATE_LIMITED"
 """The client exceeded a per-client request budget (429)."""
 
