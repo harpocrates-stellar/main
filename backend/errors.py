@@ -81,6 +81,12 @@ RATE_LIMITED = "RATE_LIMITED"
 FORBIDDEN = "FORBIDDEN"
 """The credential is valid but not authorized for this proof owner (403)."""
 
+UNAUTHORIZED = "UNAUTHORIZED"
+"""Authentication is required or the presented credential is invalid (401)."""
+
+UPLOAD_CONTENT_HASH_MISMATCH = "UPLOAD_CONTENT_HASH_MISMATCH"
+"""Assembled upload content hash or chunk integrity check failed prior to admission (400)."""
+
 DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
 """A required backing service failed; the request was rejected, not applied (503)."""
 

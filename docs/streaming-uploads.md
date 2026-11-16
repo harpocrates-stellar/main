@@ -13,7 +13,8 @@ destination artifact is retained.
 | Chunk size | Configurable via `UPLOAD_CHUNK_BYTES` (clamped to 4 KiB–1 MiB; default 64 KiB) |
 | Hashing | SHA-256 updated per chunk during copy (`hash_stream_to_path` / `StreamingFileStorage.save`) |
 | Size limit | Enforced mid-stream; raises `RequestEntityTooLarge` without logging payload bytes |
-| Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`) |
+| Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`), verifying final SHA-256 before acquiring processing admission capacity |
+| Resumable encrypted sessions | `ResumableEncryptedSessionStore` encrypts staged chunks at rest (AES-256-CTR + HMAC-SHA256), binds explicit principal ownership (`401`/`403`), and exposes bounded resume progress via `GET /api/stego/upload-session/<session_id>` |
 | Streaming trigger | Multipart bodies larger than `UPLOAD_STREAM_THRESHOLD_BYTES` (default 1 MiB) wrap `FileStorage` |
 
 ## Configuration

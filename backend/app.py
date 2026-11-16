@@ -45,6 +45,8 @@ from errors import (
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UNAUTHORIZED,
+    UPLOAD_CONTENT_HASH_MISMATCH,
     UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
@@ -148,14 +150,18 @@ from tracing import (
 )
 from readiness import ReadinessManager
 from verifier_cache import VerifierCache
-from admission import AdmissionController, require_capacity
+from admission import AdmissionController, _get_client_identity, require_capacity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    ResumableEncryptedSessionStore,
     StreamingFileStorage,
+    UploadContentHashMismatchError,
+    UploadOwnershipError,
     create_streaming_file_storage,
     hash_paths_concat,
+    normalize_sha256_hex,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -404,6 +410,8 @@ def create_app() -> Flask:
             swallow_errors=True,
         )
 
+    app.extensions["harpocrates_limiter"] = limiter
+
     @limiter.request_filter
     def _health_exempt():
         """Health and readiness probes must never be rate-limited."""
@@ -428,6 +436,79 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    resumable_session_store = ResumableEncryptedSessionStore()
+    app.extensions["admission_controller"] = admission_controller
+    app.extensions["resumable_upload_sessions"] = resumable_session_store
+
+    def _claimed_upload_owner_hint() -> str | None:
+        header_owner = (request.headers.get("X-Upload-Owner") or "").strip()
+        if header_owner:
+            return header_owner
+        if request.is_json:
+            body = request.get_json(silent=True)
+            if isinstance(body, dict):
+                raw_owner = body.get("owner") or body.get("sourceAddress")
+                if isinstance(raw_owner, str) and raw_owner.strip():
+                    return raw_owner.strip()
+        return None
+
+    def _authenticate_upload_session_caller():
+        """Resolve authenticated upload-session owner or return an error response."""
+        claimed_hint = _claimed_upload_owner_hint()
+        legacy_key = config.register_api_key
+        scoped_keys = config.register_scoped_keys
+        if legacy_key is None and not scoped_keys:
+            return claimed_hint, None
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None, error_response(
+                code=UNAUTHORIZED,
+                message="Authorization header with Bearer token is required",
+                status=401,
+            )
+
+        token = auth_header[len("Bearer "):].strip()
+        now = datetime.now(tz=timezone.utc)
+        principal = register_auth.authenticate(
+            token,
+            legacy_key=legacy_key,
+            scoped_keys=scoped_keys,
+        )
+        previous_key = config.register_api_key_previous
+        previous_principal = (
+            register_auth.authenticate(token, legacy_key=previous_key, scoped_keys=())
+            if previous_key
+            else None
+        )
+        expires = config.register_api_key_expires
+        primary_expired = expires is not None and now >= expires
+        previous_expires = config.register_api_key_previous_expires
+        if primary_expired:
+            principal = None
+        if principal is None and previous_principal is not None and (
+            previous_expires is None or now < previous_expires
+        ):
+            principal = previous_principal
+        if principal is None:
+            return None, error_response(
+                code=UNAUTHORIZED,
+                message="API key has expired" if primary_expired else "Invalid API key",
+                status=401,
+            )
+
+        if principal.is_scoped:
+            if claimed_hint is not None and not register_auth.scope_allows(
+                principal, claimed_hint
+            ):
+                return None, error_response(
+                    code=FORBIDDEN,
+                    message="credential is not authorized for the claimed upload owner",
+                    status=403,
+                )
+            return principal.owner, None
+
+        return claimed_hint or "authenticated-api-key", None
 
     @app.before_request
     def start_request_context():
@@ -690,6 +771,30 @@ def create_app() -> Flask:
             cli_code=OVERSIZED_INPUT,
         )
 
+    @app.errorhandler(UploadOwnershipError)
+    def handle_upload_ownership_error(_error: UploadOwnershipError):
+        metrics_collector.record_rejection(
+            "upload_ownership_forbidden",
+            request.url_rule.rule if request.url_rule else request.path,
+        )
+        return error_response(
+            code=FORBIDDEN,
+            message="caller is not authorized for this upload session",
+            status=403,
+        )
+
+    @app.errorhandler(UploadContentHashMismatchError)
+    def handle_upload_content_hash_mismatch(_error: UploadContentHashMismatchError):
+        metrics_collector.record_rejection(
+            "upload_content_hash_mismatch",
+            request.url_rule.rule if request.url_rule else request.path,
+        )
+        return error_response(
+            code=UPLOAD_CONTENT_HASH_MISMATCH,
+            message="assembled upload content hash verification failed",
+            status=400,
+        )
+
     @app.errorhandler(RequestEntityTooLarge)
     def request_too_large(_error: RequestEntityTooLarge):
         return error_response(
@@ -930,42 +1035,92 @@ def create_app() -> Flask:
     @app.post("/api/stego/upload-session")
     @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
+        caller_owner, auth_err = _authenticate_upload_session_caller()
+        if auth_err is not None:
+            return auth_err
+
+        raw_expected_sha = request.headers.get("X-Upload-Content-SHA256")
+        if not raw_expected_sha and request.is_json:
+            body = request.get_json(silent=True)
+            if isinstance(body, dict):
+                raw_expected_sha = body.get("expectedSha256")
+        expected_sha256 = normalize_sha256_hex(raw_expected_sha)
+
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        return jsonify({"sessionId": session_id})
+        progress = resumable_session_store.create_session(
+            session_id,
+            session_dir,
+            owner=caller_owner,
+            expected_sha256=expected_sha256,
+        )
+        return jsonify(
+            {
+                "sessionId": session_id,
+                "owner": progress["owner"],
+                "encrypted": True,
+                "maxChunks": progress["maxChunks"],
+                "expectedSha256": progress["expectedSha256"],
+            }
+        )
+
+    @app.get("/api/stego/upload-session/<session_id>")
+    @limiter.limit(config.ratelimit_upload_session)
+    def get_upload_session_resume_state(session_id: str):
+        caller_owner, auth_err = _authenticate_upload_session_caller()
+        if auth_err is not None:
+            return auth_err
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        if not session_dir.exists():
+            return jsonify({"error": "session not found"}), 404
+        progress = resumable_session_store.get_progress(
+            session_id,
+            session_dir,
+            caller_owner=caller_owner,
+        )
+        if progress is None:
+            return jsonify({"error": "session not found"}), 404
+        return jsonify(progress)
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
     def upload_chunk(session_id: str, chunk_index: int):
+        caller_owner, auth_err = _authenticate_upload_session_caller()
+        if auth_err is not None:
+            return auth_err
+
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
-        
+
         chunk = request.files.get("chunk")
         if chunk is None:
             return jsonify({"error": "chunk is required"}), 400
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
-        # Persist each session chunk with bounded-chunk hashing for integrity.
         g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
-        chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
-            streaming_chunk.save(str(chunk_path))
+            result = resumable_session_store.write_encrypted_chunk(
+                session_id,
+                session_dir,
+                caller_owner=caller_owner,
+                chunk_index=chunk_index,
+                source=chunk.stream,
+                chunk_size=getattr(config, "upload_chunk_bytes", None),
+                max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+            )
         except RequestEntityTooLarge:
             return jsonify({"error": "chunk exceeds size limit"}), 413
-        return jsonify({
-            "ok": True,
-            "bytes": streaming_chunk.bytes_written,
-            "sha256": streaming_chunk.computed_hash,
-        })
+        return jsonify(result)
 
     @app.post("/api/stego/upload-session/<session_id>/commit")
     @limiter.limit(config.ratelimit_upload_session)
-    @require_capacity(admission_controller)
     def commit_upload_session(session_id: str):
+        caller_owner, auth_err = _authenticate_upload_session_caller()
+        if auth_err is not None:
+            return auth_err
+
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
@@ -987,38 +1142,98 @@ def create_app() -> Flask:
         except ValueError as exc:
             return metadata_error_response(classify_validation_error(exc))
 
-        combined_path = session_dir / "combined.video"
-        chunk_files = sorted(
-            [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
-            key=lambda f: int(f.name.split("-")[1]),
+        expected_sha_raw = (
+            request.headers.get("X-Upload-Content-SHA256")
+            or request.form.get("expectedSha256")
+            or (metadata.get("sourceHash") if isinstance(metadata, dict) else None)
         )
-        if not chunk_files:
-            return jsonify({"error": "session has no chunks"}), 400
+        expected_sha256 = normalize_sha256_hex(expected_sha_raw)
 
-        # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
-        source_hash, _written = hash_paths_concat(
-            chunk_files,
-            combined_path,
-            chunk_size=getattr(config, "upload_chunk_bytes", None),
-            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
-        )
-
-        # Sniff assembled file before handing it to ffmpeg.
-        try:
-            sniff_media_type_path(combined_path)
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
+        # Verify ownership, encrypted chunk integrity, and final assembled SHA-256
+        # BEFORE acquiring processing admission capacity.
+        has_encrypted_manifest = (session_dir / "session-progress.json").exists()
+        legacy_chunk_files: list[Path] = []
+        if has_encrypted_manifest:
+            source_hash, _written = resumable_session_store.verify_assembled_sha256(
+                session_id,
+                session_dir,
+                caller_owner=caller_owner,
+                expected_sha256=expected_sha256,
+                chunk_size=getattr(config, "upload_chunk_bytes", None),
+                max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
             )
+        else:
+            legacy_chunk_files = sorted(
+                [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
+                key=lambda f: int(f.name.split("-")[1]),
+            )
+            if not legacy_chunk_files:
+                return jsonify({"error": "session has no chunks"}), 400
+            hasher = hashlib.sha256()
+            for part_path in legacy_chunk_files:
+                with part_path.open("rb") as handle:
+                    while True:
+                        buf = handle.read(65536)
+                        if not buf:
+                            break
+                        hasher.update(buf)
+            source_hash = hasher.hexdigest()
+            if expected_sha256 is not None and source_hash != expected_sha256:
+                raise UploadContentHashMismatchError(
+                    "assembled upload content hash does not match expectedSha256"
+                )
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            output_path = Path(tmp_dir) / "embedded.mp4"
-            embed_metadata(combined_path, output_path, metadata)
-            output_bytes = output_path.read_bytes()
-            embedded_hash = sha256_file(output_path)
-            metadata_hash = canonical_metadata_hash(metadata)
+        admission_identity = caller_owner or _get_client_identity()
+        acquired, reason = admission_controller.acquire(admission_identity)
+        if not acquired:
+            endpoint = request.url_rule.rule if request.url_rule else request.path
+            metrics_collector.record_rejection(reason, endpoint)
+            status_code = 429 if reason == "identity_limit" else 503
+            overloaded = jsonify({"error": "service overloaded", "reason": reason})
+            overloaded.status_code = status_code
+            overloaded.headers["Retry-After"] = str(
+                int(admission_controller.timeout_seconds * 2) or 5
+            )
+            return overloaded
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
+                combined_path = Path(tmp_dir) / "combined.video"
+                if has_encrypted_manifest:
+                    resumable_session_store.materialize_verified_plaintext(
+                        session_id,
+                        session_dir,
+                        combined_path,
+                        caller_owner=caller_owner,
+                        verified_sha256=source_hash,
+                        chunk_size=getattr(config, "upload_chunk_bytes", None),
+                        max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+                    )
+                else:
+                    hash_paths_concat(
+                        legacy_chunk_files,
+                        combined_path,
+                        chunk_size=getattr(config, "upload_chunk_bytes", None),
+                        max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+                    )
+
+                # Sniff assembled file before handing it to ffmpeg.
+                try:
+                    sniff_media_type_path(combined_path)
+                except QuarantineError as exc:
+                    return error_response(
+                        code=UNSUPPORTED_MEDIA_TYPE,
+                        message=str(exc),
+                        status=400,
+                    )
+
+                output_path = Path(tmp_dir) / "embedded.mp4"
+                embed_metadata(combined_path, output_path, metadata)
+                output_bytes = output_path.read_bytes()
+                embedded_hash = sha256_file(output_path)
+                metadata_hash = canonical_metadata_hash(metadata)
+        finally:
+            admission_controller.release(admission_identity)
 
         retention_class = request.headers.get("X-Harpocrates-Retention-Class") or metadata.get("retentionClass", "default")
         if retention_class not in config.retention_classes:
@@ -1053,8 +1268,7 @@ def create_app() -> Flask:
                 json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
 
-        import shutil
-        shutil.rmtree(session_dir, ignore_errors=True)
+        resumable_session_store.destroy_session(session_id, session_dir)
 
         return response
 
