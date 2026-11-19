@@ -49,7 +49,10 @@ def _valid_attestation() -> CaptureAttestation:
         ),
         platform_claims={"bootloaderLocked": True},
         critical_fields=("secureTime", "cameraPipeline"),
-        critical_extensions=("harpocrates.evidence-binding/v1",),
+        critical_extensions=(
+            "harpocrates.evidence-binding/v1",
+            "harpocrates.per-session-commitment/v1",
+        ),
         optional_metadata={
             "lensProfile": "wide-24mm",
             "osPatchLevel": "2026-10-01",
@@ -75,7 +78,11 @@ class TestKnownOptionalMetadata(unittest.TestCase):
             set(decoded.critical_fields), {"secureTime", "cameraPipeline"}
         )
         self.assertEqual(
-            decoded.critical_extensions, ("harpocrates.evidence-binding/v1",)
+            decoded.critical_extensions,
+            (
+                "harpocrates.evidence-binding/v1",
+                "harpocrates.per-session-commitment/v1",
+            ),
         )
         self.assertEqual(decoded.platform_claims, {"bootloaderLocked": True})
         self.assertEqual(decoded.trust_level, 1)
@@ -130,15 +137,35 @@ class TestUnknownRequiredDeclarations(unittest.TestCase):
 
     def test_rejects_platform_claim_that_declares_itself_critical(self):
         encoded = encode_attestation(_valid_attestation())
+
+        for marker in ({"critical": True}, {"critical": 1}, {"required": "yes"}):
+            with self.subTest(marker=marker):
+                tampered = {
+                    **encoded,
+                    "platformClaims": {"customGate": {**marker, "value": "x"}},
+                }
+
+                with self.assertRaisesRegex(
+                    AttestationProfileValidationError, "platformClaims"
+                ):
+                    decode_attestation(tampered)
+
+    def test_accepts_explicitly_false_platform_markers(self):
+        encoded = encode_attestation(_valid_attestation())
         tampered = {
             **encoded,
-            "platformClaims": {"customGate": {"critical": True, "value": "x"}},
+            "platformClaims": {
+                "customGate": {"critical": False, "required": False, "value": "x"}
+            },
         }
 
-        with self.assertRaisesRegex(
-            AttestationProfileValidationError, "platformClaims"
-        ):
-            decode_attestation(tampered)
+        decoded = decode_attestation(tampered)
+        self.assertEqual(
+            decoded.platform_claims,
+            {
+                "customGate": {"critical": False, "required": False, "value": "x"}
+            },
+        )
 
     def test_rejects_unknown_optional_metadata_key_and_unbounded_value(self):
         encoded = encode_attestation(_valid_attestation())
@@ -155,17 +182,50 @@ class TestUnknownRequiredDeclarations(unittest.TestCase):
                 {**encoded, "optionalMetadata": {"lensProfile": {"nested": True}}}
             )
 
-    def test_rejects_unknown_nested_fields(self):
+    def test_rejects_empty_container_declared_critical(self):
         encoded = encode_attestation(_valid_attestation())
         tampered = {
             **encoded,
-            "appIdentity": {**encoded["appIdentity"], "unknownRequiredSub": "x"},
+            "cameraPipeline": {},
+            "criticalFields": ["cameraPipeline"],
         }
 
         with self.assertRaisesRegex(
-            AttestationProfileValidationError, "appIdentity"
+            AttestationProfileValidationError, "omits a field"
         ):
             decode_attestation(tampered)
+
+    def test_accepts_zero_trust_level_declared_critical(self):
+        encoded = encode_attestation(_valid_attestation())
+        tampered = {**encoded, "trustLevel": 0, "criticalFields": ["trustLevel"]}
+
+        decoded = decode_attestation(tampered)
+        self.assertEqual(decoded.trust_level, 0)
+
+    def test_rejects_unknown_nested_fields(self):
+        encoded = encode_attestation(_valid_attestation())
+
+        for section in ("appIdentity", "secureTime", "cameraPipeline"):
+            with self.subTest(section=section):
+                tampered = {
+                    **encoded,
+                    section: {**encoded[section], "unknownRequiredSub": "x"},
+                }
+
+                with self.assertRaisesRegex(
+                    AttestationProfileValidationError, section
+                ):
+                    decode_attestation(tampered)
+
+    def test_rejects_non_list_critical_declarations(self):
+        encoded = encode_attestation(_valid_attestation())
+
+        for key in ("criticalFields", "criticalExtensions"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(
+                    AttestationProfileValidationError, "must be a list"
+                ):
+                    decode_attestation({**encoded, key: "not-a-list"})
 
 
 class TestProfileVersionValidation(unittest.TestCase):
@@ -212,6 +272,16 @@ class TestIssuerManifestDeclarations(unittest.TestCase):
 
         with self.assertRaisesRegex(TransparencyError, "version"):
             IssuerManifest.from_dict({**manifest, "version": True})
+
+    def test_rejects_non_list_manifest_critical_extension(self):
+        manifest = self._manifest()
+
+        with self.assertRaisesRegex(
+            TransparencyError, "unsupported critical extension"
+        ):
+            IssuerManifest.from_dict(
+                {**manifest, "criticalExtensions": "unknown.manifest.ext/v1"}
+            )
 
     def test_accepts_empty_manifest_critical_extension_list(self):
         manifest = self._manifest()

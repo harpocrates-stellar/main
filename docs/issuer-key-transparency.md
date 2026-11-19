@@ -35,7 +35,7 @@ Manifest `version` must be the integer `1`; booleans and non-integer values are 
 
 Event types: `activation`, `rotation`, `compromise`, `retirement`, `checkpoint`.
 
-Each event carries a monotonic `sequence`, `previousEventHash` chain linj, and opaque hashes only. Directory rebuild from the authoritative event log is deterministic: the same ordered events always yield the same key statuses and Merkle-style `treeHeadHash`.
+Each event carries a monotonic `sequence`, `previousEventHash` chain link, and opaque hashes only. Directory rebuild from the authoritative event log is deterministic: the same ordered events always yield the same key statuses and Merkle-style `treeHeadHash`.
 
 ## Directory checkpoints
 

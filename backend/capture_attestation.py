@@ -13,7 +13,7 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ MAX_OPTIONAL_METADATA_STR_LEN = 128
 
 
 class AttestationProfileValidationError(ValueError):
-    """Raised when a profile version or critical declaration is not understood."""
+    """Raised when a profile declaration or metadata field is not understood."""
 
 
 # ── Data model ─────────────────────────────────────────────────────────────
@@ -345,8 +345,9 @@ def _validate_platform_claims(claims: object) -> None:
             raise AttestationProfileValidationError(
                 "platformClaims keys must be bounded strings"
             )
-        if isinstance(value, dict) and (
-            value.get("critical") is True or value.get("required") is True
+        if isinstance(value, dict) and any(
+            marker in value and value[marker] not in (None, False)
+            for marker in ("critical", "required")
         ):
             raise AttestationProfileValidationError(
                 "platformClaims cannot declare unrecognised critical or required extensions"
@@ -380,11 +381,13 @@ def _validate_critical_declarations(
 
 def _validate_declared_critical_present(
     critical_fields: tuple[str, ...] | list[Any],
-    get_value: Any,
+    get_value: Callable[[str], Any],
 ) -> None:
     for field_name in critical_fields:
         value = get_value(field_name)
-        if value is None or (field_name == "platformClaims" and not value):
+        if value is None or (
+            isinstance(value, (str, dict, list, tuple)) and not value
+        ):
             raise AttestationProfileValidationError(
                 f"attestation omits a field declared in criticalFields: {field_name}"
             )

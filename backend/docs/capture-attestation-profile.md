@@ -97,10 +97,10 @@ Harpocrates metadata envelope and proof-manifest conventions.
 | `deviceCommitment` | hex32 | Yes | HMAC-SHA256(nonce, perSessionDeviceKey). |
 | `privacyScope` | string | Yes | `per_session`, `per_relying_party`, `per_device_group`. |
 | `evidenceDigestBinding` | hex32 | Yes | SHA-256 of the evidence payload this attestation describes. |
-| `platformClaims` | object | No | Platform-specific transparent claims (e.g. SafetyNet/Play Integrity raw JWTs). An entry must not mark itself `critical` or `required`. |
+| `platformClaims` | object | No | Platform-specific transparent claims (e.g. SafetyNet/Play Integrity raw JWTs). An entry must not set `critical` or `required` to a non-false value. |
 | `criticalFields` | array of strings | No | Known field names this profile requires the verifier to understand. A declared field must be present and non-empty. |
 | `criticalExtensions` | array of strings | No | Extension identifiers whose semantics are required. Only `harpocrates.evidence-binding/v1` and `harpocrates.per-session-commitment/v1` are understood by V1. |
-| `optionalMetadata` | object | No | Allowlisted, bounded display metadata. Preserved and reported as unverified; it never raises the trust level. |
+| `optionalMetadata` | object | No | Allowlisted display metadata (string values length-bounded). Preserved and reported as unverified; it never raises the trust level. |
 
 ### 4.3 Canonical Encoding
 
@@ -133,12 +133,13 @@ Decoders fail closed when they cannot understand what a profile requires:
 - Every identifier in `criticalExtensions` must be understood by this verifier.
   An unsupported identifier raises `AttestationProfileValidationError` instead
   of being ignored.
-- `platformClaims` may carry platform evidence, but an entry that declares
-  itself `critical` or `required` is rejected. Only `criticalFields` and
-  `criticalExtensions` can declare verifier requirements.
-- `optionalMetadata` accepts only known bounded scalar fields
-  (`attestationBackend`, `captureMode`, `lensProfile`, `osPatchLevel`,
-  `sensorModelClass`). It is preserved for display and policy input, but
+- `platformClaims` may carry platform evidence, but an entry that sets
+  `critical` or `required` to any non-false value is rejected. Only
+  `criticalFields` and `criticalExtensions` can declare verifier requirements.
+- `optionalMetadata` accepts only known scalar fields (`attestationBackend`,
+  `captureMode`, `lensProfile`, `osPatchLevel`, `sensorModelClass`). String
+  values are length-bounded; booleans and integers are preserved. It is
+  preserved for display and policy input, but
   `inspect_attestation_profile_metadata` reports both
   `optionalMetadataVerified: false` and `broadTrustAssumed: false`.
 
