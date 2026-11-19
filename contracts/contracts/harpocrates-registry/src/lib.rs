@@ -17,7 +17,7 @@ pub mod verifier_inputs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wasm_budget;
 
-use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN, REVOCATION_PUBLIC_INPUTS_LEN};
+use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN, REVOCATION_PUBLIC_INPUTS_LEN, SILENT_WITNESS_PUBLIC_INPUTS_LEN, SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN};
 
 /// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
@@ -402,6 +402,17 @@ pub struct RegistryConfig {
     pub schema_version: u32,
     pub revocation_root: Option<BytesN<32>>,
     pub paused_domains: u32,
+}
+
+/// Current registry input and metadata limits.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryLimits {
+    pub silent_witness_v1_inputs_len: u32,
+    pub silent_witness_v2_inputs_len: u32,
+    pub revocation_inputs_len: u32,
+    pub evidence_metadata_hash_bytes: u32,
+    pub schema_version: u32,
 }
 
 /// A verifier's declared circuit-version window (#343).
@@ -2036,6 +2047,16 @@ pub struct HarpocratesRegistry;
 
 #[contractimpl]
 impl HarpocratesRegistry {
+    pub fn get_registry_limits(_env: Env) -> RegistryLimits {
+        RegistryLimits {
+            silent_witness_v1_inputs_len: SILENT_WITNESS_PUBLIC_INPUTS_LEN as u32,
+            silent_witness_v2_inputs_len: SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN as u32,
+            revocation_inputs_len: REVOCATION_PUBLIC_INPUTS_LEN as u32,
+            evidence_metadata_hash_bytes: MAX_EVIDENCE_METADATA_HASH_BYTES,
+            schema_version: METADATA_ENVELOPE_VERSION_MAX,
+        }
+    }
+
     pub fn get_role_policy_digest(env: Env) -> BytesN<32> {
         let now = env.ledger().timestamp();
         let mut paused_domains = 0u32;
@@ -8138,3 +8159,6 @@ mod test_list_credential_roots;
 #[cfg(test)]
 mod test_uninitialized;
 
+
+#[cfg(test)]
+mod test_events_conformance;
