@@ -152,8 +152,13 @@ class IssuerManifest:
     def from_dict(obj: dict[str, Any]) -> "IssuerManifest":
         if obj.get("protocol") != PROTOCOL:
             raise TransparencyError("unsupported issuer transparency protocol")
-        if int(obj.get("version", 0)) not in SUPPORTED_VERSIONS:
+        raw_version = obj.get("version", 0)
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int) or raw_version not in SUPPORTED_VERSIONS:
             raise TransparencyError("unsupported issuer transparency version")
+        critical_ext = obj.get("criticalExtensions")
+        if critical_ext is not None:
+            if not isinstance(critical_ext, list) or len(critical_ext) > 0:
+                raise TransparencyError("unsupported critical extension in issuer manifest")
         keys = [IssuerKey.from_dict(k) for k in obj.get("activeKeys", [])]
         return IssuerManifest(
             organization_identity_hash=_require_hex(
