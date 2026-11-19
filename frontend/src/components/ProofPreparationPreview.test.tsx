@@ -7,7 +7,7 @@ import {
   PROOF_PREPARATION_POLICY_VERSION,
 } from '../proofPreparationPreview'
 import { REDACTED_PLACEHOLDER } from '../redactionPreview'
-import type { ProofPackage } from './../types'
+import type { ProofPackage } from '../types'
 
 const VIDEO_HASH = `${'11'.repeat(16)}${'22'.repeat(16)}`
 
