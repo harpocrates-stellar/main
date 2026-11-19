@@ -30,6 +30,14 @@ BORDER_BLOCK = 6
 BORDER_STRIDE = 2
 
 
+class StegoError(RuntimeError):
+    """Base error for steganography worker failures."""
+
+
+class StegoLimitExceededError(StegoError):
+    """Raised when a steganography worker exceeds configured memory or CPU limits."""
+
+
 @dataclass(frozen=True)
 class VideoInfo:
     width: int
