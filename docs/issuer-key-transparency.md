@@ -62,6 +62,15 @@ Key rotation sets `validUntil` on the predecessor. Signatures whose timestamp fa
 
 The registry expresses the same window on chain: `rotate_issuer` retires the predecessor key immediately (it can no longer sign new seals, directly or through a delegation) and records a bounded `grace_expires_at` during which `is_issuer_verifiable(predecessor)` keeps pre-rotation evidence verifiable. The window lapses on its own against ledger time and `finalize_issuer_rotation` settles the record. Because the on-chain window is capped by `MAX_ISSUER_ROTATION_GRACE_SECS`, a retired key’s manifest `validUntil` should not be set beyond that bound; `revoke_issuer` and `add_issuer` clear the on-chain record, so a compromised or re-onboarded key is never covered by a stale grace window.
 
+## Trust-policy simulation report
+
+Operators can preview trust-policy changes against synthetic or captured evidence attestations (`CaptureAttestation`) before activating a new policy version using `simulate_trust_policy` in `backend/issuer_key_transparency.py`:
+
+- **Inputs**: an iterable of `CapturedEvidenceSample` records (bounded by `MAX_SIMULATION_ITEMS`), an immutable baseline `TrustPolicy` (the active policy), an immutable candidate `TrustPolicy`, and optional `IssuerDirectory` / `DirectoryCache` / `now` context.
+- **Non-mutating**: both `TrustPolicy` objects, the directory, and the checkpoint cache are read-only; the report explicitly records `activePolicyMutated: false`.
+- **Fail-closed evaluation**: `evaluate_captured_evidence` checks trust levels, privacy scopes, app signing digest requirements, secure-time source and drift bounds, camera pipeline integrity claims, historical issuer key validity / rotation / compromise rules, and checkpoint freshness (standard and high-assurance). Missing directory or signature timestamp context for keyed samples fails closed.
+- **Canonical privacy-preserving output**: `PolicySimulationReport` includes summary counts (`totalEvaluated`, `unchangedCount`, `changedCount`, `newlyRejectedCount`, `newlyAcceptedCount`, `reasonChangedCount`) and only the changed outcomes (`changes`) identified by `evidenceId` and `attestationHash` (never `captureNonce`, `deviceCommitment`, or raw PII). Use `canonicalize_simulation_report` and `simulation_report_hash` for deterministic digests.
+
 ## Operational procedures
 
 ### Onboarding an issuer

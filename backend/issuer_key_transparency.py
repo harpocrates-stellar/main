@@ -15,12 +15,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable
 
+from capture_attestation import (
+    VALID_INTEGRITY_CLAIMS,
+    VALID_PRIVACY_SCOPES,
+    VALID_TIME_SOURCES,
+    VALID_TRUST_LEVELS,
+    CaptureAttestation,
+    canonical_attestation_hash,
+)
+
 PROTOCOL = "harpocrates-issuer-key-transparency"
 VERSION = 1
 SUPPORTED_VERSIONS = {1}
 
 MAX_ACTIVE_KEYS = 8
 MAX_EVENTS = 10_000
+MAX_SIMULATION_ITEMS = 1_000
 MAX_MANIFEST_BYTES = 8_192
 MAX_CHECKPOINT_BYTES = 16_384
 DEFAULT_FRESHNESS_SECONDS = 86_400  # 24h
@@ -647,3 +657,346 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+# ── Trust-policy simulation for captured evidence ──────────────────────────
+
+
+@dataclass(frozen=True)
+class TrustPolicy:
+    """Immutable trust policy version for evaluating captured evidence."""
+
+    policy_version: str
+    allowed_trust_levels: frozenset[int] = frozenset({1, 2})
+    allowed_privacy_scopes: frozenset[str] = frozenset(VALID_PRIVACY_SCOPES)
+    require_secure_time: bool = False
+    allowed_time_sources: frozenset[str] = frozenset(VALID_TIME_SOURCES)
+    max_time_drift_ms: int | None = None
+    allowed_integrity_claims: frozenset[str] | None = None
+    require_signing_digest: bool = False
+    allow_compromised_pre_compromise_key: bool = True
+    allow_rotated_key: bool = True
+    max_checkpoint_age_seconds: int = DEFAULT_FRESHNESS_SECONDS
+    high_assurance_max_checkpoint_age_seconds: int = HIGH_ASSURANCE_FRESHNESS_SECONDS
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy_version, str) or not self.policy_version.strip():
+            raise TransparencyError("policy_version must be a non-empty string")
+        if not self.allowed_trust_levels or not self.allowed_trust_levels.issubset(
+            VALID_TRUST_LEVELS
+        ):
+            raise TransparencyError("allowed_trust_levels must be a non-empty subset of valid trust levels")
+        if not self.allowed_privacy_scopes or not self.allowed_privacy_scopes.issubset(
+            VALID_PRIVACY_SCOPES
+        ):
+            raise TransparencyError("allowed_privacy_scopes must be a non-empty subset of valid privacy scopes")
+        if not self.allowed_time_sources or not self.allowed_time_sources.issubset(
+            VALID_TIME_SOURCES
+        ):
+            raise TransparencyError("allowed_time_sources must be a non-empty subset of valid time sources")
+        if self.max_time_drift_ms is not None and self.max_time_drift_ms < 0:
+            raise TransparencyError("max_time_drift_ms must be non-negative")
+        if self.allowed_integrity_claims is not None and (
+            not self.allowed_integrity_claims
+            or not self.allowed_integrity_claims.issubset(VALID_INTEGRITY_CLAIMS)
+        ):
+            raise TransparencyError(
+                "allowed_integrity_claims must be a non-empty subset of valid integrity claims"
+            )
+        if self.max_checkpoint_age_seconds < 0:
+            raise TransparencyError("max_checkpoint_age_seconds must be non-negative")
+        if self.high_assurance_max_checkpoint_age_seconds < 0:
+            raise TransparencyError("high_assurance_max_checkpoint_age_seconds must be non-negative")
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "allowCompromisedPreCompromiseKey": self.allow_compromised_pre_compromise_key,
+            "allowRotatedKey": self.allow_rotated_key,
+            "allowedPrivacyScopes": sorted(self.allowed_privacy_scopes),
+            "allowedTimeSources": sorted(self.allowed_time_sources),
+            "allowedTrustLevels": sorted(self.allowed_trust_levels),
+            "highAssuranceMaxCheckpointAgeSeconds": self.high_assurance_max_checkpoint_age_seconds,
+            "maxCheckpointAgeSeconds": self.max_checkpoint_age_seconds,
+            "policyVersion": self.policy_version,
+            "requireSecureTime": self.require_secure_time,
+            "requireSigningDigest": self.require_signing_digest,
+        }
+        if self.max_time_drift_ms is not None:
+            d["maxTimeDriftMs"] = self.max_time_drift_ms
+        if self.allowed_integrity_claims is not None:
+            d["allowedIntegrityClaims"] = sorted(self.allowed_integrity_claims)
+        return d
+
+
+def trust_policy_hash(policy: TrustPolicy) -> str:
+    """Deterministic SHA-256 digest of a canonical trust policy."""
+    return _sha256_hex(_canonical_json(policy.to_dict()))
+
+
+@dataclass(frozen=True)
+class CapturedEvidenceSample:
+    """Synthetic or captured evidence attestation bound to optional issuer key context."""
+
+    evidence_id: str
+    attestation: CaptureAttestation
+    key_id: str | None = None
+    signature_timestamp: int | None = None
+    high_assurance: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evidence_id, str) or not self.evidence_id.strip():
+            raise TransparencyError("evidence_id must be a non-empty string")
+
+
+@dataclass(frozen=True)
+class PolicyEvaluationOutcome:
+    """Privacy-preserving evaluation result for a single evidence sample."""
+
+    evidence_id: str
+    attestation_hash: str
+    policy_version: str
+    policy_hash: str
+    accepted: bool
+    reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "accepted": self.accepted,
+            "attestationHash": self.attestation_hash,
+            "evidenceId": self.evidence_id,
+            "policyHash": self.policy_hash,
+            "policyVersion": self.policy_version,
+            "reasons": list(self.reasons),
+        }
+
+
+@dataclass(frozen=True)
+class PolicyOutcomeDiff:
+    """Changed evaluation outcome between baseline and candidate trust policies."""
+
+    evidence_id: str
+    attestation_hash: str
+    change_type: str  # newly_rejected | newly_accepted | reasons_changed
+    baseline_accepted: bool
+    candidate_accepted: bool
+    baseline_reasons: tuple[str, ...]
+    candidate_reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attestationHash": self.attestation_hash,
+            "baselineAccepted": self.baseline_accepted,
+            "baselineReasons": list(self.baseline_reasons),
+            "candidateAccepted": self.candidate_accepted,
+            "candidateReasons": list(self.candidate_reasons),
+            "changeType": self.change_type,
+            "evidenceId": self.evidence_id,
+        }
+
+
+@dataclass(frozen=True)
+class PolicySimulationReport:
+    """Non-mutating comparison report across two trust policy versions."""
+
+    baseline_policy_version: str
+    baseline_policy_hash: str
+    candidate_policy_version: str
+    candidate_policy_hash: str
+    total_evaluated: int
+    unchanged_count: int
+    changed_count: int
+    newly_rejected_count: int
+    newly_accepted_count: int
+    reason_changed_count: int
+    changes: tuple[PolicyOutcomeDiff, ...]
+    active_policy_mutated: bool = False
+    version: int = VERSION
+    protocol: str = PROTOCOL
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "activePolicyMutated": self.active_policy_mutated,
+            "baselinePolicyHash": self.baseline_policy_hash,
+            "baselinePolicyVersion": self.baseline_policy_version,
+            "candidatePolicyHash": self.candidate_policy_hash,
+            "candidatePolicyVersion": self.candidate_policy_version,
+            "changedCount": self.changed_count,
+            "changes": [c.to_dict() for c in self.changes],
+            "newlyAcceptedCount": self.newly_accepted_count,
+            "newlyRejectedCount": self.newly_rejected_count,
+            "protocol": self.protocol,
+            "reasonChangedCount": self.reason_changed_count,
+            "totalEvaluated": self.total_evaluated,
+            "unchangedCount": self.unchanged_count,
+            "version": self.version,
+        }
+
+
+def evaluate_captured_evidence(
+    sample: CapturedEvidenceSample,
+    policy: TrustPolicy,
+    *,
+    directory: IssuerDirectory | None = None,
+    cache: DirectoryCache | None = None,
+    now: int | None = None,
+) -> PolicyEvaluationOutcome:
+    """Evaluate a single captured evidence sample under a trust policy (fail-closed)."""
+    att = sample.attestation
+    reasons: list[str] = []
+
+    if att.trust_level not in policy.allowed_trust_levels:
+        reasons.append("trust_level_not_allowed")
+    if att.privacy_scope not in policy.allowed_privacy_scopes:
+        reasons.append("privacy_scope_not_allowed")
+    if policy.require_signing_digest and not att.app_identity.signing_digest:
+        reasons.append("missing_app_signing_digest")
+
+    if policy.require_secure_time and att.secure_time is None:
+        reasons.append("missing_secure_time")
+    if att.secure_time is not None:
+        if att.secure_time.source not in policy.allowed_time_sources:
+            reasons.append("time_source_not_allowed")
+        if (
+            policy.max_time_drift_ms is not None
+            and abs(att.secure_time.drift_ms) > policy.max_time_drift_ms
+        ):
+            reasons.append("time_drift_exceeded")
+
+    if policy.allowed_integrity_claims is not None:
+        claimed = att.camera_pipeline.claimed_integrity if att.camera_pipeline else None
+        if claimed not in policy.allowed_integrity_claims:
+            reasons.append("camera_integrity_not_allowed")
+
+    if sample.key_id is not None:
+        if directory is None:
+            reasons.append("missing_issuer_directory")
+        elif sample.signature_timestamp is None:
+            reasons.append("missing_signature_timestamp")
+        else:
+            if not key_valid_for_historical_signature(
+                directory, sample.key_id, sample.signature_timestamp
+            ):
+                reasons.append("key_invalid_at_signature_time")
+            key = directory.keys.get(sample.key_id)
+            if key is not None:
+                if (
+                    key.status == KeyStatus.COMPROMISED
+                    and not policy.allow_compromised_pre_compromise_key
+                ):
+                    reasons.append("key_compromised_disallowed")
+                if key.status == KeyStatus.ROTATED and not policy.allow_rotated_key:
+                    reasons.append("rotated_key_disallowed")
+                if key_was_compromised_at(directory, sample.key_id, sample.signature_timestamp):
+                    reasons.append("key_compromised_at_signature_time")
+
+    if cache is not None:
+        max_age = (
+            policy.high_assurance_max_checkpoint_age_seconds
+            if sample.high_assurance
+            else policy.max_checkpoint_age_seconds
+        )
+        if not cache.is_fresh(now=now, max_age=max_age):
+            reasons.append("stale_directory_checkpoint")
+
+    sorted_reasons = tuple(sorted(set(reasons)))
+    return PolicyEvaluationOutcome(
+        evidence_id=sample.evidence_id,
+        attestation_hash=canonical_attestation_hash(att),
+        policy_version=policy.policy_version,
+        policy_hash=trust_policy_hash(policy),
+        accepted=len(sorted_reasons) == 0,
+        reasons=sorted_reasons,
+    )
+
+
+def simulate_trust_policy(
+    samples: Iterable[CapturedEvidenceSample],
+    baseline_policy: TrustPolicy,
+    candidate_policy: TrustPolicy,
+    *,
+    directory: IssuerDirectory | None = None,
+    cache: DirectoryCache | None = None,
+    now: int | None = None,
+) -> PolicySimulationReport:
+    """Simulate a candidate trust policy against a baseline without modifying active policy.
+
+    Evaluates each synthetic or captured attestation under both policies and
+    returns a canonical report containing only the changed outcomes and summary
+    counts. Both policies, the directory, and the cache are treated as read-only.
+    """
+    sample_list = list(samples)
+    if len(sample_list) > MAX_SIMULATION_ITEMS:
+        raise TransparencyError(
+            f"simulation batch exceeds bound ({len(sample_list)} > {MAX_SIMULATION_ITEMS})"
+        )
+
+    seen_ids: set[str] = set()
+    for s in sample_list:
+        if s.evidence_id in seen_ids:
+            raise TransparencyError(f"duplicate evidence_id in simulation batch: {s.evidence_id}")
+        seen_ids.add(s.evidence_id)
+
+    changes: list[PolicyOutcomeDiff] = []
+    unchanged_count = 0
+    newly_rejected_count = 0
+    newly_accepted_count = 0
+    reason_changed_count = 0
+
+    for sample in sample_list:
+        base_out = evaluate_captured_evidence(
+            sample, baseline_policy, directory=directory, cache=cache, now=now
+        )
+        cand_out = evaluate_captured_evidence(
+            sample, candidate_policy, directory=directory, cache=cache, now=now
+        )
+
+        if base_out.accepted == cand_out.accepted and base_out.reasons == cand_out.reasons:
+            unchanged_count += 1
+            continue
+
+        if base_out.accepted and not cand_out.accepted:
+            change_type = "newly_rejected"
+            newly_rejected_count += 1
+        elif not base_out.accepted and cand_out.accepted:
+            change_type = "newly_accepted"
+            newly_accepted_count += 1
+        else:
+            change_type = "reasons_changed"
+            reason_changed_count += 1
+
+        changes.append(
+            PolicyOutcomeDiff(
+                evidence_id=sample.evidence_id,
+                attestation_hash=base_out.attestation_hash,
+                change_type=change_type,
+                baseline_accepted=base_out.accepted,
+                candidate_accepted=cand_out.accepted,
+                baseline_reasons=base_out.reasons,
+                candidate_reasons=cand_out.reasons,
+            )
+        )
+
+    return PolicySimulationReport(
+        baseline_policy_version=baseline_policy.policy_version,
+        baseline_policy_hash=trust_policy_hash(baseline_policy),
+        candidate_policy_version=candidate_policy.policy_version,
+        candidate_policy_hash=trust_policy_hash(candidate_policy),
+        total_evaluated=len(sample_list),
+        unchanged_count=unchanged_count,
+        changed_count=len(changes),
+        newly_rejected_count=newly_rejected_count,
+        newly_accepted_count=newly_accepted_count,
+        reason_changed_count=reason_changed_count,
+        changes=tuple(changes),
+        active_policy_mutated=False,
+    )
+
+
+def canonicalize_simulation_report(report: PolicySimulationReport) -> str:
+    """Deterministic JSON encoding for a trust-policy simulation report."""
+    return _canonical_json(report.to_dict()).decode("utf-8")
+
+
+def simulation_report_hash(report: PolicySimulationReport) -> str:
+    """Deterministic SHA-256 digest of a canonical trust-policy simulation report."""
+    return _sha256_hex(canonicalize_simulation_report(report).encode("utf-8"))
