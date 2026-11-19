@@ -12,6 +12,8 @@ from db import (
     report_job_progress,
     complete_job,
     fail_job,
+    mark_job_cancelled,
+    is_job_cancelled,
     insert_proof_event,
     init_db,
     database_url,
@@ -38,6 +40,10 @@ if not LOGGER.handlers:
 LOGGER.setLevel(logging.INFO)
 
 WORKER_ID = f"worker-{os.getpid()}"
+
+
+class JobCancelledError(Exception):
+    """Raised when a job is intentionally cancelled during worker execution."""
 
 @traced_job("job.media.embed")
 def process_embed(job: dict) -> dict:
@@ -269,6 +275,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = 0.0
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -308,9 +315,24 @@ def run_worker(
                         res = process_verify_tx(job)
                     else:
                         raise ValueError(f"Unknown job type {job_type}")
-                    complete_job(job_id, res)
-                    LOGGER.info(f"Completed job {job_id}")
+                    if is_job_cancelled(job_id):
+                        LOGGER.info(
+                            f"Job {job_id} was cancelled before completion; preserving cancelled state"
+                        )
+                        mark_job_cancelled(job_id)
+                    else:
+                        complete_job(job_id, res)
+                        LOGGER.info(f"Completed job {job_id}")
+                except JobCancelledError as err:
+                    LOGGER.info(f"Cancelled job {job_id}: {err}")
+                    mark_job_cancelled(job_id, reason=str(err) or None)
                 except Exception as err:
+                    if is_job_cancelled(job_id):
+                        LOGGER.info(
+                            f"Ignoring error for already-cancelled job {job_id}: {err}"
+                        )
+                        mark_job_cancelled(job_id)
+                        return
                     LOGGER.error(f"Failed job {job_id}: {err}")
                     LOGGER.error(traceback.format_exc())
                     is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
