@@ -128,8 +128,6 @@ def process_silent_witness(job: dict) -> dict:
     credential_secret = payload["credential_secret"]
     nullifier_secret = payload["nullifier_secret"]
 
-    # Phase names only: proof generation runs as one external command and
-    # reports no measurable fraction, so percent stays None.
     report_job_progress(job["id"], "generating_proof")
     proof = generate_silent_witness(
         video_hash,
@@ -149,19 +147,12 @@ def heartbeat_loop(job_id: int, stop_event: threading.Event):
         stop_event.wait(60)
 
 def tx_verification_loop(stop_event: threading.Event):
-    """
-    Periodically reconcile pending registration confirmations against Horizon.
-
-    Prefer the batch reconciler (confirmation depth + privacy-safe signals). Fall
-    back to the legacy per-row Horizon probe when the DB helpers are unavailable.
-    """
     LOGGER.info("Starting transaction verification / registration reconcile loop")
     while not stop_event.is_set():
         try:
             if not database_url():
                 stop_event.wait(10)
                 continue
-
             try:
                 report = reconcile_pending_registrations(
                     limit=50,
@@ -179,7 +170,6 @@ def tx_verification_loop(stop_event: threading.Event):
                     summary.get("error"),
                 )
             except Exception:
-                # Legacy fallback path keeps older deployments moving.
                 with get_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -191,26 +181,17 @@ def tx_verification_loop(stop_event: threading.Event):
                             """
                         )
                         rows = [dict(row) for row in cur.fetchall()]
-
                 for row in rows:
                     if stop_event.is_set():
                         break
-
                     tx_hash = row["tx_hash"]
                     LOGGER.info("Verifying transaction %s", str(tx_hash)[:8])
                     status = verify_transaction_status(tx_hash)
-
                     if status in ("confirmed", "failed", "missing"):
-                        LOGGER.info(
-                            "Transaction %s resolved to %s",
-                            str(tx_hash)[:8],
-                            status,
-                        )
+                        LOGGER.info("Transaction %s resolved to %s", str(tx_hash)[:8], status)
                         update_tx_status(tx_hash, status)
-
         except Exception as e:
             LOGGER.error("Error in tx verification loop: %s", type(e).__name__)
-
         stop_event.wait(15)
 
 
@@ -269,6 +250,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = time.time()
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -328,7 +310,6 @@ def run_worker(
             while work_thread.is_alive():
                 work_thread.join(timeout=0.1)
                 if stop_event.is_set() and work_thread.is_alive():
-                    # Stop event received while processing job: give it until grace period expires
                     work_thread.join(timeout=grace_period_seconds)
                     if work_thread.is_alive():
                         LOGGER.warning(
@@ -347,7 +328,11 @@ def run_worker(
     LOGGER.info("Worker stopped cleanly")
 
 
+try:
+    from worker_recovery import *  # noqa: F401,F403
+except Exception:
+    pass
+
 if __name__ == "__main__":
     run_worker()
     sys.exit(0)
-
