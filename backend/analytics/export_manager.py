@@ -99,16 +99,30 @@ class ExportManager:
         rollout_phase: str = "shadow",
         export_token_verified: bool = False,
     ) -> Tuple[Optional[ExportArtifact], str, int]:
+        """Create an export artifact from the given or stored log entries.
+
+        Returns a ``(artifact, payload_or_status, count)`` tuple. On success
+        ``artifact`` is the :class:`ExportArtifact` and the second element is the
+        serialized JSON payload. On failure ``artifact`` is ``None`` and the
+        second element is a distinct machine-readable status string:
+
+        - ``"export_token_required"`` - an export token is required but was not
+          provided and shadow mode is disabled.
+        - ``"analytics_store_unavailable"`` - the analytics store is unavailable
+          (its processor is missing or raised while serializing). This status is
+          returned instead of a successful zero-record export after a backend
+          outage, so an outage can be told apart from a genuinely empty store.
+        """
         with self._lock:
             policy = self._policy
             if not export_token_verified and policy.require_export_token and not policy.allow_unauthenticated_export_shadow_mode:
                 return None, "export_token_required", 0
+            if self._processor is None:
+                return None, "analytics_store_unavailable", 0
             if entries is not None:
                 entries_filtered = list(entries)
-            elif self._processor is not None:
-                entries_filtered = list(self._processor._entries[:])
             else:
-                entries_filtered = []
+                entries_filtered = list(self._processor._entries[:])
             if not policy.include_sampled_out_events:
                 entries_filtered = [e for e in entries_filtered if e.export_safe]
             if validate_log_export_safety is not None:
@@ -125,16 +139,15 @@ class ExportManager:
                 entries_filtered = []
             entries_filtered = entries_filtered[:policy.max_artifacts_per_export]
             use_compress = compress if compress is not None else policy.compress_default
-            if self._processor is not None:
+            try:
                 serialized, count = self._processor.export_json_logs(
                     entries=entries_filtered,
                     compress=use_compress,
                     max_entries=policy.max_artifacts_per_export,
                     max_bytes=policy.max_artifact_bytes,
                 )
-            else:
-                serialized = "[]"
-                count = 0
+            except Exception:
+                return None, "analytics_store_unavailable", 0
             payload_bytes = len(serialized.encode("utf-8"))
             checksum = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
             artifact_id = self.generate_export_id()
