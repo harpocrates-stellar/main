@@ -40,6 +40,18 @@ domain-tag and scope/epoch forwarding. It checks the returned field count,
 order, and values against the input and helper result. A scoped request cannot
 produce a four- or five-field proof. The aggregated proof path remains available.
 
+## Read-only preparation preview
+
+Evidence Studio can show the canonical public half of this envelope
+(`video_hash_hi`, `video_hash_lo`, `verifier_scope`, `epoch`) and the policy
+version before proving. The preview reuses `canonicalSilentWitnessPublicInputs`,
+the same normalizer proving uses, so it cannot display values the circuit would
+not receive. The two private witness fields (`credential_secret`,
+`nullifier_secret`) are listed by name only and never enter the preview view
+model. The preview loads no circuits, generates no proof, and submits no
+transaction; see
+[`frontend/docs/proof-preparation-preview.md`](../frontend/docs/proof-preparation-preview.md).
+
 ## Artifact compatibility and migration
 
 The current Noir source declares seven public fields and a three-field helper
