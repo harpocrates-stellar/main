@@ -23,13 +23,13 @@
 | Value | Meaning |
 | --- | --- |
 | `null` | No progress reported yet (pending, or a job type that does not report). Never an error. |
-| `{"phase": string, "percent": number}` | Current step and its completion, 0–100, one decimal. |
+| `{"phase": string, "percent": number}` | Current step and its completion, 0-100, one decimal. |
 | `{"phase": string, "percent": null}` | Current step has no measurable fraction. |
 
 Phases reported today:
 
-- `embed`: `hashing_source` → `embedding` (frames written / total frames; `percent`
-  is `null` when ffprobe reports no frame count) → `hashing_output` → `recording`.
+- `embed`: `hashing_source` -> `embedding` (frames written / total frames; `percent`
+  is `null` when ffprobe reports no frame count) -> `hashing_output` -> `recording`.
 - `silent_witness`: `generating_proof` (the proof runs as one external command, so
   only the phase name is reported).
 
@@ -37,6 +37,23 @@ Processors call `db.report_job_progress(job_id, phase, percent)` as often as the
 like; the value is stored at most once per second per job
 (`JOB_PROGRESS_MIN_INTERVAL_SECONDS`), and only while the job is `running`.
 Heartbeats extend the lease only and never overwrite progress.
+
+## Worker recovery plan (read-only)
+
+After an unclean shutdown, `build_recovery_plan()` (also exposed as
+`worker_recovery_plan`, `plan_recovery`, `get_recovery_plan`, ...) inspects the
+in-memory job queue and on-disk job artifacts and returns a read-only plan
+listing abandoned leases and partial artifacts with explicit uncertainty.
+It never mutates job state or deletes files. Each plan carries a bounded
+`actions` list (default 10, configurable via `max_actions`).
+
+```python
+from worker import build_recovery_plan
+
+plan = build_recovery_plan(now=..., max_actions=5)
+assert plan["read_only"] is True
+assert len(plan["actions"]) <= 5
+```
 
 ## What the response never contains
 
