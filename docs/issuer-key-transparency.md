@@ -112,3 +112,7 @@ The registry expresses the same window on chain: `rotate_issuer` retires the pre
 ## Threat model notes
 
 Adversaries may attempt split-view presentation, checkpoint rollback, stale cache reuse for high-assurance seals, broken rotation chains, conflicting manifests at one head, or continued use of compromised keys. The test suite encodes these failure paths; operators should alert on any consistency error returned by `verify_checkpoint_consistency` / `detect_rollback`.
+
+## Device attestation profile required-field and critical-extension validation
+
+`backend/capture_attestation.py` and `backend/issuer_key_transparency.py` validate profile versions and critical extension declarations fail-closed.
