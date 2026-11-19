@@ -1,4 +1,7 @@
 import type { SeedPair } from './seedVault'
+import { VaultStorageError, classifyErrorCode } from './safeStorage'
+
+export { VaultStorageError }
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
@@ -67,52 +70,85 @@ export class CredentialVault {
   }
 
   hasVault(): boolean {
-    return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
+    try {
+      return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_READ_FAILED'), 'hasVault', {
+        cause: err,
+      })
+    }
   }
 
   async setup(password: string, seeds: SeedPair): Promise<void> {
-    const salt = crypto.getRandomValues(new Uint8Array(16))
-    const key = await deriveKey(password, salt as unknown as ArrayBuffer)
+    let key: CryptoKey
+    let envelope: VaultEnvelope
+    try {
+      const salt = crypto.getRandomValues(new Uint8Array(16))
+      key = await deriveKey(password, salt as unknown as ArrayBuffer)
 
-    const iv = crypto.getRandomValues(new Uint8Array(12))
-    const enc = new TextEncoder()
-    const pt = enc.encode(JSON.stringify(seeds))
+      const iv = crypto.getRandomValues(new Uint8Array(12))
+      const enc = new TextEncoder()
+      const pt = enc.encode(JSON.stringify(seeds))
 
-    const ct = await crypto.subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv as unknown as ArrayBuffer,
-      },
-      key,
-      pt
-    )
+      const ct = await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: iv as unknown as ArrayBuffer,
+        },
+        key,
+        pt
+      )
 
-    const envelope: VaultEnvelope = {
-      v: VAULT_VERSION,
-      salt: bufToHex(salt as unknown as ArrayBuffer),
-      iv: bufToHex(iv as unknown as ArrayBuffer),
-      ct: bufToHex(ct),
+      envelope = {
+        v: VAULT_VERSION,
+        salt: bufToHex(salt as unknown as ArrayBuffer),
+        iv: bufToHex(iv as unknown as ArrayBuffer),
+        ct: bufToHex(ct),
+      }
+    } catch (err) {
+      throw new VaultStorageError('VAULT_ENCRYPTION_FAILED', 'setup', { cause: err })
     }
 
-    window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
+    try {
+      window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_WRITE_FAILED'), 'setup', {
+        cause: err,
+      })
+    }
+
     this.memoryKey = key
     this.seeds = { credentialSeed: seeds.credentialSeed, nullifierSeed: seeds.nullifierSeed }
     this.resetTimeout()
   }
 
   async unlock(password: string): Promise<boolean> {
-    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
-    if (!stored) throw new Error('Vault is empty')
+    let stored: string | null
+    try {
+      stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_READ_FAILED'), 'unlock', {
+        cause: err,
+      })
+    }
+    if (!stored) {
+      throw new VaultStorageError('VAULT_EMPTY', 'unlock', { message: 'Vault is empty' })
+    }
 
     let envelope: VaultEnvelope
     try {
       envelope = JSON.parse(stored)
-    } catch {
-      throw new Error('Vault corrupted: unable to parse envelope')
+    } catch (err) {
+      throw new VaultStorageError('VAULT_CORRUPTED', 'unlock', {
+        message: 'Vault corrupted: unable to parse envelope',
+        cause: err,
+      })
     }
 
     if (envelope.v !== VAULT_VERSION) {
-      throw new Error(`Unsupported vault version: ${envelope.v}`)
+      throw new VaultStorageError('VAULT_UNSUPPORTED_VERSION', 'unlock', {
+        message: `Unsupported vault version: ${envelope.v}`,
+      })
     }
 
     const salt = hexToBuf(envelope.salt)
@@ -159,7 +195,13 @@ export class CredentialVault {
 
   destroy(): void {
     this.lock()
-    window.localStorage.removeItem(VAULT_STORAGE_KEY)
+    try {
+      window.localStorage.removeItem(VAULT_STORAGE_KEY)
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_REMOVE_FAILED'), 'destroy', {
+        cause: err,
+      })
+    }
   }
 
   private resetTimeout(): void {

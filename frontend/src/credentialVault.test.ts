@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { CredentialVault } from './credentialVault'
+import { CredentialVault, VaultStorageError } from './credentialVault'
 
 describe('CredentialVault', () => {
   let vault: CredentialVault
@@ -115,5 +115,76 @@ describe('CredentialVault', () => {
     window.localStorage.setItem('harpocrates:credential-vault', 'this is not valid json')
     const restoredVault = new CredentialVault()
     await expect(restoredVault.unlock('secret')).rejects.toThrow('Vault corrupted: unable to parse envelope')
+  })
+
+  it('should redact private vault values from setup encryption and storage errors', async () => {
+    const seeds = { credentialSeed: 'cred-secret-xyz', nullifierSeed: 'null-secret-abc' }
+    const nestedCause = new Error('inner crypto failure with mySecretPass! and cred-secret-xyz')
+    const encryptErr = Object.assign(new Error('encrypt failed for null-secret-abc'), {
+      name: 'OperationError',
+      cause: nestedCause,
+    })
+
+    vi.spyOn(crypto.subtle, 'encrypt').mockRejectedValueOnce(encryptErr)
+
+    let caught: unknown
+    try {
+      await vault.setup('mySecretPass!', seeds)
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(VaultStorageError)
+    const serialized = JSON.stringify(caught)
+    expect(serialized).not.toContain('mySecretPass!')
+    expect(serialized).not.toContain('cred-secret-xyz')
+    expect(serialized).not.toContain('null-secret-abc')
+
+    const parsed = JSON.parse(serialized)
+    expect(parsed.code).toBe('VAULT_ENCRYPTION_FAILED')
+    expect(parsed.operation).toBe('setup')
+    expect(parsed.redacted).toBe(true)
+    expect(parsed.cause).toEqual({
+      name: 'OperationError',
+      code: 'VAULT_DECRYPTION_FAILED',
+      redacted: true,
+      cause: {
+        name: 'Error',
+        code: 'VAULT_ENCRYPTION_FAILED',
+        redacted: true,
+      },
+    })
+  })
+
+  it('should redact nested storage errors during unlock', async () => {
+    const securityErr = Object.assign(new Error('SecurityError: blocked reading cred-secret-xyz'), {
+      name: 'SecurityError',
+    })
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementationOnce(() => {
+      throw securityErr
+    })
+
+    let caught: unknown
+    try {
+      await vault.unlock('mySecretPass!')
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(VaultStorageError)
+    const serialized = JSON.stringify(caught)
+    expect(serialized).not.toContain('cred-secret-xyz')
+    expect(serialized).not.toContain('mySecretPass!')
+    expect(JSON.parse(serialized)).toMatchObject({
+      name: 'VaultStorageError',
+      code: 'STORAGE_UNAVAILABLE',
+      operation: 'unlock',
+      redacted: true,
+      cause: {
+        name: 'SecurityError',
+        code: 'STORAGE_UNAVAILABLE',
+        redacted: true,
+      },
+    })
   })
 })
