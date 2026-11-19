@@ -29,13 +29,13 @@ Each issuer publishes a versioned manifest (`protocol: harpocrates-issuer-key-tr
 
 Canonical encoding is deterministic JSON (`sort_keys`, compact separators). Digest = SHA-256 of the unsigned body.
 
-Manifest `version` must be the integer `1`; booleans and non-integer values are rejected rather than coerced. An optional `criticalExtensions` list must be empty because manifest version 1 understands no extensions. Any non-empty list raises `TransparencyError` instead of being ignored, so an issuer cannot make a client accept a manifest whose required semantics it does not implement. Unknown top-level manifest fields remain forward-compatible and are ignored.
+Manifest `version` must be the integer `1`; booleans and non-integer values are rejected rather than coerced. An optional `criticalExtensions` list must be empty because manifest version 1 understands no extensions. Any non-empty list, or a non-list value, raises `TransparencyError` instead of being ignored, so an issuer cannot make a client accept a manifest whose required semantics it does not implement. Unknown top-level manifest fields remain forward-compatible and are ignored.
 
 ## Append-only lifecycle events
 
 Event types: `activation`, `rotation`, `compromise`, `retirement`, `checkpoint`.
 
-Each event carries a monotonic `sequence`, `previousEventHash` chain link, and opaque hashes only. Directory rebuild from the authoritative event log is deterministic: the same ordered events always yield the same key statuses and Merkle-style `treeHeadHash`.
+Each event carries a monotonic `sequence`, `previousEventHash` chain linj, and opaque hashes only. Directory rebuild from the authoritative event log is deterministic: the same ordered events always yield the same key statuses and Merkle-style `treeHeadHash`.
 
 ## Directory checkpoints
 
