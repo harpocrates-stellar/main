@@ -77,4 +77,46 @@ describe('batchExport', () => {
     expect(parsed.protocol).toBe('harpocrates-receipt-collection')
     expect(parsed.totalItems).toBe(1)
   })
+
+  it('exportBatchCSV neutralizes spreadsheet formula prefixes while preserving digests and numeric fields', () => {
+    const formulaItems: BatchItemResult[] = [
+      {
+        ...mockItems[0],
+        fileName: '=HYPERLINK("http://evil.example","click")',
+        message: '+cmd|"/C calc"!A0',
+        duplicateOf: '-1+1',
+        failureReason: '@SUM(1,2)',
+      },
+      {
+        ...mockItems[0],
+        id: 'item-tab-cr',
+        fileName: '\t=1+1',
+        message: '\r=2+2',
+      },
+    ]
+
+    const csvStr = exportBatchCSV(formulaItems)
+    const lines = csvStr.split('\n')
+    expect(lines).toHaveLength(3)
+
+    // Formula prefixes are neutralized with a leading apostrophe
+    expect(lines[1]).toContain('"\'=HYPERLINK(""http://evil.example"",""click"")"')
+    expect(lines[1]).toContain('"\'+cmd|""/C calc""!A0"')
+    expect(lines[1]).toContain('\'-1+1')
+    expect(lines[1]).toContain('"\'@SUM(1,2)"')
+
+    // Tab and CR prefixes are neutralized
+    expect(lines[2]).toContain("'\t=1+1")
+    expect(lines[2]).toContain('"\'\r=2+2"')
+
+    // Exact digest and numeric fields remain unescaped
+    expect(lines[1]).toContain(',1024,confirmed,1111222233334444555566667777888811112222333344445555666677778888,')
+    expect(lines[1]).toContain(',120')
+
+    // Machine-readable JSON export preserves raw unescaped values
+    const jsonStr = exportBatchJSON(formulaItems)
+    const parsed = JSON.parse(jsonStr) as { results: Array<{ fileName: string; message: string }> }
+    expect(parsed.results[0].fileName).toBe('=HYPERLINK("http://evil.example","click")')
+    expect(parsed.results[0].message).toBe('+cmd|"/C calc"!A0')
+  })
 })

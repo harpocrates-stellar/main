@@ -47,7 +47,8 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
 }
 
 /**
- * Export privacy-safe JSON representation of batch results.
+ * Export privacy-safe, machine-readable JSON representation of batch results.
+ * Preserves exact raw field values without spreadsheet-formula escaping.
  */
 export function exportBatchJSON(results: BatchItemResult[]): string {
   const clean = sanitizeBatchResults(results)
@@ -62,7 +63,10 @@ export function exportBatchJSON(results: BatchItemResult[]): string {
 }
 
 /**
- * Export privacy-safe CSV representation of batch results.
+ * Export privacy-safe, human-oriented CSV representation of batch results.
+ * Neutralizes leading spreadsheet formula prefixes (`=`, `+`, `-`, `@`, `\t`, `\r`)
+ * with a leading apostrophe (`'`) while retaining exact digest and numeric fields.
+ * For machine-readable consumption with unescaped field values, use `exportBatchJSON`.
  */
 export function exportBatchCSV(results: BatchItemResult[]): string {
   const clean = sanitizeBatchResults(results)
@@ -138,9 +142,16 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
   return JSON.stringify(collection, null, 2)
 }
 
+const FORMULA_PREFIX_RE = /^[=+\-@\t\r]/
+
 function escapeCSV(val: string): string {
   if (!val) return '""'
-  const needsQuotes = val.includes(',') || val.includes('"') || val.includes('\n')
-  const escaped = val.replace(/"/g, '""')
+  const neutralized = FORMULA_PREFIX_RE.test(val) ? `'${val}` : val
+  const needsQuotes =
+    neutralized.includes(',') ||
+    neutralized.includes('"') ||
+    neutralized.includes('\n') ||
+    neutralized.includes('\r')
+  const escaped = neutralized.replace(/"/g, '""')
   return needsQuotes ? `"${escaped}"` : escaped
 }
