@@ -47,6 +47,17 @@ A checkpoint binds:
 
 Clients detect **split views** (diverging heads at the same count), **rollback** (shrinking `eventCount` after a higher head was observed), **stale checkpoints**, **broken rotation links**, **conflicting manifests**, and **compromised keys**.
 
+## Offline issuer trust snapshots
+
+For air-gapped or offline verification, `export_offline_trust_snapshot` produces a deterministic canonical JSON snapshot (`protocol: harpocrates-issuer-trust-snapshot`, `version: 1`) containing **only**:
+
+- `manifests` — public issuer manifests (current and, optionally, historical rotation manifests)
+- `checkpointReferences` — public `CheckpointReference` entries (`checkpointHash`, `treeHeadHash`, `eventCount`, `timestamp`, `organizationIdentityHash`, `manifestHash`, optional `signatureHash`)
+- `policyVersions` — public `PolicyVersion` entries (`policyVersion`, `policyHash`, optional `effectiveFrom`)
+- `exportedAt` — snapshot export timestamp
+
+Evidence-specific private identifiers (such as `evidenceDigestBinding`, `captureNonce`, `deviceCommitment`, `evidenceId`, `sealId`, `proofId`, `nullifier`) and private organization fields are excluded on export and rejected fail-closed by `import_offline_trust_snapshot`. Use `verify_offline_trust_snapshot` to validate manifest references, bounds, and policy-version consistency before trusting an imported snapshot.
+
 ## Caching & freshness (fail-closed)
 
 | Mode | Max age | Behavior |
