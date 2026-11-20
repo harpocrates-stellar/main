@@ -19,6 +19,8 @@ const TIERS = new Set(['silent', 'source', 'seal'])
  * 
  * Note: Credential seeds may be stored locally ONLY in the encrypted VaultEnvelope 
  * managed by `CredentialVault`, which provides explicit lock/unlock semantics.
+ * Vault backup export destinations and encrypted backup payloads are never persisted
+ * in `safeStorage`; destinations must be explicitly selected by the user per export.
  */
 function sanitizePreferences(value: unknown): PersistedUiPreferences {
   if (!value || typeof value !== 'object') return {}

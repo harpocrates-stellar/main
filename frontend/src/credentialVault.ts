@@ -12,6 +12,157 @@ export interface VaultEnvelope {
   ct: string // hex (ciphertext)
 }
 
+export const VAULT_EXPORT_DESTINATIONS = ['file-download', 'encrypted-clipboard'] as const
+export type VaultExportDestination = (typeof VAULT_EXPORT_DESTINATIONS)[number]
+
+export interface VaultBackupCompatibilityMetadata {
+  envelopeVersion: number
+  compatible: boolean
+  compatibilityNote: string
+  kdf: 'PBKDF2-SHA256'
+  kdfIterations: number
+  cipher: 'AES-256-GCM'
+  saltBytes: number
+  ivBytes: number
+  ciphertextBytes: number
+  encryptedPayloadBytes: number
+  containsSecretsInPreview: false
+}
+
+export type VaultBackupPreviewErrorCode =
+  | 'NO_VAULT'
+  | 'CORRUPTED_ENVELOPE'
+  | 'UNSUPPORTED_VERSION'
+  | 'INVALID_ENVELOPE_FIELDS'
+
+export type VaultBackupPreviewResult =
+  | {
+      ok: true
+      metadata: VaultBackupCompatibilityMetadata
+      requiresDestinationSelection: true
+    }
+  | {
+      ok: false
+      code: VaultBackupPreviewErrorCode
+      message: string
+      envelopeVersion?: number
+    }
+
+export type VaultExportErrorCode =
+  | VaultBackupPreviewErrorCode
+  | 'DESTINATION_REQUIRED'
+  | 'INVALID_DESTINATION'
+
+export type VaultExportResult =
+  | {
+      ok: true
+      destination: VaultExportDestination
+      serializedEnvelope: string
+      metadata: VaultBackupCompatibilityMetadata
+    }
+  | {
+      ok: false
+      code: VaultExportErrorCode
+      message: string
+    }
+
+const EVEN_HEX_RE = /^[0-9a-fA-F]+$/
+
+function isValidHexField(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length % 2 === 0 && EVEN_HEX_RE.test(value)
+}
+
+export function isVaultExportDestination(value: unknown): value is VaultExportDestination {
+  return (
+    typeof value === 'string' &&
+    (VAULT_EXPORT_DESTINATIONS as readonly string[]).includes(value)
+  )
+}
+
+/**
+ * Builds a nonsecret backup export preview from a serialized `VaultEnvelope`.
+ * Never decrypts or exposes `salt`, `iv`, `ct`, passphrases, or credential seeds.
+ */
+export function buildVaultBackupPreview(rawEnvelope: string | null): VaultBackupPreviewResult {
+  if (!rawEnvelope) {
+    return {
+      ok: false,
+      code: 'NO_VAULT',
+      message: 'No encrypted credential vault is stored on this device.',
+    }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawEnvelope)
+  } catch {
+    return {
+      ok: false,
+      code: 'CORRUPTED_ENVELOPE',
+      message: 'Vault corrupted: unable to parse envelope.',
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      code: 'CORRUPTED_ENVELOPE',
+      message: 'Vault corrupted: envelope must be a JSON object.',
+    }
+  }
+
+  const candidate = parsed as Record<string, unknown>
+  if (typeof candidate.v !== 'number' || !Number.isInteger(candidate.v)) {
+    return {
+      ok: false,
+      code: 'INVALID_ENVELOPE_FIELDS',
+      message: 'Vault envelope is missing a valid integer version.',
+    }
+  }
+
+  if (candidate.v !== VAULT_VERSION) {
+    return {
+      ok: false,
+      code: 'UNSUPPORTED_VERSION',
+      message: `Unsupported vault version: ${candidate.v}. Supported version: ${VAULT_VERSION}.`,
+      envelopeVersion: candidate.v,
+    }
+  }
+
+  if (
+    !isValidHexField(candidate.salt) ||
+    !isValidHexField(candidate.iv) ||
+    !isValidHexField(candidate.ct)
+  ) {
+    return {
+      ok: false,
+      code: 'INVALID_ENVELOPE_FIELDS',
+      message: 'Vault envelope contains missing or malformed encrypted fields.',
+      envelopeVersion: candidate.v,
+    }
+  }
+
+  const encryptedPayloadBytes = new TextEncoder().encode(rawEnvelope).byteLength
+
+  return {
+    ok: true,
+    requiresDestinationSelection: true,
+    metadata: {
+      envelopeVersion: candidate.v,
+      compatible: true,
+      compatibilityNote: `Compatible with Harpocrates Credential Vault v${VAULT_VERSION} (PBKDF2-SHA256 + AES-256-GCM).`,
+      kdf: 'PBKDF2-SHA256',
+      kdfIterations: PBKDF2_ITERATIONS,
+      cipher: 'AES-256-GCM',
+      saltBytes: candidate.salt.length / 2,
+      ivBytes: candidate.iv.length / 2,
+      ciphertextBytes: candidate.ct.length / 2,
+      encryptedPayloadBytes,
+      containsSecretsInPreview: false,
+    },
+  }
+}
+
 function bufToHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
@@ -68,6 +219,54 @@ export class CredentialVault {
 
   hasVault(): boolean {
     return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
+  }
+
+  /**
+   * Returns envelope version and nonsecret compatibility metadata for the
+   * currently stored encrypted vault without decrypting or unlocking it.
+   */
+  getBackupExportPreview(): VaultBackupPreviewResult {
+    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    return buildVaultBackupPreview(stored)
+  }
+
+  /**
+   * Prepares the encrypted vault envelope for export only after an explicit
+   * destination has been selected by the user.
+   */
+  prepareEncryptedBackupExport(destination: VaultExportDestination | null | undefined): VaultExportResult {
+    if (destination === null || destination === undefined || (destination as string) === '') {
+      return {
+        ok: false,
+        code: 'DESTINATION_REQUIRED',
+        message: 'Explicit user selection of an encrypted export destination is required.',
+      }
+    }
+
+    if (!isVaultExportDestination(destination)) {
+      return {
+        ok: false,
+        code: 'INVALID_DESTINATION',
+        message: `Unsupported encrypted export destination: ${String(destination)}.`,
+      }
+    }
+
+    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    const preview = buildVaultBackupPreview(stored)
+    if (!preview.ok) {
+      return {
+        ok: false,
+        code: preview.code,
+        message: preview.message,
+      }
+    }
+
+    return {
+      ok: true,
+      destination,
+      serializedEnvelope: stored as string,
+      metadata: preview.metadata,
+    }
   }
 
   async setup(password: string, seeds: SeedPair): Promise<void> {
