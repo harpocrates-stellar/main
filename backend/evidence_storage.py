@@ -1,9 +1,29 @@
+from __future__ import annotations
+
+from collections import OrderedDict
+import hashlib
+import hmac
 import logging
 import os
-import hashlib
-from typing import Tuple
-from cryptography.fernet import Fernet
+from pathlib import Path
+import threading
+from typing import Any, Tuple
+
+from cryptography.fernet import Fernet, InvalidToken
 import db
+from storage import (
+    EVIDENCE_CORRUPTED,
+    STORAGE_IO_UNAVAILABLE,
+    STORAGE_QUOTA_EXHAUSTED,
+    EvidenceCorruptionError,
+    EvidenceStorageOperationalError,
+    StorageIOUnavailableError,
+    StorageQuotaExhaustedError,
+    atomic_write_blob_bytes,
+    classify_storage_exception,
+    get_storage_dir,
+    is_quota_or_capacity_error,
+)
 
 logger = logging.getLogger("harpocrates.evidence_storage")
 
@@ -175,3 +195,225 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+
+_QUARANTINE_LOCK = threading.Lock()
+_QUARANTINE_MAX = 4096
+_CORRUPTED_BLOB_REFS: OrderedDict[str, str] = OrderedDict()
+
+
+def _blob_quarantine_key(content_hash: str) -> str:
+    return hashlib.sha256(
+        f"harpocrates:corrupt-blob-ref:v1:{content_hash.strip()}".encode("utf-8")
+    ).hexdigest()
+
+
+def quarantine_corrupted_blob(
+    content_hash: str,
+    *,
+    error: EvidenceStorageOperationalError,
+) -> bool:
+    """Mark a blob quarantined ONLY on genuine cryptographic/digest corruption.
+
+    Refuses to quarantine blobs on quota exhaustion or transient I/O errors.
+    """
+    if not isinstance(error, EvidenceStorageOperationalError) or not error.quarantine_eligible:
+        raise ValueError(
+            "only EVIDENCE_CORRUPTED errors are eligible for evidence quarantine"
+        )
+    key = _blob_quarantine_key(content_hash)
+    with _QUARANTINE_LOCK:
+        _CORRUPTED_BLOB_REFS[key] = error.reason_code
+        _CORRUPTED_BLOB_REFS.move_to_end(key)
+        while len(_CORRUPTED_BLOB_REFS) > _QUARANTINE_MAX:
+            _CORRUPTED_BLOB_REFS.popitem(last=False)
+    return True
+
+
+def is_blob_quarantined(content_hash: str) -> bool:
+    key = _blob_quarantine_key(content_hash)
+    with _QUARANTINE_LOCK:
+        return key in _CORRUPTED_BLOB_REFS
+
+
+def reset_corrupted_quarantine() -> None:
+    with _QUARANTINE_LOCK:
+        _CORRUPTED_BLOB_REFS.clear()
+
+
+def store_encrypted_blob(
+    plaintext: bytes,
+    *,
+    storage_dir: Path | str | None = None,
+    quota_bytes: int | None = None,
+    min_free_bytes: int | None = None,
+    record_in_db: bool = True,
+    raise_on_error: bool = False,
+) -> dict[str, Any]:
+    """Encrypt and atomically store evidence, reporting quota exhaustion distinctly."""
+    if not isinstance(plaintext, (bytes, bytearray)):
+        raise TypeError("plaintext must be bytes")
+    raw_bytes = bytes(plaintext)
+    content_hash = hashlib.sha256(raw_bytes).hexdigest()
+    target_dir = Path(storage_dir) if storage_dir is not None else get_storage_dir()
+    blob_path = target_dir / f"{content_hash}.enc"
+
+    dek, encrypted_dek = generate_dek()
+    ciphertext = get_encryptor(dek).encrypt(raw_bytes)
+
+    try:
+        written = atomic_write_blob_bytes(
+            blob_path,
+            ciphertext,
+            quota_bytes=quota_bytes,
+            min_free_bytes=min_free_bytes,
+        )
+    except BaseException as exc:
+        classified = classify_storage_exception(exc)
+        logger.warning(
+            "evidence_blob_write_failed reason_code=%s retryable=%s",
+            classified.reason_code,
+            classified.retryable,
+        )
+        if raise_on_error:
+            raise classified from exc
+        return classified.to_dict()
+
+    if record_in_db:
+        record_blob(content_hash, encrypted_dek, written, str(blob_path))
+
+    return {
+        "ok": True,
+        "reasonCode": "OK",
+        "retryable": False,
+        "quarantined": False,
+        "contentHash": content_hash,
+        "ciphertextBytes": written,
+    }
+
+
+def verify_or_stage_encrypted_blob(
+    content_hash: str,
+    *,
+    expected_plaintext_hash: str | None = None,
+    stage_path: Path | str | None = None,
+    quota_bytes: int | None = None,
+    min_free_bytes: int | None = None,
+    quarantine_on_corruption: bool = True,
+    raise_on_error: bool = False,
+) -> dict[str, Any]:
+    """Authenticate and optionally stage an encrypted blob without conflating quota errors with corruption."""
+    if is_blob_quarantined(content_hash):
+        err = EvidenceCorruptionError("evidence is quarantined due to prior corruption")
+        if raise_on_error:
+            raise err
+        out = err.to_dict()
+        out["quarantined"] = True
+        return out
+
+    info = get_blob_info(content_hash)
+    if info is None:
+        return {
+            "ok": False,
+            "reasonCode": "BLOB_NOT_FOUND",
+            "retryable": False,
+            "quarantined": False,
+        }
+
+    storage_path = info.get("storage_path")
+    encrypted_dek_raw = info.get("encrypted_dek")
+    if not storage_path or not encrypted_dek_raw:
+        corr = EvidenceCorruptionError("missing blob metadata fields")
+        quarantined = (
+            quarantine_corrupted_blob(content_hash, error=corr)
+            if quarantine_on_corruption
+            else False
+        )
+        if raise_on_error:
+            raise corr
+        out = corr.to_dict()
+        out["quarantined"] = quarantined
+        return out
+
+    try:
+        ciphertext = Path(storage_path).read_bytes()
+    except OSError as exc:
+        classified = classify_storage_exception(exc)
+        if raise_on_error:
+            raise classified from exc
+        return classified.to_dict()
+
+    encrypted_dek = (
+        encrypted_dek_raw.encode("utf-8")
+        if isinstance(encrypted_dek_raw, str)
+        else bytes(encrypted_dek_raw)
+    )
+    try:
+        dek = decrypt_dek(encrypted_dek)
+        plaintext = get_encryptor(dek).decrypt(ciphertext)
+    except InvalidToken as exc:
+        corr = EvidenceCorruptionError("evidence ciphertext or wrapped DEK failed authentication")
+        quarantined = (
+            quarantine_corrupted_blob(content_hash, error=corr)
+            if quarantine_on_corruption
+            else False
+        )
+        logger.warning(
+            "evidence_blob_corrupted reason_code=%s quarantined=%s",
+            corr.reason_code,
+            quarantined,
+        )
+        if raise_on_error:
+            raise corr from exc
+        out = corr.to_dict()
+        out["quarantined"] = quarantined
+        return out
+
+    expected_digest = expected_plaintext_hash
+    if expected_digest is None and len(content_hash) == 64 and all(
+        c in "0123456789abcdefABCDEF" for c in content_hash
+    ):
+        expected_digest = content_hash.lower()
+
+    if expected_digest is not None:
+        observed_digest = hashlib.sha256(plaintext).hexdigest()
+        if not hmac.compare_digest(observed_digest, expected_digest.lower()):
+            corr = EvidenceCorruptionError("decrypted evidence digest mismatch")
+            quarantined = (
+                quarantine_corrupted_blob(content_hash, error=corr)
+                if quarantine_on_corruption
+                else False
+            )
+            if raise_on_error:
+                raise corr
+            out = corr.to_dict()
+            out["quarantined"] = quarantined
+            return out
+
+    if stage_path is not None:
+        try:
+            atomic_write_blob_bytes(
+                stage_path,
+                plaintext,
+                quota_bytes=quota_bytes,
+                min_free_bytes=min_free_bytes,
+            )
+        except BaseException as exc:
+            classified = classify_storage_exception(exc)
+            # Capacity exhaustion during staging MUST NOT quarantine valid evidence!
+            logger.warning(
+                "evidence_blob_stage_failed reason_code=%s retryable=%s quarantined=False",
+                classified.reason_code,
+                classified.retryable,
+            )
+            if raise_on_error:
+                raise classified from exc
+            return classified.to_dict()
+
+    return {
+        "ok": True,
+        "reasonCode": "OK",
+        "retryable": False,
+        "quarantined": False,
+        "verifiedBytes": len(plaintext),
+    }
