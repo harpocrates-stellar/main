@@ -35,6 +35,7 @@ export const PROOF_WORKER_MEMORY_LIMITS = Object.freeze({
   maxWitnessBytes: Number(benchLock.limits.max_witness_bytes),
   maxProofBytes: Number(benchLock.limits.max_proof_bytes),
   maxPublicInputBytes: Number(benchLock.limits.max_public_input_bytes),
+  maxDiagnosticBytes: 4096,
   maxRuntimeBytes:
     Number(benchLock.limits.max_witness_bytes) +
     Number(benchLock.limits.max_proof_bytes) +
