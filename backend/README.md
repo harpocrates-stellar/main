@@ -342,6 +342,29 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Analytics Redaction Policy Comparison
+
+`analytics/redaction_policy_diff.py` compares two analytics redaction policy
+revisions against synthetic analytics records and reports newly removed
+(redacted or dropped), newly exposed, and marker-changed field paths without
+embedding raw sensitive values in output reports.
+
+```bash
+cd backend
+python -m analytics.redaction_policy_diff \
+  --before policy_v1.json \
+  --after policy_v2.json \
+  --format text \
+  --fail-on-exposed
+```
+
+- Pass `--records <path>` to supply a JSON array of synthetic records, or omit
+  it to use the built-in synthetic fixtures (`build_synthetic_analytics_records`).
+- Keep actual production analytics and real user identifiers out of committed
+  fixtures; use RFC 2606 (`.invalid`) domains and RFC 5737 test addresses.
+- `--fail-on-exposed` exits with code `2` whenever any field becomes newly
+  exposed in the candidate policy revision.
+
 ## Test
 
 ```powershell
