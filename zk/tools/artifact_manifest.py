@@ -100,6 +100,15 @@ class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
 
 
+class ArtifactPathEscapeError(BuildError):
+    """A declared artifact path resolves outside the selected release directory.
+
+    The message carries only the repo-relative *declared* path and the
+    containing root — never the absolute host path — so the error is safe to
+    surface in CI logs.
+    """
+
+
 # ── Signals ─────────────────────────────────────────────────────────────────
 
 
@@ -303,6 +312,29 @@ def _rel(path: Path) -> str:
         return path.name
 
 
+def resolve_within_root(declared: str, root: Path) -> Path:
+    """Resolve *declared* against *root* and require the result to stay inside.
+
+    Aliases (``..`` segments and symlinks) are resolved first, then the result
+    is required to live under the resolved *root*. On any escape the helper
+    raises :class:`ArtifactPathEscapeError` naming only the declared path and
+    the root name — never the absolute host path.
+    """
+    root_resolved = root.resolve()
+    try:
+        resolved = (root_resolved / declared).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ArtifactPathEscapeError(
+            f"artifact path {declared!r} cannot be resolved: {type(exc).__name__}"
+        ) from exc
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise ArtifactPathEscapeError(
+            f"artifact path {declared!r} resolves outside the release directory "
+            f"{root.name!r}; refusing to read it"
+        )
+    return resolved
+
+
 @dataclass
 class ArtifactResult:
     path: str
@@ -331,7 +363,7 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
     kind = declaration["kind"]
     role = declaration.get("role", "unknown")
     required = bool(declaration.get("required", False))
-    target = root / relative
+    target = resolve_within_root(relative, root)
 
     result = ArtifactResult(path=relative, kind=kind, role=role, state=ArtifactState.MISSING)
 
@@ -339,6 +371,11 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
         result.state = ArtifactState.MISSING if required else ArtifactState.SKIPPED
         signal("artifact.state", path=relative, state=result.state, required=required)
         return result
+
+    # Re-resolve after the existence check: a symlink can be introduced between
+    # the containment check and the read, so the helper is called once more
+    # immediately before open() in the read below. The bounded error carries
+    # only the declared path (see resolve_within_root).
 
     size = target.stat().st_size
     if size > lock.limits.max_artifact_bytes:
@@ -355,6 +392,9 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
 
     try:
         data = target.read_bytes()
+    except ArtifactPathEscapeError:
+        # Re-raise: an escape is a policy decision the caller must see.
+        raise
     except OSError:
         result.state = ArtifactState.UNREADABLE
         signal("artifact.state", path=relative, state=result.state)
