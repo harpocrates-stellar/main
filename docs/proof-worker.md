@@ -211,3 +211,12 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+
+
+## Worker / Main-Thread Protocol Versioning
+
+`ProofWorkerManager` (`frontend/src/workers/proof-worker-manager.ts`) and `proof.worker.ts` enforce a strict integer protocol version (`PROOF_WORKER_PROTOCOL_VERSION = 1` in `frontend/src/workers/proof.worker.types.ts`) on worker/main-thread messages:
+
+- **Fail-closed before buffer transfer**: `validateWorkerProtocolVersion()` and `ProofWorkerManager.handleWorkerMessage()` check `protocolVersion` before invoking buffer-acceptance callbacks or parsing payload fields.
+- **No unsafe fallback parsing**: Missing, non-integer, stringified (e.g. `"1"`), zero, negative, `NaN`, or mismatched versions are rejected immediately without coercion.
+- **Clear reload-required result**: Mismatches return a privacy-safe `ProofWorkerResponse` with `type: 'error'`, `error.code = 'PROTOCOL_VERSION_MISMATCH'`, `error.reloadRequired = true`, and `error.privacySafe = true`, settling any matching pending request immediately.
