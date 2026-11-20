@@ -211,3 +211,22 @@ cd frontend
 npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
 ```
 
+
+
+## Worker / Main-Thread Protocol Versioning
+
+`ProofWorkerManager` (`frontend/src/workers/proof-worker-manager.ts`) and `proof.worker.ts` enforce a strict integer protocol version (`PROOF_WORKER_PROTOCOL_VERSION = 1` in `frontend/src/workers/proof.worker.types.ts`) on worker/main-thread messages:
+
+- **Fail-closed before buffer transfer**: `validateWorkerProtocolVersion()` and `ProofWorkerManager.handleWorkerMessage()` check `protocolVersion` before invoking buffer-acceptance callbacks or parsing payload fields.
+- **No unsafe fallback parsing**: Missing, non-integer, stringified (e.g. `"1"`), zero, negative, `NaN`, or mismatched versions are rejected immediately without coercion.
+- **Clear reload-required result**: Mismatches return a privacy-safe `ProofWorkerResponse` with `type: 'error'`, `error.code = 'PROTOCOL_VERSION_MISMATCH'`, `error.reloadRequired = true`, and `error.privacySafe = true`, settling any matching pending request immediately.
+
+
+## Per-Operation Proof Memory Accounting
+
+`frontend/src/proofWorkerMemory.ts` (`ProofOperationMemoryAccountant` / `createProofOperationMemoryAccountant`) and `ProofWorkerManager` (`frontend/src/workers/proof-worker-manager.ts`) track allocated and released buffer classes per operation with bounded counters:
+
+- **Buffer classes**: `artifact`, `witness`, `proof`, `publicInput`, and `secret` (`PROOF_MEMORY_BUFFER_CLASSES`). Each class reports `allocatedCount`, `releasedCount`, `allocatedBytes`, `releasedBytes`, `activeBytes`, and `peakBytes`.
+- **Bounded counters & history**: Per-class allocations are bounded by `PROOF_MEMORY_ACCOUNTING_LIMITS.maxClassAllocations` (`1024`) and per-class/runtime byte budgets from `PROOF_WORKER_MEMORY_LIMITS`. `ProofWorkerManager` retains at most `PROOF_MEMORY_ACCOUNTING_LIMITS.maxTrackedOperations` (`32`) operation reports, evicting the oldest settled entries first.
+- **Fail-closed accounting**: Over-budget allocations, counter cap overflows, negative/non-integer byte counts, unknown buffer classes, and releases exceeding active bytes or allocation counts fail closed with `CircuitInputError`.
+- **Privacy & precision boundary**: Reports (`getOperationMemoryReport(id)`, `getMemoryAccountingSnapshot()`) never include witness, proof, or secret contents. Every report explicitly sets `precision: 'operation-buffer-estimate'` and `browserWidePrecision: false` to avoid claiming browser-wide heap, WASM, or OS-level memory precision.

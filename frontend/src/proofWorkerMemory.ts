@@ -228,3 +228,284 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+
+export const PROOF_MEMORY_BUFFER_CLASSES = [
+  'artifact',
+  'witness',
+  'proof',
+  'publicInput',
+  'secret',
+] as const
+
+export type ProofMemoryBufferClass = (typeof PROOF_MEMORY_BUFFER_CLASSES)[number]
+
+export const PROOF_MEMORY_ACCOUNTING_LIMITS = Object.freeze({
+  maxClassAllocations: 1024,
+  maxTrackedOperations: 32,
+})
+
+export type ProofBufferClassCounter = {
+  readonly allocatedCount: number
+  readonly releasedCount: number
+  readonly allocatedBytes: number
+  readonly releasedBytes: number
+  readonly activeBytes: number
+  readonly peakBytes: number
+}
+
+export type ProofOperationMemoryStatus =
+  | 'active'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out'
+
+export type ProofOperationMemoryReport = {
+  readonly operationId: string
+  readonly operation: string
+  readonly status: ProofOperationMemoryStatus
+  /**
+   * Scopes these counters strictly to tracked operation buffer classes.
+   * Does not claim browser-wide heap, WASM, or OS-level memory precision.
+   */
+  readonly precision: 'operation-buffer-estimate'
+  readonly browserWidePrecision: false
+  readonly classes: Readonly<Record<ProofMemoryBufferClass, ProofBufferClassCounter>>
+  readonly totals: ProofBufferClassCounter
+}
+
+export type ProofOperationMemoryOptions = {
+  publicInputLimitBytes?: number
+  maxClassAllocations?: number
+}
+
+type MutableBufferClassCounter = {
+  allocatedCount: number
+  releasedCount: number
+  allocatedBytes: number
+  releasedBytes: number
+  activeBytes: number
+  peakBytes: number
+}
+
+const VALID_BUFFER_CLASSES = new Set<string>(PROOF_MEMORY_BUFFER_CLASSES)
+
+function isProofMemoryBufferClass(value: string): value is ProofMemoryBufferClass {
+  return VALID_BUFFER_CLASSES.has(value)
+}
+
+function emptyClassCounter(): MutableBufferClassCounter {
+  return {
+    allocatedCount: 0,
+    releasedCount: 0,
+    allocatedBytes: 0,
+    releasedBytes: 0,
+    activeBytes: 0,
+    peakBytes: 0,
+  }
+}
+
+/**
+ * Tracks allocated and released buffer classes for a single proof-worker
+ * operation using bounded counters. Never stores witness, proof, or secret
+ * payloads and explicitly marks reports as operation-level buffer estimates
+ * rather than browser-wide memory measurements.
+ */
+export class ProofOperationMemoryAccountant {
+  private readonly operationId: string
+  private readonly operation: string
+  private readonly publicInputLimitBytes?: number
+  private readonly maxClassAllocations: number
+  private status: ProofOperationMemoryStatus = 'active'
+  private totalPeakBytes = 0
+  private readonly classes: Record<ProofMemoryBufferClass, MutableBufferClassCounter> = {
+    artifact: emptyClassCounter(),
+    witness: emptyClassCounter(),
+    proof: emptyClassCounter(),
+    publicInput: emptyClassCounter(),
+    secret: emptyClassCounter(),
+  }
+
+  constructor(
+    operationId: string,
+    operation: string,
+    options?: ProofOperationMemoryOptions,
+  ) {
+    if (typeof operationId !== 'string' || operationId.trim().length === 0) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (typeof operation !== 'string' || operation.trim().length === 0) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    const maxAlloc = options?.maxClassAllocations ?? PROOF_MEMORY_ACCOUNTING_LIMITS.maxClassAllocations
+    if (
+      !Number.isSafeInteger(maxAlloc) ||
+      maxAlloc <= 0 ||
+      maxAlloc > PROOF_MEMORY_ACCOUNTING_LIMITS.maxClassAllocations
+    ) {
+      failMemoryLimit()
+    }
+
+    this.operationId = operationId
+    this.operation = operation
+    this.publicInputLimitBytes = options?.publicInputLimitBytes
+    this.maxClassAllocations = maxAlloc
+  }
+
+  allocate(bufferClass: ProofMemoryBufferClass, bytes: number): void {
+    if (!isProofMemoryBufferClass(bufferClass)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      failMemoryLimit()
+    }
+
+    const counter = this.classes[bufferClass]
+    if (counter.allocatedCount + 1 > this.maxClassAllocations) {
+      failMemoryLimit()
+    }
+
+    const nextActive = counter.activeBytes + bytes
+    if (!Number.isSafeInteger(nextActive)) {
+      failMemoryLimit()
+    }
+
+    const usage: ProofWorkerMemoryUsage = {
+      artifactBytes: this.classes.artifact.activeBytes,
+      witnessBytes: this.classes.witness.activeBytes,
+      proofBytes: this.classes.proof.activeBytes,
+      publicInputBytes: this.classes.publicInput.activeBytes,
+      secretBytes: this.classes.secret.activeBytes,
+      ...(this.publicInputLimitBytes !== undefined
+        ? { publicInputLimitBytes: this.publicInputLimitBytes }
+        : {}),
+    }
+
+    switch (bufferClass) {
+      case 'artifact':
+        usage.artifactBytes = nextActive
+        break
+      case 'witness':
+        usage.witnessBytes = nextActive
+        break
+      case 'proof':
+        usage.proofBytes = nextActive
+        break
+      case 'publicInput':
+        usage.publicInputBytes = nextActive
+        break
+      case 'secret':
+        usage.secretBytes = nextActive
+        break
+    }
+
+    assertProofWorkerMemoryBudget(usage)
+
+    counter.allocatedCount += 1
+    counter.allocatedBytes += bytes
+    counter.activeBytes = nextActive
+    if (counter.activeBytes > counter.peakBytes) {
+      counter.peakBytes = counter.activeBytes
+    }
+
+    const currentTotalActive = this.activeTotalBytes()
+    if (currentTotalActive > this.totalPeakBytes) {
+      this.totalPeakBytes = currentTotalActive
+    }
+  }
+
+  release(bufferClass: ProofMemoryBufferClass, bytes: number): void {
+    if (!isProofMemoryBufferClass(bufferClass)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      failMemoryLimit()
+    }
+
+    const counter = this.classes[bufferClass]
+    if (counter.releasedCount + 1 > counter.allocatedCount || bytes > counter.activeBytes) {
+      failMemoryLimit()
+    }
+
+    counter.releasedCount += 1
+    counter.releasedBytes += bytes
+    counter.activeBytes -= bytes
+  }
+
+  releaseAll(status?: Exclude<ProofOperationMemoryStatus, 'active'>): void {
+    for (const bufferClass of PROOF_MEMORY_BUFFER_CLASSES) {
+      const counter = this.classes[bufferClass]
+      const unreleasedCount = counter.allocatedCount - counter.releasedCount
+      if (unreleasedCount > 0) {
+        counter.releasedCount += unreleasedCount
+      }
+      if (counter.activeBytes > 0) {
+        counter.releasedBytes += counter.activeBytes
+        counter.activeBytes = 0
+      }
+    }
+    if (status !== undefined) {
+      this.status = status
+    }
+  }
+
+  setStatus(status: ProofOperationMemoryStatus): void {
+    this.status = status
+  }
+
+  snapshot(): ProofOperationMemoryReport {
+    let allocatedCount = 0
+    let releasedCount = 0
+    let allocatedBytes = 0
+    let releasedBytes = 0
+    let activeBytes = 0
+
+    const frozenClasses = {} as Record<ProofMemoryBufferClass, ProofBufferClassCounter>
+    for (const bufferClass of PROOF_MEMORY_BUFFER_CLASSES) {
+      const counter = this.classes[bufferClass]
+      allocatedCount += counter.allocatedCount
+      releasedCount += counter.releasedCount
+      allocatedBytes += counter.allocatedBytes
+      releasedBytes += counter.releasedBytes
+      activeBytes += counter.activeBytes
+      frozenClasses[bufferClass] = Object.freeze({ ...counter })
+    }
+
+    return Object.freeze({
+      operationId: this.operationId,
+      operation: this.operation,
+      status: this.status,
+      precision: 'operation-buffer-estimate',
+      browserWidePrecision: false,
+      classes: Object.freeze(frozenClasses),
+      totals: Object.freeze({
+        allocatedCount,
+        releasedCount,
+        allocatedBytes,
+        releasedBytes,
+        activeBytes,
+        peakBytes: this.totalPeakBytes,
+      }),
+    })
+  }
+
+  private activeTotalBytes(): number {
+    return (
+      this.classes.artifact.activeBytes +
+      this.classes.witness.activeBytes +
+      this.classes.proof.activeBytes +
+      this.classes.publicInput.activeBytes +
+      this.classes.secret.activeBytes
+    )
+  }
+}
+
+export function createProofOperationMemoryAccountant(
+  operationId: string,
+  operation: string,
+  options?: ProofOperationMemoryOptions,
+): ProofOperationMemoryAccountant {
+  return new ProofOperationMemoryAccountant(operationId, operation, options)
+}
