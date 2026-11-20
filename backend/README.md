@@ -106,6 +106,20 @@ This section documents all environment variables that can be used to configure t
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
 
+## Chain Indexer Backpressure
+
+The Soroban chain indexer requests 50 events per poll by default and clamps
+each requested page to a maximum of 100 events. It processes one page
+synchronously before polling again, so slow database writes pause event
+admission rather than accumulating an unbounded in-memory queue.
+
+An RPC response larger than the requested page is rejected before any events
+are written or the cursor is advanced. Database failures likewise leave the
+cursor at the last fully processed page; the worker backs off and retries from
+that cursor. Replayed projections are idempotent on `(tx_hash, event_index)`,
+so rows committed before a failed page retry are treated as duplicates. No
+additional configuration or database migration is required.
+
 ## Upload and Verification Load Test
 
 With FFmpeg installed and a local testing backend running, execute a bounded

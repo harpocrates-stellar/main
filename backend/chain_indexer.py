@@ -11,7 +11,7 @@ Indexes lifecycle events emitted directly on-chain by the Harpocrates Registry c
 
 Decodes events into proof_events rows idempotently (unique on tx_hash + event_index),
 persists the ledger cursor, queues webhook deliveries, skips and counts unknown topics,
-bounds page size, and backs off exponentially on RPC errors.
+admits at most one bounded page at a time, and backs off on RPC or database errors.
 """
 
 from __future__ import annotations
@@ -54,6 +54,15 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+
+
+class IndexerBackpressureError(RuntimeError):
+    """Raised when an RPC response exceeds the indexer's bounded batch capacity."""
+
+
+def _bounded_page_size(limit: int) -> int:
+    """Clamp an event page to the supported in-memory batch bounds."""
+    return max(1, min(int(limit), INDEXER_MAX_PAGE_SIZE))
 
 
 # ---------------------------------------------------------------------------
@@ -354,12 +363,21 @@ def classify_and_decode_event(
 def process_events_batch(
     events: list[dict[str, Any]],
     contract_id: str | None = None,
+    *,
+    max_events: int = INDEXER_MAX_PAGE_SIZE,
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
     Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    queues webhooks for newly written events, and tracks unknown topics. The
+    complete batch is admitted before any database writes are attempted.
     """
+    admission_limit = _bounded_page_size(max_events)
+    if len(events) > admission_limit:
+        raise IndexerBackpressureError(
+            f"event batch of {len(events)} exceeds admission limit {admission_limit}"
+        )
+
     summary = {
         "scanned": 0,
         "indexed": 0,
@@ -441,7 +459,7 @@ def fetch_contract_events(
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Call Soroban RPC getEvents with bounded pagination and filter."""
-    page_limit = max(1, min(int(limit), INDEXER_MAX_PAGE_SIZE))
+    page_limit = _bounded_page_size(limit)
     params: dict[str, Any] = {
         "filters": [
             {
@@ -509,17 +527,24 @@ def poll_indexer_once(
         latest = fetch_latest_ledger(active_rpc_url, timeout=timeout)
         start_ledger = latest
 
+    page_limit = _bounded_page_size(limit)
     rpc_result = fetch_contract_events(
         rpc_url=active_rpc_url,
         contract_id=active_contract_id,
         start_ledger=start_ledger,
         cursor=cursor,
-        limit=limit,
+        limit=page_limit,
         timeout=timeout,
     )
 
     events = rpc_result.get("events") or []
-    summary = process_events_batch(events, contract_id=active_contract_id)
+    if not isinstance(events, list):
+        raise RuntimeError("Soroban RPC events must be a list")
+    summary = process_events_batch(
+        events,
+        contract_id=active_contract_id,
+        max_events=page_limit,
+    )
 
     new_cursor = rpc_result.get("cursor")
     latest_ledger = rpc_result.get("latestLedger")
