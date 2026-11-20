@@ -40,6 +40,15 @@ node dist/cli.js status --proof-id <64-hex> \
 
 `status` simulates `get_proof_status(proof_id)` against the registry and maps the result to a stable status string (`registered`, `revoked`, `expired`, or `unknown`) and exit code (`0` for `registered`, `1` for `expired`, `2` for `revoked`, `3` for `unknown`). Malformed or missing `--proof-id` values exit `2` immediately without making an RPC call.
 
+To inspect network and contract compatibility between a proof bundle (manifest) and an explicit selected configuration locally (performing no signing, no chain writes, and no RPC calls):
+
+```sh
+node dist/cli.js check-compat --manifest proof.json \
+  --contract-id C... --network testnet --output json
+```
+
+`check-compat` compares the bundle's `network` and `contractId` metadata against the selected configuration (resolving network aliases such as `testnet`, `mainnet`/`public`, and `futurenet` to their Stellar network passphrases). It exits `0` when compatible, `4` on `network_mismatch`, `5` on `contract_mismatch` (or when both network and contract mismatch), `2` on usage errors, and `8` on invalid/unreadable manifests or malformed contract IDs.
+
 To verify a signed verification receipt offline without hitting the RPC:
 
 ```sh
@@ -61,8 +70,7 @@ only when `--receipt` is supplied, never a fabricated `valid`), and
 `hirpocrates.export.v1` (`unsigned: true`). It contains only public manifest
 and registry fields; it never carries media bytes, witness values, secrets,
 proof bytes, or signing keys, and the exporter never signs. Out-of-band you
-sign the result with your own C2PA signer. Missing `--manifest` exits 2;
-malformed, unsupported, or unreadable input exits 8. The export is
+sign the result with your own C2PA signer. Missing `--manifest` or an `--output` path that resolves to the same file as an input path (including symlink aliases) exits 2 without modifying the input file; malformed, unsupported, or unreadable input exits 8. The export is
 deterministic, so the same manifest and receipt always produce the same bytes
 (reproducible in CI via `devx/validate_c2pa_fixture.py`).
 
@@ -78,15 +86,15 @@ Script authors and CI integrations can rely on the following exit codes to deter
 
 | Code | Meaning | Emitted by |
 | :--- | :--- | :--- |
-| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
+| `0` | `valid` / `registered` / `compatible` / success | `verify`, `status`, `check-compat`, `verify-receipt`, `verify-lineage` |
 | `1` | `expired` | `verify`, `status`, `verify-lineage` |
-| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `check-compat`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
 | `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
-| `4` | `network_mismatch` | `verify` |
-| `5` | `contract_mismatch` | `verify` |
+| `4` | `network_mismatch` | `verify`, `check-compat` |
+| `5` | `contract_mismatch` (or both network and contract mismatch) | `verify`, `check-compat` |
 | `6` | `pending` (offline verification) | `verify` |
 | `7` | `failed` transaction | `verify` |
-| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `check-compat`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
 
 An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
 
