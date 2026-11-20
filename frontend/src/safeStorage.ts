@@ -1,5 +1,11 @@
 type StorageName = 'localStorage' | 'sessionStorage'
 
+export type SafeStorageLike = {
+  setItem(key: string, value: string): void
+  getItem(key: string): string | null
+  removeItem(key: string): void
+}
+
 export type PersistedUiPreferences = {
   currentView?: 'landing' | 'studio' | 'verify'
   selectedTier?: 'silent' | 'source' | 'seal'
@@ -17,8 +23,10 @@ const TIERS = new Set(['silent', 'source', 'seal'])
  * Everything else is excluded by construction. In particular, seeds, proof
  * witnesses, generated proofs, and raw private inputs must remain in memory.
  * 
- * Note: Credential seeds may be stored locally ONLY in the encrypted VaultEnvelope 
- * managed by `CredentialVault`, which provides explicit lock/unlock semantics.
+ * Note: Credential seeds may be stored locally ONLY in the encrypted VaultEnvelope
+ * managed by `CredentialVault`, which provides explicit lock/unlock semantics and
+ * staged format migration (preserving the previous encrypted envelope in
+ * `harpocrates:credential-vault:backup` until the replacement envelope verifies).
  */
 function sanitizePreferences(value: unknown): PersistedUiPreferences {
   if (!value || typeof value !== 'object') return {}
