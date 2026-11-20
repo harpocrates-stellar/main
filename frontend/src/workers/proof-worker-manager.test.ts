@@ -344,3 +344,233 @@ describe('destroy', () => {
     expect(internals(manager).isInitialized).toBe(true)
   })
 })
+
+
+describe('single ownership protocol and operation generations', () => {
+  it('enforces single ownership and advances generation monotonically', async () => {
+    const manager = createManager()
+    await manager.init()
+
+    const first = manager.acquireOwnership('op-1')
+    expect(first).toEqual({ generation: 1, operationId: 'op-1' })
+    expect(manager.getActiveOwner()).toEqual(first)
+    expect(manager.getGeneration()).toBe(1)
+
+    expect(() => manager.acquireOwnership('op-2')).toThrow('Worker ownership already held by an active operation')
+
+    // Mismatched token cannot release ownership
+    expect(manager.releaseOwnership({ generation: 99, operationId: 'op-1' })).toBe(false)
+    expect(manager.releaseOwnership({ generation: 1, operationId: 'op-other' })).toBe(false)
+    expect(manager.getActiveOwner()).toEqual(first)
+
+    // Matching token releases ownership and allows the next owner
+    expect(manager.releaseOwnership(first)).toBe(true)
+    expect(manager.getActiveOwner()).toBeNull()
+
+    const second = manager.acquireOwnership('op-2')
+    expect(second).toEqual({ generation: 2, operationId: 'op-2' })
+    expect(manager.getGeneration()).toBe(2)
+  })
+
+  it('tracks operation generations across worker replacement and restart', async () => {
+    const manager = createManager()
+    await manager.init()
+
+    const worker1 = new FakeWorker()
+    const worker2 = new FakeWorker()
+    const worker3 = new FakeWorker()
+
+    internals(manager).worker = worker1 as unknown as Worker
+    const owner1 = manager.acquireOwnership('op-gen-1')
+    expect(owner1.generation).toBe(1)
+
+    const genAfterReplace = manager.replaceWorker(worker2 as unknown as Worker)
+    expect(worker1.terminated).toBe(true)
+    expect(worker2.terminated).toBe(false)
+    expect(manager.getActiveOwner()).toBeNull()
+    expect(genAfterReplace).toBe(2)
+    expect(manager.getGeneration()).toBe(2)
+
+    const owner2 = manager.acquireOwnership('op-gen-2')
+    expect(owner2.generation).toBe(3)
+
+    const genAfterRestart = manager.restartWorker(worker3 as unknown as Worker)
+    expect(worker2.terminated).toBe(true)
+    expect(worker3.terminated).toBe(false)
+    expect(manager.getActiveOwner()).toBeNull()
+    expect(genAfterRestart).toBe(4)
+  })
+
+  it('accepts progress and proof messages for the active owner generation', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const progressEvents: ProofWorkerResponse[] = []
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 1000, (event) => {
+      progressEvents.push(event)
+    })
+    const [messageId] = [...internals(manager).messageHandlers.keys()]
+    const gen = manager.getGeneration()
+
+    const progressResult = manager.handleWorkerMessage({
+      type: 'progress',
+      id: messageId,
+      generation: gen,
+      data: { stage: 'generating_proof', percent: 50 },
+    })
+    expect(progressResult).toEqual({ accepted: true, generation: gen, operationId: messageId })
+    expect(progressEvents).toHaveLength(1)
+    expect(progressEvents[0].data?.stage).toBe('generating_proof')
+
+    const proofResponse: ProofWorkerResponse = {
+      type: 'success',
+      id: messageId,
+      generation: gen,
+      data: { valid: true },
+    }
+    const proofResult = manager.handleWorkerMessage(proofResponse)
+    expect(proofResult).toEqual({ accepted: true, generation: gen, operationId: messageId })
+    await expect(pending).resolves.toEqual(proofResponse)
+  })
+
+  it('rejects stale progress and proof messages after cancellation', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const progressEvents: ProofWorkerResponse[] = []
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 500, (event) => {
+      progressEvents.push(event)
+    })
+    const [messageId] = [...internals(manager).messageHandlers.keys()]
+    const staleGen = manager.getGeneration()
+
+    await manager.cancelProof()
+    expect(manager.getGeneration()).toBeGreaterThan(staleGen)
+
+    const staleProgress = manager.handleWorkerMessage({
+      type: 'progress',
+      id: messageId,
+      generation: staleGen,
+      data: { stage: 'executing_main', percent: 75 },
+    })
+    expect(staleProgress).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: manager.getGeneration(),
+      receivedGeneration: staleGen,
+    })
+
+    const staleProof = manager.handleWorkerMessage({
+      type: 'success',
+      id: messageId,
+      generation: staleGen,
+      data: { valid: true },
+    })
+    expect(staleProof).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: manager.getGeneration(),
+      receivedGeneration: staleGen,
+    })
+    expect(progressEvents).toHaveLength(0)
+
+    const assertion = expect(pending).rejects.toThrow('Verification timed out')
+    await vi.advanceTimersByTimeAsync(500)
+    await assertion
+  })
+
+  it('rejects stale progress and proof messages after worker restart', async () => {
+    const manager = createManager()
+    await manager.init()
+
+    const worker1 = new FakeWorker()
+    const worker2 = new FakeWorker()
+    internals(manager).worker = worker1 as unknown as Worker
+
+    const oldOwner = manager.acquireOwnership('op-before-restart')
+    manager.restartWorker(worker2 as unknown as Worker)
+    const newOwner = manager.acquireOwnership('op-after-restart')
+
+    // Stale progress from the replaced worker's generation is rejected
+    const staleProgress = manager.handleWorkerMessage({
+      type: 'progress',
+      id: oldOwner.operationId,
+      generation: oldOwner.generation,
+      data: { stage: 'loading_circuits', percent: 20 },
+    })
+    expect(staleProgress).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: newOwner.generation,
+      receivedGeneration: oldOwner.generation,
+    })
+
+    // Stale proof result from the replaced worker's generation is rejected
+    const staleProof = manager.handleWorkerMessage({
+      type: 'success',
+      id: oldOwner.operationId,
+      generation: oldOwner.generation,
+      data: { valid: true },
+    })
+    expect(staleProof).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: newOwner.generation,
+      receivedGeneration: oldOwner.generation,
+    })
+
+    // Active owner's generation is accepted
+    const activeProgress = manager.handleWorkerMessage({
+      type: 'progress',
+      id: newOwner.operationId,
+      generation: newOwner.generation,
+      data: { stage: 'generating_proof', percent: 60 },
+    })
+    expect(activeProgress).toEqual({
+      accepted: true,
+      generation: newOwner.generation,
+      operationId: newOwner.operationId,
+    })
+  })
+
+  it('fails closed for uninitialized manager, missing generation, or unowned operation', async () => {
+    const manager = createManager()
+
+    expect(
+      manager.handleWorkerMessage({ type: 'progress', id: 'op-1', generation: 1 }),
+    ).toEqual({
+      accepted: false,
+      reason: 'not_initialized',
+      expectedGeneration: 0,
+      receivedGeneration: 1,
+    })
+
+    await manager.init()
+    const owner = manager.acquireOwnership('op-owned')
+
+    expect(
+      manager.handleWorkerMessage({ type: 'progress', id: 'op-owned' }),
+    ).toEqual({
+      accepted: false,
+      reason: 'stale_generation',
+      expectedGeneration: owner.generation,
+      receivedGeneration: undefined,
+    })
+
+    expect(
+      manager.handleWorkerMessage({
+        type: 'success',
+        id: 'op-wrong',
+        generation: owner.generation,
+        data: { valid: true },
+      }),
+    ).toEqual({
+      accepted: false,
+      reason: 'unowned_operation',
+      expectedGeneration: owner.generation,
+      receivedGeneration: owner.generation,
+    })
+  })
+})

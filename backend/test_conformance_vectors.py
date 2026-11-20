@@ -21,7 +21,7 @@ import pytest
 
 VECTORS_DIR = Path(__file__).resolve().parents[1] / "zk" / "vectors"
 if str(VECTORS_DIR) not in sys.path:
-    sys.path.insert(0, str(VECTORS_DIR))
+    sys.path.append(str(VECTORS_DIR))
 
 import generate_malformed_public_inputs  # noqa: E402
 import generate_vectors  # noqa: E402

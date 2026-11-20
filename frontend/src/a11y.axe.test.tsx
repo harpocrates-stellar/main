@@ -193,7 +193,7 @@ describe('a11y.axe — WCAG 2.2 AA automated checks', () => {
     const { container } = render(<App />)
     await user.click(screen.getByRole('button', { name: /begin evidence flow/i }))
 
-    expect(screen.getByLabelText(/credential seed/i)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByLabelText(/credential seed/i)).toBeInTheDocument())
     expect(screen.getByLabelText(/nullifier seed/i)).toBeInTheDocument()
 
     expectNoA11yViolations(await runAxe(container), 'evidence studio (silent tier)')
@@ -203,7 +203,8 @@ describe('a11y.axe — WCAG 2.2 AA automated checks', () => {
     const user = userEvent.setup()
     const { container } = render(<App />)
     await user.click(screen.getByRole('button', { name: /begin evidence flow/i }))
-    await user.click(screen.getByRole('button', { name: /consistent source/i }))
+    const sourceBtn = await waitFor(() => screen.getByRole('button', { name: /consistent source/i }))
+    await user.click(sourceBtn)
 
     expect(screen.queryByLabelText(/credential seed/i)).not.toBeInTheDocument()
     expectNoA11yViolations(await runAxe(container), 'evidence studio (source tier)')
@@ -214,7 +215,7 @@ describe('a11y.axe — WCAG 2.2 AA automated checks', () => {
     const { container } = render(<App />)
     await user.click(screen.getByRole('button', { name: /^verify$/i }))
 
-    expect(screen.getByLabelText(/drop or choose a received video/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /drop or choose a received video/i })).toBeInTheDocument()
     expectNoA11yViolations(await runAxe(container), 'verify view')
   })
 
