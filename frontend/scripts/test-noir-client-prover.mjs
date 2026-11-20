@@ -3,10 +3,10 @@ import { Noir } from '@noir-lang/noir_js'
 import { UltraHonkBackend } from '@aztec/bb.js'
 
 const helper = JSON.parse(
-  await readFile('../zk/noir/silent_witness_helper/target/silent_witness_helper.json', 'utf8'),
+  await readFile(new URL('../public/noir/silent_witness_helper.json', import.meta.url), 'utf8'),
 )
 const main = JSON.parse(
-  await readFile('../zk/noir/silent_witness/target/silent_witness.json', 'utf8'),
+  await readFile(new URL('../public/noir/silent_witness.json', import.meta.url), 'utf8'),
 )
 
 const videoHash = '1111111111111111111111111111111122222222222222222222222222222222'
@@ -30,14 +30,15 @@ const backend = new UltraHonkBackend(main.bytecode)
 try {
   const proofData = await backend.generateProof(witness, { keccak: true })
   const verified = await backend.verifyProof(proofData, { keccak: true })
+  if (proofData.publicInputs.length !== 4 || !verified) {
+    throw new Error('Published browser artifact proof did not verify as a four-field statement')
+  }
 
   console.log(
     JSON.stringify(
       {
-        credentialRoot,
-        nullifier,
         proofBytes: proofData.proof.length,
-        publicInputs: proofData.publicInputs,
+        publicInputBytes: proofData.publicInputs.length * 32,
         verified,
       },
       null,

@@ -1,0 +1,134 @@
+{
+  "_description": "Synthetic conformance vectors for the redacted_ancestry Noir circuit (#356). Secrets and openings are fixtures only; never log real media, masks, or credential material.",
+  "_circuit": "redacted_ancestry/v1",
+  "_version": "1.0.0",
+  "_compiler": ">=1.0.0",
+  "_operation": "redact",
+  "_operation_field_hex": "0x726564616374",
+  "_min_ancestry_depth": 1,
+  "_max_ancestry_depth": 4,
+  "witness": {
+    "parent_hash_hi": 11111,
+    "parent_hash_lo": 22222,
+    "parent_blinding": 33333,
+    "mask_commitment": 44444,
+    "redaction_seed": 55555,
+    "credential_secret": 12345,
+    "nullifier_secret": 67890
+  },
+  "positive_cases": [
+    {
+      "id": "ra-pos-001-valid-min-depth",
+      "description": "Valid redacted derivative ancestry at the minimum depth",
+      "operation_type": "redact",
+      "depth": 1,
+      "expect": "pass"
+    },
+    {
+      "id": "ra-pos-002-valid-max-depth",
+      "description": "Valid redacted derivative ancestry at the maximum lineage depth",
+      "operation_type": "redact",
+      "depth": 4,
+      "expect": "pass"
+    },
+    {
+      "id": "ra-pos-003-valid-zero-parent-hash",
+      "description": "A fully redacted parent still commits to a non-zero value",
+      "operation_type": "redact",
+      "depth": 1,
+      "parent_hash_hi": 0,
+      "parent_hash_lo": 0,
+      "expect": "pass"
+    }
+  ],
+  "negative_cases": [
+    {
+      "id": "ra-neg-001-non-redact-operation",
+      "description": "Reject an operation that is not the canonical redact identifier",
+      "operation_type": "crop",
+      "expect_fail_with": "operation must be redact"
+    },
+    {
+      "id": "ra-neg-002-zero-depth",
+      "description": "Reject zero ancestry depth",
+      "depth": 0,
+      "expect_fail_with": "ancestry depth out of range"
+    },
+    {
+      "id": "ra-neg-003-oversized-depth",
+      "description": "Reject depth above the lineage MAX_LINEAGE_DEPTH",
+      "depth": 5,
+      "expect_fail_with": "ancestry depth out of range"
+    },
+    {
+      "id": "ra-neg-004-wrong-parent-opening",
+      "description": "Reject an incorrect parent blinding",
+      "expect_fail_with": "parent commitment mismatch"
+    },
+    {
+      "id": "ra-neg-005-swapped-parent-halves",
+      "description": "Reject swapped parent hash halves",
+      "expect_fail_with": "parent commitment mismatch"
+    },
+    {
+      "id": "ra-neg-006-wrong-redaction-params",
+      "description": "Reject an incorrect redaction mask opening",
+      "expect_fail_with": "parameters digest mismatch"
+    },
+    {
+      "id": "ra-neg-007-forged-derivative",
+      "description": "Reject a forged derivative digest",
+      "expect_fail_with": "derivative digest mismatch"
+    },
+    {
+      "id": "ra-neg-008-tampered-root",
+      "description": "Reject a tampered ancestry root",
+      "expect_fail_with": "ancestry root mismatch"
+    },
+    {
+      "id": "ra-neg-009-forged-nullifier",
+      "description": "Reject a forged nullifier",
+      "expect_fail_with": "nullifier mismatch"
+    },
+    {
+      "id": "ra-neg-010-domain-mismatch",
+      "description": "Reject a wrong protocol/version/network domain tag",
+      "expect_fail_with": "domain tag mismatch"
+    },
+    {
+      "id": "ra-neg-011-direct-cycle",
+      "description": "Reject parent_commitment equal to derivative_digest",
+      "expect_fail_with": "ancestry cycle detected"
+    },
+    {
+      "id": "ra-neg-012-zero-credential-secret",
+      "description": "Reject a zero credential secret",
+      "expect_fail_with": "credential secret must be non-zero"
+    },
+    {
+      "id": "ra-neg-013-zero-nullifier-secret",
+      "description": "Reject a zero nullifier secret",
+      "expect_fail_with": "nullifier secret must be non-zero"
+    },
+    {
+      "id": "ra-neg-014-zero-parent-blinding",
+      "description": "Reject a zero parent blinding",
+      "expect_fail_with": "parent blinding must be non-zero"
+    },
+    {
+      "id": "ra-neg-015-zero-redaction-seed",
+      "description": "Reject a zero redaction seed",
+      "expect_fail_with": "redaction seed must be non-zero"
+    },
+    {
+      "id": "ra-neg-016-depth-substitution",
+      "description": "Reject a statement whose root was built at a different depth",
+      "expect_fail_with": "ancestry root mismatch"
+    }
+  ],
+  "privacy_notes": [
+    "parent_hash_hi/lo, parent_blinding, mask_commitment, redaction_seed, credential_secret, and nullifier_secret remain private",
+    "rejection paths emit only stable assert message codes, never witness values",
+    "vectors are synthetic, versioned, and reproducible across nargo test runs"
+  ]
+}

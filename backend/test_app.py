@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import logging
+import os
 import tempfile
 import threading
 import unittest
@@ -12,6 +15,20 @@ from unittest.mock import patch
 import app as app_module
 import stego
 from config import load_config
+from http_security import (
+    CORS_ALLOW_HEADERS,
+    CORS_EXEMPT_PATHS,
+    CORS_EXPOSE_HEADERS,
+    CORS_METHODS,
+    SECURITY_HEADERS,
+    apply_security_headers,
+    cors_kwargs,
+    is_cors_method_allowed,
+    is_cors_request_header_allowed,
+    is_origin_allowed,
+    normalize_origin,
+)
+from errors import FORBIDDEN_ORIGIN
 from db import ConflictError, make_idempotency_key
 from logging_utils import REDACTED_VALUE, redact_sensitive
 from metrics import collector as metrics_collector
@@ -20,10 +37,160 @@ from metrics import collector as metrics_collector
 REAL_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
 
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+VALID_VIDEO_HASH = "aa" * 32
+VALID_METADATA_HASH = "bb" * 32
+VALID_PROOF_ID = "cc" * 32
+
+VALID_REGISTER_PAYLOAD: dict[str, object] = {
+    "fileName": "evidence.mp4",
+    "videoHash": VALID_VIDEO_HASH,
+    "metadataHash": VALID_METADATA_HASH,
+    "proofId": VALID_PROOF_ID,
+    "tier": "source",
+    "txHash": "deadbeef",
+    "txStatus": "PENDING",
+    "sourceAddress": "GCCHDCX2JTLB6FDKHGIAAQPS6JHBDETFXTCQRETJUP5BWBVT6G4LQKOQ",
+    "contractId": "CBQQWKW6JE6NAFM7HT7R5DNMCPISCVY275LPSUPIRLYTY3ICKYJDIANZ",
+}
+
+TEST_API_KEY = "test-secret-key-for-registration"
+
+
+# ---------------------------------------------------------------------------
+# Context manager: spin up a fresh Flask app with specific env vars
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def _app_env(extra: dict[str, str], clear: list[str] | None = None):
+    """Temporarily set *extra* env vars, optionally clearing *clear* keys,
+    then create a fresh Flask test client.  Restores the environment on exit.
+    """
+    clear = clear or []
+    saved = {k: os.environ.get(k) for k in list(extra) + clear}
+
+    for k in clear:
+        os.environ.pop(k, None)
+    os.environ.update(extra)
+
+    try:
+        fresh = app_module.create_app()
+        yield fresh.test_client()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _client_no_key():
+    """Fresh test client with no REGISTER_API_KEY configured."""
+    return _app_env({}, clear=["REGISTER_API_KEY", "REGISTER_API_KEY_EXPIRES"])
+
+
+def _client_with_key(key: str, expires: str | None = None):
+    """Fresh test client with the given API key (and optional expiry)."""
+    extra: dict[str, str] = {"REGISTER_API_KEY": key}
+    if expires:
+        extra["REGISTER_API_KEY_EXPIRES"] = expires
+    clear = [] if expires else ["REGISTER_API_KEY_EXPIRES"]
+    return _app_env(extra, clear=clear)
+
+
+@contextlib.contextmanager
+def _client_with_rotating_keys(
+    current: str,
+    previous: str,
+    previous_expires: str | None = None,
+):
+    extra = {
+        "REGISTER_API_KEY": current,
+        "REGISTER_API_KEY_PREVIOUS": previous,
+    }
+    clear = ["REGISTER_API_KEY_EXPIRES"]
+    if previous_expires:
+        extra["REGISTER_API_KEY_PREVIOUS_EXPIRES"] = previous_expires
+    else:
+        clear.append("REGISTER_API_KEY_PREVIOUS_EXPIRES")
+    with _app_env(extra, clear=clear) as client:
+        yield client
+
+
+# ---------------------------------------------------------------------------
+# Helper: POST /api/proofs/register
+# ---------------------------------------------------------------------------
+
+def _post_register(
+    client,
+    *,
+    token: str | None = None,
+    auth_header: str | None = None,
+    payload: dict | None = None,
+):
+    headers = {"Content-Type": "application/json"}
+    if auth_header is not None:
+        headers["Authorization"] = auth_header
+    elif token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    return client.post(
+        "/api/proofs/register",
+        data=json.dumps(payload or VALID_REGISTER_PAYLOAD),
+        headers=headers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# General hardening tests (pre-existing)
+# ---------------------------------------------------------------------------
+
 class AppHardeningTest(unittest.TestCase):
+
+    def test_verify_batch_success(self) -> None:
+        video_hash = "1" * 64
+        proof_id = "2" * 64
+        app_module.db.insert_proof_event(event_type="extract", video_hash=video_hash, proof_id=proof_id, tx_status="confirmed")
+        
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": video_hash}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["results"][0]["status"], "verified")
+
+    def test_verify_batch_malformed(self) -> None:
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": "not hex"}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["results"][0]["status"], "malformed")
+
+    def test_verify_batch_oversized(self) -> None:
+        proofs = [{"videoHash": "1" * 64} for _ in range(101)]
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": proofs})
+        self.assertEqual(response.status_code, 413)
+
+    def test_verify_batch_not_found(self) -> None:
+        response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": "3" * 64}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["results"][0]["status"], "not_found")
+        
+    def test_verify_batch_failed_dependency(self) -> None:
+        with patch("app.find_proof_events_by_video", side_effect=RuntimeError("db error")):
+            response = self.client.post("/api/proofs/verify-batch", json={"proofs": [{"videoHash": "1" * 64}]})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json["results"][0]["status"], "dependency_failure")
     def setUp(self) -> None:
         metrics_collector.reset()
         self.client = app_module.app.test_client()
+
+    def tearDown(self) -> None:
+        # Clean up any test routes registered on the shared app instance.
+        for rule in list(self.client.application.url_map.iter_rules()):
+            if rule.rule.startswith("/__test_"):
+                self.client.application.url_map._rules.remove(rule)
+
+    # ------------------------------------------------------------------
+    # Health / Ready
+    # ------------------------------------------------------------------
 
     def test_health_sets_security_headers(self) -> None:
         response = self.client.get("/health")
@@ -31,7 +198,10 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(response.headers["Cross-Origin-Resource-Policy"], "same-site")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.headers["X-Harpocrates-Release"], "harpocrates-1.0.0")
+        self.assertEqual(response.headers["X-Harpocrates-Network"], "testnet")
 
     def test_request_log_includes_correlation_fields(self) -> None:
         with self.assertLogs("harpocrates.requests", level="INFO") as logs:
@@ -68,12 +238,76 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(request_event["request_id"], "req-error-1")
         self.assertEqual(request_event["status"], 400)
 
+    def test_health_returns_request_id(self) -> None:
+        response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("X-Request-Id", response.headers)
+        self.assertTrue(response.headers["X-Request-Id"])
+
+    def test_health_returns_standard_envelope(self) -> None:
+        response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["ok"], True)
+        self.assertIn("request_id", response.json)
+        self.assertEqual(response.json["service"], "harpocrates-stego")
+
     def test_ready_endpoint_reports_service_dependencies(self) -> None:
         response = self.client.get("/ready")
 
         self.assertIn(response.status_code, {200, 503})
         self.assertIn("video_tools", response.json)
         self.assertIn("database", response.json)
+        self.assertIn("request_id", response.json)
+
+    # ------------------------------------------------------------------
+    # Error envelope shape
+    # ------------------------------------------------------------------
+
+    def test_error_response_includes_code_message_and_request_id(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json["ok"], False)
+        self.assertIn("error", response.json)
+        self.assertIn("code", response.json["error"])
+        self.assertIn("message", response.json["error"])
+        self.assertIn("request_id", response.json["error"])
+        self.assertEqual(response.json["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(
+            response.json["error"]["message"], "video and metadata are required"
+        )
+
+    def test_error_response_request_id_header_matches_body(self) -> None:
+        response = self.client.post(
+            "/api/stego/embed",
+            data={},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        header_id = response.headers.get("X-Request-Id")
+        body_id = response.json["error"]["request_id"]
+        self.assertEqual(header_id, body_id)
+
+    def test_forwarded_x_request_id_is_preserved(self) -> None:
+        response = self.client.get(
+            "/health",
+            headers={"X-Request-Id": "caller-supplied-uuid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Request-Id"], "caller-supplied-uuid")
+        self.assertEqual(response.json["request_id"], "caller-supplied-uuid")
+
+    # ------------------------------------------------------------------
+    # Embed validation errors
+    # ------------------------------------------------------------------
 
     def test_embed_rejects_non_video_upload(self) -> None:
         response = self.client.post(
@@ -86,7 +320,43 @@ class AppHardeningTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json["error"], "video upload must use a video content type")
+        self.assertEqual(response.json["ok"], False)
+        self.assertEqual(response.json["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(
+            response.json["error"]["message"],
+            "video upload must use a video content type",
+        )
+
+    def test_embed_rejects_invalid_video_signature_before_ffmpeg(self) -> None:
+        with patch.object(app_module, "embed_metadata") as embed:
+            response = self.client.post(
+                "/api/stego/embed",
+                data={
+                    "metadata": json.dumps(valid_metadata()),
+                    "video": (io.BytesIO(b"not really an mp4"), "evidence.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        embed.assert_not_called()
+
+    def test_extract_rejects_invalid_video_signature_before_ffmpeg(self) -> None:
+        with patch.object(app_module, "extract_metadata") as extract:
+            response = self.client.post(
+                "/api/stego/extract",
+                data={
+                    "video": (io.BytesIO(b"not really an mp4"), "evidence.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        extract.assert_not_called()
+        self.assertEqual(
+            response.json["error"],
+            "uploaded file failed signature scan; invalid or unsupported video format",
+        )
 
     def test_embed_rejects_missing_metadata_fields(self) -> None:
         response = self.client.post(
@@ -99,13 +369,89 @@ class AppHardeningTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("metadata missing required field", response.json["error"])
+        self.assertEqual(response.json["ok"], False)
+        self.assertEqual(response.json["error"]["code"], "METADATA_MISSING_FIELD")
+        self.assertEqual(response.json["error"]["field"], "proofId")
+        self.assertIn(
+            "metadata missing required field",
+            response.json["error"]["message"],
+        )
+
+    # ------------------------------------------------------------------
+    # Success envelope shape
+    # ------------------------------------------------------------------
+
+    def test_proofs_endpoint_returns_standard_envelope(self) -> None:
+        response = self.client.get("/api/proofs")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["ok"], True)
+        self.assertIn("request_id", response.json)
+        self.assertIn("events", response.json)
+
+    def test_proofs_by_video_rejects_invalid_hash_with_envelope(self) -> None:
+        response = self.client.get("/api/proofs/by-video/not-hex")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json["ok"], False)
+        self.assertEqual(response.json["error"]["code"], "VALIDATION_ERROR")
+        self.assertIn("request_id", response.json["error"])
+
+    # ------------------------------------------------------------------
+    # Internal errors do not leak details
+    # ------------------------------------------------------------------
+
+    def test_internal_error_does_not_leak_stack_trace(self) -> None:
+        """The generic RuntimeError handler must never expose raw exception text."""
+        from unittest.mock import patch
+
+        def _raise_runtime():
+            raise RuntimeError("secret credentials should not leak")
+
+        with patch.dict(
+            self.client.application.view_functions,
+            {"health": _raise_runtime},
+        ):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json["ok"], False)
+        self.assertEqual(response.json["error"]["code"], "INTERNAL_ERROR")
+        self.assertEqual(response.json["error"]["message"], "internal server error")
+        self.assertNotIn("secret", response.json["error"]["message"])
+        self.assertNotIn("credentials", response.json["error"]["message"])
+
+    # ------------------------------------------------------------------
+    # Payload too large
+    # ------------------------------------------------------------------
+
+    def test_request_too_large_returns_payload_too_large_code(self) -> None:
+        """Verify the 413 envelope carries the PAYLOAD_TOO_LARGE error code."""
+        original_max = self.client.application.config.get("MAX_CONTENT_LENGTH")
+        try:
+            self.client.application.config["MAX_CONTENT_LENGTH"] = 16
+            response = self.client.post(
+                "/api/proofs/register",
+                data="x" * 128,
+                content_type="application/json",
+            )
+
+            self.assertEqual(response.status_code, 413)
+            self.assertEqual(response.json["ok"], False)
+            self.assertEqual(response.json["error"]["code"], "PAYLOAD_TOO_LARGE")
+            self.assertIn("request_id", response.json["error"])
+        finally:
+            self.client.application.config["MAX_CONTENT_LENGTH"] = original_max
 
     def test_embed_success_removes_temp_directory(self) -> None:
-        def fake_embed(source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
-            if not source_path.exists():
+        def fake_embed(source_path: str, output_path: str, _metadata: dict[str, object]) -> None:
+            import urllib.request
+            try:
+                urllib.request.urlopen(source_path).read()
+            except Exception:
                 raise RuntimeError("source upload was not saved")
-            output_path.write_bytes(b"embedded video bytes")
+            req = urllib.request.Request(output_path, data=b"embedded video bytes", method="PUT")
+            urllib.request.urlopen(req)
 
         response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
@@ -167,8 +513,10 @@ class AppHardeningTest(unittest.TestCase):
         self.assertEqual(response.json["error"], "metadata extraction failed")
 
     def test_embed_database_failure_removes_temp_directory(self) -> None:
-        def fake_embed(_source_path: Path, output_path: Path, _metadata: dict[str, object]) -> None:
-            output_path.write_bytes(b"embedded video bytes")
+        def fake_embed(_source_path: str, output_path: str, _metadata: dict[str, object]) -> None:
+            import urllib.request
+            req = urllib.request.Request(output_path, data=b"embedded video bytes", method="PUT")
+            urllib.request.urlopen(req)
 
         response = self.post_with_tracked_tempdirs(
             "/api/stego/embed",
@@ -196,20 +544,17 @@ class AppHardeningTest(unittest.TestCase):
 
     def post_with_tracked_tempdirs(self, path: str, data: dict[str, object], *patches):
         observed: list[Path] = []
-        with REAL_TEMPORARY_DIRECTORY(prefix="harpocrates-route-test-") as parent:
-            temp_root = Path(parent)
-            tempdir_factory = tracking_temporary_directory_factory(temp_root, observed)
-            with ExitStack() as stack:
-                stack.enter_context(patch.object(app_module.tempfile, "TemporaryDirectory", tempdir_factory))
-                for patcher in patches:
-                    stack.enter_context(patcher)
-                response = self.client.post(path, data=data, content_type="multipart/form-data")
+        workspace_factory = tracking_encrypted_workspace_factory(observed)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(app_module, "EncryptedWorkspace", workspace_factory))
+            for patcher in patches:
+                stack.enter_context(patcher)
+            response = self.client.post(path, data=data, content_type="multipart/form-data")
 
-            self.assertGreaterEqual(len(observed), 1)
-            for temp_path in observed:
-                self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
-            self.assertEqual(list(temp_root.iterdir()), [])
-            return response
+        self.assertGreaterEqual(len(observed), 1)
+        for temp_path in observed:
+            self.assertFalse(temp_path.exists(), f"{temp_path} was not removed")
+        return response
 
     def test_metrics_exposes_request_counts_status_and_latency(self) -> None:
         self.client.get("/health")
@@ -226,6 +571,20 @@ class AppHardeningTest(unittest.TestCase):
         self.assertIn("# HELP harpocrates_request_duration_seconds", metrics_text)
         self.assertIn('# TYPE harpocrates_request_duration_seconds histogram', metrics_text)
         self.assertIn('harpocrates_request_duration_seconds_count{endpoint="/health",method="GET",status="200"} 1', metrics_text)
+
+    def test_metrics_exposes_bounded_dependency_health_after_readiness_probe(self) -> None:
+        readiness = self.client.get("/ready")
+        self.assertIn(readiness.status_code, (200, 503))
+
+        response = self.client.get("/metrics")
+        self.assertEqual(response.status_code, 200)
+        metrics_text = response.data.decode("utf-8")
+        self.assertIn("# HELP harpocrates_dependency_up", metrics_text)
+        self.assertIn('dependency="database"', metrics_text)
+        self.assertIn('dependency="video_tools"', metrics_text)
+        self.assertIn("# HELP harpocrates_dependency_status", metrics_text)
+        self.assertNotIn("Traceback", metrics_text)
+        self.assertNotIn("password", metrics_text.lower())
 
     def test_metrics_privacy_excludes_sensitive_identifiers_and_parameterizes_routes(self) -> None:
         video_hash = "a" * 64
@@ -283,6 +642,18 @@ class AppHardeningTest(unittest.TestCase):
             res_header = token_client.get("/metrics", headers={"X-Metrics-Token": "secret-scraping-token"})
             self.assertEqual(res_header.status_code, 200)
 
+            # Boundary: near-miss tokens (prefix, extension, empty) -> 401
+            for near_miss in ("secret-scraping-toke", "secret-scraping-tokenX", ""):
+                res_near = token_client.get("/metrics", headers={"X-Metrics-Token": near_miss})
+                self.assertEqual(res_near.status_code, 401)
+
+            # Non-ASCII credentials are rejected cleanly instead of raising.
+            res_unicode = token_client.get(
+                "/metrics", headers={"Authorization": "Bearer sécret-scraping-token"}
+            )
+            self.assertEqual(res_unicode.status_code, 401)
+            self.assertEqual(res_unicode.json["error"], "unauthorized metrics access")
+
     def test_metrics_isolation_disabled_endpoint(self) -> None:
         with patch.dict(app_module.os.environ, {"METRICS_ENABLED": "false"}):
             disabled_app = app_module.create_app()
@@ -337,7 +708,8 @@ class AppHardeningTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("ISO-8601", response.json["error"])
+        self.assertEqual(response.json["error"]["code"], "METADATA_INVALID_FIELD")
+        self.assertIn("ISO-8601", response.json["error"]["message"])
 
     def test_embed_rejects_non_utc_timestamp(self) -> None:
         response = self.client.post(
@@ -350,7 +722,8 @@ class AppHardeningTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("timezone-aware", response.json["error"])
+        self.assertEqual(response.json["error"]["code"], "METADATA_INVALID_FIELD")
+        self.assertIn("timezone-aware", response.json["error"]["message"])
 
     def test_embed_rejects_far_future_timestamp(self) -> None:
         response = self.client.post(
@@ -363,24 +736,127 @@ class AppHardeningTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("unreasonably far", response.json["error"])
+        self.assertEqual(response.json["error"]["code"], "METADATA_INVALID_FIELD")
+        self.assertIn("unreasonably far", response.json["error"]["message"])
 
 
-def tracking_temporary_directory_factory(temp_root: Path, observed: list[Path]):
-    class TrackingTemporaryDirectory:
+def tracking_encrypted_workspace_factory(observed: list[Path]):
+    class TrackingEncryptedWorkspace(app_module.EncryptedWorkspace):
         def __init__(self, *args, **kwargs) -> None:
-            kwargs["dir"] = temp_root
-            self._manager = REAL_TEMPORARY_DIRECTORY(*args, **kwargs)
-            observed.append(Path(self._manager.name))
+            super().__init__(*args, **kwargs)
+            observed.append(Path(self.tmp_dir))
+    return TrackingEncryptedWorkspace
 
-        def __enter__(self):
-            return self._manager.__enter__()
 
-        def __exit__(self, exc_type, exc, traceback):
-            return self._manager.__exit__(exc_type, exc, traceback)
+# ---------------------------------------------------------------------------
+# Registration authentication tests
+# ---------------------------------------------------------------------------
 
-    return TrackingTemporaryDirectory
+class RegisterProofAuthTest(unittest.TestCase):
+    """Positive and negative tests for /api/proofs/register authentication."""
 
+    # --- Positive: open endpoint (no key configured) ---------------------
+
+    def test_open_when_no_key_configured(self) -> None:
+        """When REGISTER_API_KEY is not set the endpoint accepts any request."""
+        with _client_no_key() as client:
+            resp = _post_register(client)
+        # 200 if DB available, 500 if DATABASE_URL absent – both indicate auth
+        # was not the reason for failure.
+        self.assertIn(resp.status_code, {200, 400, 500})
+
+    # --- Positive: valid Bearer token, no expiry -------------------------
+
+    def test_accepts_valid_bearer_token(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertIn(resp.status_code, {200, 400, 500})
+
+    # --- Positive: valid Bearer token, future expiry ---------------------
+
+    def test_accepts_valid_token_with_future_expiry(self) -> None:
+        with _client_with_key(TEST_API_KEY, expires="2099-12-31T23:59:59Z") as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertIn(resp.status_code, {200, 400, 500})
+
+    # --- Negative: missing Authorization header --------------------------
+
+    def test_rejects_missing_auth_header(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, token=None)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("Authorization", resp.json["error"])
+
+    # --- Negative: wrong token -------------------------------------------
+
+    def test_rejects_wrong_token(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, token="definitely-wrong")
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("Invalid", resp.json["error"])
+
+    # --- Negative: non-Bearer auth scheme --------------------------------
+
+    def test_rejects_non_bearer_scheme(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, auth_header=f"Basic {TEST_API_KEY}")
+        self.assertEqual(resp.status_code, 401)
+
+    # --- Negative: expired key -------------------------------------------
+
+    def test_rejects_expired_key(self) -> None:
+        with _client_with_key(TEST_API_KEY, expires="2000-06-01T00:00:00Z") as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("expired", resp.json["error"])
+
+    # --- Negative: empty Bearer value ------------------------------------
+
+    def test_rejects_empty_bearer_value(self) -> None:
+        with _client_with_key(TEST_API_KEY) as client:
+            resp = _post_register(client, auth_header="Bearer ")
+        self.assertEqual(resp.status_code, 401)
+
+    # --- Negative: wrong token, future expiry ----------------------------
+
+    def test_rejects_wrong_token_with_future_expiry(self) -> None:
+        with _client_with_key(TEST_API_KEY, expires="2099-01-01T00:00:00Z") as client:
+            resp = _post_register(client, token="not-the-right-key")
+        self.assertEqual(resp.status_code, 401)
+
+    # --- Negative: expired even with correct token -----------------------
+
+    def test_rejects_correct_token_when_expired(self) -> None:
+        """Expiry check runs before token comparison; correct key still rejected."""
+        with _client_with_key(TEST_API_KEY, expires="2000-01-01T00:00:00Z") as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("expired", resp.json["error"])
+
+    def test_accepts_previous_key_during_rotation(self) -> None:
+        with _client_with_rotating_keys("new-key", TEST_API_KEY) as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertIn(resp.status_code, {200, 400, 500})
+
+    def test_rejects_previous_key_after_overlap_expiry(self) -> None:
+        with _client_with_rotating_keys(
+            "new-key", TEST_API_KEY, previous_expires="2000-01-01T00:00:00Z"
+        ) as client:
+            resp = _post_register(client, token=TEST_API_KEY)
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("Invalid", resp.json["error"])
+
+    def test_accepts_new_key_after_previous_key_expires(self) -> None:
+        with _client_with_rotating_keys(
+            "new-key", TEST_API_KEY, previous_expires="2000-01-01T00:00:00Z"
+        ) as client:
+            resp = _post_register(client, token="new-key")
+        self.assertIn(resp.status_code, {200, 400, 500})
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 def valid_metadata() -> dict[str, object]:
     return {
@@ -394,7 +870,11 @@ def valid_metadata() -> dict[str, object]:
 
 
 def video_upload() -> tuple[io.BytesIO, str, str]:
-    return io.BytesIO(b"video bytes"), "evidence.mp4", "video/mp4"
+    return (
+        io.BytesIO(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 10),
+        "evidence.mp4",
+        "video/mp4",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +981,48 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertTrue(body["created"])
         self.assertEqual(body["db_event"]["video_hash"], payload["videoHash"])
+
+    def test_register_accepts_all_protocol_tiers(self) -> None:
+        for tier in ("silent", "source", "seal"):
+            with self.subTest(tier=tier):
+                payload = valid_register_payload(tier=tier)
+                db_row = _stub_event(payload)
+
+                with patch.object(app_module, "upsert_register_event", return_value=(db_row, True)) as upsert_mock:
+                    response = self.client.post("/api/proofs/register", json=payload)
+
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(upsert_mock.call_args.kwargs["tier"], tier)
+                self.assertEqual(response.get_json()["db_event"]["tier"], tier)
+
+    def test_register_rejects_missing_tier_with_stable_error(self) -> None:
+        payload = valid_register_payload()
+        del payload["tier"]
+
+        with patch.object(app_module, "upsert_register_event") as upsert_mock:
+            response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "tier must be one of: silent, source, seal",
+        )
+        upsert_mock.assert_not_called()
+
+    def test_register_rejects_invalid_tier_with_stable_error(self) -> None:
+        payload = valid_register_payload(tier="premium")
+
+        with patch.object(app_module, "upsert_register_event") as upsert_mock:
+            response = self.client.post("/api/proofs/register", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "tier must be one of: silent, source, seal",
+        )
+        upsert_mock.assert_not_called()
 
     # ------------------------------------------------------------------
     # Positive path: idempotent retry returns original record (200)
@@ -782,6 +1304,579 @@ class CorsPreflightAndHeadersTest(unittest.TestCase):
         exposed = response.headers.get("Access-Control-Expose-Headers", "")
         self.assertIn("X-Request-ID", exposed)
         self.assertIn("X-Harpocrates-Source-Hash", exposed)
+
+
+
+class HttpSecurityUnitTest(unittest.TestCase):
+    """Pure-unit coverage for CORS / security header helpers (no Flask app)."""
+
+    def test_cors_kwargs_positive_shape(self) -> None:
+        kwargs = cors_kwargs(["https://app.example.com"])
+        self.assertEqual(kwargs["origins"], ["https://app.example.com"])
+        self.assertEqual(kwargs["methods"], list(CORS_METHODS))
+        self.assertEqual(kwargs["allow_headers"], list(CORS_ALLOW_HEADERS))
+        self.assertEqual(kwargs["expose_headers"], list(CORS_EXPOSE_HEADERS))
+        self.assertIn("GET", kwargs["methods"])
+        self.assertIn("POST", kwargs["methods"])
+        self.assertIn("OPTIONS", kwargs["methods"])
+        self.assertNotIn("DELETE", kwargs["methods"])
+        self.assertNotIn("PUT", kwargs["methods"])
+
+    def test_cors_kwargs_copies_lists(self) -> None:
+        origins = ["https://a.example"]
+        kwargs = cors_kwargs(origins)
+        kwargs["origins"].append("https://b.example")
+        self.assertEqual(origins, ["https://a.example"])
+
+    def test_origin_allowlist_positive_negative_and_wildcard(self) -> None:
+        allowed = ["http://localhost:5173", "https://app.example.com"]
+        self.assertTrue(is_origin_allowed("http://localhost:5173", allowed))
+        self.assertFalse(is_origin_allowed("http://unauthorized-domain.com", allowed))
+        self.assertFalse(is_origin_allowed(None, allowed))
+        self.assertFalse(is_origin_allowed("", allowed))
+        self.assertTrue(is_origin_allowed("https://any.example", ["*"]))
+
+    def test_cors_method_and_header_boundary_checks(self) -> None:
+        self.assertTrue(is_cors_method_allowed("POST"))
+        self.assertTrue(is_cors_method_allowed("get"))
+        self.assertFalse(is_cors_method_allowed("DELETE"))
+        self.assertFalse(is_cors_method_allowed(None))
+        self.assertTrue(is_cors_request_header_allowed("Content-Type"))
+        self.assertTrue(is_cors_request_header_allowed("x-request-id"))
+        self.assertFalse(is_cors_request_header_allowed("X-Forbidden-Header"))
+        self.assertFalse(is_cors_request_header_allowed(None))
+
+    def test_apply_security_headers_enabled_positive(self) -> None:
+        headers: dict[str, str] = {}
+        apply_security_headers(headers, enabled=True)
+        for name, value in SECURITY_HEADERS.items():
+            self.assertEqual(headers[name], value)
+
+    def test_apply_security_headers_disabled_negative(self) -> None:
+        headers: dict[str, str] = {"X-Custom": "keep"}
+        apply_security_headers(headers, enabled=False)
+        self.assertEqual(headers, {"X-Custom": "keep"})
+        for name in SECURITY_HEADERS:
+            self.assertNotIn(name, headers)
+
+    def test_apply_security_headers_setdefault_regression(self) -> None:
+        headers = {"Cache-Control": "public, max-age=60"}
+        apply_security_headers(headers, enabled=True)
+        # Pre-set values must not be overwritten (setdefault semantics).
+        self.assertEqual(headers["Cache-Control"], "public, max-age=60")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+
+
+class SecurityHeadersToggleIntegrationTest(unittest.TestCase):
+    """Integration coverage: SECURITY_HEADERS_ENABLED toggles live responses."""
+
+    def test_security_headers_enabled_via_env(self) -> None:
+        with _app_env(
+            {
+                "SECURITY_HEADERS_ENABLED": "true",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            response = client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        for name, value in SECURITY_HEADERS.items():
+            self.assertEqual(response.headers.get(name), value)
+
+    def test_security_headers_disabled_via_env(self) -> None:
+        with _app_env(
+            {
+                "SECURITY_HEADERS_ENABLED": "false",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            response = client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        for name in SECURITY_HEADERS:
+            self.assertIsNone(response.headers.get(name))
+
+    def test_custom_cors_origin_accepted_and_rejected(self) -> None:
+        with _app_env(
+            {
+                "CORS_ORIGINS": "https://wave.example",
+                "APP_ENV": "development",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            ok = client.get("/health", headers={"Origin": "https://wave.example"})
+            bad = client.get("/health", headers={"Origin": "https://evil.example"})
+        self.assertEqual(ok.headers.get("Access-Control-Allow-Origin"), "https://wave.example")
+        self.assertNotEqual(bad.headers.get("Access-Control-Allow-Origin"), "https://evil.example")
+
+
+
+class OriginEnforcementTest(unittest.TestCase):
+    """Server-side enforcement of configured CORS origins on live responses.
+
+    flask-cors only suppresses ``Access-Control-Allow-Origin`` headers for
+    disallowed origins; the request still executes server-side. These tests
+    pin the before_request hook that actually rejects non-allow-listed browser
+    origins (issue #266).
+    """
+
+    def test_real_route_rejects_disallowed_origin(self) -> None:
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "https://evil.example"})
+        self.assertEqual(response.status_code, 403)
+        body = response.get_json()
+        self.assertEqual(body["error"]["code"], FORBIDDEN_ORIGIN)
+        # Privacy-safe: the offending origin must never be echoed back.
+        self.assertNotIn("evil.example", response.get_data(as_text=True))
+        self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+    def test_real_route_allows_configured_origin(self) -> None:
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "http://localhost:5173"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+
+    def test_request_without_origin_is_never_rejected(self) -> None:
+        """Server-to-server and same-origin callers send no Origin header."""
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas")
+        self.assertEqual(response.status_code, 200)
+
+    def test_opaque_null_origin_is_rejected(self) -> None:
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "null"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error"]["code"], FORBIDDEN_ORIGIN)
+
+    def test_exempt_paths_bypass_origin_enforcement(self) -> None:
+        """Probes and scrapers must never be rejected for cross-origin headers.
+
+        /ready may legitimately answer 503 when the database is absent; the
+        assertion is that enforcement did not reject with 403.
+        """
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            health = client.get("/health", headers={"Origin": "https://evil.example"})
+            ready = client.get("/ready", headers={"Origin": "https://evil.example"})
+            metrics = client.get("/metrics", headers={"Origin": "https://evil.example"})
+        self.assertEqual(health.status_code, 200)
+        self.assertNotEqual(ready.status_code, 403)
+        self.assertEqual(metrics.status_code, 200)
+        for response in (health, ready, metrics):
+            body = response.get_data(as_text=True)
+            self.assertNotIn(FORBIDDEN_ORIGIN, body)
+        self.assertEqual(CORS_EXEMPT_PATHS, frozenset({"/health", "/ready", "/metrics"}))
+
+    def test_rejection_is_counted_in_metrics(self) -> None:
+        metrics_collector.reset()
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            client.get("/api/schemas", headers={"Origin": "https://evil.example"})
+            # /metrics must remain readable even after a rejected origin.
+            scrape = client.get("/metrics")
+        self.assertEqual(scrape.status_code, 200)
+        self.assertIn('reason="cors_origin_not_allowed"', scrape.get_data(as_text=True))
+
+    def test_rejection_log_is_privacy_safe(self) -> None:
+        """Regression: the rejected Origin value must never reach the logs."""
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        logger = logging.getLogger("harpocrates.requests")
+        old_handlers, old_level = logger.handlers[:], logger.level
+        logger.handlers = [handler]
+        try:
+            with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+                client.get("/api/schemas", headers={"Origin": "https://evil.example"})
+        finally:
+            logger.handlers, logger.level = old_handlers, old_level
+        output = stream.getvalue()
+        self.assertIn("cors_origin_rejected", output)
+        self.assertNotIn("evil.example", output)
+
+    def test_custom_origin_enforced_end_to_end(self) -> None:
+        """Boundary: configured origin allowed, sibling subdomain rejected."""
+        with _app_env(
+            {
+                "CORS_ORIGINS": "https://wave.example",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            ok = client.get("/api/schemas", headers={"Origin": "https://wave.example"})
+            evil = client.get("/api/schemas", headers={"Origin": "https://evil.wave.example"})
+            lookalike = client.get("/api/schemas", headers={"Origin": "https://wave.example.evil.io"})
+            path = client.get("/api/schemas", headers={"Origin": "https://wave.example/evil"})
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(evil.status_code, 403)
+        self.assertEqual(lookalike.status_code, 403)
+        # Path-bearing origin must never match the bare configured origin.
+        self.assertEqual(path.status_code, 403)
+
+    def test_case_insensitive_origin_match(self) -> None:
+        """Regression: scheme/host case differences still match the allow-list."""
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas", headers={"Origin": "HTTP://LOCALHOST:5173"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_wildcard_config_allows_any_origin_in_development(self) -> None:
+        """Boundary: wildcard CORS short-circuits enforcement, matching flask-cors."""
+        with _app_env(
+            {
+                "APP_ENV": "development",
+                "CORS_ORIGINS": "*",
+                "ALLOW_WILDCARD_CORS": "true",
+                "NOIR_WORKER_ENABLED": "false",
+                "DATABASE_URL": "",
+            }
+        ) as client:
+            response = client.get("/api/schemas", headers={"Origin": "https://anything.example"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_preflight_with_disallowed_origin_is_rejected(self) -> None:
+        """Negative preflight: enforcement fires before flask-cors responds."""
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.options(
+                "/api/proofs/register",
+                headers={
+                    "Origin": "https://evil.example",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+        self.assertEqual(response.status_code, 403)
+
+
+class NormalizeOriginUnitTest(unittest.TestCase):
+    """Pure-unit coverage for origin canonicalization (no Flask app)."""
+
+    def test_positive_forms(self) -> None:
+        self.assertEqual(normalize_origin("https://app.example.com"), "https://app.example.com")
+        # Case-insensitive scheme/host, preserved port.
+        self.assertEqual(normalize_origin("HTTPS://APP.Example.COM:8443"), "https://app.example.com:8443")
+        # Surrounding whitespace is stripped.
+        self.assertEqual(normalize_origin("  https://app.example.com  "), "https://app.example.com")
+
+    def test_negative_forms(self) -> None:
+        cases = [
+            None,
+            "",
+            "   ",
+            "null",
+            "https://app.example.com/evil",
+            "https://app.example.com?x=1",
+            "https://app.example.com#f",
+            "https://user:pass@app.example.com",
+            "https://app.example.com:",
+            "https://app.example.com:port",
+            "https://app.example.com:0",
+            "https://app.example.com:99999",
+            "https://app.example.com:8443:extra",
+            "app.example.com",
+            "https://",
+            "https://app.example.com/path?query#frag",
+        ]
+        for case in cases:
+            self.assertIsNone(normalize_origin(case), msg=f"expected None for {case!r}")
+
+    def test_is_origin_allowed_normalizes_both_sides(self) -> None:
+        allowed = ["HTTPS://App.Example.Com"]
+        self.assertTrue(is_origin_allowed("https://app.example.com", allowed))
+        self.assertTrue(is_origin_allowed("  HTTPS://APP.EXAMPLE.COM ", allowed))
+        self.assertFalse(is_origin_allowed("https://app.example.com/evil", allowed))
+        self.assertFalse(is_origin_allowed("https://evil.example", allowed))
+        self.assertFalse(is_origin_allowed(None, allowed))
+
+    def test_is_origin_allowed_wildcard_short_circuit(self) -> None:
+        self.assertTrue(is_origin_allowed("https://any.example", ["*"]))
+
+
+class SchemaETagCachingTest(unittest.TestCase):
+    """ETag and caching headers for /api/schemas endpoints (issue #804)."""
+
+    def test_list_schemas_returns_200_with_etag(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("ETag"))
+        self.assertIn("schemas", response.get_json())
+
+    def test_list_schemas_returns_304_on_matching_etag(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get("/api/schemas")
+            etag = first.headers.get("ETag")
+            second = client.get("/api/schemas", headers={"If-None-Match": etag})
+        self.assertEqual(second.status_code, 304)
+
+    def test_get_schema_returns_404_for_unknown_hash(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas/" + "0" * 64)
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_schema_returns_200_with_cache_headers(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get("/api/schemas")
+            schemas = first.get_json()["schemas"]
+            if not schemas:
+                self.skipTest("no schemas available")
+            h = schemas[0]["schemaHash"]
+            response = client.get(f"/api/schemas/{h}")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("ETag"))
+        self.assertEqual(
+            response.headers.get("Cache-Control"),
+            "public, max-age=86400, immutable",
+        )
+
+    def test_get_schema_returns_304_on_matching_etag(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get("/api/schemas")
+            schemas = first.get_json()["schemas"]
+            if not schemas:
+                self.skipTest("no schemas available")
+            h = schemas[0]["schemaHash"]
+            detail = client.get(f"/api/schemas/{h}")
+            etag = detail.headers.get("ETag")
+            second = client.get(f"/api/schemas/{h}", headers={"If-None-Match": etag})
+        self.assertEqual(second.status_code, 304)
+
+
+class JobDownloadRangeAndETagTest(unittest.TestCase):
+    """ETag, conditional requests, and single-Range support for /api/jobs/<id>/download."""
+
+    def setUp(self):
+        import db
+        db._JOBS.clear()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        patcher = patch.dict(os.environ, {"HARPOCRATES_STORAGE_DIR": self.temp_dir.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_full_download_returns_200_and_etag(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 101
+        content = b"Harpocrates video payload data for test"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {
+                "source_hash": "source123",
+                "embedded_hash": content_hash,
+                "metadata_hash": "meta123",
+                "db_event": 42,
+            },
+        }
+
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get(f"/api/jobs/{job_id}/download")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, content)
+        self.assertEqual(response.headers.get("Accept-Ranges"), "bytes")
+        etag = response.headers.get("ETag")
+        self.assertTrue(etag)
+        self.assertIn(content_hash, etag)
+        self.assertEqual(response.headers.get("X-Harpocrates-Source-Hash"), "source123")
+        self.assertEqual(response.headers.get("X-Harpocrates-Embedded-Hash"), content_hash)
+        self.assertEqual(response.headers.get("X-Harpocrates-Metadata-Hash"), "meta123")
+        self.assertEqual(response.headers.get("X-Harpocrates-Db-Event"), "42")
+
+    def test_conditional_if_none_match_returns_304(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 102
+        content = b"Conditional download test content"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {"embedded_hash": content_hash},
+        }
+
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get(f"/api/jobs/{job_id}/download")
+            etag = first.headers.get("ETag")
+            self.assertTrue(etag)
+
+            # Matching strong ETag in If-None-Match
+            second = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"If-None-Match": etag},
+            )
+            self.assertEqual(second.status_code, 304)
+            self.assertEqual(second.data, b"")
+
+            # Non-matching ETag returns 200 full content
+            third = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"If-None-Match": '"different-hash"'},
+            )
+            self.assertEqual(third.status_code, 200)
+            self.assertEqual(third.data, content)
+
+    def test_range_request_returns_206_partial_content(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 103
+        content = b"0123456789abcdefghijklmnopqrstuvwxyz"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {"embedded_hash": content_hash},
+        }
+
+        total_length = len(content)
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            # Range: bytes=0-9 (first 10 bytes)
+            resp = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=0-9"},
+            )
+            self.assertEqual(resp.status_code, 206)
+            self.assertEqual(resp.data, content[0:10])
+            self.assertEqual(
+                resp.headers.get("Content-Range"),
+                f"bytes 0-9/{total_length}",
+            )
+            self.assertEqual(resp.headers.get("Content-Length"), "10")
+
+            # Range: bytes=10-19
+            resp_mid = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=10-19"},
+            )
+            self.assertEqual(resp_mid.status_code, 206)
+            self.assertEqual(resp_mid.data, content[10:20])
+            self.assertEqual(
+                resp_mid.headers.get("Content-Range"),
+                f"bytes 10-19/{total_length}",
+            )
+
+            # Suffix range: bytes=-5 (last 5 bytes)
+            resp_suffix = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=-5"},
+            )
+            self.assertEqual(resp_suffix.status_code, 206)
+            self.assertEqual(resp_suffix.data, content[-5:])
+            self.assertEqual(
+                resp_suffix.headers.get("Content-Range"),
+                f"bytes {total_length - 5}-{total_length - 1}/{total_length}",
+            )
+
+            # Offset range: bytes=20- (from byte 20 to end)
+            resp_offset = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=20-"},
+            )
+            self.assertEqual(resp_offset.status_code, 206)
+            self.assertEqual(resp_offset.data, content[20:])
+            self.assertEqual(
+                resp_offset.headers.get("Content-Range"),
+                f"bytes 20-{total_length - 1}/{total_length}",
+            )
+
+    def test_invalid_range_returns_416(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 104
+        content = b"Short content"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {"embedded_hash": content_hash},
+        }
+
+        total_length = len(content)
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            resp = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": f"bytes=100-200"},
+            )
+            self.assertEqual(resp.status_code, 416)
+            self.assertEqual(
+                resp.headers.get("Content-Range"),
+                f"bytes */{total_length}",
+            )
+
+    def test_unauthorized_or_unfinished_job_errors(self):
+        import db
+        from storage import get_job_output_path
+
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            # 1. Non-existent job -> 404
+            resp = client.get("/api/jobs/9999/download")
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(resp.get_json(), {"error": "Job not found"})
+
+            # 2. Non-embed job type -> 400
+            db._JOBS[201] = {
+                "id": 201,
+                "type": "extract",
+                "status": "completed",
+                "result": {},
+            }
+            resp = client.get("/api/jobs/201/download")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json(), {"error": "No output available for download"})
+
+            # 3. Pending job -> 400
+            db._JOBS[202] = {
+                "id": 202,
+                "type": "embed",
+                "status": "pending",
+                "result": None,
+            }
+            resp = client.get("/api/jobs/202/download")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json(), {"error": "No output available for download"})
+
+            # 4. Failed job -> 400
+            db._JOBS[203] = {
+                "id": 203,
+                "type": "embed",
+                "status": "failed",
+                "result": None,
+            }
+            resp = client.get("/api/jobs/203/download")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json(), {"error": "No output available for download"})
+
+            # 5. Completed job but output file missing -> 404
+            db._JOBS[204] = {
+                "id": 204,
+                "type": "embed",
+                "status": "completed",
+                "result": {},
+            }
+            missing_out = get_job_output_path(204)
+            if missing_out.exists():
+                missing_out.unlink()
+            resp = client.get("/api/jobs/204/download")
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(resp.get_json(), {"error": "Output file missing"})
 
 
 if __name__ == "__main__":

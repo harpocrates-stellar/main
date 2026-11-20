@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "malformed-entry",
+  "description": "Negative: malformed base64 certificate entry",
+  "atTime": "2024-06-01T00:00:00Z",
+  "chain": [
+    "not!!valid!!base64"
+  ],
+  "trustRoots": [
+    "MIIC1DCCAbygAwIBAgIBATANBgkqhkiG9w0BAQsFADAjMSEwHwYDVQQDDBhIYXJwb2NyYXRlcyBGaXh0dXJlIFJvb3QwHhcNMjMwNjAyMDAwMDAwWhcNMzQwNTMwMDAwMDAwWjAjMSEwHwYDVQQDDBhIYXJwb2NyYXRlcyBGaXh0dXJlIFJvb3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC/xRal4MRvoEldPLUfOr9/SLzZ42TWqvejLSOJzKXPUPnMRm+xqKV4ipQVpp0Jd7gTf7Gzir+Jy3pX5l6S2k/bFVSEHMP7xq2OGdog1Zgj0moyq+42IAFddk3jPif/Jxt2w8GqLuBszeNcWgAQq6H+oG83DsVrwaXjHE8Hy+HflxE8HuQUDc2kovtLEEtIc/+32t1tI2ONCsK2JLroEsKlJkU0mNfupaVS76Q41uUR99a9zVU7NDAcNA/b3kUoqNQy2p4WD9nkz0Z0Ig+9k5nLcEVtcWll9ZC7KOmw9Dv3Opk9nZ0rbim8s7/6gbXHBGuhkOn7chJiHNQUtLtD32rFAgMBAAGjEzARMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBACBE+x2cla8jg0ogdtXoXZAd5XvpNse+jS2FC4xXwJhXdmE5mRTSBH6bF0k5Dhni3QydTqcxTr0wJ9Jg53dtp0ASJh1ORuZz+1Aus7kTSagRWRFhroiaAfRZe0LEpQR30I1M8PIx6MSnRDsyRhC/BzP4tTzGm++k26ZCL1sWX+SlIo+quDRWreaHr93s1Hb+7BvaOR+st8mfDT/CbwIbuMtIT9SpzxAMeBiepkkXgZhJysjTYK2eeR2PHkW6eFku6Ur4LTvNLd+GSC6bHzR7WpMVgsveWduUoJBTW6W5AewC1BPCUa5FNYFq35O2rXzDN+bXjpU+NwPxzEHCuXqJLXE="
+  ],
+  "revokedSerials": [],
+  "expect": {
+    "ok": false,
+    "status": "invalid",
+    "errorCode": "malformed_certificate"
+  }
+}

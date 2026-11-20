@@ -1,0 +1,11 @@
+{
+  "workspace": "frontend",
+  "report_format": "istanbul_summary",
+  "description": "Minimum coverage for the frontend, measured by vitest's json-summary coverage report.",
+  "thresholds": {
+    "lines": 55,
+    "statements": 55,
+    "functions": 50,
+    "branches": 45
+  }
+}

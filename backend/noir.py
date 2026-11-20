@@ -6,16 +6,53 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from tracing import traced
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = ROOT_DIR / "zk" / "noir" / "scripts" / "generate-silent-witness-wsl.ps1"
+SINGLE_SCRIPT_PATH = ROOT_DIR / "zk" / "noir" / "scripts" / "generate-silent-witness-wsl.ps1"
+BATCH_SCRIPT_PATH = ROOT_DIR / "zk" / "noir" / "scripts" / "generate-silent-witness-aggregator.sh"
+
+from verifier_inputs import (
+    MAX_AGGREGATION_SIZE,
+    MIN_AGGREGATION_SIZE,
+    check_aggregation_batch_size,
+)
+
+try:
+    import sys
+    sys.path.insert(0, str(ROOT_DIR / "zk" / "tools"))
+    from validate_prover_inputs import validate_prover_inputs  # type: ignore[import-not-found]
+except ImportError:
+    validate_prover_inputs = None
 
 
+@traced("proof.noir.generate", attributes={"proof.system": "noir"})
 def generate_silent_witness(
     video_hash: str,
     credential_secret: str,
     nullifier_secret: str,
+    verifier_scope: str = "0",
+    epoch: int = 0,
 ) -> dict[str, Any]:
+    """Generate a single Silent Witness proof."""
+    if validate_prover_inputs is not None:
+        try:
+            hi_dec = str(int(video_hash[:32], 16)) if len(video_hash) == 64 else video_hash
+            lo_dec = str(int(video_hash[32:], 16)) if len(video_hash) == 64 else video_hash
+            validate_prover_inputs(
+                {
+                    "credential_secret": credential_secret,
+                    "nullifier_secret": nullifier_secret,
+                    "video_hash_hi": hi_dec,
+                    "video_hash_lo": lo_dec,
+                    "verifier_scope": verifier_scope,
+                    "epoch": str(epoch),
+                }
+            )
+        except Exception as exc:
+            raise ValueError(f"Invalid prover inputs: {exc}") from exc
+
     completed = subprocess.run(
         [
             "powershell",
@@ -23,13 +60,17 @@ def generate_silent_witness(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            str(SCRIPT_PATH),
+            str(SINGLE_SCRIPT_PATH),
             "-VideoHash",
             video_hash,
             "-CredentialSecret",
             credential_secret,
             "-NullifierSecret",
             nullifier_secret,
+            "-VerifierScope",
+            verifier_scope,
+            "-Epoch",
+            str(epoch),
         ],
         cwd=ROOT_DIR,
         check=False,
@@ -48,3 +89,84 @@ def generate_silent_witness(
             return json.loads(line)
 
     raise RuntimeError("Noir proof generator did not return JSON.")
+
+
+@traced("proof.noir.aggregate", attributes={"proof.system": "noir"})
+def generate_aggregated_proof(
+    video_hashes: list[str],
+    credential_secret: str,
+    nullifier_secret: str,
+) -> dict[str, Any]:
+    """Generate a bounded aggregated proof for multiple video hashes.
+
+    Uses the Silent Witness Aggregator circuit to produce a single
+    UltraHonk proof covering up to ``MAX_AGGREGATION_SIZE`` (8) video
+    hashes under the same credential identity.
+
+    Args:
+        video_hashes: Ordered list of 32-byte hex video hashes (1-8).
+        credential_secret: Decimal field string for the credential secret.
+        nullifier_secret: Decimal field string for the nullifier secret.
+
+    Returns:
+        JSON-serialized dictionary with aggregated proof artifacts.
+
+    Raises:
+        ValueError: If the batch size is out of bounds.
+        RuntimeError: If the Noir/batch process fails.
+    """
+    batch_size = len(video_hashes)
+    try:
+        check_aggregation_batch_size(batch_size)
+    except Exception as exc:
+        raise ValueError(
+            f"Batch size must be between {MIN_AGGREGATION_SIZE} and {MAX_AGGREGATION_SIZE} (got {batch_size})"
+        ) from exc
+
+    if validate_prover_inputs is not None:
+        try:
+            prover_dict: dict[str, Any] = {
+                "credential_secret": credential_secret,
+                "nullifier_secret": nullifier_secret,
+            }
+            for i, vh in enumerate(video_hashes):
+                prover_dict[f"video_hash_hi_{i}"] = (
+                    str(int(vh[:32], 16)) if len(vh) == 64 else vh
+                )
+                prover_dict[f"video_hash_lo_{i}"] = (
+                    str(int(vh[32:], 16)) if len(vh) == 64 else vh
+                )
+            validate_prover_inputs(
+                prover_dict,
+                required_fields=["credential_secret", "nullifier_secret"],
+            )
+        except Exception as exc:
+            raise ValueError(f"Invalid prover inputs: {exc}") from exc
+
+    cmd = [
+        "bash",
+        str(BATCH_SCRIPT_PATH),
+        *video_hashes,
+        credential_secret,
+        nullifier_secret,
+    ]
+
+    completed = subprocess.run(
+        cmd,
+        cwd=ROOT_DIR,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=int(os.getenv("NOIR_PROOF_TIMEOUT_SECONDS", "300")),
+    )
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(detail or "Aggregated proof generation failed.")
+
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            return json.loads(line)
+
+    raise RuntimeError("Aggregated proof generator did not return JSON.")

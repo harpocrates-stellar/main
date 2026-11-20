@@ -2,7 +2,6 @@ import time
 import threading
 from unittest.mock import patch, MagicMock
 
-import pytest
 from flask import Flask, jsonify
 
 from admission import AdmissionController, require_capacity, _get_client_identity

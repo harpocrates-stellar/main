@@ -4,12 +4,18 @@ on:
   pull_request:
     paths:
       - "contracts/**"
+      - "zk/vectors/**"
+      - "frontend/src/generated/**"
+      - "devx/contract_bindings.py"
       - ".github/workflows/contracts-ci.yml"
   push:
     branches:
       - main
     paths:
       - "contracts/**"
+      - "zk/vectors/**"
+      - "frontend/src/generated/**"
+      - "devx/contract_bindings.py"
       - ".github/workflows/contracts-ci.yml"
 
 permissions:
@@ -31,15 +37,19 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -49,14 +59,41 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-contracts-
 
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features || true
+
       - name: Run contract tests
         run: |
           set -o pipefail
           cargo test --workspace 2>&1 | tee contracts-test.log
 
+      - name: Measure contract test coverage
+        run: cargo llvm-cov --workspace --json --output-path coverage.json
+
+      - name: Check contract coverage thresholds
+        run: python3 ../devx/coverage/check_coverage.py --workspace contracts --report coverage.json
+
+      - name: Build registry Wasm for size budget
+        run: stellar contract build
+
+      - name: Enforce contract Wasm size budget (#346)
+        working-directory: .
+        run: python3 devx/wasm_size_budget.py --check
+
+      - name: Test contract bindings drift checker
+        working-directory: .
+        run: python3 devx/test_contract_bindings.py
+
+      - name: Fail on contract bindings drift
+        working-directory: .
+        run: python3 devx/contract_bindings.py --check
+
       - name: Upload test failure log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: contracts-test-failure-${{ github.run_id }}
           path: contracts/contracts-test.log

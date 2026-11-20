@@ -17,8 +17,9 @@ const TIERS = new Set(['silent', 'source', 'seal'])
  * Everything else is excluded by construction. In particular, seeds, proof
  * witnesses, generated proofs, and raw private inputs must remain in memory.
  * 
- * Note: Credential seeds may be stored locally ONLY in the encrypted VaultEnvelope 
- * managed by `CredentialVault`, which provides explicit lock/unlock semantics.
+ * Note: Credential seeds may be stored locally ONLY in the encrypted VaultEnvelope
+ * managed by `CredentialVault`, which provides explicit lock/unlock semantics and
+ * publishes its supported format parameters via `VAULT_FORMAT_COMPATIBILITY`.
  */
 function sanitizePreferences(value: unknown): PersistedUiPreferences {
   if (!value || typeof value !== 'object') return {}
@@ -42,6 +43,18 @@ function browserStorage(name: StorageName): Storage {
 
 function createSafeStorage(name: StorageName) {
   return {
+    setItem(key: string, value: string) {
+      browserStorage(name).setItem(key, value)
+    },
+
+    getItem(key: string): string | null {
+      return browserStorage(name).getItem(key)
+    },
+
+    removeItem(key: string) {
+      browserStorage(name).removeItem(key)
+    },
+
     setUiPreferences(value: PersistedUiPreferences) {
       const safe = sanitizePreferences(value)
       browserStorage(name).setItem(STORAGE_KEY, JSON.stringify(safe))

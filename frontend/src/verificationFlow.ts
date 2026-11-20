@@ -1,4 +1,5 @@
 import type { ChainProofRecord } from './stellar'
+import { fetchProofEventsByVideo } from './services/verificationService'
 
 export type VerificationEvent = {
   id: number
@@ -33,6 +34,7 @@ type VerifyArtifactInput = {
   file: File
   videoHash: string
   wallet?: string
+  signal?: AbortSignal
 }
 
 class MalformedEvidenceError extends Error {}
@@ -44,11 +46,12 @@ export async function verifyArtifact({
   file,
   videoHash,
   wallet,
+  signal,
 }: VerifyArtifactInput): Promise<VerificationResult> {
   try {
     const metadata = await extractMetadata(apiBase, file)
     const [events, chainProof] = await Promise.all([
-      fetchProofEventsByVideo(apiBase, videoHash),
+      fetchProofEventsByVideo(videoHash, signal, apiBase),
       fetchChainProof(contractId, videoHash, wallet),
     ])
 
@@ -73,34 +76,16 @@ export async function verifyArtifact({
   }
 }
 
-async function extractMetadata(apiBase: string, file: File): Promise<unknown> {
-  const form = new FormData()
-  form.append('video', file)
-
-  const response = await fetch(`${apiBase}/api/stego/extract`, {
-    method: 'POST',
-    body: form,
-  })
-  if (!response.ok) {
-    throw new MalformedEvidenceError()
-  }
-
+async function extractMetadata(_apiBase: string, file: File): Promise<unknown> {
+  const { extractMetadata: extractMetadataLocal, MalformedEvidenceError: StegoError } = await import('./stego')
   try {
-    const data = (await response.json()) as { metadata?: unknown }
-    return data.metadata
-  } catch {
-    throw new MalformedEvidenceError()
+    return await extractMetadataLocal(file)
+  } catch (err) {
+    if (err instanceof StegoError) {
+      throw new MalformedEvidenceError()
+    }
+    throw err
   }
-}
-
-async function fetchProofEventsByVideo(apiBase: string, videoHash: string) {
-  const response = await fetch(`${apiBase}/api/proofs/by-video/${videoHash}`)
-  if (!response.ok) {
-    throw new Error('Database lookup failed.')
-  }
-
-  const data = (await response.json()) as { events?: VerificationEvent[] }
-  return data.events ?? []
 }
 
 async function fetchChainProof(contractId: string, videoHash: string, wallet?: string) {

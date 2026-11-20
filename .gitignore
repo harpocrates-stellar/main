@@ -1,2 +1,8 @@
 tmp/
 *.log
+zk/bench/results/
+
+__pycache__/
+*.py[cod]
+.hypothesis/
+.pytest_cache/

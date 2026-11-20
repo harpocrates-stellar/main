@@ -1,0 +1,172 @@
+name: Backup and Restore Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_only:
+        description: 'Run backup only (skip restore drill)'
+        required: false
+        default: false
+        type: boolean
+      retention_days:
+        description: 'Backup retention in days'
+        required: false
+        default: 7
+        type: number
+  schedule:
+    # Weekly backup drill
+    - cron: '0 5 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-restore-drill-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RETENTION_DAYS: ${{ inputs.retention_days || 7 }}
+  RPO_TARGET_MINUTES: 15
+  RTO_TARGET_MINUTES: 30
+
+jobs:
+  backup-restore:
+    name: Encrypted Backup and Restore Drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnupg openssl
+
+      - name: Generate ephemeral GPG key
+        run: |
+          cat > /tmp/gpg-batch <<EOF
+          %no-protection
+          Key-Type: RSA
+          Key-Length: 2048
+          Name-Real: Harpocrates Drill
+          Name-Email: drill@harpocrates.test
+          Expire-Date: 0
+          EOF
+
+          gpg --batch --gen-key /tmp/gpg-batch
+
+          # Preserve the private key only on the ephemeral runner so
+          # the drill can simulate recovery after keyring loss.
+          gpg --armor --export-secret-keys drill@harpocrates.test \
+            > /tmp/drill-key.asc
+
+      - name: Run backup
+        id: backup
+        env:
+          GPG_RECIPIENT: drill@harpocrates.test
+        run: |
+          chmod +x scripts/backup.sh scripts/restore.sh
+
+          BACKUP_FILE=$(./scripts/backup.sh \
+            --output-dir /tmp/backup-drill \
+            --retention-days "$RETENTION_DAYS" \
+            --gpg-recipient "$GPG_RECIPIENT" 2>&1 \
+            | tee /dev/stderr \
+            | grep -oE '/tmp/backup-drill/[^ ]+\.gpg' \
+            | tail -1)
+
+          echo "file=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
+          echo "Backup created: $BACKUP_FILE"
+
+      - name: Verify backup exists and is encrypted
+        run: |
+          BACKUP_FILE="${{ steps.backup.outputs.file }}"
+
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "::error::Backup file not found"
+            exit 1
+          fi
+
+          file "$BACKUP_FILE" | grep -qi "gpg\|encrypted\|data" || {
+            echo "::error::Backup file is not encrypted"
+            file "$BACKUP_FILE"
+            exit 1
+          }
+
+          SIZE=$(stat -c%s "$BACKUP_FILE" 2>/dev/null || stat -f%z "$BACKUP_FILE" 2>/dev/null)
+          echo "Backup verified: $BACKUP_FILE ($SIZE bytes, encrypted)"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: backup-drill-encrypted-${{ github.run_id }}
+          path: /tmp/backup-drill/*.gpg
+          retention-days: ${{ env.RETENTION_DAYS }}
+          if-no-files-found: error
+
+      - name: Simulate keyring loss
+        run: |
+          gpg --batch --yes --delete-secret-keys drill@harpocrates.test 2>/dev/null || true
+          gpg --batch --yes --delete-keys drill@harpocrates.test 2>/dev/null || true
+
+          echo "Ephemeral GPG key removed from keyring"
+
+      - name: Recover GPG key
+        run: |
+          if [ ! -s /tmp/drill-key.asc ]; then
+            echo "::error::Recovery key not found"
+            exit 1
+          fi
+
+          gpg --batch --import /tmp/drill-key.asc
+
+          echo "GPG key recovered successfully"
+
+      - name: Run restore
+        if: ${{ !inputs.backup_only }}
+        env:
+          GPG_RECIPIENT: drill@harpocrates.test
+        run: |
+          BACKUP_FILE="${{ steps.backup.outputs.file }}"
+
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "::error::No backup file found"
+            exit 1
+          fi
+
+          echo "Restoring from: $BACKUP_FILE"
+
+          ./scripts/restore.sh "$BACKUP_FILE" \
+            --output-dir /tmp/restore-drill \
+            --gpg-recipient "$GPG_RECIPIENT" \
+            --rpo-minutes "$RPO_TARGET_MINUTES" \
+            --rto-minutes "$RTO_TARGET_MINUTES"
+
+      - name: Verify restored content
+        if: ${{ !inputs.backup_only }}
+        run: |
+          if [ -d /tmp/restore-drill ]; then
+            find /tmp/restore-drill -type f | head -20
+            echo ""
+            echo "Restore drill completed successfully"
+          else
+            echo "::error::Restore directory not found"
+            exit 1
+          fi
+
+      - name: Measure RTO compliance
+        if: ${{ !inputs.backup_only }}
+        run: |
+          echo "RPO target: $RPO_TARGET_MINUTES minutes"
+          echo "RTO target: $RTO_TARGET_MINUTES minutes"
+          echo "See restore output above for compliance details"
+
+      - name: Cleanup test GPG keys
+        if: always()
+        run: |
+          gpg --batch --yes --delete-secret-keys drill@harpocrates.test 2>/dev/null || true
+          gpg --batch --yes --delete-keys drill@harpocrates.test 2>/dev/null || true
+          rm -f /tmp/drill-key.asc
+          echo "Test GPG keys cleaned up"

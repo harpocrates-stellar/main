@@ -1,0 +1,8 @@
+[package]
+name = "redacted_ancestry"
+type = "bin"
+authors = ["Harpocrates"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+harpocrates_common = { path = "../harpocrates_common" }

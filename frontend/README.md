@@ -31,6 +31,17 @@ src/harpocratesRegistry.ts typed HarpocratesRegistry calls
 src/stellar.ts            public facade for app imports
 ```
 
+## Browser support
+
+The supported browser floor, required security capabilities, mobile limitations,
+and fail-closed compatibility behavior are documented in
+[`BROWSER_SUPPORT.md`](BROWSER_SUPPORT.md). The build consumes the same canonical
+target list from `browser-support.mjs`. Verify the matrix with:
+
+```powershell
+npm run check:browser-support
+```
+
 ## Build
 
 ```powershell

@@ -1,14 +1,31 @@
-import { getNetwork, requestAccess } from '@stellar/freighter-api'
+import { getNetwork, requestAccess, WatchWalletChanges } from '@stellar/freighter-api'
 
 export type {
   ChainProofRecord,
   IdentityTier,
+  ProofHistoryEntry,
+  ProofHistoryResult,
   RegisterProofInput,
   RegisterProofResult,
   TxState,
 } from './stellarTypes'
 export { describeTxState } from './stellarTypes'
-export { getProofByVideoHash, registerProofOnStellar, CONTRACT_NETWORK_PASSPHRASE } from './harpocratesRegistry'
+export {
+  correctProof,
+  expireProof,
+  getProofByVideoHash,
+  getProofHistory,
+  getProofHistoryAt,
+  getProofHistoryCount,
+  getOpenDisputeCount,
+  registerProofOnStellar,
+  verifyProof,
+  getVerifierState,
+  CONTRACT_NETWORK_PASSPHRASE,
+} from './harpocratesRegistry'
+// Re-export for use by wallet hook and guard code.
+export { WatchWalletChanges }
+export { checkNetworkMatch } from './networkGuard'
 
 export async function connectFreighter() {
   const result = await requestAccess()

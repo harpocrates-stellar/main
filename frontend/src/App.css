@@ -811,11 +811,205 @@ body::-webkit-scrollbar-thumb:hover,
   padding: 14px 0 4px;
 }
 
+.verification-timeline {
+  margin: 14px 0 16px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(9, 9, 14, 0.72);
+}
+
+.verification-timeline__header,
+.verification-timeline__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.verification-timeline__header h3 {
+  margin: 3px 0 0;
+  font-size: 15px;
+}
+
+.verification-timeline__privacy,
+.verification-timeline__title-row span {
+  color: rgba(200, 206, 255, 0.7);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.verification-timeline__list {
+  position: relative;
+  display: grid;
+  gap: 0;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.verification-timeline__list::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 9px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  content: '';
+}
+
+.verification-timeline__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.verification-timeline__marker {
+  z-index: 1;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 50%;
+  background: #09090e;
+  color: rgba(255, 255, 255, 0.48);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.verification-timeline__content {
+  min-width: 0;
+}
+
+.verification-timeline__title-row strong {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+}
+
+.verification-timeline__content p {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.verification-timeline__step--complete .verification-timeline__marker {
+  border-color: rgba(112, 255, 199, 0.72);
+  color: #70ffc7;
+}
+
+.verification-timeline__step--active .verification-timeline__marker {
+  border-color: rgba(200, 206, 255, 0.82);
+  color: #c8ceff;
+}
+
+.verification-timeline__step--failed .verification-timeline__marker {
+  border-color: rgba(255, 160, 120, 0.8);
+  color: #ffa078;
+}
+
+@media (max-width: 640px) {
+  .verification-timeline {
+    padding: 14px;
+  }
+
+  .verification-timeline__header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
 .verify-result p {
   margin: 0;
   color: rgba(255, 255, 255, 0.56);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.verify-progress {
+  min-height: 22px;
+  margin: 6px 0 2px;
+}
+
+.verify-progress-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(200, 206, 255, 0.9);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.hash-progress {
+  margin: 6px 0 2px;
+}
+
+.hash-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.hash-progress progress {
+  width: 100%;
+  height: 6px;
+  margin-top: 6px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  appearance: none;
+}
+
+.hash-progress progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hash-progress progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: #fff;
+}
+
+.hash-progress progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: #fff;
+}
+
+.verify-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.verify-action-btn {
+  min-height: 44px;
+  min-width: 96px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.verify-error p {
+  color: rgba(255, 160, 120, 0.92);
+}
+
+.verify-cancelled p {
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .event-list {
@@ -876,6 +1070,238 @@ body::-webkit-scrollbar-thumb:hover,
 
 .chain-grid code {
   margin: 0;
+}
+
+.chain-grid__value {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Issuer trust-state badge. Severity carries the colour; `data-state` carries
+   the exact state for tests and future per-state overrides. */
+.issuer-trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.issuer-trust-badge__icon {
+  flex: 0 0 auto;
+}
+
+.issuer-trust-badge__label {
+  white-space: nowrap;
+}
+
+.issuer-trust-badge__issuer {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+
+.issuer-trust-positive {
+  border-color: rgba(120, 230, 170, 0.35);
+  background: rgba(60, 200, 130, 0.08);
+  color: #8fe6b8;
+}
+
+.issuer-trust-neutral {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.issuer-trust-caution {
+  border-color: rgba(255, 190, 92, 0.32);
+  background: rgba(101, 54, 0, 0.28);
+  color: #ffd59a;
+}
+
+.issuer-trust-critical {
+  border-color: rgba(255, 108, 108, 0.38);
+  background: rgba(120, 20, 20, 0.28);
+  color: #ff9d9d;
+}
+
+/* Mobile: the side rail narrows to a single column, so let the badge fill the
+   cell and wrap its label instead of truncating it. */
+@media (max-width: 480px) {
+  .issuer-trust-badge {
+    width: 100%;
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
+  .issuer-trust-badge__label {
+    white-space: normal;
+  }
+}
+
+.provenance-card {
+  display: grid;
+  gap: 16px;
+}
+
+.provenance-card__header h4 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.provenance-card__header p {
+  margin: 6px 0 0;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.provenance-warning {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 190, 92, 0.3);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(101, 54, 0, 0.35), rgba(66, 31, 0, 0.2));
+}
+
+.provenance-warning strong {
+  color: #ffd59a;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.provenance-warning p {
+  margin: 0;
+  color: rgba(255, 236, 208, 0.92);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.provenance-dispute {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(214, 220, 230, 0.28);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: rgba(214, 220, 230, 0.06);
+}
+
+.provenance-dispute strong {
+  color: rgba(236, 240, 246, 0.95);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.provenance-dispute p {
+  margin: 0;
+  color: rgba(236, 240, 246, 0.88);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.provenance-grid {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.provenance-grid > div {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.provenance-grid > div:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.provenance-grid dt {
+  color: rgba(255, 255, 255, 0.36);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.provenance-grid dd {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.provenance-grid a {
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: none;
+}
+
+.provenance-grid a:hover {
+  text-decoration: underline;
+}
+
+.provenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.provenance-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.provenance-actions button:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.provenance-copy-status {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .muted {
@@ -1072,6 +1498,19 @@ code {
     width: 920px;
     padding: 24px 20px;
   }
+
+  .verify-actions {
+    flex-direction: column;
+  }
+
+  .verify-action-btn {
+    width: 100%;
+  }
+
+  .dropzone {
+    min-height: 160px;
+    padding: 18px 14px;
+  }
 }
 
 .topbar:not(.scrolled) .network-pill {
@@ -1099,8 +1538,438 @@ code {
   margin-bottom: 0.5rem;
 }
 
+/* Global banner shown below the navbar — spans full viewport width */
+.network-mismatch-banner--global {
+  border-radius: 0;
+  margin-bottom: 0;
+  padding: 0.6rem 1.25rem;
+  position: relative;
+  z-index: 99;
+}
+
 .network-mismatch-icon {
   flex-shrink: 0;
   font-size: 1rem;
   line-height: 1.45;
 }
+
+.release-compatibility-banner {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.release-compatibility-banner__content {
+  flex: 1;
+}
+
+.release-compatibility-banner__content code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--mono);
+  font-size: 0.8em;
+}
+
+.release-compatibility-banner__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 150ms ease;
+}
+
+.release-compatibility-banner__dismiss:hover {
+  opacity: 1;
+}
+
+/* ── Verification mode toggle (offline local check) ─────────────────────── */
+.verify-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 0.75rem;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.mode-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.mode-toggle.active {
+  border-color: rgba(125, 211, 252, 0.6);
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.mode-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-toggle:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+
+/* Highlight the connect-wallet button when a mismatch is active */
+.icon-button.wallet-mismatch {
+  border-color: rgba(255, 180, 0, 0.6);
+  color: #ffd966;
+}
+
+/* ── Skip to content ───────────────────────────────────────────────────── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  color: #050505;
+  background: #fff;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transform: translateX(-50%);
+  transition: top 160ms ease;
+}
+
+.skip-link:focus {
+  top: 8px;
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+/* ── Screen reader only ─────────────────────────────────────────────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Visible focus rings (WCAG 2.4.11 Focus Appearance) ─────────────────── */
+:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+/* Remove outline for mouse users who don't need it */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Ensure buttons and interactive elements have sufficient focus ring */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[role="radio"]:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Minimum touch/click target size (WCAG 2.5.8) ───────────────────────── */
+.tier-tab {
+  min-height: 44px;
+}
+
+.navlinks button {
+  min-height: 44px;
+  padding: 0 8px;
+}
+
+/* ── High-contrast text for data labels ─────────────────────────────────── */
+.data-list dt {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.data-list dd {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.rail-block h3 {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.page-header p {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.lede {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* Tier tabs: visible selected state beyond color alone */
+.tier-tab.active {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.38);
+}
+
+/* ── Reduced motion: disable decorative animations ───────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .flow-connector {
+    animation: none;
+    stroke-dasharray: none;
+  }
+
+  .hero-copy h1,
+  .lede,
+  .hero-actions {
+    opacity: 1;
+    animation: none;
+    transform: none;
+  }
+
+  .spin {
+    animation: none;
+  }
+
+  .topbar {
+    transition: none;
+  }
+}
+
+/* ── Error state visual ──────────────────────────────────────────────────── */
+.primary-action[aria-busy="true"] {
+  cursor: wait;
+}
+
+/* Shareable verification link (Issue #302) */
+.share-verification-link {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.share-verification-link .verify-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.share-link-status {
+  overflow-wrap: anywhere;
+}
+
+/* ── Privacy-safe redaction preview (Evidence Studio) ───────────────────── */
+.redaction-preview {
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(12, 14, 22, 0.72);
+}
+
+.redaction-preview__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.redaction-preview h3,
+.redaction-preview__header h3 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.redaction-preview__summary {
+  margin: 0 0 12px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 13px;
+}
+
+.redaction-preview__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.redaction-preview__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.redaction-preview__row:last-child {
+  border-bottom: none;
+}
+
+.redaction-preview__label {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 12px;
+}
+
+.redaction-preview__value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.78);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.redaction-preview__row--redacted .redaction-preview__value {
+  color: rgba(255, 190, 120, 0.78);
+}
+
+.redaction-preview__footnote {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.redaction-preview--empty,
+.redaction-preview--error {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.redaction-preview--error {
+  border-color: rgba(255, 120, 100, 0.35);
+}
+
+/* ── OS high-contrast support (Issue #318) ─────────────────────────────────
+   The app has no JS theme system by design: high-contrast rendering follows
+   the operating system's `prefers-contrast` / `forced-colors` signals through
+   these CSS-only overrides. There is no theme toggle, no persisted theme
+   state, and no second source of truth — the canonical dark tokens above
+   remain the only theme. These blocks only strengthen the existing tokens
+   (solid text, thicker focus rings, visible borders) when the OS requests
+   more contrast, and remap to system colors under Forced Colors mode so
+   content stays readable when the platform overrides author colors. */
+@media (prefers-contrast: more) {
+  .data-list dt,
+  .rail-block h3,
+  .redaction-preview__summary,
+  .redaction-preview__label,
+  .redaction-preview__value,
+  .redaction-preview--empty,
+  .redaction-preview--error {
+    color: #fff;
+  }
+
+  .data-list dd,
+  .page-header p,
+  .lede {
+    color: #fff;
+  }
+
+  :focus-visible,
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  [role="radio"]:focus-visible,
+  .mode-toggle:focus-visible,
+  .skip-link:focus {
+    outline-width: 3px;
+  }
+
+  .tier-tab.active {
+    background: rgba(255, 255, 255, 0.22);
+    box-shadow: inset 0 0 0 2px #fff;
+  }
+
+  .network-mismatch-banner,
+  .redaction-preview--error,
+  .icon-button.wallet-mismatch {
+    border-width: 2px;
+  }
+}
+
+@media (forced-colors: active) {
+  .app-shell {
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .signal-background,
+  .prismatic-veil,
+  .app-shell::before,
+  .app-shell::after {
+    display: none;
+  }
+
+  .data-list dt,
+  .data-list dd,
+  .rail-block h3,
+  .page-header p,
+  .lede,
+  .redaction-preview__summary,
+  .redaction-preview__value,
+  .redaction-preview__label {
+    color: CanvasText;
+  }
+
+  .tier-tab.active {
+    border: 2px solid Highlight;
+    box-shadow: none;
+  }
+
+  :focus-visible,
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  [role="radio"]:focus-visible,
+  .mode-toggle:focus-visible,
+  .skip-link:focus {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .network-mismatch-banner,
+  .redaction-preview--error {
+    border: 2px solid CanvasText;
+  }
+
+  .skip-link {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+  }
+}
+

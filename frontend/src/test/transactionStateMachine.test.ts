@@ -69,4 +69,68 @@ describe('TransactionStateMachine', () => {
     // and storage should be cleared by the persist logic since it timed out
     expect(localStorage.getItem('harpocrates_pending_tx')).toBeNull()
   })
+
+  describe('dispute transaction flows', () => {
+    it('handles open dispute happy path: idle -> submitting -> awaiting_confirmation -> confirmed', () => {
+      const machine = new TransactionStateMachine()
+      expect(machine.getState().status).toBe('idle')
+
+      // 1. Submit open dispute
+      machine.send({ type: 'SUBMIT' })
+      expect(machine.getState().status).toBe('submitting')
+
+      // 2. Tx hash received from Stellar RPC
+      const disputeTxHash = '11'.repeat(32)
+      machine.send({ type: 'TX_HASH_RECEIVED', hash: disputeTxHash })
+      expect(machine.getState().status).toBe('awaiting_confirmation')
+      expect(machine.getState().hash).toBe(disputeTxHash)
+
+      // 3. Dispute confirmed on-chain
+      machine.send({ type: 'CONFIRMED' })
+      expect(machine.getState().status).toBe('confirmed')
+      expect(localStorage.getItem('harpocrates_pending_tx')).toBeNull()
+    })
+
+    it('handles open dispute failure (cooldown or contract rejection)', () => {
+      const machine = new TransactionStateMachine()
+      machine.send({ type: 'SUBMIT' })
+      expect(machine.getState().status).toBe('submitting')
+
+      machine.send({
+        type: 'FAILED',
+        error: 'HostError: Error(Contract, #66)',
+      })
+      expect(machine.getState().status).toBe('failed')
+      expect(machine.getState().error).toBe('HostError: Error(Contract, #66)')
+
+      // Can reset after failure
+      machine.send({ type: 'RESET' })
+      expect(machine.getState().status).toBe('idle')
+      expect(machine.getState().error).toBeNull()
+    })
+
+    it('handles respond dispute flow with confirmation', () => {
+      const machine = new TransactionStateMachine()
+      machine.send({ type: 'SUBMIT' })
+      const respondTxHash = '22'.repeat(32)
+      machine.send({ type: 'TX_HASH_RECEIVED', hash: respondTxHash })
+      expect(machine.getState().status).toBe('awaiting_confirmation')
+
+      machine.send({ type: 'CONFIRMED' })
+      expect(machine.getState().status).toBe('confirmed')
+    })
+
+    it('handles timeout during awaiting confirmation', () => {
+      const machine = new TransactionStateMachine()
+      machine.send({ type: 'SUBMIT' })
+      machine.send({ type: 'TX_HASH_RECEIVED', hash: 'abc' })
+      expect(machine.getState().status).toBe('awaiting_confirmation')
+
+      machine.send({ type: 'TIMEOUT' })
+      expect(machine.getState().status).toBe('timeout')
+
+      machine.send({ type: 'RESET' })
+      expect(machine.getState().status).toBe('idle')
+    })
+  })
 })

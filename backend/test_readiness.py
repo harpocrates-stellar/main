@@ -1,6 +1,6 @@
 import time
 import unittest
-from backend.readiness import ReadinessManager, Dependency
+from readiness import ReadinessManager, Dependency
 
 class TestReadinessManager(unittest.TestCase):
     def test_all_healthy(self):
@@ -75,6 +75,41 @@ class TestReadinessManager(unittest.TestCase):
         status = manager.check()
         self.assertTrue(status["ok"])
         self.assertEqual(counter["count"], 2)
+
+    def test_status_values_are_bounded_for_metrics_consumers(self):
+        manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=1.0)
+        manager.add_dependency("db", lambda: False, critical=True)
+
+        status = manager.check()
+
+        self.assertEqual(set(status), {"db", "ok"})
+        self.assertIn(status["db"], {"connected", "disconnected", "error", "initializing", "not_configured"})
+
+    def test_default_labels_are_connected_and_disconnected(self):
+        manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+        manager.add_dependency("up", lambda: True)
+        manager.add_dependency("down", lambda: False, critical=False)
+
+        status = manager.check()
+
+        self.assertEqual(status, {"up": "connected", "down": "disconnected", "ok": True})
+
+    def test_custom_labels_are_reported_per_dependency(self):
+        manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+        manager.add_dependency("cache", lambda: True, ok_status="warm", fail_status="cold")
+        manager.add_dependency("queue", lambda: False, critical=False, ok_status="warm", fail_status="cold")
+
+        status = manager.check()
+
+        self.assertEqual(status, {"cache": "warm", "queue": "cold", "ok": True})
+
+    def test_readiness_module_does_not_reference_dependency_names(self):
+        import inspect
+        import readiness
+
+        source = inspect.getsource(readiness)
+        self.assertNotIn("video_tools", source)
+        self.assertNotIn("database", source)
 
 if __name__ == "__main__":
     unittest.main()
