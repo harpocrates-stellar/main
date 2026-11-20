@@ -47,6 +47,7 @@ export type BatchItemResult = {
   manifest: ProofManifest | null
   durationMs: number | null
   failureReason: string | null
+  issuerNote?: string | null
 }
 
 export type BatchProgress = {

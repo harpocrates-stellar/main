@@ -79,3 +79,17 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Batch Verification Export Privacy Profiles
+
+Batch verification exports (`src/batchExport.ts`) support two privacy profiles
+selectable in the Batch Verification Workspace UI (defaulting to `public`):
+
+- `public`: Shareable verification outcomes and cryptographic commitments only
+  (`status`, `videoHash`, `metadataHash`, `sourceHash`, `tier`, `chainStatus`,
+  `fileSizeBytes`, `durationMs`). Excludes raw filenames, duplicate filename
+  references, diagnostic messages, failure reasons, and private issuer notes.
+- `owner-only`: Full local audit export adding `fileName`, `message`,
+  `duplicateOf`, `failureReason`, and `issuerNote` for owner-controlled storage.
+
+Unsupported profile identifiers fail closed with an error.
