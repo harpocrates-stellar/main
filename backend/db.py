@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1171,6 +1172,9 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+# Guards check-then-write on job records: a worker's main loop and its work
+# thread can touch the same job concurrently (release vs. late completion).
+_JOBS_LOCK = threading.RLock()
 _next_job_id = 1
 
 
@@ -1206,32 +1210,68 @@ def cancel_job(job_id: int) -> bool:
     return False
 
 
+def _claim_is_current(job: dict[str, Any], generation: int | None, action: str) -> bool:
+    """Return whether a write from the claim ``generation`` may touch ``job``.
+
+    Every lease and every release bumps the job's ``_claim_generation``, so a
+    worker that lost its claim (for example after the shutdown grace period
+    expired and the job was released or re-leased) holds a stale generation.
+    ``None`` keeps the pre-fencing behaviour for callers that do not pass one.
+    """
+    if generation is None or generation == job.get("_claim_generation", 0):
+        return True
+    logger.warning(
+        "job_claim_stale job_id=%s action=%s claim_generation=%s current_generation=%s",
+        job.get("id"),
+        action,
+        generation,
+        job.get("_claim_generation", 0),
+    )
+    return False
+
+
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
 ) -> dict[str, Any] | None:
-    """Lease the next pending in-memory job matching ``job_types``."""
+    """Lease the next pending in-memory job matching ``job_types``.
+
+    The returned job carries ``_claim_generation`` (internal; stripped from
+    the public job view): pass it back to :func:`complete_job`,
+    :func:`fail_job`, :func:`report_job_progress` and :func:`heartbeat_job`
+    so writes from a superseded claim are ignored.
+    """
     del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                job["_claim_generation"] = job.get("_claim_generation", 0) + 1
+                return dict(job)
     return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(
+    job_id: int,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    generation: int | None = None,
+) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
+    A heartbeat from a stale claim ``generation`` is ignored.
     """
     del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running" and _claim_is_current(job, generation, "heartbeat"):
+            job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1246,6 +1286,7 @@ def report_job_progress(
     percent: float | None = None,
     *,
     now: float | None = None,
+    generation: int | None = None,
 ) -> bool:
     """Record ``{"phase", "percent"}`` progress for a running job.
 
@@ -1253,53 +1294,85 @@ def report_job_progress(
     ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
     measurable fraction. Updates are throttled to at most one per
     ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
-    updated. Returns True when the update was stored.
+    updated; an update from a stale claim ``generation`` is ignored. Returns
+    True when the update was stored.
     """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        if not _claim_is_current(job, generation, "progress"):
+            return False
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("progress phase must be a non-empty string")
+        phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        current = time.monotonic() if now is None else now
+        last = job.get("_progress_at")
+        if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+            return False
+        job["_progress_at"] = current
+        job["progress"] = {"phase": phase, "percent": percent}
+        return True
 
 
-def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+def complete_job(job_id: int, result: Any = None, *, generation: int | None = None) -> bool:
+    """Mark an in-memory job completed.
+
+    With ``generation``, the result is committed only if that claim is still
+    the current one, so a replaced worker cannot overwrite a newer result.
+    Returns True when the result was committed.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or not _claim_is_current(job, generation, "complete"):
+            return False
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
+        return True
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+def fail_job(
+    job_id: int,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    generation: int | None = None,
+) -> bool:
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    A retryable failure releases the claim: the job goes back to ``pending``
+    and its ``_claim_generation`` is bumped, which fences any late write from
+    the worker that held it. With ``generation``, a failure reported by a
+    stale claim, or for a job that is no longer running, is ignored. Returns
+    True when the job was updated.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or not _claim_is_current(job, generation, "fail"):
+            return False
+        if generation is not None and job.get("status") != "running":
+            # The claim already finished (for example it completed just as the
+            # grace period expired): never turn a settled job back into pending.
+            logger.warning("job_claim_settled job_id=%s status=%s", job_id, job.get("status"))
+            return False
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+            job["_claim_generation"] = job.get("_claim_generation", 0) + 1
+        return True
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

@@ -52,20 +52,20 @@ def process_embed(job: dict) -> dict:
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
         
-    report_job_progress(job_id, "hashing_source")
+    report_job_progress(job_id, "hashing_source", generation=job.get("_claim_generation"))
     source_hash = sha256_file(input_path)
 
     def on_frame(frames_done: int, frames_total: int | None) -> None:
         percent = (frames_done / frames_total * 100.0) if frames_total else None
-        report_job_progress(job_id, "embedding", percent)
+        report_job_progress(job_id, "embedding", percent, generation=job.get("_claim_generation"))
 
     embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
 
-    report_job_progress(job_id, "hashing_output")
+    report_job_progress(job_id, "hashing_output", generation=job.get("_claim_generation"))
     embedded_hash = sha256_file(output_path)
     metadata_hash = canonical_metadata_hash(metadata)
 
-    report_job_progress(job_id, "recording")
+    report_job_progress(job_id, "recording", generation=job.get("_claim_generation"))
     db_event = insert_proof_event(
         event_type="embed",
         file_name=normalize_filename(filename),
@@ -130,7 +130,7 @@ def process_silent_witness(job: dict) -> dict:
 
     # Phase names only: proof generation runs as one external command and
     # reports no measurable fraction, so percent stays None.
-    report_job_progress(job["id"], "generating_proof")
+    report_job_progress(job["id"], "generating_proof", generation=job.get("_claim_generation"))
     proof = generate_silent_witness(
         video_hash,
         credential_secret,
@@ -143,9 +143,9 @@ def process_verify_tx(job: dict) -> dict:
     """Reconcile a single registration tx enqueued at proof registration time."""
     return process_verify_tx_job(job.get("payload") or {})
 
-def heartbeat_loop(job_id: int, stop_event: threading.Event):
+def heartbeat_loop(job_id: int, stop_event: threading.Event, generation: int | None = None):
     while not stop_event.is_set():
-        heartbeat_job(job_id, lease_duration=300)
+        heartbeat_job(job_id, lease_duration=300, generation=generation)
         stop_event.wait(60)
 
 def tx_verification_loop(stop_event: threading.Event):
@@ -290,13 +290,17 @@ def run_worker(
 
             job_id = job["id"]
             job_type = job["type"]
+            # Writes from this claim carry its generation, so they are ignored
+            # once the job has been released or re-leased (see db._claim_is_current).
+            generation = job.get("_claim_generation")
+            claim = {"generation": generation} if generation is not None else {}
             LOGGER.info(f"Leased job {job_id} of type {job_type}")
 
             hb_stop_event = threading.Event()
-            hb_thread = threading.Thread(target=heartbeat_loop, args=(job_id, hb_stop_event))
+            hb_thread = threading.Thread(target=heartbeat_loop, args=(job_id, hb_stop_event, generation))
             hb_thread.start()
 
-            def _execute_job():
+            def _execute_job(claim=claim):
                 try:
                     if job_type == "embed":
                         res = process_embed(job)
@@ -308,7 +312,7 @@ def run_worker(
                         res = process_verify_tx(job)
                     else:
                         raise ValueError(f"Unknown job type {job_type}")
-                    complete_job(job_id, res)
+                    complete_job(job_id, res, **claim)
                     LOGGER.info(f"Completed job {job_id}")
                 except Exception as err:
                     LOGGER.error(f"Failed job {job_id}: {err}")
@@ -316,7 +320,7 @@ def run_worker(
                     is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
                     if job_type == "verify_tx":
                         is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                    fail_job(job_id, str(err), is_fatal=is_fatal, **claim)
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -335,7 +339,7 @@ def run_worker(
                             f"Job {job_id} did not finish within grace period of {grace_period_seconds}s; releasing job"
                         )
                         hb_stop_event.set()
-                        fail_job(job_id, "Worker shutdown grace period exceeded", is_fatal=False)
+                        fail_job(job_id, "Worker shutdown grace period exceeded", is_fatal=False, **claim)
                     break
 
         except Exception as e:
