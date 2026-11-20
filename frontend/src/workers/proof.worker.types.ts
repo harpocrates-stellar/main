@@ -32,6 +32,13 @@ export interface CSPPolicyConfig {
   sandbox: boolean;
 }
 
+export type {
+  ProofWorkerAdmissionReasonCode,
+  ProofWorkerExecutionMode,
+  ProofWorkerResourceAdmissionDecision,
+  ProofWorkerResourceAdmissionInput,
+} from '../proofWorkerMemory';
+
 export interface WorkerStatus {
   isRunning: boolean;
   currentTaskId?: string;

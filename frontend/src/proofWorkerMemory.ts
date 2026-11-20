@@ -24,6 +24,67 @@ export type ProofWorkerMemoryUsage = {
   secretBytes?: number | null
 }
 
+export type ProofWorkerExecutionMode =
+  | 'multithreaded'
+  | 'single-threaded-fallback'
+  | 'rejected'
+
+export type ProofWorkerAdmissionReasonCode =
+  | 'admitted'
+  | 'fallback_single_thread_not_isolated'
+  | 'fallback_single_thread_low_concurrency'
+  | 'fallback_single_thread_memory_constrained'
+  | 'memory_budget_exceeded'
+  | 'concurrency_limit_reached'
+
+export type ProofWorkerResourceAdmissionInput = {
+  usage?: ProofWorkerMemoryUsage
+  /** Optional CSP / manager memory cap in megabytes. */
+  maxMemoryMB?: number
+  /** Optional browser device-memory hint in gigabytes (e.g. navigator.deviceMemory). */
+  deviceMemoryGB?: number | null
+  /** Whether SharedArrayBuffer multithreading is permitted (crossOriginIsolated). */
+  crossOriginIsolated?: boolean
+  /** Reported logical CPU count (e.g. navigator.hardwareConcurrency). */
+  hardwareConcurrency?: number | null
+  /** Number of currently active proving/verification tasks. */
+  activeTasks?: number
+  /** Maximum concurrent tasks permitted (defaults to 1). */
+  maxConcurrentTasks?: number
+}
+
+export type ProofWorkerResourceAdmissionDecision = {
+  readonly admitted: boolean
+  readonly mode: ProofWorkerExecutionMode
+  readonly fallbackApplied: boolean
+  readonly reasonCodes: readonly ProofWorkerAdmissionReasonCode[]
+  /** Privacy-safe human-readable summary of memory, thread, and concurrency restrictions. */
+  readonly summary: string
+  readonly memory: {
+    readonly admitted: boolean
+    readonly estimatedBytes: number
+    readonly runtimeLimitBytes: number
+    readonly maxMemoryBytes: number | null
+    readonly deviceMemoryGB: number | null
+    readonly constrained: boolean
+    readonly detail: string
+  }
+  readonly threads: {
+    readonly requested: number
+    readonly admitted: number
+    readonly crossOriginIsolated: boolean
+    readonly fallbackSingleThread: boolean
+    readonly detail: string
+  }
+  readonly concurrency: {
+    readonly admitted: boolean
+    readonly activeTasks: number
+    readonly maxConcurrentTasks: number
+    readonly availableSlots: number
+    readonly detail: string
+  }
+}
+
 const manifestArtifacts = (browserArtifactManifest.artifacts ?? []) as BrowserArtifactEntry[]
 const publishedArtifactBytes = manifestArtifacts.reduce(
   (total, entry) => total + safeBytes(entry.raw_bytes),
@@ -100,6 +161,177 @@ export function assertProofWorkerMemoryBudget(usage: ProofWorkerMemoryUsage): vo
   if (artifactBytes + witnessBytes + proofBytes + publicInputBytes + secretBytes > runtimeLimit) {
     failMemoryLimit()
   }
+}
+
+const MAX_WASM_THREADS = 8
+const LOW_DEVICE_MEMORY_GB_THRESHOLD = 2
+const BYTES_PER_MIB = 1024 * 1024
+
+function isByteCountWithin(value: number | null | undefined, limit: number): boolean {
+  if (value === null || value === undefined) return true
+  return Number.isSafeInteger(value) && value >= 0 && value <= limit
+}
+
+function normalizeNonNegativeInt(value: number | null | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.max(0, Math.floor(value))
+}
+
+/**
+ * Evaluate proof-worker resource admission before proving starts.
+ *
+ * Explains memory, thread, and concurrency restrictions in a privacy-safe
+ * structured decision while preserving a safe single-threaded fallback for
+ * constrained or non-cross-origin-isolated browsers.
+ */
+export function evaluateProofWorkerResourceAdmission(
+  input: ProofWorkerResourceAdmissionInput = {},
+): ProofWorkerResourceAdmissionDecision {
+  const usage = input.usage ?? {}
+  const artifactBytes = safeBytes(usage.artifactBytes)
+  const witnessBytes = safeBytes(usage.witnessBytes)
+  const proofBytes = safeBytes(usage.proofBytes)
+  const publicInputLimitBytes =
+    usage.publicInputLimitBytes !== undefined && usage.publicInputLimitBytes !== null
+      ? safeBytes(usage.publicInputLimitBytes)
+      : PROOF_WORKER_MEMORY_LIMITS.maxPublicInputBytes
+  const publicInputBytes = safeBytes(usage.publicInputBytes)
+  const secretBytes = safeBytes(usage.secretBytes)
+
+  const estimatedBytes =
+    artifactBytes + witnessBytes + proofBytes + publicInputBytes + secretBytes
+  const runtimeLimitBytes =
+    PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes +
+    PROOF_WORKER_MEMORY_LIMITS.maxProofBytes +
+    publicInputLimitBytes +
+    Math.max(artifactBytes, publishedArtifactBytes)
+
+  const maxMemoryBytes =
+    typeof input.maxMemoryMB === 'number' && Number.isFinite(input.maxMemoryMB) && input.maxMemoryMB > 0
+      ? Math.floor(input.maxMemoryMB * BYTES_PER_MIB)
+      : null
+
+  const deviceMemoryGB =
+    typeof input.deviceMemoryGB === 'number' && Number.isFinite(input.deviceMemoryGB) && input.deviceMemoryGB > 0
+      ? input.deviceMemoryGB
+      : null
+  const memoryConstrained =
+    deviceMemoryGB !== null && deviceMemoryGB <= LOW_DEVICE_MEMORY_GB_THRESHOLD
+
+  const memoryFieldsValid =
+    isByteCountWithin(usage.artifactBytes, PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes) &&
+    isByteCountWithin(usage.witnessBytes, PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes) &&
+    isByteCountWithin(usage.proofBytes, PROOF_WORKER_MEMORY_LIMITS.maxProofBytes) &&
+    isByteCountWithin(usage.publicInputLimitBytes, PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes) &&
+    isByteCountWithin(usage.publicInputBytes, publicInputLimitBytes) &&
+    isByteCountWithin(usage.secretBytes, PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes)
+
+  const withinRuntimeLimit = estimatedBytes <= runtimeLimitBytes
+  const withinMaxMemoryCap = maxMemoryBytes === null || estimatedBytes <= maxMemoryBytes
+  const memoryAdmitted = memoryFieldsValid && withinRuntimeLimit && withinMaxMemoryCap
+
+  const memoryDetail = !memoryAdmitted
+    ? `Memory budget exceeded (${estimatedBytes} B estimated against ${
+        maxMemoryBytes !== null ? Math.min(runtimeLimitBytes, maxMemoryBytes) : runtimeLimitBytes
+      } B limit).`
+    : memoryConstrained
+      ? `Device memory is constrained (${deviceMemoryGB} GB); using single-threaded fallback within ${runtimeLimitBytes} B runtime budget.`
+      : `Memory within budget (${estimatedBytes} B / ${runtimeLimitBytes} B runtime limit).`
+
+  const crossOriginIsolated = Boolean(input.crossOriginIsolated)
+  const rawHardwareConcurrency =
+    typeof input.hardwareConcurrency === 'number' &&
+    Number.isFinite(input.hardwareConcurrency) &&
+    input.hardwareConcurrency > 0
+      ? Math.floor(input.hardwareConcurrency)
+      : 1
+  const requestedThreads = Math.max(1, Math.min(rawHardwareConcurrency, MAX_WASM_THREADS))
+
+  const activeTasks = normalizeNonNegativeInt(input.activeTasks, 0)
+  const maxConcurrentTasks =
+    typeof input.maxConcurrentTasks === 'number' && Number.isFinite(input.maxConcurrentTasks)
+      ? Math.max(0, Math.floor(input.maxConcurrentTasks))
+      : 1
+  const availableSlots = Math.max(0, maxConcurrentTasks - activeTasks)
+  const concurrencyAdmitted = maxConcurrentTasks > 0 && activeTasks < maxConcurrentTasks
+  const concurrencyDetail = concurrencyAdmitted
+    ? `Concurrency slot available (${activeTasks}/${maxConcurrentTasks} active).`
+    : `Concurrency limit reached (${activeTasks}/${maxConcurrentTasks} active tasks).`
+
+  const reasonCodes: ProofWorkerAdmissionReasonCode[] = []
+  if (!memoryAdmitted) reasonCodes.push('memory_budget_exceeded')
+  if (!concurrencyAdmitted) reasonCodes.push('concurrency_limit_reached')
+
+  const admitted = memoryAdmitted && concurrencyAdmitted
+
+  let admittedThreads: number
+  let fallbackSingleThread = false
+  let threadsDetail: string
+
+  if (!admitted) {
+    admittedThreads = 0
+    threadsDetail = 'Thread allocation skipped because admission was rejected.'
+  } else if (!crossOriginIsolated) {
+    admittedThreads = 1
+    fallbackSingleThread = true
+    reasonCodes.push('fallback_single_thread_not_isolated')
+    threadsDetail =
+      'Cross-origin isolation unavailable; falling back to 1 thread (SharedArrayBuffer disabled).'
+  } else if (memoryConstrained) {
+    admittedThreads = 1
+    fallbackSingleThread = true
+    reasonCodes.push('fallback_single_thread_memory_constrained')
+    threadsDetail = `Constrained device memory (${deviceMemoryGB} GB); falling back to 1 thread.`
+  } else if (requestedThreads <= 1) {
+    admittedThreads = 1
+    fallbackSingleThread = true
+    reasonCodes.push('fallback_single_thread_low_concurrency')
+    threadsDetail = 'Single logical core detected; running in single-threaded fallback mode.'
+  } else {
+    admittedThreads = requestedThreads
+    fallbackSingleThread = false
+    reasonCodes.push('admitted')
+    threadsDetail = `Multithreaded WASM proving admitted with ${admittedThreads} threads.`
+  }
+
+  const mode: ProofWorkerExecutionMode = !admitted
+    ? 'rejected'
+    : fallbackSingleThread
+      ? 'single-threaded-fallback'
+      : 'multithreaded'
+
+  const summary = `${memoryDetail} ${threadsDetail} ${concurrencyDetail}`
+
+  return Object.freeze({
+    admitted,
+    mode,
+    fallbackApplied: admitted && fallbackSingleThread,
+    reasonCodes: Object.freeze(reasonCodes),
+    summary,
+    memory: Object.freeze({
+      admitted: memoryAdmitted,
+      estimatedBytes,
+      runtimeLimitBytes,
+      maxMemoryBytes,
+      deviceMemoryGB,
+      constrained: memoryConstrained,
+      detail: memoryDetail,
+    }),
+    threads: Object.freeze({
+      requested: requestedThreads,
+      admitted: admittedThreads,
+      crossOriginIsolated,
+      fallbackSingleThread,
+      detail: threadsDetail,
+    }),
+    concurrency: Object.freeze({
+      admitted: concurrencyAdmitted,
+      activeTasks,
+      maxConcurrentTasks,
+      availableSlots,
+      detail: concurrencyDetail,
+    }),
+  })
 }
 
 export function byteLengthOfProofWorkerValue(value: unknown): number {

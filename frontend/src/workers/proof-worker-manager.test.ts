@@ -344,3 +344,68 @@ describe('destroy', () => {
     expect(internals(manager).isInitialized).toBe(true)
   })
 })
+
+describe('getResourceAdmissionDecision', () => {
+  it('explains memory, thread, and concurrency decisions before proving starts', () => {
+    const manager = createManager({ maxMemoryMB: 256 })
+    const decision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+      deviceMemoryGB: 8,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('multithreaded')
+    expect(decision.threads.admitted).toBe(4)
+    expect(decision.memory.maxMemoryBytes).toBe(256 * 1024 * 1024)
+    expect(decision.concurrency.activeTasks).toBe(0)
+    expect(decision.concurrency.maxConcurrentTasks).toBe(1)
+    expect(decision.summary).toContain('Memory within budget')
+    expect(decision.summary).toContain('4 threads')
+    expect(decision.summary).toContain('0/1 active')
+  })
+
+  it('preserves a safe single-threaded fallback for constrained browsers', () => {
+    const manager = createManager()
+    const decision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: false,
+      hardwareConcurrency: 8,
+      deviceMemoryGB: 2,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('single-threaded-fallback')
+    expect(decision.fallbackApplied).toBe(true)
+    expect(decision.threads.admitted).toBe(1)
+    expect(decision.memory.constrained).toBe(true)
+  })
+
+  it('reflects live active tasks and rejects when concurrency limit is reached', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 100)
+    const assertion = expect(pending).rejects.toThrow('Verification timed out')
+
+    const busyDecision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+    })
+    expect(busyDecision.admitted).toBe(false)
+    expect(busyDecision.mode).toBe('rejected')
+    expect(busyDecision.reasonCodes).toContain('concurrency_limit_reached')
+    expect(busyDecision.concurrency.activeTasks).toBe(1)
+    expect(busyDecision.concurrency.availableSlots).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(100)
+    await assertion
+
+    const idleDecision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+    })
+    expect(idleDecision.admitted).toBe(true)
+    expect(idleDecision.concurrency.activeTasks).toBe(0)
+  })
+})
