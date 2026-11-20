@@ -1238,6 +1238,7 @@ def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: in
 # once per decoded frame); updates are stored at most once per this interval.
 JOB_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
 JOB_PROGRESS_PHASE_MAX_LENGTH = 64
+TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 def report_job_progress(
@@ -1245,15 +1246,18 @@ def report_job_progress(
     phase: str,
     percent: float | None = None,
     *,
+    stage_revision: int | None = None,
     now: float | None = None,
 ) -> bool:
     """Record ``{"phase", "percent"}`` progress for a running job.
 
     ``phase`` is a short machine-readable step name (for example
     ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
-    measurable fraction. Updates are throttled to at most one per
-    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
-    updated. Returns True when the update was stored.
+    measurable fraction. When ``stage_revision`` is supplied, it must be a
+    non-negative integer and is enforced monotonically so late updates from a
+    completed stage are rejected regardless of wall-clock ordering. Updates are
+    throttled to at most one per ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job,
+    and only running jobs are updated. Returns True when the update was stored.
     """
     job = _JOBS.get(job_id)
     if not job or job.get("status") != "running":
@@ -1269,6 +1273,14 @@ def report_job_progress(
         if percent != percent:  # NaN
             raise ValueError("progress percent must be a number or None")
         percent = round(min(100.0, max(0.0, percent)), 1)
+    if stage_revision is not None:
+        if isinstance(stage_revision, bool) or not isinstance(stage_revision, int) or stage_revision < 0:
+            raise ValueError("progress stage_revision must be a non-negative integer")
+        current_revision = job.get("_stage_revision")
+        if current_revision is not None and stage_revision < current_revision:
+            return False
+        if current_revision is None or stage_revision > current_revision:
+            job["_stage_revision"] = stage_revision
     current = time.monotonic() if now is None else now
     last = job.get("_progress_at")
     if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
@@ -1279,9 +1291,9 @@ def report_job_progress(
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
+    """Mark an in-memory job completed. Terminal jobs are never modified."""
     job = _JOBS.get(job_id)
-    if not job:
+    if not job or job.get("status") in TERMINAL_JOB_STATUSES:
         return
     job["status"] = "completed"
     job["result"] = result
@@ -1289,9 +1301,13 @@ def complete_job(job_id: int, result: Any = None) -> None:
 
 
 def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    Terminal jobs (completed, failed, cancelled) are never transitioned back to
+    pending or running.
+    """
     job = _JOBS.get(job_id)
-    if not job:
+    if not job or job.get("status") in TERMINAL_JOB_STATUSES:
         return
     job["error"] = error
     job["failed_at"] = datetime.now(timezone.utc).isoformat()
@@ -1300,6 +1316,8 @@ def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
     else:
         job["status"] = "pending"
         job.pop("worker_id", None)
+        job.pop("_stage_revision", None)
+        job.pop("_progress_at", None)
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

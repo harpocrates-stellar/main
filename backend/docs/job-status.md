@@ -33,9 +33,13 @@ Phases reported today:
 - `silent_witness`: `generating_proof` (the proof runs as one external command, so
   only the phase name is reported).
 
-Processors call `db.report_job_progress(job_id, phase, percent)` as often as they
-like; the value is stored at most once per second per job
+Processors call `db.report_job_progress(job_id, phase, percent, stage_revision=...)`
+as often as they like; the value is stored at most once per second per job
 (`JOB_PROGRESS_MIN_INTERVAL_SECONDS`), and only while the job is `running`.
+When `stage_revision` is provided, revisions are enforced monotonically so
+delayed updates from an already-completed stage are rejected regardless of
+wall-clock ordering. Terminal jobs (`completed`, `failed`, `cancelled`) never
+transition back to `running` and ignore further progress updates.
 Heartbeats extend the lease only and never overwrite progress.
 
 ## What the response never contains
