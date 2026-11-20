@@ -301,6 +301,12 @@ get_proof_status
 get_proof_history
 get_proof_history_at
 get_proof_history_count
+get_institutional_authority_history
+get_authority_history
+get_approver_authority_history
+get_authority_history_at
+get_authority_history_count
+get_approver_authority_history_count
 open_dispute
 respond_dispute
 resolve_dispute
@@ -559,6 +565,51 @@ All registration functions and `revoke_proof` automatically record history.
 
 Proofs registered before this feature have zero history entries. `get_proof_history`
 returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
+
+## Institutional Authority History
+
+The registry maintains an append-only, privacy-preserving audit trail of institutional authority transitions across administrative governance and evidence authorization boundaries:
+- Admin transfers (proposals, cancellations, acceptances).
+- Institutional issuer authority (additions, metadata updates, rotations, grace settlements, and direct/conflict revocations).
+- Emergency pause guardians (assignment and clearing).
+
+### Bounds and Anti-Denial-of-Service Properties
+
+- `MAX_AUTHORITY_HISTORY_PAGE = 50` caps the maximum number of entries returned by a single paginated query, protecting against unbounded iteration costs.
+- **Unbounded Iteration Protection**: In addition to global sequential indexing, every approver maintains an independent, 1-based sequential sequence index (`DataKey::ApproverAuthorityHistoryEntry(approver, seq)`). Approver-specific queries index directly into this sequential mapping in O(limit) time without scanning or iterating through historical approvers across the registry.
+- Queries with `limit == 0` or `limit > MAX_AUTHORITY_HISTORY_PAGE` fail closed with `RegistryError::HistoryLimitExceeded` (`#16`).
+
+### Query Interface
+
+```text
+get_institutional_authority_history(offset: u32, limit: u32) -> AuthorityHistoryPage
+get_authority_history(offset: u32, limit: u32) -> AuthorityHistoryPage
+get_approver_authority_history(approver: Address, offset: u32, limit: u32) -> AuthorityHistoryPage
+get_authority_history_at(reference: u32) -> Option<AuthorityHistoryEntry>
+get_authority_history_count() -> u32
+get_approver_authority_history_count(approver: Address) -> u32
+```
+
+`AuthorityHistoryEntry` fields:
+- `reference: u32` — stable 1-based sequential reference.
+- `ledger_timestamp: u64` — ledger timestamp when the transition was committed on-chain.
+- `approver: Address` — the authority principal / approver whose role transitioned.
+- `role: u32` — institutional role code (`1 = Admin`, `2 = Issuer`, `3 = Guardian`).
+- `transition: u32` — transition code (`1 = Initialized`, `2 = Proposed`, `3 = Cancelled`, `4 = Accepted`, `5 = Added`, `6 = Revoked`, `7 = Rotated`, `8 = Finalized`, `9 = MetadataUpdated`, `10 = ConflictRevoked`).
+- `actor: Option<Address>` — authorized actor who executed the change.
+- `metadata_hash: Option<BytesN<32>>` — metadata commitment (e.g. issuer metadata hash), if applicable.
+
+`AuthorityHistoryPage` fields:
+- `entries: Vec<AuthorityHistoryEntry>`
+- `next_offset: u32`
+- `next_cursor: Option<u32>`
+- `total: u32`
+
+### Privacy and Fail-Closed Boundaries
+
+- Entries preserve evidence privacy: no media hashes, proof bytes, witnesses, or private keys are ever stored or emitted in authority history.
+- Historical queries are permissionless and read-only.
+- All newly added storage keys (`AuthorityHistorySeq`, `AuthorityHistoryEntry`, `ApproverAuthorityHistorySeq`, `ApproverAuthorityHistoryEntry`) are additive and backward-compatible.
 
 ## Dispute And Supersession
 

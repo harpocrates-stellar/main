@@ -178,6 +178,60 @@ pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
 pub const MAX_HISTORY_LIMIT: u32 = 50;
 
 // ---------------------------------------------------------------------------
+// Institutional authority history bounds
+// ---------------------------------------------------------------------------
+//
+// The registry records an append-only history of institutional authority
+// transitions (admin proposals/transfers, issuer additions/revocations/rotations,
+// and guardian configuration).
+//
+// - MAX_AUTHORITY_HISTORY_PAGE bounds the maximum number of entries returned
+//   by a single paginated query, protecting callers from unbounded iteration costs.
+// - Sequential per-approver indexing avoids unbounded iteration through historical
+//   approvers, allowing direct O(limit) pagination for specific approvers.
+pub const MAX_AUTHORITY_HISTORY_PAGE: u32 = 50;
+
+pub const ROLE_ADMIN: u32 = 1;
+pub const ROLE_ISSUER: u32 = 2;
+pub const ROLE_GUARDIAN: u32 = 3;
+
+pub const TRANSITION_INITIALIZED: u32 = 1;
+pub const TRANSITION_PROPOSED: u32 = 2;
+pub const TRANSITION_CANCELLED: u32 = 3;
+pub const TRANSITION_ACCEPTED: u32 = 4;
+pub const TRANSITION_ADDED: u32 = 5;
+pub const TRANSITION_REVOKED: u32 = 6;
+pub const TRANSITION_ROTATED: u32 = 7;
+pub const TRANSITION_FINALIZED: u32 = 8;
+pub const TRANSITION_METADATA_UPDATED: u32 = 9;
+pub const TRANSITION_CONFLICT_REVOKED: u32 = 10;
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum InstitutionalRole {
+    Admin = 1,
+    Issuer = 2,
+    Guardian = 3,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RoleTransition {
+    Initialized = 1,
+    Proposed = 2,
+    Cancelled = 3,
+    Accepted = 4,
+    Added = 5,
+    Revoked = 6,
+    Rotated = 7,
+    Finalized = 8,
+    MetadataUpdated = 9,
+    ConflictRevoked = 10,
+}
+
+// ---------------------------------------------------------------------------
 // Scoped emergency pause controls (#87)
 // ---------------------------------------------------------------------------
 //
@@ -854,6 +908,36 @@ pub struct ProofHistoryEntry {
     pub timestamp: u64,
     pub actor: Option<Address>,
     pub reason_code: u32,
+}
+
+/// An entry in the institutional authority transition history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityHistoryEntry {
+    /// Global 1-based sequential reference.
+    pub reference: u32,
+    /// Ledger timestamp when the transition was committed.
+    pub ledger_timestamp: u64,
+    /// The principal holding or transitioning the role.
+    pub approver: Address,
+    /// Institutional role code (`ROLE_*`).
+    pub role: u32,
+    /// Role transition code (`TRANSITION_*`).
+    pub transition: u32,
+    /// Authorizing actor address, if applicable.
+    pub actor: Option<Address>,
+    /// Associated metadata commitment (e.g. issuer metadata hash), if any.
+    pub metadata_hash: Option<BytesN<32>>,
+}
+
+/// Paginated result of institutional authority transition entries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityHistoryPage {
+    pub entries: SorobanVec<AuthorityHistoryEntry>,
+    pub next_offset: u32,
+    pub next_cursor: Option<u32>,
+    pub total: u32,
 }
 
 #[contractevent(topics = ["proof", "reg"])]
@@ -1812,6 +1896,10 @@ pub enum DataKey {
     RevocationRoot,
     ProofHistorySeq(BytesN<32>),
     ProofHistoryEntry(BytesN<32>, u32),
+    AuthorityHistorySeq,
+    AuthorityHistoryEntry(u32),
+    ApproverAuthorityHistorySeq(Address),
+    ApproverAuthorityHistoryEntry(Address, u32),
     /// Scoped, expiring delegation from a grantor to a delegate (#192).
     Delegation(Address, Address),
     /// Count of distinct delegate addresses held by a grantor (#192).
@@ -2036,6 +2124,14 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion, &(SchemaVersion::V2 as u32));
+        record_authority_history(
+            &env,
+            &admin,
+            ROLE_ADMIN,
+            TRANSITION_INITIALIZED,
+            Some(admin),
+            None,
+        );
     }
 
     /// Return the persistent storage schema version.
@@ -2095,6 +2191,39 @@ impl HarpocratesRegistry {
             // Migrations will be added here when moving to V2, V3, etc.
             // V1 -> V2: Domain-separated nullifiers by verifier context (#325).
             // Legacy nullifiers are preserved, so no iterative key rewrite is required.
+
+            // Revoke conflicting legacy issuer authority held by the admin (#414)
+            let admin_addr: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Admin)
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NotInitialized));
+            let issuer_key = DataKey::Issuer(admin_addr.clone());
+            if let Some(mut issuer_rec) = env
+                .storage()
+                .persistent()
+                .get::<_, IssuerRecord>(&issuer_key)
+            {
+                if issuer_rec.active {
+                    issuer_rec.active = false;
+                    env.storage().persistent().set(&issuer_key, &issuer_rec);
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::IssuerRotation(admin_addr.clone()));
+                    IssuerRevoked {
+                        issuer: admin_addr.clone(),
+                    }
+                    .publish(&env);
+                    record_authority_history(
+                        &env,
+                        &admin_addr,
+                        ROLE_ISSUER,
+                        TRANSITION_CONFLICT_REVOKED,
+                        Some(admin_addr.clone()),
+                        Some(issuer_rec.metadata_hash),
+                    );
+                }
+            }
 
             env.storage()
                 .persistent()
@@ -2171,10 +2300,18 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
         AdminProposed {
-            pending_admin,
-            current_admin: admin,
+            pending_admin: pending_admin.clone(),
+            current_admin: admin.clone(),
         }
         .publish(&env);
+        record_authority_history(
+            &env,
+            &pending_admin,
+            ROLE_ADMIN,
+            TRANSITION_PROPOSED,
+            Some(admin),
+            None,
+        );
     }
 
     /// Return the current admin address, if initialized.
@@ -2197,10 +2334,18 @@ impl HarpocratesRegistry {
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
         AdminTransferCancelled {
-            pending_admin,
-            current_admin: admin,
+            pending_admin: pending_admin.clone(),
+            current_admin: admin.clone(),
         }
         .publish(&env);
+        record_authority_history(
+            &env,
+            &pending_admin,
+            ROLE_ADMIN,
+            TRANSITION_CANCELLED,
+            Some(admin),
+            None,
+        );
     }
 
     pub fn accept_admin(env: Env, pending_admin: Address) {
@@ -2226,10 +2371,26 @@ impl HarpocratesRegistry {
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
         AdminAccepted {
-            new_admin: pending_admin,
-            previous_admin,
+            new_admin: pending_admin.clone(),
+            previous_admin: previous_admin.clone(),
         }
         .publish(&env);
+        record_authority_history(
+            &env,
+            &previous_admin,
+            ROLE_ADMIN,
+            TRANSITION_REVOKED,
+            Some(pending_admin.clone()),
+            None,
+        );
+        record_authority_history(
+            &env,
+            &pending_admin,
+            ROLE_ADMIN,
+            TRANSITION_ACCEPTED,
+            Some(pending_admin),
+            None,
+        );
     }
 
     pub fn add_issuer(env: Env, admin: Address, issuer: Address, metadata_hash: BytesN<32>) {
@@ -2259,10 +2420,18 @@ impl HarpocratesRegistry {
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
         IssuerAdded {
-            issuer,
-            metadata_hash,
+            issuer: issuer.clone(),
+            metadata_hash: metadata_hash.clone(),
         }
         .publish(&env);
+        record_authority_history(
+            &env,
+            &issuer,
+            ROLE_ISSUER,
+            TRANSITION_ADDED,
+            Some(admin),
+            Some(metadata_hash),
+        );
     }
 
     pub fn set_verifier(env: Env, admin: Address, verifier: Address) {
@@ -2654,7 +2823,15 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::IssuerRotation(issuer.clone()));
-        IssuerRevoked { issuer }.publish(&env);
+        IssuerRevoked { issuer: issuer.clone() }.publish(&env);
+        record_authority_history(
+            &env,
+            &issuer,
+            ROLE_ISSUER,
+            TRANSITION_REVOKED,
+            Some(admin),
+            Some(record.metadata_hash),
+        );
     }
 
     /// Update an active issuer's metadata hash.
@@ -2687,11 +2864,19 @@ impl HarpocratesRegistry {
             .set(&DataKey::Issuer(issuer.clone()), &record);
 
         IssuerMetadataUpdated {
-            issuer,
+            issuer: issuer.clone(),
             previous_metadata_hash,
-            new_metadata_hash: metadata_hash,
+            new_metadata_hash: metadata_hash.clone(),
         }
         .publish(&env);
+        record_authority_history(
+            &env,
+            &issuer,
+            ROLE_ISSUER,
+            TRANSITION_METADATA_UPDATED,
+            Some(admin),
+            Some(metadata_hash),
+        );
     }
 
     /// Rotate an active issuer key to a replacement, opening a bounded grace
@@ -2776,13 +2961,30 @@ impl HarpocratesRegistry {
         );
 
         IssuerRotated {
-            previous_issuer,
-            replacement_issuer,
+            previous_issuer: previous_issuer.clone(),
+            replacement_issuer: replacement_issuer.clone(),
             rotated_at,
             grace_expires_at,
             grace_secs: resolved_grace,
         }
         .publish(&env);
+
+        record_authority_history(
+            &env,
+            &previous_issuer,
+            ROLE_ISSUER,
+            TRANSITION_ROTATED,
+            Some(admin.clone()),
+            Some(previous.metadata_hash),
+        );
+        record_authority_history(
+            &env,
+            &replacement_issuer,
+            ROLE_ISSUER,
+            TRANSITION_ADDED,
+            Some(admin),
+            Some(replacement.metadata_hash),
+        );
 
         grace_expires_at
     }
@@ -2815,11 +3017,20 @@ impl HarpocratesRegistry {
             .remove(&DataKey::IssuerRotation(issuer.clone()));
 
         IssuerRotationGraceExpired {
-            issuer,
+            issuer: issuer.clone(),
             replacement_issuer: record.replacement_issuer,
             grace_expires_at: record.grace_expires_at,
         }
         .publish(&env);
+
+        record_authority_history(
+            &env,
+            &issuer,
+            ROLE_ISSUER,
+            TRANSITION_FINALIZED,
+            None,
+            None,
+        );
     }
 
     /// The rotation grace record for `issuer`, when the key has rotated out and
@@ -4512,6 +4723,192 @@ impl HarpocratesRegistry {
             .unwrap_or(0)
     }
 
+    pub fn get_proof_history(
+        env: Env,
+        proof_id: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> SorobanVec<ProofHistoryEntry> {
+        if limit == 0 || limit > MAX_HISTORY_LIMIT {
+            panic_with_error!(&env, RegistryError::HistoryLimitExceeded);
+        }
+
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofHistorySeq(proof_id.clone()))
+            .unwrap_or(0);
+
+        let mut entries = SorobanVec::new(&env);
+        if offset >= total {
+            return entries;
+        }
+
+        let end = offset.saturating_add(limit).min(total);
+        for seq in (offset + 1)..=end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<_, ProofHistoryEntry>(&DataKey::ProofHistoryEntry(proof_id.clone(), seq))
+            {
+                entries.push_back(entry);
+            }
+        }
+
+        entries
+    }
+
+    /// Return a bounded, paginated slice of the global institutional authority transition history.
+    pub fn get_institutional_authority_history(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> AuthorityHistoryPage {
+        if limit == 0 || limit > MAX_AUTHORITY_HISTORY_PAGE {
+            panic_with_error!(&env, RegistryError::HistoryLimitExceeded);
+        }
+
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistorySeq)
+            .unwrap_or(0);
+
+        let mut entries = SorobanVec::new(&env);
+        if offset >= total {
+            return AuthorityHistoryPage {
+                entries,
+                next_offset: offset,
+                next_cursor: None,
+                total,
+            };
+        }
+
+        let end = offset.saturating_add(limit).min(total);
+        for seq in (offset + 1)..=end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<_, AuthorityHistoryEntry>(&DataKey::AuthorityHistoryEntry(seq))
+            {
+                entries.push_back(entry);
+            }
+        }
+
+        let next_offset = end;
+        let next_cursor = if next_offset < total {
+            Some(next_offset)
+        } else {
+            None
+        };
+
+        AuthorityHistoryPage {
+            entries,
+            next_offset,
+            next_cursor,
+            total,
+        }
+    }
+
+    /// Return a bounded, paginated slice of the global institutional authority transition history.
+    /// Alias for `get_institutional_authority_history`.
+    pub fn get_authority_history(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> AuthorityHistoryPage {
+        Self::get_institutional_authority_history(env, offset, limit)
+    }
+
+    /// Return a bounded, paginated slice of authority transitions for a specific historical approver.
+    pub fn get_approver_authority_history(
+        env: Env,
+        approver: Address,
+        offset: u32,
+        limit: u32,
+    ) -> AuthorityHistoryPage {
+        if limit == 0 || limit > MAX_AUTHORITY_HISTORY_PAGE {
+            panic_with_error!(&env, RegistryError::HistoryLimitExceeded);
+        }
+
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ApproverAuthorityHistorySeq(approver.clone()))
+            .unwrap_or(0);
+
+        let mut entries = SorobanVec::new(&env);
+        if offset >= total {
+            return AuthorityHistoryPage {
+                entries,
+                next_offset: offset,
+                next_cursor: None,
+                total,
+            };
+        }
+
+        let end = offset.saturating_add(limit).min(total);
+        for seq in (offset + 1)..=end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<_, AuthorityHistoryEntry>(&DataKey::ApproverAuthorityHistoryEntry(approver.clone(), seq))
+            {
+                entries.push_back(entry);
+            }
+        }
+
+        let next_offset = end;
+        let next_cursor = if next_offset < total {
+            Some(next_offset)
+        } else {
+            None
+        };
+
+        AuthorityHistoryPage {
+            entries,
+            next_offset,
+            next_cursor,
+            total,
+        }
+    }
+
+    /// Look up a specific authority history transition by its 1-based sequential reference.
+    pub fn get_authority_history_at(
+        env: Env,
+        reference: u32,
+    ) -> Option<AuthorityHistoryEntry> {
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistorySeq)
+            .unwrap_or(0);
+
+        if reference == 0 || reference > total {
+            return None;
+        }
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistoryEntry(reference))
+    }
+
+    /// Return the total count of recorded global institutional authority transitions.
+    pub fn get_authority_history_count(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AuthorityHistorySeq)
+            .unwrap_or(0)
+    }
+
+    /// Return the total count of authority transitions for a given historical approver.
+    pub fn get_approver_authority_history_count(env: Env, approver: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ApproverAuthorityHistorySeq(approver))
+            .unwrap_or(0)
+    }
+
     // -----------------------------------------------------------------------
     // On-chain metadata envelope versioning (#317)
     // -----------------------------------------------------------------------
@@ -5184,17 +5581,49 @@ impl HarpocratesRegistry {
     /// revoke the guardian role.
     pub fn set_guardian(env: Env, admin: Address, guardian: Address) {
         require_admin(&env, &admin);
+        let prev_guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
         env.storage()
             .persistent()
             .set(&DataKey::Guardian, &guardian);
-        GuardianSet { guardian }.publish(&env);
+        GuardianSet { guardian: guardian.clone() }.publish(&env);
+        if let Some(ref prev) = prev_guardian {
+            if prev != &guardian {
+                record_authority_history(
+                    &env,
+                    prev,
+                    ROLE_GUARDIAN,
+                    TRANSITION_REVOKED,
+                    Some(admin.clone()),
+                    None,
+                );
+            }
+        }
+        record_authority_history(
+            &env,
+            &guardian,
+            ROLE_GUARDIAN,
+            TRANSITION_ADDED,
+            Some(admin),
+            None,
+        );
     }
 
     /// Remove the emergency-pause guardian role. Admin-only.
     pub fn clear_guardian(env: Env, admin: Address) {
         require_admin(&env, &admin);
+        let prev_guardian: Option<Address> = env.storage().persistent().get(&DataKey::Guardian);
         env.storage().persistent().remove(&DataKey::Guardian);
         GuardianCleared {}.publish(&env);
+        if let Some(ref g) = prev_guardian {
+            record_authority_history(
+                &env,
+                g,
+                ROLE_GUARDIAN,
+                TRANSITION_REVOKED,
+                Some(admin),
+                None,
+            );
+        }
     }
 
     /// The currently configured guardian, if any.
@@ -6703,6 +7132,68 @@ fn record_proof_history(
     .publish(env);
 }
 
+/// Append an institutional authority history entry for an approver.
+///
+/// Dual-indexed:
+/// 1. Sequential global sequence (`DataKey::AuthorityHistoryEntry(seq)`)
+/// 2. Sequential per-approver sequence (`DataKey::ApproverAuthorityHistoryEntry(approver, seq)`)
+///
+/// This avoids unbounded iteration through historical approvers during queries,
+/// enabling direct O(limit) pagination without scanning or filtering.
+fn record_authority_history(
+    env: &Env,
+    approver: &Address,
+    role: u32,
+    transition: u32,
+    actor: Option<Address>,
+    metadata_hash: Option<BytesN<32>>,
+) -> u32 {
+    let global_seq_key = DataKey::AuthorityHistorySeq;
+    let global_seq: u32 = env
+        .storage()
+        .persistent()
+        .get(&global_seq_key)
+        .unwrap_or(0);
+    let next_global_seq = global_seq
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::HistorySaturated));
+
+    let approver_seq_key = DataKey::ApproverAuthorityHistorySeq(approver.clone());
+    let approver_seq: u32 = env
+        .storage()
+        .persistent()
+        .get(&approver_seq_key)
+        .unwrap_or(0);
+    let next_approver_seq = approver_seq
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::HistorySaturated));
+
+    let now = env.ledger().timestamp();
+    let entry = AuthorityHistoryEntry {
+        reference: next_global_seq,
+        ledger_timestamp: now,
+        approver: approver.clone(),
+        role,
+        transition,
+        actor,
+        metadata_hash,
+    };
+
+    env.storage().persistent().set(
+        &DataKey::AuthorityHistoryEntry(next_global_seq),
+        &entry,
+    );
+    env.storage().persistent().set(&global_seq_key, &next_global_seq);
+
+    env.storage().persistent().set(
+        &DataKey::ApproverAuthorityHistoryEntry(approver.clone(), next_approver_seq),
+        &entry,
+    );
+    env.storage().persistent().set(&approver_seq_key, &next_approver_seq);
+
+    next_global_seq
+}
+
 fn require_timestamp_claim_actor(env: &Env, actor: &Address, proof: &ProofRecord) {
     actor.require_auth();
 
@@ -7649,6 +8140,14 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
                 issuer: proposal.target.clone(),
             }
             .publish(env);
+            record_authority_history(
+                env,
+                &proposal.target,
+                ROLE_ISSUER,
+                TRANSITION_REVOKED,
+                Some(proposal.proposer.clone()),
+                Some(record.metadata_hash),
+            );
         }
         3 => {
             // `payload` is 32 bytes; the TTL is stored big-endian in the
@@ -7773,6 +8272,14 @@ fn dispatch_council_action(env: &Env, proposal: &CouncilProposal) {
                 issuer: proposal.target.clone(),
             }
             .publish(env);
+            record_authority_history(
+                env,
+                &proposal.target,
+                ROLE_ISSUER,
+                TRANSITION_REVOKED,
+                Some(proposal.proposer.clone()),
+                Some(record.metadata_hash),
+            );
         }
         3 => {
             // UpgradeStorage
