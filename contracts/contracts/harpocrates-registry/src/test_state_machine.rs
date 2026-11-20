@@ -1216,6 +1216,12 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 .and_then(|_| {
                     if model.issuers[pending_admin.index()] == IssuerState::Active {
                         Err(RegistryError::RoleConflict)
+                    } else if let Some(existing) = model.pending_admin {
+                        if existing == pending_admin {
+                            Ok(())
+                        } else {
+                            Err(RegistryError::RoleConflict)
+                        }
                     } else {
                         Ok(())
                     }

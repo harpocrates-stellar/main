@@ -1861,6 +1861,10 @@ pub enum DataKey {
     ProofDisputeSeq(BytesN<32>),
     /// Dispute ID at 1-based sequence for a proof_id (#dispute).
     ProofDispute(BytesN<32>, u32),
+    /// Active authority/role configuration revision.
+    RoleRevision,
+    /// Pending admin transition queued revision.
+    PendingAdminRevision,
 }
 
 #[contracterror]
@@ -1880,10 +1884,7 @@ pub enum RegistryError {
     UnknownCredentialRoot = 11,
     RevokedCredentialRoot = 12,
     HistorySaturated = 13,
-    /// The scoped-nullifier proof carries an epoch that does not match the
-    /// current on-chain epoch for its scope. Replaces the unused
-    /// `InvalidHistoryAction` slot so the wire code does not change.
-    StaleEpoch = 14,
+    InvalidHistoryAction = 14,
     InvalidReasonCode = 15,
     HistoryLimitExceeded = 16,
     AlreadyExpired = 17,
@@ -1934,11 +1935,6 @@ pub enum RegistryError {
     UnknownSchema = 50,
     InactiveSchema = 51,
     SchemaVersionMismatch = 52,
-    /// The cursor supplied to `list_verifiers` is out of range or malformed.
-    /// Returns a stable, privacy-safe failure that does not reveal set size.
-    InvalidCursor = 53,
-    /// The `limit` supplied to `list_verifiers` exceeds `MAX_VERIFIER_LIST_LIMIT`.
-    ListLimitExceeded = 54,
     // --- Restored feature errors (append-only; never renumber existing) ---
     /// A scoped-nullifier proof was generated for a stale scope epoch.
     StaleEpoch = 53,
@@ -2019,6 +2015,11 @@ pub enum RegistryError {
     ReporterDisputesSaturated = 88,
     /// The action requires admin council threshold approvals.
     InsufficientApprovals = 89,
+    /// A role transition was rejected because it conflicts with existing authority,
+    /// an already queued transition for the same revision, or a stale authority revision.
+    RoleConflict = 90,
+    /// The `limit` supplied to `list_verifiers` exceeds `MAX_VERIFIER_LIST_LIMIT`.
+    ListLimitExceeded = 91,
 }
 
 #[contract]
@@ -2036,6 +2037,9 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion, &(SchemaVersion::V2 as u32));
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoleRevision, &1u32);
     }
 
     /// Return the persistent storage schema version.
@@ -2167,14 +2171,52 @@ impl HarpocratesRegistry {
         require_admin(&env, &admin);
         require_admin_role_available(&env, &pending_admin);
 
+        let current_revision = Self::get_role_revision(env.clone());
+
+        if let Some(existing_pending) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+        {
+            if existing_pending == pending_admin {
+                // Preserve an already queued compatible transition.
+                return;
+            }
+            let queued_revision: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PendingAdminRevision)
+                .unwrap_or(current_revision);
+            if queued_revision == current_revision {
+                // Reject conflicting role transitions queued for the same authority revision.
+                panic_with_error!(&env, RegistryError::RoleConflict);
+            }
+        }
+
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdminRevision, &current_revision);
         AdminProposed {
             pending_admin,
             current_admin: admin,
         }
         .publish(&env);
+    }
+
+    pub fn propose_admin_with_revision(
+        env: Env,
+        admin: Address,
+        pending_admin: Address,
+        expected_revision: u32,
+    ) {
+        let current_revision = Self::get_role_revision(env.clone());
+        if expected_revision != current_revision {
+            panic_with_error!(&env, RegistryError::RoleConflict);
+        }
+        Self::propose_admin(env, admin, pending_admin);
     }
 
     /// Return the current admin address, if initialized.
@@ -2187,6 +2229,34 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
 
+    /// Return the active authority/role configuration revision.
+    pub fn get_role_revision(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoleRevision)
+            .unwrap_or(1u32)
+    }
+
+    /// Alias for get_role_revision.
+    pub fn get_authority_revision(env: Env) -> u32 {
+        Self::get_role_revision(env)
+    }
+
+    /// Return whether `address` holds the registry administrator role.
+    pub fn is_admin(env: Env, address: Address) -> bool {
+        let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        admin.as_ref() == Some(&address)
+    }
+
+    /// Return whether `address` holds an active Tier 3 issuer role.
+    pub fn is_issuer(env: Env, address: Address) -> bool {
+        let record: Option<IssuerRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Issuer(address));
+        record.map_or(false, |r| r.active)
+    }
+
     pub fn cancel_admin_transfer(env: Env, admin: Address) {
         require_admin(&env, &admin);
 
@@ -2196,6 +2266,9 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingAdminRevision);
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2216,6 +2289,16 @@ impl HarpocratesRegistry {
         }
         require_admin_role_available(&env, &pending_admin);
 
+        let current_revision = Self::get_role_revision(env.clone());
+        let queued_revision: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminRevision)
+            .unwrap_or(current_revision);
+        if queued_revision != current_revision {
+            panic_with_error!(&env, RegistryError::RoleConflict);
+        }
+
         let previous_admin: Address = env
             .storage()
             .persistent()
@@ -2225,11 +2308,32 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingAdminRevision);
+
+        let next_revision = current_revision.saturating_add(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoleRevision, &next_revision);
+
         AdminAccepted {
             new_admin: pending_admin,
             previous_admin,
         }
         .publish(&env);
+    }
+
+    pub fn accept_admin_with_revision(
+        env: Env,
+        pending_admin: Address,
+        expected_revision: u32,
+    ) {
+        let current_revision = Self::get_role_revision(env.clone());
+        if expected_revision != current_revision {
+            panic_with_error!(&env, RegistryError::RoleConflict);
+        }
+        Self::accept_admin(env, pending_admin);
     }
 
     pub fn add_issuer(env: Env, admin: Address, issuer: Address, metadata_hash: BytesN<32>) {

@@ -57,7 +57,7 @@ fn separate_issuer_can_register_a_tier_three_seal() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #90)")]
 fn admin_cannot_be_granted_issuer_role() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -82,7 +82,7 @@ fn rejected_role_assignment_has_a_bounded_budget() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #90)")]
 fn active_issuer_cannot_be_proposed_as_admin() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -267,7 +267,7 @@ fn v2_migration_preserves_non_conflicting_issuer_authority() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #90)")]
 fn legacy_admin_issuer_record_cannot_seal_before_migration_runs() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
@@ -341,4 +341,157 @@ fn update_issuer_metadata_fails_for_non_admin_caller() {
     client.add_issuer(&admin, &issuer, &b32(&env, 0x11));
 
     client.update_issuer_metadata(&stranger, &issuer, &b32(&env, 0x33));
+}
+
+// ---------------------------------------------------------------------------
+// Authority revision and conflicting role transition tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queued_compatible_role_transition_is_preserved() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    assert_eq!(client.get_role_revision(), 1);
+    assert_eq!(client.get_authority_revision(), 1);
+
+    // Initial proposal
+    client.propose_admin(&admin, &candidate);
+    assert_eq!(client.get_pending_admin(), Some(candidate.clone()));
+    let initial_events_len = env.events().all().len();
+
+    // Queuing a compatible transition (same nominee) must succeed and preserve the queued transition.
+    client.propose_admin(&admin, &candidate);
+    assert_eq!(client.get_pending_admin(), Some(candidate.clone()));
+    assert_eq!(client.get_role_revision(), 1);
+    // Preserved compatible transition does not re-emit redundant proposal events.
+    assert_eq!(env.events().all().len(), initial_events_len);
+
+    // Candidate accepts intent and completes the transition.
+    client.accept_admin(&candidate);
+    assert_eq!(client.get_admin(), Some(candidate.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+    assert_eq!(client.get_role_revision(), 2);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn conflicting_role_transition_queued_for_same_revision_is_rejected() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate_a = Address::generate(&env);
+    let candidate_b = Address::generate(&env);
+
+    client.propose_admin(&admin, &candidate_a);
+    assert_eq!(client.get_pending_admin(), Some(candidate_a.clone()));
+
+    // Proposing candidate_b while candidate_a is already queued for the same authority revision must panic with RoleConflict (#90).
+    client.propose_admin(&admin, &candidate_b);
+}
+
+#[test]
+fn conflicting_transition_rejection_preserves_existing_pending_nominee() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate_a = Address::generate(&env);
+    let candidate_b = Address::generate(&env);
+
+    client.propose_admin(&admin, &candidate_a);
+    assert_eq!(client.get_pending_admin(), Some(candidate_a.clone()));
+
+    let res = client.try_propose_admin(&admin, &candidate_b);
+    assert!(res.is_err(), "conflicting transition must fail");
+
+    // The original nominee must be preserved and remain able to accept.
+    assert_eq!(client.get_pending_admin(), Some(candidate_a.clone()));
+    client.accept_admin(&candidate_a);
+    assert_eq!(client.get_admin(), Some(candidate_a));
+    assert_eq!(client.get_role_revision(), 2);
+}
+
+#[test]
+fn cancelling_queued_transition_allows_new_proposal_at_same_revision() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate_a = Address::generate(&env);
+    let candidate_b = Address::generate(&env);
+
+    assert_eq!(client.get_role_revision(), 1);
+
+    client.propose_admin(&admin, &candidate_a);
+    assert_eq!(client.get_pending_admin(), Some(candidate_a));
+
+    client.cancel_admin_transfer(&admin);
+    assert_eq!(client.get_pending_admin(), None);
+
+    // After cancellation, proposing candidate_b at the same revision succeeds.
+    client.propose_admin(&admin, &candidate_b);
+    assert_eq!(client.get_pending_admin(), Some(candidate_b.clone()));
+
+    client.accept_admin(&candidate_b);
+    assert_eq!(client.get_admin(), Some(candidate_b));
+    assert_eq!(client.get_role_revision(), 2);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn accepting_intent_with_stale_expected_revision_is_rejected() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    client.propose_admin(&admin, &candidate);
+    // Expected revision 2 does not match current revision 1 -> RoleConflict (#90).
+    client.accept_admin_with_revision(&candidate, &2u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn propose_with_mismatched_revision_is_rejected() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    // Current revision is 1; expecting 999 must reject with RoleConflict (#90).
+    client.propose_admin_with_revision(&admin, &candidate, &999u32);
+}
+
+#[test]
+fn propose_and_accept_with_revision_advances_role_revision() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    assert_eq!(client.get_role_revision(), 1);
+    client.propose_admin_with_revision(&admin, &candidate, &1u32);
+    assert_eq!(client.get_pending_admin(), Some(candidate.clone()));
+
+    client.accept_admin_with_revision(&candidate, &1u32);
+    assert_eq!(client.get_admin(), Some(candidate.clone()));
+    assert_eq!(client.get_role_revision(), 2);
+    assert_eq!(client.get_authority_revision(), 2);
+}
+
+#[test]
+fn rejected_conflicting_transition_has_bounded_budget() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate_a = Address::generate(&env);
+    let candidate_b = Address::generate(&env);
+
+    client.propose_admin(&admin, &candidate_a);
+    let events_before = env.events().all().len();
+
+    env.cost_estimate().budget().reset_unlimited();
+    let result = client.try_propose_admin(&admin, &candidate_b);
+    assert!(result.is_err(), "expected RoleConflict for conflicting transition");
+
+    let budget = env.cost_estimate().budget();
+    assert!(budget.cpu_instruction_cost() <= MAX_CPU_ROLE_CONFLICT);
+    assert!(budget.memory_bytes_cost() <= MAX_MEM_ROLE_CONFLICT);
+
+    // No new events emitted and pending nominee remains candidate_a.
+    assert_eq!(env.events().all().len(), events_before);
+    assert_eq!(client.get_pending_admin(), Some(candidate_a));
 }

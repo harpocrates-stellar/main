@@ -149,6 +149,8 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
         RegistryError::ReporterDisputesSaturated => "ReporterDisputesSaturated",
         RegistryError::InsufficientApprovals => "InsufficientApprovals",
+        RegistryError::RoleConflict => "RoleConflict",
+        RegistryError::ListLimitExceeded => "ListLimitExceeded",
     }
 }
 
@@ -245,6 +247,8 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::CircuitVersionMismatch,
     RegistryError::ReporterDisputesSaturated,
     RegistryError::InsufficientApprovals,
+    RegistryError::RoleConflict,
+    RegistryError::ListLimitExceeded,
 ];
 
 #[cfg(test)]

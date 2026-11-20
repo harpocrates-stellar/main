@@ -265,7 +265,7 @@ and `metadata_hash` for content they did not actually review.
 | Issuer must be in the active allowlist (`add_issuer`) before any seal registration | `lib.rs` → `get_issuer_record` |
 | Storage V2 rejects admin/issuer role overlap at grant, transfer, and registration boundaries; V1-to-V2 migration revokes only a conflicting active issuer record | `lib.rs` → `require_issuer_role_available`, `upgrade_storage` |
 | Admin can revoke a compromised issuer at any time (`revoke_issuer`) | `lib.rs` → `revoke_issuer` |
-| `RoleConflict` (`#53`) prevents one address from simultaneously controlling protocol administration and Tier 3 issuance after storage V2 | `lib.rs` → `require_issuer_role_available` |
+| `RoleConflict` (`#90`) prevents one address from simultaneously controlling protocol administration and Tier 3 issuance after storage V2, and prevents conflicting transitions queued for the same authority revision | `lib.rs` → `require_issuer_role_available`, `propose_admin` |
 | `IssuerRevoked` event is emitted on chain | `lib.rs` → `IssuerRevoked` struct |
 | `register_seal` requires `issuer.require_auth()` — the issuer's Stellar keypair must sign | `lib.rs` → `register_seal` |
 | Typed `IssuerAdded` / `IssuerRevoked` events enable off-chain monitoring | `lib.rs` → event structs |

@@ -265,10 +265,14 @@ init
 get_storage_schema_version
 upgrade_storage
 propose_admin
+propose_admin_with_revision
 cancel_admin_transfer
 accept_admin
+accept_admin_with_revision
 get_admin
 get_pending_admin
+get_role_revision
+get_authority_revision
 get_schema_version
 is_admin
 is_issuer
@@ -355,9 +359,17 @@ The rotation state is persisted and can be inspected via `get_verifier_state`.
 
 Admin control uses a two-step transfer:
 
-1. The current admin calls `propose_admin`, which creates or replaces the pending
-   admin proposal.
-2. The pending admin calls `accept_admin` to complete the transfer.
+1. The current admin calls `propose_admin`, which queues the pending admin nominee
+   for the current authority revision. If a proposal for the same nominee is already
+   queued, it is preserved without side effects. If a conflicting nominee is already
+   queued for the same revision, the call is rejected with `RoleConflict` (`#90`).
+   To replace a queued nominee within the same revision, the admin must call
+   `cancel_admin_transfer` first. Callers may also use `propose_admin_with_revision`
+   to pass an expected authority revision.
+2. The pending admin calls `accept_admin` (or `accept_admin_with_revision`) to complete
+   the transfer. The contract verifies that the queued proposal matches the current
+   authority revision before accepting intent; acceptance advances the monotonic
+   authority revision (`get_role_revision()`).
 
 The current admin may call `cancel_admin_transfer` before acceptance. Proposals,
 cancellations, and acceptances emit `["admin", "propose"]`,
@@ -377,7 +389,7 @@ Registry administration and Tier 3 issuance are disjoint roles. The admin can
 manage protocol state, credential roots, verifiers, proofs, and the issuer
 allowlist, but an active admin address cannot be granted issuer authority.
 An active issuer cannot be proposed or accepted as admin. Both rejected paths
-return the stable, privacy-safe `RoleConflict` contract error (`#53`); no media,
+return the stable, privacy-safe `RoleConflict` contract error (`#90`); no media,
 metadata, witness, proof, or key material is included.
 
 `is_admin(address)` and `is_issuer(address)` expose the effective role without
