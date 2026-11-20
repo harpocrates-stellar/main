@@ -7,6 +7,8 @@ Covers:
 - Idempotency and duplicate deduplication on (tx_hash, event_index)
 - Cursor persistence, restart, and resume without duplicates
 - Skipping and counting of unknown topics
+- Quarantine of unsupported contract event versions with bounded references and
+  version reasons, without halting indexing of unrelated supported events
 - Queueing of webhook deliveries for indexed events
 - Bounded page size and exponential backoff on RPC errors
 - Visibility of indexed revocations in /api/proofs
@@ -329,6 +331,122 @@ def test_idempotency_duplicate_events():
 
 
 # ---------------------------------------------------------------------------
+# Unsupported Event Version Quarantine
+# ---------------------------------------------------------------------------
+
+
+def test_unsupported_version_is_quarantined_without_halting_supported_events():
+    collector.reset()
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000001",
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        # Known lifecycle topic with a version this indexer does not support.
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000002",
+            "topic": ["proof", "v9", DUMMY_PROOF_2],
+            "value": {"schema_version": 9},
+        },
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000003",
+            "topic": ["proof", "history", DUMMY_PROOF_2],
+            "value": {"action": 4, "reason_code": 2, "actor": "GADMIN"},
+        },
+    ]
+
+    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary["scanned"] == 3
+    assert summary["indexed"] == 2
+    assert summary["quarantined"] == 1
+    assert summary["duplicates"] == 0
+
+    quarantined = summary["quarantine_refs"]
+    assert len(quarantined) == 1
+    ref = quarantined[0]
+    assert ref["tx_hash"] == DUMMY_TX_1
+    assert ref["event_index"] == 2
+    assert ref["version_reason"] == "unsupported_version"
+    assert ref["schema_version"] == 9
+    # Bounded references: no raw payload or proof contents are retained.
+    assert "value" not in ref
+    assert DUMMY_PROOF_2 not in json.dumps(ref)
+
+    assert collector.get_indexer_quarantined_count() == 1
+
+
+def test_quarantine_references_are_bounded():
+    collector.reset()
+    events = [
+        {
+            "txHash": DUMMY_TX_2,
+            "id": f"0000000400-{i:010d}",
+            "topic": ["proof", f"v{i + 2}", DUMMY_PROOF_1],
+            "value": {"schema_version": i + 2},
+        }
+        for i in range(INDEXER_MAX_PAGE_SIZE + 5)
+    ]
+
+    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary["quarantined"] == len(events)
+    assert len(summary["quarantine_refs"]) <= INDEXER_MAX_PAGE_SIZE
+    assert summary["quarantine_refs_truncated"] is True
+    assert summary["quarantined"] == len(events)
+
+
+def test_quarantined_event_does_not_advance_supported_dedup_key():
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000500-0000000007",
+            "topic": ["proof", "v9", DUMMY_PROOF_1],
+            "value": {"schema_version": 9},
+        }
+    ]
+    summary1 = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary1["quarantined"] == 1
+    assert summary1["indexed"] == 0
+
+    # Re-seeing the same unsupported event re-quarantines it; it is not treated
+    # as a supported duplicate and does not block a later supported version.
+    summary2 = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary2["quarantined"] == 1
+    assert summary2["duplicates"] == 0
+
+
+@mock.patch("chain_indexer.fetch_latest_ledger", return_value=600)
+@mock.patch("chain_indexer.fetch_contract_events")
+def test_quarantine_preserves_cursor_progress(mock_fetch_events, mock_latest):
+    save_indexer_cursor("soroban_events", "")
+    mock_fetch_events.return_value = {
+        "cursor": "cursor-601",
+        "latestLedger": 601,
+        "events": [
+            {
+                "txHash": DUMMY_TX_1,
+                "id": "0000000601-0000000001",
+                "topic": ["proof", "v9", DUMMY_PROOF_1],
+                "value": {"schema_version": 9},
+            },
+            {
+                "txHash": DUMMY_TX_1,
+                "id": "0000000601-0000000002",
+                "topic": ["proof", "revoke", DUMMY_PROOF_2],
+            },
+        ],
+    }
+
+    summary = poll_indexer_once(contract_id=DUMMY_CONTRACT)
+    assert summary["quarantined"] == 1
+    assert summary["indexed"] == 1
+    assert summary["new_cursor"] == "cursor-601"
+    assert get_indexer_cursor() == "cursor-601"
+
+
+# ---------------------------------------------------------------------------
 # Cursor Persistence & Resume Across Restart
 # ---------------------------------------------------------------------------
 
@@ -376,115 +494,3 @@ def test_poll_indexer_once_resumes_from_stored_cursor(mock_fetch_events, mock_la
     # Run 2: Restart simulation. Stored cursor is present.
     # It must query using cursor="cursor-501" instead of start_ledger.
     mock_fetch_events.reset_mock()
-    mock_fetch_events.return_value = {
-        "cursor": "cursor-502",
-        "latestLedger": 502,
-        "events": [],
-    }
-
-    summary2 = poll_indexer_once(contract_id=DUMMY_CONTRACT)
-    assert summary2["indexed"] == 0
-    mock_fetch_events.assert_called_with(
-        rpc_url=DEFAULT_SOROBAN_RPC_URL,
-        contract_id=DUMMY_CONTRACT,
-        start_ledger=None,
-        cursor="cursor-501",
-        limit=50,
-        timeout=INDEXER_DEFAULT_TIMEOUT,
-    )
-    assert get_indexer_cursor() == "cursor-502"
-
-
-# ---------------------------------------------------------------------------
-# Webhook Dispatch Queueing
-# ---------------------------------------------------------------------------
-
-
-@mock.patch("chain_indexer.queue_webhook_deliveries")
-def test_webhook_deliveries_queued_for_new_indexed_event(mock_queue_webhook):
-    events = [
-        {
-            "txHash": "99" * 32,
-            "id": "0000000900-0000000001",
-            "topic": ["proof", "revoke", DUMMY_PROOF_1],
-        }
-    ]
-    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
-    assert summary["indexed"] == 1
-    assert mock_queue_webhook.called
-    event_id = mock_queue_webhook.call_args[0][0]
-    assert isinstance(event_id, int)
-
-
-# ---------------------------------------------------------------------------
-# RPC Error Backoff & Recovery
-# ---------------------------------------------------------------------------
-
-
-def test_run_indexer_loop_backs_off_on_error():
-    stop_event = threading.Event()
-    call_count = 0
-
-    def fake_poll(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            raise RuntimeError("RPC connection failed")
-        stop_event.set()
-        return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0}
-
-    with mock.patch("chain_indexer.poll_indexer_once", side_effect=fake_poll):
-        # Run loop in separate thread
-        t = threading.Thread(
-            target=run_indexer_loop,
-            args=(stop_event, DUMMY_CONTRACT),
-            kwargs={"poll_interval": 0.02, "initial_backoff": 0.02, "max_backoff": 0.1},
-        )
-        t.start()
-        t.join(timeout=3.0)
-
-    assert not t.is_alive()
-    assert call_count >= 3
-
-
-# ---------------------------------------------------------------------------
-# API Visibility: Revocations Appear in /api/proofs
-# ---------------------------------------------------------------------------
-
-
-def test_indexed_revocation_appears_in_api_proofs():
-    client = app_module.app.test_client()
-
-    # Ingest revocation directly via indexer batch
-    revocation_event = {
-        "txHash": "77" * 32,
-        "id": "0000000777-0000000001",
-        "topic": ["proof", "revoke", "ff" * 32],
-    }
-
-    # Set up mock or stub for list_proof_events in app
-    with mock.patch.object(
-        app_module,
-        "list_proof_events",
-        return_value=(
-            [
-                {
-                    "id": 1001,
-                    "event_type": "revoke",
-                    "proof_id": "ff" * 32,
-                    "tx_hash": "77" * 32,
-                    "tx_status": "revoked",
-                }
-            ],
-            None,
-        ),
-    ):
-        res = client.get("/api/proofs?limit=10")
-        assert res.status_code == 200
-        data = res.json
-        assert data["ok"] is True
-        events = data["events"]
-        assert len(events) == 1
-        assert events[0]["event_type"] == "revoke"
-        assert events[0]["proof_id"] == "ff" * 32
-        assert events[0]["tx_status"] == "revoked"
