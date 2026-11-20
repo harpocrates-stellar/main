@@ -1,8 +1,33 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { VerifyView } from './VerifyView'
 import type { UseVerificationReturn } from '../hooks/useVerification'
+import { useIssuerTrust } from '../hooks/useIssuerTrust'
+import { STELLAR_STRKEY_LENGTH, type IssuerTrust } from '../provenance/issuerTrust'
+import type { ChainProofRecord } from '../stellarTypes'
+
+vi.mock('../hooks/useIssuerTrust', () => ({
+  useIssuerTrust: vi.fn(),
+}))
+
+const mockedUseIssuerTrust = vi.mocked(useIssuerTrust)
+
+function issuerTrustStub(overrides: Partial<IssuerTrust> = {}): IssuerTrust {
+  return {
+    state: 'unsupported',
+    label: 'No issuer',
+    description: 'This identity tier does not carry an issuer address.',
+    severity: 'neutral',
+    issuer: null,
+    ...overrides,
+  }
+}
+
+beforeEach(() => {
+  mockedUseIssuerTrust.mockReset()
+  mockedUseIssuerTrust.mockReturnValue(issuerTrustStub())
+})
 
 vi.mock('../stellar', () => ({
   CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Future Network ; October 2022',
@@ -15,6 +40,10 @@ vi.mock('../stellar', () => ({
 vi.mock('../components/ChainProofPanel', () => ({
   ChainProofPanel: () => <div data-testid="chain-proof-panel" />,
   formatProofExpiry: () => 'Never',
+}))
+
+vi.mock('../components/DisputePanel', () => ({
+  DisputePanel: () => <div data-testid="dispute-panel" />,
 }))
 
 vi.mock('../components/VerifierSetStatusPanel', () => ({
@@ -419,5 +448,153 @@ describe('VerifyView – portable proof manifest loading', () => {
       fireEvent.keyDown(dropzone, { key: 'Enter', code: 'Enter' })
       expect(clicked).toBe(false)
     })
+  })
+})
+
+// ─── Unknown Issuer Trust vs Invalid Signature ──────────────────────────────
+
+describe('VerifyView – unknown issuer trust vs invalid signature', () => {
+  const ISSUER_ADDRESS = `G${'B'.repeat(STELLAR_STRKEY_LENGTH - 1)}`
+  const SEAL_CHAIN_PROOF: ChainProofRecord = {
+    videoHash: 'a'.repeat(64),
+    metadataHash: 'b'.repeat(64),
+    tier: 3,
+    status: 1,
+    createdAt: '1700000000',
+    expiresAt: 0,
+    source: null,
+    issuer: ISSUER_ADDRESS,
+  }
+
+  it('explains UNKNOWN_ISSUER separately from an invalid signature while keeping the underlying proof result visible', () => {
+    mockedUseIssuerTrust.mockReturnValue(
+      issuerTrustStub({
+        state: 'unknown',
+        label: 'Issuer unknown',
+        description: 'The registry has no issuer record for this address.',
+        severity: 'caution',
+        issuer: ISSUER_ADDRESS,
+      }),
+    )
+
+    renderView({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult:
+        'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      chainProof: SEAL_CHAIN_PROOF,
+    })
+
+    // Underlying proof result remains visible
+    expect(
+      screen.getByText(
+        /Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records\./i,
+      ),
+    ).toBeInTheDocument()
+
+    // Dedicated trust explanation separates unknown issuer from invalid signature
+    const explanation = screen.getByTestId('issuer-trust-explanation')
+    expect(explanation).toHaveAttribute('data-trust-code', 'UNKNOWN_ISSUER')
+    expect(explanation).toHaveAttribute('data-severity', 'caution')
+    expect(explanation).toHaveTextContent(/Unknown issuer \(not in trust registry\)/i)
+    expect(explanation).toHaveTextContent(/UNKNOWN_ISSUER/)
+    expect(explanation).toHaveTextContent(/not an invalid signature/i)
+  })
+
+  it('explains INVALID_SIGNATURE separately from unknown issuer trust and keeps the failure result visible', () => {
+    mockedUseIssuerTrust.mockReturnValue(
+      issuerTrustStub({
+        state: 'unknown',
+        label: 'Issuer unknown',
+        severity: 'caution',
+        issuer: ISSUER_ADDRESS,
+      }),
+    )
+
+    renderView({
+      status: 'error',
+      errorCode: 'INVALID_EVIDENCE',
+      verifyHash: 'a'.repeat(64),
+      verifyResult: 'Invalid evidence: the file could not be verified as Harpocrates evidence.',
+      chainProof: SEAL_CHAIN_PROOF,
+    })
+
+    // Underlying proof failure and error code remain visible
+    expect(
+      screen.getByText(/Invalid evidence: the file could not be verified as Harpocrates evidence\./i),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Code: INVALID_EVIDENCE/i)).toBeInTheDocument()
+
+    // Trust explanation stays fail-closed as INVALID_SIGNATURE, not UNKNOWN_ISSUER
+    const explanation = screen.getByTestId('issuer-trust-explanation')
+    expect(explanation).toHaveAttribute('data-trust-code', 'INVALID_SIGNATURE')
+    expect(explanation).toHaveAttribute('data-severity', 'critical')
+    expect(explanation).toHaveTextContent(/Invalid signature or proof binding/i)
+    expect(explanation).toHaveTextContent(/cryptographic verification failure/i)
+  })
+
+  it('explains METADATA_ENVELOPE_MISMATCH as INVALID_SIGNATURE while keeping the mismatch message visible', () => {
+    renderView({
+      status: 'error',
+      errorCode: 'METADATA_ENVELOPE_MISMATCH',
+      verifyHash: 'a'.repeat(64),
+      verifyResult:
+        'Metadata mismatch: the embedded metadata hash does not match the on-chain envelope bound to this proof. Treat this artifact as tampered with.',
+      chainProof: SEAL_CHAIN_PROOF,
+    })
+
+    expect(screen.getByText(/Metadata mismatch:/i)).toBeInTheDocument()
+    expect(screen.getByText(/Code: METADATA_ENVELOPE_MISMATCH/i)).toBeInTheDocument()
+    expect(screen.getByTestId('issuer-trust-explanation')).toHaveAttribute(
+      'data-trust-code',
+      'INVALID_SIGNATURE',
+    )
+  })
+
+  it('handles ISSUER_LOOKUP_UNAVAILABLE fail-closed without conflating it with unknown issuer or invalid signature', () => {
+    mockedUseIssuerTrust.mockReturnValue(
+      issuerTrustStub({
+        state: 'unavailable',
+        label: 'Issuer lookup unavailable',
+        severity: 'caution',
+        issuer: ISSUER_ADDRESS,
+      }),
+    )
+
+    renderView({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult:
+        'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      chainProof: SEAL_CHAIN_PROOF,
+    })
+
+    expect(screen.getByText(/Confirmed: embedded Harpocrates metadata/i)).toBeInTheDocument()
+    const explanation = screen.getByTestId('issuer-trust-explanation')
+    expect(explanation).toHaveAttribute('data-trust-code', 'ISSUER_LOOKUP_UNAVAILABLE')
+    expect(explanation).toHaveTextContent(/neither an unknown issuer nor an invalid signature/i)
+  })
+
+  it('preserves identity tier separation for Tier 1 proofs without an institutional issuer', () => {
+    mockedUseIssuerTrust.mockReturnValue(issuerTrustStub({ state: 'unsupported', issuer: null }))
+
+    renderView({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult:
+        'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      chainProof: { ...SEAL_CHAIN_PROOF, tier: 1, issuer: null },
+    })
+
+    expect(screen.getByText(/Confirmed: embedded Harpocrates metadata/i)).toBeInTheDocument()
+    expect(screen.getByTestId('issuer-trust-explanation')).toHaveAttribute(
+      'data-trust-code',
+      'NO_ISSUER_REQUIRED',
+    )
+  })
+
+  it('does not render a trust explanation in idle state before any verification run', () => {
+    renderView({ status: 'idle', chainProof: null, errorCode: null })
+    expect(screen.queryByTestId('issuer-trust-explanation')).not.toBeInTheDocument()
   })
 })

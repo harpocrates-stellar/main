@@ -1155,6 +1155,88 @@ body::-webkit-scrollbar-thumb:hover,
   }
 }
 
+/* Verification portal trust explanation — separates issuer trust standing
+   from underlying cryptographic signature / proof validity. */
+.trust-explanation {
+  margin: 10px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(9, 9, 14, 0.72);
+  color: rgba(255, 255, 255, 0.88);
+  display: grid;
+  gap: 6px;
+}
+
+.trust-explanation__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trust-explanation__heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.trust-explanation__code {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.trust-explanation__body,
+.trust-explanation__distinction {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.trust-explanation__distinction {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.trust-explanation--positive {
+  border-color: rgba(120, 230, 170, 0.35);
+  background: rgba(24, 72, 48, 0.24);
+}
+
+.trust-explanation--positive .trust-explanation__heading {
+  color: #8fe6b8;
+}
+
+.trust-explanation--neutral {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.trust-explanation--caution {
+  border-color: rgba(255, 190, 92, 0.38);
+  background: rgba(101, 54, 0, 0.24);
+}
+
+.trust-explanation--caution .trust-explanation__heading {
+  color: #ffd59a;
+}
+
+.trust-explanation--critical {
+  border-color: rgba(255, 108, 108, 0.42);
+  background: rgba(120, 20, 20, 0.26);
+}
+
+.trust-explanation--critical .trust-explanation__heading {
+  color: #ff9d9d;
+}
+
 .provenance-card {
   display: grid;
   gap: 16px;

@@ -1,6 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
+import {
+  CheckCircle2,
+  FileText,
+  Info,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestion,
+  Upload,
+  WifiOff,
+  XCircle,
+} from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
+import { useIssuerTrust } from '../hooks/useIssuerTrust'
+import { explainVerificationTrust } from '../services/verificationFlow'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { DisputePanel } from '../components/DisputePanel'
 import { EventList } from '../components/EventList'
@@ -128,6 +142,33 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const showRetry = isError && !manifestError && !!errorCode && errorCode !== 'CANCELLED' && errorCode !== 'REVOKED_EVIDENCE' && errorCode !== 'EXPIRED_EVIDENCE'
   // Revoked/expired are terminal trust decisions, retry still allowed but we keep it available via retry button
   const effectiveRetry = isError || isCancelled
+
+  const issuerTrust = useIssuerTrust({
+    issuer: chainProof?.issuer ?? null,
+    expiresAt: chainProof?.expiresAt ?? null,
+    enabled: !offline && chainProof !== null,
+  })
+
+  const hasTrustContext =
+    !manifestError &&
+    (chainProof !== null ||
+      errorCode === 'INVALID_EVIDENCE' ||
+      errorCode === 'METADATA_ENVELOPE_MISMATCH' ||
+      (offline && status === 'success'))
+
+  const trustExplanation = useMemo(
+    () =>
+      hasTrustContext
+        ? explainVerificationTrust({
+            offline,
+            status,
+            errorCode,
+            issuerTrustState: chainProof ? issuerTrust.state : null,
+            chainProof,
+          })
+        : null,
+    [hasTrustContext, offline, status, errorCode, chainProof, issuerTrust.state],
+  )
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     const activeHash = videoHashInput || verifyHash
@@ -385,6 +426,34 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           </div>
         </div>
 
+        {trustExplanation ? (
+          <section
+            className={`trust-explanation trust-explanation--${trustExplanation.severity}`}
+            aria-labelledby="trust-explanation-heading"
+            data-testid="issuer-trust-explanation"
+            data-trust-code={trustExplanation.code}
+            data-severity={trustExplanation.severity}
+          >
+            <div className="trust-explanation__header">
+              {trustExplanation.severity === 'positive' ? (
+                <ShieldCheck size={14} aria-hidden="true" />
+              ) : trustExplanation.severity === 'critical' ? (
+                <ShieldAlert size={14} aria-hidden="true" />
+              ) : trustExplanation.severity === 'caution' ? (
+                <ShieldQuestion size={14} aria-hidden="true" />
+              ) : (
+                <Info size={14} aria-hidden="true" />
+              )}
+              <h3 id="trust-explanation-heading" className="trust-explanation__heading">
+                {trustExplanation.heading}
+              </h3>
+              <code className="trust-explanation__code">{trustExplanation.code}</code>
+            </div>
+            <p className="trust-explanation__body">{trustExplanation.explanation}</p>
+            <p className="trust-explanation__distinction">{trustExplanation.signatureDistinction}</p>
+          </section>
+        ) : null}
+
         <VerificationTimeline
           status={status}
           verifyHash={verifyHash}
@@ -476,6 +545,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
                 chainProof={chainProof}
                 proofId={revocationProofId}
                 sourceAddress={wallet || undefined}
+                issuerTrust={issuerTrust}
               />
               <DisputePanel
                 proofId={revocationProofId}
