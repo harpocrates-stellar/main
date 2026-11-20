@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProofWorkerManager } from './proof-worker-manager'
+import { DEFAULT_TEARDOWN_TIMEOUT_MS, ProofWorkerManager } from './proof-worker-manager'
 import { ProofWorkerLogger } from './proof-worker-logger'
-import type { ProofWorkerResponse } from './proof.worker.types'
+import type { ProofWorkerMessage, ProofWorkerResponse } from './proof.worker.types'
 
 /**
  * `ProofWorkerManager` does not spawn a real worker yet: `init` only flips
@@ -342,5 +342,401 @@ describe('destroy', () => {
     expect(() => manager.destroy()).not.toThrow()
     await manager.init()
     expect(internals(manager).isInitialized).toBe(true)
+  })
+})
+
+
+describe('single ownership protocol and operation generations', () => {
+  it('enforces single ownership and advances generation monotonically', async () => {
+    const manager = createManager()
+    await manager.init()
+
+    const first = manager.acquireOwnership('op-1')
+    expect(first).toEqual({ generation: 1, operationId: 'op-1' })
+    expect(manager.getActiveOwner()).toEqual(first)
+    expect(manager.getGeneration()).toBe(1)
+
+    expect(() => manager.acquireOwnership('op-2')).toThrow('Worker ownership already held by an active operation')
+
+    // Mismatched token cannot release ownership
+    expect(manager.releaseOwnership({ generation: 99, operationId: 'op-1' })).toBe(false)
+    expect(manager.releaseOwnership({ generation: 1, operationId: 'op-other' })).toBe(false)
+    expect(manager.getActiveOwner()).toEqual(first)
+
+    // Matching token releases ownership and allows the next owner
+    expect(manager.releaseOwnership(first)).toBe(true)
+    expect(manager.getActiveOwner()).toBeNull()
+
+    const second = manager.acquireOwnership('op-2')
+    expect(second).toEqual({ generation: 2, operationId: 'op-2' })
+    expect(manager.getGeneration()).toBe(2)
+  })
+
+  it('tracks operation generations across worker replacement and restart', async () => {
+    const manager = createManager()
+    await manager.init()
+
+    const worker1 = new FakeWorker()
+    const worker2 = new FakeWorker()
+    const worker3 = new FakeWorker()
+
+    internals(manager).worker = worker1 as unknown as Worker
+    const owner1 = manager.acquireOwnership('op-gen-1')
+    expect(owner1.generation).toBe(1)
+
+    const genAfterReplace = manager.replaceWorker(worker2 as unknown as Worker)
+    expect(worker1.terminated).toBe(true)
+    expect(worker2.terminated).toBe(false)
+    expect(manager.getActiveOwner()).toBeNull()
+    expect(genAfterReplace).toBe(2)
+    expect(manager.getGeneration()).toBe(2)
+
+    const owner2 = manager.acquireOwnership('op-gen-2')
+    expect(owner2.generation).toBe(3)
+
+    const genAfterRestart = manager.restartWorker(worker3 as unknown as Worker)
+    expect(worker2.terminated).toBe(true)
+    expect(worker3.terminated).toBe(false)
+    expect(manager.getActiveOwner()).toBeNull()
+    expect(genAfterRestart).toBe(4)
+  })
+
+  it('accepts progress and proof messages for the active owner generation', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const progressEvents: ProofWorkerResponse[] = []
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 1000, (event) => {
+      progressEvents.push(event)
+    })
+    const [messageId] = [...internals(manager).messageHandlers.keys()]
+    const gen = manager.getGeneration()
+
+    const progressResult = manager.handleWorkerMessage({
+      type: 'progress',
+      id: messageId,
+      generation: gen,
+      data: { stage: 'generating_proof', percent: 50 },
+    })
+    expect(progressResult).toEqual({ accepted: true, generation: gen, operationId: messageId })
+    expect(progressEvents).toHaveLength(1)
+    expect(progressEvents[0].data?.stage).toBe('generating_proof')
+
+    const proofResponse: ProofWorkerResponse = {
+      type: 'success',
+      id: messageId,
+      generation: gen,
+      data: { valid: true },
+    }
+    const proofResult = manager.handleWorkerMessage(proofResponse)
+    expect(proofResult).toEqual({ accepted: true, generation: gen, operationId: messageId })
+    await expect(pending).resolves.toEqual(proofResponse)
+  })
+
+  it('rejects stale progress and proof messages after cancellation', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const progressEvents: ProofWorkerResponse[] = []
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 500, (event) => {
+      progressEvents.push(event)
+    })
+    const [messageId] = [...internals(manager).messageHandlers.keys()]
+    const staleGen = manager.getGeneration()
+
+    await manager.cancelProof()
+    expect(manager.getGeneration()).toBeGreaterThan(staleGen)
+
+    const staleProgress = manager.handleWorkerMessage({
+      type: 'progress',
+      id: messageId,
+      generation: staleGen,
+      data: { stage: 'executing_main', percent: 75 },
+    })
+    expect(staleProgress).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: manager.getGeneration(),
+      receivedGeneration: staleGen,
+    })
+
+    const staleProof = manager.handleWorkerMessage({
+      type: 'success',
+      id: messageId,
+      generation: staleGen,
+      data: { valid: true },
+    })
+    expect(staleProof).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: manager.getGeneration(),
+      receivedGeneration: staleGen,
+    })
+    expect(progressEvents).toHaveLength(0)
+
+    const assertion = expect(pending).rejects.toThrow('Verification timed out')
+    await vi.advanceTimersByTimeAsync(500)
+    await assertion
+  })
+
+  it('rejects stale progress and proof messages after worker restart', async () => {
+    const manager = createManager()
+    await manager.init()
+
+    const worker1 = new FakeWorker()
+    const worker2 = new FakeWorker()
+    internals(manager).worker = worker1 as unknown as Worker
+
+    const oldOwner = manager.acquireOwnership('op-before-restart')
+    manager.restartWorker(worker2 as unknown as Worker)
+    const newOwner = manager.acquireOwnership('op-after-restart')
+
+    // Stale progress from the replaced worker's generation is rejected
+    const staleProgress = manager.handleWorkerMessage({
+      type: 'progress',
+      id: oldOwner.operationId,
+      generation: oldOwner.generation,
+      data: { stage: 'loading_circuits', percent: 20 },
+    })
+    expect(staleProgress).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: newOwner.generation,
+      receivedGeneration: oldOwner.generation,
+    })
+
+    // Stale proof result from the replaced worker's generation is rejected
+    const staleProof = manager.handleWorkerMessage({
+      type: 'success',
+      id: oldOwner.operationId,
+      generation: oldOwner.generation,
+      data: { valid: true },
+    })
+    expect(staleProof).toEqual({
+      accepted: false,
+      reason: 'cancelled',
+      expectedGeneration: newOwner.generation,
+      receivedGeneration: oldOwner.generation,
+    })
+
+    // Active owner's generation is accepted
+    const activeProgress = manager.handleWorkerMessage({
+      type: 'progress',
+      id: newOwner.operationId,
+      generation: newOwner.generation,
+      data: { stage: 'generating_proof', percent: 60 },
+    })
+    expect(activeProgress).toEqual({
+      accepted: true,
+      generation: newOwner.generation,
+      operationId: newOwner.operationId,
+    })
+  })
+
+  it('fails closed for uninitialized manager, missing generation, or unowned operation', async () => {
+    const manager = createManager()
+
+    expect(
+      manager.handleWorkerMessage({ type: 'progress', id: 'op-1', generation: 1 }),
+    ).toEqual({
+      accepted: false,
+      reason: 'not_initialized',
+      expectedGeneration: 0,
+      receivedGeneration: 1,
+    })
+
+    await manager.init()
+    const owner = manager.acquireOwnership('op-owned')
+
+    expect(
+      manager.handleWorkerMessage({ type: 'progress', id: 'op-owned' }),
+    ).toEqual({
+      accepted: false,
+      reason: 'stale_generation',
+      expectedGeneration: owner.generation,
+      receivedGeneration: undefined,
+    })
+
+    expect(
+      manager.handleWorkerMessage({
+        type: 'success',
+        id: 'op-wrong',
+        generation: owner.generation,
+        data: { valid: true },
+      }),
+    ).toEqual({
+      accepted: false,
+      reason: 'unowned_operation',
+      expectedGeneration: owner.generation,
+      receivedGeneration: owner.generation,
+    })
+  })
+})
+
+describe('explicit worker teardown acknowledgement', () => {
+  it('confirms teardown when teardown_ack arrives within the bounded interval', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const fake = new FakeWorker()
+    internals(manager).worker = fake as unknown as Worker
+    const owner = manager.acquireOwnership('op-teardown-confirmed')
+
+    const teardownPromise = manager.cancelAndTeardown({ timeoutMs: 250 })
+    expect(fake.posted).toHaveLength(1)
+    const cancelMsg = fake.posted[0] as ProofWorkerMessage
+    expect(cancelMsg.type).toBe('cancel')
+    expect(cancelMsg.id).toMatch(/^cancel_/)
+    expect(cancelMsg.generation).toBe(owner.generation + 1)
+    expect(fake.terminated).toBe(false)
+
+    // Acknowledge before the bounded interval expires
+    await vi.advanceTimersByTimeAsync(100)
+    const dispatch = manager.handleWorkerMessage({
+      type: 'teardown_ack',
+      id: cancelMsg.id,
+      generation: cancelMsg.generation,
+      data: { message: 'Teardown acknowledged' },
+    })
+    expect(dispatch).toEqual({
+      accepted: true,
+      generation: cancelMsg.generation,
+      operationId: cancelMsg.id,
+    })
+
+    const result = await teardownPromise
+    expect(result).toEqual({
+      status: 'confirmed',
+      confirmed: true,
+      forced: false,
+      generation: cancelMsg.generation,
+      cancelId: cancelMsg.id,
+      timeoutMs: 250,
+    })
+    expect(manager.getLastTeardownResult()).toEqual(result)
+    expect(fake.terminated).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('forcibly terminates the worker when teardown_ack does not arrive within the bounded interval', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const fake = new FakeWorker()
+    internals(manager).worker = fake as unknown as Worker
+    const owner = manager.acquireOwnership('op-teardown-forced')
+
+    const teardownPromise = manager.cancelAndTeardown({ timeoutMs: 300 })
+    const cancelMsg = fake.posted[0] as ProofWorkerMessage
+
+    await vi.advanceTimersByTimeAsync(299)
+    expect(fake.terminated).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await teardownPromise
+    expect(result).toEqual({
+      status: 'forced',
+      confirmed: false,
+      forced: true,
+      generation: owner.generation + 1,
+      cancelId: cancelMsg.id,
+      timeoutMs: 300,
+    })
+    expect(manager.getLastTeardownResult()).toEqual(result)
+    expect(fake.terminated).toBe(true)
+    expect(internals(manager).worker).toBeNull()
+  })
+
+  it('uses DEFAULT_TEARDOWN_TIMEOUT_MS when no timeoutMs option is provided', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const fake = new FakeWorker()
+    internals(manager).worker = fake as unknown as Worker
+
+    const teardownPromise = manager.cancelAndTeardown()
+    await vi.advanceTimersByTimeAsync(DEFAULT_TEARDOWN_TIMEOUT_MS - 1)
+    expect(fake.terminated).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await teardownPromise
+    expect(result.status).toBe('forced')
+    expect(result.timeoutMs).toBe(DEFAULT_TEARDOWN_TIMEOUT_MS)
+    expect(fake.terminated).toBe(true)
+  })
+
+  it('fails closed on mismatched or unknown teardown_ack and rejects invalid inputs', async () => {
+    vi.useFakeTimers()
+    const uninitialized = createManager()
+    await expect(uninitialized.cancelAndTeardown()).rejects.toThrow('Worker manager not initialized')
+
+    const manager = createManager()
+    await manager.init()
+    await expect(manager.cancelAndTeardown({ timeoutMs: 0 })).rejects.toThrow('Invalid teardown timeoutMs')
+    await expect(manager.cancelAndTeardown({ timeoutMs: -50 })).rejects.toThrow('Invalid teardown timeoutMs')
+    await expect(manager.cancelAndTeardown({ timeoutMs: Number.NaN })).rejects.toThrow('Invalid teardown timeoutMs')
+
+    const fake = new FakeWorker()
+    internals(manager).worker = fake as unknown as Worker
+    const teardownPromise = manager.cancelAndTeardown({ timeoutMs: 100 })
+    const cancelMsg = fake.posted[0] as ProofWorkerMessage
+
+    // Unknown cancelId is rejected
+    expect(
+      manager.handleWorkerMessage({
+        type: 'teardown_ack',
+        id: 'cancel_unknown',
+        generation: cancelMsg.generation,
+      }),
+    ).toEqual({
+      accepted: false,
+      reason: 'unowned_operation',
+      expectedGeneration: cancelMsg.generation,
+      receivedGeneration: cancelMsg.generation,
+    })
+
+    // Mismatched generation is rejected and does not confirm teardown
+    expect(
+      manager.handleWorkerMessage({
+        type: 'teardown_ack',
+        id: cancelMsg.id,
+        generation: (cancelMsg.generation ?? 0) + 99,
+      }),
+    ).toEqual({
+      accepted: false,
+      reason: 'stale_generation',
+      expectedGeneration: cancelMsg.generation,
+      receivedGeneration: (cancelMsg.generation ?? 0) + 99,
+    })
+
+    await vi.advanceTimersByTimeAsync(100)
+    const result = await teardownPromise
+    expect(result.status).toBe('forced')
+    expect(result.forced).toBe(true)
+    expect(fake.terminated).toBe(true)
+  })
+
+  it('settles pending teardown as forced if destroy() is called before timeout', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const fake = new FakeWorker()
+    internals(manager).worker = fake as unknown as Worker
+
+    const teardownPromise = manager.cancelAndTeardown({ timeoutMs: 500 })
+    manager.destroy()
+
+    const result = await teardownPromise
+    expect(result.status).toBe('forced')
+    expect(result.confirmed).toBe(false)
+    expect(result.forced).toBe(true)
+    expect(fake.terminated).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

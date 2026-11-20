@@ -29,29 +29,52 @@ class RevocationDepthError(ValueError):
         super().__init__(message or code)
         self.code = code
 
+    def signal(self) -> dict[str, str]:
+        return {"rejectCode": self.code, "field": "depth"}
 
-def validate_revocation_depth(depth: int) -> int:
+
+class DepthBoundError(RevocationDepthError):
+    """Privacy-safe depth rejection."""
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(code, message)
+
+
+def check_revocation_depth(depth: object) -> int:
+    """Return ``depth`` when it is within ``[1, MAX_REVOCATION_WITNESS_DEPTH]``."""
+    return validate_revocation_depth(depth)
+
+
+def validate_revocation_depth(depth: object) -> int:
     if isinstance(depth, bool) or not isinstance(depth, int):
-        raise RevocationDepthError("depth_not_integer", "revocation depth must be an integer")
+        raise DepthBoundError("depth_not_integer", "revocation depth must be an integer")
     if depth < MIN_REVOCATION_WITNESS_DEPTH:
-        raise RevocationDepthError("depth_undersize", "revocation depth must be >= 1")
+        raise DepthBoundError("depth_undersize", "revocation depth must be >= 1")
     if depth > MAX_REVOCATION_WITNESS_DEPTH:
-        raise RevocationDepthError(
+        raise DepthBoundError(
             "depth_oversize",
             f"revocation depth {depth} exceeds max {MAX_REVOCATION_WITNESS_DEPTH}",
         )
     return depth
 
 
-def validate_revocation_leaf_count(leaf_count: int) -> int:
+def check_revocation_leaf_count(leaf_count: object, depth: int | None = None) -> int:
+    """Reject leaf counts that exceed the depth bound or disagree with ``2**depth``."""
+    return validate_revocation_leaf_count(leaf_count, depth)
+
+
+def validate_revocation_leaf_count(leaf_count: object, depth: int | None = None) -> int:
     if isinstance(leaf_count, bool) or not isinstance(leaf_count, int):
-        raise RevocationDepthError("depth_not_integer", "revocation leaf count must be an integer")
+        raise DepthBoundError("depth_not_integer", "revocation leaf count must be an integer")
     if leaf_count < (1 << MIN_REVOCATION_WITNESS_DEPTH):
-        raise RevocationDepthError("depth_undersize", "revocation leaf count must be >= 2")
+        raise DepthBoundError("depth_undersize", "revocation leaf count must be >= 2")
     if leaf_count > MAX_REVOCATION_LEAVES:
         raise DepthBoundError("depth_oversize")
+    # Must be power of two
+    if (leaf_count & (leaf_count - 1)) != 0:
+        raise DepthBoundError("depth_non_power_of_two")
     if depth is not None:
-        bound_depth = check_revocation_depth(depth)
+        bound_depth = validate_revocation_depth(depth)
         expected = 1 << bound_depth
         if leaf_count != expected:
             raise DepthBoundError("leaf_count_mismatch")
@@ -60,10 +83,5 @@ def validate_revocation_leaf_count(leaf_count: int) -> int:
 
 def validate_revocation_witness_shape(depth: int, leaf_count: int) -> tuple[int, int]:
     validated_depth = validate_revocation_depth(depth)
-    validated_leaves = validate_revocation_leaf_count(leaf_count)
-    if validated_leaves != (1 << validated_depth):
-        raise RevocationDepthError(
-            "depth_leaf_mismatch",
-            f"leaf count {validated_leaves} does not match depth {validated_depth}",
-        )
+    validated_leaves = validate_revocation_leaf_count(leaf_count, depth=validated_depth)
     return validated_depth, validated_leaves

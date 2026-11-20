@@ -127,15 +127,22 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
       case 'cancel': {
         if (isRunning) {
           logger.info('Cancellation requested', { id: messageId });
-          // In a real implementation, this would cancel the ongoing task
+          // In a real implementation, this would cancel the ongoing task and release resources
           isRunning = false;
           currentTaskId = null;
           self.postMessage({
             type: 'status',
             id: messageId,
+            generation: message.generation,
             data: { message: 'Task cancelled' },
           } as ProofWorkerResponse);
         }
+        self.postMessage({
+          type: 'teardown_ack',
+          id: messageId,
+          generation: message.generation,
+          data: { message: 'Teardown acknowledged' },
+        } as ProofWorkerResponse);
         break;
       }
 

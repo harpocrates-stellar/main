@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
+import { CheckCircle2, Copy, Download, Eye, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { DisputePanel } from '../components/DisputePanel'
@@ -13,6 +13,11 @@ import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
+import {
+  buildVerificationExportPreview,
+  serializeVerificationExportPreview,
+  type VerificationExportPreview,
+} from '../services/verificationFlow'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const MAX_MANIFEST_SIZE_BYTES = 64 * 1024 // 64 KB cap
@@ -60,6 +65,8 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const [videoHashInput, setVideoHashInput] = useState('')
   const [proofIdInput, setProofIdInput] = useState('')
   const [manifestError, setManifestError] = useState<string | null>(null)
+  const [exportPreview, setExportPreview] = useState<VerificationExportPreview | null>(null)
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null)
 
   // Keep videoHashInput synced when verifyHash updates externally
   useEffect(() => {
@@ -128,6 +135,60 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const showRetry = isError && !manifestError && !!errorCode && errorCode !== 'CANCELLED' && errorCode !== 'REVOKED_EVIDENCE' && errorCode !== 'EXPIRED_EVIDENCE'
   // Revoked/expired are terminal trust decisions, retry still allowed but we keep it available via retry button
   const effectiveRetry = isError || isCancelled
+  const canPreviewExport =
+    !isVerifying &&
+    status !== 'idle' &&
+    Boolean(verifyHash || verifyResult || videoHashInput.trim())
+
+  const handleOpenExportPreview = () => {
+    if (!canPreviewExport) return
+    const activeHash = (videoHashInput || verifyHash).trim()
+    const metadataHash = chainProof?.metadataHash ?? provenanceRecord?.metadata.metadataHash ?? null
+    const snapshot = buildVerificationExportPreview({
+      videoHash: activeHash,
+      proofId: proofIdInput.trim() || revocationProofId,
+      metadataHash,
+      status,
+      summary: manifestError || verifyResult || statusLabel(status, offline),
+      errorCode: manifestError ? null : errorCode,
+      offline,
+      events,
+      chainProof,
+      contractId: CONTRACT_ID || null,
+      network: provenanceRecord?.network.passphrase || CONTRACT_NETWORK_PASSPHRASE,
+    })
+    setExportPreview(snapshot)
+    setExportFeedback(null)
+  }
+
+  const handleDownloadExport = () => {
+    if (!exportPreview) return
+    const json = serializeVerificationExportPreview(exportPreview)
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    const hashSuffix = exportPreview.includedFields.videoHash
+      ? exportPreview.includedFields.videoHash.slice(0, 12)
+      : 'result'
+    anchor.href = url
+    anchor.download = `verification-result-${hashSuffix}.json`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    setExportFeedback('Downloaded exact reviewed snapshot.')
+  }
+
+  const handleCopyExport = async () => {
+    if (!exportPreview) return
+    const json = serializeVerificationExportPreview(exportPreview)
+    try {
+      await navigator.clipboard.writeText(json)
+      setExportFeedback('Copied exact reviewed snapshot JSON.')
+    } catch {
+      setExportFeedback('Could not copy to clipboard.')
+    }
+  }
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     const activeHash = videoHashInput || verifyHash
@@ -181,6 +242,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           aria-label={isVerifying ? statusLabel(status, offline) : 'Drop or choose a received video. Press Enter or Space to open file picker'}
           aria-busy={isVerifying}
           aria-disabled={isVerifying}
+          htmlFor="verify-video-input"
           // ensure dropzone is a large touch target on mobile
           style={{ minHeight: 140 }}
           onKeyDown={(e) => {
@@ -213,21 +275,22 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             MP4, WebM, or MOV · up to 100 MB
           </span>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/*"
-            tabIndex={-1}
-            aria-hidden="true"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              void verifyEvidence(f, wallet || undefined)
-              // allow re-selecting the same file
-              event.target.value = ''
-            }}
-          />
         </label>
+        <input
+          ref={inputRef}
+          id="verify-video-input"
+          type="file"
+          accept="video/*"
+          tabIndex={-1}
+          aria-hidden="true"
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            void verifyEvidence(f, wallet || undefined)
+            // allow re-selecting the same file
+            event.target.value = ''
+          }}
+        />
 
         {/* Manifest Dropzone — keyboard: Tab focuses label, Enter/Space opens manifest file picker */}
         <label
@@ -237,6 +300,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           aria-label={isVerifying ? 'Manifest upload disabled during verification' : 'Proof manifest JSON upload. Press Enter or Space to open file picker'}
           aria-busy={isVerifying}
           aria-disabled={isVerifying}
+          htmlFor="verify-manifest-input"
           style={{ minHeight: 100 }}
           onKeyDown={(e) => {
             if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) {
@@ -262,20 +326,21 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <span className="muted" aria-hidden="true" style={{ fontSize: 11, textAlign: 'center', overflowWrap: 'anywhere' }}>
             Portable manifest receipt · max 64 KB
           </span>
-          <input
-            ref={manifestInputRef}
-            type="file"
-            accept=".json,application/json"
-            tabIndex={-1}
-            aria-label="Drop or choose a proof manifest JSON"
-            disabled={isVerifying}
-            onChange={(event) => {
-              const f = event.target.files?.[0] ?? null
-              if (f) void handleManifestFile(f)
-              event.target.value = ''
-            }}
-          />
         </label>
+        <input
+          ref={manifestInputRef}
+          id="verify-manifest-input"
+          type="file"
+          accept=".json,application/json"
+          tabIndex={-1}
+          aria-label="Drop or choose a proof manifest JSON"
+          disabled={isVerifying}
+          onChange={(event) => {
+            const f = event.target.files?.[0] ?? null
+            if (f) void handleManifestFile(f)
+            event.target.value = ''
+          }}
+        />
 
         {/* Verification form — prefilled by manifest or manual typing */}
         <form
@@ -424,11 +489,24 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
                 setVideoHashInput('')
                 setProofIdInput('')
                 setManifestError(null)
+                setExportPreview(null)
+                setExportFeedback(null)
                 clear()
               }}
               aria-label="Clear verification result"
             >
               Clear
+            </button>
+          ) : null}
+          {canPreviewExport ? (
+            <button
+              type="button"
+              className="hero-secondary verify-action-btn"
+              onClick={handleOpenExportPreview}
+              aria-label="Preview verification export"
+            >
+              <Eye size={14} aria-hidden="true" />
+              <span>Preview Export</span>
             </button>
           ) : null}
           {/* Hidden retry helper for tests / keyboard users */}
@@ -442,6 +520,144 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
         ) : (
           <ShareVerificationLink input={shareLinkInput} />
         )}
+
+        {exportPreview ? (
+          <section className="export-preview-panel" aria-label="Verification export preview">
+            <div className="export-preview-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ margin: 0, fontSize: '0.95rem' }}>Export Preview</h3>
+              <button
+                type="button"
+                className="hero-secondary"
+                onClick={() => {
+                  setExportPreview(null)
+                  setExportFeedback(null)
+                }}
+                aria-label="Close export preview"
+              >
+                Close
+              </button>
+            </div>
+            <p className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Exports this exact reviewed snapshot without refreshing on-chain or backend trust context.
+            </p>
+
+            <div className="export-preview-section" style={{ marginTop: 10 }}>
+              <h4 style={{ margin: '0 0 4px', fontSize: '0.8rem' }}>Freshness</h4>
+              <dl className="data-list">
+                <div>
+                  <dt>Freshness State</dt>
+                  <dd>{exportPreview.freshness.state}</dd>
+                </div>
+                <div>
+                  <dt>Snapshot Captured</dt>
+                  <dd>{exportPreview.freshness.capturedAt}</dd>
+                </div>
+                <div>
+                  <dt>Chain Record Created</dt>
+                  <dd>{exportPreview.freshness.chainRecordCreatedAt ?? 'Not loaded'}</dd>
+                </div>
+                <div>
+                  <dt>Latest Backend Event</dt>
+                  <dd>{exportPreview.freshness.latestEventAt ?? 'None'}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div className="export-preview-section" style={{ marginTop: 10 }}>
+              <h4 style={{ margin: '0 0 4px', fontSize: '0.8rem' }}>Included Fields</h4>
+              <dl className="data-list">
+                <div>
+                  <dt>Video Hash</dt>
+                  <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>
+                    {exportPreview.includedFields.videoHash || 'None'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Proof ID</dt>
+                  <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>
+                    {exportPreview.includedFields.proofId ?? 'Unresolved'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Metadata Hash</dt>
+                  <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>
+                    {exportPreview.includedFields.metadataHash ?? 'Unresolved'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Mode</dt>
+                  <dd>{exportPreview.includedFields.mode}</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd>{exportPreview.includedFields.status}</dd>
+                </div>
+                <div>
+                  <dt>Chain Status</dt>
+                  <dd>{exportPreview.includedFields.chainStatus}</dd>
+                </div>
+                <div>
+                  <dt>Identity Tier</dt>
+                  <dd>{exportPreview.includedFields.tier ?? 'Unresolved'}</dd>
+                </div>
+                <div>
+                  <dt>Matching Events</dt>
+                  <dd>{exportPreview.includedFields.eventCount}</dd>
+                </div>
+                <div>
+                  <dt>Network</dt>
+                  <dd>{exportPreview.includedFields.network}</dd>
+                </div>
+                {exportPreview.includedFields.errorCode ? (
+                  <div>
+                    <dt>Error Code</dt>
+                    <dd>{exportPreview.includedFields.errorCode}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </div>
+
+            <div className="export-preview-section" style={{ marginTop: 10 }}>
+              <h4 style={{ margin: '0 0 4px', fontSize: '0.8rem' }}>Unresolved Checks</h4>
+              {exportPreview.unresolvedChecks.length === 0 ? (
+                <p className="muted" style={{ fontSize: 11 }}>All checks resolved.</p>
+              ) : (
+                <ul className="export-unresolved-list" style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                  {exportPreview.unresolvedChecks.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="verify-actions" role="group" aria-label="Export actions" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={handleDownloadExport}
+                aria-label="Download reviewed verification JSON"
+              >
+                <Download size={14} aria-hidden="true" />
+                <span>Download JSON</span>
+              </button>
+              <button
+                type="button"
+                className="hero-secondary verify-action-btn"
+                onClick={() => void handleCopyExport()}
+                aria-label="Copy reviewed verification JSON"
+              >
+                <Copy size={14} aria-hidden="true" />
+                <span>Copy JSON</span>
+              </button>
+            </div>
+
+            {exportFeedback ? (
+              <p className="muted" role="status" aria-live="polite" style={{ fontSize: 11, marginTop: 6 }}>
+                {exportFeedback}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         <dl className="data-list">
           <div>
