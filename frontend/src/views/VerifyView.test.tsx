@@ -421,3 +421,107 @@ describe('VerifyView – portable proof manifest loading', () => {
     })
   })
 })
+
+// ─── Verification export preview ────────────────────────────────────────────
+
+describe('VerifyView – verification export preview', () => {
+  it('hides Preview Export while idle or verifying', () => {
+    const { rerender } = renderView({ status: 'idle' })
+    expect(screen.queryByRole('button', { name: /preview verification export/i })).not.toBeInTheDocument()
+
+    const verifyingHook = makeHook({ status: 'verifying', isVerifying: true, verifyHash: 'a'.repeat(64) })
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={verifyingHook}
+        provenanceRecord={null}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /preview verification export/i })).not.toBeInTheDocument()
+  })
+
+  it('opens export preview showing included fields, freshness, and unresolved checks, and copies exact JSON without refreshing trust context', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+
+    const hash = 'a'.repeat(64)
+    const metaHash = 'b'.repeat(64)
+    const proofId = 'c'.repeat(64)
+
+    const { verification } = renderView({
+      status: 'success',
+      verifyHash: hash,
+      verifyResult: 'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      chainProof: {
+        videoHash: hash,
+        metadataHash: metaHash,
+        tier: 1,
+        status: 1,
+        createdAt: '2026-11-19T12:00:00.000Z',
+        expiresAt: 0,
+      },
+      events: [
+        {
+          id: 1,
+          event_type: 'proof_registered',
+          file_name: null,
+          video_hash: hash,
+          proof_id: proofId,
+          tier: 'source',
+          tx_hash: 'tx123',
+          tx_status: 'confirmed',
+          created_at: '2026-11-19T12:01:00.000Z',
+        },
+      ],
+    })
+
+    await user.click(screen.getByRole('button', { name: /preview verification export/i }))
+
+    const previewRegion = screen.getByRole('region', { name: /verification export preview/i })
+    expect(previewRegion).toBeInTheDocument()
+    expect(previewRegion).toHaveTextContent(/freshness/i)
+    expect(previewRegion).toHaveTextContent(/included fields/i)
+    expect(previewRegion).toHaveTextContent(/unresolved checks/i)
+    expect(previewRegion).toHaveTextContent(/all checks resolved/i)
+    expect(previewRegion).toHaveTextContent(hash)
+    expect(previewRegion).toHaveTextContent(proofId)
+
+    await user.click(screen.getByRole('button', { name: /copy reviewed verification json/i }))
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const exported = JSON.parse(writeText.mock.calls[0][0])
+    expect(exported.schema).toBe('harpocrates-verification-export-preview')
+    expect(exported.trustContextRefreshedOnExport).toBe(false)
+    expect(exported.includedFields.videoHash).toBe(hash)
+    expect(exported.includedFields.proofId).toBe(proofId)
+    expect(exported.includedFields.chainStatus).toBe('confirmed')
+    expect(exported.unresolvedChecks).toEqual([])
+
+    // Must never silently refresh trust context on preview or export
+    expect(verification.verifyEvidence).not.toHaveBeenCalled()
+    expect(verification.loadEvents).not.toHaveBeenCalled()
+    expect(verification.loadSharedVerification).not.toHaveBeenCalled()
+    expect(verification.retry).not.toHaveBeenCalled()
+  })
+
+  it('lists offline unresolved checks in the export preview', async () => {
+    const user = userEvent.setup()
+    renderView({
+      offline: true,
+      status: 'success',
+      verifyHash: 'd'.repeat(64),
+      verifyResult: 'Locally verified: the artifact carries a valid Harpocrates metadata envelope.',
+    })
+
+    await user.click(screen.getByRole('button', { name: /preview verification export/i }))
+
+    const previewRegion = screen.getByRole('region', { name: /verification export preview/i })
+    expect(previewRegion).toHaveTextContent(/on-chain soroban registry status was not checked \(offline mode\)/i)
+    expect(previewRegion).toHaveTextContent(/backend neondb event feed was not queried \(offline mode\)/i)
+  })
+})

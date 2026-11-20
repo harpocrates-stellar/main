@@ -79,3 +79,12 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Verification Export Preview
+
+`src/views/VerifyView.tsx` provides an **Export Preview** for completed verification results, backed by `buildVerificationExportPreview` and `serializeVerificationExportPreview` in `src/services/verificationFlow.ts`.
+
+- **Included fields**: canonical, privacy-safe summary fields (`videoHash`, `proofId`, `metadataHash`, `mode`, `status`, `summary`, `errorCode`, `chainStatus`, `tier`, `eventCount`, `contractId`, `network`).
+- **Freshness**: captures `capturedAt`, `chainRecordCreatedAt`, `latestEventAt`, and freshness `state` (`fresh`, `stale`, or `unverified`).
+- **Unresolved checks**: explicitly lists any checks that were not resolved (for example offline mode, missing on-chain record, revoked/expired status, missing backend events, or missing identifiers).
+- **No silent refresh**: opening the preview freezes the reviewed snapshot (`trustContextRefreshedOnExport: false`), and downloading or copying JSON exports that exact snapshot without re-querying the backend or Soroban registry.
