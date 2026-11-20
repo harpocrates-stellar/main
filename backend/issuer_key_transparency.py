@@ -34,6 +34,26 @@ class KeyStatus(str, Enum):
     RETIRED = "retired"
 
 
+class TrustState(str, Enum):
+    TRUSTED = "trusted"
+    HISTORICALLY_VALID = "historically_valid"
+    UNTRUSTED = "untrusted"
+    STALE = "stale"
+
+
+class TrustChangeReason(str, Enum):
+    UNCHANGED = "unchanged"
+    ACTIVATED = "activated"
+    KEY_ROTATED = "key_rotated"
+    KEY_EXPIRED = "key_expired"
+    KEY_RETIRED = "key_retired"
+    KEY_COMPROMISED = "key_compromised"
+    STALE_DIRECTORY = "stale_directory"
+    DIRECTORY_INCONSISTENT = "directory_inconsistent"
+    UNKNOWN_KEY = "unknown_key"
+    NOT_YET_VALID = "not_yet_valid"
+
+
 class EventType(str, Enum):
     ACTIVATION = "activation"
     ROTATION = "rotation"
@@ -646,4 +666,350 @@ def create_rotation_event(
         previous_event_hash=previous_event_hash,
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
+    )
+
+
+@dataclass(frozen=True)
+class IssuerTrustAssessment:
+    """Structured issuer trust evaluation for a single verification run."""
+
+    key_id: str
+    organization_identity_hash: str
+    state: TrustState
+    reason: TrustChangeReason
+    verified_at: int
+    signature_timestamp: int
+    key_status: KeyStatus | None = None
+    successor_key_id: str | None = None
+    reason_hash: str | None = None
+    checkpoint_event_count: int | None = None
+    checkpoint_age_seconds: int | None = None
+    high_assurance: bool = False
+    consistency_errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "highAssurance": self.high_assurance,
+            "keyId": self.key_id,
+            "organizationIdentityHash": self.organization_identity_hash,
+            "reason": self.reason.value,
+            "signatureTimestamp": self.signature_timestamp,
+            "state": self.state.value,
+            "verifiedAt": self.verified_at,
+        }
+        if self.key_status is not None:
+            d["keyStatus"] = self.key_status.value
+        if self.successor_key_id is not None:
+            d["successorKeyId"] = self.successor_key_id
+        if self.reason_hash is not None:
+            d["reasonHash"] = self.reason_hash
+        if self.checkpoint_event_count is not None:
+            d["checkpointEventCount"] = self.checkpoint_event_count
+        if self.checkpoint_age_seconds is not None:
+            d["checkpointAgeSeconds"] = self.checkpoint_age_seconds
+        if self.consistency_errors:
+            d["consistencyErrors"] = list(self.consistency_errors)
+        return d
+
+
+@dataclass(frozen=True)
+class IssuerTrustChange:
+    """Explains why an issuer key's trust state changed across verification runs."""
+
+    key_id: str
+    organization_identity_hash: str
+    changed: bool
+    previous_state: TrustState
+    current_state: TrustState
+    reason: TrustChangeReason
+    previous_verified_at: int
+    current_verified_at: int
+    successor_key_id: str | None = None
+    reason_hash: str | None = None
+    rollback_errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "changed": self.changed,
+            "currentState": self.current_state.value,
+            "currentVerifiedAt": self.current_verified_at,
+            "keyId": self.key_id,
+            "organizationIdentityHash": self.organization_identity_hash,
+            "previousState": self.previous_state.value,
+            "previousVerifiedAt": self.previous_verified_at,
+            "reason": self.reason.value,
+        }
+        if self.successor_key_id is not None:
+            d["successorKeyId"] = self.successor_key_id
+        if self.reason_hash is not None:
+            d["reasonHash"] = self.reason_hash
+        if self.rollback_errors:
+            d["rollbackErrors"] = list(self.rollback_errors)
+        return d
+
+
+def _find_key_lifecycle_metadata(
+    directory: IssuerDirectory,
+    key_id: str,
+) -> tuple[str | None, str | None]:
+    """Return (successor_key_id, reason_hash) for a key from directory events."""
+    successor_key_id: str | None = None
+    reason_hash: str | None = None
+    for ev in directory.events:
+        if ev.event_type == EventType.ROTATION and ev.related_key_id == key_id:
+            successor_key_id = ev.key_id
+        if ev.key_id == key_id and ev.event_type in (EventType.COMPROMISE, EventType.RETIREMENT):
+            if ev.reason_hash is not None:
+                reason_hash = ev.reason_hash
+    return successor_key_id, reason_hash
+
+
+def _effective_key_valid_until(directory: IssuerDirectory, key: IssuerKey) -> int | None:
+    """Return the tightest valid_until bound from key state or current manifest."""
+    bounds: list[int] = []
+    if key.valid_until is not None:
+        bounds.append(key.valid_until)
+    if directory.current_manifest is not None:
+        for mk in directory.current_manifest.active_keys:
+            if mk.key_id == key.key_id and mk.valid_until is not None:
+                bounds.append(mk.valid_until)
+        if directory.current_manifest.valid_until is not None:
+            bounds.append(directory.current_manifest.valid_until)
+    return min(bounds) if bounds else None
+
+
+def assess_issuer_trust(
+    directory: IssuerDirectory,
+    key_id: str,
+    *,
+    signature_timestamp: int | None = None,
+    cache: DirectoryCache | None = None,
+    high_assurance: bool = False,
+    now: int | None = None,
+) -> IssuerTrustAssessment:
+    """Evaluate issuer key trust for a verification run with an explicit reason.
+
+    Distinguishes rotation, expiry, retirement, compromise, stale directory state,
+    and directory consistency failures instead of collapsing them into a generic
+    invalid-issuer outcome. Preserves fail-closed freshness for cached checkpoints.
+    """
+    verified_at = int(time.time()) if now is None else now
+    sig_ts = verified_at if signature_timestamp is None else signature_timestamp
+    cp_event_count: int | None = None
+    cp_age: int | None = None
+
+    if cache is not None:
+        cp_event_count = cache.checkpoint.event_count
+        cp_age = cache.age_seconds(verified_at)
+        consistency_errors = verify_checkpoint_consistency(directory, cache.checkpoint)
+        if consistency_errors:
+            return IssuerTrustAssessment(
+                key_id=key_id,
+                organization_identity_hash=directory.organization_identity_hash,
+                state=TrustState.UNTRUSTED,
+                reason=TrustChangeReason.DIRECTORY_INCONSISTENT,
+                verified_at=verified_at,
+                signature_timestamp=sig_ts,
+                checkpoint_event_count=cp_event_count,
+                checkpoint_age_seconds=cp_age,
+                high_assurance=high_assurance,
+                consistency_errors=tuple(consistency_errors),
+            )
+        try:
+            require_fresh_checkpoint(cache, high_assurance=high_assurance, now=verified_at)
+        except FreshnessError:
+            return IssuerTrustAssessment(
+                key_id=key_id,
+                organization_identity_hash=directory.organization_identity_hash,
+                state=TrustState.STALE,
+                reason=TrustChangeReason.STALE_DIRECTORY,
+                verified_at=verified_at,
+                signature_timestamp=sig_ts,
+                checkpoint_event_count=cp_event_count,
+                checkpoint_age_seconds=cp_age,
+                high_assurance=high_assurance,
+            )
+
+    key = directory.keys.get(key_id)
+    if key is None:
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=TrustState.UNTRUSTED,
+            reason=TrustChangeReason.UNKNOWN_KEY,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    successor_key_id, reason_hash = _find_key_lifecycle_metadata(directory, key_id)
+
+    if sig_ts < key.valid_from:
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=TrustState.UNTRUSTED,
+            reason=TrustChangeReason.NOT_YET_VALID,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            key_status=key.status,
+            successor_key_id=successor_key_id,
+            reason_hash=reason_hash,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    if key.status == KeyStatus.COMPROMISED:
+        state = (
+            TrustState.UNTRUSTED
+            if key_was_compromised_at(directory, key_id, sig_ts)
+            else TrustState.HISTORICALLY_VALID
+        )
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=state,
+            reason=TrustChangeReason.KEY_COMPROMISED,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            key_status=key.status,
+            successor_key_id=successor_key_id,
+            reason_hash=reason_hash,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    if key.status == KeyStatus.ROTATED:
+        state = (
+            TrustState.HISTORICALLY_VALID
+            if key_valid_for_historical_signature(directory, key_id, sig_ts)
+            else TrustState.UNTRUSTED
+        )
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=state,
+            reason=TrustChangeReason.KEY_ROTATED,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            key_status=key.status,
+            successor_key_id=successor_key_id,
+            reason_hash=reason_hash,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    if key.status == KeyStatus.RETIRED:
+        state = (
+            TrustState.HISTORICALLY_VALID
+            if key_valid_for_historical_signature(directory, key_id, sig_ts)
+            else TrustState.UNTRUSTED
+        )
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=state,
+            reason=TrustChangeReason.KEY_RETIRED,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            key_status=key.status,
+            successor_key_id=successor_key_id,
+            reason_hash=reason_hash,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    # KeyStatus.ACTIVE — check manifest valid_from and key/manifest expiry
+    if directory.current_manifest is not None and sig_ts < directory.current_manifest.valid_from:
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=TrustState.UNTRUSTED,
+            reason=TrustChangeReason.NOT_YET_VALID,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            key_status=key.status,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    effective_until = _effective_key_valid_until(directory, key)
+    if effective_until is not None and sig_ts >= effective_until:
+        return IssuerTrustAssessment(
+            key_id=key_id,
+            organization_identity_hash=directory.organization_identity_hash,
+            state=TrustState.UNTRUSTED,
+            reason=TrustChangeReason.KEY_EXPIRED,
+            verified_at=verified_at,
+            signature_timestamp=sig_ts,
+            key_status=key.status,
+            checkpoint_event_count=cp_event_count,
+            checkpoint_age_seconds=cp_age,
+            high_assurance=high_assurance,
+        )
+
+    return IssuerTrustAssessment(
+        key_id=key_id,
+        organization_identity_hash=directory.organization_identity_hash,
+        state=TrustState.TRUSTED,
+        reason=TrustChangeReason.ACTIVATED,
+        verified_at=verified_at,
+        signature_timestamp=sig_ts,
+        key_status=key.status,
+        checkpoint_event_count=cp_event_count,
+        checkpoint_age_seconds=cp_age,
+        high_assurance=high_assurance,
+    )
+
+
+def compare_issuer_trust(
+    previous: IssuerTrustAssessment,
+    current: IssuerTrustAssessment,
+    *,
+    previous_checkpoint: DirectoryCheckpoint | None = None,
+    current_checkpoint: DirectoryCheckpoint | None = None,
+) -> IssuerTrustChange:
+    """Compare two verification runs and expose the reason for any trust change."""
+    if previous.organization_identity_hash != current.organization_identity_hash:
+        raise TransparencyError("cannot compare trust across different organizations")
+    if previous.key_id != current.key_id:
+        raise TransparencyError("cannot compare trust across different keys")
+
+    if previous_checkpoint is not None and current_checkpoint is not None:
+        rollback_errors = detect_rollback(previous_checkpoint, current_checkpoint)
+        if rollback_errors:
+            return IssuerTrustChange(
+                key_id=current.key_id,
+                organization_identity_hash=current.organization_identity_hash,
+                changed=True,
+                previous_state=previous.state,
+                current_state=TrustState.UNTRUSTED,
+                reason=TrustChangeReason.DIRECTORY_INCONSISTENT,
+                previous_verified_at=previous.verified_at,
+                current_verified_at=current.verified_at,
+                successor_key_id=current.successor_key_id,
+                reason_hash=current.reason_hash,
+                rollback_errors=tuple(rollback_errors),
+            )
+
+    changed = previous.state != current.state or previous.reason != current.reason
+    reason = current.reason if changed else TrustChangeReason.UNCHANGED
+    return IssuerTrustChange(
+        key_id=current.key_id,
+        organization_identity_hash=current.organization_identity_hash,
+        changed=changed,
+        previous_state=previous.state,
+        current_state=current.state,
+        reason=reason,
+        previous_verified_at=previous.verified_at,
+        current_verified_at=current.verified_at,
+        successor_key_id=current.successor_key_id,
+        reason_hash=current.reason_hash,
     )

@@ -62,6 +62,22 @@ Key rotation sets `validUntil` on the predecessor. Signatures whose timestamp fa
 
 The registry expresses the same window on chain: `rotate_issuer` retires the predecessor key immediately (it can no longer sign new seals, directly or through a delegation) and records a bounded `grace_expires_at` during which `is_issuer_verifiable(predecessor)` keeps pre-rotation evidence verifiable. The window lapses on its own against ledger time and `finalize_issuer_rotation` settles the record. Because the on-chain window is capped by `MAX_ISSUER_ROTATION_GRACE_SECS`, a retired key’s manifest `validUntil` should not be set beyond that bound; `revoke_issuer` and `add_issuer` clear the on-chain record, so a compromised or re-onboarded key is never covered by a stale grace window.
 
+## Trust changes across verification runs
+
+Use `assess_issuer_trust(directory, key_id, ...)` to evaluate an issuer key for a single verification run and `compare_issuer_trust(previous, current, ...)` to explain why trust changed between runs without collapsing distinct causes into a generic invalid-issuer error.
+
+- **States (`TrustState`)**: `trusted`, `historically_valid`, `untrusted`, `stale`.
+- **Reasons (`TrustChangeReason`)**:
+  - `unchanged` — trust state and reason did not change between runs.
+  - `activated` — key is active and within its validity window.
+  - `key_rotated` — key was rotated to a successor (`successorKeyId` populated); pre-rotation historical signatures remain `historically_valid`.
+  - `key_expired` — key or manifest `validUntil` window elapsed.
+  - `key_retired` — key was explicitly retired (optional opaque `reasonHash`).
+  - `key_compromised` — key was marked compromised (optional opaque `reasonHash`); pre-compromise signatures remain `historically_valid` while surfacing compromise status.
+  - `stale_directory` — cached checkpoint exceeded its standard or high-assurance freshness window (fail-closed `stale` state).
+  - `directory_inconsistent` — checkpoint consistency check or cross-run rollback/equivocation check failed.
+  - `unknown_key` / `not_yet_valid` — key missing from directory or signature predates `validFrom`.
+
 ## Operational procedures
 
 ### Onboarding an issuer
