@@ -38,6 +38,19 @@ like; the value is stored at most once per second per job
 (`JOB_PROGRESS_MIN_INTERVAL_SECONDS`), and only while the job is `running`.
 Heartbeats extend the lease only and never overwrite progress.
 
+## Cancellation vs. processing failure
+
+Intentional cancellation (via `POST /api/jobs/<id>/cancel` or a worker raising
+`worker.JobCancelledError`) is kept distinct from processing failures:
+
+- `status` transitions to `"cancelled"` and `cancelled_at` is recorded.
+- `result` preserves a stable object for the requester:
+  `{"cancelled": true, "reason": "<reason>"}` (defaults to `"Job cancelled"`).
+- `retry_count` is **not** incremented, and cancelled jobs are never re-queued
+  for automatic failure retries.
+- Failure fields (`error`, `failed_at`) are not set, and late `complete_job` or
+  `fail_job` calls do not overwrite an already-cancelled job.
+
 ## What the response never contains
 
 The job's request `payload` (filenames, metadata, proof secrets) and internal

@@ -1174,6 +1174,19 @@ _JOBS: dict[int, dict[str, Any]] = {}
 _next_job_id = 1
 
 
+DEFAULT_CANCELLATION_REASON = "Job cancelled"
+
+
+def _cancelled_result(reason: str | None = None) -> dict[str, Any]:
+    """Build the stable cancelled result payload returned to requesters."""
+    text = (
+        reason.strip()
+        if isinstance(reason, str) and reason.strip()
+        else DEFAULT_CANCELLATION_REASON
+    )
+    return {"cancelled": True, "reason": text}
+
+
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
@@ -1187,6 +1200,7 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "status": "pending",
         "result": None,
         "progress": None,
+        "retry_count": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     return job_id
@@ -1197,13 +1211,50 @@ def get_job(job_id: int) -> dict[str, Any] | None:
     return _JOBS.get(job_id)
 
 
-def cancel_job(job_id: int) -> bool:
-    """Cancel a pending job. Returns True on success."""
+def cancel_job(job_id: int, *, reason: str | None = None) -> bool:
+    """Cancel a pending or running job without affecting failure retry counts.
+
+    Preserves a stable cancelled result for the requester and records
+    ``cancelled_at``. Returns True when the job transitioned to ``cancelled``,
+    False when the job does not exist or is already in a terminal state.
+    """
     job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
+    if job and job.get("status") in ("pending", "running"):
         job["status"] = "cancelled"
+        job["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+        job["result"] = _cancelled_result(reason)
+        job.pop("worker_id", None)
         return True
     return False
+
+
+def mark_job_cancelled(job_id: int, reason: str | None = None) -> bool:
+    """Record intentional worker cancellation for a job.
+
+    Unlike :func:`fail_job`, cancellation never increments ``retry_count``,
+    never re-queues the job for automatic retry, and never sets failure fields
+    (``error`` / ``failed_at``). If the job is already ``cancelled``, its
+    existing ``cancelled_at`` and ``result`` are preserved unchanged.
+    """
+    job = _JOBS.get(job_id)
+    if not job:
+        return False
+    status = job.get("status")
+    if status == "cancelled":
+        if not isinstance(job.get("result"), dict) or job["result"].get("cancelled") is not True:
+            job["result"] = _cancelled_result(reason)
+        job.setdefault("cancelled_at", datetime.now(timezone.utc).isoformat())
+        job.pop("worker_id", None)
+        return True
+    if status in ("pending", "running"):
+        return cancel_job(job_id, reason=reason)
+    return False
+
+
+def is_job_cancelled(job_id: int) -> bool:
+    """Return True when the job exists and is in the ``cancelled`` state."""
+    job = _JOBS.get(job_id)
+    return bool(job and job.get("status") == "cancelled")
 
 
 def lease_job(
@@ -1279,9 +1330,9 @@ def report_job_progress(
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
+    """Mark an in-memory job completed unless it was already cancelled."""
     job = _JOBS.get(job_id)
-    if not job:
+    if not job or job.get("status") == "cancelled":
         return
     job["status"] = "completed"
     job["result"] = result
@@ -1289,15 +1340,20 @@ def complete_job(job_id: int, result: Any = None) -> None:
 
 
 def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    Cancelled jobs are terminal and are never transitioned to failed/pending
+    or counted in ``retry_count``.
+    """
     job = _JOBS.get(job_id)
-    if not job:
+    if not job or job.get("status") == "cancelled":
         return
     job["error"] = error
     job["failed_at"] = datetime.now(timezone.utc).isoformat()
     if is_fatal:
         job["status"] = "failed"
     else:
+        job["retry_count"] = int(job.get("retry_count", 0)) + 1
         job["status"] = "pending"
         job.pop("worker_id", None)
 
