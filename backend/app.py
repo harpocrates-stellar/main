@@ -87,6 +87,29 @@ except ImportError:
     default_min_confirmations = None
     reconcile_pending_registrations = None
     reconcile_registration = None
+
+
+def build_reconcile_batch_report(
+    *,
+    limit: int,
+    selected: int,
+    processed: int,
+    deferred: int,
+) -> dict:
+    """Describe a reconciliation batch for administrative responses.
+
+    ``complete_batch`` is true when every selected item in this batch was
+    processed.  ``complete_backlog`` is true only when nothing was deferred,
+    meaning no further pending work remains beyond this batch.
+    """
+    return {
+        "limit": int(limit),
+        "selected": int(selected),
+        "processed": int(processed),
+        "deferred": int(deferred),
+        "complete_batch": int(processed) == int(selected),
+        "complete_backlog": int(deferred) == 0 and int(processed) == int(selected),
+    }
 from idempotency import idempotent
 from lineage import (
     LineageValidationError,

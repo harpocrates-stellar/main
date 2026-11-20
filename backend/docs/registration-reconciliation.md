@@ -45,6 +45,15 @@ API keys, or private keys.
 ```
 
 - Omit `txHash` to batch-reconcile pending rows (max 50).
+- Batch responses report `summary.selected` (rows chosen for this call),
+  `summary.processed` (rows whose reconciliation outcome was applied or
+  attempted to completion), and `summary.deferred` (selected-eligible rows left
+  for a later call, e.g. due to `limit` or a transient Horizon error).
+- Batch responses include `batch.complete` (`true` when the selected batch was
+  fully processed with nothing deferred) and `backlog.complete` (`true` only when
+  no pending rows remain eligible after this call). A complete batch does not
+  imply a complete backlog: when `batch.complete=true` but `backlog.complete=false`,
+  more pending rows exist and further calls are required.
 - `force=true` overwrites terminal statuses (repair / rollback aid).
 - Horizon dependency failures return HTTP 503 for single-hash calls and are
   counted under `summary.error` for batch calls without writing durable state.

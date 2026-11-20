@@ -196,7 +196,19 @@ def reconcile_pending_registrations(
     limit: int = MAX_RECONCILE_BATCH,
     min_confirmations: int | None = None,
 ) -> dict[str, Any]:
-    """Reconcile up to ``limit`` pending registration rows."""
+    """Reconcile up to ``limit`` pending registration rows.
+
+    The returned ``batch`` object reports the batch-limit accounting:
+
+    - ``selected``: rows fetched for this batch (bounded by the effective limit)
+    - ``processed``: rows actually reconciled in this batch
+    - ``deferred``: rows left for a later batch (selected but not processed)
+    - ``limit``: the effective (clamped) batch limit applied
+    - ``completeBatch``: True when the batch was filled to its limit
+    - ``completeBacklog``: True only when the backlog was fully drained,
+      i.e. fewer rows than the limit were available and none were deferred.
+      A full batch does not imply an empty backlog.
+    """
     page_size = clamp_reconcile_limit(limit)
     min_conf = (
         default_min_confirmations()
@@ -218,6 +230,7 @@ def reconcile_pending_registrations(
         "updated": 0,
     }
 
+    selected = len(pending)
     for row in pending:
         summary["scanned"] += 1
         item = reconcile_registration(
@@ -237,9 +250,22 @@ def reconcile_pending_registrations(
         if item.get("updated"):
             summary["updated"] += 1
 
+    processed = len(results)
+    deferred = selected - processed
+    complete_batch = selected >= page_size
+    complete_backlog = (not complete_batch) and deferred == 0
+
     return {
         "ok": True,
         "summary": summary,
+        "batch": {
+            "selected": selected,
+            "processed": processed,
+            "deferred": deferred,
+            "limit": page_size,
+            "completeBatch": complete_batch,
+            "completeBacklog": complete_backlog,
+        },
         "minConfirmations": min_conf,
         "results": results,
     }
