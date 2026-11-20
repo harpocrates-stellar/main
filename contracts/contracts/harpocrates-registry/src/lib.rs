@@ -1808,6 +1808,8 @@ pub enum DataKey {
     /// Pause record for a single registration domain bit (#87).
     Pause(u32),
     PendingAdmin,
+    /// Optional expiry timestamp (Unix seconds) for `PendingAdmin`.
+    PendingAdminExpiry,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
     ProofHistorySeq(BytesN<32>),
@@ -2019,6 +2021,33 @@ pub enum RegistryError {
     ReporterDisputesSaturated = 88,
     /// The action requires admin council threshold approvals.
     InsufficientApprovals = 89,
+    /// Role invitation expiry duration was zero, above `MAX_ROLE_INVITATION_TTL_SECS`, or overflowed.
+    InvalidRoleInvitationExpiry = 90,
+    /// The pending role invitation has expired and can no longer be accepted.
+    RoleInvitationExpired = 91,
+}
+
+/// Maximum TTL for an expiring admin role invitation (30 days).
+pub const MAX_ROLE_INVITATION_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Lifecycle state of a pending role invitation.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoleInvitationStatus {
+    Nonexistent,
+    Active,
+    Expired,
+}
+
+/// Read-only view of the current admin role invitation and its expiry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleInvitationView {
+    pub status: RoleInvitationStatus,
+    pub pending_admin: Option<Address>,
+    /// Unix timestamp in seconds when the invitation expires, or `0` when
+    /// nonexistent or created without an expiry window.
+    pub expires_at: u64,
 }
 
 #[contract]
@@ -2170,6 +2199,42 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdminExpiry);
+        AdminProposed {
+            pending_admin,
+            current_admin: admin,
+        }
+        .publish(&env);
+    }
+
+    /// Propose a pending admin with a bounded expiry window (`duration_secs`).
+    ///
+    /// The invitation is active while `ledger().timestamp() < expires_at` and
+    /// becomes expired once `ledger().timestamp() >= expires_at`.
+    pub fn propose_admin_with_expiry(
+        env: Env,
+        admin: Address,
+        pending_admin: Address,
+        duration_secs: u64,
+    ) {
+        require_admin(&env, &admin);
+        require_admin_role_available(&env, &pending_admin);
+
+        if duration_secs == 0 || duration_secs > MAX_ROLE_INVITATION_TTL_SECS {
+            panic_with_error!(&env, RegistryError::InvalidRoleInvitationExpiry);
+        }
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(duration_secs)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvalidRoleInvitationExpiry));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdminExpiry, &expires_at);
         AdminProposed {
             pending_admin,
             current_admin: admin,
@@ -2182,9 +2247,51 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::Admin)
     }
 
-    /// Return the pending admin address, if an admin transfer is proposed.
+    /// Return the active pending admin address, or `None` if no invitation
+    /// exists or the invitation has expired. Read-only: never mutates state.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&DataKey::PendingAdmin)
+        let pending_admin: Address = env.storage().persistent().get(&DataKey::PendingAdmin)?;
+        let expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminExpiry)
+            .unwrap_or(0);
+        if expires_at != 0 && env.ledger().timestamp() >= expires_at {
+            None
+        } else {
+            Some(pending_admin)
+        }
+    }
+
+    /// Inspect the current admin role invitation status and expiry without
+    /// mutating contract state or performing hidden cleanup.
+    pub fn get_role_invitation(env: Env) -> RoleInvitationView {
+        let pending_admin: Option<Address> =
+            env.storage().persistent().get(&DataKey::PendingAdmin);
+        match pending_admin {
+            None => RoleInvitationView {
+                status: RoleInvitationStatus::Nonexistent,
+                pending_admin: None,
+                expires_at: 0,
+            },
+            Some(candidate) => {
+                let expires_at: u64 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::PendingAdminExpiry)
+                    .unwrap_or(0);
+                let status = if expires_at != 0 && env.ledger().timestamp() >= expires_at {
+                    RoleInvitationStatus::Expired
+                } else {
+                    RoleInvitationStatus::Active
+                };
+                RoleInvitationView {
+                    status,
+                    pending_admin: Some(candidate),
+                    expires_at,
+                }
+            }
+        }
     }
 
     pub fn cancel_admin_transfer(env: Env, admin: Address) {
@@ -2196,6 +2303,7 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminExpiry);
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2214,6 +2322,14 @@ impl HarpocratesRegistry {
         if proposed_admin != pending_admin {
             panic_with_error!(&env, RegistryError::Unauthorized);
         }
+        let expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminExpiry)
+            .unwrap_or(0);
+        if expires_at != 0 && env.ledger().timestamp() >= expires_at {
+            panic_with_error!(&env, RegistryError::RoleInvitationExpired);
+        }
         require_admin_role_available(&env, &pending_admin);
 
         let previous_admin: Address = env
@@ -2225,6 +2341,7 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminExpiry);
         AdminAccepted {
             new_admin: pending_admin,
             previous_admin,

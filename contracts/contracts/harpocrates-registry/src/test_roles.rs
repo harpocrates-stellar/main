@@ -5,7 +5,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, BytesN, Env, IntoVal, Symbol,
 };
 
@@ -341,4 +341,171 @@ fn update_issuer_metadata_fails_for_non_admin_caller() {
     client.add_issuer(&admin, &issuer, &b32(&env, 0x11));
 
     client.update_issuer_metadata(&stranger, &issuer, &b32(&env, 0x33));
+}
+
+// ---------------------------------------------------------------------------
+// Role invitation expiry read-only inspection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn role_invitation_reports_nonexistent_active_and_expired_without_mutating_state() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    // 1. Nonexistent before any proposal.
+    assert_eq!(
+        client.get_role_invitation(),
+        RoleInvitationView {
+            status: RoleInvitationStatus::Nonexistent,
+            pending_admin: None,
+            expires_at: 0,
+        }
+    );
+    assert_eq!(client.get_pending_admin(), None);
+
+    // 2. Active with explicit expiry window.
+    env.ledger().set_timestamp(1_700_000_000);
+    client.propose_admin_with_expiry(&admin, &candidate, &600);
+    let expected_expiry = 1_700_000_600;
+
+    assert_eq!(
+        client.get_role_invitation(),
+        RoleInvitationView {
+            status: RoleInvitationStatus::Active,
+            pending_admin: Some(candidate.clone()),
+            expires_at: expected_expiry,
+        }
+    );
+    assert_eq!(client.get_pending_admin(), Some(candidate.clone()));
+
+    // Still active 1 second before expiry.
+    env.ledger().set_timestamp(expected_expiry - 1);
+    assert_eq!(client.get_role_invitation().status, RoleInvitationStatus::Active);
+    assert_eq!(client.get_pending_admin(), Some(candidate.clone()));
+
+    // 3. Expired at the exact expiry boundary (`now == expires_at`).
+    env.ledger().set_timestamp(expected_expiry);
+    let _ = env.events().all();
+
+    let first_view = client.get_role_invitation();
+    assert_eq!(
+        first_view,
+        RoleInvitationView {
+            status: RoleInvitationStatus::Expired,
+            pending_admin: Some(candidate.clone()),
+            expires_at: expected_expiry,
+        }
+    );
+    assert_eq!(client.get_pending_admin(), None);
+
+    // Repeated reads remain consistent and emit no events or hidden cleanup writes.
+    assert_eq!(client.get_role_invitation(), first_view);
+    assert_eq!(client.get_pending_admin(), None);
+    assert_eq!(env.events().all().len(), 0);
+    env.as_contract(&contract_id, || {
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, Address>(&DataKey::PendingAdmin),
+            Some(candidate.clone())
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, u64>(&DataKey::PendingAdminExpiry),
+            Some(expected_expiry)
+        );
+    });
+
+    // Accepting an expired invitation fails closed without mutating storage.
+    let accept_result = client.try_accept_admin(&candidate);
+    assert!(accept_result.is_err());
+    assert_eq!(client.get_role_invitation(), first_view);
+
+    // Explicit cancellation clears both keys and returns to Nonexistent.
+    client.cancel_admin_transfer(&admin);
+    assert_eq!(
+        client.get_role_invitation(),
+        RoleInvitationView {
+            status: RoleInvitationStatus::Nonexistent,
+            pending_admin: None,
+            expires_at: 0,
+        }
+    );
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
+        assert!(!env.storage().persistent().has(&DataKey::PendingAdminExpiry));
+    });
+}
+
+#[test]
+fn legacy_propose_admin_without_expiry_remains_active_and_compatible() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    env.ledger().set_timestamp(1_700_000_000);
+    client.propose_admin(&admin, &candidate);
+
+    // Advances far in the future; legacy proposal has no expiry (`expires_at == 0`).
+    env.ledger().set_timestamp(1_900_000_000);
+    assert_eq!(
+        client.get_role_invitation(),
+        RoleInvitationView {
+            status: RoleInvitationStatus::Active,
+            pending_admin: Some(candidate.clone()),
+            expires_at: 0,
+        }
+    );
+    assert_eq!(client.get_pending_admin(), Some(candidate.clone()));
+
+    client.accept_admin(&candidate);
+    assert!(client.is_admin(&candidate));
+    assert_eq!(
+        client.get_role_invitation().status,
+        RoleInvitationStatus::Nonexistent
+    );
+}
+
+#[test]
+fn active_expiring_invitation_can_be_accepted_before_expiry() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    env.ledger().set_timestamp(1_700_000_000);
+    client.propose_admin_with_expiry(&admin, &candidate, &300);
+    env.ledger().set_timestamp(1_700_000_299);
+
+    client.accept_admin(&candidate);
+    assert!(client.is_admin(&candidate));
+    assert_eq!(
+        client.get_role_invitation(),
+        RoleInvitationView {
+            status: RoleInvitationStatus::Nonexistent,
+            pending_admin: None,
+            expires_at: 0,
+        }
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")] // InvalidRoleInvitationExpiry
+fn propose_admin_with_expiry_rejects_zero_duration() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    client.propose_admin_with_expiry(&admin, &candidate, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")] // InvalidRoleInvitationExpiry
+fn propose_admin_with_expiry_rejects_duration_above_cap() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let candidate = Address::generate(&env);
+
+    client.propose_admin_with_expiry(&admin, &candidate, &(MAX_ROLE_INVITATION_TTL_SECS + 1));
 }
