@@ -206,15 +206,26 @@ python manage.py retention --dry-run        # count expired, non-held proof even
 python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
 python manage.py retention --run --batch-size 500
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py projection-reconcile --start-ledger 1000 --end-ledger 1100 --contract-id C... --limit 1000
 python manage.py --json drift               # machine-readable JSON output
 ```
+
+`projection-reconcile` is read-only. It compares recognized lifecycle events
+in the inclusive ledger range with `proof_events` rows keyed by
+`(tx_hash, event_index)`, reporting absent projections separately from rows
+whose projected fields conflict with chain data. The range is limited to
+10,000 ledgers and the event limit defaults to 1,000 (maximum 10,000); an
+exceeded event limit returns an incomplete report rather than a clean result.
+Exit code `1` indicates a discrepancy or incomplete range. The command needs
+`DATABASE_URL` and `--contract-id`; the RPC endpoint can be selected with
+`--rpc-url`, `SOROBAN_RPC_URL`, or `STELLAR_RPC_URL`.
 
 Exit codes:
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success; no problems found |
-| `1` | Schema drift detected or migration checksum mismatch |
+| `1` | Schema drift, migration checksum mismatch, projection discrepancy, or incomplete projection range |
 | `2` | Invalid command-line usage |
 | `3` | `DATABASE_URL` is not configured |
 | `4` | Unexpected error (e.g. database unreachable); only the error type is printed |

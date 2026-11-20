@@ -457,6 +457,7 @@ def fetch_contract_events(
     cursor: str | None = None,
     limit: int = INDEXER_DEFAULT_PAGE_SIZE,
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    end_ledger: int | None = None,
 ) -> dict[str, Any]:
     """Call Soroban RPC getEvents with bounded pagination and filter."""
     page_limit = _bounded_page_size(limit)
@@ -477,6 +478,8 @@ def fetch_contract_events(
         params["cursor"] = cursor
     elif start_ledger is not None:
         params["startLedger"] = start_ledger
+    if end_ledger is not None:
+        params["endLedger"] = end_ledger
 
     payload = {
         "jsonrpc": "2.0",

@@ -1527,6 +1527,36 @@ def insert_indexed_proof_event(
     raise RuntimeError(f"Conflict on tx {tx_hash}:{event_index} but row not found")
 
 
+def get_indexed_proof_events(
+    event_keys: list[tuple[str, int]],
+) -> list[dict[str, Any]]:
+    """Read indexed projection rows for the supplied (tx_hash, event_index) keys."""
+    if not event_keys:
+        return []
+    if not database_url():
+        return [
+            dict(_INDEXED_EVENTS[key])
+            for key in event_keys
+            if key in _INDEXED_EVENTS
+        ]
+
+    tx_hashes, event_indexes = zip(*event_keys)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select tx_hash, event_index, event_type, proof_id, contract_id,
+                       tx_status, metadata
+                from proof_events
+                where (tx_hash, event_index) in (
+                    select * from unnest(%s::text[], %s::integer[])
+                );
+                """,
+                (list(tx_hashes), list(event_indexes)),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:
     if not database_url():
         return _INDEXER_STATE.get(indexer_id, {}).get("cursor")
