@@ -342,3 +342,71 @@ fn update_issuer_metadata_fails_for_non_admin_caller() {
 
     client.update_issuer_metadata(&stranger, &issuer, &b32(&env, 0x33));
 }
+
+// ---------------------------------------------------------------------------
+// Canonical role-policy digest tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn get_role_policy_digest_returns_same_digest_for_equivalent_policy_state() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let digest_1 = client.get_role_policy_digest();
+    let digest_2 = client.get_role_policy_digest();
+    assert_eq!(digest_1, digest_2);
+
+    // Initial default state digest is non-zero
+    assert_ne!(digest_1, b32(&env, 0x00));
+}
+
+#[test]
+fn get_role_policy_digest_changes_when_governance_policy_fields_change() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let baseline_digest = client.get_role_policy_digest();
+
+    // 1. Changing verifier changes policy digest
+    let verifier = Address::generate(&env);
+    client.set_verifier(&admin, &verifier);
+    let with_verifier = client.get_role_policy_digest();
+    assert_ne!(baseline_digest, with_verifier);
+
+    // 2. Setting guardian changes policy digest
+    let guardian = Address::generate(&env);
+    client.set_guardian(&admin, &guardian);
+    let with_guardian = client.get_role_policy_digest();
+    assert_ne!(with_verifier, with_guardian);
+
+    // 3. Pausing a domain bit changes policy digest
+    client.pause(&admin, &PAUSE_DOMAIN_TIER1_REGISTRATION, &3600);
+    let with_pause = client.get_role_policy_digest();
+    assert_ne!(with_guardian, with_pause);
+
+    // 4. Moving ledger time past pause expiration returns digest back to unpaused
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3601);
+    let expired_pause = client.get_role_policy_digest();
+    assert_eq!(expired_pause, with_guardian);
+}
+
+#[test]
+fn get_role_policy_digest_does_not_change_on_evidence_or_issuer_mutations() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    let before = client.get_role_policy_digest();
+
+    // Adding or updating issuers is evidence registration authority, not policy
+    let issuer = Address::generate(&env);
+    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
+    assert_eq!(client.get_role_policy_digest(), before);
+
+    client.update_issuer_metadata(&admin, &issuer, &b32(&env, 0xA2));
+    assert_eq!(client.get_role_policy_digest(), before);
+
+    // Revocation root updates are evidence state, not role-policy
+    client.set_revocation_root(&admin, &b32(&env, 0xEE));
+    assert_eq!(client.get_role_policy_digest(), before);
+}
+}
