@@ -46,3 +46,29 @@ def test_rejects_invalid_digest_fields(field: str, value: str):
 def test_rejects_incomplete_context_without_inventing_receipt_fields():
     with pytest.raises(ValueError, match="videoHash"):
         build_verification_receipt({"proofId": "a" * 64})
+
+
+def test_receipt_includes_index_freshness_and_coverage():
+    receipt = build_verification_receipt(context())
+
+    assert receipt["indexFreshness"]["lastTrustedLedger"] == 42
+    assert receipt["indexFreshness"]["knownGaps"] == []
+
+
+def test_stale_index_does_not_imply_invalid_proof():
+    stale = context()
+    stale["indexLastTrustedLedger"] = 10
+    stale["ledgerSequence"] = 42
+    receipt = build_verification_receipt(stale)
+
+    assert receipt["result"] == "unverified"
+    assert receipt["indexFreshness"]["stale"] is True
+    assert receipt["indexFreshness"]["lastTrustedLedger"] == 10
+
+
+def test_known_gaps_are_reported_in_coverage():
+    gapped = context()
+    gapped["indexKnownGaps"] = [[11, 20]]
+    receipt = build_verification_receipt(gapped)
+
+    assert receipt["indexFreshness"]["knownGaps"] == [[11, 20]]
