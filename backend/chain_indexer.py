@@ -10,6 +10,8 @@ Indexes lifecycle events emitted directly on-chain by the Harpocrates Registry c
 - supersede_dispute (DisputeSuperseded)
 
 Decodes events into proof_events rows idempotently (unique on tx_hash + event_index),
+validates that every event in a fetched page belongs to a single consistent contract
+identity before projection (rejecting conflicting pages without advancing the cursor),
 persists the ledger cursor, queues webhook deliveries, skips and counts unknown topics,
 bounds page size, and backs off exponentially on RPC errors.
 """
@@ -351,15 +353,81 @@ def classify_and_decode_event(
 # ---------------------------------------------------------------------------
 
 
+class ContractIdentityConflictError(ValueError):
+    """Raised when an event page contains events from a conflicting contract identity."""
+
+
+def _extract_event_contract_id(event: dict[str, Any]) -> str | None:
+    """Extract and validate explicit contract identity fields from a raw event."""
+    raw_camel = event.get("contractId")
+    raw_snake = event.get("contract_id")
+
+    candidates: list[str] = []
+    for field_name, raw_val in (("contractId", raw_camel), ("contract_id", raw_snake)):
+        if raw_val is None:
+            continue
+        if not isinstance(raw_val, str) or not raw_val.strip():
+            raise ContractIdentityConflictError(
+                f"Invalid {field_name} in event: expected non-empty string"
+            )
+        candidates.append(raw_val.strip())
+
+    if len(candidates) == 2 and candidates[0] != candidates[1]:
+        raise ContractIdentityConflictError(
+            f"Conflicting contractId/contract_id within event: {candidates[0]} != {candidates[1]}"
+        )
+
+    return candidates[0] if candidates else None
+
+
+def validate_event_page_contract_identity(
+    events: list[dict[str, Any]],
+    expected_contract_id: str | None = None,
+) -> str | None:
+    """Validate that every event in a page belongs to a single consistent contract identity.
+
+    When expected_contract_id is provided, every event with an explicit contractId/contract_id
+    must match it. When expected_contract_id is omitted, all explicit contract IDs in the
+    page must agree with each other.
+
+    Raises ContractIdentityConflictError on any mismatch so the page is rejected before
+    projection and before any cursor is committed.
+    """
+    baseline = (
+        expected_contract_id.strip()
+        if isinstance(expected_contract_id, str) and expected_contract_id.strip()
+        else None
+    )
+
+    for idx, raw in enumerate(events):
+        if not isinstance(raw, dict):
+            continue
+        event_contract_id = _extract_event_contract_id(raw)
+        if event_contract_id is None:
+            continue
+        if baseline is None:
+            baseline = event_contract_id
+        elif event_contract_id != baseline:
+            raise ContractIdentityConflictError(
+                f"Contract identity changed inside event page at index {idx}: "
+                f"expected {baseline}, got {event_contract_id}"
+            )
+
+    return baseline
+
+
 def process_events_batch(
     events: list[dict[str, Any]],
     contract_id: str | None = None,
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
-    Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    Validates every event's contract identity before projection, decodes lifecycle events,
+    inserts them idempotently into proof_events, queues webhooks for newly written events,
+    and tracks unknown topics.
     """
+    validate_event_page_contract_identity(events, expected_contract_id=contract_id)
+
     summary = {
         "scanned": 0,
         "indexed": 0,

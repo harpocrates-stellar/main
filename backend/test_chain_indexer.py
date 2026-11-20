@@ -25,6 +25,7 @@ import pytest
 
 import app as app_module
 from chain_indexer import (
+    ContractIdentityConflictError,
     DEFAULT_SOROBAN_RPC_URL,
     INDEXER_DEFAULT_TIMEOUT,
     INDEXER_MAX_PAGE_SIZE,
@@ -35,6 +36,7 @@ from chain_indexer import (
     poll_indexer_once,
     process_events_batch,
     run_indexer_loop,
+    validate_event_page_contract_identity,
 )
 from db import (
     get_indexer_cursor,
@@ -488,3 +490,111 @@ def test_indexed_revocation_appears_in_api_proofs():
         assert events[0]["event_type"] == "revoke"
         assert events[0]["proof_id"] == "ff" * 32
         assert events[0]["tx_status"] == "revoked"
+
+
+# ---------------------------------------------------------------------------
+# Contract Identity Consistency Validation
+# ---------------------------------------------------------------------------
+
+OTHER_CONTRACT = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBXGI"
+
+
+def test_process_events_batch_rejects_contract_identity_change_before_projection():
+    """If contractId changes mid-page, reject the entire page before projecting any event."""
+    events = [
+        {
+            "txHash": "e1" * 32,
+            "id": "0000000600-0000000001",
+            "contractId": DUMMY_CONTRACT,
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        {
+            "txHash": "e2" * 32,
+            "id": "0000000600-0000000002",
+            "contractId": OTHER_CONTRACT,
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
+    ]
+
+    with (
+        mock.patch("chain_indexer.insert_indexed_proof_event") as mock_insert,
+        mock.patch("chain_indexer.queue_webhook_deliveries") as mock_webhook,
+    ):
+        with pytest.raises(ContractIdentityConflictError, match="Contract identity changed"):
+            process_events_batch(events, contract_id=DUMMY_CONTRACT)
+
+        mock_insert.assert_not_called()
+        mock_webhook.assert_not_called()
+
+
+@mock.patch("chain_indexer.fetch_contract_events")
+def test_poll_indexer_once_keeps_committed_cursor_unchanged_on_conflicting_page(mock_fetch_events):
+    """A page with a conflicting contractId must fail closed and leave the committed cursor unchanged."""
+    save_indexer_cursor("soroban_events", "cursor-committed-600", ledger=600)
+
+    mock_fetch_events.return_value = {
+        "cursor": "cursor-should-not-commit-601",
+        "latestLedger": 601,
+        "events": [
+            {
+                "txHash": "f1" * 32,
+                "id": "0000000601-0000000001",
+                "contractId": DUMMY_CONTRACT,
+                "topic": ["proof", "revoke", DUMMY_PROOF_1],
+            },
+            {
+                "txHash": "f2" * 32,
+                "id": "0000000601-0000000002",
+                "contractId": OTHER_CONTRACT,
+                "topic": ["proof", "history", DUMMY_PROOF_2],
+                "value": {"action": 4},
+            },
+        ],
+    }
+
+    with mock.patch("chain_indexer.insert_indexed_proof_event") as mock_insert:
+        with pytest.raises(ContractIdentityConflictError):
+            poll_indexer_once(contract_id=DUMMY_CONTRACT)
+
+        mock_insert.assert_not_called()
+
+    assert get_indexer_cursor("soroban_events") == "cursor-committed-600"
+
+
+def test_validate_event_page_contract_identity_boundary_cases():
+    # Without expected_contract_id, conflicting contract IDs inside the page are still rejected.
+    with pytest.raises(ContractIdentityConflictError):
+        validate_event_page_contract_identity(
+            [
+                {"contractId": DUMMY_CONTRACT, "txHash": DUMMY_TX_1},
+                {"contract_id": OTHER_CONTRACT, "txHash": DUMMY_TX_2},
+            ],
+            expected_contract_id=None,
+        )
+
+    # Conflicting camelCase vs snake_case contract ID on the same event is rejected.
+    with pytest.raises(ContractIdentityConflictError, match="Conflicting contractId/contract_id"):
+        validate_event_page_contract_identity(
+            [{"contractId": DUMMY_CONTRACT, "contract_id": OTHER_CONTRACT}],
+            expected_contract_id=DUMMY_CONTRACT,
+        )
+
+    # Empty/whitespace contractId is rejected.
+    with pytest.raises(ContractIdentityConflictError, match="Invalid contractId"):
+        validate_event_page_contract_identity(
+            [{"contractId": "   "}],
+            expected_contract_id=DUMMY_CONTRACT,
+        )
+
+    # Consistent explicit contract IDs and omitted contract IDs pass.
+    assert (
+        validate_event_page_contract_identity(
+            [
+                {"contractId": DUMMY_CONTRACT},
+                {"txHash": DUMMY_TX_1},
+                {"contract_id": DUMMY_CONTRACT},
+            ],
+            expected_contract_id=DUMMY_CONTRACT,
+        )
+        == DUMMY_CONTRACT
+    )
