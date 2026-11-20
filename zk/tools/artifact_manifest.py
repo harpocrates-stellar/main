@@ -100,6 +100,15 @@ class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
 
 
+class ArtifactSizeMismatchError(BuildError):
+    """A declared artifact size disagrees with the on-disk size.
+
+    Raised *before* the file is hashed or decompressed, so a size mismatch
+    costs only a stat() rather than the full read/normalize/digest pipeline.
+    The message names the declared path and the two sizes only.
+    """
+
+
 # ── Signals ─────────────────────────────────────────────────────────────────
 
 
@@ -321,6 +330,7 @@ class ArtifactResult:
             "role": self.role,
             "raw_bytes": self.raw_bytes,
             "normalized_bytes": self.normalized_bytes,
+            "size_bytes": self.raw_bytes,
             "raw_sha256": self.raw_sha256,
             "normalized_sha256": self.normalized_sha256,
         }
@@ -352,6 +362,27 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
             limit=lock.limits.max_artifact_bytes,
         )
         return result
+
+    # Size validation (#1218): if the lock declares an expected size, check it
+    # against the on-disk stat *before* reading, normalizing, or hashing. A
+    # mismatch is rejected explicitly and deterministically; the error names
+    # the declared path and both sizes, never the absolute host path.
+    declared_size = declaration.get("size_bytes")
+    if declared_size is not None:
+        try:
+            declared_int = int(declared_size)
+        except (TypeError, ValueError) as exc:
+            raise BuildError(
+                f"artifact {relative}: declared size_bytes is not an integer"
+            ) from exc
+        if declared_int < 0:
+            raise BuildError(
+                f"artifact {relative}: declared size_bytes is negative"
+            )
+        if declared_int != size:
+            raise ArtifactSizeMismatchError(
+                f"artifact {relative}: declared size {declared_int} != actual {size}"
+            )
 
     try:
         data = target.read_bytes()
@@ -512,6 +543,12 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
         if after is None:
             findings.append(f"artifact {path}: missing from the rebuilt tree")
             continue
+        before_size = before.get("size_bytes", before.get("raw_bytes"))
+        after_size = after.get("size_bytes", after.get("raw_bytes"))
+        if before_size is not None and after_size is not None and before_size != after_size:
+            findings.append(
+                f"artifact {path}: size {before_size} -> {after_size}"
+            )
         if before.get("normalized_sha256") != after.get("normalized_sha256"):
             findings.append(
                 f"artifact {path}: normalized digest "
