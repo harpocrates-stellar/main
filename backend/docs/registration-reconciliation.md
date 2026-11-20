@@ -31,6 +31,30 @@ Logs and API responses include only:
 Never logged or returned: media, metadata envelopes, witness values, credentials,
 API keys, or private keys.
 
+## Registration reconciliation timeline
+
+The reconciler records bounded observation and transition records for each
+registration so an authorized requester can see how a registration's outcome
+was determined over time.
+
+Each registration timeline entry carries one of four outcome classifications:
+
+| Outcome | Meaning |
+| --- | --- |
+| `submitted` | The transaction was accepted by the client and recorded as `pending`; no ledger observation yet |
+| `confirmed` | Horizon reports the transaction as successful at or above `TX_MIN_CONFIRMATIONS` depth |
+| `rejected` | Horizon reports the transaction as failed, or the transaction is absent after the retry window |
+| `unknown` | Horizon could not be reached or returned an inconclusive response; the row remains `pending` |
+
+Timeline records are bounded: at most 20 observation and transition records are
+returned per registration, newest first. Records contain only outcome, status
+code, ledger number, confirmation count, timestamp, and the truncated `txHash`
+prefix. They never contain media, metadata envelopes, witness values,
+credentials, or private keys.
+
+Access to the timeline is limited to the authorized requester who owns the
+registration. Requests from other identities receive HTTP 403.
+
 ## Interface
 
 `POST /api/proofs/reconcile`
@@ -48,6 +72,14 @@ API keys, or private keys.
 - `force=true` overwrites terminal statuses (repair / rollback aid).
 - Horizon dependency failures return HTTP 503 for single-hash calls and are
   counted under `summary.error` for batch calls without writing durable state.
+- Horizon failures during batch reconciliation are classified as `unknown` in the
+  timeline and never promoted to `rejected`, so fail-closed verification is preserved.
+
+`GET /api/proofs/{txHash}/timeline`
+
+Returns the bounded timeline of observation and transition records for the
+registration, each tagged with `submitted`, `confirmed`, `rejected`, or
+`unknown`. Only the authorized owner of the registration may call this endpoint.
 
 ## Worker integration
 

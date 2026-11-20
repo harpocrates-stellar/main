@@ -11,6 +11,7 @@ from registration_reconcile import (
     process_verify_tx_job,
     reconcile_pending_registrations,
     reconcile_registration,
+    build_reconciliation_timeline,
 )
 from tx_verification import TxVerificationResult, normalize_tx_hash, verify_transaction
 
@@ -117,6 +118,26 @@ def test_reconcile_malformed_hash_is_stable():
     assert result["status"] == "failed"
     assert result["error"] == "malformed_tx_hash"
     assert result["updated"] is False
+
+
+def test_timeline_distinguishes_submitted_confirmed_rejected_unknown():
+    observations = [
+        {"at": 1, "status": "pending", "reason": "submitted"},
+        {"at": 2, "status": "confirmed", "reason": "confirmed"},
+        {"at": 3, "status": "failed", "reason": "tx_unsuccessful"},
+        {"at": 4, "status": "error", "reason": "horizon_dependency_failure"},
+    ]
+    timeline = build_reconciliation_timeline(observations, limit=10)
+    kinds = [t["outcome"] for t in timeline["transitions"]]
+    assert kinds == ["submitted", "confirmed", "rejected", "unknown"]
+    assert len(timeline["observations"]) == 4
+
+
+def test_timeline_is_bounded():
+    observations = [{"at": i, "status": "pending", "reason": "submitted"} for i in range(100)]
+    timeline = build_reconciliation_timeline(observations, limit=5)
+    assert len(timeline["observations"]) == 5
+    assert timeline["truncated"] is True
 
 
 @mock.patch(
