@@ -61,8 +61,7 @@ only when `--receipt` is supplied, never a fabricated `valid`), and
 `hirpocrates.export.v1` (`unsigned: true`). It contains only public manifest
 and registry fields; it never carries media bytes, witness values, secrets,
 proof bytes, or signing keys, and the exporter never signs. Out-of-band you
-sign the result with your own C2PA signer. Missing `--manifest` exits 2;
-malformed, unsupported, or unreadable input exits 8. The export is
+sign the result with your own C2PA signer. Missing `--manifest` or an `--output` path that resolves to the same file as an input path (including symlink aliases) exits 2 without modifying the input file; malformed, unsupported, or unreadable input exits 8. The export is
 deterministic, so the same manifest and receipt always produce the same bytes
 (reproducible in CI via `devx/validate_c2pa_fixture.py`).
 
