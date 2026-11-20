@@ -5,9 +5,10 @@ import binascii
 import hashlib
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Iterator
 
 import psycopg
@@ -1171,6 +1172,62 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+
+# Bounded per-job attempt history (see docs/job-status.md). Each lease opens an
+# attempt; progress and the terminal outcome are recorded on it. Only the
+# newest JOB_ATTEMPT_HISTORY_LIMIT attempts are kept; ``attempt`` keeps
+# counting, so dropped attempts show up as a gap in the numbering.
+JOB_ATTEMPT_HISTORY_LIMIT = 10
+# Outcomes recorded on an attempt.
+ATTEMPT_COMPLETED = "completed"
+ATTEMPT_FAILED = "failed"
+ATTEMPT_RELEASED = "released"
+# Attempt history is public, so free text (error messages may quote paths or
+# payload values) is never stored. Values that are not a plain code are
+# dropped entirely rather than cleaned, so nothing derived from them leaks.
+_ATTEMPT_REASON_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_ATTEMPT_WORKER_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _attempt_code(value: Any, pattern: re.Pattern[str] = _ATTEMPT_REASON_RE) -> str | None:
+    """Return ``value`` if it is a plain code (e.g. an exception class name), else None."""
+    if isinstance(value, str) and pattern.fullmatch(value):
+        return value
+    return None
+
+
+def _open_attempt(job: dict[str, Any], worker_id: str) -> None:
+    attempts = job.setdefault("attempts", [])
+    number = job.get("_attempt_count", 0) + 1
+    job["_attempt_count"] = number
+    attempts.append(
+        {
+            "attempt": number,
+            "worker_id": _attempt_code(worker_id, _ATTEMPT_WORKER_RE),
+            "leased_at": datetime.now(UTC).isoformat(),
+            "ended_at": None,
+            "outcome": None,
+            "reason": None,
+            "progress": None,
+        }
+    )
+    del attempts[:-JOB_ATTEMPT_HISTORY_LIMIT]
+
+
+def _current_attempt(job: dict[str, Any]) -> dict[str, Any] | None:
+    attempts = job.get("attempts") or []
+    if attempts and attempts[-1].get("outcome") is None:
+        return attempts[-1]
+    return None
+
+
+def _close_attempt(job: dict[str, Any], outcome: str, reason: Any = None) -> None:
+    attempt = _current_attempt(job)
+    if attempt is None:
+        return
+    attempt["outcome"] = outcome
+    attempt["reason"] = _attempt_code(reason)
+    attempt["ended_at"] = datetime.now(UTC).isoformat()
 _next_job_id = 1
 
 
@@ -1217,7 +1274,10 @@ def lease_job(
         if job.get("status") == "pending" and job.get("type") in job_types:
             job["status"] = "running"
             job["worker_id"] = worker_id
-            return dict(job)
+            _open_attempt(job, worker_id)
+            leased = dict(job)
+            leased["attempts"] = [dict(attempt) for attempt in job["attempts"]]
+            return leased
     return None
 
 
@@ -1275,24 +1335,41 @@ def report_job_progress(
         return False
     job["_progress_at"] = current
     job["progress"] = {"phase": phase, "percent": percent}
+    attempt = _current_attempt(job)
+    if attempt is not None:
+        attempt["progress"] = {"phase": phase, "percent": percent}
     return True
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
+    """Mark an in-memory job completed and close its current attempt."""
     job = _JOBS.get(job_id)
     if not job:
         return
+    _close_attempt(job, ATTEMPT_COMPLETED)
     job["status"] = "completed"
     job["result"] = result
     job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
+def fail_job(
+    job_id: int,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    reason: str | None = None,
+) -> None:
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    The current attempt is closed as ``"failed"`` (fatal) or ``"released"``
+    (back to the queue). ``reason`` is a short machine code for the attempt
+    history, such as the exception class name; the free-text ``error`` is
+    never copied into the history.
+    """
     job = _JOBS.get(job_id)
     if not job:
         return
+    _close_attempt(job, ATTEMPT_FAILED if is_fatal else ATTEMPT_RELEASED, reason)
     job["error"] = error
     job["failed_at"] = datetime.now(timezone.utc).isoformat()
     if is_fatal:

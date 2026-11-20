@@ -316,7 +316,7 @@ def run_worker(
                     is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
                     if job_type == "verify_tx":
                         is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                    fail_job(job_id, str(err), is_fatal=is_fatal, reason=type(err).__name__)
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -335,7 +335,12 @@ def run_worker(
                             f"Job {job_id} did not finish within grace period of {grace_period_seconds}s; releasing job"
                         )
                         hb_stop_event.set()
-                        fail_job(job_id, "Worker shutdown grace period exceeded", is_fatal=False)
+                        fail_job(
+                            job_id,
+                            "Worker shutdown grace period exceeded",
+                            is_fatal=False,
+                            reason="shutdown_grace_exceeded",
+                        )
                     break
 
         except Exception as e:
