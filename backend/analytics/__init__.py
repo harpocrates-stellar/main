@@ -148,6 +148,19 @@ try:
 except Exception:
     pass
 
+try:
+    from analytics.redaction_policy_diff import (
+        FieldDiff,
+        PolicyComparisonReport,
+        RecordComparison,
+        RedactionPolicyRevision,
+        build_synthetic_analytics_records,
+        compare_redaction_policies,
+        load_policy_revision,
+    )
+except Exception:
+    pass
+
 __all__ = [
     "ANALYTICS_CONFIG_SCHEMA_VERSION",
     "ANALYTICS_ROLLOUT_PHASE",
@@ -233,4 +246,11 @@ __all__ = [
     "get_engine",
     "set_engine",
     "register_analytics_routes",
+    "FieldDiff",
+    "PolicyComparisonReport",
+    "RecordComparison",
+    "RedactionPolicyRevision",
+    "build_synthetic_analytics_records",
+    "compare_redaction_policies",
+    "load_policy_revision",
 ]

@@ -81,6 +81,23 @@ def test_verify_transaction_dependency_error(mock_fetch, _urls):
     assert result.reason == "horizon_dependency_failure"
 
 
+@mock.patch("registration_reconcile.update_tx_status")
+@mock.patch(
+    "registration_reconcile.verify_transaction",
+    return_value=TxVerificationResult(status="error", reason="horizon_dependency_failure"),
+)
+def test_reconcile_outage_preserves_pending_intent(mock_verify, mock_update):
+    # An unavailable RPC must not invalidate evidence: the pending intent is
+    # kept, no terminal state is written, and a retryable code is returned.
+    result = reconcile_registration(VALID_TX, previous_status="pending", min_confirmations=1)
+    assert result["status"] == "pending"
+    assert result["updated"] is False
+    assert result["reason"] == "horizon_dependency_failure"
+    assert result["retryable"] is True
+    assert result["error"] != "missing"
+    mock_update.assert_not_called()
+
+
 @mock.patch("registration_reconcile.update_tx_status", return_value=True)
 @mock.patch(
     "registration_reconcile.verify_transaction",
@@ -159,3 +176,20 @@ def test_process_verify_tx_job_success(mock_reconcile):
 def test_process_verify_tx_job_raises_on_dependency_failure(mock_reconcile):
     with pytest.raises(RuntimeError):
         process_verify_tx_job({"txHash": VALID_TX})
+
+
+@mock.patch(
+    "registration_reconcile.list_pending_registration_txs",
+    return_value=[
+        {"id": 1, "proof_id": "p" * 64, "tx_hash": VALID_TX, "tx_status": "pending"},
+    ],
+)
+@mock.patch(
+    "registration_reconcile.reconcile_registration",
+    return_value={"status": "pending", "reason": "horizon_dependency_failure", "retryable": True, "updated": False},
+)
+def test_reconcile_pending_batch_counts_outage_as_retryable(mock_one, mock_list):
+    report = reconcile_pending_registrations(limit=10, min_confirmations=1)
+    assert report["summary"]["missing"] == 0
+    assert report["summary"]["updated"] == 0
+    assert report["summary"]["retryable"] == 1

@@ -228,3 +228,45 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
     throw new CircuitInputError('circuit_load_failed')
   }
 }
+
+/**
+ * Zeroes a byte buffer in place so completed private witness / proof material
+ * does not linger in memory once its operation has finished.
+ */
+export function wipeProofBuffer(buffer: ArrayBuffer | ArrayBufferView | null | undefined): void {
+  if (!buffer) return
+  if (buffer instanceof ArrayBuffer) {
+    new Uint8Array(buffer).fill(0)
+    return
+  }
+  new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength).fill(0)
+}
+
+/**
+ * Tracks transient proof buffers for an operation and releases them (zeroing
+ * contents and dropping references) once the operation completes or the
+ * session is reused, so a later operation cannot observe earlier witness data.
+ */
+export class ProofBufferLedger {
+  private buffers = new Set<ArrayBuffer | ArrayBufferView>()
+
+  track<T extends ArrayBuffer | ArrayBufferView>(buffer: T): T {
+    this.buffers.add(buffer)
+    return buffer
+  }
+
+  /** Releases a buffer after it has been transferred or exported. */
+  release(buffer: ArrayBuffer | ArrayBufferView): void {
+    if (this.buffers.delete(buffer)) wipeProofBuffer(buffer)
+  }
+
+  get size(): number {
+    return this.buffers.size
+  }
+
+  /** Wipes and forgets every tracked buffer. Safe to call repeatedly. */
+  clear(): void {
+    for (const buffer of this.buffers) wipeProofBuffer(buffer)
+    this.buffers.clear()
+  }
+}

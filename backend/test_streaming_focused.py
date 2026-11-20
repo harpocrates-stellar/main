@@ -20,6 +20,7 @@ from streaming_upload import (
     clamp_chunk_bytes,
     hash_paths_concat,
     hash_stream_to_path,
+    resolve_max_bytes,
     sha256_path_bounded,
 )
 
@@ -31,6 +32,32 @@ class TestChunkBounds(unittest.TestCase):
         self.assertEqual(clamp_chunk_bytes(100, enforce_min=True), MIN_CHUNK_BYTES)
         self.assertEqual(clamp_chunk_bytes(10_000_000), MAX_CHUNK_BYTES)
         self.assertEqual(clamp_chunk_bytes(32_768), 32_768)
+
+
+class TestResolveMaxBytes(unittest.TestCase):
+    def test_explicit_positive_resolved(self):
+        self.assertEqual(resolve_max_bytes(1024), 1024)
+
+    def test_explicit_zero_byte_allowance_resolved(self):
+        self.assertEqual(resolve_max_bytes(0), 0)
+
+    def test_absent_limit_returns_none(self):
+        with patch("streaming_upload._upload_config", return_value=None):
+            self.assertIsNone(resolve_max_bytes())
+
+    def test_config_zero_byte_allowance_does_not_fall_back(self):
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(upload_max_bytes=0, max_video_bytes=4096)
+        with patch("streaming_upload._upload_config", return_value=config):
+            self.assertEqual(resolve_max_bytes(), 0)
+
+    def test_config_absent_upload_max_falls_back_to_video_bytes(self):
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(upload_max_bytes=None, max_video_bytes=4096)
+        with patch("streaming_upload._upload_config", return_value=config):
+            self.assertEqual(resolve_max_bytes(), 4096)
 
 
 class TestHashStreamToPath(unittest.TestCase):
@@ -64,6 +91,36 @@ class TestHashStreamToPath(unittest.TestCase):
                 io.BytesIO(payload), dest, chunk_size=1024, max_size=4096
             )
             self.assertEqual(written, 4096)
+            self.assertEqual(digest, hashlib.sha256(payload).hexdigest())
+
+    def test_zero_byte_allowance_empty_stream_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "out.bin"
+            digest, written = hash_stream_to_path(
+                io.BytesIO(b""), dest, chunk_size=1024, max_size=0
+            )
+            self.assertEqual(written, 0)
+            self.assertEqual(digest, hashlib.sha256(b"").hexdigest())
+            self.assertTrue(dest.exists())
+            self.assertEqual(dest.stat().st_size, 0)
+
+    def test_zero_byte_allowance_non_empty_stream_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "out.bin"
+            with self.assertRaises(RequestEntityTooLarge):
+                hash_stream_to_path(
+                    io.BytesIO(b"data"), dest, chunk_size=1024, max_size=0
+                )
+            self.assertFalse(dest.exists())
+
+    def test_absent_limit_allows_stream(self):
+        payload = b"Z" * 8192
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "out.bin"
+            digest, written = hash_stream_to_path(
+                io.BytesIO(payload), dest, chunk_size=1024, max_size=None
+            )
+            self.assertEqual(written, 8192)
             self.assertEqual(digest, hashlib.sha256(payload).hexdigest())
 
 
@@ -138,6 +195,44 @@ class TestStreamingFileStorage(unittest.TestCase):
             self.assertEqual(streaming_file.computed_hash, expected_hash)
             self.assertEqual(streaming_file.bytes_written, len(test_data))
 
+    def test_zero_byte_allowance_accepts_empty(self):
+        streaming_file = StreamingFileStorage(
+            stream=io.BytesIO(b""),
+            filename="empty.bin",
+            max_size=0,
+            chunk_size=1024,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "empty.bin"
+            streaming_file.save(str(dest))
+            self.assertEqual(streaming_file.bytes_written, 0)
+            self.assertEqual(streaming_file.computed_hash, hashlib.sha256(b"").hexdigest())
+
+    def test_zero_byte_allowance_rejects_non_empty(self):
+        streaming_file = StreamingFileStorage(
+            stream=io.BytesIO(b"payload"),
+            filename="rejected.bin",
+            max_size=0,
+            chunk_size=1024,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "rejected.bin"
+            with self.assertRaises(RequestEntityTooLarge):
+                streaming_file.save(str(dest))
+            self.assertFalse(dest.exists())
+
+    def test_absent_limit_accepts_payload(self):
+        streaming_file = StreamingFileStorage(
+            stream=io.BytesIO(b"unlimited data"),
+            filename="unlimited.bin",
+            max_size=None,
+            chunk_size=1024,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "unlimited.bin"
+            streaming_file.save(str(dest))
+            self.assertEqual(streaming_file.bytes_written, len(b"unlimited data"))
+
 
 class TestConcatAndBoundedHash(unittest.TestCase):
     def test_hash_paths_concat_matches_joined_bytes(self):
@@ -164,6 +259,38 @@ class TestConcatAndBoundedHash(unittest.TestCase):
             self.assertEqual(digest, hashlib.sha256(b"").hexdigest())
             self.assertTrue(dest.exists())
             self.assertEqual(dest.stat().st_size, 0)
+
+    def test_zero_byte_allowance_concat_empty_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "empty1.bin"
+            p2 = Path(tmp) / "empty2.bin"
+            p1.write_bytes(b"")
+            p2.write_bytes(b"")
+            dest = Path(tmp) / "out.bin"
+            digest, written = hash_paths_concat([p1, p2], dest, max_size=0)
+            self.assertEqual(written, 0)
+            self.assertEqual(digest, hashlib.sha256(b"").hexdigest())
+
+    def test_zero_byte_allowance_concat_non_empty_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "chunk.bin"
+            p1.write_bytes(b"data")
+            dest = Path(tmp) / "out.bin"
+            with self.assertRaises(RequestEntityTooLarge):
+                hash_paths_concat([p1], dest, max_size=0)
+            self.assertFalse(dest.exists())
+
+    def test_absent_limit_concat_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "chunk1.bin"
+            p2 = Path(tmp) / "chunk2.bin"
+            p1.write_bytes(b"hello ")
+            p2.write_bytes(b"world")
+            dest = Path(tmp) / "out.bin"
+            digest, written = hash_paths_concat([p1, p2], dest, max_size=None)
+            self.assertEqual(written, 11)
+            self.assertEqual(dest.read_bytes(), b"hello world")
+            self.assertEqual(digest, hashlib.sha256(b"hello world").hexdigest())
 
 
 if __name__ == "__main__":

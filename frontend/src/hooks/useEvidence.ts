@@ -20,6 +20,12 @@ import {
 } from '../workers/proofWorkerClient'
 import { hashFileInWorker } from '../workers/fileHashWorkerClient'
 import { appConfig } from '../config'
+import { CIRCUIT_INPUT_SCHEMA_VERSION, silentWitnessEpoch } from '../circuitInputSchema'
+import {
+  buildProofPreparationPreview,
+  PROOF_PREPARATION_VERIFIER_SCOPE,
+  type ProofPreparationPreviewResult,
+} from '../proofPreparationPreview'
 
 export const TIERS = [
   {
@@ -74,6 +80,8 @@ export type UseEvidenceReturn = {
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
   message: string
+  /** Read-only preview of the canonical proof inputs and policy version. */
+  proofPreparation: ProofPreparationPreviewResult
   registration: RegisterProofResult | null
   networkMismatch: string | null
   isCancellable: boolean
@@ -145,6 +153,19 @@ export function useEvidence(): UseEvidenceReturn {
   const selectedTierMeta = useMemo(
     () => TIERS.find((t) => t.id === selectedTier) ?? TIERS[0],
     [selectedTier],
+  )
+
+  // Read-only: derived from the evidence package and the proving policy alone.
+  // It never touches seeds, loads a circuit, or submits anything.
+  const proofPreparation = useMemo(
+    () =>
+      buildProofPreparationPreview({
+        proof,
+        tier: selectedTier,
+        verifierScope: PROOF_PREPARATION_VERIFIER_SCOPE,
+        epoch: silentWitnessEpoch(),
+      }),
+    [proof, selectedTier],
   )
 
   const isCancellable = stage === 'hashing' || stage === 'embedding' || stage === 'proving'
@@ -416,9 +437,9 @@ export function useEvidence(): UseEvidenceReturn {
         videoHash: baseProof.videoHash,
         credentialSecret: credentialSeed,
         nullifierSecret: nullifierSeed,
-        inputSchemaVersion: 1,
-        verifierScope: 'harpocrates',
-        epoch: Math.floor(Date.now() / 86400000),
+        inputSchemaVersion: CIRCUIT_INPUT_SCHEMA_VERSION,
+        verifierScope: PROOF_PREPARATION_VERIFIER_SCOPE,
+        epoch: silentWitnessEpoch(),
         signal: controller.signal,
         onProgress: () => {
           if (seqRef.current !== seq) return
@@ -471,6 +492,7 @@ export function useEvidence(): UseEvidenceReturn {
     nullifierSeed,
     setNullifierSeed,
     message,
+    proofPreparation,
     registration,
     networkMismatch,
     isCancellable,

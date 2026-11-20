@@ -103,23 +103,63 @@ class DeclaredUploadLimitTest(unittest.TestCase):
             4096 + self.app_module.UPLOAD_MULTIPART_OVERHEAD_BYTES,
         )
 
+    def test_zero_byte_allowance_is_respected(self):
+        config = SimpleNamespace(
+            upload_max_bytes=0,
+            max_video_bytes=4096,
+            max_content_length=10_000_000,
+        )
+        self.assertEqual(
+            self.app_module.declared_upload_limit_bytes(config),
+            self.app_module.UPLOAD_MULTIPART_OVERHEAD_BYTES,
+        )
+
+    def test_upload_max_bytes_env_accepts_zero(self):
+        with patch.dict(os.environ, {"UPLOAD_MAX_BYTES": "0"}):
+            self.assertEqual(self.app_module.load_config().upload_max_bytes, 0)
+
+    def test_absent_upload_max_falls_back_to_video_budget(self):
+        config = SimpleNamespace(
+            upload_max_bytes=None,
+            max_video_bytes=4096,
+            max_content_length=10_000_000,
+        )
+        self.assertEqual(
+            self.app_module.declared_upload_limit_bytes(config),
+            4096 + self.app_module.UPLOAD_MULTIPART_OVERHEAD_BYTES,
+        )
+
 
 class UploadContentLengthGateTest(unittest.TestCase):
     """End-to-end gate behaviour on the real Flask app."""
 
     def setUp(self):
         self._previous_max_video = os.environ.get("MAX_VIDEO_BYTES")
+        self._previous_max_json = os.environ.get("MAX_JSON_BYTES")
+        os.environ["MAX_JSON_BYTES"] = "2000000"
         # A 1 KiB video budget makes the ~1 MiB declared boundary reachable
         # with synthetic bodies instead of 250 MiB of test data.
         os.environ["MAX_VIDEO_BYTES"] = "1024"
+        self._previous_upload_max = os.environ.pop("UPLOAD_MAX_BYTES", None)
         self.app_module, self.app, self.client = _make_fresh_app()
         self.limit = _declared_limit(self.app_module)
+        self.app.config["MAX_FORM_MEMORY_SIZE"] = (
+            self.limit + 2 * _SYNTHETIC_PAD_STEP
+        )
 
     def tearDown(self):
         if self._previous_max_video is None:
             os.environ.pop("MAX_VIDEO_BYTES", None)
         else:
             os.environ["MAX_VIDEO_BYTES"] = self._previous_max_video
+        if self._previous_max_json is None:
+            os.environ.pop("MAX_JSON_BYTES", None)
+        else:
+            os.environ["MAX_JSON_BYTES"] = self._previous_max_json
+        if self._previous_upload_max is None:
+            os.environ.pop("UPLOAD_MAX_BYTES", None)
+        else:
+            os.environ["UPLOAD_MAX_BYTES"] = self._previous_upload_max
 
     def _assert_payload_too_large(self, response):
         self.assertEqual(response.status_code, 413)

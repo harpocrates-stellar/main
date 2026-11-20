@@ -5,9 +5,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StudioView } from './StudioView'
+import { buildProofPreparationPreview } from '../proofPreparationPreview'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
@@ -49,6 +50,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     nullifierSeed: '',
     setNullifierSeed: vi.fn(),
     message: 'Upload evidence to begin.',
+    proofPreparation: buildProofPreparationPreview({ proof: null, tier: 'silent' }),
     registration: null,
     networkMismatch: null,
     isCancellable: false,
@@ -76,6 +78,55 @@ beforeEach(() => {
     timestamp: '2026-01-01T00:00:00.000Z',
     tier: 'silent',
   }
+})
+
+describe('StudioView – proof preparation preview', () => {
+  it('shows canonical public inputs and the policy version before proving', () => {
+    const preparation = buildProofPreparationPreview({
+      proof,
+      tier: 'silent',
+      verifierScope: '0',
+      epoch: 20_000,
+    })
+
+    renderStudio(makeEvidence({ stage: 'ready', proof, proofPreparation: preparation }))
+
+    const region = screen.getByRole('region', {
+      name: 'Read-only proof preparation preview',
+    })
+    expect(region).toHaveTextContent('silent_witness/input-v1')
+    expect(region).toHaveTextContent(BigInt(`0x${'b'.repeat(32)}`).toString(10))
+    expect(region).toHaveTextContent('20000')
+    expect(region).toHaveTextContent('[REDACTED]')
+    expect(within(region).queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('is hidden for identity tiers that do not generate a zero-knowledge proof', () => {
+    const sourceMeta = {
+      id: 'source' as const,
+      title: 'Consistent Source',
+      label: 'Pseudonymous Wallet',
+      icon: vi.fn(),
+      description: 'Freighter signature links evidence to a recurring Stellar source.',
+    }
+
+    renderStudio(
+      makeEvidence({
+        selectedTier: 'source',
+        selectedTierMeta: sourceMeta,
+        stage: 'ready',
+        proof: { ...proof, tier: 'source' },
+        proofPreparation: buildProofPreparationPreview({
+          proof: { ...proof, tier: 'source' },
+          tier: 'source',
+        }),
+      }),
+    )
+
+    expect(
+      screen.queryByRole('region', { name: 'Read-only proof preparation preview' }),
+    ).not.toBeInTheDocument()
+  })
 })
 
 describe('StudioView – cancel button', () => {

@@ -2,7 +2,16 @@ import schema from '../../zk/noir/circuit_input_schema_v1.json'
 import type { CompiledCircuit } from '@noir-lang/types'
 
 export const CIRCUIT_INPUT_SCHEMA_VERSION = 1
+export const CIRCUIT_INPUT_SCHEMA_ID: string = schema.id
 export const BN254_FIELD_MODULUS = BigInt(schema.field_modulus)
+
+/** Milliseconds per scoped-nullifier epoch (one UTC day). */
+export const SILENT_WITNESS_EPOCH_MS = 86_400_000
+
+/** Day-granular epoch used for scoped nullifiers; deterministic for a given clock. */
+export function silentWitnessEpoch(now: number = Date.now()): number {
+  return Math.floor(now / SILENT_WITNESS_EPOCH_MS)
+}
 
 export type SilentWitnessInput = {
   videoHash: string
@@ -11,6 +20,19 @@ export type SilentWitnessInput = {
   inputSchemaVersion?: number
   verifierScope?: string
   epoch?: number
+}
+
+export type SilentWitnessPublicInput = {
+  videoHash: string
+  verifierScope?: string
+  epoch?: number
+}
+
+export type CanonicalSilentWitnessPublicInputs = {
+  video_hash_hi: string
+  video_hash_lo: string
+  verifier_scope: string
+  epoch: string
 }
 
 export type CircuitInputErrorCode =
@@ -48,6 +70,31 @@ function proofField(value: unknown): bigint | null {
   return field < BN254_FIELD_MODULUS ? field : null
 }
 
+/**
+ * Canonicalize the public half of a Silent Witness input envelope.
+ *
+ * Proving and the read-only preparation preview both call this, so the values
+ * an operator sees before proving are byte-for-byte the values handed to Noir.
+ * Private witness fields are out of scope here and never accepted.
+ */
+export function canonicalSilentWitnessPublicInputs(
+  input: SilentWitnessPublicInput,
+): CanonicalSilentWitnessPublicInputs {
+  if (!input || typeof input !== 'object') throw new CircuitInputError('invalid_input')
+  const scope = normalizeInputField(input.verifierScope ?? '0')
+  if (typeof input.videoHash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(input.videoHash) ||
+      scope === null || !Number.isSafeInteger(input.epoch ?? 0) || (input.epoch ?? 0) < 0) {
+    throw new CircuitInputError('invalid_input')
+  }
+
+  return {
+    video_hash_hi: BigInt(`0x${input.videoHash.slice(0, 32)}`).toString(10),
+    video_hash_lo: BigInt(`0x${input.videoHash.slice(32)}`).toString(10),
+    verifier_scope: scope,
+    epoch: String(input.epoch ?? 0),
+  }
+}
+
 export function prepareSilentWitnessInputs(input: SilentWitnessInput) {
   if (!input || typeof input !== 'object') throw new CircuitInputError('invalid_input')
   if (input.inputSchemaVersion !== undefined && input.inputSchemaVersion !== CIRCUIT_INPUT_SCHEMA_VERSION) {
@@ -55,20 +102,12 @@ export function prepareSilentWitnessInputs(input: SilentWitnessInput) {
   }
   const credential = normalizeInputField(input.credentialSecret)
   const nullifier = normalizeInputField(input.nullifierSecret)
-  const scope = normalizeInputField(input.verifierScope ?? '0')
-  if (typeof input.videoHash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(input.videoHash) ||
-      credential === null || nullifier === null || scope === null ||
-      !Number.isSafeInteger(input.epoch ?? 0) || (input.epoch ?? 0) < 0) {
-    throw new CircuitInputError('invalid_input')
-  }
+  if (credential === null || nullifier === null) throw new CircuitInputError('invalid_input')
 
   return {
     credential_secret: credential,
     nullifier_secret: nullifier,
-    video_hash_hi: BigInt(`0x${input.videoHash.slice(0, 32)}`).toString(10),
-    video_hash_lo: BigInt(`0x${input.videoHash.slice(32)}`).toString(10),
-    verifier_scope: scope,
-    epoch: String(input.epoch ?? 0),
+    ...canonicalSilentWitnessPublicInputs(input),
   }
 }
 

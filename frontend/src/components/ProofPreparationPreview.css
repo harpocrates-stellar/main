@@ -1,0 +1,119 @@
+/* ── Read-only proof preparation preview (Issue #1130) ─────────────────── */
+.proof-preparation {
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(12, 14, 22, 0.72);
+}
+
+.proof-preparation__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.proof-preparation h3,
+.proof-preparation__header h3 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.proof-preparation__badge {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid rgba(120, 220, 180, 0.35);
+  border-radius: 999px;
+  color: rgba(120, 220, 180, 0.9);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.proof-preparation__policy,
+.proof-preparation__summary {
+  margin: 0 0 8px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 13px;
+}
+
+.proof-preparation__policy code {
+  font-family: var(--mono);
+}
+
+.proof-preparation__list {
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.proof-preparation__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.proof-preparation__row:last-child {
+  border-bottom: none;
+}
+
+.proof-preparation__row dt {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 12px;
+}
+
+.proof-preparation__row dd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.proof-preparation__row--public dd code {
+  text-align: right;
+  word-break: break-all;
+}
+
+.proof-preparation__row--concealed dd {
+  color: rgba(255, 190, 120, 0.78);
+}
+
+.proof-preparation__footnote {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.proof-preparation--empty,
+.proof-preparation--error {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.proof-preparation--error {
+  border-color: rgba(255, 120, 100, 0.35);
+}
+
+/* Follows the app's CSS-only high-contrast rule (Issue #318): stronger text
+   when the OS asks for more contrast, no theme state of its own. */
+@media (prefers-contrast: more) {
+  .proof-preparation__summary,
+  .proof-preparation__row dt,
+  .proof-preparation--empty,
+  .proof-preparation--error {
+    color: #fff;
+  }
+}
