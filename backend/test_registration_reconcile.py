@@ -159,3 +159,205 @@ def test_process_verify_tx_job_success(mock_reconcile):
 def test_process_verify_tx_job_raises_on_dependency_failure(mock_reconcile):
     with pytest.raises(RuntimeError):
         process_verify_tx_job({"txHash": VALID_TX})
+
+
+# --- Proof registration intent binding tests ---
+
+SAMPLE_STATEMENT = {
+    "video_hash": "1" * 64,
+    "metadata_hash": "2" * 64,
+    "proof_id": "3" * 64,
+    "tier": "seal",
+    "source_address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+}
+
+
+def test_canonical_intent_digest_deterministic_and_normalized():
+    from idempotency import canonical_evidence_statement, compute_intent_digest
+
+    camel = {
+        "videoHash": "0x" + "1" * 64,
+        "metadataHash": "2" * 64,
+        "proofId": "3" * 64,
+        "tier": "  SEAL ",
+        "sourceAddress": SAMPLE_STATEMENT["source_address"],
+        "contractId": SAMPLE_STATEMENT["contract_id"],
+    }
+    d1 = compute_intent_digest(SAMPLE_STATEMENT)
+    d2 = compute_intent_digest(camel)
+    assert d1 == d2
+    assert len(d1) == 64
+
+    # Altering any canonical field changes the digest
+    altered = dict(SAMPLE_STATEMENT, tier="source")
+    assert compute_intent_digest(altered) != d1
+    canonical = canonical_evidence_statement(**SAMPLE_STATEMENT)
+    assert canonical["tier"] == "seal"
+
+
+def test_reconcile_persists_intent_before_verify_and_confirms_matching_statement():
+    from idempotency import compute_intent_digest
+
+    expected_digest = compute_intent_digest(SAMPLE_STATEMENT)
+    call_order: list[str] = []
+
+    def fake_persist(tx_hash, digest):
+        call_order.append("persist")
+        assert tx_hash == VALID_TX
+        assert digest == expected_digest
+        return digest
+
+    def fake_verify(tx_hash, min_confirmations=1):
+        call_order.append("verify")
+        return TxVerificationResult(
+            status="confirmed",
+            confirmations=2,
+            ledger=42,
+            reason="confirmed",
+            registered_statement=dict(SAMPLE_STATEMENT),
+        )
+
+    with mock.patch("registration_reconcile.persist_registration_intent", side_effect=fake_persist), \
+         mock.patch("registration_reconcile.verify_transaction", side_effect=fake_verify), \
+         mock.patch("registration_reconcile.update_tx_status", return_value=True) as mock_update:
+        result = reconcile_registration(
+            VALID_TX,
+            previous_status="pending",
+            expected_statement=SAMPLE_STATEMENT,
+        )
+
+    assert call_order == ["persist", "verify"]
+    assert result["status"] == "confirmed"
+    assert result["intentDigest"] == expected_digest
+    assert result["intentVerified"] is True
+    assert result["updated"] is True
+    mock_update.assert_called_once_with(VALID_TX, "confirmed", force=False)
+
+
+def test_reconcile_rejects_mismatched_registered_statement():
+    from idempotency import compute_intent_digest
+
+    expected_digest = compute_intent_digest(SAMPLE_STATEMENT)
+    tampered_statement = dict(SAMPLE_STATEMENT, video_hash="f" * 64)
+
+    with mock.patch("registration_reconcile.persist_registration_intent", return_value=expected_digest) as mock_persist, \
+         mock.patch(
+             "registration_reconcile.verify_transaction",
+             return_value=TxVerificationResult(
+                 status="confirmed",
+                 confirmations=3,
+                 ledger=50,
+                 reason="confirmed",
+                 registered_statement=tampered_statement,
+             ),
+         ), \
+         mock.patch("registration_reconcile.update_tx_status", return_value=True) as mock_update:
+        result = reconcile_registration(
+            VALID_TX,
+            previous_status="pending",
+            expected_statement=SAMPLE_STATEMENT,
+        )
+
+    mock_persist.assert_called_once_with(VALID_TX, expected_digest)
+    assert result["status"] == "failed"
+    assert result["reason"] == "registered_statement_mismatch"
+    assert result["intentVerified"] is False
+    assert result["updated"] is True
+    mock_update.assert_called_once_with(VALID_TX, "failed", force=False)
+
+
+def test_reconcile_fails_closed_when_bound_intent_has_no_registered_statement():
+    from idempotency import compute_intent_digest
+
+    expected_digest = compute_intent_digest(SAMPLE_STATEMENT)
+
+    with mock.patch("registration_reconcile.persist_registration_intent", return_value=expected_digest), \
+         mock.patch(
+             "registration_reconcile.verify_transaction",
+             return_value=TxVerificationResult(
+                 status="confirmed",
+                 confirmations=3,
+                 ledger=50,
+                 reason="confirmed",
+             ),
+         ), \
+         mock.patch("registration_reconcile.update_tx_status", return_value=True) as mock_update:
+        result = reconcile_registration(
+            VALID_TX,
+            previous_status="pending",
+            intent_digest=expected_digest,
+        )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "registered_statement_missing"
+    assert result["intentVerified"] is False
+    mock_update.assert_called_once_with(VALID_TX, "failed", force=False)
+
+
+def test_reconcile_rejects_on_persisted_intent_conflict_before_verify():
+    from idempotency import IntentConflictError, compute_intent_digest
+
+    expected_digest = compute_intent_digest(SAMPLE_STATEMENT)
+
+    with mock.patch(
+        "registration_reconcile.persist_registration_intent",
+        side_effect=IntentConflictError("conflict"),
+    ), mock.patch("registration_reconcile.verify_transaction") as mock_verify:
+        result = reconcile_registration(
+            VALID_TX,
+            previous_status="pending",
+            expected_statement=SAMPLE_STATEMENT,
+        )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "intent_digest_conflict"
+    assert result["intentDigest"] == expected_digest
+    assert result["intentVerified"] is False
+    mock_verify.assert_not_called()
+
+
+def test_verify_transaction_extracts_horizon_hash_memo():
+    import base64
+    from idempotency import compute_intent_digest
+
+    digest = compute_intent_digest(SAMPLE_STATEMENT)
+    memo_b64 = base64.b64encode(bytes.fromhex(digest)).decode("ascii")
+
+    with mock.patch("tx_verification._latest_ledger", return_value=200), \
+         mock.patch(
+             "tx_verification._fetch_json",
+             return_value=(
+                 200,
+                 {
+                     "successful": True,
+                     "ledger": 198,
+                     "memo_type": "hash",
+                     "memo": memo_b64,
+                 },
+             ),
+         ):
+        result = verify_transaction(VALID_TX, min_confirmations=1)
+
+    assert result.status == "confirmed"
+    assert result.registered_intent_digest == digest
+
+
+def test_process_verify_tx_job_forwards_intent_digest():
+    from idempotency import compute_intent_digest
+
+    digest = compute_intent_digest(SAMPLE_STATEMENT)
+    with mock.patch(
+        "registration_reconcile.reconcile_registration",
+        return_value={"status": "confirmed", "intentDigest": digest, "intentVerified": True, "updated": True},
+    ) as mock_reconcile:
+        out = process_verify_tx_job({"tx_hash": VALID_TX, "proof_id": "3" * 64, "intent_digest": digest})
+
+    assert out["status"] == "confirmed"
+    mock_reconcile.assert_called_once_with(
+        VALID_TX,
+        previous_status="pending",
+        proof_id="3" * 64,
+        min_confirmations=None,
+        intent_digest=digest,
+    )

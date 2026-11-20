@@ -1,7 +1,9 @@
 """Horizon-backed Stellar transaction status checks for registration reconcile."""
 
 from __future__ import annotations
+import base64
 from dataclasses import dataclass
+from typing import Any
 
 @dataclass
 class TxVerificationResult:
@@ -12,6 +14,37 @@ class TxVerificationResult:
     confirmations: int | None = None
     successful: bool | None = None
     source: str | None = None
+    registered_statement: dict[str, Any] | None = None
+    registered_intent_digest: str | None = None
+
+
+def _extract_registered_intent(data: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Extract on-chain registered statement or intent digest from Horizon tx data."""
+    statement = data.get("registered_statement")
+    if not isinstance(statement, dict):
+        statement = None
+
+    digest: str | None = None
+    raw_digest = data.get("intent_digest") or data.get("statement_digest")
+    if isinstance(raw_digest, str):
+        try:
+            digest = normalize_tx_hash(raw_digest)
+        except ValueError:
+            digest = None
+
+    if digest is None and data.get("memo_type") == "hash" and isinstance(data.get("memo"), str):
+        memo_val = data["memo"].strip()
+        try:
+            digest = normalize_tx_hash(memo_val)
+        except ValueError:
+            try:
+                decoded = base64.b64decode(memo_val, validate=True)
+                if len(decoded) == 32:
+                    digest = decoded.hex()
+            except Exception:
+                digest = None
+
+    return statement, digest
 
 
 def normalize_tx_hash(value: object) -> str:
@@ -171,6 +204,8 @@ def verify_transaction(
                     reason="awaiting_confirmations",
                 )
 
+            reg_statement, reg_digest = _extract_registered_intent(data)
+
             return TxVerificationResult(
                 status="confirmed",
                 ledger=ledger,
@@ -179,6 +214,8 @@ def verify_transaction(
                 successful=True,
                 source=rpc_url,
                 reason="confirmed",
+                registered_statement=reg_statement,
+                registered_intent_digest=reg_digest,
             )
         except Exception as exc:
             saw_dependency_failure = True

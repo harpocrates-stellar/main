@@ -87,7 +87,12 @@ except ImportError:
     default_min_confirmations = None
     reconcile_pending_registrations = None
     reconcile_registration = None
-from idempotency import idempotent
+from idempotency import (
+    IntentConflictError,
+    idempotent,
+    persist_registration_intent,
+    registration_intent_digest,
+)
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
@@ -1531,6 +1536,23 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        intent_digest = None
+        if normalized_tx_hash:
+            intent_digest = registration_intent_digest(
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=proof_id,
+                tier=tier,
+                source_address=validated_source_address,
+                contract_id=validated_contract_id,
+            )
+            try:
+                persist_registration_intent(normalized_tx_hash, intent_digest)
+            except IntentConflictError:
+                return jsonify({
+                    "error": "transaction hash is already bound to a different registration intent",
+                }), 409
+
         if db_event and db_event.get("id") and created:
             # A newly registered proof can change the on-chain verification
             # result. Evict all cached results for this proof before clients
@@ -1538,10 +1560,21 @@ def create_app() -> Flask:
             app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
+                enqueue_job(
+                    "verify_tx",
+                    {
+                        "proof_id": proof_id,
+                        "tx_hash": normalized_tx_hash,
+                        "contract_id": validated_contract_id,
+                        "intent_digest": intent_digest,
+                    },
+                )
 
         status = 201 if created else 200
-        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+        body = {"ok": True, "db_event": db_event, "created": created}
+        if intent_digest is not None:
+            body["intentDigest"] = intent_digest
+        return jsonify(body), status
 
     @app.post("/api/proofs/reconcile")
     def reconcile_registration_confirmations():
