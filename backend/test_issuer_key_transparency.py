@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import unittest
 
+from capture_attestation import (
+    AppIdentity,
+    CameraPipeline,
+    CaptureAttestation,
+    SecureTime,
+)
 from issuer_key_transparency import (
     DEFAULT_FRESHNESS_SECONDS,
     HIGH_ASSURANCE_FRESHNESS_SECONDS,
+    MAX_SIMULATION_ITEMS,
+    CapturedEvidenceSample,
     DirectoryCache,
     DirectoryCheckpoint,
     DirectoryEvent,
@@ -17,16 +25,22 @@ from issuer_key_transparency import (
     IssuerManifest,
     KeyStatus,
     TransparencyError,
+    TrustPolicy,
+    canonicalize_simulation_report,
     compute_tree_head,
     create_activation_event,
     create_rotation_event,
     detect_rollback,
+    evaluate_captured_evidence,
     event_hash,
     key_valid_for_historical_signature,
     key_was_compromised_at,
     manifest_hash,
     rebuild_directory,
     require_fresh_checkpoint,
+    simulate_trust_policy,
+    simulation_report_hash,
+    trust_policy_hash,
     verify_checkpoint_consistency,
 )
 
@@ -244,6 +258,254 @@ class PrivacyTests(unittest.TestCase):
         for forbidden in ("email", "legalname", "phone", "street", "employee"):
             self.assertNotIn(forbidden, blob)
         self.assertIn("organizationIdentityHash", encoded)
+
+
+def _synthetic_attestation(
+    *,
+    trust_level: int = 2,
+    privacy_scope: str = "per_session",
+    nonce_char: str = "1",
+    signing_digest: str | None = "2" * 64,
+    secure_time: SecureTime | None = None,
+    claimed_integrity: str | None = "raw_sensor",
+) -> CaptureAttestation:
+    return CaptureAttestation(
+        version=1,
+        trust_level=trust_level,
+        capture_nonce=nonce_char * 64,
+        app_identity=AppIdentity(
+            package_name="org.harpocrates.capture",
+            version_code="104",
+            signing_digest=signing_digest,
+        ),
+        device_commitment="3" * 64,
+        privacy_scope=privacy_scope,
+        evidence_digest_binding="4" * 64,
+        secure_time=secure_time,
+        camera_pipeline=CameraPipeline(claimed_integrity=claimed_integrity),
+    )
+
+
+class TrustPolicySimulationTests(unittest.TestCase):
+    def test_simulation_reports_changed_outcomes_without_mutating_active_policy(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        e1 = create_rotation_event(ORG, "k2", KEY_B, "k1", 1, 2000, event_hash(e0))
+        d = rebuild_directory(ORG, [e0, e1])
+        m = _manifest([IssuerKey("k2", KEY_B, "ed25519", 2000)], valid_from=2000)
+        d.publish_manifest(m)
+        cp = d.make_checkpoint(timestamp=2500, signature_hash=SIG)
+        cache = DirectoryCache(checkpoint=cp, fetched_at=2500)
+
+        active_policy = TrustPolicy(
+            policy_version="policy-v1",
+            allowed_trust_levels=frozenset({1, 2}),
+            allowed_privacy_scopes=frozenset({"per_session", "per_relying_party"}),
+            require_secure_time=False,
+            allowed_integrity_claims=frozenset({"raw_sensor", "processed"}),
+            allow_rotated_key=True,
+        )
+        candidate_policy = TrustPolicy(
+            policy_version="policy-v2",
+            allowed_trust_levels=frozenset({2}),
+            allowed_privacy_scopes=frozenset({"per_session", "per_relying_party", "per_device_group"}),
+            require_secure_time=True,
+            max_time_drift_ms=500,
+            allowed_integrity_claims=frozenset({"raw_sensor"}),
+            allow_rotated_key=True,
+        )
+
+        before_policy_hash = trust_policy_hash(active_policy)
+        before_tree_head = d.tree_head()
+
+        samples = [
+            # Unchanged: accepted under both v1 and v2
+            CapturedEvidenceSample(
+                evidence_id="ev-hw-ok",
+                attestation=_synthetic_attestation(
+                    trust_level=2,
+                    nonce_char="a",
+                    secure_time=SecureTime(unix_ms=2600_000, source="hardware_clock", drift_ms=50),
+                    claimed_integrity="raw_sensor",
+                ),
+                key_id="k2",
+                signature_timestamp=2400,
+            ),
+            # Newly rejected: software-attested + no secure time (accepted in v1, rejected in v2)
+            CapturedEvidenceSample(
+                evidence_id="ev-sw-downgrade",
+                attestation=_synthetic_attestation(
+                    trust_level=1,
+                    nonce_char="b",
+                    secure_time=None,
+                    claimed_integrity="processed",
+                ),
+                key_id="k1",
+                signature_timestamp=1500,
+            ),
+            # Newly accepted: per_device_group scope allowed in v2 but not v1
+            CapturedEvidenceSample(
+                evidence_id="ev-scope-expanded",
+                attestation=_synthetic_attestation(
+                    trust_level=2,
+                    privacy_scope="per_device_group",
+                    nonce_char="c",
+                    secure_time=SecureTime(unix_ms=2600_000, source="ntp_synchronized", drift_ms=100),
+                    claimed_integrity="raw_sensor",
+                ),
+                key_id="k2",
+                signature_timestamp=2400,
+            ),
+            # Reasons changed: rooted device rejected under both, plus missing secure time in v2
+            CapturedEvidenceSample(
+                evidence_id="ev-rooted-extra-reason",
+                attestation=_synthetic_attestation(
+                    trust_level=3,
+                    nonce_char="d",
+                    secure_time=None,
+                    claimed_integrity="raw_sensor",
+                ),
+            ),
+        ]
+
+        report = simulate_trust_policy(
+            samples,
+            active_policy,
+            candidate_policy,
+            directory=d,
+            cache=cache,
+            now=2600,
+        )
+
+        # Active policy and directory must remain completely unmodified
+        self.assertFalse(report.active_policy_mutated)
+        self.assertEqual(trust_policy_hash(active_policy), before_policy_hash)
+        self.assertEqual(d.tree_head(), before_tree_head)
+
+        self.assertEqual(report.total_evaluated, 4)
+        self.assertEqual(report.unchanged_count, 1)
+        self.assertEqual(report.changed_count, 3)
+        self.assertEqual(report.newly_rejected_count, 1)
+        self.assertEqual(report.newly_accepted_count, 1)
+        self.assertEqual(report.reason_changed_count, 1)
+
+        by_id = {c.evidence_id: c for c in report.changes}
+        self.assertNotIn("ev-hw-ok", by_id)
+
+        self.assertEqual(by_id["ev-sw-downgrade"].change_type, "newly_rejected")
+        self.assertTrue(by_id["ev-sw-downgrade"].baseline_accepted)
+        self.assertFalse(by_id["ev-sw-downgrade"].candidate_accepted)
+        self.assertIn("trust_level_not_allowed", by_id["ev-sw-downgrade"].candidate_reasons)
+        self.assertIn("missing_secure_time", by_id["ev-sw-downgrade"].candidate_reasons)
+        self.assertIn("camera_integrity_not_allowed", by_id["ev-sw-downgrade"].candidate_reasons)
+
+        self.assertEqual(by_id["ev-scope-expanded"].change_type, "newly_accepted")
+        self.assertFalse(by_id["ev-scope-expanded"].baseline_accepted)
+        self.assertTrue(by_id["ev-scope-expanded"].candidate_accepted)
+        self.assertEqual(by_id["ev-scope-expanded"].baseline_reasons, ("privacy_scope_not_allowed",))
+
+        self.assertEqual(by_id["ev-rooted-extra-reason"].change_type, "reasons_changed")
+        self.assertEqual(
+            by_id["ev-rooted-extra-reason"].baseline_reasons, ("trust_level_not_allowed",)
+        )
+        self.assertEqual(
+            by_id["ev-rooted-extra-reason"].candidate_reasons,
+            ("missing_secure_time", "trust_level_not_allowed"),
+        )
+
+        # Deterministic canonical encoding & privacy (no nonce or deviceCommitment leaked)
+        canonical = canonicalize_simulation_report(report)
+        self.assertEqual(simulation_report_hash(report), simulation_report_hash(report))
+        self.assertNotIn("captureNonce", canonical)
+        self.assertNotIn("deviceCommitment", canonical)
+
+    def test_compromised_key_and_stale_checkpoint_fail_closed(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        d = rebuild_directory(ORG, [e0])
+        d.append_event(
+            DirectoryEvent(
+                event_type=EventType.COMPROMISE,
+                sequence=1,
+                timestamp=1800,
+                organization_identity_hash=ORG,
+                key_id="k1",
+                public_key_hash=KEY_A,
+                previous_event_hash=event_hash(e0),
+                reason_hash="1" * 64,
+            )
+        )
+        m = _manifest([IssuerKey("k1", KEY_A, "ed25519", 1000)], valid_from=1000)
+        d.publish_manifest(m)
+        cp = d.make_checkpoint(timestamp=2000, signature_hash=SIG)
+        cache = DirectoryCache(checkpoint=cp, fetched_at=2000)
+
+        permissive = TrustPolicy(
+            policy_version="v1",
+            allow_compromised_pre_compromise_key=True,
+            high_assurance_max_checkpoint_age_seconds=3600,
+        )
+        strict = TrustPolicy(
+            policy_version="v2",
+            allow_compromised_pre_compromise_key=False,
+            high_assurance_max_checkpoint_age_seconds=600,
+        )
+
+        sample = CapturedEvidenceSample(
+            evidence_id="ev-pre-compromise",
+            attestation=_synthetic_attestation(trust_level=2),
+            key_id="k1",
+            signature_timestamp=1500,
+            high_assurance=True,
+        )
+        report = simulate_trust_policy(
+            [sample], permissive, strict, directory=d, cache=cache, now=3000
+        )
+        self.assertEqual(report.newly_rejected_count, 1)
+        diff = report.changes[0]
+        self.assertIn("key_compromised_disallowed", diff.candidate_reasons)
+        self.assertIn("stale_directory_checkpoint", diff.candidate_reasons)
+
+    def test_missing_directory_for_keyed_sample_fails_closed(self) -> None:
+        policy = TrustPolicy(policy_version="v1")
+        sample = CapturedEvidenceSample(
+            evidence_id="ev-no-dir",
+            attestation=_synthetic_attestation(trust_level=2),
+            key_id="k1",
+            signature_timestamp=1500,
+        )
+        outcome = evaluate_captured_evidence(sample, policy, directory=None)
+        self.assertFalse(outcome.accepted)
+        self.assertEqual(outcome.reasons, ("missing_issuer_directory",))
+
+    def test_boundary_and_invalid_policy_cases(self) -> None:
+        with self.assertRaises(TransparencyError):
+            TrustPolicy(policy_version=" ")
+        with self.assertRaises(TransparencyError):
+            TrustPolicy(policy_version="v1", allowed_trust_levels=frozenset({99}))
+        with self.assertRaises(TransparencyError):
+            TrustPolicy(policy_version="v1", max_time_drift_ms=-1)
+        with self.assertRaises(TransparencyError):
+            TrustPolicy(policy_version="v1", max_checkpoint_age_seconds=-5)
+        with self.assertRaises(TransparencyError):
+            CapturedEvidenceSample(evidence_id="", attestation=_synthetic_attestation())
+
+        p1 = TrustPolicy(policy_version="v1")
+        # Empty batch returns zeroed report
+        empty_report = simulate_trust_policy([], p1, p1)
+        self.assertEqual(empty_report.total_evaluated, 0)
+        self.assertEqual(empty_report.changed_count, 0)
+
+        # Duplicate evidence_id rejected
+        s1 = CapturedEvidenceSample(evidence_id="dup", attestation=_synthetic_attestation())
+        with self.assertRaises(TransparencyError):
+            simulate_trust_policy([s1, s1], p1, p1)
+
+        # Exceeding MAX_SIMULATION_ITEMS rejected
+        too_many = [
+            CapturedEvidenceSample(evidence_id=f"ev-{i}", attestation=_synthetic_attestation())
+            for i in range(MAX_SIMULATION_ITEMS + 1)
+        ]
+        with self.assertRaises(TransparencyError):
+            simulate_trust_policy(too_many, p1, p1)
 
 
 if __name__ == "__main__":
