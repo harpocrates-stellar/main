@@ -7,6 +7,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+
+vi.mock('../stellar', () => ({
+  CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  getVerifierState: vi.fn().mockResolvedValue(null),
+  expireProof: vi.fn(),
+  correctProof: vi.fn(),
+}))
+
+vi.mock('../harpocratesRegistry', () => ({
+  CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  getVerifierState: vi.fn().mockResolvedValue(null),
+  getOpenDisputeCount: vi.fn().mockResolvedValue(0),
+  getProofHistory: vi.fn().mockResolvedValue({ entries: [], total: 0 }),
+  expireProof: vi.fn(),
+  correctProof: vi.fn(),
+}))
+
 import { StudioView } from './StudioView'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
@@ -41,6 +58,7 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
       description: 'Noir ZK proof.',
     },
     stage: 'idle',
+    hashProgress: null,
     file: null,
     proof: null,
     processedVideoUrl: '',
@@ -52,9 +70,14 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     registration: null,
     networkMismatch: null,
     isCancellable: false,
+    review: null,
+    reviewInvalidatedReason: null,
+    openReview: vi.fn(),
+    closeReview: vi.fn(),
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +144,75 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('StudioView – evidence processing review', () => {
+  it('shows Review before registering button and opens review on click', async () => {
+    const user = userEvent.setup()
+    const openReview = vi.fn()
+    renderStudio(makeEvidence({ stage: 'ready', proof, openReview }))
+
+    const reviewBtn = screen.getByRole('button', { name: /review before registering/i })
+    expect(reviewBtn).toBeEnabled()
+    await user.click(reviewBtn)
+    expect(openReview).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders identity tier, statement digest, and network in the review screen', async () => {
+    const user = userEvent.setup()
+    const registerProof = vi.fn()
+    const closeReview = vi.fn()
+    const digest = 'f'.repeat(64)
+
+    renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        registerProof,
+        closeReview,
+        review: {
+          tier: 'silent',
+          tierTitle: 'Silent Witness',
+          tierLabel: 'Anonymous Credential',
+          statementDigest: digest,
+          networkName: 'Testnet',
+          networkPassphrase: 'Test SDF Network ; September 2015',
+          proofId: proof.proofId,
+          videoHash: proof.videoHash,
+          metadataHash: proof.metadataHash,
+          sourceHash: proof.sourceHash,
+        },
+      }),
+    )
+
+    const region = screen.getByRole('region', { name: 'Evidence processing review' })
+    expect(region).toBeInTheDocument()
+    expect(region).toHaveTextContent('Silent Witness (Anonymous Credential)')
+    expect(screen.getByTestId('review-statement-digest')).toHaveTextContent(digest)
+    expect(region).toHaveTextContent('Testnet')
+    expect(region).toHaveTextContent('Test SDF Network ; September 2015')
+
+    await user.click(screen.getByRole('button', { name: /confirm & register proof/i }))
+    expect(registerProof).toHaveBeenCalledWith('GSOURCEGAUTH')
+
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(closeReview).toHaveBeenCalledTimes(1)
+  })
+
+  it('displays an invalidation alert when reviewInvalidatedReason is set', () => {
+    renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        review: null,
+        reviewInvalidatedReason:
+          'Review invalidated because the identity tier changed. Review again before registering.',
+      }),
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/identity tier changed/i)
+    expect(screen.queryByRole('region', { name: 'Evidence processing review' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /review before registering/i })).toBeInTheDocument()
   })
 })

@@ -15,6 +15,12 @@ vi.mock('../services/evidenceService', () => ({
   embedVideo: embedVideoMock,
 }))
 
+vi.mock('../stellar', () => ({
+  CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  getWalletNetwork: vi.fn(),
+  registerProofOnStellar: vi.fn(),
+}))
+
 describe('useEvidence hashing progress', () => {
   afterEach(() => {
     vi.clearAllMocks()
@@ -230,6 +236,123 @@ describe('useEvidence hashing progress', () => {
     })
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
+})
+
+describe('useEvidence pre-registration review', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  async function prepareReadyEvidence() {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    const hook = renderHook(() => useEvidence())
+    const file = new File(['synthetic-video'], 'sample.mp4', { lastModified: 1700000000000 })
+    await act(async () => {
+      await hook.result.current.handleEvidence(file)
+    })
+    return hook
+  }
+
+  it('builds a review snapshot with identity tier, statement digest, and network', async () => {
+    const { result } = await prepareReadyEvidence()
+
+    expect(result.current.review).toBeNull()
+    await act(async () => {
+      await result.current.openReview()
+    })
+
+    expect(result.current.review).not.toBeNull()
+    expect(result.current.review?.tier).toBe('silent')
+    expect(result.current.review?.tierTitle).toBe('Silent Witness')
+    expect(result.current.review?.networkName).toBe('Testnet')
+    expect(result.current.review?.networkPassphrase).toBe('Test SDF Network ; September 2015')
+    expect(result.current.review?.statementDigest).toMatch(/^[0-9a-f]{64}$/)
+    expect(result.current.reviewInvalidatedReason).toBeNull()
+  })
+
+  it('invalidates the review when identity tier or proof parameters change', async () => {
+    const { result } = await prepareReadyEvidence()
+
+    await act(async () => {
+      await result.current.openReview()
+    })
+    expect(result.current.review).not.toBeNull()
+
+    // Changing credential seed invalidates the active review
+    act(() => {
+      result.current.setCredentialSeed('new-secret-seed')
+    })
+    expect(result.current.review).toBeNull()
+    expect(result.current.reviewInvalidatedReason).toMatch(/proof parameters changed/i)
+    // Privacy check: secret seed must never appear in the invalidation message
+    expect(result.current.reviewInvalidatedReason).not.toContain('new-secret-seed')
+
+    // Re-open review, then change nullifier seed
+    await act(async () => {
+      await result.current.openReview()
+    })
+    expect(result.current.review).not.toBeNull()
+    act(() => {
+      result.current.setNullifierSeed('new-nullifier-seed')
+    })
+    expect(result.current.review).toBeNull()
+    expect(result.current.reviewInvalidatedReason).toMatch(/proof parameters changed/i)
+
+    // Re-open review, then change identity tier
+    await act(async () => {
+      await result.current.openReview()
+    })
+    expect(result.current.review).not.toBeNull()
+    act(() => {
+      result.current.setSelectedTier('source')
+    })
+    expect(result.current.review).toBeNull()
+    expect(result.current.reviewInvalidatedReason).toMatch(/identity tier changed/i)
+  })
+
+  it('invalidates the review when a new source file is selected', async () => {
+    const { result } = await prepareReadyEvidence()
+
+    await act(async () => {
+      await result.current.openReview()
+    })
+    expect(result.current.review).not.toBeNull()
+
+    hashFileInWorkerMock.mockResolvedValueOnce('d'.repeat(64))
+    const nextFile = new File(['next-video'], 'next.mp4', { lastModified: 1700000001000 })
+    await act(async () => {
+      await result.current.handleEvidence(nextFile)
+    })
+
+    expect(result.current.review).toBeNull()
+    expect(result.current.reviewInvalidatedReason).toMatch(/source file changed/i)
+  })
+
+  it('fails closed when registerProof is called without an active review', async () => {
+    const { result } = await prepareReadyEvidence()
+
+    await act(async () => {
+      await result.current.registerProof('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF')
+    })
+
+    expect(result.current.stage).toBe('ready')
+    expect(result.current.registration).toBeNull()
+    expect(result.current.message).toMatch(/review the evidence package before registering/i)
   })
 })
 

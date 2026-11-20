@@ -43,6 +43,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     registration,
     networkMismatch,
     isCancellable,
+    review,
+    reviewInvalidatedReason,
+    openReview,
+    closeReview,
     handleEvidence,
     registerProof,
     cancelEvidence,
@@ -244,34 +248,122 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </a>
         ) : null}
 
-        <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={!proof || !!networkMismatch || isBusy}
-            aria-busy={isBusy || undefined}
-            onClick={() => void registerProof(wallet)}
-          >
-            {isBusy ? (
-              <Loader2 className="spin" size={18} aria-hidden="true" />
-            ) : (
-              <BadgeCheck size={18} aria-hidden="true" />
-            )}
-            Register proof
-          </button>
+        {reviewInvalidatedReason ? (
+          <div className="review-invalidated-banner" role="alert">
+            <span>{reviewInvalidatedReason}</span>
+          </div>
+        ) : null}
 
-          {isProving ? (
+        {review ? (
+          <section
+            className="evidence-review"
+            role="region"
+            aria-label="Evidence processing review"
+          >
+            <header className="evidence-review__header">
+              <BadgeCheck size={16} aria-hidden="true" />
+              <h3>Evidence Processing Review</h3>
+            </header>
+            <p className="evidence-review__summary">
+              Confirm the identity tier, statement digest, and target network before submitting to Stellar.
+            </p>
+            <dl className="evidence-review__list" aria-label="Registration review details">
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Identity Tier</dt>
+                <dd className="evidence-review__value">
+                  {review.tierTitle} ({review.tierLabel})
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Statement Digest</dt>
+                <dd className="evidence-review__value">
+                  <code data-testid="review-statement-digest">{review.statementDigest}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Network</dt>
+                <dd className="evidence-review__value">
+                  <span>{review.networkName}</span>{' '}
+                  <code>{review.networkPassphrase}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Video Hash</dt>
+                <dd className="evidence-review__value">
+                  <code>{shortHash(review.videoHash)}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Metadata Hash</dt>
+                <dd className="evidence-review__value">
+                  <code>{shortHash(review.metadataHash)}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Proof ID</dt>
+                <dd className="evidence-review__value">
+                  <code>{shortHash(review.proofId)}</code>
+                </dd>
+              </div>
+            </dl>
+            <p className="evidence-review__footnote muted">
+              Private seeds, witness proofs, and raw media remain local to this browser.
+            </p>
+            <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button
+                className="primary-action"
+                type="button"
+                disabled={!!networkMismatch || isBusy}
+                aria-busy={isBusy || undefined}
+                onClick={() => void registerProof(wallet)}
+              >
+                {isBusy ? (
+                  <Loader2 className="spin" size={18} aria-hidden="true" />
+                ) : (
+                  <BadgeCheck size={18} aria-hidden="true" />
+                )}
+                Confirm &amp; register proof
+              </button>
+              <button
+                className="secondary-action"
+                type="button"
+                disabled={isBusy}
+                onClick={closeReview}
+              >
+                Back
+              </button>
+            </div>
+          </section>
+        ) : (
+          <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button
-              className="secondary-action"
+              className="primary-action"
               type="button"
-              onClick={() => cancelProving()}
-              aria-label="Cancel proof generation"
+              disabled={!proof || !!networkMismatch || isBusy}
+              aria-busy={isBusy || undefined}
+              onClick={() => void openReview()}
             >
-              <XCircle size={18} aria-hidden="true" />
-              Cancel proving
+              {isBusy ? (
+                <Loader2 className="spin" size={18} aria-hidden="true" />
+              ) : (
+                <BadgeCheck size={18} aria-hidden="true" />
+              )}
+              Review before registering
             </button>
-          ) : null}
-        </div>
+
+            {isProving ? (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => cancelProving()}
+                aria-label="Cancel proof generation"
+              >
+                <XCircle size={18} aria-hidden="true" />
+                Cancel proving
+              </button>
+            ) : null}
+          </div>
+        )}
 
         <ShareVerificationLink input={shareLinkInput} />
       </div>
