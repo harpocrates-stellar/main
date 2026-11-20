@@ -82,6 +82,9 @@ class AppConfig:
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
     job_file_ttl_seconds: int = 86_400
+    # Processing deadlines; 0 disables each one (the default, today's behaviour).
+    job_queue_ttl_seconds: int = 0
+    job_execution_timeout_seconds: int = 0
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
     retention_dry_run: bool = False
@@ -164,6 +167,12 @@ def load_config() -> AppConfig:
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
         job_file_ttl_seconds=_job_file_ttl_env(),
+        job_queue_ttl_seconds=_job_file_ttl_env(
+            "HARPOCRATES_JOB_QUEUE_TTL_SECONDS", JOB_QUEUE_TTL_SECONDS_DEFAULT
+        ),
+        job_execution_timeout_seconds=_job_file_ttl_env(
+            "HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS", JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT
+        ),
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
@@ -305,13 +314,21 @@ def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", de
 
 
 JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
+# Queue expiry (time a job may wait as ``pending``) and execution timeout (time a
+# leased job may run) are separate limits. 0 disables a limit.
+JOB_QUEUE_TTL_SECONDS_DEFAULT = 0
+JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT = 0
 
 
 def _job_file_ttl_env(
     name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
     default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
 ) -> int:
-    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
+    """Load a non-negative integer seconds setting.
+
+    Defaults to HARPOCRATES_JOB_FILE_TTL_SECONDS (24h = 86400s); also used for
+    HARPOCRATES_JOB_QUEUE_TTL_SECONDS and HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS.
+    """
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default

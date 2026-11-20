@@ -5,9 +5,10 @@ import binascii
 import hashlib
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Iterator
 
 import psycopg
@@ -1171,6 +1172,14 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+# Guards check-then-write on job records: a worker's main loop (deadlines) and
+# its work thread (completion) can touch the same job concurrently.
+_JOBS_LOCK = threading.RLock()
+
+# Terminal reasons set when a processing deadline closes a job.
+JOB_QUEUE_EXPIRED = "queue_expired"
+JOB_EXECUTION_TIMEOUT = "execution_timeout"
+_DEADLINE_REASONS = frozenset({JOB_QUEUE_EXPIRED, JOB_EXECUTION_TIMEOUT})
 _next_job_id = 1
 
 
@@ -1188,6 +1197,8 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "result": None,
         "progress": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        # Queue expiry is measured from when the job (re)entered the queue.
+        "_queued_at": time.time(),
     }
     return job_id
 
@@ -1213,12 +1224,102 @@ def lease_job(
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
     del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") == "pending" and job.get("type") in job_types:
+                job["status"] = "running"
+                job["worker_id"] = worker_id
+                # Execution timeout is measured from the lease.
+                job["_started_at"] = time.time()
+                return dict(job)
     return None
+
+
+def _close_by_deadline(job: dict[str, Any], reason: str, message: str) -> None:
+    job["status"] = "failed"
+    job["failure_reason"] = reason
+    job["error"] = message
+    job["failed_at"] = datetime.now(UTC).isoformat()
+    job.pop("worker_id", None)
+    logger.warning("job_deadline_exceeded job_id=%s reason=%s", job.get("id"), reason)
+
+
+def expire_queued_jobs(queue_ttl_seconds: float, *, now: float | None = None) -> int:
+    """Fail ``pending`` jobs that waited in the queue for ``queue_ttl_seconds``.
+
+    Queue expiry is measured from when the job last entered the queue (enqueue
+    or a retryable release), never from its execution. Expired jobs end as
+    ``failed`` with ``failure_reason`` ``"queue_expired"``. A limit of 0 or
+    less disables expiry. Returns the number of jobs expired.
+    """
+    if not queue_ttl_seconds or queue_ttl_seconds <= 0:
+        return 0
+    current = time.time() if now is None else now
+    expired = 0
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") != "pending":
+                continue
+            queued_at = job.get("_queued_at")
+            if queued_at is None or current - queued_at < queue_ttl_seconds:
+                continue
+            _close_by_deadline(job, JOB_QUEUE_EXPIRED, "Queue expiry exceeded")
+            expired += 1
+    return expired
+
+
+def time_out_job(job_id: int, execution_timeout_seconds: float, *, now: float | None = None) -> bool:
+    """Fail a ``running`` job whose execution exceeded ``execution_timeout_seconds``.
+
+    Execution time is measured from the lease, independently of how long the
+    job waited in the queue. The job ends as ``failed`` with ``failure_reason``
+    ``"execution_timeout"`` and is not retried. Because the process that holds
+    it may still be writing, the job is marked as having an active writer
+    until :func:`release_job_writer` is called; artifact cleanup waits for
+    that. Returns True when the job was timed out.
+    """
+    if not execution_timeout_seconds or execution_timeout_seconds <= 0:
+        return False
+    current = time.time() if now is None else now
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        started_at = job.get("_started_at")
+        if started_at is None or current - started_at < execution_timeout_seconds:
+            return False
+        _close_by_deadline(job, JOB_EXECUTION_TIMEOUT, "Execution timeout exceeded")
+        job["_writer_active"] = True
+        return True
+
+
+def job_writer_active(job_id: int | str) -> bool:
+    """Return whether a process may still be writing this job's artifacts."""
+    job = _JOBS.get(job_id)
+    return bool(job and job.get("_writer_active"))
+
+
+def release_job_writer(job_id: int) -> bool:
+    """Record that the process working on ``job_id`` stopped writing.
+
+    Returns True when the job had been closed by a deadline while its process
+    was still active, i.e. its partial artifacts can now be cleaned.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        return bool(job and job.pop("_writer_active", False))
+
+
+def _closed_by_deadline(job: dict[str, Any], action: str) -> bool:
+    if job.get("failure_reason") not in _DEADLINE_REASONS:
+        return False
+    logger.warning(
+        "job_deadline_final job_id=%s action=%s reason=%s",
+        job.get("id"),
+        action,
+        job.get("failure_reason"),
+    )
+    return True
 
 
 def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
@@ -1280,26 +1381,31 @@ def report_job_progress(
 
 def complete_job(job_id: int, result: Any = None) -> None:
     """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or _closed_by_deadline(job, "complete"):
+            # A job closed by a processing deadline is final: a late result
+            # from the process that overran it is dropped.
+            return
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
     """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or _closed_by_deadline(job, "fail"):
+            return
+        job["error"] = error
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+            job["_queued_at"] = time.time()  # back in the queue: queue expiry restarts
 
 
 def get_job_queue_metrics() -> dict[str, Any]:

@@ -44,3 +44,30 @@ The job's request `payload` (filenames, metadata, proof secrets) and internal
 underscore-prefixed fields (trace links, throttle state) are stripped by
 `public_job_view` before the job is returned. Progress values are phase names
 and numbers only and carry no payload data.
+
+## Processing deadlines
+
+Two separate limits, both off by default (`0`), so existing deployments keep
+today's behaviour:
+
+| Setting | Measured from | When exceeded |
+| --- | --- | --- |
+| `HARPOCRATES_JOB_QUEUE_TTL_SECONDS` | when the job entered the queue (enqueue, or a retryable release back to `pending`) | the `pending` job ends `failed` with `"failure_reason": "queue_expired"` and is never leased |
+| `HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS` | the lease (time waiting in the queue does not count) | the `running` job ends `failed` with `"failure_reason": "execution_timeout"` and is not retried |
+
+Both values are non-negative integers; anything else fails config loading.
+A job closed by a deadline is final: a late result or error from the process
+that overran it is dropped and logged as `job_deadline_final`.
+
+```json
+{ "id": 12, "status": "failed", "failure_reason": "execution_timeout",
+  "error": "Execution timeout exceeded", "progress": { "phase": "embedding", "percent": 63.0 } }
+```
+
+### Artifact cleanup after a timeout
+
+A Python worker thread cannot be killed, so a timed-out job's process may keep
+writing for a while. Until it returns, the job is marked as having an active
+writer and `sweep_job_files` keeps its files even past
+`HARPOCRATES_JOB_FILE_TTL_SECONDS`. When the process returns, the worker
+removes the partial output; the input follows the normal retention sweep.

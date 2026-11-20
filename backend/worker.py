@@ -12,6 +12,9 @@ from db import (
     report_job_progress,
     complete_job,
     fail_job,
+    expire_queued_jobs,
+    time_out_job,
+    release_job_writer,
     insert_proof_event,
     init_db,
     database_url,
@@ -231,9 +234,19 @@ def _worker_grace_period_seconds() -> float:
         return DEFAULT_WORKER_GRACE_PERIOD_SECONDS
 
 
+def _remove_partial_output(job_id: int) -> None:
+    """Drop the output a timed-out job left behind, once its writer stopped."""
+    try:
+        get_job_output_path(job_id).unlink(missing_ok=True)
+    except OSError as e:
+        LOGGER.error("Partial output cleanup failed for job %s: %s", job_id, type(e).__name__)
+
+
 def run_worker(
     stop_event: threading.Event | None = None,
     grace_period_seconds: float | None = None,
+    queue_ttl_seconds: float | None = None,
+    execution_timeout_seconds: float | None = None,
 ):
     init_db()
     config = load_config()
@@ -246,6 +259,12 @@ def run_worker(
 
     if grace_period_seconds is None:
         grace_period_seconds = _worker_grace_period_seconds()
+    # Two separate deadlines (0 disables each): queue expiry for pending jobs,
+    # execution timeout for the job this worker is running.
+    if queue_ttl_seconds is None:
+        queue_ttl_seconds = config.job_queue_ttl_seconds
+    if execution_timeout_seconds is None:
+        execution_timeout_seconds = config.job_execution_timeout_seconds
 
     def _signal_handler(signum, frame):
         LOGGER.info(f"Received signal {signum}, initiating graceful shutdown")
@@ -279,6 +298,9 @@ def run_worker(
                 except Exception as e:
                     LOGGER.error("Job file sweep failed: %s", type(e).__name__)
 
+            if queue_ttl_seconds:
+                expire_queued_jobs(queue_ttl_seconds)
+
             job = lease_job(
                 WORKER_ID,
                 ["embed", "extract", "silent_witness", "verify_tx"],
@@ -296,7 +318,16 @@ def run_worker(
             hb_thread = threading.Thread(target=heartbeat_loop, args=(job_id, hb_stop_event))
             hb_thread.start()
 
-            def _execute_job():
+            # Bind this job's values: after an execution timeout the loop leases
+            # the next job while this thread may still be running, and the loop
+            # variables are rebound to that next job.
+            def _execute_job(
+                job=job,
+                job_id=job_id,
+                job_type=job_type,
+                hb_stop_event=hb_stop_event,
+                hb_thread=hb_thread,
+            ):
                 try:
                     if job_type == "embed":
                         res = process_embed(job)
@@ -320,6 +351,10 @@ def run_worker(
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
+                    # The process stopped writing: only now may a timed-out
+                    # job's partial output be cleaned.
+                    if release_job_writer(job_id):
+                        _remove_partial_output(job_id)
 
             work_thread = threading.Thread(target=_execute_job)
             work_thread.daemon = True
@@ -327,6 +362,18 @@ def run_worker(
 
             while work_thread.is_alive():
                 work_thread.join(timeout=0.1)
+                if (
+                    execution_timeout_seconds
+                    and work_thread.is_alive()
+                    and time_out_job(job_id, execution_timeout_seconds)
+                ):
+                    # Python threads cannot be killed: the job is closed now and
+                    # the thread cleans its partial output when it returns.
+                    LOGGER.warning(
+                        f"Job {job_id} exceeded execution timeout of {execution_timeout_seconds}s; failing job"
+                    )
+                    hb_stop_event.set()
+                    break
                 if stop_event.is_set() and work_thread.is_alive():
                     # Stop event received while processing job: give it until grace period expires
                     work_thread.join(timeout=grace_period_seconds)
