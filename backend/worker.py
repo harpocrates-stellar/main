@@ -19,7 +19,7 @@ from db import (
     update_tx_status,
 )
 from envelope import canonical_metadata_hash
-from stego import StegoLimitExceededError, embed_metadata, extract_metadata, sha256_file
+from stego import embed_metadata, extract_metadata, sha256_file
 from noir import generate_silent_witness
 from app import safe_filename, redact_metadata
 from app import normalize_filename, redact_metadata
@@ -52,20 +52,20 @@ def process_embed(job: dict) -> dict:
     if not input_path.exists():
         raise RuntimeError(f"Input video file missing for job {job_id}")
         
-    report_job_progress(job_id, "hashing_source")
+    report_job_progress(job_id, "hashing_source", stage_revision=1)
     source_hash = sha256_file(input_path)
 
     def on_frame(frames_done: int, frames_total: int | None) -> None:
         percent = (frames_done / frames_total * 100.0) if frames_total else None
-        report_job_progress(job_id, "embedding", percent)
+        report_job_progress(job_id, "embedding", percent, stage_revision=2)
 
     embed_metadata(input_path, output_path, metadata, progress_callback=on_frame)
 
-    report_job_progress(job_id, "hashing_output")
+    report_job_progress(job_id, "hashing_output", stage_revision=3)
     embedded_hash = sha256_file(output_path)
     metadata_hash = canonical_metadata_hash(metadata)
 
-    report_job_progress(job_id, "recording")
+    report_job_progress(job_id, "recording", stage_revision=4)
     db_event = insert_proof_event(
         event_type="embed",
         file_name=normalize_filename(filename),
@@ -130,7 +130,7 @@ def process_silent_witness(job: dict) -> dict:
 
     # Phase names only: proof generation runs as one external command and
     # reports no measurable fraction, so percent stays None.
-    report_job_progress(job["id"], "generating_proof")
+    report_job_progress(job["id"], "generating_proof", stage_revision=1)
     proof = generate_silent_witness(
         video_hash,
         credential_secret,
