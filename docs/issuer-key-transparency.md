@@ -47,6 +47,15 @@ A checkpoint binds:
 
 Clients detect **split views** (diverging heads at the same count), **rollback** (shrinking `eventCount` after a higher head was observed), **stale checkpoints**, **broken rotation links**, **conflicting manifests**, and **compromised keys**.
 
+## Portable consistency proof bundles
+
+A `ConsistencyProofBundle` (`protocol: harpocrates-issuer-key-transparency`, `version: 1`) binds an `earlierCheckpoint` and `laterCheckpoint` to the ordered `interveningEvents` slice between them.
+
+- Build from an authoritative directory with `build_consistency_proof_bundle(directory, earlier, later)` (or `directory.make_consistency_proof_bundle(earlier, later)`).
+- Serialize/deserialize canonically with `bundle.to_json()` / `ConsistencyProofBundle.from_json(raw)` and hash with `consistency_proof_bundle_hash(bundle)`.
+- Verify continuity offline without trusting a live directory response via `verify_consistency_proof_bundle(bundle, expected_organization_identity_hash=..., expected_earlier_checkpoint=...)` or fail-closed `require_valid_consistency_proof_bundle(...)`.
+- Verification confirms non-regression (`detect_rollback` and checkpoint timestamps), contiguous monotonic sequences, `previousEventHash` chaining, and `advance_tree_head(earlier.tree_head_hash, intervening_events) == later.tree_head_hash`.
+
 ## Caching & freshness (fail-closed)
 
 | Mode | Max age | Behavior |

@@ -23,6 +23,7 @@ MAX_ACTIVE_KEYS = 8
 MAX_EVENTS = 10_000
 MAX_MANIFEST_BYTES = 8_192
 MAX_CHECKPOINT_BYTES = 16_384
+MAX_CONSISTENCY_BUNDLE_BYTES = 1_048_576
 DEFAULT_FRESHNESS_SECONDS = 86_400  # 24h
 HIGH_ASSURANCE_FRESHNESS_SECONDS = 3_600  # 1h fail-closed window
 
@@ -331,12 +332,17 @@ def checkpoint_hash(checkpoint: DirectoryCheckpoint) -> str:
     return _sha256_hex(canonicalize_checkpoint(checkpoint).encode("utf-8"))
 
 
-def compute_tree_head(events: Iterable[DirectoryEvent]) -> str:
-    """Deterministic Merkle-style chain head over ordered events."""
-    head = "0" * 64
+def advance_tree_head(start_head: str, events: Iterable[DirectoryEvent]) -> str:
+    """Advance a deterministic Merkle-style chain head across ordered events."""
+    head = _require_hex("startHead", start_head)
     for ev in events:
         head = _sha256_hex((head + event_hash(ev)).encode("utf-8"))
     return head
+
+
+def compute_tree_head(events: Iterable[DirectoryEvent]) -> str:
+    """Deterministic Merkle-style chain head over ordered events."""
+    return advance_tree_head("0" * 64, events)
 
 
 @dataclass
@@ -474,6 +480,14 @@ class IssuerDirectory:
             signature_hash=signature_hash,
         )
 
+    def make_consistency_proof_bundle(
+        self,
+        earlier_checkpoint: DirectoryCheckpoint,
+        later_checkpoint: DirectoryCheckpoint,
+    ) -> "ConsistencyProofBundle":
+        """Build a portable consistency proof bundle between two checkpoints."""
+        return build_consistency_proof_bundle(self, earlier_checkpoint, later_checkpoint)
+
 
 def rebuild_directory(
     organization_identity_hash: str,
@@ -536,6 +550,238 @@ def detect_rollback(
     ):
         errors.append("conflicting manifests at same eventCount")
     return errors
+
+
+@dataclass(frozen=True)
+class ConsistencyProofBundle:
+    """Portable, offline-verifiable consistency proof between two checkpoints.
+
+    Binds an earlier and later ``DirectoryCheckpoint`` to the intervening
+    append-only ``DirectoryEvent`` sequence so verifiers can confirm continuity
+    without trusting a live directory response.
+    """
+
+    earlier_checkpoint: DirectoryCheckpoint
+    later_checkpoint: DirectoryCheckpoint
+    intervening_events: tuple[DirectoryEvent, ...] = ()
+    version: int = VERSION
+    protocol: str = PROTOCOL
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.intervening_events, tuple):
+            object.__setattr__(self, "intervening_events", tuple(self.intervening_events))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "earlierCheckpoint": self.earlier_checkpoint.to_dict(),
+            "interveningEvents": [ev.to_dict() for ev in self.intervening_events],
+            "laterCheckpoint": self.later_checkpoint.to_dict(),
+            "protocol": self.protocol,
+            "version": self.version,
+        }
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> "ConsistencyProofBundle":
+        if not isinstance(obj, dict):
+            raise TransparencyError("consistency proof bundle must be a JSON object")
+        if obj.get("protocol") != PROTOCOL:
+            raise TransparencyError("unsupported consistency proof bundle protocol")
+        if int(obj.get("version", 0)) not in SUPPORTED_VERSIONS:
+            raise TransparencyError("unsupported consistency proof bundle version")
+        raw_events = obj.get("interveningEvents")
+        if not isinstance(raw_events, list):
+            raise TransparencyError("interveningEvents must be a list")
+        if len(raw_events) > MAX_EVENTS:
+            raise TransparencyError("interveningEvents exceeds bound")
+        earlier = DirectoryCheckpoint.from_dict(obj["earlierCheckpoint"])
+        later = DirectoryCheckpoint.from_dict(obj["laterCheckpoint"])
+        events = tuple(DirectoryEvent.from_dict(ev) for ev in raw_events)
+        return ConsistencyProofBundle(
+            earlier_checkpoint=earlier,
+            later_checkpoint=later,
+            intervening_events=events,
+            version=int(obj["version"]),
+            protocol=str(obj["protocol"]),
+        )
+
+    def to_json(self) -> str:
+        return canonicalize_consistency_proof_bundle(self)
+
+    @staticmethod
+    def from_json(raw: str | bytes) -> "ConsistencyProofBundle":
+        raw_bytes = raw.encode("utf-8") if isinstance(raw, str) else raw
+        if len(raw_bytes) > MAX_CONSISTENCY_BUNDLE_BYTES:
+            raise TransparencyError("consistency proof bundle exceeds size bound")
+        try:
+            parsed = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TransparencyError(f"invalid consistency proof bundle JSON: {exc}") from exc
+        return ConsistencyProofBundle.from_dict(parsed)
+
+
+def canonicalize_consistency_proof_bundle(bundle: ConsistencyProofBundle) -> str:
+    """Deterministic JSON encoding for a consistency proof bundle."""
+    if len(bundle.intervening_events) > MAX_EVENTS:
+        raise TransparencyError("interveningEvents exceeds bound")
+    encoded = _canonical_json(bundle.to_dict())
+    if len(encoded) > MAX_CONSISTENCY_BUNDLE_BYTES:
+        raise TransparencyError("consistency proof bundle exceeds size bound")
+    return encoded.decode("utf-8")
+
+
+def consistency_proof_bundle_hash(bundle: ConsistencyProofBundle) -> str:
+    """SHA-256 digest of the canonical consistency proof bundle."""
+    return _sha256_hex(canonicalize_consistency_proof_bundle(bundle).encode("utf-8"))
+
+
+def build_consistency_proof_bundle(
+    directory: IssuerDirectory,
+    earlier_checkpoint: DirectoryCheckpoint,
+    later_checkpoint: DirectoryCheckpoint,
+) -> ConsistencyProofBundle:
+    """Build a portable consistency proof bundle from an authoritative directory."""
+    if earlier_checkpoint.event_count < 0 or later_checkpoint.event_count < 0:
+        raise TransparencyError("checkpoint eventCount must be non-negative")
+    earlier_errors = verify_checkpoint_consistency(directory, earlier_checkpoint)
+    if earlier_errors:
+        raise TransparencyError(
+            "earlier checkpoint inconsistent with directory: " + "; ".join(earlier_errors)
+        )
+    later_errors = verify_checkpoint_consistency(directory, later_checkpoint)
+    if later_errors:
+        raise TransparencyError(
+            "later checkpoint inconsistent with directory: " + "; ".join(later_errors)
+        )
+    rollback_errors = detect_rollback(earlier_checkpoint, later_checkpoint)
+    if rollback_errors:
+        raise TransparencyError(
+            "invalid checkpoint ordering: " + "; ".join(rollback_errors)
+        )
+    if later_checkpoint.timestamp < earlier_checkpoint.timestamp:
+        raise TransparencyError("checkpoint timestamp regressed")
+
+    intervening = tuple(
+        directory.events[earlier_checkpoint.event_count : later_checkpoint.event_count]
+    )
+    bundle = ConsistencyProofBundle(
+        earlier_checkpoint=earlier_checkpoint,
+        later_checkpoint=later_checkpoint,
+        intervening_events=intervening,
+    )
+    require_valid_consistency_proof_bundle(bundle)
+    return bundle
+
+
+def verify_consistency_proof_bundle(
+    bundle: ConsistencyProofBundle,
+    *,
+    expected_organization_identity_hash: str | None = None,
+    expected_earlier_checkpoint: DirectoryCheckpoint | None = None,
+) -> list[str]:
+    """Verify checkpoint continuity offline without trusting a live directory.
+
+    Returns a list of consistency errors (empty list means valid).
+    """
+    errors: list[str] = []
+    earlier = bundle.earlier_checkpoint
+    later = bundle.later_checkpoint
+
+    if bundle.protocol != PROTOCOL:
+        errors.append("unsupported consistency proof bundle protocol")
+    if bundle.version not in SUPPORTED_VERSIONS:
+        errors.append("unsupported consistency proof bundle version")
+    if earlier.protocol != PROTOCOL or later.protocol != PROTOCOL:
+        errors.append("unsupported checkpoint protocol in consistency bundle")
+    if earlier.version not in SUPPORTED_VERSIONS or later.version not in SUPPORTED_VERSIONS:
+        errors.append("unsupported checkpoint version in consistency bundle")
+
+    try:
+        canonicalize_consistency_proof_bundle(bundle)
+    except TransparencyError as exc:
+        errors.append(str(exc))
+
+    if earlier.event_count < 0 or later.event_count < 0:
+        errors.append("checkpoint eventCount must be non-negative")
+
+    if expected_organization_identity_hash is not None:
+        norm_org = expected_organization_identity_hash.lower()
+        if earlier.organization_identity_hash != norm_org:
+            errors.append("earlier checkpoint organizationIdentityHash mismatch")
+        if later.organization_identity_hash != norm_org:
+            errors.append("later checkpoint organizationIdentityHash mismatch")
+
+    if expected_earlier_checkpoint is not None:
+        if checkpoint_hash(earlier) != checkpoint_hash(expected_earlier_checkpoint):
+            errors.append("earlier checkpoint does not match expected anchor")
+
+    errors.extend(detect_rollback(earlier, later))
+
+    if later.timestamp < earlier.timestamp:
+        errors.append("checkpoint timestamp regressed")
+
+    if earlier.event_count == 0 and earlier.tree_head_hash != "0" * 64:
+        errors.append("genesis checkpoint treeHeadHash must be all zeros")
+
+    expected_delta = later.event_count - earlier.event_count
+    if expected_delta >= 0 and len(bundle.intervening_events) != expected_delta:
+        errors.append(
+            f"intervening event count mismatch: expected {expected_delta}, "
+            f"got {len(bundle.intervening_events)}"
+        )
+
+    for idx, ev in enumerate(bundle.intervening_events):
+        if ev.organization_identity_hash != earlier.organization_identity_hash:
+            errors.append(
+                f"intervening event {idx} organizationIdentityHash mismatch"
+            )
+        expected_seq = earlier.event_count + idx
+        if ev.sequence != expected_seq:
+            errors.append(
+                f"non-monotonic sequence at intervening event {idx}: "
+                f"expected {expected_seq}, got {ev.sequence}"
+            )
+        if ev.sequence == 0:
+            if ev.previous_event_hash is not None:
+                errors.append("genesis event must not set previousEventHash")
+        elif idx == 0:
+            if not ev.previous_event_hash or not _is_hex(ev.previous_event_hash):
+                errors.append(
+                    "first intervening event after non-genesis checkpoint must set previousEventHash"
+                )
+        else:
+            prev_hash = event_hash(bundle.intervening_events[idx - 1])
+            if ev.previous_event_hash != prev_hash:
+                errors.append(
+                    f"broken event chain at sequence {ev.sequence} (previousEventHash mismatch)"
+                )
+
+    if expected_delta >= 0 and len(bundle.intervening_events) == expected_delta:
+        computed_head = advance_tree_head(earlier.tree_head_hash, bundle.intervening_events)
+        if computed_head != later.tree_head_hash:
+            errors.append(
+                "later checkpoint treeHeadHash does not match intervening events (broken continuity)"
+            )
+
+    return errors
+
+
+def require_valid_consistency_proof_bundle(
+    bundle: ConsistencyProofBundle,
+    *,
+    expected_organization_identity_hash: str | None = None,
+    expected_earlier_checkpoint: DirectoryCheckpoint | None = None,
+) -> ConsistencyProofBundle:
+    """Fail-closed offline verification gate for a consistency proof bundle."""
+    errors = verify_consistency_proof_bundle(
+        bundle,
+        expected_organization_identity_hash=expected_organization_identity_hash,
+        expected_earlier_checkpoint=expected_earlier_checkpoint,
+    )
+    if errors:
+        raise TransparencyError(
+            "invalid consistency proof bundle: " + "; ".join(errors)
+        )
+    return bundle
 
 
 @dataclass
