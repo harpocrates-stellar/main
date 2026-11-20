@@ -274,14 +274,12 @@ def declared_upload_limit_bytes(config) -> int:
         per_file = max(0, int(upload_max))
     else:
         per_file = int(config.max_video_bytes)
-    if per_file == 0:
-        return 0
+
     limit = per_file + UPLOAD_MULTIPART_OVERHEAD_BYTES
     global_cap = int(getattr(config, "max_content_length", 0) or 0)
     if global_cap and limit > global_cap:
         limit = global_cap
     return limit
-
 
 def _make_key_func(config):
     """Return a rate-limit key function that uses the real client IP.
@@ -445,6 +443,23 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+
+    @app.before_request
+    def enforce_declared_upload_limit():
+        # Reject oversized multipart uploads from Content-Length before Flask
+        # parses the body or buffers form fields/files.
+        if (
+            request.mimetype != "multipart/form-data"
+            or not request.path.startswith("/api/stego/")
+        ):
+            return None
+        content_length = request.content_length
+        if (
+            content_length is not None
+            and content_length > declared_upload_limit_bytes(config)
+        ):
+            raise RequestEntityTooLarge()
+        return None
 
     @app.before_request
     def initialize_trace_context():
