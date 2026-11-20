@@ -647,3 +647,315 @@ def create_rotation_event(
         related_key_id=predecessor_key_id,
         manifest_hash=manifest_hash_value,
     )
+
+
+@dataclass(frozen=True)
+class KeyLifecycleChange:
+    """Proposed key lifecycle transition reported by a directory import preview."""
+
+    key_id: str
+    public_key_hash: str
+    previous_status: KeyStatus | None
+    proposed_status: KeyStatus
+    event_types: tuple[EventType, ...]
+    valid_from: int
+    valid_until: int | None = None
+    related_key_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "eventTypes": [et.value for et in self.event_types],
+            "keyId": self.key_id,
+            "previousStatus": self.previous_status.value if self.previous_status else None,
+            "proposedStatus": self.proposed_status.value,
+            "publicKeyHash": self.public_key_hash,
+            "validFrom": self.valid_from,
+        }
+        if self.valid_until is not None:
+            d["validUntil"] = self.valid_until
+        if self.related_key_id is not None:
+            d["relatedKeyId"] = self.related_key_id
+        return d
+
+
+@dataclass(frozen=True)
+class CheckpointLineage:
+    """Before/after checkpoint and manifest lineage for a directory import preview."""
+
+    organization_identity_hash: str
+    current_event_count: int
+    proposed_event_count: int
+    added_event_count: int
+    current_tree_head_hash: str
+    proposed_tree_head_hash: str
+    current_manifest_hash: str | None
+    proposed_manifest_hash: str | None
+    manifest_chain_hashes: tuple[str, ...]
+    previously_seen_checkpoint_hash: str | None = None
+    incoming_checkpoint_hash: str | None = None
+    incoming_checkpoint_event_count: int | None = None
+    incoming_checkpoint_tree_head_hash: str | None = None
+    extends_current_head: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "addedEventCount": self.added_event_count,
+            "currentEventCount": self.current_event_count,
+            "currentManifestHash": self.current_manifest_hash,
+            "currentTreeHeadHash": self.current_tree_head_hash,
+            "extendsCurrentHead": self.extends_current_head,
+            "manifestChainHashes": list(self.manifest_chain_hashes),
+            "organizationIdentityHash": self.organization_identity_hash,
+            "proposedEventCount": self.proposed_event_count,
+            "proposedManifestHash": self.proposed_manifest_hash,
+            "proposedTreeHeadHash": self.proposed_tree_head_hash,
+        }
+        if self.previously_seen_checkpoint_hash is not None:
+            d["previouslySeenCheckpointHash"] = self.previously_seen_checkpoint_hash
+        if self.incoming_checkpoint_hash is not None:
+            d["incomingCheckpointHash"] = self.incoming_checkpoint_hash
+        if self.incoming_checkpoint_event_count is not None:
+            d["incomingCheckpointEventCount"] = self.incoming_checkpoint_event_count
+        if self.incoming_checkpoint_tree_head_hash is not None:
+            d["incomingCheckpointTreeHeadHash"] = self.incoming_checkpoint_tree_head_hash
+        return d
+
+
+@dataclass(frozen=True)
+class DirectoryImportPreview:
+    """Non-mutating preview of a proposed issuer directory import."""
+
+    organization_identity_hash: str
+    acceptable: bool
+    errors: tuple[str, ...]
+    key_changes: tuple[KeyLifecycleChange, ...]
+    checkpoint_lineage: CheckpointLineage
+    proposed_events: tuple[DirectoryEvent, ...]
+    proposed_manifests: tuple[IssuerManifest, ...]
+    incoming_checkpoint: DirectoryCheckpoint | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "acceptable": self.acceptable,
+            "checkpointLineage": self.checkpoint_lineage.to_dict(),
+            "errors": list(self.errors),
+            "keyChanges": [c.to_dict() for c in self.key_changes],
+            "organizationIdentityHash": self.organization_identity_hash,
+        }
+
+
+def _clone_directory(directory: IssuerDirectory) -> IssuerDirectory:
+    return IssuerDirectory(
+        organization_identity_hash=directory.organization_identity_hash,
+        events=list(directory.events),
+        keys=dict(directory.keys),
+        current_manifest=directory.current_manifest,
+        manifests_by_hash=dict(directory.manifests_by_hash),
+    )
+
+
+def preview_directory_import(
+    current_directory: IssuerDirectory,
+    incoming_events: list[DirectoryEvent],
+    *,
+    incoming_manifests: list[IssuerManifest] | None = None,
+    incoming_checkpoint: DirectoryCheckpoint | None = None,
+    previously_seen_checkpoint: DirectoryCheckpoint | None = None,
+) -> DirectoryImportPreview:
+    """Preview proposed key lifecycle changes and checkpoint lineage without mutating trust state.
+
+    Accepts either a full event log starting at sequence 0 (whose prefix must match
+    `current_directory.events`) or delta events starting at `len(current_directory.events)`.
+    No mutation is performed on `current_directory`; call `apply_directory_import` only
+    after reviewing and accepting a valid preview.
+    """
+    errors: list[str] = []
+    extends_current_head = True
+    current_count = len(current_directory.events)
+    current_head = current_directory.tree_head()
+    current_mh = (
+        manifest_hash(current_directory.current_manifest)
+        if current_directory.current_manifest is not None
+        else None
+    )
+
+    # Determine delta events while checking prefix consistency / rollback.
+    delta_events: list[DirectoryEvent] = []
+    if incoming_events:
+        first_seq = incoming_events[0].sequence
+        if current_count > 0 and first_seq == 0:
+            if len(incoming_events) < current_count:
+                errors.append("incoming event log shorter than current directory (rollback)")
+                extends_current_head = False
+            else:
+                for idx in range(current_count):
+                    if event_hash(incoming_events[idx]) != event_hash(current_directory.events[idx]):
+                        errors.append(
+                            f"incoming event log diverges from current directory at sequence {idx} (split view)"
+                        )
+                        extends_current_head = False
+                        break
+                if extends_current_head:
+                    delta_events = list(incoming_events[current_count:])
+        else:
+            delta_events = list(incoming_events)
+
+    # Filter out already-published manifests if a full manifest history was supplied.
+    delta_manifests: list[IssuerManifest] = []
+    for manifest in incoming_manifests or []:
+        try:
+            mh = manifest_hash(manifest)
+        except TransparencyError as exc:
+            errors.append(str(exc))
+            continue
+        if mh not in current_directory.manifests_by_hash:
+            delta_manifests.append(manifest)
+
+    candidate = _clone_directory(current_directory)
+    applied_events: list[DirectoryEvent] = []
+    applied_manifests: list[IssuerManifest] = []
+    manifest_chain_hashes: list[str] = []
+
+    if extends_current_head:
+        for ev in delta_events:
+            try:
+                candidate.append_event(ev)
+                applied_events.append(ev)
+            except TransparencyError as exc:
+                errors.append(str(exc))
+                extends_current_head = False
+                break
+
+        for manifest in delta_manifests:
+            try:
+                mh = candidate.publish_manifest(manifest)
+                applied_manifests.append(manifest)
+                manifest_chain_hashes.append(mh)
+            except TransparencyError as exc:
+                errors.append(str(exc))
+                break
+
+    # Checkpoint lineage and rollback/equivocation checks.
+    if incoming_checkpoint is not None:
+        errors.extend(verify_checkpoint_consistency(candidate, incoming_checkpoint))
+        if previously_seen_checkpoint is not None:
+            errors.extend(detect_rollback(previously_seen_checkpoint, incoming_checkpoint))
+    elif previously_seen_checkpoint is not None:
+        if len(candidate.events) < previously_seen_checkpoint.event_count:
+            errors.append("candidate directory shorter than previously seen checkpoint (rollback)")
+            extends_current_head = False
+        else:
+            prefix_head = compute_tree_head(
+                candidate.events[: previously_seen_checkpoint.event_count]
+            )
+            if prefix_head != previously_seen_checkpoint.tree_head_hash:
+                errors.append(
+                    "candidate directory diverges from previously seen checkpoint (split view)"
+                )
+                extends_current_head = False
+
+    # Compute proposed key lifecycle changes by comparing current vs candidate state.
+    events_by_key: dict[str, list[EventType]] = {}
+    related_by_key: dict[str, str] = {}
+    for ev in applied_events:
+        if ev.event_type == EventType.CHECKPOINT:
+            continue
+        events_by_key.setdefault(ev.key_id, []).append(ev.event_type)
+        if ev.related_key_id:
+            related_by_key[ev.key_id] = ev.related_key_id
+            events_by_key.setdefault(ev.related_key_id, []).append(ev.event_type)
+
+    key_changes: list[KeyLifecycleChange] = []
+    for key_id in sorted(set(current_directory.keys) | set(candidate.keys)):
+        before = current_directory.keys.get(key_id)
+        after = candidate.keys.get(key_id)
+        if after is None:
+            continue
+        if before != after:
+            key_changes.append(
+                KeyLifecycleChange(
+                    key_id=key_id,
+                    public_key_hash=after.public_key_hash,
+                    previous_status=before.status if before is not None else None,
+                    proposed_status=after.status,
+                    event_types=tuple(events_by_key.get(key_id, ())),
+                    valid_from=after.valid_from,
+                    valid_until=after.valid_until,
+                    related_key_id=related_by_key.get(key_id),
+                )
+            )
+
+    proposed_mh = (
+        manifest_hash(candidate.current_manifest)
+        if candidate.current_manifest is not None
+        else None
+    )
+    lineage = CheckpointLineage(
+        organization_identity_hash=current_directory.organization_identity_hash,
+        current_event_count=current_count,
+        proposed_event_count=len(candidate.events),
+        added_event_count=len(applied_events),
+        current_tree_head_hash=current_head,
+        proposed_tree_head_hash=candidate.tree_head(),
+        current_manifest_hash=current_mh,
+        proposed_manifest_hash=proposed_mh,
+        manifest_chain_hashes=tuple(manifest_chain_hashes),
+        previously_seen_checkpoint_hash=(
+            checkpoint_hash(previously_seen_checkpoint)
+            if previously_seen_checkpoint is not None
+            else None
+        ),
+        incoming_checkpoint_hash=(
+            checkpoint_hash(incoming_checkpoint) if incoming_checkpoint is not None else None
+        ),
+        incoming_checkpoint_event_count=(
+            incoming_checkpoint.event_count if incoming_checkpoint is not None else None
+        ),
+        incoming_checkpoint_tree_head_hash=(
+            incoming_checkpoint.tree_head_hash if incoming_checkpoint is not None else None
+        ),
+        extends_current_head=extends_current_head and not errors,
+    )
+
+    return DirectoryImportPreview(
+        organization_identity_hash=current_directory.organization_identity_hash,
+        acceptable=len(errors) == 0,
+        errors=tuple(errors),
+        key_changes=tuple(key_changes),
+        checkpoint_lineage=lineage,
+        proposed_events=tuple(applied_events),
+        proposed_manifests=tuple(applied_manifests),
+        incoming_checkpoint=incoming_checkpoint,
+    )
+
+
+def apply_directory_import(
+    directory: IssuerDirectory,
+    preview: DirectoryImportPreview,
+) -> IssuerDirectory:
+    """Apply an accepted directory import preview to `directory` (fail-closed)."""
+    if not preview.acceptable:
+        raise TransparencyError(
+            "cannot apply rejected directory import preview: " + "; ".join(preview.errors)
+        )
+    lineage = preview.checkpoint_lineage
+    if directory.organization_identity_hash != preview.organization_identity_hash:
+        raise TransparencyError("directory organizationIdentityHash mismatch")
+    if (
+        len(directory.events) != lineage.current_event_count
+        or directory.tree_head() != lineage.current_tree_head_hash
+    ):
+        raise TransparencyError("directory state changed since preview was generated")
+    current_mh = (
+        manifest_hash(directory.current_manifest)
+        if directory.current_manifest is not None
+        else None
+    )
+    if current_mh != lineage.current_manifest_hash:
+        raise TransparencyError("directory manifest changed since preview was generated")
+
+    for ev in preview.proposed_events:
+        directory.append_event(ev)
+    for manifest in preview.proposed_manifests:
+        directory.publish_manifest(manifest)
+    return directory

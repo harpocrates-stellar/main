@@ -47,6 +47,15 @@ A checkpoint binds:
 
 Clients detect **split views** (diverging heads at the same count), **rollback** (shrinking `eventCount` after a higher head was observed), **stale checkpoints**, **broken rotation links**, **conflicting manifests**, and **compromised keys**.
 
+## Directory import preview
+
+Before applying an incoming event log, manifest update, or checkpoint to local trust state, callers can run `preview_directory_import(current_directory, incoming_events, incoming_manifests=..., incoming_checkpoint=..., previously_seen_checkpoint=...)`:
+
+- Replays the proposed delta (or full log after verifying prefix equality) against an isolated clone so `current_directory` is **never mutated** during preview.
+- Reports proposed `KeyLifecycleChange` transitions (previous/proposed status, lifecycle event types, validity windows, and rotation links) and `CheckpointLineage` (before/after event counts, tree head hashes, manifest chain hashes, and checkpoint hashes).
+- Fails closed on rollback, split views, broken event/rotation/manifest links, or checkpoint equivocation (`acceptable=False`, populated `errors`).
+- Only `apply_directory_import(directory, preview)` mutates trust state, and it refuses rejected previews or directories whose state diverged after the preview was generated.
+
 ## Caching & freshness (fail-closed)
 
 | Mode | Max age | Behavior |
