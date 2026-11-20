@@ -6,6 +6,10 @@ the transaction, or with a stale client-reported `txStatus`. This module is the
 canonical reconciler: it queries Horizon (with failover), applies a confirmation
 depth policy, and updates `tx_status` without creating a second protocol truth.
 
+An unavailable RPC/Horizon dependency is an operational condition, not evidence
+invalidity. In that case the pending intent is preserved (no durable write), and
+the result carries the retryable code ``rpc_unavailable``.
+
 Privacy: logs and API responses never include media, metadata envelopes,
 witness values, credentials, or private keys — only status codes and truncated
 transaction hash prefixes.
@@ -34,6 +38,9 @@ LOGGER.setLevel(logging.INFO)
 
 MAX_RECONCILE_BATCH = 50
 DEFAULT_MIN_CONFIRMATIONS = 1
+
+# Retryable operational code returned when the chain dependency is unavailable.
+RPC_UNAVAILABLE_CODE = "rpc_unavailable"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -106,7 +113,8 @@ def reconcile_registration(
     Reconcile a single registration transaction hash against Horizon.
 
     - Malformed hashes → status ``failed`` / reason ``malformed_tx_hash``
-    - Horizon dependency failures → status ``error`` (no durable write)
+    - Horizon dependency failures → status ``error`` with retryable code
+      ``rpc_unavailable``; the pending intent is preserved (no durable write)
     - Terminal rows are left unchanged unless ``force`` is true
     """
     min_conf = (
@@ -166,8 +174,10 @@ def reconcile_registration(
             updated,
         )
     elif verification.status == "error":
+        # Dependency outage: keep the pending intent untouched and surface a
+        # retryable operational code rather than any evidence-validity verdict.
         LOGGER.warning(
-            "registration_reconcile_dependency tx=%s reason=%s",
+            "registration_reconcile_dependency tx=%s reason=%s retryable=true",
             _short_hash(normalized),
             verification.reason,
         )
@@ -188,6 +198,11 @@ def reconcile_registration(
         event_id=event_id,
     )
     payload["minConfirmationsApplied"] = min_conf
+    if verification.status == "error":
+        payload["retryable"] = True
+        payload["code"] = RPC_UNAVAILABLE_CODE
+        # The pending intent is preserved; the row must not be marked failed.
+        payload["preservedStatus"] = previous_status or "pending"
     return payload
 
 
@@ -260,5 +275,5 @@ def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if result.get("status") == "error":
         # Surface dependency failures so the worker can retry non-fatally.
-        raise RuntimeError(result.get("reason") or "horizon_dependency_failure")
+        raise RuntimeError(result.get("code") or RPC_UNAVAILABLE_CODE)
     return result
