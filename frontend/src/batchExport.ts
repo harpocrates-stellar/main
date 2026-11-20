@@ -1,8 +1,13 @@
-import type { BatchItemResult } from './batchVerifier'
+import { orderBatchResults, type BatchItemResult } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
-import { createProofManifest } from './proofManifest'
 
+/**
+ * Privacy-safe, serializable batch report entry bound to its original selected
+ * input identity (`id` and `inputIndex`) without raw `File` handles or media bytes.
+ */
 export type CleanBatchReportItem = {
+  id: string
+  inputIndex: number
   fileName: string
   fileSizeBytes: number
   status: string
@@ -27,10 +32,16 @@ export type ReceiptCollection = {
 
 /**
  * Strips raw File handles and sensitive memory states, returning a clean,
- * privacy-safe serializable representation of batch verification results.
+ * privacy-safe serializable representation of batch verification results
+ * ordered by original selected `inputIndex` (never by completion order).
  */
 export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchReportItem[] {
-  return results.map((item) => ({
+  return orderBatchResults(results).map((item, idx) => ({
+    id: item.id,
+    inputIndex:
+      typeof item.inputIndex === 'number' && Number.isFinite(item.inputIndex)
+        ? item.inputIndex
+        : idx,
     fileName: item.fileName,
     fileSizeBytes: item.fileSizeBytes,
     status: item.status,
@@ -42,12 +53,13 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
     message: item.message,
     duplicateOf: item.duplicateOf,
     failureReason: item.failureReason,
-    durationMs: item.durationMs ? Math.round(item.durationMs) : null,
+    durationMs: item.durationMs !== null ? Math.round(item.durationMs) : null,
   }))
 }
 
 /**
- * Export privacy-safe JSON representation of batch results.
+ * Export privacy-safe JSON representation of batch results in stable original
+ * input order.
  */
 export function exportBatchJSON(results: BatchItemResult[]): string {
   const clean = sanitizeBatchResults(results)
@@ -62,7 +74,9 @@ export function exportBatchJSON(results: BatchItemResult[]): string {
 }
 
 /**
- * Export privacy-safe CSV representation of batch results.
+ * Export privacy-safe CSV representation of batch results in stable original
+ * input order, appending original input identity columns (`Input Index`,
+ * `Input ID`) after the existing report columns for compatibility.
  */
 export function exportBatchCSV(results: BatchItemResult[]): string {
   const clean = sanitizeBatchResults(results)
@@ -79,6 +93,8 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
     'Duplicate Of',
     'Failure Reason',
     'Duration (ms)',
+    'Input Index',
+    'Input ID',
   ]
 
   const rows = clean.map((item) => [
@@ -94,18 +110,21 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
     escapeCSV(item.duplicateOf ?? ''),
     escapeCSV(item.failureReason ?? ''),
     item.durationMs !== null ? String(item.durationMs) : '',
+    String(item.inputIndex),
+    escapeCSV(item.id),
   ])
 
   return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n')
 }
 
 /**
- * Export standalone collection of valid ProofManifest receipts from the batch.
+ * Export standalone collection of valid ProofManifest receipts from the batch
+ * in stable original input order.
  */
 export function exportReceiptCollection(results: BatchItemResult[]): string {
   const manifests: ProofManifest[] = []
 
-  for (const item of results) {
+  for (const item of orderBatchResults(results)) {
     if (item.manifest) {
       manifests.push(item.manifest)
     } else if (item.status === 'confirmed' && item.videoHash && item.metadataHash && item.tier) {

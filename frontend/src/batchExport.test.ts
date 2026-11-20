@@ -77,4 +77,71 @@ describe('batchExport', () => {
     expect(parsed.protocol).toBe('harpocrates-receipt-collection')
     expect(parsed.totalItems).toBe(1)
   })
+
+  it('orders JSON, CSV, and receipt exports by original inputIndex rather than completion order', () => {
+    const completionOrderedItems: BatchItemResult[] = [
+      {
+        ...mockItems[0],
+        id: 'input-third',
+        inputIndex: 2,
+        fileName: 'third.mp4',
+        videoHash: '3333222233334444555566667777888811112222333344445555666677778888',
+        durationMs: 0,
+      },
+      {
+        ...mockItems[0],
+        id: 'input-first',
+        inputIndex: 0,
+        fileName: 'first.mp4',
+        videoHash: '1111222233334444555566667777888811112222333344445555666677778888',
+        durationMs: 250,
+      },
+      {
+        ...mockItems[1],
+        id: 'input-second',
+        inputIndex: 1,
+        fileName: 'second.mp4',
+        durationMs: 15,
+      },
+    ]
+
+    const sanitized = sanitizeBatchResults(completionOrderedItems)
+    expect(sanitized.map((item) => ({ id: item.id, inputIndex: item.inputIndex, fileName: item.fileName }))).toEqual([
+      { id: 'input-first', inputIndex: 0, fileName: 'first.mp4' },
+      { id: 'input-second', inputIndex: 1, fileName: 'second.mp4' },
+      { id: 'input-third', inputIndex: 2, fileName: 'third.mp4' },
+    ])
+    // 0 ms duration is preserved instead of coerced to null
+    expect(sanitized[2].durationMs).toBe(0)
+
+    const parsedJson = JSON.parse(exportBatchJSON(completionOrderedItems)) as {
+      results: Array<{ id: string; inputIndex: number; fileName: string }>
+    }
+    expect(parsedJson.results.map((r) => r.id)).toEqual(['input-first', 'input-second', 'input-third'])
+
+    const csvLines = exportBatchCSV(completionOrderedItems).split('\n')
+    expect(csvLines[0]).toContain('Input Index,Input ID')
+    expect(csvLines[1]).toContain('first.mp4')
+    expect(csvLines[1].endsWith(',0,input-first')).toBe(true)
+    expect(csvLines[2]).toContain('second.mp4')
+    expect(csvLines[2].endsWith(',1,input-second')).toBe(true)
+    expect(csvLines[3]).toContain('third.mp4')
+    expect(csvLines[3].endsWith(',2,input-third')).toBe(true)
+
+    const receipts = JSON.parse(exportReceiptCollection(completionOrderedItems)) as {
+      receipts: Array<{ videoHash: string }>
+    }
+    expect(receipts.receipts.map((r) => r.videoHash)).toEqual([
+      '1111222233334444555566667777888811112222333344445555666677778888',
+      '3333222233334444555566667777888811112222333344445555666677778888',
+    ])
+  })
+
+  it('preserves caller order and assigns fallback inputIndex when legacy items omit inputIndex', () => {
+    const sanitized = sanitizeBatchResults(mockItems)
+    expect(sanitized.map((i) => ({ id: i.id, inputIndex: i.inputIndex }))).toEqual([
+      { id: 'item-1', inputIndex: 0 },
+      { id: 'item-2', inputIndex: 1 },
+    ])
+  })
 })
