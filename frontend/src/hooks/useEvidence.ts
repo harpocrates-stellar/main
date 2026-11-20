@@ -48,6 +48,9 @@ export const TIERS = [
 const CONTRACT_ID = appConfig.harpocratesRegistryId
 
 // Privacy-safe stable copy — never includes file names, hashes, or secrets.
+export const EVIDENCE_REPLACED_MESSAGE =
+  'Evidence file replaced. Previous proof, registration, and verification state were cleared; verify or register the newly selected file.'
+
 const CANCELLED_MESSAGES: Record<Stage, string> = {
   idle: 'Request cancelled.',
   hashing: 'Upload cancelled.',
@@ -74,6 +77,9 @@ export type UseEvidenceReturn = {
   nullifierSeed: string
   setNullifierSeed: (v: string) => void
   message: string
+  /** Privacy-safe accessible explanation when replacing a file clears prior state. */
+  evidenceChangeNotice?: string | null
+  clearEvidenceChangeNotice?: () => void
   registration: RegisterProofResult | null
   networkMismatch: string | null
   isCancellable: boolean
@@ -101,12 +107,15 @@ export function useEvidence(): UseEvidenceReturn {
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
+  const [evidenceChangeNotice, setEvidenceChangeNotice] = useState<string | null>(null)
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
   const registrationInFlightedRef = useRef<boolean>(false)
   const completedRegistrationRef = useRef<string | null>(null)
   const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
+  const processedVideoUrlRef = useRef<string>('')
+  const hasSelectedEvidenceRef = useRef<boolean>(false)
 
   // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber a
   // newer flow or a reset caused by cancellation.
@@ -149,6 +158,18 @@ export function useEvidence(): UseEvidenceReturn {
 
   const isCancellable = stage === 'hashing' || stage === 'embedding' || stage === 'proving'
 
+  function clearProcessedVideoUrl() {
+    if (processedVideoUrlRef.current) {
+      URL.revokeObjectURL(processedVideoUrlRef.current)
+      processedVideoUrlRef.current = ''
+    }
+    setProcessedVideoUrl('')
+  }
+
+  function clearEvidenceChangeNotice() {
+    setEvidenceChangeNotice(null)
+  }
+
   function resetFlow() {
     abortRef.current?.abort()
     abortRef.current = null
@@ -159,11 +180,13 @@ export function useEvidence(): UseEvidenceReturn {
     proofRequestIdRef.current = null
     proofClientRef.current?.destroy()
     proofClientRef.current = null
-    if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
-    setProcessedVideoUrl('')
+    pendingPersistenceRef.current = null
+    hasSelectedEvidenceRef.current = false
+    clearProcessedVideoUrl()
     setProof(null)
     setFile(null)
     setRegistration(null)
+    setEvidenceChangeNotice(null)
   }
 
   function getProofClient(): ProofWorkerClient {
@@ -185,12 +208,26 @@ export function useEvidence(): UseEvidenceReturn {
   async function handleEvidence(nextFile: File | null) {
     if (!nextFile) return
 
+    const hadPriorEvidence =
+      hasSelectedEvidenceRef.current ||
+      Boolean(file || proof || registration || processedVideoUrlRef.current)
+
     evidenceFlowAbortRef.current?.abort()
     const controller = new AbortController()
     evidenceFlowAbortRef.current = controller
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
+    // Clear stale proof, download URL, and registration state before processing
+    // the replacement file so previous evidence state can never leak onto it.
+    cancelProving()
+    seqRef.current += 1
+    pendingPersistenceRef.current = null
+    clearProcessedVideoUrl()
+    setProof(null)
+    setRegistration(null)
+    hasSelectedEvidenceRef.current = true
+    setEvidenceChangeNotice(hadPriorEvidence ? EVIDENCE_REPLACED_MESSAGE : null)
     setFile(nextFile)
 
     const cached = cachedFileHashRef.current
@@ -264,8 +301,10 @@ export function useEvidence(): UseEvidenceReturn {
       )
       if (!isCurrentFlow()) return
 
-      if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
-      setProcessedVideoUrl(URL.createObjectURL(embeddedBlob))
+      clearProcessedVideoUrl()
+      const nextUrl = URL.createObjectURL(embeddedBlob)
+      processedVideoUrlRef.current = nextUrl
+      setProcessedVideoUrl(nextUrl)
       setProof({
         fileName: `harpocrates-${nextFile.name.replace(/[^.]+$/, '')}.mp4`,
         sourceHash,
@@ -340,6 +379,7 @@ export function useEvidence(): UseEvidenceReturn {
         pendingPersistenceRef.current = null
         completedRegistrationRef.current = registrationKey
         setRegistration(pendingPersistence.result)
+        setEvidenceChangeNotice(null)
         setStage('registered')
         setMessage(`Registration submitted with Stellar status: ${pendingPersistence.result.status}.`)
       } catch (error) {
@@ -382,6 +422,7 @@ export function useEvidence(): UseEvidenceReturn {
       pendingPersistenceRef.current = null
       completedRegistrationRef.current = registrationKey
       setRegistration(result)
+      setEvidenceChangeNotice(null)
       setStage('registered')
       setMessage(`Registration submitted with Stellar status: ${result.status}.`)
     } catch (error) {
@@ -428,7 +469,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -471,6 +512,8 @@ export function useEvidence(): UseEvidenceReturn {
     nullifierSeed,
     setNullifierSeed,
     message,
+    evidenceChangeNotice,
+    clearEvidenceChangeNotice,
     registration,
     networkMismatch,
     isCancellable,

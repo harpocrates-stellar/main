@@ -96,6 +96,7 @@ Two hidden live regions are rendered unconditionally before `<main>`:
 - Progress messages (hashing, embedding, proving, ready) → `liveStatus.announce()` → polite region  
 - Error messages (network, steganography, registration, wallet) → `liveAlert.announce()` → assertive region  
 - The visible status `<p>` in the studio header also carries `role="status" aria-live="polite" aria-atomic="true"` as a secondary announcement path
+- Replacing the selected file in Evidence Studio immediately clears stale proof, registration, and verification badges (`StudioView.tsx` + `useEvidence.ts`) and renders a dedicated privacy-safe `.studio-state-notice` (`role="status" aria-live="polite" aria-atomic="true"`) explaining that prior verification state was cleared until the new file is verified or registered
 
 ---
 

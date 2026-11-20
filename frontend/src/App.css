@@ -1553,6 +1553,21 @@ code {
   line-height: 1.45;
 }
 
+.studio-state-notice {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  background: rgba(120, 170, 255, 0.1);
+  border: 1px solid rgba(120, 170, 255, 0.35);
+  color: rgba(235, 243, 255, 0.94);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  margin-bottom: 0.5rem;
+}
+
+.studio-state-notice p {
+  margin: 0;
+}
+
 .release-compatibility-banner {
   justify-content: space-between;
   align-items: center;
@@ -1915,6 +1930,7 @@ input:focus-visible,
   }
 
   .network-mismatch-banner,
+  .studio-state-notice,
   .redaction-preview--error,
   .icon-button.wallet-mismatch {
     border-width: 2px;
@@ -1962,6 +1978,7 @@ input:focus-visible,
   }
 
   .network-mismatch-banner,
+  .studio-state-notice,
   .redaction-preview--error {
     border: 2px solid CanvasText;
   }
