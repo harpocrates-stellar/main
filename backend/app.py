@@ -113,6 +113,11 @@ from metadata_errors import (
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+try:
+    from stego import StegoLimitExceededError
+except (ImportError, AttributeError):
+    class StegoLimitExceededError(RuntimeError):  # type: ignore[no-redef]
+        pass
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -264,7 +269,13 @@ def declared_upload_limit_bytes(config) -> int:
     The whole body must still fit under ``MAX_CONTENT_LENGTH`` when that cap is
     the lower of the two, so the effective limit is the minimum of the two.
     """
-    per_file = int(getattr(config, "upload_max_bytes", 0) or config.max_video_bytes)
+    upload_max = getattr(config, "upload_max_bytes", None)
+    if upload_max is not None:
+        per_file = max(0, int(upload_max))
+    else:
+        per_file = int(config.max_video_bytes)
+    if per_file == 0:
+        return 0
     limit = per_file + UPLOAD_MULTIPART_OVERHEAD_BYTES
     global_cap = int(getattr(config, "max_content_length", 0) or 0)
     if global_cap and limit > global_cap:
@@ -802,9 +813,11 @@ def create_app() -> Flask:
     def _enforce_video_size(video) -> bool:
         # StreamingFileStorage enforces the limit mid-stream during save();
         # avoid seek() which can force whole-body buffering on the WSGI input.
+        upload_max = getattr(config, "upload_max_bytes", None)
+        effective_max = max(0, int(upload_max)) if upload_max is not None else config.max_video_bytes
         if isinstance(video, StreamingFileStorage):
             if video.bytes_written > 0:
-                return video.bytes_written <= config.max_video_bytes
+                return video.bytes_written <= effective_max
             if request.content_length is not None:
                 # Content-Length includes multipart overhead; still a useful gate.
                 return request.content_length <= config.max_content_length
@@ -812,7 +825,7 @@ def create_app() -> Flask:
         video.seek(0, 2)
         size = video.tell()
         video.seek(0)
-        return size <= config.max_video_bytes
+        return size <= effective_max
 
     def _enable_streaming_for_large_uploads():
         """Wrap large multipart uploads with bounded-chunk stream hashing."""

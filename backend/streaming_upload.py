@@ -71,8 +71,8 @@ def resolve_chunk_bytes(explicit: int | None = None) -> int:
     return DEFAULT_CHUNK_BYTES
 
 
-def resolve_max_bytes(explicit: int | None = None) -> int:
-    """Resolve the hard upload size limit (0 = unlimited, not recommended)."""
+def resolve_max_bytes(explicit: int | None = None) -> int | None:
+    """Resolve the hard upload size limit in bytes (None = unlimited)."""
     if explicit is not None:
         return max(0, int(explicit))
     config = _upload_config()
@@ -81,7 +81,7 @@ def resolve_max_bytes(explicit: int | None = None) -> int:
             value = getattr(config, attr, None)
             if value is not None:
                 return max(0, int(value))
-    return 0
+    return None
 
 
 def resolve_temp_dir(explicit: str | Path | None = None) -> Optional[str]:
@@ -130,7 +130,7 @@ def hash_stream_to_path(
                 chunk = source.read(bounded)
                 if not chunk:
                     break
-                if limit > 0 and bytes_written + len(chunk) > limit:
+                if limit is not None and bytes_written + len(chunk) > limit:
                     raise RequestEntityTooLarge("Upload exceeds size limit")
                 tmp_file.write(chunk)
                 hasher.update(chunk)
@@ -181,7 +181,7 @@ def hash_paths_concat(
                         chunk = handle.read(bounded)
                         if not chunk:
                             break
-                        if limit > 0 and bytes_written + len(chunk) > limit:
+                        if limit is not None and bytes_written + len(chunk) > limit:
                             raise RequestEntityTooLarge("Upload exceeds size limit")
                         out.write(chunk)
                         hasher.update(chunk)
@@ -227,7 +227,7 @@ class StreamingFileStorage(FileStorage):
         stream: BinaryIO,
         filename: Optional[str] = None,
         content_type: Optional[str] = None,
-        max_size: int = 0,
+        max_size: int | None = None,
         chunk_size: int | None = None,
         temp_dir: str | Path | None = None,
     ):
@@ -288,13 +288,7 @@ class StreamingFileStorage(FileStorage):
 def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileStorage:
     """Wrap a Werkzeug ``FileStorage`` with bounded-chunk streaming hashing."""
     config = _upload_config()
-    max_size = resolve_max_bytes(
-        getattr(config, "upload_max_bytes", None)
-        if config is not None
-        else None
-    )
-    if max_size == 0 and config is not None:
-        max_size = int(getattr(config, "max_video_bytes", 0) or 0)
+    max_size = resolve_max_bytes()
     chunk_size = resolve_chunk_bytes(
         getattr(config, "upload_chunk_bytes", None) if config is not None else None
     )

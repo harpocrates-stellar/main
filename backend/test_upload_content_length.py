@@ -103,6 +103,25 @@ class DeclaredUploadLimitTest(unittest.TestCase):
             4096 + self.app_module.UPLOAD_MULTIPART_OVERHEAD_BYTES,
         )
 
+    def test_zero_byte_allowance_is_respected(self):
+        config = SimpleNamespace(
+            upload_max_bytes=0,
+            max_video_bytes=4096,
+            max_content_length=10_000_000,
+        )
+        self.assertEqual(self.app_module.declared_upload_limit_bytes(config), 0)
+
+    def test_absent_upload_max_falls_back_to_video_budget(self):
+        config = SimpleNamespace(
+            upload_max_bytes=None,
+            max_video_bytes=4096,
+            max_content_length=10_000_000,
+        )
+        self.assertEqual(
+            self.app_module.declared_upload_limit_bytes(config),
+            4096 + self.app_module.UPLOAD_MULTIPART_OVERHEAD_BYTES,
+        )
+
 
 class UploadContentLengthGateTest(unittest.TestCase):
     """End-to-end gate behaviour on the real Flask app."""
