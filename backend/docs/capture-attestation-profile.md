@@ -113,7 +113,52 @@ SHA-256(canonical_bytes)
 
 ## 5. Integration Points
 
-### 5.1 Metadata Envelope
+### 5.1 Verification Assurance Response
+
+`POST /api/capture-attestation/verify` retains its existing `valid`,
+`attestation_hash`, and `checks` fields and adds an `assurance` object with the
+stable schema identifier `harpocrates-capture-assurance/v1`:
+
+```json
+{
+  "schema": "harpocrates-capture-assurance/v1",
+  "deviceClaims": {
+    "status": "reported",
+    "trustLevel": { "code": 2, "label": "hardware_backed" },
+    "claimedIntegrity": "raw_sensor"
+  },
+  "issuerCertification": {
+    "status": "not_evaluated",
+    "reasonCode": "issuer_transparency_not_checked"
+  },
+  "captureVerification": {
+    "verifiedProperties": ["attested_digest_matches_request"],
+    "failedProperties": [],
+    "notEvaluatedProperties": [
+      "device_commitment_matches_supplied_key",
+      "evidence_content_digest",
+      "secure_time",
+      "camera_pipeline_integrity",
+      "platform_claims"
+    ]
+  }
+}
+```
+
+`deviceClaims` values, including `trustLevel` and `claimedIntegrity`, are
+device-reported claims and do not establish issuer certification. The endpoint
+sets issuer certification to `not_evaluated`; it does not query the issuer
+directory. `captureVerification` lists only checks actually performed as
+verified or failed. `attested_digest_matches_request` compares two supplied
+digest values; the endpoint does not hash the evidence bytes, so
+`evidence_content_digest` remains not evaluated. Secure-time,
+camera-pipeline-integrity, and platform claims also remain not evaluated. A
+caller-supplied device key can verify the per-session commitment but does not
+elevate a device claim to institutional trust. The `assurance` object is
+additive; the v1 attestation encoding and existing response fields remain
+unchanged.
+
+### 5.2 Metadata Envelope
 
 The attestation object is included as an **optional** `attestation` field
 in the Harpocrates metadata envelope embedded in video files:
@@ -139,7 +184,7 @@ The canonical metadata hash (used for on-chain registration) covers
 the entire metadata including the attestation sub-object, so tampering
 with attestation data is detectable on-chain.
 
-### 5.2 Proof Manifest
+### 5.3 Proof Manifest
 
 The attestation status is reflected in the proof manifest as an
 informational field:
@@ -161,12 +206,12 @@ informational field:
 }
 ```
 
-### 5.3 CLI and SDK
+### 5.4 CLI and SDK
 
 The `@harpocrates/cli` package includes attestation validation utilities
 that verify the attestation binding against the evidence digest.
 
-### 5.4 Soroban Contract
+### 5.5 Soroban Contract
 
 No on-chain changes are required. The attestation is fully verified
 off-chain and its integrity is covered by the metadata hash that is

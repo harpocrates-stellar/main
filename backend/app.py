@@ -87,6 +87,29 @@ except ImportError:
     default_min_confirmations = None
     reconcile_pending_registrations = None
     reconcile_registration = None
+
+
+def build_reconcile_batch_report(
+    *,
+    limit: int,
+    selected: int,
+    processed: int,
+    deferred: int,
+) -> dict:
+    """Describe a reconciliation batch for administrative responses.
+
+    ``complete_batch`` is true when every selected item in this batch was
+    processed.  ``complete_backlog`` is true only when nothing was deferred,
+    meaning no further pending work remains beyond this batch.
+    """
+    return {
+        "limit": int(limit),
+        "selected": int(selected),
+        "processed": int(processed),
+        "deferred": int(deferred),
+        "complete_batch": int(processed) == int(selected),
+        "complete_backlog": int(deferred) == 0 and int(processed) == int(selected),
+    }
 from idempotency import idempotent
 from lineage import (
     LineageValidationError,
@@ -113,7 +136,13 @@ from metadata_errors import (
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+try:
+    from stego import StegoLimitExceededError
+except (ImportError, AttributeError):
+    class StegoLimitExceededError(RuntimeError):  # type: ignore[no-redef]
+        pass
 from capture_attestation import (
+    build_assurance_schema,
     canonical_attestation_hash,
     decode_attestation,
     verify_device_commitment,
@@ -121,6 +150,7 @@ from capture_attestation import (
 from c2pa import (
     C2paParseError,
     C2paTrustStatus,
+    compute_privacy_flags,
     corroborate_binding,
     export_c2pa_manifest,
     parse_c2pa_manifest,
@@ -264,13 +294,17 @@ def declared_upload_limit_bytes(config) -> int:
     The whole body must still fit under ``MAX_CONTENT_LENGTH`` when that cap is
     the lower of the two, so the effective limit is the minimum of the two.
     """
-    per_file = int(getattr(config, "upload_max_bytes", 0) or config.max_video_bytes)
+    upload_max = getattr(config, "upload_max_bytes", None)
+    if upload_max is not None:
+        per_file = max(0, int(upload_max))
+    else:
+        per_file = int(config.max_video_bytes)
+
     limit = per_file + UPLOAD_MULTIPART_OVERHEAD_BYTES
     global_cap = int(getattr(config, "max_content_length", 0) or 0)
     if global_cap and limit > global_cap:
         limit = global_cap
     return limit
-
 
 def _make_key_func(config):
     """Return a rate-limit key function that uses the real client IP.
@@ -434,6 +468,23 @@ def create_app() -> Flask:
         g.start_time = time.perf_counter()
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         g.request_started_at = time.perf_counter()
+
+    @app.before_request
+    def enforce_declared_upload_limit():
+        # Reject oversized multipart uploads from Content-Length before Flask
+        # parses the body or buffers form fields/files.
+        if (
+            request.mimetype != "multipart/form-data"
+            or not request.path.startswith("/api/stego/")
+        ):
+            return None
+        content_length = request.content_length
+        if (
+            content_length is not None
+            and content_length > declared_upload_limit_bytes(config)
+        ):
+            raise RequestEntityTooLarge()
+        return None
 
     @app.before_request
     def initialize_trace_context():
@@ -802,9 +853,11 @@ def create_app() -> Flask:
     def _enforce_video_size(video) -> bool:
         # StreamingFileStorage enforces the limit mid-stream during save();
         # avoid seek() which can force whole-body buffering on the WSGI input.
+        upload_max = getattr(config, "upload_max_bytes", None)
+        effective_max = max(0, int(upload_max)) if upload_max is not None else config.max_video_bytes
         if isinstance(video, StreamingFileStorage):
             if video.bytes_written > 0:
-                return video.bytes_written <= config.max_video_bytes
+                return video.bytes_written <= effective_max
             if request.content_length is not None:
                 # Content-Length includes multipart overhead; still a useful gate.
                 return request.content_length <= config.max_content_length
@@ -812,7 +865,7 @@ def create_app() -> Flask:
         video.seek(0, 2)
         size = video.tell()
         video.seek(0)
-        return size <= config.max_video_bytes
+        return size <= effective_max
 
     def _enable_streaming_for_large_uploads():
         """Wrap large multipart uploads with bounded-chunk stream hashing."""
@@ -2193,6 +2246,7 @@ def create_app() -> Flask:
                 "valid": valid,
                 "attestation_hash": attestation_hash,
                 "checks": checks,
+                "assurance": build_assurance_schema(decoded, checks),
             }
         )
 
@@ -2424,6 +2478,7 @@ def create_app() -> Flask:
             "hashes_verified": bool(corroboration is not None and corroboration.ok),
             "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
+            "privacy_flags": compute_privacy_flags(parsed).to_dict(),
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
                 "verification. A matching 'expected' block is integrity "

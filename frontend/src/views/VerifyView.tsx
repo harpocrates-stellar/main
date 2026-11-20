@@ -13,9 +13,26 @@ import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
+import {
+  buildVerificationDimensions,
+  type TrustDimensionState,
+} from '../services/verificationFlow'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const MAX_MANIFEST_SIZE_BYTES = 64 * 1024 // 64 KB cap
+
+function dimensionStateLabel(state: TrustDimensionState): string {
+  switch (state) {
+    case 'verified':
+      return 'Verified'
+    case 'failed':
+      return 'Failed'
+    case 'unverified':
+      return 'Unverified'
+    case 'not_applicable':
+      return 'Not applicable'
+  }
+}
 
 type Props = {
   wallet: string
@@ -150,6 +167,25 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
       tier,
     }
   }, [status, videoHashInput, verifyHash, events, proofIdInput, chainProof, provenanceRecord])
+
+  const showTrustDimensions =
+    status !== 'idle' || !!chainProof || events.length > 0 || !!errorCode
+
+  const trustModel = useMemo(() => {
+    const hasHarpocratesMetadata =
+      errorCode === 'METADATA_ENVELOPE_MISMATCH'
+        ? false
+        : status === 'success' &&
+          /(Confirmed:|Metadata only:|Locally verified:)/i.test(verifyResult)
+    return buildVerificationDimensions({
+      hasHarpocratesMetadata,
+      metadataEnvelopeMismatch: errorCode === 'METADATA_ENVELOPE_MISMATCH',
+      onChain: chainProof,
+      events,
+      offline,
+      errorCode,
+    })
+  }, [status, verifyResult, chainProof, events, offline, errorCode])
 
   return (
     <section className="workspace app-page verify-page" id="verify">
@@ -384,6 +420,41 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
             ) : null}
           </div>
         </div>
+
+        {showTrustDimensions ? (
+          <section
+            className="trust-dimensions"
+            aria-label="Verification trust dimensions"
+            data-overall-verdict={trustModel.overall}
+          >
+            <h3 style={{ fontSize: '0.85rem', marginBottom: 6 }}>Trust Dimensions</h3>
+            {trustModel.hasFailure ? (
+              <p className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+                One or more trust dimensions failed; successful dimensions do not override failures.
+              </p>
+            ) : null}
+            <ul className="trust-dimensions-list" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
+              {Object.values(trustModel.dimensions).map((dim) => (
+                <li
+                  key={dim.key}
+                  data-dimension={dim.key}
+                  data-state={dim.state}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, fontSize: 12 }}
+                >
+                  <div>
+                    <strong>{dim.label}</strong>
+                    <span className="muted" style={{ display: 'block', fontSize: 11 }}>
+                      {dim.summary}
+                    </span>
+                  </div>
+                  <span className={`trust-dimension-state trust-dimension-${dim.state}`}>
+                    {dimensionStateLabel(dim.state)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <VerificationTimeline
           status={status}

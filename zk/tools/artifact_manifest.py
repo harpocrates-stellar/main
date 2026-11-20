@@ -100,6 +100,16 @@ class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
 
 
+class ManifestVerificationError(BuildError):
+    """Signature verification failed or required fields are missing.
+
+    Raised by :func:`verify_manifest` and :func:`load_verified_artifacts`
+    *before* any artifact bytes are read, so an unsigned or tampered release
+    manifest can never reach a client. The message names only the failure
+    reason — never artifact content or key material.
+    """
+
+
 # ── Signals ─────────────────────────────────────────────────────────────────
 
 
@@ -321,9 +331,27 @@ class ArtifactResult:
             "role": self.role,
             "raw_bytes": self.raw_bytes,
             "normalized_bytes": self.normalized_bytes,
+            "size_bytes": self.raw_bytes,
             "raw_sha256": self.raw_sha256,
             "normalized_sha256": self.normalized_sha256,
         }
+
+
+@dataclass
+class DependencyRecord:
+    """One content-addressed input that an artifact was built from.
+
+    ``kind`` is one of ``source``, ``helper``, or ``toolchain``. ``sha256``
+    is the digest of the file content (for source/helper) or of the pinned
+    toolchain version record (for toolchain). Paths are repo-relative.
+    """
+
+    path: str
+    kind: str
+    sha256: str
+
+    def to_entry(self) -> dict:
+        return {"path": self.path, "kind": self.kind, "sha256": self.sha256}
 
 
 def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult:
@@ -422,22 +450,38 @@ def build_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
     for declaration in lock.artifacts:
         run.entries.append(digest_artifact(declaration, lock, root))
 
+    provenance = collect_provenance(lock, root)
+    toolchain = {
+        "nargo": lock.toolchain["nargo"]["version"],
+        "barretenberg": lock.toolchain["barretenberg"]["version"],
+        "proving_scheme": lock.toolchain["proving_scheme"],
+        "oracle_hash": lock.toolchain["oracle_hash"],
+    }
+    # Content-addressed dependency graph (#1215): every artifact entry carries
+    # the source files, helper files, and pinned toolchain record it was
+    # built from. The toolchain record is hashed as canonical JSON so the
+    # digest is stable across hosts; source/helper digests come from the
+    # provenance map already collected above.
+    toolchain_sha = sha256_hex(
+        json.dumps(toolchain, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    dependencies = {
+        "toolchain": {"sha256": toolchain_sha},
+        "sources": dict(sorted(provenance.items())),
+    }
+
     manifest = {
         "format": MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
-        "toolchain": {
-            "nargo": lock.toolchain["nargo"]["version"],
-            "barretenberg": lock.toolchain["barretenberg"]["version"],
-            "proving_scheme": lock.toolchain["proving_scheme"],
-            "oracle_hash": lock.toolchain["oracle_hash"],
-        },
+        "toolchain": toolchain,
         "environment": dict(sorted(lock.environment.items())),
         "normalization_policy_sha256": sha256_hex(
             json.dumps(lock.raw["normalization"], sort_keys=True, separators=(",", ":")).encode(
                 "utf-8"
             )
         ),
-        "provenance": collect_provenance(lock, root),
+        "provenance": provenance,
+        "dependencies": dependencies,
         "artifacts": [
             entry.to_entry()
             for entry in run.entries
@@ -524,6 +568,31 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
                 "(host metadata only; not a semantic change)"
             )
 
+    return findings
+
+
+def stale_artifacts(manifest: dict, current_inputs: dict) -> list[str]:
+    """Return a list of dependency paths whose recorded digest no longer
+    matches ``current_inputs`` (path -> sha256).
+
+    ``current_inputs`` is what ``collect_provenance`` returns right now. Any
+    source or helper file present in the manifest's ``dependencies.sources``
+    whose digest has changed (or which no longer exists) is reported. A tool
+    chain record mismatch is reported under the synthetic path
+    ``toolchain`` so a bumped compiler version flags every artifact.
+    """
+    findings: list[str] = []
+    recorded_sources = (manifest.get("dependencies") or {}).get("sources", {})
+    for path, recorded_sha in sorted(recorded_sources.items()):
+        actual_sha = current_inputs.get(path)
+        if actual_sha is None:
+            findings.append(f"dependency {path}: recorded but not present on disk")
+        elif actual_sha != recorded_sha:
+            findings.append(
+                f"dependency {path}: {_short(recorded_sha)} -> {_short(actual_sha)}"
+            )
+    for path in sorted(set(current_inputs) - set(recorded_sources)):
+        findings.append(f"dependency {path}: new input, not recorded in manifest")
     return findings
 
 
@@ -1123,6 +1192,11 @@ def command_verify(args: argparse.Namespace) -> int:
     _fail_on_fatal(run)
 
     findings = compare_manifests(expected, actual)
+    # Stale-input check (#1215): flag any source or helper file whose digest
+    # has changed since the manifest was recorded, before reporting success.
+    stale = stale_artifacts(expected, actual.get("provenance", {}))
+    for finding in stale:
+        findings.append(f"stale: {finding}")
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
@@ -1158,6 +1232,135 @@ def command_compare(args: argparse.Namespace) -> int:
 
     signal("compare.ok", artifacts=len(first.get("artifacts", [])))
     return EXIT_OK
+
+
+# ── Signed release manifest (#1214) ─────────────────────────────────────────
+#
+# A release manifest binds three things into one signed payload:
+#   - the pinned compiler lock (canonical sha256 of the lock file)
+#   - the circuit source revision (canonical sha256 of every provenance file)
+#   - every exported artifact digest (path -> normalized sha256)
+#
+# The signing primitive is HMAC-SHA256 with a caller-supplied key, stdlib
+# only — the repo has no Ed25519 signer and the issue's boundaries forbid
+# adding a dependency. Verification runs entirely offline: given the signed
+# manifest and the same key, the recomputed MAC must equal the recorded one,
+# and the payload must match the recorded artifact digests.
+#
+# Canonical serialization: JSON with sorted keys, no whitespace drift, the
+# signature field removed before hashing. This makes the signed bytes
+# reproducible across hosts and Python versions.
+
+import hmac as _hmac
+
+
+def _canonical_release_payload(
+    *,
+    toolchain: dict,
+    source_revision: str,
+    artifacts: dict,
+) -> bytes:
+    """Return the deterministic bytes that are signed.
+
+    Excludes any signature field, so sign and verify hash the same input.
+    """
+    payload = {
+        "format": "harpocrates.zk-release-manifest",
+        "version": MANIFEST_VERSION,
+        "toolchain": {k: toolchain[k] for k in sorted(toolchain)},
+        "source_revision": source_revision,
+        "artifacts": {k: artifacts[k] for k in sorted(artifacts)},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sign_manifest(
+    *,
+    toolchain: dict,
+    source_revision: str,
+    artifacts: dict,
+    signing_key: bytes,
+) -> dict:
+    """Return a signed release manifest.
+
+    ``artifacts`` maps repo-relative path -> normalized sha256. The returned
+    dict is JSON-serializable and stable across hosts.
+    """
+    if not signing_key:
+        raise ManifestVerificationError("signing key must be non-empty")
+    body = _canonical_release_payload(
+        toolchain=toolchain,
+        source_revision=source_revision,
+        artifacts=artifacts,
+    )
+    mac = _hmac.new(signing_key, body, "sha256").hexdigest()
+    return {
+        "format": "harpocrates.zk-release-manifest",
+        "version": MANIFEST_VERSION,
+        "toolchain": {k: toolchain[k] for k in sorted(toolchain)},
+        "source_revision": source_revision,
+        "artifacts": {k: artifacts[k] for k in sorted(artifacts)},
+        "signature": {"scheme": "hmac-sha256", "mac": mac},
+    }
+
+
+def verify_manifest(manifest: dict, signing_key: bytes) -> None:
+    """Fail-closed offline verification.
+
+    Raises :class:`ManifestVerificationError` if the manifest is missing the
+    signature, the scheme is unsupported, the MAC does not match, or the
+    payload shape is wrong. No artifact bytes are read here.
+    """
+    if not signing_key:
+        raise ManifestVerificationError("signing key must be non-empty")
+    if manifest.get("format") != "harpocrates.zk-release-manifest":
+        raise ManifestVerificationError("not a release manifest")
+    sig = manifest.get("signature") or {}
+    if sig.get("scheme") != "hmac-sha256":
+        raise ManifestVerificationError("unsupported signature scheme")
+    recorded = sig.get("mac")
+    if not isinstance(recorded, str) or len(recorded) != 64:
+        raise ManifestVerificationError("malformed signature MAC")
+    try:
+        body = _canonical_release_payload(
+            toolchain=manifest["toolchain"],
+            source_revision=manifest["source_revision"],
+            artifacts=manifest["artifacts"],
+        )
+    except (KeyError, TypeError) as exc:
+        raise ManifestVerificationError(
+            f"release manifest missing required field: {type(exc).__name__}"
+        ) from exc
+    expected = _hmac.new(signing_key, body, "sha256").hexdigest()
+    if not _hmac.compare_digest(recorded, expected):
+        raise ManifestVerificationError("signature mismatch")
+
+
+def load_verified_artifacts(manifest: dict, directory: Path, signing_key: bytes) -> dict[str, bytes]:
+    """Verify *manifest*, then load artifact bytes from *directory*.
+
+    Any verification failure raises :class:`ManifestVerificationError` before
+    a single byte is read from disk. On success, returns path -> bytes for
+    every declared artifact whose digest matches the manifest.
+    """
+    verify_manifest(manifest, signing_key)
+    directory = directory.resolve()
+    out: dict[str, bytes] = {}
+    for path, expected_sha in manifest["artifacts"].items():
+        target = directory / path
+        try:
+            data = target.read_bytes()
+        except OSError as exc:
+            raise ManifestVerificationError(
+                f"artifact {path}: cannot be read ({type(exc).__name__})"
+            ) from exc
+        actual = sha256_hex(data)
+        if actual != expected_sha:
+            raise ManifestVerificationError(
+                f"artifact {path}: digest mismatch"
+            )
+        out[path] = data
+    return out
 
 
 def build_parser() -> argparse.ArgumentParser:

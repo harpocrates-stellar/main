@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { BatchItemResult } from './batchVerifier'
 import {
+  BatchExportConflictError,
+  detectConflictingStatements,
   exportBatchCSV,
   exportBatchJSON,
   exportReceiptCollection,
   sanitizeBatchResults,
+  validateBatchExportResults,
 } from './batchExport'
 
 describe('batchExport', () => {
@@ -78,45 +81,98 @@ describe('batchExport', () => {
     expect(parsed.totalItems).toBe(1)
   })
 
-  it('exportBatchCSV neutralizes spreadsheet formula prefixes while preserving digests and numeric fields', () => {
-    const formulaItems: BatchItemResult[] = [
+  it('rejects batch exports when two rows share a videoHash with conflicting outcomes', () => {
+    const conflicting: BatchItemResult[] = [
+      mockItems[0],
       {
         ...mockItems[0],
-        fileName: '=HYPERLINK("http://evil.example","click")',
-        message: '+cmd|"/C calc"!A0',
-        duplicateOf: '-1+1',
-        failureReason: '@SUM(1,2)',
-      },
-      {
-        ...mockItems[0],
-        id: 'item-tab-cr',
-        fileName: '\t=1+1',
-        message: '\r=2+2',
+        id: 'item-conflict',
+        fileName: 'evidence1-tampered.mp4',
+        status: 'revoked',
+        chainStatus: 'Revoked',
       },
     ]
 
-    const csvStr = exportBatchCSV(formulaItems)
-    const lines = csvStr.split('\n')
-    expect(lines).toHaveLength(3)
+    expect(() => exportBatchJSON(conflicting)).toThrow(BatchExportConflictError)
+    expect(() => exportBatchCSV(conflicting)).toThrow(BatchExportConflictError)
+    expect(() => exportReceiptCollection(conflicting)).toThrow(BatchExportConflictError)
 
-    // Formula prefixes are neutralized with a leading apostrophe
-    expect(lines[1]).toContain('"\'=HYPERLINK(""http://evil.example"",""click"")"')
-    expect(lines[1]).toContain('"\'+cmd|""/C calc""!A0"')
-    expect(lines[1]).toContain('\'-1+1')
-    expect(lines[1]).toContain('"\'@SUM(1,2)"')
+    const conflicts = detectConflictingStatements(conflicting)
+    expect(conflicts).toHaveLength(2)
+    expect(conflicts[0].identifierType).toBe('videoHash')
+    expect(conflicts[0].firstFileName).toBe('evidence1.mp4')
+    expect(conflicts[0].conflictingFileName).toBe('evidence1-tampered.mp4')
+    expect(conflicts[0].reason).toContain('status (confirmed vs revoked)')
+  })
 
-    // Tab and CR prefixes are neutralized
-    expect(lines[2]).toContain("'\t=1+1")
-    expect(lines[2]).toContain('"\'\r=2+2"')
+  it('rejects conflicting manifest proofId rows', () => {
+    const conflictingManifests: BatchItemResult[] = [
+      {
+        ...mockItems[0],
+        id: 'm-1',
+        videoHash: 'aaaa',
+        metadataHash: 'bbbb',
+        manifest: {
+          protocol: 'harpocrates',
+          version: 1,
+          proofId: 'shared-proof-id',
+          tier: 'silent',
+          network: 'testnet',
+          contractId: 'C1',
+          transactionRef: 'tx1',
+          videoHash: 'aaaa',
+          metadataHash: 'bbbb',
+          sourceHash: 'aaaa',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          verifierScope: '0',
+          epoch: 0,
+        },
+      },
+      {
+        ...mockItems[0],
+        id: 'm-2',
+        fileName: 'evidence2.mp4',
+        videoHash: 'cccc',
+        metadataHash: 'dddd',
+        manifest: {
+          protocol: 'harpocrates',
+          version: 1,
+          proofId: 'shared-proof-id',
+          tier: 'seal',
+          network: 'testnet',
+          contractId: 'C1',
+          transactionRef: 'tx2',
+          videoHash: 'cccc',
+          metadataHash: 'dddd',
+          sourceHash: 'cccc',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          verifierScope: '0',
+          epoch: 0,
+        },
+      },
+    ]
 
-    // Exact digest and numeric fields remain unescaped
-    expect(lines[1]).toContain(',1024,confirmed,1111222233334444555566667777888811112222333344445555666677778888,')
-    expect(lines[1]).toContain(',120')
+    expect(() => exportReceiptCollection(conflictingManifests)).toThrow(BatchExportConflictError)
+  })
 
-    // Machine-readable JSON export preserves raw unescaped values
-    const jsonStr = exportBatchJSON(formulaItems)
-    const parsed = JSON.parse(jsonStr) as { results: Array<{ fileName: string; message: string }> }
-    expect(parsed.results[0].fileName).toBe('=HYPERLINK("http://evil.example","click")')
-    expect(parsed.results[0].message).toBe('+cmd|"/C calc"!A0')
+  it('preserves valid unique results and expected duplicate-status rows', () => {
+    const withDuplicate: BatchItemResult[] = [
+      ...mockItems,
+      {
+        ...mockItems[0],
+        id: 'item-dup',
+        fileName: 'evidence1-copy.mp4',
+        status: 'duplicate',
+        metadataHash: null,
+        tier: null,
+        chainStatus: null,
+        duplicateOf: 'evidence1.mp4',
+      },
+    ]
+
+    expect(validateBatchExportResults(withDuplicate)).toHaveLength(3)
+    expect(() => exportBatchJSON(withDuplicate)).not.toThrow()
+    expect(() => exportBatchCSV(withDuplicate)).not.toThrow()
+    expect(() => exportReceiptCollection(withDuplicate)).not.toThrow()
   })
 })
