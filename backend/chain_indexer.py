@@ -17,20 +17,26 @@ bounds page size, and backs off exponentially on RPC errors.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import struct
+import tempfile
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from db import (
+    get_indexer_checkpoint_manifest,
     get_indexer_cursor,
     insert_indexed_proof_event,
+    save_indexer_checkpoint_manifest,
     save_indexer_cursor,
 )
 from fetch_external import safe_urlopen
@@ -54,6 +60,369 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+
+INDEXER_CHECKPOINT_MANIFEST_VERSION = 1
+INDEXER_CHECKPOINT_DOMAIN = "harpocrates.indexer.checkpoint.v1"
+INDEXER_SCHEMA_VERSION = "1"
+DEFAULT_INDEXER_ID = "soroban_events"
+
+
+# ---------------------------------------------------------------------------
+# Verified Checkpoint Manifest
+# ---------------------------------------------------------------------------
+
+
+class IndexerCheckpointError(ValueError):
+    """Base error for checkpoint manifest verification or resume failures."""
+
+    def __init__(self, message: str, *, reason: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.details = details or {}
+
+
+class CheckpointVerificationError(IndexerCheckpointError):
+    """Raised when a checkpoint manifest is malformed or fails integrity verification."""
+
+
+class IncompatibleCheckpointError(IndexerCheckpointError):
+    """Raised when a checkpoint manifest is incompatible with the active indexer target."""
+
+
+def resolve_indexer_network(network: str | None = None, rpc_url: str | None = None) -> str:
+    """Resolve and normalize the canonical network identifier for checkpoint binding."""
+    raw = (
+        network
+        or os.getenv("STELLAR_NETWORK")
+        or os.getenv("HARPOCRATES_NETWORK")
+        or os.getenv("RELEASE_NETWORK")
+    )
+    if raw and str(raw).strip():
+        return str(raw).strip().lower()
+
+    url = (rpc_url or "").strip().lower()
+    if "testnet" in url:
+        return "testnet"
+    if "futurenet" in url:
+        return "futurenet"
+    if "localhost" in url or "127.0.0.1" in url or "standalone" in url:
+        return "standalone"
+    if "mainnet" in url or "soroban-rpc.mainnet" in url or "pubnet" in url:
+        return "mainnet"
+    return "testnet"
+
+
+def resolve_indexer_schema_version(schema_version: str | None = None) -> str:
+    """Resolve the canonical projection schema version bound to checkpoints."""
+    raw = schema_version or os.getenv("INDEXER_SCHEMA_VERSION") or INDEXER_SCHEMA_VERSION
+    normalized = str(raw).strip()
+    if not normalized:
+        raise CheckpointVerificationError(
+            "schema_version must be a non-empty string",
+            reason="invalid_schema_version",
+        )
+    return normalized
+
+
+def _is_valid_non_negative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def compute_checkpoint_manifest_hash(payload: dict[str, Any]) -> str:
+    """Compute a domain-separated canonical SHA-256 digest for a checkpoint payload."""
+    canonical_json = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    preimage = f"{INDEXER_CHECKPOINT_DOMAIN}\n{canonical_json}".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+@dataclass(frozen=True)
+class IndexerCheckpointManifest:
+    """Verified checkpoint manifest binding network, contract, schema, and observed ledger."""
+
+    manifest_version: int
+    indexer_id: str
+    network: str
+    contract_id: str
+    schema_version: str
+    cursor: str
+    observed_ledger: int
+    manifest_hash: str
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "manifest_version": self.manifest_version,
+            "indexer_id": self.indexer_id,
+            "network": self.network,
+            "contract_id": self.contract_id,
+            "schema_version": self.schema_version,
+            "cursor": self.cursor,
+            "observed_ledger": self.observed_ledger,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        data = self.canonical_payload()
+        data["manifest_hash"] = self.manifest_hash
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Any) -> IndexerCheckpointManifest:
+        if not isinstance(data, dict):
+            raise CheckpointVerificationError(
+                "Checkpoint manifest must be a JSON object",
+                reason="malformed_manifest",
+            )
+
+        required = (
+            "manifest_version",
+            "indexer_id",
+            "network",
+            "contract_id",
+            "schema_version",
+            "cursor",
+            "observed_ledger",
+            "manifest_hash",
+        )
+        missing = [k for k in required if k not in data]
+        if missing:
+            raise CheckpointVerificationError(
+                f"Checkpoint manifest missing required fields: {', '.join(missing)}",
+                reason="malformed_manifest",
+                details={"missing": missing},
+            )
+
+        manifest_version = data["manifest_version"]
+        if not isinstance(manifest_version, int) or isinstance(manifest_version, bool):
+            raise CheckpointVerificationError(
+                "manifest_version must be an integer",
+                reason="malformed_manifest",
+            )
+        if manifest_version != INDEXER_CHECKPOINT_MANIFEST_VERSION:
+            raise CheckpointVerificationError(
+                f"Unsupported checkpoint manifest_version: {manifest_version}",
+                reason="unsupported_manifest_version",
+                details={"manifest_version": manifest_version},
+            )
+
+        for field_name in ("indexer_id", "network", "contract_id", "schema_version", "cursor"):
+            val = data[field_name]
+            if not isinstance(val, str) or not val.strip():
+                raise CheckpointVerificationError(
+                    f"Checkpoint manifest field '{field_name}' must be a non-empty string",
+                    reason="malformed_manifest",
+                    details={"field": field_name},
+                )
+
+        observed_ledger = data["observed_ledger"]
+        if not _is_valid_non_negative_int(observed_ledger):
+            raise CheckpointVerificationError(
+                "Checkpoint manifest field 'observed_ledger' must be a non-negative integer",
+                reason="malformed_manifest",
+                details={"field": "observed_ledger"},
+            )
+
+        manifest_hash = data["manifest_hash"]
+        if (
+            not isinstance(manifest_hash, str)
+            or len(manifest_hash) != 64
+            or any(c not in "0123456789abcdef" for c in manifest_hash)
+        ):
+            raise CheckpointVerificationError(
+                "Checkpoint manifest field 'manifest_hash' must be a 64-character lowercase hex digest",
+                reason="malformed_manifest",
+                details={"field": "manifest_hash"},
+            )
+
+        return cls(
+            manifest_version=manifest_version,
+            indexer_id=data["indexer_id"].strip(),
+            network=data["network"].strip().lower(),
+            contract_id=data["contract_id"].strip(),
+            schema_version=data["schema_version"].strip(),
+            cursor=data["cursor"],
+            observed_ledger=observed_ledger,
+            manifest_hash=manifest_hash,
+        )
+
+
+def build_checkpoint_manifest(
+    *,
+    network: str,
+    contract_id: str,
+    schema_version: str,
+    cursor: str,
+    observed_ledger: int,
+    indexer_id: str = DEFAULT_INDEXER_ID,
+) -> IndexerCheckpointManifest:
+    """Build and hash a canonical verified indexer checkpoint manifest."""
+    if not isinstance(network, str) or not network.strip():
+        raise CheckpointVerificationError("network must be a non-empty string", reason="malformed_manifest")
+    if not isinstance(contract_id, str) or not contract_id.strip():
+        raise CheckpointVerificationError("contract_id must be a non-empty string", reason="malformed_manifest")
+    if not isinstance(schema_version, str) or not schema_version.strip():
+        raise CheckpointVerificationError("schema_version must be a non-empty string", reason="malformed_manifest")
+    if not isinstance(cursor, str) or not cursor.strip():
+        raise CheckpointVerificationError("cursor must be a non-empty string", reason="malformed_manifest")
+    if not isinstance(indexer_id, str) or not indexer_id.strip():
+        raise CheckpointVerificationError("indexer_id must be a non-empty string", reason="malformed_manifest")
+    if not _is_valid_non_negative_int(observed_ledger):
+        raise CheckpointVerificationError(
+            "observed_ledger must be a non-negative integer",
+            reason="malformed_manifest",
+        )
+
+    payload = {
+        "manifest_version": INDEXER_CHECKPOINT_MANIFEST_VERSION,
+        "indexer_id": indexer_id.strip(),
+        "network": network.strip().lower(),
+        "contract_id": contract_id.strip(),
+        "schema_version": schema_version.strip(),
+        "cursor": cursor,
+        "observed_ledger": observed_ledger,
+    }
+    digest = compute_checkpoint_manifest_hash(payload)
+    return IndexerCheckpointManifest(
+        manifest_version=INDEXER_CHECKPOINT_MANIFEST_VERSION,
+        indexer_id=payload["indexer_id"],
+        network=payload["network"],
+        contract_id=payload["contract_id"],
+        schema_version=payload["schema_version"],
+        cursor=payload["cursor"],
+        observed_ledger=payload["observed_ledger"],
+        manifest_hash=digest,
+    )
+
+
+def verify_checkpoint_manifest(
+    manifest: IndexerCheckpointManifest | dict[str, Any],
+) -> IndexerCheckpointManifest:
+    """Fail-closed integrity verification of a checkpoint manifest."""
+    parsed = (
+        manifest
+        if isinstance(manifest, IndexerCheckpointManifest)
+        else IndexerCheckpointManifest.from_dict(manifest)
+    )
+    # Re-validate fields even when passed as a dataclass instance
+    parsed = IndexerCheckpointManifest.from_dict(parsed.to_dict())
+    expected_hash = compute_checkpoint_manifest_hash(parsed.canonical_payload())
+    if not hmac.compare_digest(parsed.manifest_hash, expected_hash):
+        raise CheckpointVerificationError(
+            "Checkpoint manifest integrity check failed: manifest_hash mismatch",
+            reason="manifest_integrity_failed",
+        )
+    return parsed
+
+
+def validate_checkpoint_resume(
+    manifest: IndexerCheckpointManifest | dict[str, Any],
+    *,
+    network: str,
+    contract_id: str,
+    schema_version: str,
+    indexer_id: str = DEFAULT_INDEXER_ID,
+    current_ledger: int | None = None,
+) -> IndexerCheckpointManifest:
+    """Verify manifest integrity and compatibility with the active indexer target."""
+    verified = verify_checkpoint_manifest(manifest)
+
+    expected_indexer_id = indexer_id.strip()
+    expected_network = network.strip().lower()
+    expected_contract_id = contract_id.strip()
+    expected_schema_version = schema_version.strip()
+
+    if verified.indexer_id != expected_indexer_id:
+        raise IncompatibleCheckpointError(
+            f"Checkpoint indexer_id mismatch: stored={verified.indexer_id} expected={expected_indexer_id}",
+            reason="indexer_id_mismatch",
+            details={"stored": verified.indexer_id, "expected": expected_indexer_id},
+        )
+    if verified.network != expected_network:
+        raise IncompatibleCheckpointError(
+            f"Checkpoint network mismatch: stored={verified.network} expected={expected_network}",
+            reason="network_mismatch",
+            details={"stored": verified.network, "expected": expected_network},
+        )
+    if verified.contract_id != expected_contract_id:
+        raise IncompatibleCheckpointError(
+            f"Checkpoint contract_id mismatch: stored={verified.contract_id} expected={expected_contract_id}",
+            reason="contract_mismatch",
+            details={"stored": verified.contract_id, "expected": expected_contract_id},
+        )
+    if verified.schema_version != expected_schema_version:
+        raise IncompatibleCheckpointError(
+            f"Checkpoint schema_version mismatch: stored={verified.schema_version} expected={expected_schema_version}",
+            reason="schema_mismatch",
+            details={"stored": verified.schema_version, "expected": expected_schema_version},
+        )
+    if current_ledger is not None:
+        if not _is_valid_non_negative_int(current_ledger):
+            raise IncompatibleCheckpointError(
+                f"Invalid current_ledger: {current_ledger}",
+                reason="invalid_ledger",
+                details={"current_ledger": current_ledger},
+            )
+        if current_ledger < verified.observed_ledger:
+            raise IncompatibleCheckpointError(
+                f"Checkpoint observed ledger regression: current={current_ledger} < stored={verified.observed_ledger}",
+                reason="ledger_regression",
+                details={"stored": verified.observed_ledger, "current": current_ledger},
+            )
+
+    return verified
+
+
+def load_checkpoint_manifest_file(path: str | Path) -> IndexerCheckpointManifest | None:
+    """Load and verify a checkpoint manifest from disk. Returns None if file does not exist."""
+    manifest_file = Path(path)
+    if not manifest_file.exists():
+        return None
+    try:
+        raw_text = manifest_file.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
+    except Exception as exc:
+        raise CheckpointVerificationError(
+            f"Failed to read or parse checkpoint manifest file: {exc}",
+            reason="malformed_manifest",
+        ) from exc
+    return verify_checkpoint_manifest(data)
+
+
+def write_checkpoint_manifest_file(
+    path: str | Path,
+    manifest: IndexerCheckpointManifest,
+) -> None:
+    """Atomically write a verified checkpoint manifest to disk."""
+    verified = verify_checkpoint_manifest(manifest)
+    manifest_file = Path(path)
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(
+        verified.to_dict(),
+        sort_keys=True,
+        indent=2,
+        ensure_ascii=True,
+    ) + "\n"
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".checkpoint_manifest_",
+        suffix=".tmp",
+        dir=str(manifest_file.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, manifest_file)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -486,20 +855,99 @@ def fetch_contract_events(
 # ---------------------------------------------------------------------------
 
 
+def _extract_observed_ledger(
+    rpc_result: dict[str, Any],
+    events: list[dict[str, Any]],
+    *,
+    start_ledger: int | None = None,
+    previous_ledger: int | None = None,
+) -> int | None:
+    """Resolve the highest observed ledger from an RPC response or fallback context."""
+    raw_latest = rpc_result.get("latestLedger")
+    if raw_latest is not None:
+        try:
+            latest_int = int(raw_latest)
+            if latest_int >= 0:
+                return latest_int
+        except (TypeError, ValueError):
+            pass
+
+    event_ledgers: list[int] = []
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("ledger") is not None:
+            try:
+                val = int(ev["ledger"])
+                if val >= 0:
+                    event_ledgers.append(val)
+            except (TypeError, ValueError):
+                continue
+    if event_ledgers:
+        return max(event_ledgers)
+
+    if _is_valid_non_negative_int(start_ledger):
+        return start_ledger
+    if _is_valid_non_negative_int(previous_ledger):
+        return previous_ledger
+    return None
+
+
 def poll_indexer_once(
     contract_id: str | None = None,
     rpc_url: str | None = None,
     limit: int = INDEXER_DEFAULT_PAGE_SIZE,
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    *,
+    network: str | None = None,
+    schema_version: str | None = None,
+    manifest_path: str | Path | None = None,
+    indexer_id: str = DEFAULT_INDEXER_ID,
+    require_verified_manifest: bool = False,
 ) -> dict[str, Any]:
-    """Execute one indexing cycle: fetch, ingest, and persist cursor."""
+    """Execute one indexing cycle: verify checkpoint, fetch, ingest, and persist manifest."""
     active_contract_id = contract_id or os.getenv("HARPOCRATES_REGISTRY_CONTRACT_ID") or os.getenv("CONTRACT_ID")
     if not active_contract_id:
         return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0, "reason": "no_contract_id"}
 
     active_rpc_url = rpc_url or os.getenv("SOROBAN_RPC_URL") or os.getenv("STELLAR_RPC_URL") or DEFAULT_SOROBAN_RPC_URL
+    active_network = resolve_indexer_network(network=network, rpc_url=active_rpc_url)
+    active_schema_version = resolve_indexer_schema_version(schema_version=schema_version)
+    active_manifest_path = manifest_path or os.getenv("INDEXER_CHECKPOINT_MANIFEST_PATH")
 
-    cursor = get_indexer_cursor()
+    # 1. Load and verify any existing checkpoint manifest BEFORE fetching or mutating projection.
+    verified_manifest: IndexerCheckpointManifest | None = None
+    if active_manifest_path:
+        loaded_file_manifest = load_checkpoint_manifest_file(active_manifest_path)
+        if loaded_file_manifest is not None:
+            verified_manifest = validate_checkpoint_resume(
+                loaded_file_manifest,
+                network=active_network,
+                contract_id=active_contract_id,
+                schema_version=active_schema_version,
+                indexer_id=indexer_id,
+            )
+
+    if verified_manifest is None:
+        stored_manifest = get_indexer_checkpoint_manifest(indexer_id)
+        if stored_manifest is not None:
+            verified_manifest = validate_checkpoint_resume(
+                stored_manifest,
+                network=active_network,
+                contract_id=active_contract_id,
+                schema_version=active_schema_version,
+                indexer_id=indexer_id,
+            )
+
+    if verified_manifest is not None:
+        cursor: str | None = verified_manifest.cursor
+    else:
+        cursor = get_indexer_cursor(indexer_id)
+        if cursor and require_verified_manifest:
+            raise IncompatibleCheckpointError(
+                "Refusing to resume from unverified legacy cursor without a checkpoint manifest",
+                reason="missing_checkpoint_manifest",
+                details={"indexer_id": indexer_id},
+            )
+
     start_ledger = None
 
     if not cursor:
@@ -519,20 +967,53 @@ def poll_indexer_once(
     )
 
     events = rpc_result.get("events") or []
+    observed_ledger = _extract_observed_ledger(
+        rpc_result,
+        events,
+        start_ledger=start_ledger,
+        previous_ledger=verified_manifest.observed_ledger if verified_manifest else None,
+    )
+
+    # 2. Reject observed ledger regression BEFORE mutating the trusted projection.
+    if verified_manifest is not None and observed_ledger is not None:
+        validate_checkpoint_resume(
+            verified_manifest,
+            network=active_network,
+            contract_id=active_contract_id,
+            schema_version=active_schema_version,
+            indexer_id=indexer_id,
+            current_ledger=observed_ledger,
+        )
+
     summary = process_events_batch(events, contract_id=active_contract_id)
 
     new_cursor = rpc_result.get("cursor")
-    latest_ledger = rpc_result.get("latestLedger")
+    effective_cursor: str | None = None
 
     if new_cursor and new_cursor != cursor:
-        save_indexer_cursor(cursor=new_cursor, ledger=latest_ledger)
-        summary["new_cursor"] = new_cursor
+        effective_cursor = str(new_cursor)
     elif events and not new_cursor:
         # If RPC provides event IDs without top-level cursor, use last event's id/pagingToken
         last_id = events[-1].get("id") or events[-1].get("pagingToken")
         if last_id:
-            save_indexer_cursor(cursor=str(last_id), ledger=latest_ledger)
-            summary["new_cursor"] = str(last_id)
+            effective_cursor = str(last_id)
+
+    if effective_cursor:
+        save_indexer_cursor(indexer_id=indexer_id, cursor=effective_cursor, ledger=observed_ledger)
+        summary["new_cursor"] = effective_cursor
+        if observed_ledger is not None:
+            new_manifest = build_checkpoint_manifest(
+                network=active_network,
+                contract_id=active_contract_id,
+                schema_version=active_schema_version,
+                cursor=effective_cursor,
+                observed_ledger=observed_ledger,
+                indexer_id=indexer_id,
+            )
+            save_indexer_checkpoint_manifest(new_manifest.to_dict(), indexer_id=indexer_id)
+            if active_manifest_path:
+                write_checkpoint_manifest_file(active_manifest_path, new_manifest)
+            summary["checkpoint_manifest"] = new_manifest.to_dict()
 
     return summary
 

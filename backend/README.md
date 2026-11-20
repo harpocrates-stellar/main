@@ -342,6 +342,34 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Verified Indexer Checkpoint Manifest
+
+The Soroban event indexer (`chain_indexer.py`) binds each persisted checkpoint
+to a canonical, SHA-256-verified manifest (`IndexerCheckpointManifest`) that
+records:
+
+- `manifest_version` (`1`)
+- `indexer_id` (default `soroban_events`)
+- `network` (canonical Stellar network, e.g. `testnet`, `mainnet`, `futurenet`, `standalone`)
+- `contract_id` (registry contract ID)
+- `schema_version` (projection schema version, default `"1"`)
+- `cursor` (Soroban RPC paging cursor)
+- `observed_ledger` (non-negative observed ledger sequence)
+- `manifest_hash` (domain-separated SHA-256 digest of the canonical JSON payload)
+
+On resume, `poll_indexer_once()` verifies the manifest digest and checks
+compatibility against the active `network`, `contract_id`, `schema_version`,
+and `observed_ledger` monotonicity before fetching events or mutating
+`proof_events`. Any tampered manifest, target mismatch, or ledger regression
+fails closed with `CheckpointVerificationError` or `IncompatibleCheckpointError`
+without mutating the trusted projection.
+
+Optional environment variables:
+
+- `STELLAR_NETWORK` / `HARPOCRATES_NETWORK`: Explicit network name bound to the checkpoint (inferred from `SOROBAN_RPC_URL` if unset).
+- `INDEXER_SCHEMA_VERSION`: Projection schema version bound to the checkpoint (default `"1"`).
+- `INDEXER_CHECKPOINT_MANIFEST_PATH`: Optional file path for atomic on-disk checkpoint manifest persistence.
+
 ## Test
 
 ```powershell

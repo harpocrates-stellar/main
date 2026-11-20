@@ -1568,3 +1568,57 @@ def save_indexer_cursor(
                 (indexer_id, cursor, ledger),
             )
         connection.commit()
+
+
+def get_indexer_checkpoint_manifest(
+    indexer_id: str = "soroban_events",
+) -> dict[str, Any] | None:
+    """Return the stored checkpoint manifest dict for an indexer, if any."""
+    if not database_url():
+        state = _INDEXER_STATE.get(indexer_id)
+        if not state:
+            return None
+        manifest = state.get("manifest")
+        return dict(manifest) if isinstance(manifest, dict) else None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select cursor, ledger from indexer_state where id = %s;",
+                (indexer_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            raw_cursor = row.get("cursor")
+            if isinstance(raw_cursor, str) and raw_cursor.startswith("{"):
+                try:
+                    parsed = json.loads(raw_cursor)
+                    if isinstance(parsed, dict) and "manifest_hash" in parsed:
+                        return parsed
+                except Exception:
+                    return None
+            return None
+
+
+def save_indexer_checkpoint_manifest(
+    manifest: dict[str, Any],
+    indexer_id: str = "soroban_events",
+) -> None:
+    """Persist the verified checkpoint manifest alongside the indexer cursor."""
+    cursor_val = str(manifest.get("cursor") or "")
+    ledger_val = manifest.get("observed_ledger")
+    if not database_url():
+        _INDEXER_STATE[indexer_id] = {
+            "cursor": cursor_val,
+            "ledger": ledger_val,
+            "manifest": dict(manifest),
+            "updated_at": datetime.now(timezone.utc),
+        }
+        return
+
+    save_indexer_cursor(
+        indexer_id=indexer_id,
+        cursor=cursor_val,
+        ledger=ledger_val if isinstance(ledger_val, int) else None,
+    )
