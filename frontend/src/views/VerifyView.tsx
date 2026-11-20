@@ -391,6 +391,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           events={events}
           chainProof={chainProof}
           errorCode={errorCode}
+          offline={offline}
         />
 
         {/* Action row — reachable on mobile, adequate touch targets */}

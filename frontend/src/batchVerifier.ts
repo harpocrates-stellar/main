@@ -27,6 +27,86 @@ export type BatchConfig = {
   apiBase: string
   contractId: string
   wallet?: string
+  network?: string
+}
+
+export const BATCH_CHECKPOINT_PROTOCOL = 'harpocrates-batch-checkpoint' as const
+export const BATCH_CHECKPOINT_VERSION = 1 as const
+
+export type BatchFileFingerprint = {
+  index: number
+  fileName: string
+  fileSizeBytes: number
+  lastModified: number
+  mimeType: string
+  sampleHash: string
+}
+
+export type BatchCheckpointPolicy = {
+  maxFileSizeBytes: number
+  maxTotalSizeBytes: number
+}
+
+export type BatchCheckpointNetworkContext = {
+  apiBase: string
+  contractId: string
+  network: string
+}
+
+export type BatchCheckpointCompletedItem = {
+  index: number
+  fileName: string
+  fileSizeBytes: number
+  status: BatchOutcome
+  videoHash: string | null
+  metadataHash: string | null
+  sourceHash: string | null
+  tier: string | null
+  chainStatus: string | null
+  message: string
+  duplicateOf: string | null
+  failureReason: string | null
+  durationMs: number | null
+}
+
+export type BatchVerificationCheckpoint = {
+  protocol: typeof BATCH_CHECKPOINT_PROTOCOL
+  version: typeof BATCH_CHECKPOINT_VERSION
+  createdAt: string
+  updatedAt: string
+  policy: BatchCheckpointPolicy
+  networkContext: BatchCheckpointNetworkContext
+  files: BatchFileFingerprint[]
+  completed: BatchCheckpointCompletedItem[]
+}
+
+export type CheckpointMismatchReason =
+  | 'invalid-format'
+  | 'policy-mismatch'
+  | 'network-mismatch'
+  | 'files-mismatch'
+
+export type CheckpointValidationResult =
+  | { ok: true }
+  | {
+      ok: false
+      reason: CheckpointMismatchReason
+      message: string
+    }
+
+export class BatchCheckpointError extends Error {
+  public readonly reason: CheckpointMismatchReason
+
+  constructor(reason: CheckpointMismatchReason, message: string) {
+    super(message)
+    this.name = 'BatchCheckpointError'
+    this.reason = reason
+  }
+}
+
+export type BatchRunOptions = {
+  checkpoint?: BatchVerificationCheckpoint
+  onCheckpoint?: (checkpoint: BatchVerificationCheckpoint) => void
 }
 
 export type BatchItemResult = {
@@ -78,6 +158,274 @@ export const DEFAULT_BATCH_CONFIG: BatchConfig = {
   maxTotalSizeBytes: 500 * 1024 * 1024, // 500 MB
   apiBase: appConfig.apiBase,
   contractId: appConfig.registryId,
+  network: import.meta.env.VITE_STELLAR_NETWORK ?? 'testnet',
+}
+
+const COMPLETED_OUTCOMES: ReadonlySet<BatchOutcome> = new Set<BatchOutcome>([
+  'confirmed',
+  'revoked',
+  'metadata-only',
+  'database-only',
+  'manifest-valid',
+  'manifest-invalid',
+  'malformed',
+  'oversized',
+  'duplicate',
+  'error',
+  'unavailable',
+])
+
+const FINGERPRINT_SAMPLE_BYTES = 64 * 1024
+
+export function isCompletedBatchOutcome(status: BatchOutcome): boolean {
+  return COMPLETED_OUTCOMES.has(status)
+}
+
+function normalizeApiBase(apiBase: string): string {
+  return apiBase.trim().replace(/\/+$/, '')
+}
+
+function normalizeNetworkContext(config: BatchConfig): BatchCheckpointNetworkContext {
+  return {
+    apiBase: normalizeApiBase(config.apiBase),
+    contractId: config.contractId.trim(),
+    network: (config.network ?? DEFAULT_BATCH_CONFIG.network ?? 'testnet').trim().toLowerCase(),
+  }
+}
+
+function normalizePolicy(config: BatchConfig): BatchCheckpointPolicy {
+  return {
+    maxFileSizeBytes: config.maxFileSizeBytes,
+    maxTotalSizeBytes: config.maxTotalSizeBytes,
+  }
+}
+
+/**
+ * Computes a nonsecret, bounded fingerprint for a File without persisting raw bytes.
+ * Hashes file size plus bounded head and tail slices using SHA-256.
+ */
+export async function computeFileFingerprint(
+  file: File,
+  index: number,
+  signal?: AbortSignal,
+): Promise<BatchFileFingerprint> {
+  if (signal?.aborted) {
+    throw new Error('Operation cancelled.')
+  }
+
+  const headEnd = Math.min(file.size, FINGERPRINT_SAMPLE_BYTES)
+  const headBuf = new Uint8Array(await file.slice(0, headEnd).arrayBuffer())
+  if (signal?.aborted) {
+    throw new Error('Operation cancelled.')
+  }
+
+  let tailBuf = new Uint8Array(0)
+  if (file.size > FINGERPRINT_SAMPLE_BYTES) {
+    const tailStart = Math.max(headEnd, file.size - FINGERPRINT_SAMPLE_BYTES)
+    tailBuf = new Uint8Array(await file.slice(tailStart, file.size).arrayBuffer())
+    if (signal?.aborted) {
+      throw new Error('Operation cancelled.')
+    }
+  }
+
+  const sizePrefix = new TextEncoder().encode(`size:${file.size};`)
+  const combined = new Uint8Array(sizePrefix.length + headBuf.length + tailBuf.length)
+  combined.set(sizePrefix, 0)
+  combined.set(headBuf, sizePrefix.length)
+  combined.set(tailBuf, sizePrefix.length + headBuf.length)
+
+  const digest = await crypto.subtle.digest('SHA-256', combined.buffer)
+
+  return {
+    index,
+    fileName: file.name,
+    fileSizeBytes: file.size,
+    lastModified: file.lastModified,
+    mimeType: file.type,
+    sampleHash: hex(digest),
+  }
+}
+
+export async function computeBatchFingerprints(
+  files: File[],
+  signal?: AbortSignal,
+): Promise<BatchFileFingerprint[]> {
+  const fingerprints: BatchFileFingerprint[] = []
+  for (let i = 0; i < files.length; i++) {
+    fingerprints.push(await computeFileFingerprint(files[i], i, signal))
+  }
+  return fingerprints
+}
+
+/**
+ * Builds a privacy-safe checkpoint containing only nonsecret file fingerprints,
+ * policy/network context, and completed results.
+ */
+export function createBatchCheckpoint(
+  files: BatchFileFingerprint[],
+  items: BatchItemResult[],
+  config: BatchConfig,
+  createdAt?: string,
+): BatchVerificationCheckpoint {
+  const now = new Date().toISOString()
+  const completed: BatchCheckpointCompletedItem[] = []
+
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]
+    if (!isCompletedBatchOutcome(item.status)) {
+      continue
+    }
+    completed.push({
+      index,
+      fileName: item.fileName,
+      fileSizeBytes: item.fileSizeBytes,
+      status: item.status,
+      videoHash: item.videoHash,
+      metadataHash: item.metadataHash,
+      sourceHash: item.sourceHash,
+      tier: item.tier,
+      chainStatus: item.chainStatus,
+      message: item.message,
+      duplicateOf: item.duplicateOf,
+      failureReason: item.failureReason,
+      durationMs: item.durationMs !== null ? Math.round(item.durationMs) : null,
+    })
+  }
+
+  return {
+    protocol: BATCH_CHECKPOINT_PROTOCOL,
+    version: BATCH_CHECKPOINT_VERSION,
+    createdAt: createdAt ?? now,
+    updatedAt: now,
+    policy: normalizePolicy(config),
+    networkContext: normalizeNetworkContext(config),
+    files: files.map((f) => ({
+      index: f.index,
+      fileName: f.fileName,
+      fileSizeBytes: f.fileSizeBytes,
+      lastModified: f.lastModified,
+      mimeType: f.mimeType,
+      sampleHash: f.sampleHash,
+    })),
+    completed,
+  }
+}
+
+/**
+ * Validates that a checkpoint is well-formed and bound to the exact input files,
+ * policy limits, and network context. Fails closed on any mismatch.
+ */
+export function validateBatchCheckpoint(
+  checkpoint: unknown,
+  files: BatchFileFingerprint[],
+  config: BatchConfig,
+): CheckpointValidationResult {
+  if (!checkpoint || typeof checkpoint !== 'object') {
+    return { ok: false, reason: 'invalid-format', message: 'Checkpoint must be a JSON object.' }
+  }
+
+  const cp = checkpoint as Partial<BatchVerificationCheckpoint>
+  if (cp.protocol !== BATCH_CHECKPOINT_PROTOCOL || cp.version !== BATCH_CHECKPOINT_VERSION) {
+    return {
+      ok: false,
+      reason: 'invalid-format',
+      message: 'Unsupported checkpoint protocol or version.',
+    }
+  }
+
+  if (
+    !cp.policy ||
+    typeof cp.policy.maxFileSizeBytes !== 'number' ||
+    typeof cp.policy.maxTotalSizeBytes !== 'number' ||
+    !cp.networkContext ||
+    typeof cp.networkContext.apiBase !== 'string' ||
+    typeof cp.networkContext.contractId !== 'string' ||
+    typeof cp.networkContext.network !== 'string' ||
+    !Array.isArray(cp.files) ||
+    !Array.isArray(cp.completed)
+  ) {
+    return {
+      ok: false,
+      reason: 'invalid-format',
+      message: 'Checkpoint is missing required fields.',
+    }
+  }
+
+  const expectedPolicy = normalizePolicy(config)
+  if (
+    cp.policy.maxFileSizeBytes !== expectedPolicy.maxFileSizeBytes ||
+    cp.policy.maxTotalSizeBytes !== expectedPolicy.maxTotalSizeBytes
+  ) {
+    return {
+      ok: false,
+      reason: 'policy-mismatch',
+      message: 'Batch policy limits do not match checkpoint policy.',
+    }
+  }
+
+  const expectedNetwork = normalizeNetworkContext(config)
+  if (
+    normalizeApiBase(cp.networkContext.apiBase) !== expectedNetwork.apiBase ||
+    cp.networkContext.contractId.trim() !== expectedNetwork.contractId ||
+    cp.networkContext.network.trim().toLowerCase() !== expectedNetwork.network
+  ) {
+    return {
+      ok: false,
+      reason: 'network-mismatch',
+      message: 'Network context (API base, contract ID, or network) does not match checkpoint.',
+    }
+  }
+
+  if (cp.files.length !== files.length) {
+    return {
+      ok: false,
+      reason: 'files-mismatch',
+      message: `Input file count (${files.length}) does not match checkpoint (${cp.files.length}).`,
+    }
+  }
+
+  for (let i = 0; i < files.length; i++) {
+    const expected = files[i]
+    const actual = cp.files[i]
+    if (
+      !actual ||
+      actual.index !== expected.index ||
+      actual.fileName !== expected.fileName ||
+      actual.fileSizeBytes !== expected.fileSizeBytes ||
+      actual.lastModified !== expected.lastModified ||
+      actual.mimeType !== expected.mimeType ||
+      actual.sampleHash !== expected.sampleHash
+    ) {
+      return {
+        ok: false,
+        reason: 'files-mismatch',
+        message: `Input file identity mismatch at index ${i} (${expected.fileName}).`,
+      }
+    }
+  }
+
+  const seenIndices = new Set<number>()
+  for (const entry of cp.completed) {
+    if (
+      !entry ||
+      typeof entry.index !== 'number' ||
+      !Number.isInteger(entry.index) ||
+      entry.index < 0 ||
+      entry.index >= files.length ||
+      seenIndices.has(entry.index) ||
+      typeof entry.status !== 'string' ||
+      !isCompletedBatchOutcome(entry.status as BatchOutcome)
+    ) {
+      return {
+        ok: false,
+        reason: 'invalid-format',
+        message: 'Checkpoint contains an invalid or non-completed result entry.',
+      }
+    }
+    seenIndices.add(entry.index)
+  }
+
+  return { ok: true }
 }
 
 /**
@@ -175,8 +523,11 @@ export class BatchVerifier {
   private items: BatchItemResult[] = []
   private abortController: AbortController | null = null
   private onProgressCallback?: (progress: BatchProgress, items: BatchItemResult[]) => void
+  private onCheckpointCallback?: (checkpoint: BatchVerificationCheckpoint) => void
   private processedHashes = new Map<string, string>() // videoHash -> itemId
   private accumulatedTotalBytes = 0
+  private currentFingerprints: BatchFileFingerprint[] = []
+  private checkpointCreatedAt: string | null = null
 
   constructor(config: Partial<BatchConfig> = {}) {
     this.config = { ...DEFAULT_BATCH_CONFIG, ...config }
@@ -198,7 +549,26 @@ export class BatchVerifier {
     this.onProgressCallback = cb
   }
 
+  public setOnCheckpoint(cb: (checkpoint: BatchVerificationCheckpoint) => void): void {
+    this.onCheckpointCallback = cb
+  }
+
+  public getCheckpoint(): BatchVerificationCheckpoint | null {
+    if (this.currentFingerprints.length === 0) {
+      return null
+    }
+    return createBatchCheckpoint(
+      this.currentFingerprints,
+      this.items,
+      this.config,
+      this.checkpointCreatedAt ?? undefined,
+    )
+  }
+
   public cancel(): void {
+    if (this.abortController?.signal.aborted) {
+      return
+    }
     if (this.abortController) {
       this.abortController.abort()
     }
@@ -212,24 +582,79 @@ export class BatchVerifier {
     this.notifyProgress(true, true)
   }
 
+  public async resumeBatch(
+    files: File[],
+    checkpoint: BatchVerificationCheckpoint,
+    onProgress?: (progress: BatchProgress, items: BatchItemResult[]) => void,
+    options?: Omit<BatchRunOptions, 'checkpoint'>,
+  ): Promise<{ items: BatchItemResult[]; summary: BatchSummary; checkpoint: BatchVerificationCheckpoint }> {
+    return this.runBatch(files, onProgress, { ...options, checkpoint })
+  }
+
   public async runBatch(
     files: File[],
     onProgress?: (progress: BatchProgress, items: BatchItemResult[]) => void,
-  ): Promise<{ items: BatchItemResult[]; summary: BatchSummary }> {
+    options?: BatchRunOptions,
+  ): Promise<{ items: BatchItemResult[]; summary: BatchSummary; checkpoint: BatchVerificationCheckpoint }> {
     if (onProgress) {
       this.onProgressCallback = onProgress
+    }
+    if (options?.onCheckpoint) {
+      this.onCheckpointCallback = options.onCheckpoint
     }
 
     this.abortController = new AbortController()
     const signal = this.abortController.signal
 
+    // Compute nonsecret input file fingerprints upfront
+    const fingerprints = await computeBatchFingerprints(files)
+
+    // Fail-closed checkpoint validation before mutating state
+    const restoredByIndex = new Map<number, BatchCheckpointCompletedItem>()
+    if (options?.checkpoint) {
+      const validation = validateBatchCheckpoint(options.checkpoint, fingerprints, this.config)
+      if (!validation.ok) {
+        throw new BatchCheckpointError(validation.reason, validation.message)
+      }
+      for (const entry of options.checkpoint.completed) {
+        restoredByIndex.set(entry.index, entry)
+      }
+    }
+
     // Initialize item results
     const startTime = performance.now()
     this.processedHashes.clear()
     this.accumulatedTotalBytes = 0
+    this.currentFingerprints = fingerprints
+    this.checkpointCreatedAt = options?.checkpoint?.createdAt ?? new Date().toISOString()
 
     this.items = files.map((file, idx) => {
       const id = `item-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const restored = restoredByIndex.get(idx)
+      if (restored) {
+        if (restored.videoHash && restored.status !== 'duplicate') {
+          this.processedHashes.set(restored.videoHash, id)
+        }
+        return {
+          id,
+          file,
+          fileName: restored.fileName,
+          fileSizeBytes: restored.fileSizeBytes,
+          status: restored.status,
+          videoHash: restored.videoHash,
+          metadataHash: restored.metadataHash,
+          sourceHash: restored.sourceHash,
+          tier: restored.tier,
+          chainStatus: restored.chainStatus,
+          message: restored.message,
+          events: [],
+          chainProof: null,
+          duplicateOf: restored.duplicateOf,
+          manifest: null,
+          durationMs: restored.durationMs,
+          failureReason: restored.failureReason,
+        }
+      }
       return {
         id,
         file,
@@ -256,6 +681,13 @@ export class BatchVerifier {
     // Filter oversized files upfront based on total and per-file limits
     let currentBatchBytes = 0
     for (const item of this.items) {
+      if (item.status !== 'pending') {
+        if (item.status !== 'oversized') {
+          currentBatchBytes += item.fileSizeBytes
+        }
+        continue
+      }
+
       if (item.fileSizeBytes > this.config.maxFileSizeBytes) {
         item.status = 'oversized'
         const limitMb = Math.round(this.config.maxFileSizeBytes / (1024 * 1024))
@@ -290,6 +722,7 @@ export class BatchVerifier {
         if (!item) break
 
         await this.processItem(item, signal)
+        this.emitCheckpoint()
         this.notifyProgress(false, queue.length === 0)
       }
     }
@@ -310,9 +743,16 @@ export class BatchVerifier {
 
     const endTime = performance.now()
     const summary = this.computeSummary(endTime - startTime)
+    const checkpoint = createBatchCheckpoint(
+      this.currentFingerprints,
+      this.items,
+      this.config,
+      this.checkpointCreatedAt,
+    )
+    this.emitCheckpoint(checkpoint)
     this.notifyProgress(signal.aborted, true)
 
-    return { items: [...this.items], summary }
+    return { items: [...this.items], summary, checkpoint }
   }
 
   private async processItem(item: BatchItemResult, signal: AbortSignal): Promise<void> {
@@ -507,5 +947,45 @@ export class BatchVerifier {
     }
 
     return summary
+  }
+
+  private emitCheckpoint(precomputed?: BatchVerificationCheckpoint): void {
+    if (!this.onCheckpointCallback || this.currentFingerprints.length === 0) return
+    const snapshot =
+      precomputed ??
+      createBatchCheckpoint(
+        this.currentFingerprints,
+        this.items,
+        this.config,
+        this.checkpointCreatedAt ?? undefined,
+      )
+    this.onCheckpointCallback(snapshot)
+  }
+
+  private notifyProgress(isCancelled: boolean, isDone: boolean): void {
+    if (!this.onProgressCallback) return
+
+    const totalFiles = this.items.length
+    const completedFiles = this.items.filter(
+      (item) => item.status !== 'pending' && item.status !== 'hashing' && item.status !== 'processing',
+    ).length
+    const activeCount = this.items.filter(
+      (item) => item.status === 'hashing' || item.status === 'processing',
+    ).length
+    const processedBytes = this.items
+      .filter((item) => item.status !== 'pending')
+      .reduce((acc, item) => acc + item.fileSizeBytes, 0)
+
+    const progress: BatchProgress = {
+      totalFiles,
+      completedFiles,
+      processedBytes,
+      totalBytes: this.accumulatedTotalBytes || this.items.reduce((acc, i) => acc + i.fileSizeBytes, 0),
+      activeCount,
+      isCancelled,
+      isDone: isDone || completedFiles === totalFiles,
+    }
+
+    this.onProgressCallback(progress, [...this.items])
   }
 }

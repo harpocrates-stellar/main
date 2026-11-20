@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  BatchCheckpointError,
   BatchVerifier,
+  computeBatchFingerprints,
   computeChunkedSha256,
+  computeFileFingerprint,
   tryParseManifest,
+  validateBatchCheckpoint,
   type BatchConfig,
+  type BatchVerificationCheckpoint,
 } from './batchVerifier'
 
 describe('batchVerifier', () => {
@@ -178,6 +183,185 @@ describe('batchVerifier', () => {
       const { items } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+    })
+  })
+
+  describe('Resumable Checkpoints', () => {
+    it('computes nonsecret file fingerprints sensitive to content changes', async () => {
+      const f1 = new File(['alpha payload'], 'clip.mp4', { type: 'video/mp4', lastModified: 1700000000000 })
+      const f2 = new File(['omega payload'], 'clip.mp4', { type: 'video/mp4', lastModified: 1700000000000 })
+
+      const fp1 = await computeFileFingerprint(f1, 0)
+      const fp2 = await computeFileFingerprint(f2, 0)
+
+      expect(fp1.fileName).toBe('clip.mp4')
+      expect(fp1.fileSizeBytes).toBe(f1.size)
+      expect(fp1.sampleHash).toMatch(/^[0-9a-f]{64}$/)
+      expect(fp1.sampleHash).not.toBe(fp2.sampleHash)
+    })
+
+    it('resumes a cancelled batch without re-verifying completed items and persists no secrets', async () => {
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/api/stego/extract')) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ metadata: { protocol: 'harpocrates' } }),
+          })
+        }
+        if (url.includes('/api/proofs/by-video/')) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ events: [] }),
+          })
+        }
+        return Promise.reject(new Error('Unknown url'))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const config: Partial<BatchConfig> = {
+        maxConcurrency: 1,
+        maxFileSizeBytes: 1024 * 1024,
+        maxTotalSizeBytes: 5 * 1024 * 1024,
+        apiBase: 'http://127.0.0.1:5050',
+        contractId: '',
+        network: 'testnet',
+        wallet: 'GSECRETWALLETADDRESS',
+      }
+
+      const f1 = new File(['synthetic-media-one'], 'one.mp4', { type: 'video/mp4', lastModified: 1000 })
+      const f2 = new File(['synthetic-media-two'], 'two.mp4', { type: 'video/mp4', lastModified: 2000 })
+
+      const verifier1 = new BatchVerifier(config)
+      let savedCheckpoint: BatchVerificationCheckpoint | null = null
+
+      const firstRun = await verifier1.runBatch([f1, f2], undefined, {
+        onCheckpoint: (cp) => {
+          savedCheckpoint = cp
+          if (cp.completed.length === 1) {
+            verifier1.cancel()
+          }
+        },
+      })
+
+      expect(firstRun.items[0].status).not.toBe('pending')
+      expect(firstRun.items[0].status).not.toBe('cancelled')
+      expect(firstRun.items[1].status).toBe('cancelled')
+      expect(savedCheckpoint).not.toBeNull()
+      expect(savedCheckpoint!.completed).toHaveLength(1)
+      expect(savedCheckpoint!.completed[0].index).toBe(0)
+
+      // Checkpoint must persist only nonsecret fingerprints & completed results
+      const serialized = JSON.stringify(savedCheckpoint)
+      expect(serialized).not.toContain('synthetic-media-one')
+      expect(serialized).not.toContain('synthetic-media-two')
+      expect(serialized).not.toContain('GSECRETWALLETADDRESS')
+
+      const callsAfterFirstRun = fetchMock.mock.calls.length
+
+      // Resume with a fresh verifier instance using the exact same files & context
+      const verifier2 = new BatchVerifier(config)
+      const resumed = await verifier2.resumeBatch([f1, f2], savedCheckpoint!)
+
+      expect(resumed.items[0].status).toBe(firstRun.items[0].status)
+      expect(resumed.items[1].status).not.toBe('cancelled')
+      expect(resumed.items[1].status).not.toBe('pending')
+      expect(resumed.checkpoint.completed).toHaveLength(2)
+
+      // Only the second file should have triggered network calls
+      const callsDuringResume = fetchMock.mock.calls.length - callsAfterFirstRun
+      expect(callsDuringResume).toBe(callsAfterFirstRun)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects resume when input files, policy, or network context no longer match', async () => {
+      const config: Partial<BatchConfig> = {
+        maxConcurrency: 1,
+        maxFileSizeBytes: 1024,
+        maxTotalSizeBytes: 4096,
+        apiBase: 'http://127.0.0.1:5050',
+        contractId: 'CTEST123',
+        network: 'testnet',
+      }
+
+      const f1 = new File(['payload-a'], 'a.mp4', { type: 'video/mp4', lastModified: 1000 })
+      const f2 = new File(['payload-b'], 'b.mp4', { type: 'video/mp4', lastModified: 2000 })
+
+      const fingerprints = await computeBatchFingerprints([f1, f2])
+      const verifier = new BatchVerifier(config)
+      const validCheckpoint: BatchVerificationCheckpoint = {
+        protocol: 'harpocrates-batch-checkpoint',
+        version: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+        updatedAt: '2026-11-19T00:00:00.000Z',
+        policy: { maxFileSizeBytes: 1024, maxTotalSizeBytes: 4096 },
+        networkContext: { apiBase: 'http://127.0.0.1:5050', contractId: 'CTEST123', network: 'testnet' },
+        files: fingerprints,
+        completed: [],
+      }
+
+      // 1. Modified file content
+      const f2Modified = new File(['payload-x'], 'b.mp4', { type: 'video/mp4', lastModified: 2000 })
+      await expect(verifier.resumeBatch([f1, f2Modified], validCheckpoint)).rejects.toMatchObject({
+        name: 'BatchCheckpointError',
+        reason: 'files-mismatch',
+      })
+
+      // 2. Reordered files
+      await expect(verifier.resumeBatch([f2, f1], validCheckpoint)).rejects.toMatchObject({
+        name: 'BatchCheckpointError',
+        reason: 'files-mismatch',
+      })
+
+      // 3. Policy mismatch
+      const policyVerifier = new BatchVerifier({ ...config, maxFileSizeBytes: 2048 })
+      await expect(policyVerifier.resumeBatch([f1, f2], validCheckpoint)).rejects.toMatchObject({
+        name: 'BatchCheckpointError',
+        reason: 'policy-mismatch',
+      })
+
+      // 4. Network context mismatch (contractId, apiBase, or network)
+      const networkVerifier = new BatchVerifier({ ...config, network: 'mainnet' })
+      await expect(networkVerifier.resumeBatch([f1, f2], validCheckpoint)).rejects.toMatchObject({
+        name: 'BatchCheckpointError',
+        reason: 'network-mismatch',
+      })
+
+      const contractVerifier = new BatchVerifier({ ...config, contractId: 'COTHER999' })
+      await expect(contractVerifier.resumeBatch([f1, f2], validCheckpoint)).rejects.toMatchObject({
+        name: 'BatchCheckpointError',
+        reason: 'network-mismatch',
+      })
+
+      // 5. Invalid completed status (e.g. 'cancelled' injected into completed)
+      const invalidStatusCheckpoint = {
+        ...validCheckpoint,
+        completed: [
+          {
+            index: 0,
+            fileName: 'a.mp4',
+            fileSizeBytes: f1.size,
+            status: 'cancelled' as const,
+            videoHash: null,
+            metadataHash: null,
+            sourceHash: null,
+            tier: null,
+            chainStatus: null,
+            message: 'Cancelled',
+            duplicateOf: null,
+            failureReason: null,
+            durationMs: 1,
+          },
+        ],
+      }
+      const validation = validateBatchCheckpoint(invalidStatusCheckpoint, fingerprints, verifier.getConfig())
+      expect(validation.ok).toBe(false)
+      if (!validation.ok) {
+        expect(validation.reason).toBe('invalid-format')
+      }
+      await expect(verifier.resumeBatch([f1, f2], invalidStatusCheckpoint)).rejects.toBeInstanceOf(
+        BatchCheckpointError,
+      )
     })
   })
 })
