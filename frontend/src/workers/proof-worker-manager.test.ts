@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProofWorkerManager } from './proof-worker-manager'
+import { ProofWorkerManager, buildOfflineWorkerCapabilityReport } from './proof-worker-manager'
+import { PROOF_WORKER_MEMORY_LIMITS } from '../proofWorkerMemory'
 import { ProofWorkerLogger } from './proof-worker-logger'
 import type { ProofWorkerResponse } from './proof.worker.types'
 
@@ -309,6 +310,93 @@ describe('getStatus and getCSPHeaders', () => {
 
     expect(headers['Content-Security-Policy']).toBeUndefined()
     expect(headers['X-Frame-Options']).toBe('DENY')
+  })
+})
+
+describe('offline worker capability report', () => {
+  const capableGlobal = {
+    Worker: FakeWorker,
+    WebAssembly: function WebAssembly() {},
+    crypto: { subtle: {} },
+    BigInt,
+    ArrayBuffer,
+  } as unknown as typeof globalThis
+
+  it('inspects required browser features and configured artifact metadata offline without network or worker init', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('fetch must not be called during offline capability inspection')
+    })
+    const manager = createManager({ maxMemoryMB: 256, maxExecutionTimeMs: 45000 })
+
+    const report = manager.getOfflineCapabilityReport({ globalObj: capableGlobal })
+
+    expect(report.offline).toBe(true)
+    expect(report.ready).toBe(true)
+    expect(report.issues).toEqual([])
+    expect(report.browser.ok).toBe(true)
+    expect(report.browser.tier).toBe('supported')
+    expect(report.browser.missing).toEqual([])
+    expect(report.artifacts.publishedArtifactCount).toBeGreaterThan(0)
+    expect(report.artifacts.allArtifactsWithinLimit).toBe(true)
+    expect(report.csp).toEqual({
+      sandbox: true,
+      maxMemoryMB: 256,
+      maxExecutionTimeMs: 45000,
+      allowedOriginsCount: 2,
+    })
+    expect(internals(manager).isInitialized).toBe(false)
+    expect(internals(manager).worker).toBeNull()
+    expect(FakeWorker.live.size).toBe(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when required browser capabilities are missing', () => {
+    const missingCapabilitiesGlobal = {
+      BigInt,
+      ArrayBuffer,
+    } as unknown as typeof globalThis
+
+    const report = createManager().getOfflineCapabilityReport({
+      globalObj: missingCapabilitiesGlobal,
+    })
+
+    expect(report.offline).toBe(true)
+    expect(report.ready).toBe(false)
+    expect(report.browser.ok).toBe(false)
+    expect(report.browser.tier).toBe('unsupported')
+    expect(report.browser.missing).toEqual(['Worker', 'moduleWorkerType', 'WebAssembly', 'SubtleCrypto'])
+    expect(report.issues).toContain(report.browser.reason)
+  })
+
+  it('fails closed when configured artifact metadata is empty or exceeds limits', () => {
+    const emptyManifestReport = buildOfflineWorkerCapabilityReport({
+      globalObj: capableGlobal,
+      manifest: { format: 'test', version: 1, artifacts: [] },
+    })
+    expect(emptyManifestReport.ready).toBe(false)
+    expect(emptyManifestReport.issues).toContain(
+      'No published proving artifacts configured in manifest.',
+    )
+
+    const oversizedArtifactReport = buildOfflineWorkerCapabilityReport({
+      globalObj: capableGlobal,
+      cspConfig: { maxMemoryMB: 1 },
+      manifest: {
+        format: 'test',
+        version: 1,
+        artifacts: [
+          {
+            path: 'frontend/public/noir/oversized.json',
+            raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes + 1,
+          },
+        ],
+      },
+    })
+    expect(oversizedArtifactReport.ready).toBe(false)
+    expect(oversizedArtifactReport.artifacts.allArtifactsWithinLimit).toBe(false)
+    expect(oversizedArtifactReport.issues).toContain(
+      'One or more configured proving artifacts exceed the worker artifact byte limit.',
+    )
   })
 })
 

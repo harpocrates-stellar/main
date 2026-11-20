@@ -5,6 +5,9 @@ import { CircuitInputError } from './circuitInputSchema'
 type BrowserArtifactEntry = {
   path: string
   raw_bytes?: number
+  normalized_bytes?: number
+  role?: string
+  kind?: string
 }
 
 type JsonResponseLike = {
@@ -57,6 +60,94 @@ function assertByteCount(value: number | null | undefined, limit: number): numbe
   if (value === null || value === undefined) return 0
   if (!Number.isSafeInteger(value) || value < 0 || value > limit) failMemoryLimit()
   return value
+}
+
+export type BrowserArtifactManifestLike = {
+  format?: string
+  version?: number
+  artifacts?: readonly BrowserArtifactEntry[]
+  skipped?: readonly string[]
+  toolchain?: {
+    barretenberg?: string
+    nargo?: string
+    oracle_hash?: string
+    proving_scheme?: string
+  }
+}
+
+export type ProofWorkerArtifactEntryMetadata = {
+  readonly path: string
+  readonly role?: string
+  readonly kind?: string
+  readonly rawBytes: number
+  readonly normalizedBytes?: number
+  readonly withinArtifactLimit: boolean
+}
+
+export type ProofWorkerArtifactMetadataReport = {
+  readonly format: string
+  readonly version: number
+  readonly toolchain: {
+    readonly barretenberg?: string
+    readonly nargo?: string
+    readonly oracleHash?: string
+    readonly provingScheme?: string
+  }
+  readonly publishedArtifactCount: number
+  readonly skippedArtifactCount: number
+  readonly totalPublishedArtifactBytes: number
+  readonly allArtifactsWithinLimit: boolean
+  readonly artifacts: readonly ProofWorkerArtifactEntryMetadata[]
+  readonly memoryLimits: typeof PROOF_WORKER_MEMORY_LIMITS
+}
+
+/**
+ * Inspect configured browser proving artifact metadata offline.
+ * Uses only static manifest metadata and memory ceilings — never fetches or loads artifacts.
+ */
+export function inspectProofWorkerArtifactMetadata(
+  manifest: BrowserArtifactManifestLike = browserArtifactManifest,
+): ProofWorkerArtifactMetadataReport {
+  const entries = (manifest.artifacts ?? []).map((entry) => {
+    const rawBytes = safeBytes(entry.raw_bytes)
+    const normalizedBytes =
+      entry.normalized_bytes !== undefined ? safeBytes(entry.normalized_bytes) : undefined
+    return Object.freeze({
+      path: entry.path,
+      ...(entry.role !== undefined ? { role: entry.role } : {}),
+      ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
+      rawBytes,
+      ...(normalizedBytes !== undefined ? { normalizedBytes } : {}),
+      withinArtifactLimit:
+        rawBytes > 0 && rawBytes <= PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes,
+    })
+  })
+
+  const totalPublishedArtifactBytes = entries.reduce((total, entry) => total + entry.rawBytes, 0)
+  const allArtifactsWithinLimit = entries.every((entry) => entry.withinArtifactLimit)
+
+  return Object.freeze({
+    format: manifest.format ?? 'unknown',
+    version: Number.isSafeInteger(manifest.version) ? Number(manifest.version) : 0,
+    toolchain: Object.freeze({
+      ...(manifest.toolchain?.barretenberg !== undefined
+        ? { barretenberg: manifest.toolchain.barretenberg }
+        : {}),
+      ...(manifest.toolchain?.nargo !== undefined ? { nargo: manifest.toolchain.nargo } : {}),
+      ...(manifest.toolchain?.oracle_hash !== undefined
+        ? { oracleHash: manifest.toolchain.oracle_hash }
+        : {}),
+      ...(manifest.toolchain?.proving_scheme !== undefined
+        ? { provingScheme: manifest.toolchain.proving_scheme }
+        : {}),
+    }),
+    publishedArtifactCount: entries.length,
+    skippedArtifactCount: (manifest.skipped ?? []).length,
+    totalPublishedArtifactBytes,
+    allArtifactsWithinLimit,
+    artifacts: Object.freeze(entries),
+    memoryLimits: PROOF_WORKER_MEMORY_LIMITS,
+  })
 }
 
 export function browserArtifactByteLimit(path: string): number {

@@ -181,6 +181,24 @@ invoked.
   surfacing as a benign "unhandled rejection" in test output. This has been
   observed not to affect real-browser behavior (verified manually).
 
+## Offline worker capability report
+
+`ProofWorkerManager.getOfflineCapabilityReport()` (and standalone
+`buildOfflineWorkerCapabilityReport()` in `src/workers/proof-worker-manager.ts`)
+plus `inspectProofWorkerArtifactMetadata()` in `src/proofWorkerMemory.ts`
+produce a synchronous, offline readiness report:
+
+- Inspects required browser capabilities (`Worker`, `moduleWorkerType`,
+  `WebAssembly`, `SubtleCrypto`, `BigInt`, `ArrayBuffer`) via
+  `multiBrowserWorkerSupport.ts`.
+- Inspects configured proving artifact metadata and memory ceilings from the
+  statically bundled `zk/browser.artifacts.manifest.json` and
+  `zk/bench/bench.lock.json` without loading proving artifacts or contacting
+  network endpoints.
+- Fails closed (`ready: false`) with privacy-safe capability/metadata issue
+  descriptions when required browser features are missing or configured
+  artifact metadata is empty or exceeds worker/CSP limits.
+
 ## Multi-browser worker support
 
 Browser proving is gated by the same support floor documented in
