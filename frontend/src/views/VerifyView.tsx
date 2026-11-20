@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
+import { ArrowLeftRight, CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { DisputePanel } from '../components/DisputePanel'
 import { EventList } from '../components/EventList'
+import { ReceiptComparisonView } from '../components/ReceiptComparisonView'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import VerificationTimeline from '../components/VerificationTimeline'
@@ -13,6 +14,7 @@ import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
+import { parseReceiptComparisonShareUrl } from '../services/receiptComparison'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const MAX_MANIFEST_SIZE_BYTES = 64 * 1024 // 64 KB cap
@@ -60,6 +62,15 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
   const [videoHashInput, setVideoHashInput] = useState('')
   const [proofIdInput, setProofIdInput] = useState('')
   const [manifestError, setManifestError] = useState<string | null>(null)
+
+  const initialComparison = useMemo(() => {
+    if (typeof window === 'undefined' || !window.location?.hash) return null
+    if (!window.location.hash.includes('compare=')) return null
+    const parsed = parseReceiptComparisonShareUrl(window.location.hash)
+    return parsed.ok ? parsed : null
+  }, [])
+
+  const [showComparison, setShowComparison] = useState(() => initialComparison !== null)
 
   // Keep videoHashInput synced when verifyHash updates externally
   useEffect(() => {
@@ -461,6 +472,24 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
             <dd>{wallet ? `${wallet.slice(0, 5)}…${wallet.slice(-4)}` : 'Not connected'}</dd>
           </div>
         </dl>
+
+        <div style={{ marginTop: '1rem' }}>
+          <button
+            type="button"
+            className="hero-secondary"
+            aria-expanded={showComparison}
+            onClick={() => setShowComparison((prev) => !prev)}
+          >
+            <ArrowLeftRight size={14} aria-hidden="true" />
+            <span>{showComparison ? 'Hide receipt comparison' : 'Compare two receipts'}</span>
+          </button>
+          {showComparison ? (
+            <ReceiptComparisonView
+              initialLeft={initialComparison?.left ?? null}
+              initialRight={initialComparison?.right ?? null}
+            />
+          ) : null}
+        </div>
       </div>
 
       <aside className="side-rail">

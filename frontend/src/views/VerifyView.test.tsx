@@ -421,3 +421,22 @@ describe('VerifyView – portable proof manifest loading', () => {
     })
   })
 })
+
+describe('VerifyView – receipt comparison view', () => {
+  it('toggles the receipt comparison view on and off', async () => {
+    const user = userEvent.setup()
+    renderView()
+
+    const toggle = screen.getByRole('button', { name: /compare two receipts/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: /compare verification receipts/i })).not.toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('heading', { name: /compare verification receipts/i })).toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: /compare verification receipts/i })).not.toBeInTheDocument()
+  })
+})
