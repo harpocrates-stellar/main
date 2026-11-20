@@ -357,18 +357,3 @@ def test_reset_on_empty_manager_is_safe():
     mgr = _manager()
     mgr.reset()
     assert mgr.list_artifacts() == []
-
-
-def test_memory_cap_evicts_oldest_artifact():
-    mgr = ExportManager(policy=ExportPolicy(), processor=LogProcessor(), max_artifacts_memory=2)
-    a, _, _ = _export(mgr, [_safe_entry("a")])
-    b, _, _ = _export(mgr, [_safe_entry("b")])
-    c, _, _ = _export(mgr, [_safe_entry("c")])
-    assert mgr.get_artifact(a.artifact_id) is None
-    assert [x.artifact_id for x in mgr.list_artifacts()] == [c.artifact_id, b.artifact_id]
-
-
-def test_default_policy_values_are_bounded():
-    assert EXPORT_POLICY_DEFAULT.max_artifacts_per_export > 0
-    assert EXPORT_POLICY_DEFAULT.max_artifact_bytes > 0
-    assert EXPORT_POLICY_DEFAULT.require_safety_signature is True

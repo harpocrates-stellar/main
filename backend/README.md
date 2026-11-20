@@ -106,6 +106,20 @@ This section documents all environment variables that can be used to configure t
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
 
+## Chain Indexer Backpressure
+
+The Soroban chain indexer requests 50 events per poll by default and clamps
+each requested page to a maximum of 100 events. It processes one page
+synchronously before polling again, so slow database writes pause event
+admission rather than accumulating an unbounded in-memory queue.
+
+An RPC response larger than the requested page is rejected before any events
+are written or the cursor is advanced. Database failures likewise leave the
+cursor at the last fully processed page; the worker backs off and retries from
+that cursor. Replayed projections are idempotent on `(tx_hash, event_index)`,
+so rows committed before a failed page retry are treated as duplicates. No
+additional configuration or database migration is required.
+
 ## Upload and Verification Load Test
 
 With FFmpeg installed and a local testing backend running, execute a bounded
@@ -127,6 +141,21 @@ No protocol, API schema, or database migration is introduced. Rollback is
 limited to removing the workload, its focused coverage, and this documentation;
 use normal test-data retention procedures for any synthetic events already
 created.
+
+## Worker Stale Heartbeat Handling
+
+Background workers extend active job leases via `heartbeat_job` and check for
+stale heartbeats via `get_job_heartbeat_state` and `reclaim_stale_jobs`.
+
+- Environment override: `WORKER_HEARTBEAT_STALE_SECONDS` (default: `300`, must
+  be positive).
+- When a `running` job's heartbeat age reaches or exceeds the stale threshold,
+  it is re-queued to `pending` with a retryable `processing_state` reason
+  (`stale_worker_heartbeat`, `retryable: true`, `category: "processing_state"`,
+  `cryptographic_failure: false`).
+- Stale heartbeats are reported independently of proof validity: unverified or
+  incomplete worker output is never classified as a cryptographic failure, and
+  private job payloads are never included in reclaimed-job summaries or logs.
 
 ## Noir Developer Worker
 
@@ -192,15 +221,26 @@ python manage.py retention --dry-run        # count expired, non-held proof even
 python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
 python manage.py retention --run --batch-size 500
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py projection-reconcile --start-ledger 1000 --end-ledger 1100 --contract-id C... --limit 1000
 python manage.py --json drift               # machine-readable JSON output
 ```
+
+`projection-reconcile` is read-only. It compares recognized lifecycle events
+in the inclusive ledger range with `proof_events` rows keyed by
+`(tx_hash, event_index)`, reporting absent projections separately from rows
+whose projected fields conflict with chain data. The range is limited to
+10,000 ledgers and the event limit defaults to 1,000 (maximum 10,000); an
+exceeded event limit returns an incomplete report rather than a clean result.
+Exit code `1` indicates a discrepancy or incomplete range. The command needs
+`DATABASE_URL` and `--contract-id`; the RPC endpoint can be selected with
+`--rpc-url`, `SOROBAN_RPC_URL`, or `STELLAR_RPC_URL`.
 
 Exit codes:
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success; no problems found |
-| `1` | Schema drift detected or migration checksum mismatch |
+| `1` | Schema drift, migration checksum mismatch, projection discrepancy, or incomplete projection range |
 | `2` | Invalid command-line usage |
 | `3` | `DATABASE_URL` is not configured |
 | `4` | Unexpected error (e.g. database unreachable); only the error type is printed |
@@ -341,6 +381,29 @@ Bump `CACHE_KEY_DOMAIN_TAG` (e.g. to `...:v2`) whenever the key field layout
 changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
+
+## Analytics Redaction Policy Comparison
+
+`analytics/redaction_policy_diff.py` compares two analytics redaction policy
+revisions against synthetic analytics records and reports newly removed
+(redacted or dropped), newly exposed, and marker-changed field paths without
+embedding raw sensitive values in output reports.
+
+```bash
+cd backend
+python -m analytics.redaction_policy_diff \
+  --before policy_v1.json \
+  --after policy_v2.json \
+  --format text \
+  --fail-on-exposed
+```
+
+- Pass `--records <path>` to supply a JSON array of synthetic records, or omit
+  it to use the built-in synthetic fixtures (`build_synthetic_analytics_records`).
+- Keep actual production analytics and real user identifiers out of committed
+  fixtures; use RFC 2606 (`.invalid`) domains and RFC 5737 test addresses.
+- `--fail-on-exposed` exits with code `2` whenever any field becomes newly
+  exposed in the candidate policy revision.
 
 ## Test
 

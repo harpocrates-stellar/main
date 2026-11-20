@@ -13,6 +13,7 @@ import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proo
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
+import { ProofPreparationPreview } from '../components/ProofPreparationPreview'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
@@ -40,6 +41,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     nullifierSeed,
     setNullifierSeed,
     message,
+    proofPreparation,
     registration,
     networkMismatch,
     isCancellable,
@@ -223,6 +225,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <dd>{registration?.status ?? 'Not submitted'}</dd>
           </div>
         </dl>
+
+        {selectedTier === 'silent' && proof ? (
+          <ProofPreparationPreview preparation={proofPreparation} />
+        ) : null}
 
         <RedactionPreview
           proof={proof}

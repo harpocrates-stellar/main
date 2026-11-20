@@ -194,6 +194,24 @@ class C2paUnknownAssertion:
     data: Any
     unsupported_semantics: bool = True
 
+@dataclass(frozen=True)
+class PrivacyFlags:
+    """Presence-only privacy flags derived from a manifest's ingredient graph.
+
+    These booleans report whether a manifest *includes* privacy-sensitive
+    ingredient information. The values themselves are never retained or
+    returned; only the presence bit is kept. See ``compute_privacy_flags``.
+    """
+
+    has_source_locations: bool = False
+    has_identifying_metadata: bool = False
+
+    def to_dict(self) -> dict[str, bool]:
+        return {
+            "has_source_locations": self.has_source_locations,
+            "has_identifying_metadata": self.has_identifying_metadata,
+        }
+
 
 @dataclass
 class C2paParsedManifest:
@@ -370,6 +388,86 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
         binding=binding,
         unknown_assertions=unknown,
         trust_status=C2paTrustStatus.SIGNATURE_NOT_CHECKED,
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Privacy flags (#1100)
+# ---------------------------------------------------------------------------
+#
+# Presence-only inspection of the manifest's non-binding assertions. C2PA
+# ingredient assertions (``c2pa.ingredient``, ``c2pa.ingredients``) may carry
+# source-location fields (``location``, ``sourceLocation``, ``source_location``,
+# ``sourceUrl``, ``uri``) or identifying metadata about the subject
+# (``subject``, ``identity``, ``author``, ``creator``, ``name``,
+# ``biometric``). We record only whether *any* such key appears; the value is
+# discarded immediately and never stored, logged, or returned.
+#
+# This walk is deliberately conservative: a false positive (flag set when the
+# value looks like an identifier) is acceptable; a false negative (a private
+# value silently accepted as clean) is not.
+
+_SOURCE_LOCATION_KEYS: frozenset[str] = frozenset(
+    {"location", "sourcelocation", "source_location", "sourceurl", "uri"}
+)
+_IDENTIFYING_KEYS: frozenset[str] = frozenset(
+    {"subject", "identity", "author", "creator", "name", "biometric"}
+)
+_INGREDIENT_LABELS: frozenset[str] = frozenset(
+    {"c2pa.ingredient", "c2pa.ingredients"}
+)
+
+
+def _scan_presence(obj: Any, keys: frozenset[str], depth: int = 0) -> bool:
+    """Return True iff any dict key (case-insensitively) is in ``keys``."""
+    if depth > _MAX_JSON_DEPTH:
+        return False
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in keys:
+                return True
+            if _scan_presence(v, keys, depth + 1):
+                return True
+        return False
+    if isinstance(obj, list):
+        return any(_scan_presence(item, keys, depth + 1) for item in obj)
+    return False
+
+
+def compute_privacy_flags(parsed: "C2paParsedManifest") -> PrivacyFlags:
+    """Return presence-only privacy flags for *parsed* (#1100).
+
+    Walks the manifest's non-binding assertions. Ingredient assertions
+    (``c2pa.ingredient`` / ``c2pa.ingredients``) are inspected for
+    source-location and identifying-metadata keys. Any assertion whose data
+    contains such a key at any depth is recorded as present; the value is not
+    retained.
+
+    The Harpocrates binding itself is never inspected for these keys — the
+    binding fields are already public digests, and treating e.g. ``contract_id``
+    as identifying would fire on every valid manifest.
+    """
+    has_loc = False
+    has_id = False
+    for ua in parsed.unknown_assertions:
+        if ua.label.lower() in _INGREDIENT_LABELS:
+            if _scan_presence(ua.data, _SOURCE_LOCATION_KEYS):
+                has_loc = True
+            if _scan_presence(ua.data, _IDENTIFYING_KEYS):
+                has_id = True
+            # Also flag if a non-ingredient assertion carries location keys,
+            # because the issue asks whether the manifest *includes* them.
+        else:
+            if _scan_presence(ua.data, _SOURCE_LOCATION_KEYS):
+                has_loc = True
+            if _scan_presence(ua.data, _IDENTIFYING_KEYS):
+                has_id = True
+        if has_loc and has_id:
+            break
+    return PrivacyFlags(
+        has_source_locations=has_loc,
+        has_identifying_metadata=has_id,
     )
 
 

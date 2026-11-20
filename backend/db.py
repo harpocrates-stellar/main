@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import logging
+import re
 import os
 import time
 from contextlib import contextmanager
@@ -63,6 +64,32 @@ _TRANSIENT_MESSAGE_FRAGMENTS = (
     "couldn't connect to compute",
     "error connecting to compute node",
 )
+
+# Diagnostic bounds for worker exception text persisted on job failure.
+JOB_ERROR_MAX_BYTES = 2048
+_JOB_ERROR_REDACTED = "[redacted]"
+_PRIVATE_PATH_RE = re.compile(r"(?:/(?:home|Users|root|tmp|var|srv|opt|etc)/[^\s'\"]*)")
+_SECRET_SHAPED_RE = re.compile(
+    r"(?i)((?:password|passwd|secret|token|api[_-]?key|authorization|bearer)\s*[=:]?\s*)\S+"
+)
+_LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
+
+
+def sanitize_job_error(error: object) -> str:
+    """Return a bounded, redacted diagnostic string for job-failure storage.
+
+    Strips private filesystem paths and secret-shaped values and caps the
+    result at ``JOB_ERROR_MAX_BYTES`` UTF-8 bytes so arbitrary exception text
+    cannot bloat storage or leak credentials.
+    """
+    text = str(error) if error is not None else ""
+    text = _PRIVATE_PATH_RE.sub(_JOB_ERROR_REDACTED, text)
+    text = _SECRET_SHAPED_RE.sub(lambda m: m.group(1) + _JOB_ERROR_REDACTED, text)
+    text = _LONG_HEX_RE.sub(_JOB_ERROR_REDACTED, text)
+    encoded = text.encode("utf-8")
+    if len(encoded) > JOB_ERROR_MAX_BYTES:
+        text = encoded[:JOB_ERROR_MAX_BYTES].decode("utf-8", errors="ignore")
+    return text
 
 
 def encode_proof_events_cursor(event_id: int) -> str:
@@ -1206,32 +1233,189 @@ def cancel_job(job_id: int) -> bool:
     return False
 
 
+DEFAULT_HEARTBEAT_STALE_SECONDS = 300.0
+STALE_HEARTBEAT_REASON = "stale_worker_heartbeat"
+PROCESSING_STATE_CATEGORY = "processing_state"
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
+    lease_seconds = float(lease_duration)
+    if lease_seconds <= 0:
+        raise ValueError("lease_duration must be positive")
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.isoformat()
     for job in _JOBS.values():
         if job.get("status") == "pending" and job.get("type") in job_types:
             job["status"] = "running"
             job["worker_id"] = worker_id
+            job["leased_at"] = current_iso
+            job["heartbeat_at"] = current_iso
+            job["lease_duration_seconds"] = lease_seconds
+            job.pop("processing_state", None)
             return dict(job)
     return None
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(
+    job_id: int,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    now: datetime | None = None,
+) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
+    del progress
+    lease_seconds = float(lease_duration)
+    if lease_seconds <= 0:
+        raise ValueError("lease_duration must be positive")
     job = _JOBS.get(job_id)
     if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        current = now if now is not None else datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        job["heartbeat_at"] = current.isoformat()
+        job["lease_duration_seconds"] = lease_seconds
+        job.pop("processing_state", None)
+
+
+def get_job_heartbeat_state(
+    job: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Assess whether a running job's worker heartbeat is stale.
+
+    Returns a retryable processing-state descriptor that is strictly
+    independent of cryptographic/proof validity so unverified output is never
+    classified as a cryptographic failure.
+    """
+    raw_threshold = (
+        stale_after_seconds
+        if stale_after_seconds is not None
+        else job.get("lease_duration_seconds", DEFAULT_HEARTBEAT_STALE_SECONDS)
+    )
+    threshold = float(raw_threshold)
+    if threshold <= 0:
+        raise ValueError("stale_after_seconds must be positive")
+
+    if job.get("status") != "running":
+        return {
+            "stale": False,
+            "reason": None,
+            "retryable": False,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "heartbeat_age_seconds": None,
+            "stale_after_seconds": threshold,
+        }
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    reference = (
+        _parse_iso_utc(job.get("heartbeat_at"))
+        or _parse_iso_utc(job.get("leased_at"))
+        or _parse_iso_utc(job.get("created_at"))
+    )
+    if reference is None:
+        return {
+            "stale": False,
+            "reason": None,
+            "retryable": False,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "heartbeat_age_seconds": None,
+            "stale_after_seconds": threshold,
+        }
+
+    age_seconds = max(0.0, (current - reference).total_seconds())
+    is_stale = age_seconds >= threshold
+    return {
+        "stale": is_stale,
+        "reason": STALE_HEARTBEAT_REASON if is_stale else None,
+        "retryable": is_stale,
+        "category": PROCESSING_STATE_CATEGORY,
+        "cryptographic_failure": False,
+        "heartbeat_age_seconds": round(age_seconds, 3),
+        "stale_after_seconds": threshold,
+    }
+
+
+def reclaim_stale_jobs(
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float | None = None,
+) -> list[dict[str, Any]]:
+    """Re-queue running jobs whose worker heartbeat has gone stale.
+
+    Stale jobs are transitioned back to ``pending`` with a retryable
+    ``processing_state`` reason (``stale_worker_heartbeat``) rather than being
+    marked ``failed`` or classified as a cryptographic failure.
+    """
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.isoformat()
+
+    reclaimed: list[dict[str, Any]] = []
+    for job in _JOBS.values():
+        if job.get("status") != "running":
+            continue
+        state = get_job_heartbeat_state(
+            job,
+            now=current,
+            stale_after_seconds=stale_after_seconds,
+        )
+        if not state["stale"]:
+            continue
+        job["status"] = "pending"
+        job.pop("worker_id", None)
+        job["processing_state"] = {
+            "reason": STALE_HEARTBEAT_REASON,
+            "retryable": True,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "detected_at": current_iso,
+            "heartbeat_age_seconds": state["heartbeat_age_seconds"],
+            "stale_after_seconds": state["stale_after_seconds"],
+        }
+        reclaimed.append(
+            {
+                "id": job["id"],
+                "type": job["type"],
+                "status": job["status"],
+                "processing_state": dict(job["processing_state"]),
+            }
+        )
+    return reclaimed
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1293,7 +1477,7 @@ def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
     job = _JOBS.get(job_id)
     if not job:
         return
-    job["error"] = error
+    job["error"] = sanitize_job_error(error)
     job["failed_at"] = datetime.now(timezone.utc).isoformat()
     if is_fatal:
         job["status"] = "failed"
@@ -1525,6 +1709,36 @@ def insert_indexed_proof_event(
     if existing:
         return dict(existing), False
     raise RuntimeError(f"Conflict on tx {tx_hash}:{event_index} but row not found")
+
+
+def get_indexed_proof_events(
+    event_keys: list[tuple[str, int]],
+) -> list[dict[str, Any]]:
+    """Read indexed projection rows for the supplied (tx_hash, event_index) keys."""
+    if not event_keys:
+        return []
+    if not database_url():
+        return [
+            dict(_INDEXED_EVENTS[key])
+            for key in event_keys
+            if key in _INDEXED_EVENTS
+        ]
+
+    tx_hashes, event_indexes = zip(*event_keys)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select tx_hash, event_index, event_type, proof_id, contract_id,
+                       tx_status, metadata
+                from proof_events
+                where (tx_hash, event_index) in (
+                    select * from unnest(%s::text[], %s::integer[])
+                );
+                """,
+                (list(tx_hashes), list(event_indexes)),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
 
 def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:

@@ -211,13 +211,20 @@ def idempotent(request_type: str):
             try:
                 result = func(*args, **kwargs)
                 body, code = _extract_response_parts(result)
-                if 200 <= code < 500:
+                if code == 503:
+                    # Retryable operational outage (e.g. chain RPC unavailable):
+                    # keep the request retryable and never cache it as evidence invalidity.
+                    clear_idempotency_record(record_id)
+                elif 200 <= code < 500:
                     # Cache 2xx and stable 4xx for exact replay (no raw media/secrets).
                     store_response(record_id, {"status": code, "body": body})
                 else:
                     # Do not cache server failures — allow a later retry to re-acquire.
                     clear_idempotency_record(record_id)
                 return result
+            except RetryableOperationalError:
+                clear_idempotency_record(record_id)
+                raise
             except Exception:
                 # Privacy-safe: never persist exception strings (may contain paths/secrets).
                 store_error(record_id, {"error": "request processing failed", "status": 500})

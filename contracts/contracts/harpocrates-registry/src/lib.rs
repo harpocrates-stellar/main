@@ -1830,6 +1830,10 @@ pub enum DataKey {
     ProposalSeq,
     /// Timelock proposal by sequential ID (#86).
     Proposal(u32),
+    /// Intent digest for a council proposal (#1184).
+    CouncilIntent(u32),
+    /// Intent digest for a timelock proposal (#1184).
+    TimelockIntent(u32),
     /// Minimum timelock delay in seconds (#86).
     TimelockMinDelay,
     /// Schema definition by schema hash.
@@ -1989,6 +1993,10 @@ pub enum RegistryError {
     LineageChildrenLimitExceeded = 79,
     /// Parent already holds MAX_LINEAGE_CHILDREN_PER_PARENT children (#335).
     LineageChildrenSaturated = 80,
+    /// Stored intent digest does not match the proposal's parameters (#1184).
+    IntentDigestMismatch = 90,
+    /// Proposal has no stored intent digest; refuse to execute (fail-closed) (#1184).
+    MissingIntentDigest = 91,
     /// Metadata envelope version is zero or above `METADATA_ENVELOPE_VERSION_MAX` (#317).
     UnsupportedMetadataEnvelopeVersion = 68,
     /// Metadata envelope hash is zero / malformed (#317).
@@ -2914,6 +2922,16 @@ impl HarpocratesRegistry {
             executed: false,
             cancelled: false,
         };
+        let intent = intent_digest(
+            &env,
+            TIMELOCK_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::TimelockIntent(proposal_id), &intent);
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
@@ -2966,6 +2984,23 @@ impl HarpocratesRegistry {
         if is_council_active(&env) && (proposal.action == 1 || proposal.action == 2) {
             panic_with_error!(&env, RegistryError::InsufficientApprovals);
         }
+        // Intent digest: bind execution to the approved parameters (#1184).
+        let stored_intent: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TimelockIntent(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::MissingIntentDigest));
+        let recomputed = intent_digest(
+            &env,
+            TIMELOCK_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        if recomputed != stored_intent {
+            panic_with_error!(&env, RegistryError::IntentDigestMismatch);
+        }
+
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -2994,6 +3029,23 @@ impl HarpocratesRegistry {
         if proposal.action == ProposalAction::UpgradeWasm as u32 {
             panic_with_error!(&env, RegistryError::InvalidProposalAction);
         }
+        // Intent digest: the emergency path is not a bypass (#1184).
+        let stored_intent: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TimelockIntent(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::MissingIntentDigest));
+        let recomputed = intent_digest(
+            &env,
+            TIMELOCK_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        if recomputed != stored_intent {
+            panic_with_error!(&env, RegistryError::IntentDigestMismatch);
+        }
+
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -3239,6 +3291,16 @@ impl HarpocratesRegistry {
             cancelled: false,
         };
 
+        let intent = intent_digest(
+            &env,
+            COUNCIL_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilIntent(proposal_id), &intent);
         env.storage()
             .persistent()
             .set(&DataKey::CouncilProposal(proposal_id), &proposal);
@@ -3331,6 +3393,23 @@ impl HarpocratesRegistry {
         // Threshold enforcement
         if proposal.approvals.len() < council.threshold {
             panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
+
+        // Intent digest: bind execution to the approved parameters (#1184).
+        let stored_intent: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CouncilIntent(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::MissingIntentDigest));
+        let recomputed = intent_digest(
+            &env,
+            COUNCIL_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        if recomputed != stored_intent {
+            panic_with_error!(&env, RegistryError::IntentDigestMismatch);
         }
 
         proposal.executed = true;
@@ -7620,6 +7699,37 @@ fn count_pending_proposals(env: &Env) -> u32 {
         }
     }
     pending
+}
+
+
+// ---------------------------------------------------------------------------
+// Role-change intent digest (#1184)
+// ---------------------------------------------------------------------------
+//
+// A queued privileged transition binds its approved (action, target, payload)
+// tuple with an intent digest computed at propose time and stored alongside
+// the proposal. Execute paths recompute the digest from the freshly loaded
+// proposal and reject any mismatch before dispatch, so a substituted target
+// role cannot be applied. Council and timelock use distinct domains so a
+// council intent cannot be replayed as a timelock intent.
+
+const COUNCIL_INTENT_DOMAIN: &[u8] = b"harpocrates.council.intent.v1";
+const TIMELOCK_INTENT_DOMAIN: &[u8] = b"harpocrates.timelock.intent.v1";
+
+fn intent_digest(
+    env: &Env,
+    domain: &[u8],
+    action: u32,
+    target: &Address,
+    payload: &BytesN<32>,
+) -> BytesN<32> {
+    let mut pre = Bytes::new(env);
+    pre.extend_from_slice(domain);
+    pre.extend_from_slice(&action.to_be_bytes());
+    let target_xdr = target.clone().to_xdr(env);
+    pre.append(&target_xdr);
+    pre.append(payload);
+    env.crypto().sha256(&pre).into()
 }
 
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {

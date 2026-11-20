@@ -85,6 +85,8 @@ class AppConfig:
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
     retention_dry_run: bool = False
+    # None falls back to MAX_VIDEO_BYTES; zero allows no file payload.
+    upload_max_bytes: int | None = None
 
 
 
@@ -165,6 +167,7 @@ def load_config() -> AppConfig:
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        upload_max_bytes=_optional_nonnegative_int_env("UPLOAD_MAX_BYTES"),
     )
 
 
@@ -185,6 +188,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:
