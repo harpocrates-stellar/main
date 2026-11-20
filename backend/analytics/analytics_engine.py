@@ -310,7 +310,35 @@ class AnalyticsEngine:
                         event = transition_event_state(event, EventLifecycleState.CONSENT_PENDING)
                     event.annotations["consent_grace"] = "true"
 
-        replay_enabled = True
+
+        # Dimension validation: reject labels that may expose uploaded evidence (hashes or raw filenames)
+        if event.payload and isinstance(event.payload, dict):
+            labels = event.payload.get("labels", {})
+            if isinstance(labels, dict):
+                for key, val in labels.items():
+                    if not isinstance(val, str):
+                        continue
+                    # Detect long hex hash (40+ hex chars)
+                    if re.fullmatch(r"[a-fA-F0-9]{40,}", val):
+                        if transition_event_state is not None and EventLifecycleState is not None:
+                            event = transition_event_state(
+                                event,
+                                EventLifecycleState.DROPPED,
+                                reason="dimension_rejected_hash",
++                                new_operation_status=EventOperationStatus.INVALID,
+                            )
+                        return event
+                    # Detect raw filename patterns (contains a dot and optional path separators)
+                    if "." in val and ("/" in val or "\\" in val or re.search(r"[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+", val)):
+                        if transition_event_state is not None and EventLifecycleState is not None:
+                            event = transition_event_state(
+                                event,
+                                EventLifecycleState.DROPPED,
+                                reason="dimension_rejected_filename",
++                                new_operation_status=EventOperationStatus.INVALID,
+                            )
+                        return event
+
         if self.config is not None and hasattr(self.config, "features"):
             replay_enabled = getattr(self.config.features, "session_replay_protection_enabled", True)
 

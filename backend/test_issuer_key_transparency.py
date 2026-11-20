@@ -17,6 +17,7 @@ from issuer_key_transparency import (
     IssuerManifest,
     KeyStatus,
     TransparencyError,
+    canonicalize_manifest,
     compute_tree_head,
     create_activation_event,
     create_rotation_event,
@@ -244,6 +245,49 @@ class PrivacyTests(unittest.TestCase):
         for forbidden in ("email", "legalname", "phone", "street", "employee"):
             self.assertNotIn(forbidden, blob)
         self.assertIn("organizationIdentityHash", encoded)
+
+
+class ManifestKeyConflictTests(unittest.TestCase):
+    def test_rejects_repeated_key_id_with_conflicting_attributes(self) -> None:
+        m = _manifest(
+            [
+                IssuerKey("k1", KEY_A, "ed25519", 1000),
+                IssuerKey("k1", KEY_B, "ed25519", 1000),
+            ]
+        )
+        with self.assertRaises(TransparencyError) as ctx:
+            canonicalize_manifest(m)
+        self.assertIn("conflicting attributes", str(ctx.exception).lower())
+
+    def test_rejects_duplicate_key_id_with_identical_attributes(self) -> None:
+        m = _manifest(
+            [
+                IssuerKey("k1", KEY_A, "ed25519", 1000),
+                IssuerKey("k1", KEY_A, "ed25519", 1000),
+            ]
+        )
+        with self.assertRaises(TransparencyError) as ctx:
+            canonicalize_manifest(m)
+        self.assertIn("duplicate keyid", str(ctx.exception).lower())
+
+    def test_retains_previous_trusted_directory_on_conflict(self) -> None:
+        d = IssuerDirectory(ORG)
+        m1 = _manifest([IssuerKey("k1", KEY_A, "ed25519", 1000)])
+        h1 = d.publish_manifest(m1)
+
+        conflicting = _manifest(
+            [
+                IssuerKey("k1", KEY_A, "ed25519", 1000),
+                IssuerKey("k1", KEY_B, "ed25519", 2000),
+            ],
+            predecessor=h1,
+            valid_from=2000,
+        )
+        with self.assertRaises(TransparencyError):
+            d.publish_manifest(conflicting)
+
+        self.assertEqual(d.current_manifest, m1)
+        self.assertEqual(list(d.manifests_by_hash.keys()), [h1])
 
 
 if __name__ == "__main__":

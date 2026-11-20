@@ -184,6 +184,22 @@ class IssuerManifest:
         )
 
 
+def _validate_manifest_keys(active_keys: list[IssuerKey]) -> None:
+    """Reject manifests with repeated key identifiers or conflicting key attributes."""
+    seen: dict[str, IssuerKey] = {}
+    for key in active_keys:
+        if not key.key_id:
+            raise TransparencyError("keyId is required")
+        existing = seen.get(key.key_id)
+        if existing is not None:
+            if existing != key:
+                raise TransparencyError(
+                    f"conflicting attributes for repeated keyId: {key.key_id}"
+                )
+            raise TransparencyError(f"duplicate keyId in manifest: {key.key_id}")
+        seen[key.key_id] = key
+
+
 def canonicalize_manifest(manifest: IssuerManifest) -> str:
     """Deterministic JSON encoding used for hashing and signatures."""
     payload = manifest.to_dict()
@@ -196,6 +212,7 @@ def canonicalize_manifest(manifest: IssuerManifest) -> str:
         raise TransparencyError("active key count exceeds bound")
     if not manifest.issuer_address:
         raise TransparencyError("issuerAddress is required")
+    _validate_manifest_keys(manifest.active_keys)
     return encoded.decode("utf-8")
 
 
