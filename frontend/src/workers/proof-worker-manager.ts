@@ -5,6 +5,9 @@ import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-poli
 const logger = new ProofWorkerLogger({ enabled: true });
 
 export class ProofWorkerManager {
+  // Preserve the currently active proof result to avoid losing state on unexpected messages
+  private activeProofResult: ProofWorkerResponse | null = null;
+
   private worker: Worker | null = null;
   private cspConfig: ReturnType<typeof validateCSPPolicy>;
   private messageHandlers: Map<string, (response: ProofWorkerResponse) => void> = new Map();
@@ -15,6 +18,8 @@ export class ProofWorkerManager {
   }
 
   async init(origin?: string): Promise<void> {
+
+  }
     if (this.isInitialized) {
       logger.warn('Worker already initialized');
       return;

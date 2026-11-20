@@ -115,6 +115,8 @@ export function useEvidence(): UseEvidenceReturn {
   const proofClientRef = useRef<ProofWorkerClient | null>(null)
   const proofRequestIdRef = useRef<string | null>(null)
   const stageRef = useRef<Stage>('idle')
+  // Tracks last announced hashing percentage to avoid duplicate live‑region messages.
+  const lastAnnouncedPercentageRef = useRef<number>(-1);
   const proveAbortRef = useRef<AbortController | null>(null)
   const evidenceFlowAbortRef = useRef<AbortController | null>(null)
   const cachedFileHashRef = useRef<{
@@ -228,9 +230,10 @@ export function useEvidence(): UseEvidenceReturn {
           (progress) => {
             if (!isCurrentFlow()) return
             setHashProgress(progress)
-            setMessage(
-              `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
-            )
+            if (progress.percentage !== lastAnnouncedPercentageRef.current) {
+              setMessage(`Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`);
+              lastAnnouncedPercentageRef.current = progress.percentage;
+            }
           },
           controller.signal,
         )

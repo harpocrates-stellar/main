@@ -47,13 +47,47 @@ async function deriveKey(password: string, salt: ArrayBuffer): Promise<CryptoKey
   )
 }
 
+export class StorageUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StorageUnavailableError';
+  }
+}
+
+// BroadcastChannel for vault lock events
+export const VAULT_LOCK_CHANNEL = new BroadcastChannel('credential-vault-lock');
+
+// BroadcastChannel for vault lock events
+export const VAULT_LOCK_CHANNEL = new BroadcastChannel('credential-vault-lock');
+
 export class CredentialVault {
   private memoryKey: CryptoKey | null = null
   private seeds: SeedPair | null = null
   private timeoutId: ReturnType<typeof setTimeout> | null = null
   private inactivityTimeoutMs: number
 
+  private memoryKey: CryptoKey | null = null
+  private seeds: SeedPair | null = null
+  private timeoutId: ReturnType<typeof setTimeout> | null = null
+  private inactivityTimeoutMs: number
+
   constructor(inactivityTimeoutMs = DEFAULT_TIMEOUT_MS) {
+    this.inactivityTimeoutMs = inactivityTimeoutMs;
+    // Listen for lock broadcasts from other tabs
+    VAULT_LOCK_CHANNEL.addEventListener('message', (e) => {
+      if (e.data === 'lock') {
+        // Perform lock without rebroadcast to avoid loops
+        this.memoryKey = null;
+        if (this.seeds) {
+          this.seeds.credentialSeed = '';
+          this.seeds.nullifierSeed = '';
+        }
+        this.seeds = null;
+        this.clearTimeout();
+      }
+    });
+    this.inactivityTimeoutMs = inactivityTimeoutMs;
+  }
     this.inactivityTimeoutMs = inactivityTimeoutMs
   }
 
@@ -94,6 +128,39 @@ export class CredentialVault {
       ct: bufToHex(ct),
     }
 
+    try {
+      window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
+    } catch (e) {
+      // Distinguish storage issues from other errors
+      throw new StorageUnavailableError('Browser storage unavailable during vault setup')
+    }
+    this.memoryKey = key
+    this.seeds = { credentialSeed: seeds.credentialSeed, nullifierSeed: seeds.nullifierSeed }
+    this.resetTimeout()
+  }
+    const salt = crypto.getRandomValues(new Uint8Array(16))
+    const key = await deriveKey(password, salt as unknown as ArrayBuffer)
+
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const enc = new TextEncoder()
+    const pt = enc.encode(JSON.stringify(seeds))
+
+    const ct = await crypto.subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv as unknown as ArrayBuffer,
+      },
+      key,
+      pt
+    )
+
+    const envelope: VaultEnvelope = {
+      v: VAULT_VERSION,
+      salt: bufToHex(salt as unknown as ArrayBuffer),
+      iv: bufToHex(iv as unknown as ArrayBuffer),
+      ct: bufToHex(ct),
+    }
+
     window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
     this.memoryKey = key
     this.seeds = { credentialSeed: seeds.credentialSeed, nullifierSeed: seeds.nullifierSeed }
@@ -101,6 +168,61 @@ export class CredentialVault {
   }
 
   async unlock(password: string): Promise<boolean> {
+    let stored: string | null;
+    try {
+      stored = window.localStorage.getItem(VAULT_STORAGE_KEY);
+    } catch (e) {
+      // Storage access failure, likely unavailable or permission issue
+      throw new StorageUnavailableError('Browser storage unavailable during vault unlock');
+    }
+    if (!stored) throw new Error('Vault is empty');
+
+    let envelope: VaultEnvelope;
+    try {
+      envelope = JSON.parse(stored);
+    } catch {
+      throw new Error('Vault corrupted: unable to parse envelope');
+    }
+
+    if (envelope.v !== VAULT_VERSION) {
+      throw new Error(`Unsupported vault version: ${envelope.v}`);
+    }
+
+    const salt = hexToBuf(envelope.salt);
+    const iv = hexToBuf(envelope.iv);
+    const ct = hexToBuf(envelope.ct);
+
+    try {
+      const key = await deriveKey(password, salt as unknown as ArrayBuffer);
+      const pt = await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: iv as unknown as ArrayBuffer,
+        },
+        key,
+        ct as unknown as ArrayBuffer
+      );
+
+      const dec = new TextDecoder();
+      const seedsRaw = JSON.parse(dec.decode(pt));
+
+      this.memoryKey = key;
+      this.seeds = {
+        credentialSeed: seedsRaw.credentialSeed,
+        nullifierSeed: seedsRaw.nullifierSeed,
+      };
+      this.resetTimeout();
+      return true;
+    } catch (e) {
+      // Differentiate decryption failure (bad password) from other errors
+      if (e instanceof DOMException) {
+        // Could be storage related, but decrypt throws OperationError for bad data
+        throw e;
+      }
+      // Typically decryption failure due to wrong password
+      return false;
+    }
+  }
     const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
     if (!stored) throw new Error('Vault is empty')
 
@@ -147,6 +269,21 @@ export class CredentialVault {
   }
 
   lock(): void {
+    // Broadcast lock event to other tabs
+    try {
+      VAULT_LOCK_CHANNEL.postMessage('lock');
+    } catch (e) {
+      // ignore if broadcast fails
+    }
+    this.memoryKey = null;
+    // Zero out references
+    if (this.seeds) {
+      this.seeds.credentialSeed = '';
+      this.seeds.nullifierSeed = '';
+    }
+    this.seeds = null;
+    this.clearTimeout();
+  }
     this.memoryKey = null
     // Zero out references
     if (this.seeds) {
