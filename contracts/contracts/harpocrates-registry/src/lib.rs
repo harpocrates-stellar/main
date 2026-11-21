@@ -376,6 +376,16 @@ pub struct VerifierState {
     pub rollback_window_end: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RolePolicy {
+    pub timelock_min_delay_secs: u64,
+    pub verifier: Option<Address>,
+    pub guardian: Option<Address>,
+    pub paused_domains: u32,
+    pub schema_version: u32,
+}
+
 /// Aggregate snapshot of the registry's operational configuration (#721).
 ///
 /// Combines the individual configuration getters and the currently paused
@@ -2034,6 +2044,30 @@ pub struct HarpocratesRegistry;
 
 #[contractimpl]
 impl HarpocratesRegistry {
+    pub fn get_role_policy_digest(env: Env) -> BytesN<32> {
+        let now = env.ledger().timestamp();
+        let mut paused_domains = 0u32;
+        for bit in PAUSE_DOMAIN_SINGLE_BITS {
+            if domain_is_paused(&env, bit, now) {
+                paused_domains |= bit;
+            }
+        }
+
+        let storage = env.storage().persistent();
+        let policy = RolePolicy {
+            timelock_min_delay_secs: storage.get::<_, u64>(&DataKey::TimelockMinDelay).unwrap_or(DEFAULT_TIMELOCK_MIN_DELAY_SECS),
+            verifier: storage.get::<_, Address>(&DataKey::Verifier),
+            guardian: storage.get::<_, Address>(&DataKey::Guardian),
+            paused_domains,
+            schema_version: storage.get::<_, u32>(&DataKey::SchemaVersion).unwrap_or(SchemaVersion::V1 as u32),
+        };
+        
+        let mut bytes = Bytes::new(&env);
+        bytes.push(0x01); // Version 1
+        bytes.append(&policy.to_xdr(&env));
+        env.crypto().sha256(&bytes)
+    }
+
     pub fn init(env: Env, admin: Address) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic_with_error!(&env, RegistryError::AlreadyInitialized);
