@@ -187,6 +187,7 @@ from admission import (
 )
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
+from chain_indexer import index_freshness_summary
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     ResumableUploadSessionStore,

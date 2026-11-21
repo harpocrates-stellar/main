@@ -565,6 +565,28 @@ def poll_indexer_once(
     return summary
 
 
+def get_index_freshness(
+    contract_id: str | None = None,
+    max_lag_ledgers: int = 100,
+) -> dict[str, Any]:
+    """Report index freshness from the persisted cursor for read-side responses.
+
+    Returns the last trusted ledger and a ``stale`` flag. Callers must treat a
+    stale index as "unknown", never as evidence that a proof is invalid.
+    """
+    active_contract_id = contract_id or os.getenv("HARPOCRATES_REGISTRY_CONTRACT_ID") or os.getenv("CONTRACT_ID")
+    cursor = get_indexer_cursor() if active_contract_id else None
+    last_trusted_ledger = cursor.get("ledger") if isinstance(cursor, dict) else None
+    return {
+        "contract_id": active_contract_id,
+        "last_trusted_ledger": last_trusted_ledger,
+        "has_cursor": bool(cursor),
+        "max_lag_ledgers": max_lag_ledgers,
+        "stale": last_trusted_ledger is None,
+        "verdict_impact": "none",
+    }
+
+
 def run_indexer_loop(
     stop_event: threading.Event,
     contract_id: str | None = None,
