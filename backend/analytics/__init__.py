@@ -122,11 +122,20 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        EXCLUDED_SENSITIVE_CLASSES,
         EXPORT_FORMAT_VERSION,
+        EXPORT_POLICY_DEFAULT,
+        MANIFEST_DIGEST_PREFIX,
+        TENANT_EXPORT_MANIFEST_VERSION,
         ExportArtifact,
         ExportManager,
         ExportPolicy,
-        EXPORT_POLICY_DEFAULT,
+        TenantExportManifest,
+        build_tenant_export_manifest,
+        compute_manifest_digest,
+        compute_redaction_policy_digest,
+        is_sensitive_record_class,
+        verify_tenant_export_manifest,
     )
 except Exception:
     pass
@@ -234,11 +243,20 @@ __all__ = [
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "EXCLUDED_SENSITIVE_CLASSES",
     "EXPORT_FORMAT_VERSION",
+    "MANIFEST_DIGEST_PREFIX",
+    "TENANT_EXPORT_MANIFEST_VERSION",
     "ExportArtifact",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "TenantExportManifest",
+    "build_tenant_export_manifest",
+    "compute_manifest_digest",
+    "compute_redaction_policy_digest",
+    "is_sensitive_record_class",
+    "verify_tenant_export_manifest",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",

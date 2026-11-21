@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
     from analytics.log_processor import LogEntry, LogProcessor, validate_log_export_safety
@@ -20,6 +22,47 @@ except Exception:
 
 
 EXPORT_FORMAT_VERSION = "1.0.0"
+TENANT_EXPORT_MANIFEST_VERSION = "1.0.0"
+MANIFEST_DIGEST_PREFIX = "mft-v1:"
+MANIFEST_DOMAIN_SEPARATOR = "harpocrates-tenant-export-manifest-v1:"
+REDACTION_POLICY_DIGEST_PREFIX = "rpol-v1:"
+REDACTION_POLICY_DOMAIN_SEPARATOR = "harpocrates-redaction-policy-v1:"
+
+# Sensitive evidence and credential classes excluded from tenant exports by construction.
+EXCLUDED_SENSITIVE_CLASSES: Tuple[str, ...] = (
+    "credential",
+    "evidence_media",
+    "pii",
+    "private_key",
+    "proof_payload",
+    "secret",
+    "wallet_signature",
+    "witness",
+)
+
+_SENSITIVE_CLASS_HINTS = frozenset({
+    "evidence", "evidence_media", "media", "video", "audio", "image",
+    "upload", "raw_bytes", "blob", "frame", "clip", "recording", "screenshot",
+    "witness", "witness_data", "proof", "proof_payload", "zk_proof",
+    "proving_key", "verification_key", "nullifier", "commitment", "private_inputs",
+    "credential", "credentials", "secret", "secrets", "password", "passwd", "pwd",
+    "token", "consent_token", "export_token", "api_key", "apikey",
+    "private_key", "privkey", "mnemonic", "seed_phrase", "recovery_phrase",
+    "access_key", "session_token", "bearer",
+    "wallet_signature", "signature", "tx_signature", "auth_signature",
+    "ed25519_signature", "signed_tx", "xdr", "transaction_envelope",
+    "pii", "biometric", "passport", "ssn", "government_id",
+})
+
+_CREDENTIAL_VALUE_PATTERNS = (
+    re.compile(r"\bcst-v1:[0-9a-f]{16,}\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"-----BEGIN\s+[A-Z0-9 ]+PRIVATE KEY-----"),
+    re.compile(r"\bS[A-Z2-7]{55}\b"),
+)
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_RECORD_CLASS_NORM_RE = re.compile(r"[^a-z0-9_]+")
 
 # Sentinel values distinguishing withdrawn consent from data never collected.
 CONSENT_STATE_NEVER_COLLECTED = "never_collected"
@@ -70,6 +113,270 @@ class ExportArtifact:
     server_file_name: str = ""
     # Caller-requested display label. Only populated for authorized output.
     display_label: Optional[str] = None
+    # Verifiable tenant data export manifest binding record classes and redaction policy.
+    manifest: Optional["TenantExportManifest"] = None
+
+
+def _canonical_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def compute_redaction_policy_digest(
+    redaction_version: str = "harpocrates-redaction-v1",
+    excluded_categories: Optional[Iterable[str]] = None,
+    cap_bytes: int = 256,
+    max_depth: int = 16,
+) -> str:
+    """Compute a canonical SHA-256 digest for the active redaction policy."""
+    cats = sorted(set(excluded_categories if excluded_categories is not None else EXCLUDED_SENSITIVE_CLASSES))
+    canonical = _canonical_json({
+        "cap_bytes": int(cap_bytes),
+        "excluded_categories": cats,
+        "max_depth": int(max_depth),
+        "redaction_version": str(redaction_version),
+    })
+    digest = hashlib.sha256((REDACTION_POLICY_DOMAIN_SEPARATOR + canonical).encode("utf-8")).hexdigest()
+    return REDACTION_POLICY_DIGEST_PREFIX + digest
+
+
+def _normalize_record_class(value: str) -> str:
+    lowered = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return _RECORD_CLASS_NORM_RE.sub("_", lowered).strip("_")
+
+
+def is_sensitive_record_class(record_class: str) -> bool:
+    """Return True if a record class represents sensitive evidence or credential material."""
+    norm = _normalize_record_class(record_class)
+    if not norm:
+        return True
+    if norm in _SENSITIVE_CLASS_HINTS:
+        return True
+    parts = [p for p in norm.split("_") if p]
+    if any(p in _SENSITIVE_CLASS_HINTS for p in parts):
+        return True
+    for i in range(len(parts) - 1):
+        if f"{parts[i]}_{parts[i + 1]}" in _SENSITIVE_CLASS_HINTS:
+            return True
+    return False
+
+
+def _value_contains_credential_pattern(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return any(pat.search(value) is not None for pat in _CREDENTIAL_VALUE_PATTERNS)
+
+
+def classify_record_class(entry: Any) -> str:
+    """Derive a canonical record class name for an exported log entry."""
+    labels = getattr(entry, "labels", None)
+    if isinstance(labels, dict) and labels.get("category"):
+        return _normalize_record_class(str(labels["category"]))
+    event_name = getattr(entry, "event_name", "") or "operational_event"
+    return _normalize_record_class(str(event_name))
+
+
+def entry_contains_sensitive_material(entry: Any) -> Tuple[bool, List[str]]:
+    """Inspect a log entry for sensitive evidence or credential material."""
+    reasons: List[str] = []
+    record_class = classify_record_class(entry)
+    if is_sensitive_record_class(record_class):
+        reasons.append(f"sensitive_record_class:{record_class}")
+
+    event_name = getattr(entry, "event_name", "")
+    if event_name and is_sensitive_record_class(str(event_name)):
+        reasons.append(f"sensitive_event_name:{event_name}")
+
+    labels = getattr(entry, "labels", None)
+    if isinstance(labels, dict):
+        for k, v in labels.items():
+            if is_sensitive_record_class(str(k)):
+                reasons.append(f"sensitive_label_key:{k}")
+            if _value_contains_credential_pattern(v):
+                reasons.append(f"credential_in_label:{k}")
+
+    counters = getattr(entry, "counters", None)
+    if isinstance(counters, dict):
+        for k in counters:
+            if is_sensitive_record_class(str(k)):
+                reasons.append(f"sensitive_counter_key:{k}")
+
+    summary = getattr(entry, "message_summary", None)
+    if _value_contains_credential_pattern(summary):
+        reasons.append("credential_in_message_summary")
+
+    return (len(reasons) > 0, reasons)
+
+
+def filter_entries_for_tenant_export(entries: List[Any]) -> Tuple[List[Any], List[str]]:
+    """Exclude entries carrying sensitive evidence or credential material by construction."""
+    safe: List[Any] = []
+    excluded_ids: List[str] = []
+    for entry in entries:
+        is_sensitive, _ = entry_contains_sensitive_material(entry)
+        if is_sensitive:
+            excluded_ids.append(str(getattr(entry, "entry_id", "")))
+        else:
+            safe.append(entry)
+    return safe, excluded_ids
+
+
+@dataclass
+class TenantExportManifest:
+    """Verifiable manifest binding exported record classes and redaction policy to a digest."""
+
+    artifact_id: str
+    payload_sha256: str
+    entry_count: int
+    record_classes: Tuple[str, ...]
+    redaction_policy_version: str
+    redaction_policy_digest: str
+    consent_policy_revision: Optional[str] = None
+    consent_state: str = CONSENT_STATE_NEVER_COLLECTED
+    tenant_tag: Optional[str] = None
+    excluded_sensitive_classes: Tuple[str, ...] = EXCLUDED_SENSITIVE_CLASSES
+    manifest_version: str = TENANT_EXPORT_MANIFEST_VERSION
+    manifest_digest: str = ""
+
+    def to_canonical_payload(self) -> Dict[str, Any]:
+        return {
+            "artifact_id": self.artifact_id,
+            "consent_policy_revision": self.consent_policy_revision,
+            "consent_state": self.consent_state,
+            "entry_count": int(self.entry_count),
+            "excluded_sensitive_classes": list(self.excluded_sensitive_classes),
+            "manifest_version": self.manifest_version,
+            "payload_sha256": self.payload_sha256,
+            "record_classes": list(self.record_classes),
+            "redaction_policy_digest": self.redaction_policy_digest,
+            "redaction_policy_version": self.redaction_policy_version,
+            "tenant_tag": self.tenant_tag,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = self.to_canonical_payload()
+        data["manifest_digest"] = self.manifest_digest
+        return data
+
+
+def compute_manifest_digest(manifest: TenantExportManifest) -> str:
+    """Compute the canonical domain-separated SHA-256 digest of a TenantExportManifest."""
+    canonical = _canonical_json(manifest.to_canonical_payload())
+    digest = hashlib.sha256((MANIFEST_DOMAIN_SEPARATOR + canonical).encode("utf-8")).hexdigest()
+    return MANIFEST_DIGEST_PREFIX + digest
+
+
+def build_tenant_export_manifest(
+    *,
+    artifact_id: str,
+    serialized_payload: str,
+    entry_count: int,
+    record_classes: Iterable[str],
+    redaction_policy_version: str = "harpocrates-redaction-v1",
+    redaction_policy_digest: Optional[str] = None,
+    consent_policy_revision: Optional[str] = None,
+    consent_state: str = CONSENT_STATE_NEVER_COLLECTED,
+    tenant_tag: Optional[str] = None,
+) -> TenantExportManifest:
+    """Construct a verifiable TenantExportManifest, failing closed on sensitive record classes."""
+    normalized_classes = sorted({_normalize_record_class(rc) for rc in record_classes})
+    for rc in normalized_classes:
+        if is_sensitive_record_class(rc):
+            raise ValueError(f"sensitive record class excluded by construction: {rc}")
+
+    policy_digest = (
+        redaction_policy_digest
+        if redaction_policy_digest is not None
+        else compute_redaction_policy_digest(redaction_version=redaction_policy_version)
+    )
+    payload_sha256 = hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+    manifest = TenantExportManifest(
+        artifact_id=artifact_id,
+        payload_sha256=payload_sha256,
+        entry_count=int(entry_count),
+        record_classes=tuple(normalized_classes),
+        redaction_policy_version=redaction_policy_version,
+        redaction_policy_digest=policy_digest,
+        consent_policy_revision=consent_policy_revision,
+        consent_state=consent_state,
+        tenant_tag=tenant_tag,
+        excluded_sensitive_classes=EXCLUDED_SENSITIVE_CLASSES,
+        manifest_version=TENANT_EXPORT_MANIFEST_VERSION,
+    )
+    manifest.manifest_digest = compute_manifest_digest(manifest)
+    return manifest
+
+
+def verify_tenant_export_manifest(
+    manifest: TenantExportManifest,
+    serialized_payload: str,
+    *,
+    expected_redaction_policy_digest: Optional[str] = None,
+    expected_tenant_tag: Optional[str] = None,
+) -> Tuple[bool, List[str]]:
+    """Fail-closed verification of a TenantExportManifest against its serialized payload."""
+    errors: List[str] = []
+    if not isinstance(manifest, TenantExportManifest):
+        return False, ["invalid_manifest_type"]
+
+    if manifest.manifest_version != TENANT_EXPORT_MANIFEST_VERSION:
+        errors.append(f"unsupported_manifest_version:{manifest.manifest_version}")
+
+    digest_val = manifest.manifest_digest or ""
+    if not digest_val.startswith(MANIFEST_DIGEST_PREFIX) or not _HEX64_RE.match(
+        digest_val[len(MANIFEST_DIGEST_PREFIX):]
+    ):
+        errors.append("malformed_manifest_digest")
+    else:
+        expected_digest = compute_manifest_digest(manifest)
+        if not hmac.compare_digest(digest_val, expected_digest):
+            errors.append("manifest_digest_mismatch")
+
+    actual_payload_sha256 = hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(manifest.payload_sha256 or "", actual_payload_sha256):
+        errors.append("payload_sha256_mismatch")
+
+    rc_list = list(manifest.record_classes)
+    if rc_list != sorted(set(rc_list)):
+        errors.append("record_classes_not_canonical")
+    for rc in rc_list:
+        if is_sensitive_record_class(rc):
+            errors.append(f"sensitive_record_class_present:{rc}")
+
+    if not set(EXCLUDED_SENSITIVE_CLASSES).issubset(set(manifest.excluded_sensitive_classes)):
+        errors.append("missing_required_excluded_sensitive_classes")
+
+    if expected_redaction_policy_digest is not None:
+        if not hmac.compare_digest(
+            manifest.redaction_policy_digest or "", expected_redaction_policy_digest
+        ):
+            errors.append("redaction_policy_digest_mismatch")
+
+    if expected_tenant_tag is not None:
+        if not hmac.compare_digest(manifest.tenant_tag or "", expected_tenant_tag):
+            errors.append("tenant_tag_mismatch")
+
+    # Inspect uncompressed JSON payloads for leaked sensitive keys or credential markers.
+    try:
+        parsed = json.loads(serialized_payload)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, list):
+        if len(parsed) != manifest.entry_count:
+            errors.append("entry_count_mismatch")
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            labels = item.get("labels")
+            if isinstance(labels, dict):
+                for k, v in labels.items():
+                    if is_sensitive_record_class(str(k)):
+                        errors.append(f"payload_contains_sensitive_key:{k}")
+                    if _value_contains_credential_pattern(v):
+                        errors.append(f"payload_contains_credential:{k}")
+            if _value_contains_credential_pattern(item.get("message_summary")):
+                errors.append("payload_contains_credential:message_summary")
+
+    return (len(errors) == 0, errors)
 
 
 def resolve_consent_state(entries: List[LogEntry]) -> Tuple[Optional[str], str]:
@@ -174,6 +481,7 @@ class ExportManager:
                 entries_filtered = [e for e in entries_filtered if e.export_safe]
             if validate_log_export_safety is not None:
                 entries_filtered = [e for e in entries_filtered if validate_log_export_safety(e)[0]]
+            entries_filtered, _ = filter_entries_for_tenant_export(entries_filtered)
             if policy.require_safety_signature:
                 all_safe = all(e.export_safe for e in entries_filtered)
                 if not all_safe:
@@ -200,6 +508,19 @@ class ExportManager:
             payload_bytes = len(serialized.encode("utf-8"))
             checksum = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
             artifact_id = self.generate_export_id()
+            exported_entries = entries_filtered[:count]
+            record_classes = [classify_record_class(e) for e in exported_entries]
+            redaction_version = "harpocrates-redaction-v1"
+            manifest = build_tenant_export_manifest(
+                artifact_id=artifact_id,
+                serialized_payload=serialized,
+                entry_count=count,
+                record_classes=record_classes,
+                redaction_policy_version=redaction_version,
+                consent_policy_revision=consent_revision,
+                consent_state=consent_state,
+                tenant_tag=exported_by_tag if export_token_verified else None,
+            )
             artifact = ExportArtifact(
                 artifact_id=artifact_id,
                 generated_at_epoch_seconds=time.time(),
@@ -210,11 +531,13 @@ class ExportManager:
                 safety_signature=safety_sig,
                 checksum_sha256_prefix16=checksum,
                 rollout_phase=rollout_phase,
+                redaction_version=redaction_version,
                 encryption_at_rest=False,
                 consent_policy_revision=consent_revision,
                 consent_state=consent_state,
                 server_file_name=self.generate_server_file_name(artifact_id, use_compress),
                 display_label=sanitize_display_label(display_label) if export_token_verified else None,
+                manifest=manifest,
             )
             if len(self._artifacts) >= self._max_artifacts_memory:
                 if self._artifact_queue:
@@ -223,6 +546,28 @@ class ExportManager:
             self._artifacts[artifact_id] = artifact
             self._artifact_queue.append(artifact_id)
             return artifact, serialized, count
+
+    def verify_artifact_manifest(
+        self,
+        artifact_id: str,
+        serialized_payload: str,
+        *,
+        expected_redaction_policy_digest: Optional[str] = None,
+        expected_tenant_tag: Optional[str] = None,
+    ) -> Tuple[bool, List[str]]:
+        """Fail-closed verification of a stored artifact's tenant export manifest."""
+        with self._lock:
+            artifact = self._artifacts.get(artifact_id)
+        if artifact is None:
+            return False, ["artifact_not_found"]
+        if artifact.manifest is None:
+            return False, ["manifest_missing"]
+        return verify_tenant_export_manifest(
+            artifact.manifest,
+            serialized_payload,
+            expected_redaction_policy_digest=expected_redaction_policy_digest,
+            expected_tenant_tag=expected_tenant_tag,
+        )
 
     def get_artifact(self, artifact_id: str) -> Optional[ExportArtifact]:
         with self._lock:

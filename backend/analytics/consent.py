@@ -115,6 +115,19 @@ class ConsentState:
             stable_account_tag=self.account_tag,
         )
 
+    def to_export_summary(self) -> Dict[str, object]:
+        """Return a credential-free summary suitable for tenant export manifests.
+
+        Explicitly omits ``consent_token`` and any credential material by construction.
+        """
+        return {
+            "account_tag": self.account_tag,
+            "status": self.status,
+            "policy_revision": self.policy_revision,
+            "granted_scopes": sorted(set(self.granted_scopes)),
+            "version": self.version,
+        }
+
 
 DEFAULT_CONSENT_STATE = ConsentState(
     status=ConsentStatus.UNKNOWN,
