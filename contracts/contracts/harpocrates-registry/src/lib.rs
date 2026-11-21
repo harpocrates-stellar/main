@@ -17,7 +17,7 @@ pub mod verifier_inputs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wasm_budget;
 
-use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN, REVOCATION_PUBLIC_INPUTS_LEN};
+use verifier_inputs::{RejectCode, PUBLIC_INPUTS_LEN, REVOCATION_PUBLIC_INPUTS_LEN, SILENT_WITNESS_PUBLIC_INPUTS_LEN, SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN};
 
 /// Schema selectors accepted by [`HarpocratesRegistry::classify_public_inputs`].
 pub const SCHEMA_ID_SILENT_WITNESS: u32 = 1;
@@ -376,6 +376,16 @@ pub struct VerifierState {
     pub rollback_window_end: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RolePolicy {
+    pub timelock_min_delay_secs: u64,
+    pub verifier: Option<Address>,
+    pub guardian: Option<Address>,
+    pub paused_domains: u32,
+    pub schema_version: u32,
+}
+
 /// Aggregate snapshot of the registry's operational configuration (#721).
 ///
 /// Combines the individual configuration getters and the currently paused
@@ -392,6 +402,17 @@ pub struct RegistryConfig {
     pub schema_version: u32,
     pub revocation_root: Option<BytesN<32>>,
     pub paused_domains: u32,
+}
+
+/// Current registry input and metadata limits.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryLimits {
+    pub silent_witness_v1_inputs_len: u32,
+    pub silent_witness_v2_inputs_len: u32,
+    pub revocation_inputs_len: u32,
+    pub evidence_metadata_hash_bytes: u32,
+    pub schema_version: u32,
 }
 
 /// A verifier's declared circuit-version window (#343).
@@ -2034,6 +2055,40 @@ pub struct HarpocratesRegistry;
 
 #[contractimpl]
 impl HarpocratesRegistry {
+    pub fn get_registry_limits(_env: Env) -> RegistryLimits {
+        RegistryLimits {
+            silent_witness_v1_inputs_len: SILENT_WITNESS_PUBLIC_INPUTS_LEN as u32,
+            silent_witness_v2_inputs_len: SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN as u32,
+            revocation_inputs_len: REVOCATION_PUBLIC_INPUTS_LEN as u32,
+            evidence_metadata_hash_bytes: MAX_EVIDENCE_METADATA_HASH_BYTES,
+            schema_version: METADATA_ENVELOPE_VERSION_MAX,
+        }
+    }
+
+    pub fn get_role_policy_digest(env: Env) -> BytesN<32> {
+        let now = env.ledger().timestamp();
+        let mut paused_domains = 0u32;
+        for bit in PAUSE_DOMAIN_SINGLE_BITS {
+            if domain_is_paused(&env, bit, now) {
+                paused_domains |= bit;
+            }
+        }
+
+        let storage = env.storage().persistent();
+        let policy = RolePolicy {
+            timelock_min_delay_secs: storage.get::<_, u64>(&DataKey::TimelockMinDelay).unwrap_or(DEFAULT_TIMELOCK_MIN_DELAY_SECS),
+            verifier: storage.get::<_, Address>(&DataKey::Verifier),
+            guardian: storage.get::<_, Address>(&DataKey::Guardian),
+            paused_domains,
+            schema_version: storage.get::<_, u32>(&DataKey::SchemaVersion).unwrap_or(SchemaVersion::V1 as u32),
+        };
+        
+        let mut bytes = Bytes::new(&env);
+        bytes.push(0x01); // Version 1
+        bytes.append(&policy.to_xdr(&env));
+        env.crypto().sha256(&bytes)
+    }
+
     pub fn init(env: Env, admin: Address) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic_with_error!(&env, RegistryError::AlreadyInitialized);
@@ -8214,3 +8269,6 @@ mod test_list_credential_roots;
 #[cfg(test)]
 mod test_uninitialized;
 
+
+#[cfg(test)]
+mod test_events_conformance;
