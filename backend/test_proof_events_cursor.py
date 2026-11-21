@@ -267,4 +267,12 @@ class ProofByVideoCursorApiTest(unittest.TestCase):
         finder.assert_called_once_with(self.VIDEO_HASH, 2, cursor_id=9)
 
     def test_invalid_cursor_returns_400(self) -> None:
-        for bad in ("not-a-valid-cursor", "%%%", "0", "-1", base64.urlsafe_b64encode(b"0").decode(
+        for bad in ("not-a-valid-cursor", "%%%", "0", "-1", base64.urlsafe_b64encode(b"0").decode("ascii")):
+            with self.subTest(cursor=bad):
+                response = self.client.get(f"/api/proofs/by-video/{self.VIDEO_HASH}?cursor={bad}")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json["error"], "invalid cursor")
+
+
+if __name__ == "__main__":
+    unittest.main()

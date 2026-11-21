@@ -11,24 +11,6 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
-        """Return a dict representation of the config where secret fields are redacted.
-        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
-        presence (True if set, False otherwise). Non‑secret fields retain their original
-        values.
-        """
-        from dataclasses import asdict
-        secret_fields = {
-            "metrics_token",
-            "tracing_endpoint",
-            "register_api_key",
-            "register_api_key_previous",
-        }
-        raw = asdict(self)
-        for field in secret_fields:
-            if field in raw:
-                raw[field] = raw[field] is not None
-        return raw
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -90,6 +72,27 @@ class AppConfig:
     indexer_quarantine_max_entries: int = 1000
     registration_reconcile_state_dir: str = ""
     stellar_network_passphrase: str = ""
+
+    def redacted_summary(self) -> dict[str, object]:
+        """Return a dict representation of the config where secret fields are redacted.
+
+        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
+        presence (True if set, False otherwise). Non-secret fields retain their original
+        values.
+        """
+        from dataclasses import asdict
+
+        secret_fields = {
+            "metrics_token",
+            "tracing_endpoint",
+            "register_api_key",
+            "register_api_key_previous",
+        }
+        raw = asdict(self)
+        for field in secret_fields:
+            if field in raw:
+                raw[field] = raw[field] is not None
+        return raw
 
 
 def load_config() -> AppConfig:
@@ -177,7 +180,6 @@ def load_config() -> AppConfig:
             or ""
         ),
     )
-
 
 
 def _upload_chunk_bytes() -> int:
@@ -285,34 +287,7 @@ def _sample_ratio_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
         return default
-    try:
-        parsed = float(value)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be between 0 and 1") from exc
-    if not 0.0 <= parsed <= 1.0:
+    parsed = float(value)
+    if parsed < 0.0 or parsed > 1.0:
         raise RuntimeError(f"{name} must be between 0 and 1")
     return parsed
-
-
-# Retention worker batch bounds. The upper bound must match
-# db.RETENTION_BATCH_MAX_SIZE, which clamps the value again at the SQL layer.
-RETENTION_BATCH_SIZE_DEFAULT = 100
-RETENTION_BATCH_SIZE_MAX = 5000
-
-
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
-    """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    return max(1, min(parsed, RETENTION_BATCH_SIZE_MAX))
-
-
-JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
-
-
-def _job_file_ttl_
