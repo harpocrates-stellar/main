@@ -461,6 +461,28 @@ MIGRATIONS: list[Migration] = [
             WHERE ledger IS NOT NULL;
         """,
     ),
+    Migration(
+        id=14,
+        name="create registration_conflicts quarantine table",
+        sql="""
+        CREATE TABLE IF NOT EXISTS registration_conflicts (
+            id              BIGSERIAL PRIMARY KEY,
+            idempotency_key TEXT      NOT NULL,
+            conflict_field  TEXT      NOT NULL,
+            proof_id        TEXT,
+            video_hash      TEXT,
+            source_address  TEXT,
+            tx_hash         TEXT,
+            conflict_tier_incoming TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at      TIMESTAMPTZ NOT NULL DEFAULT now() + INTERVAL '30 days'
+        );
+        CREATE INDEX IF NOT EXISTS registration_conflicts_key_idx
+            ON registration_conflicts (idempotency_key);
+        CREATE INDEX IF NOT EXISTS registration_conflicts_expires_at_idx
+            ON registration_conflicts (expires_at);
+        """,
+    ),
 ]
 
 

@@ -88,6 +88,11 @@ except ImportError:
     reconcile_pending_registrations = None
     reconcile_registration = None
 
+try:
+    from registration_quarantine import record_registration_conflict
+except ImportError:
+    record_registration_conflict = None  # type: ignore[assignment]
+
 
 def build_reconcile_batch_report(
     *,
@@ -1579,6 +1584,16 @@ def create_app() -> Flask:
                 claimed_capture_time=claimed_capture_time,
             )
         except ConflictError as exc:
+            # Retain the contradictory claim for operator review without
+            # publishing private evidence metadata in the diagnostic.
+            exc._proof_id = proof_id  # type: ignore[attr-defined]
+            exc._video_hash = video_hash  # type: ignore[attr-defined]
+            exc._source_address = validated_source_address  # type: ignore[attr-defined]
+            if record_registration_conflict is not None:
+                try:
+                    record_registration_conflict(exc, tx_hash=normalized_tx_hash)
+                except Exception:
+                    pass  # quarantine failure must never suppress the 409
             return jsonify({
                 "error": "idempotency key reused with conflicting payload",
                 "conflict_field": exc.field,

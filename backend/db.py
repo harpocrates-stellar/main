@@ -1573,6 +1573,166 @@ def get_job_queue_metrics() -> dict[str, Any]:
 get_job_metrics = get_job_queue_metrics
 
 
+# ---------------------------------------------------------------------------
+# Registration conflict quarantine — in-memory stub (no DATABASE_URL)
+# ---------------------------------------------------------------------------
+
+# Maps idempotency_key → list of conflict records (bounded per key)
+_REGISTRATION_CONFLICTS: dict[str, list[dict[str, Any]]] = {}
+_mock_conflict_id = 200000
+
+
+def insert_registration_conflict(
+    *,
+    idempotency_key: str,
+    conflict_field: str,
+    proof_id: str | None = None,
+    video_hash: str | None = None,
+    source_address: str | None = None,
+    tx_hash: str | None = None,
+    conflict_tier_incoming: str | None = None,
+    per_key_max: int = 10,
+    ttl_days: int = 30,
+) -> bool:
+    """Insert a quarantine record for a registration conflict.
+
+    Enforces a per-idempotency-key cap (``per_key_max``).  When the cap is
+    already reached the record is silently skipped and ``False`` is returned.
+    Returns ``True`` when a new record was stored.
+
+    Privacy: only ``conflict_field`` (name), safe public identifiers
+    (``proof_id``, ``video_hash``, ``source_address``, ``tx_hash``), and
+    the ``conflict_tier_incoming`` enum value are persisted.  Raw hash
+    values for the conflicting field are never stored.
+    """
+    global _mock_conflict_id
+
+    if not database_url():
+        existing = _REGISTRATION_CONFLICTS.get(idempotency_key, [])
+        if len(existing) >= per_key_max:
+            return False
+        _mock_conflict_id += 1
+        now = datetime.now(timezone.utc)
+        record: dict[str, Any] = {
+            "id": _mock_conflict_id,
+            "idempotency_key": idempotency_key,
+            "conflict_field": conflict_field,
+            "proof_id": proof_id,
+            "video_hash": video_hash,
+            "source_address": source_address,
+            "tx_hash": tx_hash,
+            "conflict_tier_incoming": conflict_tier_incoming,
+            "created_at": now,
+            "expires_at": now,  # TTL not enforced in memory
+        }
+        _REGISTRATION_CONFLICTS.setdefault(idempotency_key, []).append(record)
+        return True
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # Enforce per-key cap atomically before inserting.
+            cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM registration_conflicts "
+                "WHERE idempotency_key = %s;",
+                (idempotency_key,),
+            )
+            row = cursor.fetchone()
+            if row and int(row["cnt"]) >= per_key_max:
+                return False
+
+            cursor.execute(
+                """
+                INSERT INTO registration_conflicts (
+                    idempotency_key,
+                    conflict_field,
+                    proof_id,
+                    video_hash,
+                    source_address,
+                    tx_hash,
+                    conflict_tier_incoming,
+                    expires_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s,
+                        now() + (%s || ' days')::interval)
+                RETURNING id, created_at, expires_at;
+                """,
+                (
+                    idempotency_key,
+                    conflict_field,
+                    proof_id,
+                    video_hash,
+                    source_address,
+                    tx_hash,
+                    conflict_tier_incoming,
+                    str(int(ttl_days)),
+                ),
+            )
+            inserted = cursor.fetchone()
+        connection.commit()
+    return inserted is not None
+
+
+def get_registration_conflicts(
+    idempotency_key: str,
+) -> list[dict[str, Any]]:
+    """Return all quarantine records for the given idempotency key.
+
+    Results are ordered by ``created_at ASC``.  Expired records are
+    included; callers that need only live records should filter on
+    ``expires_at > now()``.
+    """
+    if not database_url():
+        return [
+            dict(r)
+            for r in _REGISTRATION_CONFLICTS.get(idempotency_key, [])
+        ]
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, idempotency_key, conflict_field,
+                       proof_id, video_hash, source_address,
+                       tx_hash, conflict_tier_incoming,
+                       created_at, expires_at
+                FROM registration_conflicts
+                WHERE idempotency_key = %s
+                ORDER BY created_at ASC;
+                """,
+                (idempotency_key,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def purge_expired_conflicts(batch_size: int = 500) -> int:
+    """Delete expired quarantine records and return the count removed.
+
+    Safe to call repeatedly (no-op when no rows are expired).  Uses a
+    bounded ``LIMIT`` to avoid long-running deletes on large tables.
+    """
+    if not database_url():
+        # In-memory stubs do not enforce expiry.
+        return 0
+
+    limit = max(1, min(int(batch_size), 10_000))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM registration_conflicts
+                WHERE id IN (
+                    SELECT id FROM registration_conflicts
+                    WHERE expires_at < now()
+                    LIMIT %s
+                );
+                """,
+                (limit,),
+            )
+            deleted = cursor.rowcount or 0
+        connection.commit()
+    return deleted
+
+
 _INDEXED_EVENTS: dict[tuple[str, int], dict[str, Any]] = {}
 _INDEXER_STATE: dict[str, dict[str, Any]] = {}
 _mock_indexed_id = 100000
