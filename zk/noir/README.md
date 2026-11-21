@@ -260,6 +260,24 @@ pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_confor
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
+## Protocol domain separation
+
+[`fixtures/protocol_domain_separation_vectors.json`](fixtures/protocol_domain_separation_vectors.json)
+publishes independently derived Pedersen vectors for the configured protocol,
+domain-version, and network fields, plus rejected one-field replay mutations
+and scope-specific nullifiers. The baseline has one configured deployment
+tuple; the frontend's `testnet` / `mainnet` descriptor strings are not separate
+Noir field configurations. Verifier scope and epoch are intentionally bound in
+the scoped-nullifier derivation, not in the deployment-level `domain_tag`.
+`DOMAIN_VERSION_FIELD` and the proof-envelope `circuit_version` are independent
+axes; the latter is constrained by `CURRENT_CIRCUIT_VERSION`.
+
+The vector tags were calculated using the pinned `@aztec/bb.js` 0.87.0
+Pedersen implementation, separately from `expected_domain_tag()` in Noir. The
+Silent Witness tests pin the canonical vector, reject alternate protocol,
+domain-version, and network tags, and prove that a nullifier from one verifier
+scope cannot be reused in another.
+
 ## Build
 
 For the full local build with the checked-in prover file:
