@@ -419,3 +419,18 @@ python -m unittest test_app.py test_stego.py test_registration_reconcile.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+
+## Registration Idempotency
+
+`POST /api/proofs/register` enforces idempotency at both the request layer (`idempotency.py`) and the persistence layer (`db.upsert_register_event`):
+
+- The canonical idempotency binding includes the HTTP method, path, query string, identity `tier` (`silent`, `source`, or `seal`), and raw request body.
+- When an explicit `Idempotency-Key` header is supplied, the key is bound to the canonical digest and identity tier. Replaying the same key with the same payload replays the stored response; reusing the key with a changed identity tier returns `409 Conflict` (`{"error": "idempotency key reused with conflicting payload", "conflict_field": "tier"}`) without invoking the handler or enqueueing another `verify_tx` registration job.
+
+## Evidence Retention Previews
+
+`evidence_storage.preview_tenant_retention(tenant_id, *, now=None, ttl_seconds=None)` returns a read-only retention preview scoped strictly to the authenticated `tenant_id`:
+
+- Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
+- Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
+- Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.

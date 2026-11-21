@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 import logging
 import os
 import hashlib
-from typing import Tuple
+from typing import Any, Tuple
 from cryptography.fernet import Fernet
 import db
+from storage import _parse_timestamp
 
 logger = logging.getLogger("harpocrates.evidence_storage")
 
@@ -175,6 +177,123 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+def preview_tenant_retention(
+    tenant_id: str,
+    *,
+    now: datetime | int | float | str | None = None,
+    ttl_seconds: int | float | None = None,
+) -> dict[str, Any]:
+    """Return a read-only retention preview for a single authenticated tenant.
+
+    Reports blob counts, ages, and deletion eligibility scoped strictly to
+    ``tenant_id``. Other tenants' content hashes, tenant identifiers, and all
+    filesystem storage paths are never queried or returned.
+    """
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        raise ValueError("tenant_id must be a non-empty string")
+    normalized_tenant = tenant_id.strip()
+
+    if ttl_seconds is not None:
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or ttl_seconds < 0:
+            raise ValueError("ttl_seconds must be a non-negative number")
+
+    now_dt = datetime.now(timezone.utc) if now is None else _parse_timestamp(now)
+
+    with db.get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                    r.content_hash,
+                    r.ref_count,
+                    b.size_bytes,
+                    b.created_at,
+                    exists (
+                        select 1
+                        from tenant_blob_refs other
+                        where other.content_hash = r.content_hash
+                          and other.tenant_id <> r.tenant_id
+                          and other.ref_count > 0
+                    ) as shared_with_other_tenants
+                from tenant_blob_refs r
+                join blobs b on b.content_hash = r.content_hash
+                where r.tenant_id = %s
+                  and r.ref_count > 0
+                order by b.created_at asc, r.content_hash asc
+                """,
+                (normalized_tenant,),
+            )
+            rows = cursor.fetchall()
+
+    items: list[dict[str, Any]] = []
+    ages: list[float] = []
+    total_ref_count = 0
+    total_size_bytes = 0
+    eligible_count = 0
+    shared_count = 0
+
+    for row in rows:
+        if isinstance(row, dict):
+            content_hash = row["content_hash"]
+            ref_count = int(row["ref_count"])
+            size_bytes = int(row["size_bytes"])
+            created_at = row["created_at"]
+            shared = bool(row["shared_with_other_tenants"])
+        else:
+            content_hash, ref_count, size_bytes, created_at, shared = row
+            ref_count = int(ref_count)
+            size_bytes = int(size_bytes)
+            shared = bool(shared)
+
+        created_dt = _parse_timestamp(created_at)
+        age_seconds = max(0.0, (now_dt - created_dt).total_seconds())
+        ages.append(age_seconds)
+
+        total_ref_count += ref_count
+        total_size_bytes += size_bytes
+        if shared:
+            shared_count += 1
+
+        if shared:
+            deletion_eligible = False
+            ineligible_reason: str | None = "shared_with_other_tenants"
+        elif ttl_seconds is not None and age_seconds < ttl_seconds:
+            deletion_eligible = False
+            ineligible_reason = "within_retention_window"
+        else:
+            deletion_eligible = True
+            ineligible_reason = None
+            eligible_count += 1
+
+        items.append(
+            {
+                "content_hash": content_hash,
+                "ref_count": ref_count,
+                "size_bytes": size_bytes,
+                "age_seconds": age_seconds,
+                "deletion_eligible": deletion_eligible,
+                "deletion_ineligible_reason": ineligible_reason,
+            }
+        )
+
+    blob_count = len(items)
+    return {
+        "tenant_id": normalized_tenant,
+        "evaluated_at": now_dt.isoformat(),
+        "ttl_seconds": ttl_seconds,
+        "blob_count": blob_count,
+        "total_ref_count": total_ref_count,
+        "total_size_bytes": total_size_bytes,
+        "eligible_for_deletion_count": eligible_count,
+        "retained_count": blob_count - eligible_count,
+        "shared_blob_count": shared_count,
+        "oldest_age_seconds": max(ages) if ages else None,
+        "newest_age_seconds": min(ages) if ages else None,
+        "average_age_seconds": (sum(ages) / blob_count) if ages else None,
+        "blobs": items,
+    }
+
+
 def rotate_encryption_key(new_master_key=None, old_master_key=None, key_id=None, *, content_hashes=None):
     import os
     from cryptography.fernet import Fernet
