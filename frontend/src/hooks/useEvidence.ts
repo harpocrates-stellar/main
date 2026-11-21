@@ -87,6 +87,10 @@ export type UseEvidenceReturn = {
   message: string
   /** Read-only preview of the canonical proof inputs and policy version. */
   proofPreparation: ProofPreparationPreviewResult
+  /** Sensitive export field keys explicitly acknowledged by the operator in this session. */
+  acknowledgedSensitiveFields: string[]
+  /** Record explicit operator acknowledgement for newly exposed sensitive export fields. */
+  acknowledgeSensitiveFields: (keys: string[]) => void
   registration: RegisterProofResult | null
   networkMismatch: string | null
   isCancellable: boolean
@@ -131,6 +135,7 @@ export function useEvidence(): UseEvidenceReturn {
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+  const [acknowledgedSensitiveFields, setAcknowledgedSensitiveFields] = useState<string[]>([])
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
   const registrationInFlightedRef = useRef<boolean>(false)
   const completedRegistrationRef = useRef<string | null>(null)
@@ -211,6 +216,20 @@ export function useEvidence(): UseEvidenceReturn {
     setProof(null)
     setFile(null)
     setRegistration(null)
+    setAcknowledgedSensitiveFields([])
+  }
+
+  function acknowledgeSensitiveFields(keys: string[]) {
+    if (!keys.length) return
+    setAcknowledgedSensitiveFields((prev) => {
+      const merged = new Set(prev)
+      for (const key of keys) {
+        if (typeof key === 'string' && key.length > 0) {
+          merged.add(key)
+        }
+      }
+      return Array.from(merged)
+    })
   }
 
   function getProofClient(): ProofWorkerClient {
@@ -578,6 +597,8 @@ export function useEvidence(): UseEvidenceReturn {
     setNullifierSeed,
     message,
     proofPreparation,
+    acknowledgedSensitiveFields,
+    acknowledgeSensitiveFields,
     registration,
     networkMismatch,
     isCancellable,

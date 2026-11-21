@@ -288,9 +288,16 @@ export function exportReceiptCollection(results: BatchItemResult[]): string {
   return JSON.stringify(collection, null, 2)
 }
 
+const FORMULA_PREFIX_RE = /^[=+\-@\t\r]/
+
 function escapeCSV(val: string): string {
   if (!val) return '""'
-  const needsQuotes = val.includes(',') || val.includes('"') || val.includes('\n')
-  const escaped = val.replace(/"/g, '""')
+  const neutralized = FORMULA_PREFIX_RE.test(val) ? `'${val}` : val
+  const needsQuotes =
+    neutralized.includes(',') ||
+    neutralized.includes('"') ||
+    neutralized.includes('\n') ||
+    neutralized.includes('\r')
+  const escaped = neutralized.replace(/"/g, '""')
   return needsQuotes ? `"${escaped}"` : escaped
 }
