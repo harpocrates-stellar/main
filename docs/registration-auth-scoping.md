@@ -36,6 +36,20 @@ request body alone, so running auth after them would let a cached success be
 served to a caller who may not register it. Regression tests cover both an
 unauthenticated caller and a different owner replaying an identical body.
 
+## Reconciliation checkpoint
+
+`registration_reconcile.py` keeps the last trusted ledger out of the request
+path. Its checkpoint records the Stellar network name/passphrase and a
+fingerprint of the current deployment configuration. Checkpoints from another
+network or deployment are refused on load and on write, and a lower ledger is
+rejected, so a restored or stale state directory cannot roll confirmed
+registration state backwards.
+
+The checkpoint is local durable state under
+`HARPOCRATES_REGISTRATION_RECONCILE_DIR`, separate from the idempotency records
+in `idempotency_records`. No request field, credential, or proof material is
+written to it.
+
 ## Privacy
 
 Failures carry a stable code and a field *name*. Tokens, digests, addresses and

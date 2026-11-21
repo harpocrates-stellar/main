@@ -14,8 +14,12 @@ import hashlib
 import os
 import shutil
 import tempfile
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, Iterable, Optional, Tuple, Union
+from typing import BinaryIO, Iterable, Iterator, Optional, Tuple, Union
 
 from flask import g
 from werkzeug.datastructures import FileStorage
@@ -95,6 +99,153 @@ def resolve_temp_dir(explicit: str | Path | None = None) -> Optional[str]:
     return None
 
 
+class UploadState(str, Enum):
+    QUEUED = "queued"
+    RECEIVING = "receiving"
+    COMMITTING = "committing"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class UploadCancelledError(RuntimeError):
+    def __init__(self, message: str = "Upload cancelled"):
+        super().__init__(message)
+        self.code = "UPLOAD_CANCELLED"
+        self.status_code = 409
+
+
+@dataclass
+class UploadSession:
+    id: str
+    session_dir: Path
+    state: UploadState = UploadState.QUEUED
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    admission_ticket_id: Optional[str] = None
+    queued_admission_ticket_id: Optional[str] = None
+    cleanup_done: bool = False
+    _active_writers: int = field(default=0, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    @property
+    def active_writers(self) -> int:
+        with self._lock:
+            return self._active_writers
+
+    def attach_admission(self, ticket_id: Optional[str]) -> None:
+        with self._lock:
+            self.admission_ticket_id = ticket_id
+
+    def attach_queued_admission(self, ticket_id: Optional[str]) -> None:
+        with self._lock:
+            self.queued_admission_ticket_id = ticket_id
+            self.admission_ticket_id = ticket_id
+
+    def mark_receiving(self) -> None:
+        with self._lock:
+            if self.state is UploadState.QUEUED:
+                self.state = UploadState.RECEIVING
+
+    def mark_committing(self) -> None:
+        with self._lock:
+            if self.state in (UploadState.QUEUED, UploadState.RECEIVING):
+                self.state = UploadState.COMMITTING
+
+    def complete(self) -> None:
+        with self._lock:
+            self.state = UploadState.COMPLETED
+
+    def fail(self) -> None:
+        with self._lock:
+            if self.state is not UploadState.CANCELLED:
+                self.state = UploadState.FAILED
+
+    @contextmanager
+    def writer(self) -> Iterator["UploadSession"]:
+        self.check_cancelled()
+        with self._lock:
+            if self.state is UploadState.CANCELLED:
+                raise UploadCancelledError()
+            self._active_writers += 1
+            self.mark_receiving()
+        try:
+            yield self
+        finally:
+            cleanup = False
+            with self._lock:
+                self._active_writers -= 1
+                if self._active_writers == 0 and self.state is UploadState.CANCELLED:
+                    cleanup = True
+            if cleanup:
+                self._cleanup()
+
+    def cancel(self) -> bool:
+        cleanup = False
+        with self._lock:
+            if self.state not in (
+                UploadState.QUEUED,
+                UploadState.RECEIVING,
+                UploadState.COMMITTING,
+            ):
+                return False
+            self.state = UploadState.CANCELLED
+            self.cancel_event.set()
+            cleanup = self._active_writers == 0
+        if cleanup:
+            self._cleanup()
+        return True
+
+    def check_cancelled(self) -> None:
+        if self.cancel_event.is_set() or self.state is UploadState.CANCELLED:
+            raise UploadCancelledError()
+
+    def _cleanup(self) -> None:
+        with self._lock:
+            if self.cleanup_done:
+                return
+            self.cleanup_done = True
+        shutil.rmtree(self.session_dir, ignore_errors=True)
+
+
+class UploadSessionRegistry:
+    def __init__(self) -> None:
+        self._sessions: dict[str, UploadSession] = {}
+        self._lock = threading.Lock()
+
+    def create(self, session_id: str, session_dir: Union[str, Path]) -> UploadSession:
+        session = UploadSession(id=session_id, session_dir=Path(session_dir))
+        with self._lock:
+            self._sessions[session_id] = session
+        return session
+
+    def get(self, session_id: str) -> Optional[UploadSession]:
+        with self._lock:
+            return self._sessions.get(session_id)
+
+    def cancel(self, session_id: str, admission_controller=None) -> Optional[bool]:
+        session = self.get(session_id)
+        if session is None:
+            return None
+        cancelled = session.cancel()
+        if cancelled and admission_controller is not None:
+            ticket_ids = [
+                session.admission_ticket_id,
+                session.queued_admission_ticket_id,
+            ]
+            for ticket_id in dict.fromkeys(ticket_ids):
+                if ticket_id is None:
+                    continue
+                ticket = admission_controller.get_ticket(ticket_id)
+                admission_controller.cancel(ticket_id)
+                if ticket is not None and ticket.queued:
+                    admission_controller.release_ticket(ticket_id)
+        return cancelled
+
+    def remove(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+
 def hash_stream_to_path(
     source: BinaryIO,
     destination: Union[str, Path],
@@ -102,6 +253,7 @@ def hash_stream_to_path(
     chunk_size: int | None = None,
     max_size: int | None = None,
     temp_dir: str | Path | None = None,
+    cancellation: UploadSession | None = None,
 ) -> Tuple[str, int]:
     """Copy *source* to *destination* in bounded chunks while hashing SHA-256.
 
@@ -127,6 +279,8 @@ def hash_stream_to_path(
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as tmp_file:
             while True:
+                if cancellation is not None:
+                    cancellation.check_cancelled()
                 chunk = source.read(bounded)
                 if not chunk:
                     break
@@ -160,6 +314,7 @@ def hash_paths_concat(
     *,
     chunk_size: int | None = None,
     max_size: int | None = None,
+    cancellation: UploadSession | None = None,
 ) -> Tuple[str, int]:
     """Concatenate *paths* into *destination* with bounded-chunk SHA-256 hashing."""
     bounded = resolve_chunk_bytes(chunk_size)
@@ -176,8 +331,12 @@ def hash_paths_concat(
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as out:
             for path in paths:
+                if cancellation is not None:
+                    cancellation.check_cancelled()
                 with Path(path).open("rb") as handle:
                     while True:
+                        if cancellation is not None:
+                            cancellation.check_cancelled()
                         chunk = handle.read(bounded)
                         if not chunk:
                             break
@@ -230,12 +389,14 @@ class StreamingFileStorage(FileStorage):
         max_size: int | None = None,
         chunk_size: int | None = None,
         temp_dir: str | Path | None = None,
+        cancellation: UploadSession | None = None,
     ):
         super().__init__(stream, filename, content_type=content_type)
         self._max_size = max_size
         self._chunk_size = resolve_chunk_bytes(chunk_size)
         self._temp_dir = resolve_temp_dir(temp_dir)
         self._materialized_path: Optional[Path] = None
+        self._cancellation = cancellation
         self._bytes_written = 0
         self._hash_computed = False
         self._digest: Optional[str] = None
@@ -271,6 +432,7 @@ class StreamingFileStorage(FileStorage):
             chunk_size=self._chunk_size,
             max_size=self._max_size,
             temp_dir=self._temp_dir,
+            cancellation=self._cancellation,
         )
         self._bytes_written = written
         self._digest = digest
@@ -285,7 +447,10 @@ class StreamingFileStorage(FileStorage):
             pass
 
 
-def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileStorage:
+def create_streaming_file_storage(
+    field_storage: FileStorage,
+    cancellation: UploadSession | None = None,
+) -> StreamingFileStorage:
     """Wrap a Werkzeug ``FileStorage`` with bounded-chunk streaming hashing."""
     config = _upload_config()
     max_size = resolve_max_bytes()
@@ -302,4 +467,5 @@ def create_streaming_file_storage(field_storage: FileStorage) -> StreamingFileSt
         max_size=max_size,
         chunk_size=chunk_size,
         temp_dir=temp_dir,
+        cancellation=cancellation,
     )

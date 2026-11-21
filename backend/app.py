@@ -184,6 +184,9 @@ from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream,
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
+    UploadCancelledError,
+    UploadSessionRegistry,
+    UploadState,
     create_streaming_file_storage,
     hash_paths_concat,
 )
@@ -462,6 +465,7 @@ def create_app() -> Flask:
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
     )
+    upload_session_registry = UploadSessionRegistry()
 
     @app.before_request
     def start_request_context():
@@ -986,27 +990,40 @@ def create_app() -> Flask:
         session_id = str(uuid.uuid4())
         session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
         session_dir.mkdir(parents=True, exist_ok=True)
+        session = upload_session_registry.create(session_id, session_dir)
+        ticket = admission_controller.create_ticket(session_id)
+        session.attach_queued_admission(ticket.id if ticket is not None else None)
         return jsonify({"sessionId": session_id})
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
+    @require_capacity(admission_controller)
     def upload_chunk(session_id: str, chunk_index: int):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        session = upload_session_registry.get(session_id)
+        if session is None:
+            return jsonify({"error": "session not found"}), 404
+        session_dir = session.session_dir
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
-        
+
         chunk = request.files.get("chunk")
         if chunk is None:
             return jsonify({"error": "chunk is required"}), 400
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
-        # Persist each session chunk with bounded-chunk hashing for integrity.
+        admission_ticket = getattr(g, "admission_ticket", None)
+        if admission_ticket is not None:
+            session.attach_admission(admission_ticket.id)
+
         g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
+        streaming_chunk = create_streaming_file_storage(chunk, cancellation=session)
         chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
-            streaming_chunk.save(str(chunk_path))
+            with session.writer():
+                streaming_chunk.save(str(chunk_path))
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
         except RequestEntityTooLarge:
             return jsonify({"error": "chunk exceeds size limit"}), 413
         return jsonify({
@@ -1015,13 +1032,38 @@ def create_app() -> Flask:
             "sha256": streaming_chunk.computed_hash,
         })
 
+    @app.post("/api/stego/upload-session/<session_id>/cancel")
+    @limiter.limit(config.ratelimit_upload_session)
+    def cancel_upload_session(session_id: str):
+        cancelled = upload_session_registry.cancel(session_id, admission_controller)
+        if cancelled is None:
+            return jsonify({"error": "session not found"}), 404
+        if not cancelled:
+            return jsonify({
+                "error": "session cannot be cancelled",
+                "code": "UPLOAD_NOT_CANCELLABLE",
+            }), 409
+        return jsonify({"ok": True, "state": UploadState.CANCELLED.value})
+
     @app.post("/api/stego/upload-session/<session_id>/commit")
     @limiter.limit(config.ratelimit_upload_session)
     @require_capacity(admission_controller)
     def commit_upload_session(session_id: str):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        session = upload_session_registry.get(session_id)
+        if session is None:
+            return jsonify({"error": "session not found"}), 404
+        session_dir = session.session_dir
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
+
+        admission_ticket = getattr(g, "admission_ticket", None)
+        if admission_ticket is not None:
+            session.attach_admission(admission_ticket.id)
+        session.mark_committing()
+        try:
+            session.check_cancelled()
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:
@@ -1049,12 +1091,17 @@ def create_app() -> Flask:
             return jsonify({"error": "session has no chunks"}), 400
 
         # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
-        source_hash, _written = hash_paths_concat(
-            chunk_files,
-            combined_path,
-            chunk_size=getattr(config, "upload_chunk_bytes", None),
-            max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
-        )
+        try:
+            with session.writer():
+                source_hash, _written = hash_paths_concat(
+                    chunk_files,
+                    combined_path,
+                    chunk_size=getattr(config, "upload_chunk_bytes", None),
+                    max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+                    cancellation=session,
+                )
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
 
         # Sniff assembled file before handing it to ffmpeg.
         try:
@@ -1106,7 +1153,10 @@ def create_app() -> Flask:
                 json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
 
-        import shutil
+        if session.queued_admission_ticket_id:
+            admission_controller.release_ticket(session.queued_admission_ticket_id)
+        session.complete()
+        upload_session_registry.remove(session_id)
         shutil.rmtree(session_dir, ignore_errors=True)
 
         return response
