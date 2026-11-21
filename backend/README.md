@@ -257,6 +257,7 @@ values, and unexpected exceptions are reported by type name only.
 
 - Metric labels strictly record generic HTTP attributes: HTTP `method`, parameterized route rule `endpoint` (e.g., `/api/proofs/by-video/<video_hash>`), and HTTP `status`.
 - Filenames, video hashes, metadata hashes, wallet addresses, proof payload data, and secret seeds are strictly excluded.
+- Analytics telemetry dimensions are strictly validated against an allowed vocabulary (`ALLOWED_DIMENSION_VOCABULARY`) prior to aggregation; raw filenames and cryptographic hashes are rejected from becoming metric labels.
 - Upload sizes are recorded in bounded histogram buckets.
 
 ### Endpoint Protection

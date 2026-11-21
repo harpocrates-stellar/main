@@ -36,6 +36,7 @@ class ExportPolicy:
     export_id_prefix: str = "exp-v1:"
     require_safety_signature: bool = True
     safety_signature_prefix: str = "sig-v1:"
+    validate_dimensions: bool = True
 
 
 EXPORT_POLICY_DEFAULT: ExportPolicy = ExportPolicy()
