@@ -1,4 +1,7 @@
 import type { SeedPair } from './seedVault'
+import { VaultStorageError, classifyErrorCode } from './safeStorage'
+
+export { VaultStorageError }
 
 const VAULT_STORAGE_KEY = 'harpocrates:credential-vault'
 const VAULT_VERSION = 1
@@ -206,7 +209,13 @@ export class CredentialVault {
   }
 
   hasVault(): boolean {
-    return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
+    try {
+      return !!window.localStorage.getItem(VAULT_STORAGE_KEY)
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_READ_FAILED'), 'hasVault', {
+        cause: err,
+      })
+    }
   }
 
   async setup(password: string, seeds: SeedPair): Promise<void> {
@@ -233,15 +242,23 @@ export class CredentialVault {
       ct: bufToHex(ct),
     }
 
-    window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope))
     this.memoryKey = key
     this.seeds = { credentialSeed: seeds.credentialSeed, nullifierSeed: seeds.nullifierSeed }
     this.resetTimeout()
   }
 
   async unlock(password: string): Promise<boolean> {
-    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
-    if (!stored) throw new Error('Vault is empty')
+    let stored: string | null
+    try {
+      stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_READ_FAILED'), 'unlock', {
+        cause: err,
+      })
+    }
+    if (!stored) {
+      throw new VaultStorageError('VAULT_EMPTY', 'unlock', { message: 'Vault is empty' })
+    }
 
     let parsed: unknown
     try {
@@ -296,7 +313,13 @@ export class CredentialVault {
 
   destroy(): void {
     this.lock()
-    window.localStorage.removeItem(VAULT_STORAGE_KEY)
+    try {
+      window.localStorage.removeItem(VAULT_STORAGE_KEY)
+    } catch (err) {
+      throw new VaultStorageError(classifyErrorCode(err, 'VAULT_STORAGE_REMOVE_FAILED'), 'destroy', {
+        cause: err,
+      })
+    }
   }
 
   private resetTimeout(): void {

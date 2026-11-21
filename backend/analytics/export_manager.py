@@ -21,6 +21,11 @@ except Exception:
 
 EXPORT_FORMAT_VERSION = "1.0.0"
 
+# Sentinel values distinguishing withdrawn consent from data never collected.
+CONSENT_STATE_NEVER_COLLECTED = "never_collected"
+CONSENT_STATE_WITHDRAWN = "withdrawn"
+CONSENT_STATE_GRANTED = "granted"
+
 _SAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -56,10 +61,44 @@ class ExportArtifact:
     rollout_phase: str = "shadow"
     redaction_version: str = "harpocrates-redaction-v1"
     encryption_at_rest: bool = False
+    # Consent policy revision in effect when the underlying data was collected.
+    # Entries collected under no recorded policy are reported as never_collected
+    # rather than being conflated with withdrawn consent.
+    consent_policy_revision: Optional[str] = None
+    consent_state: str = CONSENT_STATE_NEVER_COLLECTED
     # Server-selected, filesystem-safe name. Never derived from user input.
     server_file_name: str = ""
     # Caller-requested display label. Only populated for authorized output.
     display_label: Optional[str] = None
+
+
+def resolve_consent_state(entries: List[LogEntry]) -> Tuple[Optional[str], str]:
+    """Derive the consent policy revision and state for a set of entries.
+
+    Each entry may carry a ``consent_policy_revision`` recording the policy
+    effective at collection time and a ``consent_withdrawn`` flag. Entries with
+    no recorded revision are treated as never collected.
+    """
+    revisions = set()
+    withdrawn = False
+    granted = False
+    for e in entries:
+        rev = getattr(e, "consent_policy_revision", None)
+        if rev is None:
+            continue
+        revisions.add(rev)
+        if getattr(e, "consent_withdrawn", False):
+            withdrawn = True
+        else:
+            granted = True
+    if not revisions:
+        return None, CONSENT_STATE_NEVER_COLLECTED
+    revision = sorted(revisions)[-1] if len(revisions) == 1 else ",".join(sorted(revisions))
+    if withdrawn and not granted:
+        return revision, CONSENT_STATE_WITHDRAWN
+    if granted:
+        return revision, CONSENT_STATE_GRANTED
+    return revision, CONSENT_STATE_WITHDRAWN
 
 
 def sanitize_display_label(label: Optional[str]) -> Optional[str]:
@@ -143,6 +182,7 @@ class ExportManager:
                     safety_sig = self.compute_safety_signature(entries_filtered)
             else:
                 safety_sig = None
+            consent_revision, consent_state = resolve_consent_state(entries_filtered)
             if not export_token_verified:
                 entries_filtered = []
             entries_filtered = entries_filtered[:policy.max_artifacts_per_export]
@@ -171,6 +211,8 @@ class ExportManager:
                 checksum_sha256_prefix16=checksum,
                 rollout_phase=rollout_phase,
                 encryption_at_rest=False,
+                consent_policy_revision=consent_revision,
+                consent_state=consent_state,
                 server_file_name=self.generate_server_file_name(artifact_id, use_compress),
                 display_label=sanitize_display_label(display_label) if export_token_verified else None,
             )

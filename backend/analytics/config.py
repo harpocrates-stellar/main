@@ -22,6 +22,11 @@ CONSENT_TOKEN_DOMAIN = CryptoDomainVersion("consent-token", 1, "SHA-256/hex24", 
 
 ANALYTICS_CONFIG_SCHEMA_VERSION = "1.0.0"
 
+# Consent policy revision recorded on exports so that the policy in effect at
+# collection time can be distinguished from later revisions. Bump when the
+# consent policy text or semantics change.
+CONSENT_POLICY_REVISION = "1"
+
 
 class RolloutPhase(str):
     OFF = "off"
@@ -93,6 +98,11 @@ class ExportConfig:
     max_artifacts_per_export: int = 64
     export_token_header_name: str = "X-Analytics-Export-Token"
     export_token_required_in_production: bool = True
+    # When true, each exported record carries the consent policy revision that
+    # was effective at collection time, and consent state is reported as one of
+    # "granted", "withdrawn", or "not_collected" so withdrawn consent is never
+    # conflated with data that was never collected.
+    include_consent_policy_revision: bool = True
 
 
 @dataclass
@@ -144,6 +154,7 @@ class AnalyticsConfig:
         SESSION_REPLAY_NONCE_DOMAIN,
         CONSENT_TOKEN_DOMAIN,
     )
+    consent_policy_revision: str = CONSENT_POLICY_REVISION
     schema_version: str = ANALYTICS_CONFIG_SCHEMA_VERSION
     generated_at_utc_epoch_seconds: float = field(default_factory=time.time)
     app_env: str = field(default_factory=lambda: os.getenv("APP_ENV", "development"))
@@ -211,6 +222,16 @@ def load_analytics_config(**overrides) -> AnalyticsConfig:
     raw_consent_enabled = os.getenv("ANALYTICS_CONSENT_ENABLED")
     if raw_consent_enabled is not None:
         config.features.consent_check_enabled = _safe_bool(raw_consent_enabled, config.features.consent_check_enabled)
+
+    raw_consent_revision = os.getenv("ANALYTICS_CONSENT_POLICY_REVISION")
+    if raw_consent_revision is not None and raw_consent_revision.strip():
+        config.consent_policy_revision = raw_consent_revision.strip()
+
+    raw_include_revision = os.getenv("ANALYTICS_EXPORT_INCLUDE_CONSENT_REVISION")
+    if raw_include_revision is not None:
+        config.export.include_consent_policy_revision = _safe_bool(
+            raw_include_revision, config.export.include_consent_policy_revision
+        )
 
     raw_session_replay = os.getenv("ANALYTICS_SESSION_REPLAY_PROTECTION")
     if raw_session_replay is not None:

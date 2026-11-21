@@ -10,13 +10,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
+
+from quarantine import isolate_upload
 
 from streaming_upload import (
     DEFAULT_CHUNK_BYTES,
     MAX_CHUNK_BYTES,
     MIN_CHUNK_BYTES,
+    PrematureUploadTerminationError,
+    ResumableUploadSessionStore,
     StreamingFileStorage,
+    UPLOAD_TERMINATED_PREMATURELY,
     clamp_chunk_bytes,
     hash_paths_concat,
     hash_stream_to_path,
@@ -291,6 +296,117 @@ class TestConcatAndBoundedHash(unittest.TestCase):
             self.assertEqual(written, 11)
             self.assertEqual(dest.read_bytes(), b"hello world")
             self.assertEqual(digest, hashlib.sha256(b"hello world").hexdigest())
+
+
+class _DisconnectingStream:
+    """Synthetic stream that yields optional chunks before simulating a disconnect."""
+
+    def __init__(self, chunks: list[bytes], exc: Exception):
+        self._chunks = list(chunks)
+        self._exc = exc
+
+    def read(self, _size: int = -1) -> bytes:
+        if self._chunks:
+            return self._chunks.pop(0)
+        raise self._exc
+
+
+class TestPrematureUploadTermination(unittest.TestCase):
+    def test_valid_empty_stream_succeeds_without_premature_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest_none = Path(tmp) / "empty-none.bin"
+            digest, written = hash_stream_to_path(
+                io.BytesIO(b""), dest_none, chunk_size=1024, expected_size=None
+            )
+            self.assertEqual(written, 0)
+            self.assertEqual(digest, hashlib.sha256(b"").hexdigest())
+
+            dest_zero = Path(tmp) / "empty-zero.bin"
+            digest_z, written_z = hash_stream_to_path(
+                io.BytesIO(b""), dest_zero, chunk_size=1024, expected_size=0
+            )
+            self.assertEqual(written_z, 0)
+            self.assertEqual(digest_z, hashlib.sha256(b"").hexdigest())
+
+    def test_disconnected_input_at_zero_bytes_differs_from_empty_stream(self):
+        for exc in (ClientDisconnected(), ConnectionResetError("peer reset"), EOFError("unexpected eof")):
+            with self.subTest(exc=type(exc).__name__), tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "out.bin"
+                stream = _DisconnectingStream([], exc)
+                with self.assertRaises(PrematureUploadTerminationError) as cm:
+                    hash_stream_to_path(stream, dest, chunk_size=1024, temp_dir=tmp)
+                self.assertEqual(cm.exception.code, UPLOAD_TERMINATED_PREMATURELY)
+                self.assertEqual(cm.exception.status_code, 400)
+                self.assertEqual(cm.exception.bytes_received, 0)
+                self.assertFalse(dest.exists())
+                self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_mid_stream_disconnect_cleans_up_partial_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "partial.mp4"
+            stream = _DisconnectingStream([b"chunk-1-", b"chunk-2-"], ConnectionResetError("dropped"))
+            with self.assertRaises(PrematureUploadTerminationError) as cm:
+                hash_stream_to_path(stream, dest, chunk_size=8, temp_dir=tmp)
+            self.assertEqual(cm.exception.code, UPLOAD_TERMINATED_PREMATURELY)
+            self.assertEqual(cm.exception.bytes_received, 16)
+            self.assertFalse(dest.exists())
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_truncated_stream_below_expected_size_raises_premature_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "truncated.bin"
+            with self.assertRaises(PrematureUploadTerminationError) as cm:
+                hash_stream_to_path(
+                    io.BytesIO(b"short"),
+                    dest,
+                    chunk_size=1024,
+                    expected_size=64,
+                    temp_dir=tmp,
+                )
+            self.assertEqual(cm.exception.code, UPLOAD_TERMINATED_PREMATURELY)
+            self.assertEqual(cm.exception.bytes_received, 5)
+            self.assertEqual(cm.exception.expected_bytes, 64)
+            self.assertFalse(dest.exists())
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_partial_evidence_never_enters_processing_job(self):
+        processing_called = []
+        stream = _DisconnectingStream(
+            [b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00"],
+            ClientDisconnected(),
+        )
+        storage = StreamingFileStorage(
+            stream=stream,
+            filename="evidence.mp4",
+            content_type="video/mp4",
+            max_size=1024,
+            chunk_size=16,
+        )
+        with self.assertRaises(PrematureUploadTerminationError) as cm:
+            with isolate_upload(storage, filename="evidence.mp4", content_type="video/mp4") as path:
+                processing_called.append(path)
+        self.assertEqual(cm.exception.code, UPLOAD_TERMINATED_PREMATURELY)
+        self.assertEqual(processing_called, [])
+        self.assertIsNone(storage.computed_hash)
+
+    def test_resumable_chunk_disconnect_does_not_persist_partial_chunk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ResumableUploadSessionStore(tmp, default_chunk_size=16)
+            session, token = store.create_session(owner="GABC123")
+            stream = _DisconnectingStream([b"partial-chunk"], ConnectionResetError("reset"))
+            with self.assertRaises(PrematureUploadTerminationError) as cm:
+                store.write_chunk(
+                    session.session_id,
+                    0,
+                    stream,
+                    session_token=token,
+                    owner="GABC123",
+                )
+            self.assertEqual(cm.exception.code, UPLOAD_TERMINATED_PREMATURELY)
+            self.assertEqual(cm.exception.bytes_received, len(b"partial-chunk"))
+            progress = store.get_progress(session.session_id, session_token=token, owner="GABC123")
+            self.assertEqual(progress["receivedChunks"], [])
+            self.assertEqual(progress["totalBytes"], 0)
 
 
 if __name__ == "__main__":

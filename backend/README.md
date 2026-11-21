@@ -249,6 +249,24 @@ Output never includes connection strings or secrets: every line is scrubbed of
 the `DATABASE_URL` value, URL credentials, and `password=`/`token=`-style
 values, and unexpected exceptions are reported by type name only.
 
+## Index Rebuild Dry-Run
+
+The chain indexer can reconstruct a temporary projection from synthetic events
+and report differences against the live index without replacing it. The dry-run
+is read-only with respect to the live index: it writes only to a temporary
+state directory that is removed after the run.
+
+Each projection carries a deterministic fingerprint: a SHA-256 digest over a
+canonical, sorted encoding of the projected records. Identical event inputs
+always yield identical fingerprints, so the live and rebuilt projections can be
+compared by digest alone. Differences are reported per record key with the
+fingerprint of each side; no raw evidence, media, or secrets are included in
+the report.
+
+Rollback: the dry-run stores no new durable evidence and changes no schema.
+Removing the dry-run entry point and its focused coverage restores the previous
+behaviour. Temporary state directories are deleted automatically.
+
 ## Privacy-Safe Service Metrics
 
 `GET /metrics` exposes service workload, latency, status code distributions, and bounded upload-size metrics in standard Prometheus format.
@@ -337,6 +355,10 @@ METRICS_TOKEN=secret-scraping-token
 METRICS_PATH=/metrics
 NOIR_WORKER_ENABLED=true
 NOIR_PROOF_TIMEOUT_SECONDS=180
+HARPOCRATES_RELEASE_ID=harpocrates-1.0.0
+HARPOCRATES_RELEASE_NETWORK=testnet
+STELLAR_NETWORK_PASSPHRASE=
+HARPOCRATES_REGISTRATION_RECONCILE_DIR=/tmp/harpocrates-registration-reconcile
 DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
@@ -382,35 +404,51 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
-## Analytics Redaction Policy Comparison
+## Registration Reconciliation Checkpoint
 
-`analytics/redaction_policy_diff.py` compares two analytics redaction policy
-revisions against synthetic analytics records and reports newly removed
-(redacted or dropped), newly exposed, and marker-changed field paths without
-embedding raw sensitive values in output reports.
+`registration_reconcile.py` persists a single checkpoint containing the last
+trusted Stellar ledger, the network name/passphrase identity, and a fingerprint
+of the deployment configuration (`HARPOCRATES_RELEASE_ID`,
+`HARPOCRATES_RELEASE_NETWORK`, and the passphrase). The file is written atomically
+under `HARPOCRATES_REGISTRATION_RECONCILE_DIR` with owner-only permissions.
 
-```bash
-cd backend
-python -m analytics.redaction_policy_diff \
-  --before policy_v1.json \
-  --after policy_v2.json \
-  --format text \
-  --fail-on-exposed
+`CheckpointStore.record()` is idempotent for the same ledger and rejects lower
+ledgers. `load()`, `save()`, and `reconcile_registration()` refuse a checkpoint
+whose network or deployment fingerprint differs from the current configuration,
+so a stale or cross-network state file cannot advance confirmed registration
+state. The passphrase defaults to the known value for the configured release
+network; set `STELLAR_NETWORK_PASSPHRASE` explicitly for local or forked
+networks.
+
+```python
+from registration_reconcile import CheckpointStore, DeploymentIdentity
+
+deployment = DeploymentIdentity.from_config()
+store = CheckpointStore(deployment=deployment)
+checkpoint = store.record(1_250)
 ```
-
-- Pass `--records <path>` to supply a JSON array of synthetic records, or omit
-  it to use the built-in synthetic fixtures (`build_synthetic_analytics_records`).
-- Keep actual production analytics and real user identifiers out of committed
-  fixtures; use RFC 2606 (`.invalid`) domains and RFC 5737 test addresses.
-- `--fail-on-exposed` exits with code `2` whenever any field becomes newly
-  exposed in the candidate policy revision.
 
 ## Test
 
 ```powershell
-python -m unittest test_app.py test_stego.py
+python -m unittest test_app.py test_stego.py test_registration_reconcile.py
 ```
 
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+
+## Registration Idempotency
+
+`POST /api/proofs/register` enforces idempotency at both the request layer (`idempotency.py`) and the persistence layer (`db.upsert_register_event`):
+
+- The canonical idempotency binding includes the HTTP method, path, query string, identity `tier` (`silent`, `source`, or `seal`), and raw request body.
+- When an explicit `Idempotency-Key` header is supplied, the key is bound to the canonical digest and identity tier. Replaying the same key with the same payload replays the stored response; reusing the key with a changed identity tier returns `409 Conflict` (`{"error": "idempotency key reused with conflicting payload", "conflict_field": "tier"}`) without invoking the handler or enqueueing another `verify_tx` registration job.
+
+## Evidence Retention Previews
+
+`evidence_storage.preview_tenant_retention(tenant_id, *, now=None, ttl_seconds=None)` returns a read-only retention preview scoped strictly to the authenticated `tenant_id`:
+
+- Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
+- Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
+- Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.

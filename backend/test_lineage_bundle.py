@@ -7,6 +7,9 @@ from lineage import (
     MAX_BUNDLE_BYTES,
     MAX_LINEAGE_DEPTH,
     LineageBundleError,
+    LineageMissingDependency,
+    LineageVerificationStatus,
+    LineageVerifiedEdge,
     build_lineage_verification_bundle,
     canonical_lineage_bundle,
     lineage_bundle_digest,
@@ -324,3 +327,172 @@ class PortableLineageBundleTests(unittest.TestCase):
                 trust_references=[_make_trust_ref(root_id)],
             )
         self.assertEqual(ctx_orphan.exception.reason, "disconnected_statement")
+
+
+class IncompleteLineageVerificationTests(unittest.TestCase):
+    def _make_raw_bundle(
+        self,
+        *,
+        target_digest: str,
+        statements: list[dict],
+        trust_references: list[dict],
+        network: str = "testnet",
+    ) -> dict:
+        bundle = {
+            "protocol": "harpocrates",
+            "bundleVersion": LINEAGE_BUNDLE_VERSION,
+            "targetDigest": target_digest,
+            "network": network,
+            "statements": statements,
+            "trustReferences": trust_references,
+        }
+        bundle["bundleDigest"] = lineage_bundle_digest(bundle)
+        return bundle
+
+    def test_complete_bundle_reports_verified_status_and_edges(self) -> None:
+        root_id = _hex("a")
+        mid_id = _hex("b")
+        leaf_id = _hex("c")
+        bundle = build_lineage_verification_bundle(
+            target_digest=leaf_id,
+            network="testnet",
+            statements=[
+                _make_statement(output=mid_id, parents=[root_id], operation="blur"),
+                _make_statement(output=leaf_id, parents=[mid_id], operation="crop"),
+            ],
+            trust_references=[_make_trust_ref(root_id, tier="silent")],
+        )
+
+        result = verify_lineage_verification_bundle(bundle, allow_incomplete=True)
+        self.assertTrue(result.valid)
+        self.assertTrue(result.complete)
+        self.assertEqual(result.status, LineageVerificationStatus.VERIFIED)
+        self.assertEqual(result.missing_dependencies, ())
+        self.assertEqual(len(result.verified_edges), 2)
+        self.assertEqual(
+            {(e.child_digest, e.parent_id, e.parent_kind, e.operation_type) for e in result.verified_edges},
+            {
+                (mid_id, root_id, "trust_reference", "blur"),
+                (leaf_id, mid_id, "statement", "crop"),
+            },
+        )
+        payload = result.to_dict()
+        self.assertEqual(payload["status"], "verified")
+        self.assertTrue(payload["valid"])
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["missingDependencies"], [])
+        self.assertEqual(len(payload["verifiedEdges"]), 2)
+
+    def test_partial_bundle_exposes_incomplete_status_verified_edges_and_missing_deps(self) -> None:
+        root_a = _hex("a")
+        missing_root = _hex("f")
+        mid_a = _hex("b")
+        mid_b = _hex("c")
+        leaf = _hex("d")
+
+        # mid_a is anchored at root_a and also depends on missing_root;
+        # mid_b depends only on missing_root; leaf composes mid_a and mid_b.
+        raw_bundle = self._make_raw_bundle(
+            target_digest=leaf,
+            statements=[
+                _make_statement(output=mid_a, parents=[root_a, missing_root], operation="compose"),
+                _make_statement(output=mid_b, parents=[missing_root], operation="blur"),
+                _make_statement(output=leaf, parents=[mid_a, mid_b], operation="crop"),
+            ],
+            trust_references=[_make_trust_ref(root_a, tier="source")],
+        )
+
+        # Default mode remains fail-closed.
+        with self.assertRaises(LineageBundleError) as ctx:
+            verify_lineage_verification_bundle(raw_bundle)
+        self.assertEqual(ctx.exception.reason, "missing_parent")
+
+        # Incomplete mode exposes a distinct non-valid INCOMPLETE result.
+        result = verify_lineage_verification_bundle(raw_bundle, allow_incomplete=True)
+        self.assertFalse(result.valid)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.status, LineageVerificationStatus.INCOMPLETE)
+        self.assertEqual(result.root_proof_ids, (root_a,))
+        self.assertEqual(result.tiers, ("source",))
+        self.assertEqual(result.trust_anchor_types, ("onchain_proof",))
+        self.assertEqual(
+            result.missing_dependencies,
+            (
+                LineageMissingDependency(
+                    parent_id=missing_root,
+                    referenced_by=(mid_a, mid_b),
+                    reason="missing_parent",
+                ),
+            ),
+        )
+        self.assertEqual(
+            [(e.child_digest, e.parent_id, e.parent_kind) for e in result.verified_edges],
+            [
+                (mid_a, root_a, "trust_reference"),
+                (leaf, mid_a, "statement"),
+                (leaf, mid_b, "statement"),
+            ],
+        )
+        payload = result.to_dict()
+        self.assertEqual(payload["status"], "incomplete")
+        self.assertFalse(payload["valid"])
+        self.assertFalse(payload["complete"])
+        self.assertEqual(
+            payload["missingDependencies"],
+            [{"parentId": missing_root, "referencedBy": [mid_a, mid_b], "reason": "missing_parent"}],
+        )
+
+    def test_unanchored_bundle_with_no_trust_references_is_incomplete_not_verified_original(self) -> None:
+        missing_parent = _hex("e")
+        leaf = _hex("b")
+        raw_bundle = self._make_raw_bundle(
+            target_digest=leaf,
+            statements=[_make_statement(output=leaf, parents=[missing_parent], operation="redact")],
+            trust_references=[],
+        )
+
+        # Default mode rejects empty trustReferences.
+        with self.assertRaises(LineageBundleError) as ctx:
+            verify_lineage_verification_bundle(raw_bundle)
+        self.assertEqual(ctx.exception.reason, "empty_trust_references")
+
+        # Incomplete mode never presents this as a verified original.
+        result = verify_lineage_verification_bundle(raw_bundle, allow_incomplete=True)
+        self.assertFalse(result.valid)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.status, LineageVerificationStatus.INCOMPLETE)
+        self.assertEqual(result.root_proof_ids, ())
+        self.assertEqual(result.tiers, ())
+        self.assertEqual(result.trust_anchor_types, ())
+        self.assertEqual(result.verified_edges, ())
+        self.assertEqual(
+            result.missing_dependencies,
+            (LineageMissingDependency(parent_id=missing_parent, referenced_by=(leaf,)),),
+        )
+
+    def test_incomplete_mode_still_fails_closed_on_cycles_and_tampering(self) -> None:
+        node_a = _hex("a")
+        node_b = _hex("b")
+        missing = _hex("f")
+
+        cyclic_bundle = self._make_raw_bundle(
+            target_digest=node_a,
+            statements=[
+                _make_statement(output=node_a, parents=[node_b, missing], operation="compose"),
+                _make_statement(output=node_b, parents=[node_a], operation="crop"),
+            ],
+            trust_references=[],
+        )
+        with self.assertRaises(LineageBundleError) as ctx_cycle:
+            verify_lineage_verification_bundle(cyclic_bundle, allow_incomplete=True)
+        self.assertEqual(ctx_cycle.exception.reason, "cycle_detected")
+
+        tampered = self._make_raw_bundle(
+            target_digest=node_a,
+            statements=[_make_statement(output=node_a, parents=[missing], operation="crop")],
+            trust_references=[],
+        )
+        tampered["bundleDigest"] = _hex("0")
+        with self.assertRaises(LineageBundleError) as ctx_tamper:
+            verify_lineage_verification_bundle(tampered, allow_incomplete=True)
+        self.assertEqual(ctx_tamper.exception.reason, "bundle_digest_mismatch")
