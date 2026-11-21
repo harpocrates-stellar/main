@@ -27,6 +27,52 @@ pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
 /// enforce the appended circuit-version field without touching the v1 codec.
 pub const SCHEMA_ID_SILENT_WITNESS_V2: u32 = 3;
 
+/// Bounded compatibility entry for one accepted proof-statement schema.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofStatementSchemaDescriptor {
+    /// Numeric schema selector accepted by `classify_public_inputs`.
+    pub schema_id: u32,
+    /// Verifier-input codec version (`1` for `hpx-vi/1`, `2` for `hpx-vi/2`).
+    pub verifier_input_version: u32,
+    /// Circuit version associated with this schema.
+    pub circuit_version: u32,
+    /// Exact byte length of canonical public inputs for this schema.
+    pub public_inputs_len: u32,
+    /// Bitmask of critical fields supported by this schema.
+    pub supported_critical_fields: u32,
+}
+
+/// Bounded proof statement compatibility descriptor exposed by the registry.
+///
+/// Describes accepted schema selectors, verifier-input codec versions, active
+/// circuit-version bounds, proof-blob size bounds, and supported critical-field
+/// bitmasks. Unsupported critical fields always fail closed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofStatementCompatibilityDescriptor {
+    /// Format version of this compatibility descriptor.
+    pub descriptor_version: u32,
+    /// Lowest accepted verifier-input codec version (`hpx-vi/1` = 1).
+    pub min_verifier_input_version: u32,
+    /// Highest accepted verifier-input codec version (`hpx-vi/2` = 2).
+    pub max_verifier_input_version: u32,
+    /// Lowest circuit version currently accepted by the active verifier window.
+    pub min_circuit_version: u32,
+    /// Highest circuit version currently accepted by the active verifier window.
+    pub max_circuit_version: u32,
+    /// Minimum accepted proof-blob length in bytes.
+    pub min_proof_bytes: u32,
+    /// Maximum accepted proof-blob length in bytes.
+    pub max_proof_bytes: u32,
+    /// Union bitmask of all critical fields supported by this build.
+    pub supported_critical_fields: u32,
+    /// Always `true`: unknown or unsupported critical fields fail closed.
+    pub fail_closed_on_unknown_critical_fields: bool,
+    /// Bounded, deterministic list of accepted proof-statement schemas.
+    pub schemas: SorobanVec<ProofStatementSchemaDescriptor>,
+}
+
 /// Maximum Merkle depth for the `revocation_witness` circuit (#357).
 /// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
 /// Raising this value requires a new circuit version — do not change it silently.
@@ -5457,6 +5503,83 @@ impl HarpocratesRegistry {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof statement compatibility descriptor
+    // -----------------------------------------------------------------------
+
+    /// Return the bounded proof statement compatibility descriptor for this
+    /// registry deployment.
+    ///
+    /// Read-only, side-effect free, and bounded: describes the accepted schema
+    /// selectors, verifier-input codec versions, active circuit-version window,
+    /// proof-blob size window, and supported critical-field bitmasks. Safe to
+    /// call without authentication and while any registration domain is paused.
+    /// No private witness values, nullifiers, or media commitments are surfaced.
+    pub fn get_proof_statement_compatibility(env: Env) -> ProofStatementCompatibilityDescriptor {
+        let (min_circuit_version, max_circuit_version) = get_verifier_circuit_versions_raw(&env);
+        let mut schemas: SorobanVec<ProofStatementSchemaDescriptor> = SorobanVec::new(&env);
+        for entry in verifier_inputs::SUPPORTED_SCHEMAS.iter() {
+            schemas.push_back(ProofStatementSchemaDescriptor {
+                schema_id: entry.schema_id,
+                verifier_input_version: entry.verifier_input_version,
+                circuit_version: entry.circuit_version,
+                public_inputs_len: entry.public_inputs_len,
+                supported_critical_fields: entry.supported_critical_fields,
+            });
+        }
+
+        ProofStatementCompatibilityDescriptor {
+            descriptor_version: verifier_inputs::COMPATIBILITY_DESCRIPTOR_VERSION,
+            min_verifier_input_version: verifier_inputs::MIN_VERIFIER_INPUT_VERSION,
+            max_verifier_input_version: verifier_inputs::MAX_VERIFIER_INPUT_VERSION,
+            min_circuit_version,
+            max_circuit_version,
+            min_proof_bytes: verifier_inputs::MIN_PROOF_BYTES,
+            max_proof_bytes: verifier_inputs::MAX_PROOF_BYTES,
+            supported_critical_fields: verifier_inputs::CRITICAL_FIELDS_ALL_SUPPORTED,
+            fail_closed_on_unknown_critical_fields: true,
+            schemas,
+        }
+    }
+
+    /// Fail-closed pre-flight check for a proof statement's schema selector,
+    /// verifier-input codec version, active circuit-version window, and
+    /// required critical-field bitmask.
+    ///
+    /// Returns [`verifier_inputs::ACCEPTED_CODE`] (`0`) when compatible, or
+    /// the stable [`RejectCode::as_code`] value otherwise:
+    /// - [`RejectCode::UnknownSchema`] (`9`) for unknown `schema_id`
+    /// - [`RejectCode::VersionMismatch`] (`10`) for mismatched
+    ///   `verifier_input_version` or a schema whose circuit version falls
+    ///   outside the active verifier's circuit-version window
+    /// - [`RejectCode::UnsupportedCriticalField`] (`11`) when any bit in
+    ///   `required_critical_fields` is not supported by the selected schema
+    ///   (fail-closed on unknown or cross-schema critical fields)
+    pub fn check_proof_statement_compatibility(
+        env: Env,
+        schema_id: u32,
+        verifier_input_version: u32,
+        required_critical_fields: u32,
+    ) -> u32 {
+        let entry = match verifier_inputs::check_statement_compatibility(
+            schema_id,
+            verifier_input_version,
+            required_critical_fields,
+        ) {
+            Ok(entry) => entry,
+            Err(code) => return code.as_code(),
+        };
+
+        let (min_circuit_version, max_circuit_version) = get_verifier_circuit_versions_raw(&env);
+        if entry.circuit_version < min_circuit_version
+            || entry.circuit_version > max_circuit_version
+        {
+            return RejectCode::VersionMismatch.as_code();
+        }
+
+        verifier_inputs::ACCEPTED_CODE
     }
 
     // -----------------------------------------------------------------------

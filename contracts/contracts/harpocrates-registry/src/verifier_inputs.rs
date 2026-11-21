@@ -26,6 +26,53 @@ pub const CODEC_ID: &str = "hpx-vi/1";
 /// Codec identifier for the circuit-versioned silent-witness envelope.
 pub const CODEC_ID_V2: &str = "hpx-vi/2";
 
+/// Numeric verifier-input codec versions corresponding to `hpx-vi/1` and `hpx-vi/2`.
+pub const VERIFIER_INPUT_VERSION_V1: u32 = 1;
+pub const VERIFIER_INPUT_VERSION_V2: u32 = 2;
+pub const MIN_VERIFIER_INPUT_VERSION: u32 = VERIFIER_INPUT_VERSION_V1;
+pub const MAX_VERIFIER_INPUT_VERSION: u32 = VERIFIER_INPUT_VERSION_V2;
+
+/// Version of the bounded proof statement compatibility descriptor format.
+pub const COMPATIBILITY_DESCRIPTOR_VERSION: u32 = 1;
+
+/// Hard upper bound on the number of schema entries in a compatibility descriptor.
+pub const MAX_COMPATIBILITY_SCHEMAS: usize = 8;
+
+/// Bitmask of critical proof-statement fields understood by the canonical codec.
+///
+/// Any bit outside a schema's supported mask (including future/unknown bits)
+/// must fail closed with [`RejectCode::UnsupportedCriticalField`].
+pub const CRITICAL_FIELD_VIDEO_HASH: u32 = 1 << 0;
+pub const CRITICAL_FIELD_CREDENTIAL_ROOT: u32 = 1 << 1;
+pub const CRITICAL_FIELD_NULLIFIER: u32 = 1 << 2;
+pub const CRITICAL_FIELD_DOMAIN_TAG: u32 = 1 << 3;
+pub const CRITICAL_FIELD_VERIFIER_SCOPE: u32 = 1 << 4;
+pub const CRITICAL_FIELD_EPOCH: u32 = 1 << 5;
+pub const CRITICAL_FIELD_CIRCUIT_VERSION: u32 = 1 << 6;
+pub const CRITICAL_FIELD_REVOCATION_ROOT: u32 = 1 << 7;
+
+/// Critical fields supported by `silent_witness/v1` (`hpx-vi/1`).
+pub const CRITICAL_FIELDS_SILENT_WITNESS_V1: u32 = CRITICAL_FIELD_VIDEO_HASH
+    | CRITICAL_FIELD_CREDENTIAL_ROOT
+    | CRITICAL_FIELD_NULLIFIER
+    | CRITICAL_FIELD_DOMAIN_TAG;
+
+/// Critical fields supported by `revocation_witness/v1` (`hpx-vi/1`).
+pub const CRITICAL_FIELDS_REVOCATION_WITNESS_V1: u32 = CRITICAL_FIELD_REVOCATION_ROOT
+    | CRITICAL_FIELD_NULLIFIER
+    | CRITICAL_FIELD_DOMAIN_TAG
+    | CRITICAL_FIELD_CREDENTIAL_ROOT;
+
+/// Critical fields supported by `silent_witness/v2` (`hpx-vi/2`).
+pub const CRITICAL_FIELDS_SILENT_WITNESS_V2: u32 = CRITICAL_FIELDS_SILENT_WITNESS_V1
+    | CRITICAL_FIELD_VERIFIER_SCOPE
+    | CRITICAL_FIELD_EPOCH
+    | CRITICAL_FIELD_CIRCUIT_VERSION;
+
+/// Union of all critical fields supported by this codec build.
+pub const CRITICAL_FIELDS_ALL_SUPPORTED: u32 =
+    CRITICAL_FIELDS_SILENT_WITNESS_V2 | CRITICAL_FIELDS_REVOCATION_WITNESS_V1;
+
 pub const FIELD_LEN: usize = 32;
 pub const SILENT_WITNESS_FIELD_COUNT: usize = 5;
 pub const REVOCATION_FIELD_COUNT: usize = 4;
@@ -77,6 +124,9 @@ pub enum RejectCode {
     /// The envelope's declared circuit version is not the one this codec
     /// accepts (`hpx-vi/2` cases only).
     VersionMismatch,
+    /// A requested proof statement requires a critical field not supported by
+    /// the selected schema or this codec build (fail-closed).
+    UnsupportedCriticalField,
 }
 
 /// Numeric result meaning "the material was accepted", returned by the
@@ -98,6 +148,7 @@ impl RejectCode {
             RejectCode::ProofOversize => 8,
             RejectCode::UnknownSchema => 9,
             RejectCode::VersionMismatch => 10,
+            RejectCode::UnsupportedCriticalField => 11,
         }
     }
 
@@ -115,6 +166,7 @@ impl RejectCode {
             "proof_oversize" => Some(RejectCode::ProofOversize),
             "unknown_schema" => Some(RejectCode::UnknownSchema),
             "version_mismatch" => Some(RejectCode::VersionMismatch),
+            "unsupported_critical_field" => Some(RejectCode::UnsupportedCriticalField),
             _ => None,
         }
     }
@@ -132,6 +184,7 @@ impl RejectCode {
             RejectCode::ProofOversize => "proof_oversize",
             RejectCode::UnknownSchema => "unknown_schema",
             RejectCode::VersionMismatch => "version_mismatch",
+            RejectCode::UnsupportedCriticalField => "unsupported_critical_field",
         }
     }
 }
@@ -461,6 +514,90 @@ pub fn classify(
     check_proof_bounds(proof_len)
 }
 
+/// Bounded description of one accepted proof-statement schema.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchemaCompatibilityEntry {
+    pub schema_id: u32,
+    pub schema_name: &'static str,
+    pub codec_id: &'static str,
+    pub verifier_input_version: u32,
+    pub circuit_version: u32,
+    pub public_inputs_len: u32,
+    pub supported_critical_fields: u32,
+}
+
+/// Fixed-size, bounded table of all accepted proof-statement schemas.
+pub const SUPPORTED_SCHEMAS: [SchemaCompatibilityEntry; 3] = [
+    SchemaCompatibilityEntry {
+        schema_id: 1,
+        schema_name: SCHEMA_SILENT_WITNESS,
+        codec_id: CODEC_ID,
+        verifier_input_version: VERIFIER_INPUT_VERSION_V1,
+        circuit_version: 1,
+        public_inputs_len: SILENT_WITNESS_PUBLIC_INPUTS_LEN as u32,
+        supported_critical_fields: CRITICAL_FIELDS_SILENT_WITNESS_V1,
+    },
+    SchemaCompatibilityEntry {
+        schema_id: 2,
+        schema_name: SCHEMA_REVOCATION_WITNESS,
+        codec_id: CODEC_ID,
+        verifier_input_version: VERIFIER_INPUT_VERSION_V1,
+        circuit_version: 1,
+        public_inputs_len: REVOCATION_PUBLIC_INPUTS_LEN as u32,
+        supported_critical_fields: CRITICAL_FIELDS_REVOCATION_WITNESS_V1,
+    },
+    SchemaCompatibilityEntry {
+        schema_id: 3,
+        schema_name: SCHEMA_SILENT_WITNESS_V2,
+        codec_id: CODEC_ID_V2,
+        verifier_input_version: VERIFIER_INPUT_VERSION_V2,
+        circuit_version: EXPECTED_CIRCUIT_VERSION,
+        public_inputs_len: SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN as u32,
+        supported_critical_fields: CRITICAL_FIELDS_SILENT_WITNESS_V2,
+    },
+];
+
+const _: () = assert!(
+    SUPPORTED_SCHEMAS.len() <= MAX_COMPATIBILITY_SCHEMAS,
+    "SUPPORTED_SCHEMAS must stay within MAX_COMPATIBILITY_SCHEMAS"
+);
+
+/// Look up a supported schema entry by its numeric selector.
+pub fn schema_entry_by_id(schema_id: u32) -> Option<&'static SchemaCompatibilityEntry> {
+    let mut i = 0;
+    while i < SUPPORTED_SCHEMAS.len() {
+        if SUPPORTED_SCHEMAS[i].schema_id == schema_id {
+            return Some(&SUPPORTED_SCHEMAS[i]);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Fail-closed compatibility check for a requested proof statement.
+///
+/// Check order:
+/// 1. `schema_id` must be a known schema ([`RejectCode::UnknownSchema`]).
+/// 2. `verifier_input_version` must match the schema's accepted codec version
+///    ([`RejectCode::VersionMismatch`]).
+/// 3. Every bit in `required_critical_fields` must be supported by that schema;
+///    any unknown or unsupported critical field bit fails closed with
+///    [`RejectCode::UnsupportedCriticalField`].
+pub fn check_statement_compatibility(
+    schema_id: u32,
+    verifier_input_version: u32,
+    required_critical_fields: u32,
+) -> Result<&'static SchemaCompatibilityEntry, RejectCode> {
+    let entry = schema_entry_by_id(schema_id).ok_or(RejectCode::UnknownSchema)?;
+    if verifier_input_version != entry.verifier_input_version {
+        return Err(RejectCode::VersionMismatch);
+    }
+    if (required_critical_fields & !entry.supported_critical_fields) != 0 {
+        return Err(RejectCode::UnsupportedCriticalField);
+    }
+    Ok(entry)
+}
+
 #[cfg(test)]
 mod constant_time_tests {
     use super::*;
@@ -616,5 +753,142 @@ mod constant_time_tests {
                 "byte {index}"
             );
         }
+    }
+}
+
+
+#[cfg(test)]
+mod compatibility_descriptor_tests {
+    use super::*;
+
+    #[test]
+    fn supported_schemas_table_is_bounded_and_canonical() {
+        assert!(SUPPORTED_SCHEMAS.len() <= MAX_COMPATIBILITY_SCHEMAS);
+        assert_eq!(SUPPORTED_SCHEMAS.len(), 3);
+
+        let sw1 = schema_entry_by_id(1).expect("silent_witness/v1 must exist");
+        assert_eq!(sw1.schema_name, SCHEMA_SILENT_WITNESS);
+        assert_eq!(sw1.codec_id, CODEC_ID);
+        assert_eq!(sw1.verifier_input_version, VERIFIER_INPUT_VERSION_V1);
+        assert_eq!(sw1.circuit_version, 1);
+        assert_eq!(sw1.public_inputs_len, SILENT_WITNESS_PUBLIC_INPUTS_LEN as u32);
+        assert_eq!(sw1.supported_critical_fields, CRITICAL_FIELDS_SILENT_WITNESS_V1);
+
+        let rv1 = schema_entry_by_id(2).expect("revocation_witness/v1 must exist");
+        assert_eq!(rv1.schema_name, SCHEMA_REVOCATION_WITNESS);
+        assert_eq!(rv1.codec_id, CODEC_ID);
+        assert_eq!(rv1.verifier_input_version, VERIFIER_INPUT_VERSION_V1);
+        assert_eq!(rv1.circuit_version, 1);
+        assert_eq!(rv1.public_inputs_len, REVOCATION_PUBLIC_INPUTS_LEN as u32);
+        assert_eq!(
+            rv1.supported_critical_fields,
+            CRITICAL_FIELDS_REVOCATION_WITNESS_V1
+        );
+
+        let sw2 = schema_entry_by_id(3).expect("silent_witness/v2 must exist");
+        assert_eq!(sw2.schema_name, SCHEMA_SILENT_WITNESS_V2);
+        assert_eq!(sw2.codec_id, CODEC_ID_V2);
+        assert_eq!(sw2.verifier_input_version, VERIFIER_INPUT_VERSION_V2);
+        assert_eq!(sw2.circuit_version, EXPECTED_CIRCUIT_VERSION);
+        assert_eq!(
+            sw2.public_inputs_len,
+            SILENT_WITNESS_V2_PUBLIC_INPUTS_LEN as u32
+        );
+        assert_eq!(sw2.supported_critical_fields, CRITICAL_FIELDS_SILENT_WITNESS_V2);
+
+        assert!(schema_entry_by_id(0).is_none());
+        assert!(schema_entry_by_id(4).is_none());
+    }
+
+    #[test]
+    fn check_statement_compatibility_accepts_supported_combinations() {
+        for entry in SUPPORTED_SCHEMAS.iter() {
+            assert_eq!(
+                check_statement_compatibility(
+                    entry.schema_id,
+                    entry.verifier_input_version,
+                    entry.supported_critical_fields,
+                ),
+                Ok(entry)
+            );
+            assert_eq!(
+                check_statement_compatibility(entry.schema_id, entry.verifier_input_version, 0),
+                Ok(entry)
+            );
+        }
+    }
+
+    #[test]
+    fn check_statement_compatibility_fails_closed_on_unknown_schema_and_version_mismatch() {
+        assert_eq!(
+            check_statement_compatibility(0, VERIFIER_INPUT_VERSION_V1, 0),
+            Err(RejectCode::UnknownSchema)
+        );
+        assert_eq!(
+            check_statement_compatibility(99, VERIFIER_INPUT_VERSION_V2, 0),
+            Err(RejectCode::UnknownSchema)
+        );
+        assert_eq!(
+            check_statement_compatibility(
+                1,
+                VERIFIER_INPUT_VERSION_V2,
+                CRITICAL_FIELDS_SILENT_WITNESS_V1
+            ),
+            Err(RejectCode::VersionMismatch)
+        );
+        assert_eq!(
+            check_statement_compatibility(
+                3,
+                VERIFIER_INPUT_VERSION_V1,
+                CRITICAL_FIELDS_SILENT_WITNESS_V2
+            ),
+            Err(RejectCode::VersionMismatch)
+        );
+    }
+
+    #[test]
+    fn check_statement_compatibility_fails_closed_on_unsupported_critical_fields() {
+        // Unknown high bit must fail closed for every schema.
+        let unknown_critical_bit: u32 = 1 << 31;
+        for entry in SUPPORTED_SCHEMAS.iter() {
+            assert_eq!(
+                check_statement_compatibility(
+                    entry.schema_id,
+                    entry.verifier_input_version,
+                    entry.supported_critical_fields | unknown_critical_bit,
+                ),
+                Err(RejectCode::UnsupportedCriticalField)
+            );
+        }
+
+        // A v2-only critical field (verifier_scope) must fail closed on v1.
+        assert_eq!(
+            check_statement_compatibility(
+                1,
+                VERIFIER_INPUT_VERSION_V1,
+                CRITICAL_FIELDS_SILENT_WITNESS_V1 | CRITICAL_FIELD_VERIFIER_SCOPE,
+            ),
+            Err(RejectCode::UnsupportedCriticalField)
+        );
+
+        // Revocation root is not a silent_witness/v2 critical field.
+        assert_eq!(
+            check_statement_compatibility(
+                3,
+                VERIFIER_INPUT_VERSION_V2,
+                CRITICAL_FIELDS_SILENT_WITNESS_V2 | CRITICAL_FIELD_REVOCATION_ROOT,
+            ),
+            Err(RejectCode::UnsupportedCriticalField)
+        );
+
+        assert_eq!(RejectCode::UnsupportedCriticalField.as_code(), 11);
+        assert_eq!(
+            RejectCode::UnsupportedCriticalField.as_str(),
+            "unsupported_critical_field"
+        );
+        assert_eq!(
+            RejectCode::from_wire("unsupported_critical_field"),
+            Some(RejectCode::UnsupportedCriticalField)
+        );
     }
 }
