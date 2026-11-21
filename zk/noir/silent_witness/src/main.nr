@@ -26,6 +26,14 @@ fn main(
     domain_tag: pub Field,
     circuit_version: pub Field,
 ) {
+    // Validate circuit_version first so unsupported versions fail with a
+    // stable error category distinct from unsatisfied circuit constraints
+    // ("malformed") or domain mismatches ("unsupported").
+    assert(
+        circuit_version == CURRENT_CIRCUIT_VERSION as Field,
+        "circuit version mismatch",
+    );
+
     let scope_hash = std::hash::pedersen_hash([
         SCOPED_NULLIFIER_V1,
         verifier_scope,
@@ -445,6 +453,49 @@ fn test_circuit_version_downgrade() {
     let root = std::hash::pedersen_hash([cs]);
     let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
     main(cs, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 1);
+}
+
+// Zero circuit version is unsupported and must fail with the version mismatch category.
+#[test(should_fail_with = "circuit version mismatch")]
+fn test_circuit_version_zero_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 0);
+}
+
+// Future circuit version (v3) is unsupported by this v2 circuit.
+#[test(should_fail_with = "circuit version mismatch")]
+fn test_circuit_version_future_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 3);
+}
+
+// Version mismatch must be reported before unsatisfied circuit constraints
+// ("malformed") when both an unsupported version and an invalid witness are supplied.
+#[test(should_fail_with = "circuit version mismatch")]
+fn test_circuit_version_mismatch_precedes_constraint_failure() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(99999, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 1);
 }
 
 // ============================================================
