@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { BatchItemResult } from './batchVerifier'
+import {
+  BatchCheckpointError,
+  type BatchItemResult,
+  type BatchVerificationCheckpoint,
+} from './batchVerifier'
 import {
   BatchExportConflictError,
   detectConflictingStatements,
   exportBatchCSV,
+  exportBatchCheckpoint,
   exportBatchJSON,
   exportReceiptCollection,
+  parseBatchCheckpoint,
   sanitizeBatchResults,
   validateBatchExportResults,
 } from './batchExport'
