@@ -177,6 +177,51 @@ pub const MAX_EVIDENCE_METADATA_HASH_BYTES: u32 = 32;
 pub const MAX_HISTORY_ENTRIES_PER_PROOF: u32 = 256;
 pub const MAX_HISTORY_LIMIT: u32 = 50;
 
+/// Completeness metadata attached to every bounded proof-history query (#proof-history-completeness).
+///
+/// A caller MUST inspect `complete` before treating a returned page as the full
+/// evidence history. When `complete` is `false`, `truncated` is `true` and
+/// `next_cursor` (when present) names the predecessor entry from which the
+/// remaining history can be fetched. A partial lifecycle page is never presented
+/// as a complete evidence history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryPageMeta {
+    /// Number of entries actually returned in this page.
+    pub returned: u32,
+    /// Total number of entries stored for the proof.
+    pub total: u32,
+    /// `true` when the page does not cover the entire stored history.
+    pub truncated: bool,
+    /// `true` only when the page covers the entire stored history.
+    pub complete: bool,
+    /// Index of the last returned entry, used as the predecessor reference for
+    /// the next page. `None` when the page is empty or complete.
+    pub next_cursor: Option<u32>,
+}
+
+impl HistoryPageMeta {
+    /// Build completeness metadata for a page of `returned` entries starting at
+    /// `start` out of `total` stored entries, bounded by `limit`.
+    pub fn for_page(start: u32, returned: u32, total: u32) -> Self {
+        let end = start.saturating_add(returned);
+        let complete = start == 0 && end >= total;
+        let truncated = !complete;
+        let next_cursor = if truncated && returned > 0 && end < total {
+            Some(end - 1)
+        } else {
+            None
+        };
+        HistoryPageMeta {
+            returned,
+            total,
+            truncated,
+            complete,
+            next_cursor,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Scoped emergency pause controls (#87)
 // ---------------------------------------------------------------------------

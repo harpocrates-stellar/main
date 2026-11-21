@@ -7,6 +7,9 @@
 //! - Limit clamping to MAX_CREDENTIAL_ROOTS_PAGE when limit == 0 or exceeds cap.
 //! - Out-of-range cursors return empty pages gracefully.
 //! - Idempotent index appending.
+//! - Proof-history completeness metadata: truncation flag and predecessor
+//!   references are reported explicitly, and a partial page is never presented
+//!   as a complete history.
 
 #![cfg(test)]
 
@@ -193,4 +196,66 @@ fn test_list_credential_roots_idempotent_indexing() {
 
     let page = client.list_credential_roots(&0, &10);
     assert_eq!(page.roots.len(), 1);
+}
+
+#[test]
+fn test_proof_history_completeness_full_page_is_complete() {
+    let (env, client, admin) = setup_registry();
+
+    for i in 1..=3u8 {
+        client.add_credential_root(&admin, &b32(&env, i), &b32(&env, 0xEE));
+    }
+
+    let meta = client.get_proof_history_completeness(&0, &10);
+    assert!(meta.is_complete);
+    assert!(!meta.truncated);
+    assert_eq!(meta.total_count, 3);
+    assert_eq!(meta.returned_count, 3);
+    assert_eq!(meta.start_cursor, 0);
+    assert_eq!(meta.next_cursor, None);
+    assert_eq!(meta.predecessor_cursor, None);
+}
+
+#[test]
+fn test_proof_history_completeness_truncated_page_is_not_complete() {
+    let (env, client, admin) = setup_registry();
+
+    for i in 1..=5u8 {
+        client.add_credential_root(&admin, &b32(&env, i), &b32(&env, 0xEE));
+    }
+
+    let meta = client.get_proof_history_completeness(&0, &2);
+    assert!(!meta.is_complete);
+    assert!(meta.truncated);
+    assert_eq!(meta.total_count, 5);
+    assert_eq!(meta.returned_count, 2);
+    assert_eq!(meta.next_cursor, Some(3));
+    assert_eq!(meta.predecessor_cursor, None);
+
+    // Continuation page references its predecessor explicitly.
+    let meta2 = client.get_proof_history_completeness(&3, &2);
+    assert!(!meta2.is_complete);
+    assert!(meta2.truncated);
+    assert_eq!(meta2.predecessor_cursor, Some(1));
+    assert_eq!(meta2.next_cursor, Some(5));
+
+    // Final page is complete relative to its window and has no successor.
+    let meta3 = client.get_proof_history_completeness(&5, &2);
+    assert!(meta3.returned_count == 0);
+    assert!(meta3.is_complete);
+    assert!(!meta3.truncated);
+    assert_eq!(meta3.next_cursor, None);
+}
+
+#[test]
+fn test_proof_history_completeness_empty_registry_is_complete() {
+    let (_env, client, _admin) = setup_registry();
+
+    let meta = client.get_proof_history_completeness(&0, &10);
+    assert!(meta.is_complete);
+    assert!(!meta.truncated);
+    assert_eq!(meta.total_count, 0);
+    assert_eq!(meta.returned_count, 0);
+    assert_eq!(meta.next_cursor, None);
+    assert_eq!(meta.predecessor_cursor, None);
 }
