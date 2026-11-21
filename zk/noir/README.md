@@ -209,6 +209,24 @@ bbup
 
 Circuit artifact building, proof generation, and verification key management are driven by `zk/tools/build_circuits.py`. Toolchain versions, the hermetic environment, artifact normalization rules, and resource limits are pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json).
 
+The cross-circuit public-input compatibility report checks the actual `main`
+public-input order and `Field` types for Silent Witness, redacted ancestry, and
+selective disclosure, then reports encodings for identically named public
+fields. Run it from the repository root:
+
+```bash
+python zk/tools/public_input_compatibility.py
+```
+
+The command prints JSON and exits nonzero if a circuit's public-input order has
+drifted, a shared field lacks an encoding declaration, or an encoding difference
+does not exactly match its reviewed entry in `zk/tools/public_input_compatibility.py`.
+The current reviewed differences are the credential-root derivation, nullifier
+derivations, and public circuit-version values. Video-hash halves and the domain
+tag use the same encodings where they are shared. A new or changed difference
+must be reviewed and recorded explicitly; the report does not normalize values
+or imply that fields with the same name are interchangeable.
+
 ```bash
 # Unified driver commands:
 python zk/tools/build_circuits.py build               # double build + compare, write manifest
