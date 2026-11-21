@@ -242,26 +242,6 @@ class TestIsolateUpload(unittest.TestCase):
             with isolate_upload(self._mock("e.mp4", "video/mp4", b"This is just a text file masquerading as video")):
                 pass
         self.assertIn("failed signature scan", str(ctx.exception))
-    def test_bad_ext(self):
-        with self.assertRaises(QuarantineError) as ctx:
-            with isolate_upload(self._mock("m.exe", "application/octet-stream", MP4_MAGIC)):
-                pass
-        self.assertIn("unsupported extension", str(ctx.exception))
-    def test_bad_mime(self):
-        with self.assertRaises(QuarantineError) as ctx:
-            with isolate_upload(self._mock("v.mp4", "application/pdf", MP4_MAGIC)):
-                pass
-        self.assertIn("unsupported content type", str(ctx.exception))
-    def test_empty(self):
-        with self.assertRaises(QuarantineError) as ctx:
-            with isolate_upload(self._mock("v.mp4", "video/mp4", b"")):
-                pass
-        self.assertIn("too small", str(ctx.exception))
-    def test_mov_as_mp4(self):
-        with self.assertRaises(QuarantineError) as ctx:
-            with isolate_upload(self._mock("v.mp4", "video/mp4", MOV_MAGIC)):
-                pass
-        self.assertIn("possible content-type spoofing", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ Covers:
 - Idempotency and duplicate deduplication on (tx_hash, event_index)
 - Cursor persistence, restart, and resume without duplicates
 - Skipping and counting of unknown topics
+- Quarantine of unsupported contract event versions with bounded references and
+  version reasons, without halting indexing of unrelated supported events
 - Queueing of webhook deliveries for indexed events
 - Bounded page size and exponential backoff on RPC errors
 - Visibility of indexed revocations in /api/proofs
@@ -326,6 +328,122 @@ def test_idempotency_duplicate_events():
     summary2 = process_events_batch(events, contract_id=DUMMY_CONTRACT)
     assert summary2["indexed"] == 0
     assert summary2["duplicates"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Unsupported Event Version Quarantine
+# ---------------------------------------------------------------------------
+
+
+def test_unsupported_version_is_quarantined_without_halting_supported_events():
+    collector.reset()
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000001",
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        # Known lifecycle topic with a version this indexer does not support.
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000002",
+            "topic": ["proof", "v9", DUMMY_PROOF_2],
+            "value": {"schema_version": 9},
+        },
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000003",
+            "topic": ["proof", "history", DUMMY_PROOF_2],
+            "value": {"action": 4, "reason_code": 2, "actor": "GADMIN"},
+        },
+    ]
+
+    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary["scanned"] == 3
+    assert summary["indexed"] == 2
+    assert summary["quarantined"] == 1
+    assert summary["duplicates"] == 0
+
+    quarantined = summary["quarantine_refs"]
+    assert len(quarantined) == 1
+    ref = quarantined[0]
+    assert ref["tx_hash"] == DUMMY_TX_1
+    assert ref["event_index"] == 2
+    assert ref["version_reason"] == "unsupported_version"
+    assert ref["schema_version"] == 9
+    # Bounded references: no raw payload or proof contents are retained.
+    assert "value" not in ref
+    assert DUMMY_PROOF_2 not in json.dumps(ref)
+
+    assert collector.get_indexer_quarantined_count() == 1
+
+
+def test_quarantine_references_are_bounded():
+    collector.reset()
+    events = [
+        {
+            "txHash": DUMMY_TX_2,
+            "id": f"0000000400-{i:010d}",
+            "topic": ["proof", f"v{i + 2}", DUMMY_PROOF_1],
+            "value": {"schema_version": i + 2},
+        }
+        for i in range(INDEXER_MAX_PAGE_SIZE + 5)
+    ]
+
+    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary["quarantined"] == len(events)
+    assert len(summary["quarantine_refs"]) <= INDEXER_MAX_PAGE_SIZE
+    assert summary["quarantine_refs_truncated"] is True
+    assert summary["quarantined"] == len(events)
+
+
+def test_quarantined_event_does_not_advance_supported_dedup_key():
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000500-0000000007",
+            "topic": ["proof", "v9", DUMMY_PROOF_1],
+            "value": {"schema_version": 9},
+        }
+    ]
+    summary1 = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary1["quarantined"] == 1
+    assert summary1["indexed"] == 0
+
+    # Re-seeing the same unsupported event re-quarantines it; it is not treated
+    # as a supported duplicate and does not block a later supported version.
+    summary2 = process_events_batch(events, contract_id=DUMMY_CONTRACT)
+    assert summary2["quarantined"] == 1
+    assert summary2["duplicates"] == 0
+
+
+@mock.patch("chain_indexer.fetch_latest_ledger", return_value=600)
+@mock.patch("chain_indexer.fetch_contract_events")
+def test_quarantine_preserves_cursor_progress(mock_fetch_events, mock_latest):
+    save_indexer_cursor("soroban_events", "")
+    mock_fetch_events.return_value = {
+        "cursor": "cursor-601",
+        "latestLedger": 601,
+        "events": [
+            {
+                "txHash": DUMMY_TX_1,
+                "id": "0000000601-0000000001",
+                "topic": ["proof", "v9", DUMMY_PROOF_1],
+                "value": {"schema_version": 9},
+            },
+            {
+                "txHash": DUMMY_TX_1,
+                "id": "0000000601-0000000002",
+                "topic": ["proof", "revoke", DUMMY_PROOF_2],
+            },
+        ],
+    }
+
+    summary = poll_indexer_once(contract_id=DUMMY_CONTRACT)
+    assert summary["quarantined"] == 1
+    assert summary["indexed"] == 1
+    assert summary["new_cursor"] == "cursor-601"
+    assert get_indexer_cursor() == "cursor-601"
 
 
 # ---------------------------------------------------------------------------
