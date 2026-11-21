@@ -1,6 +1,7 @@
 import logging
 import os
 import hashlib
+import uuid
 from typing import Tuple
 from cryptography.fernet import Fernet
 import db
@@ -101,6 +102,34 @@ def remove_tenant_ref(tenant_id: str, content_hash: str) -> bool:
     return True
 
 
+def _audit_ref(content_hash: str) -> str:
+    """Return a non-reversible audit reference for a blob without exposing its hash."""
+    return hashlib.sha256(("audit:" + content_hash).encode("utf-8")).hexdigest()[:32]
+
+
+def record_deletion_receipt(receipt_id: str, phase: str, selected: list, completed: list):
+    """Persist a two-phase deletion receipt.
+
+    phase 'approved' records the selection before any storage action runs.
+    phase 'completed' records audit references for storage actions that finished.
+    Only audit references are stored: no content hashes, storage paths, or keys.
+    """
+    with db.get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into blob_deletion_receipts (receipt_id, phase, selected_refs, completed_refs)
+                values (%s, %s, %s, %s)
+                on conflict (receipt_id) do update
+                set phase = excluded.phase,
+                    completed_refs = excluded.completed_refs,
+                    updated_at = now()
+                """,
+                (receipt_id, phase, ",".join(selected), ",".join(completed))
+            )
+        conn.commit()
+
+
 def collect_unreferenced_blobs(limit: int = 100) -> int:
     """Transactionally delete blob rows and files that have zero references.
 
@@ -115,6 +144,9 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
     collected = 0
     with db.get_connection() as conn:
         with conn.cursor() as cursor:
+            receipt_id = uuid.uuid4().hex
+            selected_refs: list = []
+            completed_refs: list = []
             cursor.execute(
                 """
                 select content_hash, storage_path
@@ -138,6 +170,7 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
             for row in rows:
                 content_hash = row["content_hash"] if isinstance(row, dict) else row[0]
                 storage_path = row["storage_path"] if isinstance(row, dict) else row[1]
+                selected_refs.append(_audit_ref(content_hash))
 
                 # Attempt file deletion first
                 try:
@@ -155,6 +188,7 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
                     continue
 
                 cursor.execute("delete from blobs where content_hash = %s", (content_hash,))
+                completed_refs.append(_audit_ref(content_hash))
                 collected += 1
 
         conn.commit()
@@ -176,8 +210,6 @@ def get_blob_info(content_hash: str) -> dict | None:
             row = cursor.fetchone()
             return dict(row) if row else None
 def rotate_encryption_key(new_master_key=None, old_master_key=None, key_id=None, *, content_hashes=None):
-    import os
-    from cryptography.fernet import Fernet
     old_key = old_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
     new_key = new_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
     if not old_key:
