@@ -33,6 +33,7 @@ from config import load_config
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
 from tracing import traced_job
+from registration_reconcile import process_verify_tx_job, reconcile_pending_registrations, default_min_confirmations
 from chain_indexer import run_indexer_loop
 
 LOGGER = logging.getLogger("harpocrates.worker")

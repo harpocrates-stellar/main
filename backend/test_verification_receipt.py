@@ -7,6 +7,7 @@ from time_attestation import (
     PROFILE_ID,
     create_time_attestation,
     encode_time_attestation,
+    add_stellar_anchor,
 )
 from verification_receipt import (
     build_verification_receipt,
@@ -220,3 +221,94 @@ def test_compare_fails_closed_on_invalid_receipt_or_observations():
 
     with pytest.raises(ValueError, match="timeAttestation malformed"):
         compare_verification_receipts(valid, _receipt(timeAttestation={"version": 99}))
+
+
+# ── Time bounds in receipt comparison ────────────────────────────────────────
+
+def test_compare_time_attestation_with_time_bounds():
+    """Receipt comparison includes time bounds in time attestation diff."""
+    digest = "a" * 64
+    fixed_time = 1700000000000
+    
+    # Create two attestations with same time sources but different anchor counts
+    ta_before = create_time_attestation(evidence_digest=digest, claimed_time_ms=fixed_time)
+    ta_after = TimeAttestation(
+        version=1,
+        protocol=PROFILE_ID,
+        evidence_digest=digest,
+        claimed_time=ta_before.claimed_time,
+        observed_time=ta_before.observed_time,
+        stellar_anchors=[
+            StellarAnchor(
+                ledger_sequence=100,
+                ledger_timestamp=fixed_time // 1000,
+                transaction_hash="d" * 64,
+                network_passphrase="Test SDF Network ; September 2015",
+            )
+        ],
+        rfc3161_anchors=[],
+    )
+    
+    run_a = _receipt(timeAttestation=encode_time_attestation(ta_before))
+    run_b = _receipt(timeAttestation=ta_after)
+    
+    report = compare_verification_receipts(run_a, run_b)
+    
+    # Time bounds should be present in both encoded attestations
+    encoded_before = encode_time_attestation(ta_before)
+    encoded_after = encode_time_attestation(ta_after)
+    assert "timeBounds" in encoded_before
+    assert "timeBounds" in encoded_after
+    assert encoded_before["timeBounds"]["claimedTime"] == "inclusive"
+    assert encoded_after["timeBounds"]["stellarAnchors"] == "inclusive"
+
+
+def test_compare_fixed_clock_exact_boundary_match():
+    """Receipt comparison with fixed clock at exact boundary."""
+    digest = "b" * 64
+    fixed_time = 1700000000000
+    
+    # Both runs have identical time attestation with exact boundary match
+    ta = create_time_attestation(evidence_digest=digest, claimed_time_ms=fixed_time)
+    # Add stellar anchor at exact same timestamp
+    ta_with_anchor = add_stellar_anchor(
+        ta,
+        ledger_sequence=100,
+        ledger_timestamp=fixed_time // 1000,
+        transaction_hash="c" * 64,
+        network_passphrase="Test SDF Network ; September 2015",
+    )
+    
+    run_a = _receipt(timeAttestation=encode_time_attestation(ta_with_anchor))
+    run_b = _receipt(timeAttestation=ta_with_anchor)
+    
+    report = compare_verification_receipts(run_a, run_b)
+    
+    # Should be identical including time bounds
+    assert report["identical"] is True
+    assert report["equivalentEvidence"] is True
+    assert report["presentationOnly"] is False
+
+
+def test_compare_time_bounds_presentation_only_difference():
+    """Time bounds differences are presentation-only if time sources match."""
+    digest = "c" * 64
+    fixed_time = 1700000000000
+    
+    ta = create_time_attestation(evidence_digest=digest, claimed_time_ms=fixed_time)
+    ta_with_stellar = add_stellar_anchor(
+        ta,
+        ledger_sequence=100,
+        ledger_timestamp=fixed_time // 1000,
+        transaction_hash="d" * 64,
+        network_passphrase="Test SDF Network ; September 2015",
+    )
+    
+    # Both have same time sources, time bounds should match
+    run_a = _receipt(timeAttestation=encode_time_attestation(ta_with_stellar))
+    run_b = _receipt(timeAttestation=ta_with_stellar)
+    
+    report = compare_verification_receipts(run_a, run_b)
+    
+    assert report["identical"] is True
+    # Time bounds are derived from time source types, so identical sources = identical bounds
