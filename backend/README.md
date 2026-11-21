@@ -29,6 +29,14 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+## Receipt Signing-Key History
+
+`GET /api/receipts/signing-keys` returns the public receipt signing-key history
+as a bounded, read-only list. Each entry carries the public key, its
+`valid_from` and `valid_until` validity interval, and a key identifier. The
+endpoint never exposes or loads private signing material; signing remains
+owned by the frontend.
+
 
 ## Configuration
 

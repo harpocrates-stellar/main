@@ -61,6 +61,16 @@ def test_rejects_incomplete_context_without_inventing_receipt_fields():
         build_verification_receipt({"proofId": "a" * 64})
 
 
+def test_receipt_remains_unsigned_when_key_history_is_requested():
+    # Public signing-key history is served by a separate read-only endpoint.
+    # The unsigned receipt model must not embed key material or signatures.
+    receipt = build_verification_receipt(context())
+
+    assert "signingKeys" not in receipt
+    assert "keyHistory" not in receipt
+    assert "signature" not in receipt
+
+
 def _receipt(**overrides: object) -> dict[str, object]:
     base = dict(build_verification_receipt(context(), result="verified"))
     base["verifiedAt"] = "2026-10-01T12:00:00+00:00"

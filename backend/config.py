@@ -11,24 +11,6 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
-        """Return a dict representation of the config where secret fields are redacted.
-        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
-        presence (True if set, False otherwise). Non‑secret fields retain their original
-        values.
-        """
-        from dataclasses import asdict
-        secret_fields = {
-            "metrics_token",
-            "tracing_endpoint",
-            "register_api_key",
-            "register_api_key_previous",
-        }
-        raw = asdict(self)
-        for field in secret_fields:
-            if field in raw:
-                raw[field] = raw[field] is not None
-        return raw
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -81,8 +63,36 @@ class AppConfig:
     external_fetch_max_response_bytes: int = 65_536
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
+    job_file_ttl_seconds: int = 86_400
+    retention_blob_gc_enabled: bool = False
+    retention_unreferenced_blobs_enabled: bool = False
+    retention_dry_run: bool = False
+    # Public receipt signing-key history: bounded number of entries served by the
+    # read-only key-history endpoint. Public keys only; never private material.
+    receipt_key_history_max_entries: int = 100
     registration_reconcile_state_dir: str = ""
     stellar_network_passphrase: str = ""
+
+    def redacted_summary(self) -> dict[str, object]:
+        """Return a dict representation of the config where secret fields are redacted.
+
+        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
+        presence (True if set, False otherwise). Non-secret fields retain their original
+        values.
+        """
+        from dataclasses import asdict
+
+        secret_fields = {
+            "metrics_token",
+            "tracing_endpoint",
+            "register_api_key",
+            "register_api_key_previous",
+        }
+        raw = asdict(self)
+        for field in secret_fields:
+            if field in raw:
+                raw[field] = raw[field] is not None
+        return raw
 
 
 def load_config() -> AppConfig:
@@ -158,6 +168,11 @@ def load_config() -> AppConfig:
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
+        job_file_ttl_seconds=_job_file_ttl_env(),
+        retention_blob_gc_enabled=_blob_gc_enabled_env(),
+        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
+        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        receipt_key_history_max_entries=_int_env("RECEIPT_KEY_HISTORY_MAX_ENTRIES", 100),
         registration_reconcile_state_dir=_str_env("HARPOCRATES_REGISTRATION_RECONCILE_DIR") or "",
         stellar_network_passphrase=(
             _str_env("STELLAR_NETWORK_PASSPHRASE")
@@ -165,7 +180,6 @@ def load_config() -> AppConfig:
             or ""
         ),
     )
-
 
 
 def _upload_chunk_bytes() -> int:
@@ -271,65 +285,4 @@ def _float_env(name: str, default: float) -> float:
 
 def _sample_ratio_env(name: str, default: float) -> float:
     value = os.getenv(name)
-    if value is None:
-        return default
-    try:
-        parsed = float(value)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be between 0 and 1") from exc
-    if not 0.0 <= parsed <= 1.0:
-        raise RuntimeError(f"{name} must be between 0 and 1")
-    return parsed
-
-
-# Retention worker batch bounds. The upper bound must match
-# db.RETENTION_BATCH_MAX_SIZE, which clamps the value again at the SQL layer.
-RETENTION_BATCH_SIZE_DEFAULT = 100
-RETENTION_BATCH_SIZE_MAX = 5000
-
-
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
-    """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    return max(1, min(parsed, RETENTION_BATCH_SIZE_MAX))
-
-
-JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
-
-
-def _job_file_ttl_env(
-    name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
-    default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
-) -> int:
-    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    if parsed < 0:
-        raise RuntimeError(f"{name} must be non-negative")
-    return parsed
-
-
-def _blob_gc_enabled_env() -> bool:
-    """Return whether blob garbage collection is enabled in retention worker."""
-    for var in (
-        "RETENTION_BLOB_GC_ENABLED",
-        "HARPOCRATES_RETENTION_BLOB_GC_ENABLED",
-        "RETENTION_UNREFERENCED_BLOBS_ENABLED",
-        "HARPOCRATES_RETENTION_UNREFERENCED_BLOBS_ENABLED",
-    ):
-        val = os.getenv(var)
-        if val is not None:
-            return val.strip().lower() in {"1", "true", "yes", "on"}
-    return False
-
+    if

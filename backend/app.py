@@ -134,7 +134,7 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
-from verification_receipt import build_verification_receipt
+from verification_receipt import build_verification_receipt, signing_key_history
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 try:
     from stego import StegoLimitExceededError
