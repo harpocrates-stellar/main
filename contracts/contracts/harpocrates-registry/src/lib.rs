@@ -10,6 +10,9 @@ use soroban_sdk::{
 
 pub type SorobanVec<T> = Vec<T>;
 
+/// Explicit supersession link returned by [`HarpocratesRegistry::get_supersession_link`].
+/// Declared at crate root so the contract method signature is self-contained.
+
 pub mod verifier_inputs;
 
 // Wasm size-budget constants and helpers (#346). Host-side only so the
@@ -137,6 +140,32 @@ pub const MAX_SOURCE_BATCH_PROOF_LEN: u32 = 32;
 
 pub const SOURCE_BATCH_LEAF_DOMAIN: u8 = 0x00;
 pub const SOURCE_BATCH_NODE_DOMAIN: u8 = 0x01;
+
+// ---------------------------------------------------------------------------
+// Explicit supersession link reads
+// ---------------------------------------------------------------------------
+//
+// A supersession link records that one statement identity supersedes another.
+// Reads return the original and superseding identities together with the
+// lifecycle status of the link. Supersession is never inferred from event
+// ordering; only an explicitly stored link is reported.
+
+/// Lifecycle status for a supersession link: link recorded and in force.
+pub const SUPERSESSION_STATUS_ACTIVE: u32 = 1;
+/// Lifecycle status for a supersession link that has been withdrawn.
+pub const SUPERSESSION_STATUS_WITHDRAWN: u32 = 2;
+
+/// Explicit supersession link between an original and a superseding statement.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupersessionLink {
+    /// Identity of the original (superseded) statement.
+    pub original: BytesN<32>,
+    /// Identity of the superseding statement.
+    pub superseding: BytesN<32>,
+    /// Lifecycle status of the link (`SUPERSESSION_STATUS_*`).
+    pub status: u32,
+}
 
 
 // ---------------------------------------------------------------------------
