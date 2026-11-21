@@ -30,6 +30,10 @@ BORDER_BLOCK = 6
 BORDER_STRIDE = 2
 
 
+class StegoLimitExceededError(Exception):
+    """Raised when stego processing exceeds memory or CPU limits."""
+
+
 @dataclass(frozen=True)
 class VideoInfo:
     width: int

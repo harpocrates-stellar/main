@@ -124,3 +124,64 @@ def test_admission_controller_decorator():
         if code != 200:
             assert "error" in data
             assert data["reason"] in ["identity_limit", "queue_full"]
+
+
+def test_admission_controller_active_session_tracking():
+    controller = AdmissionController(
+        max_concurrent=5,
+        max_queue=5,
+        max_per_identity=5,
+        timeout_seconds=1.0,
+    )
+
+    session_id = "test-session-123"
+    assert not controller.is_session_active(session_id)
+    assert controller.get_active_sessions() == set()
+
+    # Acquire once
+    controller.acquire_session(session_id)
+    assert controller.is_session_active(session_id)
+    assert controller.get_active_sessions() == {session_id}
+
+    # Acquire again (reference count = 2)
+    controller.acquire_session(session_id)
+    assert controller.is_session_active(session_id)
+
+    # Release once (reference count = 1, still active)
+    controller.release_session(session_id)
+    assert controller.is_session_active(session_id)
+
+    # Release second time (reference count = 0, inactive)
+    controller.release_session(session_id)
+    assert not controller.is_session_active(session_id)
+    assert controller.get_active_sessions() == set()
+
+    # Context manager
+    with controller.active_session("session-ctx"):
+        assert controller.is_session_active("session-ctx")
+        assert "session-ctx" in controller.get_active_sessions()
+    assert not controller.is_session_active("session-ctx")
+
+
+def test_admission_controller_decorator_tracks_session_id():
+    app = Flask(__name__)
+    controller = AdmissionController(
+        max_concurrent=2,
+        max_queue=1,
+        max_per_identity=2,
+        timeout_seconds=0.5,
+    )
+
+    session_status_during_request = {}
+
+    @app.route("/session/<session_id>/commit", methods=["POST"])
+    @require_capacity(controller)
+    def commit_route(session_id: str):
+        session_status_during_request[session_id] = controller.is_session_active(session_id)
+        return jsonify({"ok": True, "active": controller.is_session_active(session_id)})
+
+    client = app.test_client()
+    res = client.post("/session/abc-xyz/commit")
+    assert res.status_code == 200
+    assert session_status_during_request["abc-xyz"] is True
+    assert not controller.is_session_active("abc-xyz")

@@ -112,7 +112,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file, StegoLimitExceededError
 from capture_attestation import (
     canonical_attestation_hash,
     decode_attestation,
@@ -127,6 +127,7 @@ from c2pa import (
 )
 from logging_utils import log_structured, redact_sensitive
 from errors import (
+    GONE,
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
@@ -155,7 +156,11 @@ from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     StreamingFileStorage,
     create_streaming_file_storage,
+    get_session_dir,
     hash_paths_concat,
+    init_session_dir,
+    is_session_expired,
+    touch_session,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -931,16 +936,21 @@ def create_app() -> Flask:
     @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
         session_id = str(uuid.uuid4())
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
-        session_dir.mkdir(parents=True, exist_ok=True)
+        init_session_dir(session_id, temp_dir=getattr(config, "upload_temp_dir", None))
         return jsonify({"sessionId": session_id})
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
     def upload_chunk(session_id: str, chunk_index: int):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        session_dir = get_session_dir(session_id, temp_dir=getattr(config, "upload_temp_dir", None))
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
+        if is_session_expired(session_dir, ttl_seconds=config.upload_session_ttl_seconds):
+            return error_response(
+                code=GONE,
+                message="upload session has expired",
+                status=410,
+            )
         
         chunk = request.files.get("chunk")
         if chunk is None:
@@ -949,13 +959,17 @@ def create_app() -> Flask:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
         # Persist each session chunk with bounded-chunk hashing for integrity.
-        g.upload_config = config
-        streaming_chunk = create_streaming_file_storage(chunk)
-        chunk_path = session_dir / f"chunk-{chunk_index}"
-        try:
-            streaming_chunk.save(str(chunk_path))
-        except RequestEntityTooLarge:
-            return jsonify({"error": "chunk exceeds size limit"}), 413
+        # Hold an active worker reference so retention sweeps avoid deleting active chunks.
+        with admission_controller.active_session(session_id):
+            g.upload_config = config
+            streaming_chunk = create_streaming_file_storage(chunk)
+            chunk_path = session_dir / f"chunk-{chunk_index}"
+            try:
+                streaming_chunk.save(str(chunk_path))
+            except RequestEntityTooLarge:
+                return jsonify({"error": "chunk exceeds size limit"}), 413
+            touch_session(session_dir)
+
         return jsonify({
             "ok": True,
             "bytes": streaming_chunk.bytes_written,
@@ -966,9 +980,15 @@ def create_app() -> Flask:
     @limiter.limit(config.ratelimit_upload_session)
     @require_capacity(admission_controller)
     def commit_upload_session(session_id: str):
-        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        session_dir = get_session_dir(session_id, temp_dir=getattr(config, "upload_temp_dir", None))
         if not session_dir.exists():
             return jsonify({"error": "session not found"}), 404
+        if is_session_expired(session_dir, ttl_seconds=config.upload_session_ttl_seconds):
+            return error_response(
+                code=GONE,
+                message="upload session has expired",
+                status=410,
+            )
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:

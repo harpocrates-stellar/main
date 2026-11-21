@@ -1,3 +1,4 @@
+import contextlib
 import threading
 from functools import wraps
 from typing import Dict, Tuple
@@ -25,13 +26,21 @@ class AdmissionController:
         self._lock = threading.Lock()
         self._current_queue = 0
         self._identity_counts: Dict[str, int] = {}
+        self._active_sessions: Dict[str, int] = {}
         self._semaphore = threading.Semaphore(max_concurrent)
 
-    def acquire(self, identity: str) -> Tuple[bool, str]:
+    def acquire(self, identity: str, session_id: str | None = None) -> Tuple[bool, str]:
         """
         Attempt to acquire a concurrency slot.
+        Optionally associates the execution with an upload session ID.
         Returns (True, "ok") if successful, or (False, reason) if rejected.
         """
+        success, reason = self._acquire_slot(identity)
+        if success and session_id:
+            self.acquire_session(session_id)
+        return success, reason
+
+    def _acquire_slot(self, identity: str) -> Tuple[bool, str]:
         with self._lock:
             # 1. Per-identity fairness
             if self._identity_counts.get(identity, 0) >= self.max_per_identity:
@@ -69,16 +78,64 @@ class AdmissionController:
 
         return True, "ok"
 
-    def release(self, identity: str) -> None:
+    def release(self, identity: str, session_id: str | None = None) -> None:
         """
         Release a previously acquired concurrency slot.
+        Optionally releases an associated upload session reference.
         """
+        if session_id:
+            self.release_session(session_id)
         with self._lock:
             self._identity_counts[identity] -= 1
             if self._identity_counts[identity] == 0:
                 del self._identity_counts[identity]
         
         self._semaphore.release()
+
+    def acquire_session(self, session_id: str) -> None:
+        """Register an active worker reference to an upload session.
+
+        While an upload session is referenced by one or more active workers,
+        its chunks are protected from retention cleanup or expiration purges.
+        """
+        if not session_id:
+            return
+        with self._lock:
+            self._active_sessions[session_id] = (
+                self._active_sessions.get(session_id, 0) + 1
+            )
+
+    def release_session(self, session_id: str) -> None:
+        """Release an active worker reference to an upload session."""
+        if not session_id:
+            return
+        with self._lock:
+            count = self._active_sessions.get(session_id, 0) - 1
+            if count <= 0:
+                self._active_sessions.pop(session_id, None)
+            else:
+                self._active_sessions[session_id] = count
+
+    def is_session_active(self, session_id: str) -> bool:
+        """Return whether an upload session is currently referenced by active workers."""
+        if not session_id:
+            return False
+        with self._lock:
+            return self._active_sessions.get(session_id, 0) > 0
+
+    def get_active_sessions(self) -> set[str]:
+        """Return a snapshot set of upload session IDs referenced by active workers."""
+        with self._lock:
+            return set(self._active_sessions.keys())
+
+    @contextlib.contextmanager
+    def active_session(self, session_id: str):
+        """Context manager to hold an active worker session reference."""
+        self.acquire_session(session_id)
+        try:
+            yield
+        finally:
+            self.release_session(session_id)
 
 
 def _get_client_identity() -> str:
@@ -97,12 +154,19 @@ def require_capacity(controller: AdmissionController):
     """
     Flask decorator to enforce admission control on a route.
     Returns 429 or 503 with a Retry-After header on rejection.
+    If the decorated route processes an upload session (session_id in kwargs or
+    view_args), marks the session as active while processing so retention
+    sweeps avoid deleting chunks referenced by active workers.
     """
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
             identity = _get_client_identity()
-            acquired, reason = controller.acquire(identity)
+            session_id = kwargs.get("session_id")
+            if not session_id and hasattr(request, "view_args") and request.view_args:
+                session_id = request.view_args.get("session_id")
+
+            acquired, reason = controller.acquire(identity, session_id=session_id)
             
             if not acquired:
                 # Import here to avoid circular imports if needed
@@ -124,6 +188,6 @@ def require_capacity(controller: AdmissionController):
             try:
                 return f(*args, **kwargs)
             finally:
-                controller.release(identity)
+                controller.release(identity, session_id=session_id)
         return wrapped
     return decorator

@@ -102,6 +102,7 @@ This section documents all environment variables that can be used to configure t
 | SECURITY_HEADERS_ENABLED | boolean | true |  | Enable or disable security headers (X-Content-Type-Options, etc.) | no | no |
 | TRUSTED_PROXIES | list of strings |  |  | Comma-separated list of trusted proxy CIDR ranges for IP address resolution | no | no |
 | UPLOAD_CHUNK_BYTES | string |  |  | Size of upload chunks in bytes (clamped between 4096 and 1048576) | no | no |
+| UPLOAD_SESSION_TTL_SECONDS | integer | 3600 | must be positive | Time-to-live for upload sessions in seconds | no | no |
 | VERIFIER_CACHE_MAX_SIZE | integer | 10000 | must be positive | Maximum number of entries in the verifier proof cache | no | no |
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
@@ -188,12 +189,17 @@ new numbered migration instead.
 python manage.py migrate                    # apply pending migrations
 python manage.py migrate --check            # verify checksums, list pending; applies nothing
 python manage.py drift                      # compare live schema with the expected schema
-python manage.py retention --dry-run        # count expired, non-held proof events
-python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
-python manage.py retention --run --batch-size 500
+python manage.py retention --dry-run        # preview expired proof events and upload sessions
+python manage.py retention --run            # purge expired proof events and upload sessions
+python manage.py retention --run --batch-size 500 --session-limit 1000
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
 python manage.py --json drift               # machine-readable JSON output
 ```
+
+`retention --dry-run` and `retention --run` evaluate both database proof events and disk-backed streaming upload sessions:
+- `--session-limit` bounds upload session directory scanning (default: 500).
+- Upload session preview reports `total_sessions_scanned`, `expired_sessions_count`, `active_worker_sessions_skipped`, `reclaimable_bytes`, `bounded_limit_reached`, and per-session previews.
+- Sessions actively in use by workers (`AdmissionController`) are strictly preserved and skipped.
 
 Exit codes:
 
