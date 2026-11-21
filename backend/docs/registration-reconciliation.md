@@ -71,8 +71,9 @@ registration. Requests from other identities receive HTTP 403.
 - Omit `txHash` to batch-reconcile pending rows (max 50).
 - Batch responses report `summary.selected` (rows chosen for this call),
   `summary.processed` (rows whose reconciliation outcome was applied or
-  attempted to completion), and `summary.deferred` (selected-eligible rows left
-  for a later call, e.g. due to `limit` or a transient Horizon error).
+  attempted to completion), `summary.deferred` (selected-eligible rows left
+  for a later call, e.g. due to `limit` or a transient Horizon error), and
+  `summary.error` (rows that failed reconciliation without writing durable state).
 - Batch responses include `batch.complete` (`true` when the selected batch was
   fully processed with nothing deferred) and `backlog.complete` (`true` only when
   no pending rows remain eligible after this call). A complete batch does not
@@ -95,7 +96,9 @@ registration. Requests from other identities receive HTTP 403.
 
 Returns the bounded timeline of observation and transition records for the
 registration, each tagged with `submitted`, `confirmed`, `rejected`, or
-`unknown`. Only the authorized owner of the registration may call this endpoint.
+`unknown`. At most 20 records are returned, newest first. Only the authorized
+owner of the registration may call this endpoint; other identities receive
+HTTP 403.
 
 ## Worker integration
 

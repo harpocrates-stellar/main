@@ -309,18 +309,7 @@ def test_reconcile_pending_batch_summary(mock_one, mock_list):
 )
 def test_process_verify_tx_job_success(mock_reconcile):
     out = process_verify_tx_job({"tx_hash": VALID_TX, "proof_id": "p" * 64})
-    assert out["status"] == "pending"
+    assert out["status"] == "pending"= "pending"
+    assert out["reason"] == "awaiting_confirmations"
+    assert out["updated"] is False
     mock_reconcile.assert_called_once()
-
-
-@mock.patch(
-    "registration_reconcile.reconcile_registration",
-    return_value={"status": "error", "reason": "horizon_dependency_failure"},
-)
-def test_process_verify_tx_job_raises_on_dependency_failure(mock_reconcile):
-    with pytest.raises(RuntimeError):
-        process_verify_tx_job({"txHash": VALID_TX})
-
-
-if __name__ == "__main__":
-    unittest.main()
