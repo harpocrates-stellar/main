@@ -5,8 +5,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events as _},
-    Address, BytesN, Env, IntoVal, Symbol,
+    testutils::{Address as _, Events as _, Ledger as _},
+    vec, Address, BytesN, Env, IntoVal, Symbol,
 };
 
 fn b32(env: &Env, value: u8) -> BytesN<32> {
@@ -341,4 +341,202 @@ fn update_issuer_metadata_fails_for_non_admin_caller() {
     client.add_issuer(&admin, &issuer, &b32(&env, 0x11));
 
     client.update_issuer_metadata(&stranger, &issuer, &b32(&env, 0x33));
+}
+
+// ---------------------------------------------------------------------------
+// Institutional role revocation readiness report tests (#1193)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_readiness_report_for_unregistered_account_is_cleanly_not_ready() {
+    let (env, contract_id, _admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let unknown = Address::generate(&env);
+
+    let report = client.get_role_revocation_readiness(&unknown);
+    assert_eq!(report.role, unknown);
+    assert_eq!(report.role_address(), &unknown);
+    assert!(!report.is_issuer);
+    assert!(!report.is_active_issuer);
+    assert!(!report.is_council_member);
+    assert!(!report.is_admin);
+    assert_eq!(report.delegations_affected, 0);
+    assert_eq!(report.outstanding_approvals, 0);
+    assert_eq!(report.pending_revocation_proposals, 0);
+    assert_eq!(report.revocation_proposal_approvals, 0);
+    assert!(!report.has_active_rotation_grace);
+    assert!(!report.council_governance_active);
+    assert!(!report.revocation_ready);
+    assert!(!report.is_ready());
+
+    // Alias produces identical report
+    let alias_report = client.get_institutional_role_revocation_readiness(&unknown);
+    assert_eq!(report, alias_report);
+}
+
+#[test]
+fn test_readiness_report_for_active_issuer_single_admin_policy() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+
+    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
+
+    let report = client.get_role_revocation_readiness(&issuer);
+    assert_eq!(report.role, issuer);
+    assert!(report.is_issuer);
+    assert!(report.is_active_issuer);
+    assert!(!report.is_council_member);
+    assert!(!report.is_admin);
+    assert_eq!(report.delegations_affected, 0);
+    assert_eq!(report.outstanding_approvals, 0);
+    assert_eq!(report.pending_revocation_proposals, 0);
+    assert_eq!(report.revocation_proposal_approvals, 0);
+    assert!(!report.has_active_rotation_grace);
+    assert!(!report.council_governance_active);
+    assert!(report.revocation_ready);
+    assert!(report.is_ready());
+}
+
+#[test]
+fn test_readiness_report_identifies_affected_delegations_and_post_revocation_state() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let delegate1 = Address::generate(&env);
+    let delegate2 = Address::generate(&env);
+
+    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
+    client.grant_delegation(&issuer, &delegate1, &DELEGATION_SCOPE_REGISTER_SEAL, &3600);
+    client.grant_delegation(&issuer, &delegate2, &DELEGATION_SCOPE_REGISTER_SEAL, &7200);
+
+    let report = client.get_role_revocation_readiness(&issuer);
+    assert!(report.is_active_issuer);
+    assert_eq!(report.delegations_affected, 2);
+    assert!(report.revocation_ready);
+
+    // Revoke issuer
+    client.revoke_issuer(&admin, &issuer);
+
+    let post_report = client.get_role_revocation_readiness(&issuer);
+    assert!(post_report.is_issuer);
+    assert!(!post_report.is_active_issuer);
+    assert_eq!(post_report.delegations_affected, 2);
+    assert!(!post_report.revocation_ready);
+}
+
+#[test]
+fn test_readiness_report_identifies_active_rotation_grace() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let previous_issuer = Address::generate(&env);
+    let replacement_issuer = Address::generate(&env);
+
+    client.add_issuer(&admin, &previous_issuer, &b32(&env, 0xA1));
+    client.rotate_issuer(
+        &admin,
+        &previous_issuer,
+        &replacement_issuer,
+        &b32(&env, 0xA2),
+        &86_400,
+    );
+
+    let report = client.get_role_revocation_readiness(&previous_issuer);
+    assert!(report.is_issuer);
+    assert!(!report.is_active_issuer);
+    assert!(report.has_active_rotation_grace);
+    assert!(!report.revocation_ready);
+
+    let repl_report = client.get_role_revocation_readiness(&replacement_issuer);
+    assert!(repl_report.is_issuer);
+    assert!(repl_report.is_active_issuer);
+    assert!(!repl_report.has_active_rotation_grace);
+    assert!(repl_report.revocation_ready);
+}
+
+#[test]
+fn test_readiness_report_preserves_council_revocation_policy_and_approvals() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+
+    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
+
+    // Configure 2-of-3 council and advance time past delay
+    let members = vec![&env, m1.clone(), m2.clone(), m3.clone()];
+    client.set_admin_council(&admin, &members, &2);
+    env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
+
+    // With active council, single-admin direct revocation is blocked
+    let report_before = client.get_role_revocation_readiness(&issuer);
+    assert!(report_before.council_governance_active);
+    assert_eq!(report_before.pending_revocation_proposals, 0);
+    assert_eq!(report_before.revocation_proposal_approvals, 0);
+    assert!(!report_before.revocation_ready, "cannot revoke directly under active council");
+
+    // Council member m1 proposes revocation
+    let proposal_id = client.create_council_proposal(
+        &m1,
+        &(CouncilAction::RevokeIssuer as u32),
+        &issuer,
+        &b32(&env, 0x00),
+        &86_400,
+    );
+
+    // Proposal created: 1 approval, threshold 2 not met
+    let report_proposed = client.get_role_revocation_readiness(&issuer);
+    assert_eq!(report_proposed.pending_revocation_proposals, 1);
+    assert_eq!(report_proposed.revocation_proposal_approvals, 1);
+    assert!(!report_proposed.revocation_ready, "threshold 2 not yet met");
+
+    // Council member m2 approves proposal: threshold 2 met!
+    client.approve_council_proposal(&m2, &proposal_id);
+    let report_approved = client.get_role_revocation_readiness(&issuer);
+    assert_eq!(report_approved.pending_revocation_proposals, 1);
+    assert_eq!(report_approved.revocation_proposal_approvals, 2);
+    assert!(report_approved.revocation_ready, "threshold met, ready for execution");
+
+    // Execute proposal
+    client.execute_council_proposal(&m1, &proposal_id);
+    let report_after = client.get_role_revocation_readiness(&issuer);
+    assert!(!report_after.is_active_issuer);
+    assert_eq!(report_after.pending_revocation_proposals, 0);
+    assert!(!report_after.revocation_ready);
+}
+
+#[test]
+fn test_readiness_report_identifies_council_member_outstanding_approvals() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let verifier = Address::generate(&env);
+
+    let members = vec![&env, m1.clone(), m2.clone()];
+    client.set_admin_council(&admin, &members, &2);
+    env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
+
+    let report_initial = client.get_role_revocation_readiness(&m1);
+    assert!(report_initial.is_council_member);
+    assert_eq!(report_initial.outstanding_approvals, 0);
+
+    // m1 proposes an action
+    let proposal_id = client.create_council_proposal(
+        &m1,
+        &(CouncilAction::SetVerifier as u32),
+        &verifier,
+        &b32(&env, 0x00),
+        &86_400,
+    );
+
+    let report_active = client.get_role_revocation_readiness(&m1);
+    assert_eq!(report_active.outstanding_approvals, 1);
+
+    // Cancel proposal -> outstanding approvals drops to 0
+    client.cancel_council_proposal(&m1, &proposal_id);
+    let report_cancelled = client.get_role_revocation_readiness(&m1);
+    assert_eq!(report_cancelled.outstanding_approvals, 0);
 }

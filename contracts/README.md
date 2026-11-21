@@ -294,6 +294,8 @@ rotate_issuer
 finalize_issuer_rotation
 get_issuer_rotation
 is_issuer_verifiable
+get_role_revocation_readiness
+get_institutional_role_revocation_readiness
 set_revocation_root
 get_revocation_root
 check_non_revocation
@@ -407,6 +409,32 @@ is rolled back to a prior Wasm artifact, stored evidence remains readable, but
 that older artifact does not enforce disjoint roles and can grant the admin an
 issuer record again. Re-upgrade and revoke that issuer record before resuming
 issuer operations.
+
+## Institutional role revocation readiness report
+
+Before revoking an institutional key (e.g. Tier 3 Public Seal issuer or council member), operators and monitoring scripts can evaluate revocation impact and policy prerequisites in a single read-only call:
+
+```text
+get_role_revocation_readiness(role_address)
+```
+
+(Also available under the alias `get_institutional_role_revocation_readiness`).
+
+The call returns a `RoleRevocationReadinessReport` containing:
+- `role`: Evaluated account address.
+- `is_issuer`: True if an issuer record exists for the address.
+- `is_active_issuer`: True if the address holds active issuer authority.
+- `is_council_member`: True if the address is a member of the active admin council.
+- `is_admin`: True if the address holds registry administrator authority.
+- `delegations_affected`: Count of active delegations issued by this role that will be impacted by revocation.
+- `outstanding_approvals`: Count of open, unexpired council proposals currently approved by this role.
+- `pending_revocation_proposals`: Count of pending unexecuted revocation proposals targeting this role.
+- `revocation_proposal_approvals`: Highest approval count among pending revocation council proposals targeting this role.
+- `has_active_rotation_grace`: True if an unexpired rotation grace window is active for this issuer.
+- `council_governance_active`: True if multi-party admin council governance is currently effective.
+- `revocation_ready`: True if all prerequisites under the approved revocation policy are met. When council governance is active, this requires threshold approvals on a revocation proposal; under single-admin governance, active issuers can be revoked directly.
+
+The query is strictly read-only, non-panicking, and preserves evidence privacy.
 
 ## Timelocked Administration
 

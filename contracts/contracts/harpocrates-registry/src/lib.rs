@@ -394,6 +394,53 @@ pub struct RegistryConfig {
     pub paused_domains: u32,
 }
 
+/// Readiness report for revoking an institutional role (#1193).
+///
+/// Evaluates the standing, affected evidence authorization boundaries
+/// (delegations), and administrative governance dependencies (outstanding
+/// approvals, council proposals, rotation grace) before executing revocation.
+///
+/// Strictly read-only; preserves the approved revocation policy
+/// (single-admin or multi-party admin council).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleRevocationReadinessReport {
+    /// The account evaluated.
+    pub role: Address,
+    /// True if an issuer record exists for this address.
+    pub is_issuer: bool,
+    /// True if the address currently holds active issuer authority.
+    pub is_active_issuer: bool,
+    /// True if the address is an active member of the admin council.
+    pub is_council_member: bool,
+    /// True if the address is the current registry administrator.
+    pub is_admin: bool,
+    /// Number of delegations granted by this role that will become inactive.
+    pub delegations_affected: u32,
+    /// Number of active/unexpired council proposals approved by this address.
+    pub outstanding_approvals: u32,
+    /// Number of pending unexecuted revocation proposals targeting this role.
+    pub pending_revocation_proposals: u32,
+    /// Highest approval count among pending revocation council proposals targeting this role.
+    pub revocation_proposal_approvals: u32,
+    /// True if this issuer currently has an unexpired rotation grace window.
+    pub has_active_rotation_grace: bool,
+    /// True if multi-party admin council governance is currently effective.
+    pub council_governance_active: bool,
+    /// True if all prerequisites under the approved revocation policy are satisfied.
+    pub revocation_ready: bool,
+}
+
+impl RoleRevocationReadinessReport {
+    pub fn role_address(&self) -> &Address {
+        &self.role
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.revocation_ready
+    }
+}
+
 /// A verifier's declared circuit-version window (#343).
 ///
 /// Immutable record of what the active verifier was told it may check, plus
@@ -2185,6 +2232,22 @@ impl HarpocratesRegistry {
     /// Return the pending admin address, if an admin transfer is proposed.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::PendingAdmin)
+    }
+
+    /// Read-only: does `address` hold the registry administrator role?
+    pub fn is_admin(env: Env, address: Address) -> bool {
+        match env.storage().persistent().get::<_, Address>(&DataKey::Admin) {
+            Some(admin) => admin == address,
+            None => false,
+        }
+    }
+
+    /// Read-only: does `address` hold active issuer authority?
+    pub fn is_issuer(env: Env, address: Address) -> bool {
+        match env.storage().persistent().get::<_, IssuerRecord>(&DataKey::Issuer(address)) {
+            Some(record) => record.active,
+            None => false,
+        }
     }
 
     pub fn cancel_admin_transfer(env: Env, admin: Address) {
@@ -4685,6 +4748,153 @@ impl HarpocratesRegistry {
 
     pub fn get_issuer(env: Env, issuer: Address) -> Option<IssuerRecord> {
         env.storage().persistent().get(&DataKey::Issuer(issuer))
+    }
+
+    /// Read-only query: assess whether an institutional role can be revoked
+    /// under current governance policy, identifying affected delegations,
+    /// outstanding approvals, and pending revocation proposals (#1193).
+    pub fn get_role_revocation_readiness(env: Env, role: Address) -> RoleRevocationReadinessReport {
+        let is_admin = match env.storage().persistent().get::<_, Address>(&DataKey::Admin) {
+            Some(admin) => admin == role,
+            None => false,
+        };
+
+        let issuer_record = env
+            .storage()
+            .persistent()
+            .get::<_, IssuerRecord>(&DataKey::Issuer(role.clone()));
+        let is_issuer = issuer_record.is_some();
+        let is_active_issuer = issuer_record.as_ref().map(|r| r.active).unwrap_or(false);
+
+        let council_opt = get_admin_council_record(&env);
+        let is_council_member = if let Some(ref council) = council_opt {
+            let mut member = false;
+            for m in council.members.iter() {
+                if m == role {
+                    member = true;
+                    break;
+                }
+            }
+            member
+        } else {
+            false
+        };
+
+        let delegations_affected = delegation_count(&env, &role);
+
+        let now = env.ledger().timestamp();
+        let council_active = is_council_active(&env);
+        let council_threshold = council_opt.as_ref().map(|c| c.threshold).unwrap_or(0);
+
+        let council_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CouncilProposalSeq)
+            .unwrap_or(0);
+
+        let mut outstanding_approvals: u32 = 0;
+        let mut pending_revocation_proposals: u32 = 0;
+        let mut revocation_proposal_approvals: u32 = 0;
+        let mut council_threshold_met = false;
+
+        for id in 1..=council_seq {
+            if let Some(prop) = env
+                .storage()
+                .persistent()
+                .get::<_, CouncilProposal>(&DataKey::CouncilProposal(id))
+            {
+                if !prop.executed && !prop.cancelled && now <= prop.expires_at {
+                    for a in prop.approvals.iter() {
+                        if a == role {
+                            outstanding_approvals = outstanding_approvals.saturating_add(1);
+                            break;
+                        }
+                    }
+                    if prop.action == CouncilAction::RevokeIssuer as u32 && prop.target == role {
+                        pending_revocation_proposals =
+                            pending_revocation_proposals.saturating_add(1);
+                        let app_count = prop.approvals.len();
+                        if app_count > revocation_proposal_approvals {
+                            revocation_proposal_approvals = app_count;
+                        }
+                        if council_active
+                            && council_threshold > 0
+                            && app_count >= council_threshold
+                        {
+                            council_threshold_met = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        let timelock_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalSeq)
+            .unwrap_or(0);
+
+        let mut timelock_ready = false;
+        for id in 1..=timelock_seq {
+            if let Some(prop) = env
+                .storage()
+                .persistent()
+                .get::<_, TimelockProposal>(&DataKey::Proposal(id))
+            {
+                if !prop.executed && !prop.cancelled {
+                    if prop.action == ProposalAction::RevokeIssuer as u32 && prop.target == role {
+                        pending_revocation_proposals =
+                            pending_revocation_proposals.saturating_add(1);
+                        if now >= prop.min_execution_at {
+                            timelock_ready = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        let has_active_rotation_grace = if let Some(rot) = env
+            .storage()
+            .persistent()
+            .get::<_, IssuerRotationRecord>(&DataKey::IssuerRotation(role.clone()))
+        {
+            now < rot.grace_expires_at
+        } else {
+            false
+        };
+
+        let revocation_ready = if is_active_issuer {
+            if council_active {
+                council_threshold_met || timelock_ready
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        RoleRevocationReadinessReport {
+            role,
+            is_issuer,
+            is_active_issuer,
+            is_council_member,
+            is_admin,
+            delegations_affected,
+            outstanding_approvals,
+            pending_revocation_proposals,
+            revocation_proposal_approvals,
+            has_active_rotation_grace,
+            council_governance_active: council_active,
+            revocation_ready,
+        }
+    }
+
+    /// Convenience alias for `get_role_revocation_readiness` (#1193).
+    pub fn get_institutional_role_revocation_readiness(
+        env: Env,
+        role: Address,
+    ) -> RoleRevocationReadinessReport {
+        Self::get_role_revocation_readiness(env, role)
     }
 
     /// Record a verifiable derivative of one or more existing artefacts, and
