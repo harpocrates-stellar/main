@@ -395,6 +395,86 @@ def test_poll_indexer_once_resumes_from_stored_cursor(mock_fetch_events, mock_la
     assert get_indexer_cursor() == "cursor-502"
 
 
+def test_poll_rejects_batch_over_admission_limit_without_advancing_cursor(monkeypatch):
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000600-0000000001",
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        {
+            "txHash": DUMMY_TX_2,
+            "id": "0000000600-0000000002",
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
+    ]
+    monkeypatch.setattr("chain_indexer.INDEXER_MAX_PAGE_SIZE", 1)
+
+    with (
+        mock.patch("chain_indexer.get_indexer_cursor", return_value="cursor-before"),
+        mock.patch("chain_indexer.save_indexer_cursor") as save_cursor,
+        mock.patch(
+            "chain_indexer.fetch_contract_events",
+            return_value={"cursor": "cursor-after", "events": events},
+        ) as fetch_events,
+        mock.patch("chain_indexer.insert_indexed_proof_event") as insert_event,
+    ):
+        with pytest.raises(RuntimeError, match="batch.*limit"):
+            poll_indexer_once(contract_id=DUMMY_CONTRACT, limit=10)
+
+    fetch_events.assert_called_once()
+    assert fetch_events.call_args.kwargs["limit"] == 1
+    insert_event.assert_not_called()
+    save_cursor.assert_not_called()
+
+
+def test_poll_retries_partial_database_write_from_last_cursor():
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000700-0000000001",
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        {
+            "txHash": DUMMY_TX_2,
+            "id": "0000000700-0000000002",
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
+    ]
+    with (
+        mock.patch("chain_indexer.get_indexer_cursor", return_value="cursor-before"),
+        mock.patch("chain_indexer.save_indexer_cursor") as save_cursor,
+        mock.patch(
+            "chain_indexer.fetch_contract_events",
+            return_value={"cursor": "cursor-after", "events": events},
+        ) as fetch_events,
+        mock.patch(
+            "chain_indexer.insert_indexed_proof_event",
+            side_effect=[
+                ({"id": 1}, True),
+                RuntimeError("database write failed"),
+                ({"id": 1}, False),
+                ({"id": 2}, True),
+            ],
+        ),
+        mock.patch("chain_indexer.queue_webhook_deliveries"),
+    ):
+        with pytest.raises(RuntimeError, match="database write failed"):
+            poll_indexer_once(contract_id=DUMMY_CONTRACT)
+
+        save_cursor.assert_not_called()
+        summary = poll_indexer_once(contract_id=DUMMY_CONTRACT)
+
+    assert fetch_events.call_count == 2
+    assert all(
+        call.kwargs["cursor"] == "cursor-before"
+        for call in fetch_events.call_args_list
+    )
+    assert summary["duplicates"] == 1
+    assert summary["indexed"] == 1
+    save_cursor.assert_called_once_with(cursor="cursor-after", ledger=None)
+
+
 # ---------------------------------------------------------------------------
 # Webhook Dispatch Queueing
 # ---------------------------------------------------------------------------

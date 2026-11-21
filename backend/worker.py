@@ -1,14 +1,19 @@
 import logging
 import time
 import os
+import re
 from logging_utils import log_structured
 import threading
 import traceback
 from pathlib import Path
 
 from db import (
+    DEFAULT_HEARTBEAT_STALE_SECONDS,
+    STALE_HEARTBEAT_REASON,
     lease_job,
     heartbeat_job,
+    get_job_heartbeat_state,
+    reclaim_stale_jobs,
     report_job_progress,
     complete_job,
     fail_job,
@@ -28,6 +33,7 @@ from config import load_config
 from storage import get_job_input_path, get_job_output_path, sweep_job_files
 from tx_verification import verify_transaction_status
 from tracing import traced_job
+from registration_reconcile import process_verify_tx_job, reconcile_pending_registrations, default_min_confirmations
 from chain_indexer import run_indexer_loop
 
 LOGGER = logging.getLogger("harpocrates.worker")
@@ -38,6 +44,42 @@ if not LOGGER.handlers:
 LOGGER.setLevel(logging.INFO)
 
 WORKER_ID = f"worker-{os.getpid()}"
+
+DIAGNOSTIC_MAX_BYTES = 2048
+DIAGNOSTIC_MAX_FRAMES = 20
+
+_PRIVATE_PATH_RE = re.compile(r"(?:/(?:home|Users|root|var|tmp|srv|opt|mnt)/[^\s'\"]*)")
+_SECRET_RE = re.compile(
+    r"(?i)((?:secret|token|password|passwd|api[_-]?key|authorization|credential)[\w-]*\s*[=:]\s*)(\S+)"
+)
+_LONG_TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
+
+
+def _redact_diagnostic_text(text: str) -> str:
+    text = _SECRET_RE.sub(r"\1[REDACTED]", text)
+    text = _PRIVATE_PATH_RE.sub("[PATH]", text)
+    text = _LONG_TOKEN_RE.sub("[REDACTED]", text)
+    return text
+
+
+def _cap_bytes(text: str, limit: int = DIAGNOSTIC_MAX_BYTES) -> str:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore") + "...[truncated]"
+
+
+def sanitize_exception_text(err: BaseException) -> str:
+    """Return bounded, redacted text describing an exception."""
+    return _cap_bytes(_redact_diagnostic_text(str(err)))
+
+
+def sanitize_traceback(err: BaseException) -> str:
+    """Return bounded, redacted traceback text; frames are capped and redacted."""
+    frames = traceback.format_exception(type(err), err, err.__traceback__)
+    frames = frames[-DIAGNOSTIC_MAX_FRAMES:]
+    text = "".join(frames)
+    return _cap_bytes(_redact_diagnostic_text(text))
 
 @traced_job("job.media.embed")
 def process_embed(job: dict) -> dict:
@@ -128,8 +170,6 @@ def process_silent_witness(job: dict) -> dict:
     credential_secret = payload["credential_secret"]
     nullifier_secret = payload["nullifier_secret"]
 
-    # Phase names only: proof generation runs as one external command and
-    # reports no measurable fraction, so percent stays None.
     report_job_progress(job["id"], "generating_proof")
     proof = generate_silent_witness(
         video_hash,
@@ -149,19 +189,12 @@ def heartbeat_loop(job_id: int, stop_event: threading.Event):
         stop_event.wait(60)
 
 def tx_verification_loop(stop_event: threading.Event):
-    """
-    Periodically reconcile pending registration confirmations against Horizon.
-
-    Prefer the batch reconciler (confirmation depth + privacy-safe signals). Fall
-    back to the legacy per-row Horizon probe when the DB helpers are unavailable.
-    """
     LOGGER.info("Starting transaction verification / registration reconcile loop")
     while not stop_event.is_set():
         try:
             if not database_url():
                 stop_event.wait(10)
                 continue
-
             try:
                 report = reconcile_pending_registrations(
                     limit=50,
@@ -179,7 +212,6 @@ def tx_verification_loop(stop_event: threading.Event):
                     summary.get("error"),
                 )
             except Exception:
-                # Legacy fallback path keeps older deployments moving.
                 with get_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -191,26 +223,17 @@ def tx_verification_loop(stop_event: threading.Event):
                             """
                         )
                         rows = [dict(row) for row in cur.fetchall()]
-
                 for row in rows:
                     if stop_event.is_set():
                         break
-
                     tx_hash = row["tx_hash"]
                     LOGGER.info("Verifying transaction %s", str(tx_hash)[:8])
                     status = verify_transaction_status(tx_hash)
-
                     if status in ("confirmed", "failed", "missing"):
-                        LOGGER.info(
-                            "Transaction %s resolved to %s",
-                            str(tx_hash)[:8],
-                            status,
-                        )
+                        LOGGER.info("Transaction %s resolved to %s", str(tx_hash)[:8], status)
                         update_tx_status(tx_hash, status)
-
         except Exception as e:
             LOGGER.error("Error in tx verification loop: %s", type(e).__name__)
-
         stop_event.wait(15)
 
 
@@ -231,9 +254,21 @@ def _worker_grace_period_seconds() -> float:
         return DEFAULT_WORKER_GRACE_PERIOD_SECONDS
 
 
+def _worker_heartbeat_stale_seconds() -> float:
+    raw = os.getenv("WORKER_HEARTBEAT_STALE_SECONDS")
+    if raw is None or not raw.strip():
+        return DEFAULT_HEARTBEAT_STALE_SECONDS
+    try:
+        val = float(raw)
+        return val if val > 0 else DEFAULT_HEARTBEAT_STALE_SECONDS
+    except ValueError:
+        return DEFAULT_HEARTBEAT_STALE_SECONDS
+
+
 def run_worker(
     stop_event: threading.Event | None = None,
     grace_period_seconds: float | None = None,
+    heartbeat_stale_seconds: float | None = None,
 ):
     init_db()
     config = load_config()
@@ -246,6 +281,9 @@ def run_worker(
 
     if grace_period_seconds is None:
         grace_period_seconds = _worker_grace_period_seconds()
+
+    if heartbeat_stale_seconds is None:
+        heartbeat_stale_seconds = _worker_heartbeat_stale_seconds()
 
     def _signal_handler(signum, frame):
         LOGGER.info(f"Received signal {signum}, initiating graceful shutdown")
@@ -269,6 +307,7 @@ def run_worker(
     indexer_thread.daemon = True
     indexer_thread.start()
 
+    last_sweep_time = time.time()
     while not stop_event.is_set():
         try:
             now_time = time.time()
@@ -278,6 +317,24 @@ def run_worker(
                     sweep_job_files()
                 except Exception as e:
                     LOGGER.error("Job file sweep failed: %s", type(e).__name__)
+
+            try:
+                reclaimed = reclaim_stale_jobs(stale_after_seconds=heartbeat_stale_seconds)
+                for item in reclaimed:
+                    log_structured(
+                        LOGGER,
+                        logging.WARNING,
+                        {
+                            "event": "stale_worker_heartbeat",
+                            "job_id": item["id"],
+                            "job_type": item["type"],
+                            "reason": STALE_HEARTBEAT_REASON,
+                            "retryable": True,
+                            "cryptographic_failure": False,
+                        },
+                    )
+            except Exception as e:
+                LOGGER.error("Stale heartbeat check failed: %s", type(e).__name__)
 
             job = lease_job(
                 WORKER_ID,
@@ -311,12 +368,13 @@ def run_worker(
                     complete_job(job_id, res)
                     LOGGER.info(f"Completed job {job_id}")
                 except Exception as err:
-                    LOGGER.error(f"Failed job {job_id}: {err}")
-                    LOGGER.error(traceback.format_exc())
+                    safe_message = sanitize_exception_text(err)
+                    LOGGER.error(f"Failed job {job_id}: {safe_message}")
+                    LOGGER.error(sanitize_traceback(err))
                     is_fatal = isinstance(err, ValueError) and job_type != "verify_tx"
                     if job_type == "verify_tx":
                         is_fatal = isinstance(err, ValueError)
-                    fail_job(job_id, str(err), is_fatal=is_fatal)
+                    fail_job(job_id, safe_message, is_fatal=is_fatal)
                 finally:
                     hb_stop_event.set()
                     hb_thread.join()
@@ -328,7 +386,6 @@ def run_worker(
             while work_thread.is_alive():
                 work_thread.join(timeout=0.1)
                 if stop_event.is_set() and work_thread.is_alive():
-                    # Stop event received while processing job: give it until grace period expires
                     work_thread.join(timeout=grace_period_seconds)
                     if work_thread.is_alive():
                         LOGGER.warning(
@@ -347,7 +404,11 @@ def run_worker(
     LOGGER.info("Worker stopped cleanly")
 
 
+try:
+    from worker_recovery import *  # noqa: F401,F403
+except Exception:
+    pass
+
 if __name__ == "__main__":
     run_worker()
     sys.exit(0)
-

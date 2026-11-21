@@ -19,6 +19,7 @@ from typing import Any
 # ── Constants ──────────────────────────────────────────────────────────────
 
 PROFILE_ID = "harpocrates-capture-attestation/v1"
+ASSURANCE_SCHEMA_ID = "harpocrates-capture-assurance/v1"
 SUPPORTED_VERSIONS = {1}
 
 VALID_TRUST_LEVELS = {0, 1, 2, 3, 4}
@@ -187,6 +188,63 @@ def verify_device_commitment(
         hashlib.sha256,
     ).hexdigest()
     return attestation.device_commitment == expected
+
+
+def build_assurance_schema(
+    attestation: CaptureAttestation,
+    checks: dict[str, bool],
+) -> dict[str, Any]:
+    """Describe device claims, issuer status, and only the capture checks run."""
+    verified: list[str] = []
+    failed: list[str] = []
+    not_evaluated: list[str] = []
+
+    check_properties = (
+        ("evidence_binding", "attested_digest_matches_request"),
+        ("device_commitment", "device_commitment_matches_supplied_key"),
+    )
+    for check_name, property_name in check_properties:
+        if check_name not in checks:
+            not_evaluated.append(property_name)
+        elif checks[check_name]:
+            verified.append(property_name)
+        else:
+            failed.append(property_name)
+
+    not_evaluated.extend(
+        (
+            "evidence_content_digest",
+            "secure_time",
+            "camera_pipeline_integrity",
+            "platform_claims",
+        )
+    )
+    claimed_integrity = (
+        attestation.camera_pipeline.claimed_integrity
+        if attestation.camera_pipeline is not None
+        else None
+    )
+
+    return {
+        "schema": ASSURANCE_SCHEMA_ID,
+        "deviceClaims": {
+            "status": "reported",
+            "trustLevel": {
+                "code": attestation.trust_level,
+                "label": TRUST_LEVEL_LABELS[attestation.trust_level],
+            },
+            "claimedIntegrity": claimed_integrity,
+        },
+        "issuerCertification": {
+            "status": "not_evaluated",
+            "reasonCode": "issuer_transparency_not_checked",
+        },
+        "captureVerification": {
+            "verifiedProperties": verified,
+            "failedProperties": failed,
+            "notEvaluatedProperties": not_evaluated,
+        },
+    }
 
 
 def make_device_commitment(capture_nonce: str, per_session_device_key: bytes) -> str:
