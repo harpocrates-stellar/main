@@ -1,11 +1,45 @@
-import logging
+from __future__ import annotations
+
 import os
-import hashlib
-from typing import Tuple
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Tuple
+
 from cryptography.fernet import Fernet
 import db
 
-logger = logging.getLogger("harpocrates.evidence_storage")
+STORAGE_METADATA_ERROR_CODE = "DEPENDENCY_UNAVAILABLE"
+STORAGE_METADATA_ERROR_STATUS = 503
+
+COLLECTED = "collected"
+REFERENCED = "referenced"
+MISSING = "missing"
+UNLINK_FAILED = "collected_unlink_failed"
+
+
+class StorageMetadataRetryableError(RuntimeError):
+    def __init__(
+        self,
+        message: str = "storage metadata update is temporarily unavailable",
+        attempts: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.code = STORAGE_METADATA_ERROR_CODE
+        self.status = STORAGE_METADATA_ERROR_STATUS
+
+
+RetryableStorageError = StorageMetadataRetryableError
+StorageRetryableError = StorageMetadataRetryableError
+
+
+@dataclass(frozen=True)
+class BlobCollectionResult:
+    status: str
+    content_hash: str
+    storage_path: str | None = None
+    attempts: int = 1
 
 
 def generate_dek() -> Tuple[bytes, bytes]:
@@ -47,19 +81,44 @@ def record_blob(content_hash: str, encrypted_dek: bytes, size_bytes: int, storag
         conn.commit()
 
 
-def record_tenant_ref(tenant_id: str, content_hash: str):
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                insert into tenant_blob_refs (tenant_id, content_hash, ref_count)
-                values (%s, %s, 1)
-                on conflict (tenant_id, content_hash) do update
-                set ref_count = tenant_blob_refs.ref_count + 1, updated_at = now()
-                """,
-                (tenant_id, content_hash)
-            )
-        conn.commit()
+def record_tenant_ref(
+    tenant_id: str,
+    content_hash: str,
+    *,
+    connection_factory: Callable[[], Any] | None = None,
+):
+    """Record a tenant reference after locking the blob row.
+
+    The lock makes concurrent collection wait for this committed reference, so
+    a collector cannot observe a blob as unreferenced while a reference update
+    is still in flight. Exhausted retries raise a bounded retryable error.
+    """
+    factory = connection_factory or db.get_connection
+
+    def attempt(_attempt: int) -> None:
+        with factory() as conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "select 1 from blobs where content_hash = %s for update",
+                        (content_hash,),
+                    )
+                    cursor.execute(
+                        """
+                        insert into tenant_blob_refs (tenant_id, content_hash, ref_count)
+                        values (%s, %s, 1)
+                        on conflict (tenant_id, content_hash) do update
+                        set ref_count = tenant_blob_refs.ref_count + 1, updated_at = now()
+                        """,
+                        (tenant_id, content_hash),
+                    )
+                conn.commit()
+            except Exception:
+                _safe_rollback(conn)
+                raise
+
+    _with_bounded_retry(attempt, "tenant reference metadata update")
+
 
 
 def remove_tenant_ref(tenant_id: str, content_hash: str) -> bool:
@@ -175,3 +234,110 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+
+def collect_unreferenced_blob(
+    content_hash: str,
+    *,
+    connection_factory: Callable[[], Any] | None = None,
+) -> BlobCollectionResult:
+    """Collect an unreferenced encrypted blob without risking live evidence.
+
+    The blob row is locked, tenant references are checked, and the metadata
+    deletion is committed before the encrypted file is removed. If either
+    metadata step fails, the file is left untouched and a bounded retryable
+    storage error is raised.
+    """
+    factory = connection_factory or db.get_connection
+
+    def attempt(attempt_number: int) -> BlobCollectionResult:
+        result, storage_path = _collect_once(factory, content_hash)
+        if result.status == COLLECTED and storage_path:
+            try:
+                Path(storage_path).unlink(missing_ok=True)
+            except OSError:
+                result = BlobCollectionResult(UNLINK_FAILED, content_hash, storage_path, attempt_number)
+        return BlobCollectionResult(result.status, content_hash, storage_path, attempt_number)
+
+    return _with_bounded_retry(attempt, "blob collection metadata update")
+
+
+collect_blob = collect_unreferenced_blob
+
+
+def _collect_once(
+    factory: Callable[[], Any], content_hash: str
+) -> tuple[BlobCollectionResult, str | None]:
+    with factory() as conn:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "select storage_path from blobs where content_hash = %s for update",
+                    (content_hash,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    conn.commit()
+                    return BlobCollectionResult(MISSING, content_hash), None
+                storage_path = str(dict(row)["storage_path"])
+                cursor.execute(
+                    "select 1 from tenant_blob_refs where content_hash = %s and ref_count > 0 limit 1",
+                    (content_hash,),
+                )
+                if cursor.fetchone() is not None:
+                    conn.commit()
+                    return BlobCollectionResult(REFERENCED, content_hash, storage_path), storage_path
+                cursor.execute("delete from blobs where content_hash = %s", (content_hash,))
+            conn.commit()
+        except Exception:
+            _safe_rollback(conn)
+            raise
+    return BlobCollectionResult(COLLECTED, content_hash, storage_path), storage_path
+
+
+def _safe_rollback(conn: Any) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _positive_env(name: str, default: float, maximum: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return min(value, maximum)
+
+
+def _with_bounded_retry(operation: Callable[[int], Any], description: str) -> Any:
+    max_attempts = int(_positive_env("DB_CONNECT_MAX_ATTEMPTS", 4, 10))
+    deadline_seconds = _positive_env("DB_CONNECT_DEADLINE_SECONDS", 15.0, 60.0)
+    retry_base_seconds = _positive_env("DB_CONNECT_RETRY_BASE_SECONDS", 0.05, 1.0)
+    started = time.monotonic()
+    last_error: Exception | None = None
+
+    for attempt_number in range(1, max_attempts + 1):
+        try:
+            return operation(attempt_number)
+        except StorageMetadataRetryableError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            elapsed = time.monotonic() - started
+            remaining = deadline_seconds - elapsed
+            if attempt_number >= max_attempts or remaining <= 0:
+                break
+            delay = min(retry_base_seconds * (2 ** (attempt_number - 1)), remaining, 0.5)
+            if delay > 0:
+                time.sleep(delay)
+
+    raise StorageMetadataRetryableError(
+        f"{description} failed after {attempt_number} attempt(s)",
+        attempts=attempt_number,
+    ) from last_error

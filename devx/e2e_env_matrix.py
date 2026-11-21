@@ -135,6 +135,9 @@ def temporary_env(env: dict[str, str]):
         "MAX_METADATA_BYTES",
         "HARPOCRATES_RELEASE_ID",
         "HARPOCRATES_RELEASE_NETWORK",
+        "STELLAR_NETWORK_PASSPHRASE",
+        "HARPOCRATES_NETWORK_PASSPHRASE",
+        "HARPOCRATES_REGISTRATION_RECONCILE_DIR",
         "SECURITY_HEADERS_ENABLED",
     ]
     bleed_saved = {k: os.environ.get(k) for k in bleed}
