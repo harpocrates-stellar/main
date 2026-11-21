@@ -12,6 +12,12 @@ Indexes lifecycle events emitted directly on-chain by the Harpocrates Registry c
 Decodes events into proof_events rows idempotently (unique on tx_hash + event_index),
 persists the ledger cursor, queues webhook deliveries, skips and counts unknown topics,
 bounds page size, and backs off exponentially on RPC errors.
+
+Proof identifiers:
+Accepts 32-byte hex strings (with optional 0x prefix), 32-byte raw values, and exact
+decimal integer IDs (preserved as exact strings across JSON and database boundaries).
+Rejects unsafe integer coercion, including booleans, floating-point numbers, fractional
+inputs, and exponent notation (fail-closed, skipped and recorded as unknown topics).
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from strkey import (
     _VERSION_BYTE_ED25519_PUBLIC,
     make_strkey,
 )
+from tx_verification import normalize_proof_id, normalize_tx_hash
 from webhook import queue_webhook_deliveries
 
 LOGGER = logging.getLogger("harpocrates.chain_indexer")
@@ -105,6 +112,14 @@ def decode_scval(raw: Any) -> Any:
             return struct.unpack(">I" if disc == 3 else ">i", payload[:4])[0]
         if disc in (5, 6, 7, 8):  # SCV_U64, SCV_I64, SCV_TIMEPOINT, SCV_DURATION
             return struct.unpack(">Q" if disc in (5, 7, 8) else ">q", payload[:8])[0]
+        if disc in (9, 10):  # SCV_U128, SCV_I128
+            hi, lo = struct.unpack(">QQ" if disc == 9 else ">qQ", payload[:16])
+            return (hi << 64) | lo
+        if disc in (11, 12):  # SCV_U256, SCV_I256
+            hi_hi, hi_lo, lo_hi, lo_lo = struct.unpack(
+                ">QQQQ" if disc == 11 else ">qQQQ", payload[:32]
+            )
+            return (hi_hi << 192) | (hi_lo << 128) | (lo_hi << 64) | lo_lo
         if disc in (13, 14, 15):  # SCV_BYTES, SCV_STRING, SCV_SYMBOL
             b_len = struct.unpack(">I", payload[:4])[0]
             val_bytes = payload[4 : 4 + b_len]
@@ -129,15 +144,13 @@ def decode_scval(raw: Any) -> Any:
 
 
 def _normalize_hex(val: Any) -> str | None:
-    """Return a 64-character lowercase hex string if valid, else stringified."""
+    """Return a normalized proof ID string (hex or decimal) if valid, else None."""
     if val is None:
         return None
-    if isinstance(val, bytes):
-        return val.hex().lower()
-    text = str(val).strip().lower()
-    if text.startswith("0x"):
-        text = text[2:]
-    return text
+    try:
+        return normalize_proof_id(val)
+    except (ValueError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +177,10 @@ def classify_and_decode_event(
     )
     if not tx_hash or not isinstance(tx_hash, str):
         return None
-    tx_hash = _normalize_hex(tx_hash) or tx_hash
+    try:
+        tx_hash = normalize_tx_hash(tx_hash)
+    except ValueError:
+        return None
 
     # Resolve event index
     event_index = event.get("eventIndex")
@@ -208,7 +224,10 @@ def classify_and_decode_event(
 
     # 1. Proof Revocation: topics = ["proof", "revoke", proof_id]
     if first == "proof" and second == "revoke" and len(topics) >= 3:
-        proof_id = _normalize_hex(topics[2])
+        try:
+            proof_id = normalize_proof_id(topics[2])
+        except (ValueError, TypeError):
+            return None
         return DecodedLifecycleEvent(
             event_type="revoke",
             proof_id=proof_id,
@@ -222,7 +241,10 @@ def classify_and_decode_event(
 
     # 2. Proof History: topics = ["proof", "history", proof_id]
     if first == "proof" and second == "history" and len(topics) >= 3:
-        proof_id = _normalize_hex(topics[2])
+        try:
+            proof_id = normalize_proof_id(topics[2])
+        except (ValueError, TypeError):
+            return None
         # Value carries ProofHistoryEntry: action (u32), timestamp (u64), actor (Option<Address>), reason_code (u32)
         # Action codes: 1=Registered, 2=Verified, 3=Revoked, 4=Expired, 5=Corrected, 6=TtlUpdated
         action = None
@@ -283,8 +305,18 @@ def classify_and_decode_event(
     # 3. Dispute Lifecycle Events: topics = ["dispute", action, dispute_id, proof_id]
     if first == "dispute" and len(topics) >= 2:
         action = second
-        dispute_id = _normalize_hex(topics[2]) if len(topics) >= 3 else None
-        proof_id = _normalize_hex(topics[3]) if len(topics) >= 4 else None
+        dispute_id = None
+        if len(topics) >= 3 and topics[2] is not None:
+            try:
+                dispute_id = normalize_proof_id(topics[2])
+            except (ValueError, TypeError):
+                return None
+        proof_id = None
+        if len(topics) >= 4 and topics[3] is not None:
+            try:
+                proof_id = normalize_proof_id(topics[3])
+            except (ValueError, TypeError):
+                return None
         if proof_id is None and len(topics) == 3:
             # Fallback if dispute_id / proof_id single identifier
             proof_id = dispute_id
@@ -313,8 +345,11 @@ def classify_and_decode_event(
             )
         if action == "supersede":
             superseded_by = None
-            if isinstance(val, dict):
-                superseded_by = _normalize_hex(val.get("superseded_by"))
+            if isinstance(val, dict) and val.get("superseded_by") is not None:
+                try:
+                    superseded_by = normalize_proof_id(val.get("superseded_by"))
+                except (ValueError, TypeError):
+                    return None
             return DecodedLifecycleEvent(
                 event_type="dispute_supersede",
                 proof_id=proof_id,

@@ -1,6 +1,7 @@
-"""Horizon-backed Stellar transaction status checks for registration reconcile."""
+"""Horizon-backed Stellar transaction status checks and proof identifier normalization for registration reconcile."""
 
 from __future__ import annotations
+import re
 from dataclasses import dataclass
 
 @dataclass
@@ -14,6 +15,9 @@ class TxVerificationResult:
     source: str | None = None
 
 
+_EXPONENT_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+$")
+
+
 def normalize_tx_hash(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("txHash must be a string")
@@ -23,6 +27,98 @@ def normalize_tx_hash(value: object) -> str:
     if len(normalized) != 64 or not all(c in "0123456789abcdef" for c in normalized):
         raise ValueError("txHash must be a 32-byte hex string")
     return normalized
+
+
+def normalize_proof_id(value: object) -> str:
+    """Validate and normalize an indexed proof identifier.
+
+    Preserves exact decimal IDs across JSON and database boundaries,
+    normalizes 32-byte (64-character) hex strings to lowercase, and
+    rejects unsafe integer coercion, including booleans, floating-point numbers,
+    fractional inputs, exponent notation, negative values, and malformed strings.
+
+    Parameters
+    ----------
+    value:
+        A 32-byte hex string (with or without 0x prefix), raw 32 bytes,
+        a non-negative integer, or an exact decimal string of digits.
+
+    Returns
+    -------
+    str:
+        The normalized proof ID as a lowercase hex string or exact decimal string.
+
+    Raises
+    ------
+    ValueError:
+        If the identifier is malformed, fractional, uses exponent notation,
+        is boolean, is negative, or cannot be safely represented.
+    """
+    if value is None:
+        raise ValueError("proofId must not be None")
+
+    if isinstance(value, bool):
+        raise ValueError("proofId cannot be a boolean; boolean coercion is rejected")
+
+    if isinstance(value, float):
+        raise ValueError("proofId cannot be a float; fractional and exponent inputs are rejected")
+
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) == 32:
+            return value.hex().lower()
+        raise ValueError("bytes proofId must be exactly 32 bytes")
+
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("proofId must be a non-negative integer")
+        return str(value)
+
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            raise ValueError("proofId must not be empty")
+
+        if s.startswith("-"):
+            raise ValueError("proofId must be non-negative")
+
+        if "." in s:
+            raise ValueError("proofId cannot be fractional; fractional and exponent inputs are rejected")
+
+        if _EXPONENT_RE.match(s):
+            raise ValueError("proofId cannot use exponent notation; fractional and exponent inputs are rejected")
+
+        if s.lower().startswith("0x"):
+            hex_part = s[2:]
+            if len(hex_part) == 64 and all(c in "0123456789abcdef" for c in hex_part.lower()):
+                return hex_part.lower()
+            raise ValueError("hex proofId must be a 32-byte (64-character) hex string")
+
+        if len(s) == 64 and all(c in "0123456789abcdef" for c in s.lower()):
+            return s.lower()
+
+        if s.isdecimal():
+            return s
+
+        raise ValueError("proofId must be a 64-character hex string or an exact decimal integer")
+
+    try:
+        from decimal import Decimal
+
+        if isinstance(value, Decimal):
+            if value.is_nan() or value.is_infinite():
+                raise ValueError("proofId cannot be NaN or Infinite")
+            if value < 0:
+                raise ValueError("proofId must be non-negative")
+            if value % 1 != 0:
+                raise ValueError("proofId cannot be fractional; fractional and exponent inputs are rejected")
+            str_val = str(value)
+            if "e" in str_val.lower():
+                raise ValueError("proofId cannot use exponent notation; fractional and exponent inputs are rejected")
+            return str(int(value))
+    except ImportError:
+        pass
+
+    raise ValueError(f"unsupported proofId type: {type(value).__name__}")
 
 
 import json

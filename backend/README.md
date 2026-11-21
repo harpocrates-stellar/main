@@ -342,6 +342,15 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Proof Identifier Normalization
+
+`tx_verification.normalize_proof_id` and `chain_indexer` validate and normalize
+on-chain proof identifiers before inserting them into read views:
+
+- **Exact Decimal IDs**: Non-negative integers and digit strings (including large 64-bit, 128-bit, and 256-bit values exceeding standard IEEE-754 precision) are preserved as exact decimal strings across JSON and database boundaries without floating-point precision loss.
+- **Hexadecimal Identifiers**: Standard 32-byte hex strings (with or without `0x`/`0X` prefix) and raw 32-byte values are normalized to 64 lowercase hexadecimal characters.
+- **Fail-Closed Unsafe Coercion Rejection**: Floating-point numbers, fractional notation (e.g. `123.45`, `1.0`), exponent/scientific notation (e.g. `1e10`, `1.5e3`), booleans (`True`/`False`), negative values, and malformed strings are strictly rejected with `ValueError`. In the chain indexer event loop, events with malformed or coerced proof IDs are rejected fail-closed and tracked under the skipped/unknown topic metrics without corrupting the read view.
+
 ## Test
 
 ```powershell
