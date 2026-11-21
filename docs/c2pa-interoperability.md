@@ -393,6 +393,37 @@ Existing proof events, on-chain records, and ZK artifacts are unchanged.
 
 ---
 
+## Offline C2PA & Lineage Interoperability Corpus
+
+An offline, deterministic interoperability corpus lives in
+`backend/fixtures/c2pa_lineage_corpus.json` with a zero-network runner in
+`backend/c2pa_lineage_corpus.py`.
+
+All vectors use synthetic 32-byte hex digests and synthetic metadata — never
+real or sensitive media — and cover:
+
+- **C2PA manifests** across all identity tiers (`silent`, `source`, `seal`),
+  mixed supported (`harpocrates.binding/v1`) and unsupported ingredient/vendor
+  assertions (`c2pa.ingredient`, `c2pa.actions`, custom vendor labels),
+  corroboration matches/mismatches, and fail-closed parser rejections
+  (embedded binding contradictions, duplicates, unsupported algorithms, mapping
+  version mismatches, and assertion count bounds).
+- **Lineage manifests and DAGs** at maximum fan-out/depth bounds as well as
+  unsupported operations, fan-out/depth overflow, and transitive cycles.
+- **Cross-subsystem interoperability** combining mixed-ingredient C2PA manifests
+  with linked Harpocrates lineage manifests and corroboration checks, while
+  keeping `trust_status` strictly `signature_not_checked`.
+
+```bash
+# Run the offline corpus CLI directly
+cd backend && python c2pa_lineage_corpus.py
+
+# Run the focused corpus test suite
+cd backend && python -m pytest test_c2pa_lineage_corpus.py -v
+```
+
+---
+
 ## Running the tests
 
 ```bash
@@ -401,6 +432,9 @@ cd backend && python -m pytest test_c2pa.py -v
 
 # Backend — endpoint-level hash verification on /api/c2pa/export|import
 cd backend && python -m pytest test_c2pa_hashes_api.py -v
+
+# Backend — offline C2PA & lineage interoperability corpus
+cd backend && python -m pytest test_c2pa_lineage_corpus.py -v
 
 # Frontend
 cd frontend && npx vitest run src/c2pa.test.ts

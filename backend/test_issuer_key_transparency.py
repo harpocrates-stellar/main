@@ -7,21 +7,27 @@ import unittest
 from issuer_key_transparency import (
     DEFAULT_FRESHNESS_SECONDS,
     HIGH_ASSURANCE_FRESHNESS_SECONDS,
+    MAX_EXPLANATION_EVENTS,
     DirectoryCache,
     DirectoryCheckpoint,
     DirectoryEvent,
     EventType,
     FreshnessError,
+    HistoricalKeyValidityExplanation,
+    HistoricalValidityReason,
     IssuerDirectory,
     IssuerKey,
     IssuerManifest,
     KeyStatus,
+    LifecycleEventRef,
     TransparencyError,
+    canonicalize_validity_explanation,
     compute_tree_head,
     create_activation_event,
     create_rotation_event,
     detect_rollback,
     event_hash,
+    explain_historical_key_validity,
     key_valid_for_historical_signature,
     key_was_compromised_at,
     manifest_hash,
@@ -234,6 +240,132 @@ class HistoricalSignatureTests(unittest.TestCase):
         self.assertTrue(key_valid_for_historical_signature(d, "k1", 1500))
         self.assertTrue(key_was_compromised_at(d, "k1", 1800))
         self.assertFalse(key_was_compromised_at(d, "k1", 1700))
+
+
+class HistoricalValidityExplanationTests(unittest.TestCase):
+    def test_valid_before_and_invalid_after_rotation(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        e1 = create_rotation_event(ORG, "k2", KEY_B, "k1", 1, 2000, event_hash(e0))
+        d = rebuild_directory(ORG, [e0, e1])
+
+        before = explain_historical_key_validity(d, "k1", 1500)
+        self.assertTrue(before.valid)
+        self.assertEqual(before.reason_code, HistoricalValidityReason.VALID_BEFORE_ROTATION)
+        self.assertEqual(before.key_status, KeyStatus.ROTATED)
+        self.assertEqual(before.valid_from, 1000)
+        self.assertEqual(before.valid_until, 2000)
+        self.assertFalse(before.compromised_at_signature_time)
+        self.assertFalse(before.compromised_later)
+        self.assertFalse(before.events_truncated)
+        self.assertEqual(len(before.lifecycle_events), 2)
+        self.assertEqual(before.lifecycle_events[0].event_hash, event_hash(e0))
+        self.assertEqual(before.lifecycle_events[1].event_hash, event_hash(e1))
+        self.assertEqual(before.lifecycle_events[1].related_key_id, "k1")
+
+        at_boundary = explain_historical_key_validity(d, "k1", 2000)
+        self.assertFalse(at_boundary.valid)
+        self.assertEqual(
+            at_boundary.reason_code, HistoricalValidityReason.ROTATED_BEFORE_SIGNATURE_TIME
+        )
+
+        active_new = explain_historical_key_validity(d, "k2", 2000)
+        self.assertTrue(active_new.valid)
+        self.assertEqual(active_new.reason_code, HistoricalValidityReason.VALID_ACTIVE_KEY)
+        self.assertEqual(len(active_new.lifecycle_events), 1)
+        self.assertEqual(active_new.lifecycle_events[0].event_hash, event_hash(e1))
+
+    def test_compromised_key_explanation_pre_and_post_boundary(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        compromise = DirectoryEvent(
+            event_type=EventType.COMPROMISE,
+            sequence=1,
+            timestamp=1800,
+            organization_identity_hash=ORG,
+            key_id="k1",
+            public_key_hash=KEY_A,
+            previous_event_hash=event_hash(e0),
+            reason_hash="1" * 64,
+        )
+        d = rebuild_directory(ORG, [e0, compromise])
+
+        pre = explain_historical_key_validity(d, "k1", 1500)
+        self.assertTrue(pre.valid)
+        self.assertEqual(pre.reason_code, HistoricalValidityReason.VALID_BEFORE_COMPROMISE)
+        self.assertFalse(pre.compromised_at_signature_time)
+        self.assertTrue(pre.compromised_later)
+
+        post = explain_historical_key_validity(d, "k1", 1800)
+        self.assertFalse(post.valid)
+        self.assertEqual(
+            post.reason_code, HistoricalValidityReason.COMPROMISED_AT_SIGNATURE_TIME
+        )
+        self.assertTrue(post.compromised_at_signature_time)
+        self.assertFalse(post.compromised_later)
+
+    def test_retired_unknown_and_before_activation_reasons(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        retire = DirectoryEvent(
+            event_type=EventType.RETIREMENT,
+            sequence=1,
+            timestamp=2500,
+            organization_identity_hash=ORG,
+            key_id="k1",
+            public_key_hash=KEY_A,
+            previous_event_hash=event_hash(e0),
+        )
+        d = rebuild_directory(ORG, [e0, retire])
+
+        unknown = explain_historical_key_validity(d, "missing-key", 1500)
+        self.assertFalse(unknown.valid)
+        self.assertEqual(unknown.reason_code, HistoricalValidityReason.UNKNOWN_KEY)
+        self.assertIsNone(unknown.key_status)
+        self.assertEqual(unknown.lifecycle_events, ())
+
+        early = explain_historical_key_validity(d, "k1", 999)
+        self.assertFalse(early.valid)
+        self.assertEqual(early.reason_code, HistoricalValidityReason.BEFORE_ACTIVATION)
+
+        valid_pre_retire = explain_historical_key_validity(d, "k1", 2000)
+        self.assertTrue(valid_pre_retire.valid)
+        self.assertEqual(
+            valid_pre_retire.reason_code, HistoricalValidityReason.VALID_BEFORE_RETIREMENT
+        )
+
+        post_retire = explain_historical_key_validity(d, "k1", 2500)
+        self.assertFalse(post_retire.valid)
+        self.assertEqual(
+            post_retire.reason_code, HistoricalValidityReason.RETIRED_BEFORE_SIGNATURE_TIME
+        )
+
+    def test_bounded_lifecycle_events_and_invalid_bound_rejected(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        e1 = create_rotation_event(ORG, "k2", KEY_B, "k1", 1, 2000, event_hash(e0))
+        d = rebuild_directory(ORG, [e0, e1])
+
+        bounded = explain_historical_key_validity(d, "k1", 1500, max_events=1)
+        self.assertTrue(bounded.events_truncated)
+        self.assertEqual(len(bounded.lifecycle_events), 1)
+        self.assertEqual(bounded.lifecycle_events[0].sequence, 0)
+
+        with self.assertRaises(TransparencyError):
+            explain_historical_key_validity(d, "k1", 1500, max_events=0)
+        with self.assertRaises(TransparencyError):
+            explain_historical_key_validity(
+                d, "k1", 1500, max_events=MAX_EXPLANATION_EVENTS + 1
+            )
+
+    def test_canonical_round_trip_and_privacy_boundary(self) -> None:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        d = rebuild_directory(ORG, [e0])
+        exp = explain_historical_key_validity(d, "k1", 1500)
+        raw = canonicalize_validity_explanation(exp)
+        parsed = HistoricalKeyValidityExplanation.from_dict(exp.to_dict())
+        self.assertEqual(parsed, exp)
+        self.assertEqual(raw, canonicalize_validity_explanation(parsed))
+
+        blob = raw.lower()
+        for forbidden in ("evidence", "media", "email", "legalname", "phone", "device", "nonce"):
+            self.assertNotIn(forbidden, blob)
 
 
 class PrivacyTests(unittest.TestCase):
