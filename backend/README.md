@@ -120,6 +120,64 @@ that cursor. Replayed projections are idempotent on `(tx_hash, event_index)`,
 so rows committed before a failed page retry are treated as duplicates. No
 additional configuration or database migration is required.
 
+## Upload Admission Decision Schema
+
+Admission-controlled upload routes return a stable decision payload when they
+reject work. The legacy top-level `reason` (`identity_limit`, `queue_full`, or
+`timeout`) is retained for existing callers; new callers should use
+`error.admission`.
+
+| Stable code | Stable reason | HTTP | Meaning |
+| --- | --- | --- | --- |
+| `ADMISSION_IDENTITY_QUOTA` | `identity_quota` | 429 | The caller has reached its configured concurrent-upload quota. |
+| `ADMISSION_QUEUE_SATURATION` | `queue_saturation` | 503 | The bounded admission queue is full. |
+| `ADMISSION_PROCESSING_CAPACITY` | `processing_capacity` | 503 | A processing slot did not become available before the admission timeout. |
+
+Rejections use the standard error envelope plus an `admission` object:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "ADMISSION_QUEUE_SATURATION",
+    "message": "upload admission queue is full",
+    "request_id": "a1b2c3d4-...",
+    "admission": {
+      "code": "ADMISSION_QUEUE_SATURATION",
+      "reason": "queue_saturation",
+      "message": "upload admission queue is full",
+      "retryAfterSeconds": 10,
+      "retryable": true
+    }
+  },
+  "reason": "queue_full",
+  "admissionReason": "queue_saturation",
+  "retryAfterSeconds": 10
+}
+```
+
+`retryAfterSeconds` is bounded to 1–60 seconds and always matches the
+`Retry-After` response header. Messages never include client identity, queue
+depth, concurrency counters, or other callers' state. No new environment
+variables are required.
+
+## Upload Session Cancellation
+
+Upload sessions created by `POST /api/stego/upload-session` can be cancelled with
+`POST /api/stego/upload-session/<session_id>/cancel`. Cancellation is accepted
+while the session is queued, receiving chunks, or committing; terminal sessions
+return `409 UPLOAD_NOT_CANCELLABLE`, and unknown sessions return `404`.
+
+A queued admission ticket is released immediately. An active ticket moves to the
+`cancelling` state and is released when the in-flight chunk or commit request
+finishes. Cancellation removes the session's temporary directory only after all
+active writers stop, so a concurrent chunk never loses bytes mid-write. Further
+chunk, commit, or bounded-hash work on the cancelled session returns
+`409 UPLOAD_CANCELLED`.
+
+No additional environment variables are required; cancellation reuses the
+existing admission and upload settings.
+
 ## Upload and Verification Load Test
 
 With FFmpeg installed and a local testing backend running, execute a bounded
@@ -337,6 +395,12 @@ METRICS_TOKEN=secret-scraping-token
 METRICS_PATH=/metrics
 NOIR_WORKER_ENABLED=true
 NOIR_PROOF_TIMEOUT_SECONDS=180
+HARPOCRATES_RELEASE_ID=harpocrates-1.0.0
+HARPOCRATES_RELEASE_NETWORK=testnet
+STELLAR_NETWORK_PASSPHRASE=
+HARPOCRATES_REGISTRATION_RECONCILE_DIR=/tmp/harpocrates-registration-reconcile
+HARPOCRATES_STORAGE_DIR=/tmp/harpocrates_jobs
+MASTER_ENCRYPTION_KEY=
 DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
@@ -382,33 +446,50 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
-## Analytics Redaction Policy Comparison
+## Registration Reconciliation Checkpoint
 
-`analytics/redaction_policy_diff.py` compares two analytics redaction policy
-revisions against synthetic analytics records and reports newly removed
-(redacted or dropped), newly exposed, and marker-changed field paths without
-embedding raw sensitive values in output reports.
+`registration_reconcile.py` persists a single checkpoint containing the last
+trusted Stellar ledger, the network name/passphrase identity, and a fingerprint
+of the deployment configuration (`HARPOCRATES_RELEASE_ID`,
+`HARPOCRATES_RELEASE_NETWORK`, and the passphrase). The file is written atomically
+under `HARPOCRATES_REGISTRATION_RECONCILE_DIR` with owner-only permissions.
 
-```bash
-cd backend
-python -m analytics.redaction_policy_diff \
-  --before policy_v1.json \
-  --after policy_v2.json \
-  --format text \
-  --fail-on-exposed
+`CheckpointStore.record()` is idempotent for the same ledger and rejects lower
+ledgers. `load()`, `save()`, and `reconcile_registration()` refuse a checkpoint
+whose network or deployment fingerprint differs from the current configuration,
+so a stale or cross-network state file cannot advance confirmed registration
+state. The passphrase defaults to the known value for the configured release
+network; set `STELLAR_NETWORK_PASSPHRASE` explicitly for local or forked
+networks.
+
+```python
+from registration_reconcile import CheckpointStore, DeploymentIdentity
+
+deployment = DeploymentIdentity.from_config()
+store = CheckpointStore(deployment=deployment)
+checkpoint = store.record(1_250)
 ```
 
-- Pass `--records <path>` to supply a JSON array of synthetic records, or omit
-  it to use the built-in synthetic fixtures (`build_synthetic_analytics_records`).
-- Keep actual production analytics and real user identifiers out of committed
-  fixtures; use RFC 2606 (`.invalid`) domains and RFC 5737 test addresses.
-- `--fail-on-exposed` exits with code `2` whenever any field becomes newly
-  exposed in the candidate policy revision.
+## Encrypted Blob Collection
+
+`evidence_storage.py` never removes an encrypted blob file until the metadata
+transaction has committed. `collect_unreferenced_blob()` locks the blob row,
+checks for committed `tenant_blob_refs`, deletes the `blobs` row, commits, and
+only then unlinks the ciphertext. A failed reference check or metadata deletion
+leaves the file in place and raises `StorageMetadataRetryableError` after a
+bounded number of attempts.
+
+`record_tenant_ref()` takes the same blob-row lock before writing a reference,
+so concurrent collection cannot classify an in-flight reference as unreferenced.
+Both operations reuse the existing `DB_CONNECT_MAX_ATTEMPTS`,
+`DB_CONNECT_DEADLINE_SECONDS`, and `DB_CONNECT_RETRY_BASE_SECONDS` retry budget.
+At an HTTP boundary, map the error to the existing `DEPENDENCY_UNAVAILABLE`
+(503) envelope.
 
 ## Test
 
 ```powershell
-python -m unittest test_app.py test_stego.py
+python -m unittest test_app.py test_stego.py test_registration_reconcile.py test_evidence_storage.py
 ```
 
 The service uses temporary files while processing and does not persist uploaded
