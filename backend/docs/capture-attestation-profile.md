@@ -65,7 +65,10 @@ Harpocrates metadata envelope and proof-manifest conventions.
     "deviceCommitment": "32-byte-hex",
     "privacyScope": "per_session",
     "evidenceDigestBinding": "32-byte-hex",
-    "platformClaims": {}
+    "platformClaims": {},
+    "criticalFields": ["secureTime"],
+    "criticalExtensions": ["harpocrates.evidence-binding/v1"],
+    "optionalMetadata": {"captureMode": "still_burst"}
   }
 }
 ```
@@ -94,7 +97,10 @@ Harpocrates metadata envelope and proof-manifest conventions.
 | `deviceCommitment` | hex32 | Yes | HMAC-SHA256(nonce, perSessionDeviceKey). |
 | `privacyScope` | string | Yes | `per_session`, `per_relying_party`, `per_device_group`. |
 | `evidenceDigestBinding` | hex32 | Yes | SHA-256 of the evidence payload this attestation describes. |
-| `platformClaims` | object | No | Platform-specific transparent claims (e.g. SafetyNet/Play Integrity raw JWTs). |
+| `platformClaims` | object | No | Platform-specific transparent claims (e.g. SafetyNet/Play Integrity raw JWTs). An entry must not set `critical` or `required` to a non-false value. |
+| `criticalFields` | array of strings | No | Known field names this profile requires the verifier to understand. A declared field must be present and non-empty. |
+| `criticalExtensions` | array of strings | No | Extension identifiers whose semantics are required. Only `harpocrates.evidence-binding/v1` and `harpocrates.per-session-commitment/v1` are understood by V1. |
+| `optionalMetadata` | object | No | Allowlisted display metadata (string values length-bounded). Preserved and reported as unverified; it never raises the trust level. |
 
 ### 4.3 Canonical Encoding
 
@@ -110,6 +116,32 @@ The canonical hash is then:
 ```
 SHA-256(canonical_bytes)
 ```
+
+### 4.4 Profile Version and Critical Declarations
+
+Decoders fail closed when they cannot understand what a profile requires:
+
+- `version` must be the integer `1`; booleans and non-integer values are
+  rejected rather than coerced. `profile` must equal
+  `harpocrates-capture-attestation/v<version>`.
+- Unknown top-level fields, and unknown fields inside `appIdentity`,
+  `secureTime`, and `cameraPipeline`, are rejected. Known optional fields remain
+  compatible and round-trip unchanged.
+- Every name in `criticalFields` must be a known attestation field, and the
+  declared field must be present and non-empty. Unknown required fields raise
+  `AttestationProfileValidationError` (a `ValueError` subclass).
+- Every identifier in `criticalExtensions` must be understood by this verifier.
+  An unsupported identifier raises `AttestationProfileValidationError` instead
+  of being ignored.
+- `platformClaims` may carry platform evidence, but an entry that sets
+  `critical` or `required` to any non-false value is rejected. Only
+  `criticalFields` and `criticalExtensions` can declare verifier requirements.
+- `optionalMetadata` accepts only known scalar fields (`attestationBackend`,
+  `captureMode`, `lensProfile`, `osPatchLevel`, `sensorModelClass`). String
+  values are length-bounded; booleans and integers are preserved. It is
+  preserved for display and policy input, but
+  `inspect_attestation_profile_metadata` reports both
+  `optionalMetadataVerified: false` and `broadTrustAssumed: false`.
 
 ## 5. Integration Points
 
@@ -245,6 +277,8 @@ already stored in the contract's proof records.
 Reference implementations and test vectors are maintained in:
 
 - `backend/test_capture_attestation.py` — Python reference implementation.
+- `backend/test_attestation_profile_validation.py` — profile version and
+  critical-declaration rejection cases.
 - `cli/test/capture-attestation.test.ts` — Node.js test vectors.
 
 ## 8. Migration and Compatibility
@@ -252,7 +286,11 @@ Reference implementations and test vectors are maintained in:
 - **Versioning:** The `profile` string includes a `/v1` suffix. Future
   versions will use `/v2`, etc.
 - **Backward compatibility:** V1 verifiers MUST reject unknown profile
-  versions. Adding new optional fields to the same version is allowed.
+  versions and unknown required fields. Unknown top-level or nested fields are
+  rejected too, so introducing a new optional field requires updating the
+  verifier allow-list in the same release.
+- **Critical declarations:** A profile that requires an unknown field or
+  extension must be rejected, never downgraded to an unattested result silently.
 - **Schema changes:** Require bumping the `version` number in the
   attestation object.
 
