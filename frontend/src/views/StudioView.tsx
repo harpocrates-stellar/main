@@ -14,6 +14,8 @@ import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
 import { ProofPreparationPreview } from '../components/ProofPreparationPreview'
+import { ExportPrivacySummary } from '../components/ExportPrivacySummary'
+import { buildExportPrivacySummary } from '../exportPrivacySummary'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
@@ -42,6 +44,8 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setNullifierSeed,
     message,
     proofPreparation,
+    acknowledgedSensitiveFields = [],
+    acknowledgeSensitiveFields,
     registration,
     networkMismatch,
     isCancellable,
@@ -72,6 +76,18 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
       tier: proof.tier,
     }
   }, [proof, registration?.hash])
+
+  const exportPrivacySummary = useMemo(
+    () =>
+      buildExportPrivacySummary({
+        proof,
+        wallet,
+        acknowledgedSensitiveKeys: acknowledgedSensitiveFields,
+      }),
+    [proof, wallet, acknowledgedSensitiveFields],
+  )
+  const canExportArtifact =
+    exportPrivacySummary.ok && !exportPrivacySummary.requiresAcknowledgement
 
   return (
     <section className="workspace app-page" id="studio" aria-busy={isBusy || undefined} aria-label="Evidence Studio workspace">
@@ -239,15 +255,34 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         />
 
+        {proof ? (
+          <ExportPrivacySummary
+            summary={exportPrivacySummary}
+            onAcknowledgeSensitiveFields={acknowledgeSensitiveFields}
+          />
+        ) : null}
+
         {processedVideoUrl ? (
-          <a
-            className="download-link"
-            href={processedVideoUrl}
-            download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
-            aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
-          >
-            Download embedded evidence video
-          </a>
+          canExportArtifact ? (
+            <a
+              className="download-link"
+              href={processedVideoUrl}
+              download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
+            >
+              Download embedded evidence video
+            </a>
+          ) : (
+            <button
+              type="button"
+              className="download-link download-link--blocked"
+              disabled
+              aria-disabled="true"
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'} (acknowledge newly exposed sensitive fields first)`}
+            >
+              Download embedded evidence video
+            </button>
+          )
         ) : null}
 
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>

@@ -51,6 +51,8 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     setNullifierSeed: vi.fn(),
     message: 'Upload evidence to begin.',
     proofPreparation: buildProofPreparationPreview({ proof: null, tier: 'silent' }),
+    acknowledgedSensitiveFields: [],
+    acknowledgeSensitiveFields: vi.fn(),
     registration: null,
     networkMismatch: null,
     isCancellable: false,
@@ -172,5 +174,74 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('StudioView – export privacy summary', () => {
+  it('shows metadata classes and public identifiers and allows immediate export for baseline silent tier', () => {
+    renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        processedVideoUrl: 'blob:synthetic-evidence',
+      }),
+    )
+
+    const summaryRegion = screen.getByRole('region', { name: 'Export privacy summary' })
+    expect(summaryRegion).toHaveTextContent('Container & file metadata')
+    expect(summaryRegion).toHaveTextContent('Cryptographic digests')
+    expect(summaryRegion).toHaveTextContent('Ready to export')
+    expect(within(summaryRegion).queryByRole('checkbox')).not.toBeInTheDocument()
+
+    const downloadLink = screen.getByRole('link', { name: /Download harpocrates-clip\.mp4/i })
+    expect(downloadLink).toHaveAttribute('href', 'blob:synthetic-evidence')
+  })
+
+  it('blocks export until newly exposed sensitive fields are explicitly acknowledged on source tier', async () => {
+    const user = userEvent.setup()
+    const acknowledgeSensitiveFields = vi.fn()
+    const sourceProof: ProofPackage = { ...proof, tier: 'source' }
+
+    const { rerender } = renderStudio(
+      makeEvidence({
+        selectedTier: 'source',
+        stage: 'ready',
+        proof: sourceProof,
+        processedVideoUrl: 'blob:synthetic-source-evidence',
+        acknowledgedSensitiveFields: [],
+        acknowledgeSensitiveFields,
+      }),
+    )
+
+    expect(
+      screen.queryByRole('link', { name: /Download harpocrates-clip\.mp4/i }),
+    ).not.toBeInTheDocument()
+    const blockedButton = screen.getByRole('button', {
+      name: /Download harpocrates-clip\.mp4 \(acknowledge newly exposed sensitive fields first\)/i,
+    })
+    expect(blockedButton).toBeDisabled()
+
+    const checkbox = screen.getByRole('checkbox')
+    await user.click(checkbox)
+    expect(acknowledgeSensitiveFields).toHaveBeenCalledWith(['publicIdentity'])
+
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          selectedTier: 'source',
+          stage: 'ready',
+          proof: sourceProof,
+          processedVideoUrl: 'blob:synthetic-source-evidence',
+          acknowledgedSensitiveFields: ['publicIdentity'],
+          acknowledgeSensitiveFields,
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    const downloadLink = screen.getByRole('link', { name: /Download harpocrates-clip\.mp4/i })
+    expect(downloadLink).toHaveAttribute('href', 'blob:synthetic-source-evidence')
   })
 })
