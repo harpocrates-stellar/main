@@ -8,7 +8,7 @@ import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
-import { useA11yStage } from '../hooks/useA11y'
+import { useA11yStage, useStageFocus } from '../hooks/useA11y'
 import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
@@ -59,6 +59,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const stageHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const registerActionRef = useRef<HTMLButtonElement | null>(null)
+
+  useStageFocus(stage, stageHeadingRef, registerActionRef)
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -78,8 +82,17 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
       <div className="studio">
         <header className="page-header">
           <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
-          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
-          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
+          <p id="studio-status" role="status" aria-live="polite" aria-atomic="true">{message}</p>
+          <h3
+            id="studio-stage-heading"
+            ref={stageHeadingRef}
+            tabIndex={-1}
+            className="sr-only"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {statusLabel}
+          </h3>
         </header>
 
         {networkMismatch ? (
@@ -252,6 +265,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <button
+            ref={registerActionRef}
             className="primary-action"
             type="button"
             disabled={!proof || !!networkMismatch || isBusy}

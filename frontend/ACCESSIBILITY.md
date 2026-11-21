@@ -36,7 +36,7 @@ This document records the accessibility implementation for the Harpocrates front
 | 2.1.1 Keyboard | All interactive elements are native `<button>`, `<a>`, or `<input>` — fully keyboard accessible; no `tabIndex` traps |
 | 2.1.2 No Keyboard Trap | Skip-link and standard DOM order; no modal overlays trapping focus |
 | 2.4.1 Bypass Blocks | Skip-to-content link (`<a href="#main-content" class="skip-link">`) is the first focusable element; it renders visibly on focus |
-| 2.4.3 Focus Order | View transitions move focus to the target view's `<h2>` via `studioHeadingRef` / `verifyHeadingRef` + `setTimeout(focus, 50)` |
+| 2.4.3 Focus Order | View transitions move focus to the target view's `<h2>` via `studioHeadingRef` / `verifyHeadingRef` + `setTimeout(focus, 50)`; evidence-stage transitions restore focus to the Studio status heading (or the Register proof control once a package is ready) only when the focused control was removed or disabled |
 | 2.4.4 Link Purpose | Download link has `aria-label` that includes the filename; nav buttons have descriptive text |
 | 2.4.6 Headings and Labels | `<h1>` on hero, `<h2>` on Evidence Studio and Verify Artifact, `<h3>` on each rail block; all inputs have explicit labels |
 | 2.4.7 Focus Visible | `:focus-visible` rule adds 2 px solid `#4a9eff` ring to all interactive elements |
@@ -58,7 +58,7 @@ This document records the accessibility implementation for the Harpocrates front
 | Criterion | Implementation |
 |-----------|----------------|
 | 4.1.2 Name, Role, Value | All interactive elements use native HTML semantics; `aria-pressed` on wallet button and tier tabs; `aria-current="page"` on active nav button; `aria-busy` on studio section and register button during processing |
-| 4.1.3 Status Messages | Progress messages use `aria-live="polite"` in both the `.sr-only` live region and the visible `#studio-status` paragraph; errors use `aria-live="assertive"` in the `.sr-only` alert region |
+| 4.1.3 Status Messages | Progress messages use `aria-live="polite"` in both the `.sr-only` `#studio-stage-heading` (an `<h3>`) and the visible `#studio-status` paragraph; errors use `aria-live="assertive"` in the `.sr-only` alert region. Stage focus restoration targets the concise heading, so a stage change announces the status instead of re-reading the page |
 
 ---
 
@@ -66,14 +66,17 @@ This document records the accessibility implementation for the Harpocrates front
 
 ### `src/hooks/useA11y.ts`
 
-Four exported hooks:
+Five exported hooks:
 
 ```
-useLiveRegion(politeness?)  →  { message, announce }
-useA11yStage(stage)         →  { statusLabel, isBusy }
-useFocusReturn(ref, bool)   →  void (side-effect: returns focus on false)
-useSkipLink()               →  { mainRef, handleSkip }
+useLiveRegion(politeness?)                 →  { message, announce }
+useA11yStage(stage)                        →  { statusLabel, isBusy }
+useFocusReturn(ref, bool)                  →  void (side-effect: returns focus on false)
+useSkipLink()                              →  { mainRef, handleSkip }
+useStageFocus(stage, statusRef, nextRef?)  →  void (side-effect: restores focus after a stage change)
 ```
+
+`useStageFocus` records the last focused element and only moves focus when a stage change removes or disables that control (for example, the Cancel button disappearing when a flow is cancelled). Once a package is `ready` it focuses the Register proof control; every other stage focuses the `.sr-only` `#studio-stage-heading`. Updates that do not change the stage, such as hash progress percentages, never move focus, and the heading is scoped so assistive technology does not re-announce the surrounding page.
 
 `useLiveRegion.announce` runs every message through `sanitizeAnnouncement` before storing it in state. The sanitiser applies four regex passes in order:
 
