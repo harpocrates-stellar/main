@@ -414,6 +414,17 @@ High-impact registry administrative actions (such as setting the primary verifie
 
 See [TIMELOCK.md](TIMELOCK.md) for action kinds, payload and target semantics, delays, cancellation and emergency rules, error codes, and events.
 
+## Admin Council Proposal Cancellations
+
+Use `cancel_council_proposal_with_reason` to cancel an admin council proposal
+with a `CouncilCancellationReason` code. The `CouncilProposalCancelled` event
+retains the proposal ID as its stable identity and includes the bounded reason
+code; do not include private notes or free-form text in cancellation events.
+The existing `cancel_council_proposal` entrypoint remains available for
+compatibility and emits `LegacyUnspecified` (code `0`). New integrations should
+use a specific reason code: `Superseded` (`1`), `InvalidAction` (`2`),
+`SecurityConcern` (`3`), `NoLongerNeeded` (`4`), or `Other` (`5`).
+
 ## Emergency Pause
 
 Registration can be paused per identity tier without affecting reads or

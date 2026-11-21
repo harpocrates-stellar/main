@@ -1634,6 +1634,22 @@ pub struct CouncilProposalCancelled {
     #[topic]
     pub cancelled_by: Address,
     pub cancelled_at: u64,
+    pub reason_code: CouncilCancellationReason,
+}
+
+/// Bounded, privacy-safe reasons for cancelling an admin council proposal.
+/// Numeric values are stable on-chain; do not renumber.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum CouncilCancellationReason {
+    /// Indicates that no reason was supplied; the compatibility entrypoint uses it.
+    LegacyUnspecified = 0,
+    Superseded = 1,
+    InvalidAction = 2,
+    SecurityConcern = 3,
+    NoLongerNeeded = 4,
+    Other = 5,
 }
 
 #[contracttype]
@@ -3428,8 +3444,34 @@ impl HarpocratesRegistry {
         .publish(&env);
     }
 
-    /// Cancel a council proposal.
+    /// Cancel a council proposal using the compatibility reason code.
+    ///
+    /// New callers should use `cancel_council_proposal_with_reason`.
     pub fn cancel_council_proposal(env: Env, caller: Address, proposal_id: u32) {
+        Self::cancel_council_proposal_internal(
+            env,
+            caller,
+            proposal_id,
+            CouncilCancellationReason::LegacyUnspecified,
+        );
+    }
+
+    /// Cancel a council proposal with a bounded, privacy-safe reason code.
+    pub fn cancel_council_proposal_with_reason(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+        reason_code: CouncilCancellationReason,
+    ) {
+        Self::cancel_council_proposal_internal(env, caller, proposal_id, reason_code);
+    }
+
+    fn cancel_council_proposal_internal(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+        reason_code: CouncilCancellationReason,
+    ) {
         let council = Self::get_admin_council(env.clone())
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::Unauthorized));
 
@@ -3468,6 +3510,7 @@ impl HarpocratesRegistry {
             proposal_id,
             cancelled_by: caller,
             cancelled_at: env.ledger().timestamp(),
+            reason_code,
         }
         .publish(&env);
     }
