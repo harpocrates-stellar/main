@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from evidence_storage import assert_safe_destination
-from storage import BlobStore, StorageConfig, _collect_protected_paths, _paths_alias, load_storage_config
+from blob_store import BlobStore, StorageConfig, _collect_protected_paths, _paths_alias, load_storage_config
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +274,7 @@ class TestCollectProtectedPaths:
 
     def test_always_includes_source_root(self, tmp_path: Path) -> None:
         """The application source directory is always protected."""
-        import storage as storage_module
+        import blob_store as storage_module
 
         with patch.dict(os.environ, {}, clear=False):
             protected = _collect_protected_paths(tmp_path)
@@ -332,7 +332,7 @@ class TestLoadStorageConfig:
 
     def test_raises_when_storage_path_aliases_source_root(self) -> None:
         """Configuring EVIDENCE_STORAGE_PATH to the app source dir is rejected at load time."""
-        import storage as storage_module
+        import blob_store as storage_module
 
         source_root = str(Path(storage_module.__file__).resolve().parent)
         with patch.dict(os.environ, {"EVIDENCE_STORAGE_PATH": source_root}, clear=False):

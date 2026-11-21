@@ -403,6 +403,7 @@ def process_events_batch(
             tx_status=decoded.tx_status,
             metadata=decoded.metadata,
             created_at=decoded.created_at,
+            ledger=decoded.ledger,
         )
 
         if created:
