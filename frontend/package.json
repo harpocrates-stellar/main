@@ -26,7 +26,7 @@
     "ogl": "^1.0.11",
     "pako": "^3.0.1",
     "react": "^19.3.0",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
