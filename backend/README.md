@@ -106,6 +106,20 @@ This section documents all environment variables that can be used to configure t
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
 
+## Chain Indexer Backpressure
+
+The Soroban chain indexer requests 50 events per poll by default and clamps
+each requested page to a maximum of 100 events. It processes one page
+synchronously before polling again, so slow database writes pause event
+admission rather than accumulating an unbounded in-memory queue.
+
+An RPC response larger than the requested page is rejected before any events
+are written or the cursor is advanced. Database failures likewise leave the
+cursor at the last fully processed page; the worker backs off and retries from
+that cursor. Replayed projections are idempotent on `(tx_hash, event_index)`,
+so rows committed before a failed page retry are treated as duplicates. No
+additional configuration or database migration is required.
+
 ## Upload and Verification Load Test
 
 With FFmpeg installed and a local testing backend running, execute a bounded
@@ -127,6 +141,21 @@ No protocol, API schema, or database migration is introduced. Rollback is
 limited to removing the workload, its focused coverage, and this documentation;
 use normal test-data retention procedures for any synthetic events already
 created.
+
+## Worker Stale Heartbeat Handling
+
+Background workers extend active job leases via `heartbeat_job` and check for
+stale heartbeats via `get_job_heartbeat_state` and `reclaim_stale_jobs`.
+
+- Environment override: `WORKER_HEARTBEAT_STALE_SECONDS` (default: `300`, must
+  be positive).
+- When a `running` job's heartbeat age reaches or exceeds the stale threshold,
+  it is re-queued to `pending` with a retryable `processing_state` reason
+  (`stale_worker_heartbeat`, `retryable: true`, `category: "processing_state"`,
+  `cryptographic_failure: false`).
+- Stale heartbeats are reported independently of proof validity: unverified or
+  incomplete worker output is never classified as a cryptographic failure, and
+  private job payloads are never included in reclaimed-job summaries or logs.
 
 ## Noir Developer Worker
 
@@ -192,15 +221,26 @@ python manage.py retention --dry-run        # count expired, non-held proof even
 python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
 python manage.py retention --run --batch-size 500
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
+python manage.py projection-reconcile --start-ledger 1000 --end-ledger 1100 --contract-id C... --limit 1000
 python manage.py --json drift               # machine-readable JSON output
 ```
+
+`projection-reconcile` is read-only. It compares recognized lifecycle events
+in the inclusive ledger range with `proof_events` rows keyed by
+`(tx_hash, event_index)`, reporting absent projections separately from rows
+whose projected fields conflict with chain data. The range is limited to
+10,000 ledgers and the event limit defaults to 1,000 (maximum 10,000); an
+exceeded event limit returns an incomplete report rather than a clean result.
+Exit code `1` indicates a discrepancy or incomplete range. The command needs
+`DATABASE_URL` and `--contract-id`; the RPC endpoint can be selected with
+`--rpc-url`, `SOROBAN_RPC_URL`, or `STELLAR_RPC_URL`.
 
 Exit codes:
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success; no problems found |
-| `1` | Schema drift detected or migration checksum mismatch |
+| `1` | Schema drift, migration checksum mismatch, projection discrepancy, or incomplete projection range |
 | `2` | Invalid command-line usage |
 | `3` | `DATABASE_URL` is not configured |
 | `4` | Unexpected error (e.g. database unreachable); only the error type is printed |
@@ -297,6 +337,10 @@ METRICS_TOKEN=secret-scraping-token
 METRICS_PATH=/metrics
 NOIR_WORKER_ENABLED=true
 NOIR_PROOF_TIMEOUT_SECONDS=180
+HARPOCRATES_RELEASE_ID=harpocrates-1.0.0
+HARPOCRATES_RELEASE_NETWORK=testnet
+STELLAR_NETWORK_PASSPHRASE=
+HARPOCRATES_REGISTRATION_RECONCILE_DIR=/tmp/harpocrates-registration-reconcile
 DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
@@ -342,10 +386,34 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
+## Registration Reconciliation Checkpoint
+
+`registration_reconcile.py` persists a single checkpoint containing the last
+trusted Stellar ledger, the network name/passphrase identity, and a fingerprint
+of the deployment configuration (`HARPOCRATES_RELEASE_ID`,
+`HARPOCRATES_RELEASE_NETWORK`, and the passphrase). The file is written atomically
+under `HARPOCRATES_REGISTRATION_RECONCILE_DIR` with owner-only permissions.
+
+`CheckpointStore.record()` is idempotent for the same ledger and rejects lower
+ledgers. `load()`, `save()`, and `reconcile_registration()` refuse a checkpoint
+whose network or deployment fingerprint differs from the current configuration,
+so a stale or cross-network state file cannot advance confirmed registration
+state. The passphrase defaults to the known value for the configured release
+network; set `STELLAR_NETWORK_PASSPHRASE` explicitly for local or forked
+networks.
+
+```python
+from registration_reconcile import CheckpointStore, DeploymentIdentity
+
+deployment = DeploymentIdentity.from_config()
+store = CheckpointStore(deployment=deployment)
+checkpoint = store.record(1_250)
+```
+
 ## Test
 
 ```powershell
-python -m unittest test_app.py test_stego.py
+python -m unittest test_app.py test_stego.py test_registration_reconcile.py
 ```
 
 The service uses temporary files while processing and does not persist uploaded

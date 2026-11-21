@@ -23,6 +23,8 @@ MAX_ACTIVE_KEYS = 8
 MAX_EVENTS = 10_000
 MAX_MANIFEST_BYTES = 8_192
 MAX_CHECKPOINT_BYTES = 16_384
+MAX_EXPLANATION_EVENTS = 16
+MAX_EXPLANATION_BYTES = 4_096
 DEFAULT_FRESHNESS_SECONDS = 86_400  # 24h
 HIGH_ASSURANCE_FRESHNESS_SECONDS = 3_600  # 1h fail-closed window
 
@@ -40,6 +42,21 @@ class EventType(str, Enum):
     COMPROMISE = "compromise"
     RETIREMENT = "retirement"
     CHECKPOINT = "checkpoint"
+
+
+class HistoricalValidityReason(str, Enum):
+    """Stable reason codes for historical issuer-key validity explanations."""
+
+    VALID_ACTIVE_KEY = "valid_active_key"
+    VALID_BEFORE_ROTATION = "valid_before_rotation"
+    VALID_BEFORE_RETIREMENT = "valid_before_retirement"
+    VALID_BEFORE_COMPROMISE = "valid_before_compromise"
+    UNKNOWN_KEY = "unknown_key"
+    BEFORE_ACTIVATION = "before_activation"
+    ROTATED_BEFORE_SIGNATURE_TIME = "rotated_before_signature_time"
+    RETIRED_BEFORE_SIGNATURE_TIME = "retired_before_signature_time"
+    COMPROMISED_AT_SIGNATURE_TIME = "compromised_at_signature_time"
+    EXPIRED_BEFORE_SIGNATURE_TIME = "expired_before_signature_time"
 
 
 class TransparencyError(ValueError):
@@ -599,6 +616,210 @@ def key_was_compromised_at(directory: IssuerDirectory, key_id: str, at: int) -> 
         return False
     # Compromised at valid_until boundary.
     return key.valid_until is not None and at >= key.valid_until
+
+
+@dataclass(frozen=True)
+class LifecycleEventRef:
+    """Public, bounded reference to a key lifecycle event."""
+
+    event_type: EventType
+    sequence: int
+    timestamp: int
+    event_hash: str
+    key_id: str
+    related_key_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "eventHash": self.event_hash,
+            "eventType": self.event_type.value,
+            "keyId": self.key_id,
+            "sequence": self.sequence,
+            "timestamp": self.timestamp,
+        }
+        if self.related_key_id:
+            d["relatedKeyId"] = self.related_key_id
+        return d
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> "LifecycleEventRef":
+        return LifecycleEventRef(
+            event_type=EventType(str(obj["eventType"])),
+            sequence=int(obj["sequence"]),
+            timestamp=int(obj["timestamp"]),
+            event_hash=_require_hex("eventHash", str(obj["eventHash"])),
+            key_id=str(obj["keyId"]),
+            related_key_id=str(obj["relatedKeyId"]) if obj.get("relatedKeyId") else None,
+        )
+
+
+@dataclass(frozen=True)
+class HistoricalKeyValidityExplanation:
+    """Bounded, privacy-preserving explanation of historical issuer-key validity.
+
+    Contains only public directory metadata, stable reason codes, and bounded
+    public lifecycle event references. Never includes private evidence
+    identifiers, media digests, or raw organization/user fields.
+    """
+
+    organization_identity_hash: str
+    key_id: str
+    signature_timestamp: int
+    valid: bool
+    reason_code: HistoricalValidityReason
+    key_status: KeyStatus | None
+    valid_from: int | None
+    valid_until: int | None
+    compromised_at_signature_time: bool
+    compromised_later: bool
+    lifecycle_events: tuple[LifecycleEventRef, ...] = ()
+    events_truncated: bool = False
+    version: int = VERSION
+    protocol: str = PROTOCOL
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "compromisedAtSignatureTime": self.compromised_at_signature_time,
+            "compromisedLater": self.compromised_later,
+            "eventsTruncated": self.events_truncated,
+            "keyId": self.key_id,
+            "lifecycleEvents": [ref.to_dict() for ref in self.lifecycle_events],
+            "organizationIdentityHash": self.organization_identity_hash,
+            "protocol": self.protocol,
+            "reasonCode": self.reason_code.value,
+            "signatureTimestamp": self.signature_timestamp,
+            "valid": self.valid,
+            "version": self.version,
+        }
+        if self.key_status is not None:
+            d["keyStatus"] = self.key_status.value
+        if self.valid_from is not None:
+            d["validFrom"] = self.valid_from
+        if self.valid_until is not None:
+            d["validUntil"] = self.valid_until
+        return d
+
+    @staticmethod
+    def from_dict(obj: dict[str, Any]) -> "HistoricalKeyValidityExplanation":
+        if obj.get("protocol") != PROTOCOL:
+            raise TransparencyError("unsupported issuer transparency protocol")
+        if int(obj.get("version", 0)) not in SUPPORTED_VERSIONS:
+            raise TransparencyError("unsupported issuer transparency version")
+        raw_events = obj.get("lifecycleEvents", [])
+        if len(raw_events) > MAX_EXPLANATION_EVENTS:
+            raise TransparencyError("explanation lifecycleEvents exceeds bound")
+        return HistoricalKeyValidityExplanation(
+            organization_identity_hash=_require_hex(
+                "organizationIdentityHash", str(obj["organizationIdentityHash"])
+            ),
+            key_id=str(obj["keyId"]),
+            signature_timestamp=int(obj["signatureTimestamp"]),
+            valid=bool(obj["valid"]),
+            reason_code=HistoricalValidityReason(str(obj["reasonCode"])),
+            key_status=KeyStatus(str(obj["keyStatus"])) if obj.get("keyStatus") is not None else None,
+            valid_from=int(obj["validFrom"]) if obj.get("validFrom") is not None else None,
+            valid_until=int(obj["validUntil"]) if obj.get("validUntil") is not None else None,
+            compromised_at_signature_time=bool(obj["compromisedAtSignatureTime"]),
+            compromised_later=bool(obj["compromisedLater"]),
+            lifecycle_events=tuple(LifecycleEventRef.from_dict(e) for e in raw_events),
+            events_truncated=bool(obj.get("eventsTruncated", False)),
+            version=int(obj["version"]),
+            protocol=str(obj["protocol"]),
+        )
+
+
+def canonicalize_validity_explanation(explanation: HistoricalKeyValidityExplanation) -> str:
+    """Deterministic bounded JSON encoding of a historical validity explanation."""
+    if len(explanation.lifecycle_events) > MAX_EXPLANATION_EVENTS:
+        raise TransparencyError("explanation lifecycleEvents exceeds bound")
+    encoded = _canonical_json(explanation.to_dict())
+    if len(encoded) > MAX_EXPLANATION_BYTES:
+        raise TransparencyError("validity explanation exceeds size bound")
+    return encoded.decode("utf-8")
+
+
+def explain_historical_key_validity(
+    directory: IssuerDirectory,
+    key_id: str,
+    signature_timestamp: int,
+    *,
+    max_events: int = MAX_EXPLANATION_EVENTS,
+) -> HistoricalKeyValidityExplanation:
+    """Explain historical issuer-key validity as a bounded public record.
+
+    Reuses ``key_valid_for_historical_signature`` and ``key_was_compromised_at``
+    for the underlying validity decision, attaches a stable reason code, and
+    includes bounded public lifecycle event references without private evidence
+    identifiers.
+    """
+    if max_events < 1 or max_events > MAX_EXPLANATION_EVENTS:
+        raise TransparencyError(
+            f"max_events must be between 1 and {MAX_EXPLANATION_EVENTS}"
+        )
+
+    valid = key_valid_for_historical_signature(directory, key_id, signature_timestamp)
+    compromised_at = key_was_compromised_at(directory, key_id, signature_timestamp)
+    key = directory.keys.get(key_id)
+
+    if key is None:
+        reason = HistoricalValidityReason.UNKNOWN_KEY
+        compromised_later = False
+    elif valid:
+        compromised_later = key.status == KeyStatus.COMPROMISED and not compromised_at
+        if key.status == KeyStatus.ACTIVE:
+            reason = HistoricalValidityReason.VALID_ACTIVE_KEY
+        elif key.status == KeyStatus.ROTATED:
+            reason = HistoricalValidityReason.VALID_BEFORE_ROTATION
+        elif key.status == KeyStatus.RETIRED:
+            reason = HistoricalValidityReason.VALID_BEFORE_RETIREMENT
+        else:
+            reason = HistoricalValidityReason.VALID_BEFORE_COMPROMISE
+    else:
+        compromised_later = False
+        if signature_timestamp < key.valid_from:
+            reason = HistoricalValidityReason.BEFORE_ACTIVATION
+        elif compromised_at:
+            reason = HistoricalValidityReason.COMPROMISED_AT_SIGNATURE_TIME
+        elif key.status == KeyStatus.ROTATED:
+            reason = HistoricalValidityReason.ROTATED_BEFORE_SIGNATURE_TIME
+        elif key.status == KeyStatus.RETIRED:
+            reason = HistoricalValidityReason.RETIRED_BEFORE_SIGNATURE_TIME
+        else:
+            reason = HistoricalValidityReason.EXPIRED_BEFORE_SIGNATURE_TIME
+
+    matching_refs = [
+        LifecycleEventRef(
+            event_type=ev.event_type,
+            sequence=ev.sequence,
+            timestamp=ev.timestamp,
+            event_hash=event_hash(ev),
+            key_id=ev.key_id,
+            related_key_id=ev.related_key_id,
+        )
+        for ev in directory.events
+        if ev.event_type != EventType.CHECKPOINT
+        and (ev.key_id == key_id or ev.related_key_id == key_id)
+    ]
+    truncated = len(matching_refs) > max_events
+    bounded_refs = tuple(matching_refs[:max_events])
+
+    explanation = HistoricalKeyValidityExplanation(
+        organization_identity_hash=directory.organization_identity_hash,
+        key_id=key_id,
+        signature_timestamp=signature_timestamp,
+        valid=valid,
+        reason_code=reason,
+        key_status=key.status if key is not None else None,
+        valid_from=key.valid_from if key is not None else None,
+        valid_until=key.valid_until if key is not None else None,
+        compromised_at_signature_time=compromised_at,
+        compromised_later=compromised_later,
+        lifecycle_events=bounded_refs,
+        events_truncated=truncated,
+    )
+    # Enforce canonical byte-size bound fail-closed.
+    canonicalize_validity_explanation(explanation)
+    return explanation
 
 
 def create_activation_event(

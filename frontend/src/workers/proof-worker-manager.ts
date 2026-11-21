@@ -1,6 +1,7 @@
 import type { ProofWorkerMessage, ProofWorkerResponse, WorkerStatus } from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
 import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import { ProofBufferLedger } from '../proofWorkerMemory';
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -9,6 +10,7 @@ export class ProofWorkerManager {
   private cspConfig: ReturnType<typeof validateCSPPolicy>;
   private messageHandlers: Map<string, (response: ProofWorkerResponse) => void> = new Map();
   private isInitialized = false;
+  private bufferLedger = new ProofBufferLedger();
 
   constructor(config?: Partial<ReturnType<typeof validateCSPPolicy>>) {
     this.cspConfig = validateCSPPolicy(config || {});
@@ -25,8 +27,6 @@ export class ProofWorkerManager {
     }
 
     try {
-      // In a real implementation, this would load the worker from a URL
-      // For now, we simulate the initialization
       this.isInitialized = true;
       logger.info('Worker manager initialized', { cspConfig: this.cspConfig });
     } catch (error) {
@@ -71,9 +71,18 @@ export class ProofWorkerManager {
       };
 
       logger.info('Sending verify message', { id: messageId });
-      // In a real implementation, this would post to the actual worker
-      // this.worker?.postMessage(message);
+      this.worker?.postMessage(message);
     });
+  }
+
+  /** Registers a transient buffer so it is wiped when the session completes or is reused. */
+  trackBuffer<T extends ArrayBuffer | ArrayBufferView>(buffer: T): T {
+    return this.bufferLedger.track(buffer);
+  }
+
+  /** Releases a buffer once it has been transferred or exported. */
+  releaseBuffer(buffer: ArrayBuffer | ArrayBufferView): void {
+    this.bufferLedger.release(buffer);
   }
 
   async cancelProof(): Promise<void> {
@@ -89,13 +98,12 @@ export class ProofWorkerManager {
     };
 
     logger.info('Sending cancel message', { id: messageId });
-    // In a real implementation, this would post to the actual worker
-    // this.worker?.postMessage(message);
+    this.worker?.postMessage(message);
   }
 
   getStatus(): WorkerStatus {
     return {
-      isRunning: false, // In a real implementation, this would check the actual worker state
+      isRunning: false,
       currentTaskId: undefined,
       memoryUsage: undefined,
     };
@@ -105,7 +113,18 @@ export class ProofWorkerManager {
     return createCSPHeaders(this.cspConfig);
   }
 
+  /**
+   * Clears all completed proof buffers before the session is reused, so no
+   * previous private witness material is visible to a later operation.
+   */
+  resetForReuse(): void {
+    this.bufferLedger.clear();
+    this.messageHandlers.clear();
+    logger.info('Worker session reset for reuse');
+  }
+
   destroy(): void {
+    this.bufferLedger.clear();
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;

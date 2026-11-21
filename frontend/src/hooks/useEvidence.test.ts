@@ -233,3 +233,59 @@ describe('useEvidence hashing progress', () => {
   })
 })
 
+describe('useEvidence proof preparation preview', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('previews canonical public inputs before proving and submits nothing', async () => {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    const { result } = renderHook(() => useEvidence())
+    expect(result.current.proofPreparation).toMatchObject({
+      ok: false,
+      code: 'MISSING_EVIDENCE',
+    })
+
+    await act(async () => {
+      await result.current.handleEvidence(new File(['x'], 'evidence.mp4'))
+    })
+
+    expect(result.current.stage).toBe('ready')
+    const preview = result.current.proofPreparation
+    expect(preview.ok).toBe(true)
+    if (!preview.ok) return
+
+    expect(preview.policyId).toBe('silent_witness/input-v1')
+    expect(preview.policyVersion).toBe(1)
+    expect(preview.publicInputs.map((field) => field.key)).toEqual([
+      'video_hash_hi',
+      'video_hash_lo',
+      'verifier_scope',
+      'epoch',
+    ])
+    expect(preview.publicInputs.find((field) => field.key === 'verifier_scope')?.value).toBe('0')
+    expect(preview.publicInputs.find((field) => field.key === 'video_hash_hi')?.value).toBe(
+      BigInt(`0x${'b'.repeat(32)}`).toString(10),
+    )
+    expect(preview.concealedInputs.every((field) => field.value === '[REDACTED]')).toBe(true)
+    expect(preview.readOnly).toBe(true)
+    expect(preview.transactionSubmission).toBe('none')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})

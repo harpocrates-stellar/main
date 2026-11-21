@@ -81,11 +81,8 @@ class AppConfig:
     external_fetch_max_response_bytes: int = 65_536
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
-    job_file_ttl_seconds: int = 86_400
-    retention_blob_gc_enabled: bool = False
-    retention_unreferenced_blobs_enabled: bool = False
-    retention_dry_run: bool = False
-
+    registration_reconcile_state_dir: str = ""
+    stellar_network_passphrase: str = ""
 
 
 def load_config() -> AppConfig:
@@ -161,10 +158,12 @@ def load_config() -> AppConfig:
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
-        job_file_ttl_seconds=_job_file_ttl_env(),
-        retention_blob_gc_enabled=_blob_gc_enabled_env(),
-        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
-        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        registration_reconcile_state_dir=_str_env("HARPOCRATES_REGISTRATION_RECONCILE_DIR") or "",
+        stellar_network_passphrase=(
+            _str_env("STELLAR_NETWORK_PASSPHRASE")
+            or _str_env("HARPOCRATES_NETWORK_PASSPHRASE")
+            or ""
+        ),
     )
 
 
@@ -185,6 +184,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:

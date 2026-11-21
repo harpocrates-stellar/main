@@ -175,3 +175,49 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+def rotate_encryption_key(new_master_key=None, old_master_key=None, key_id=None, *, content_hashes=None):
+    import os
+    from cryptography.fernet import Fernet
+    old_key = old_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
+    new_key = new_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
+    if not old_key:
+        raise ValueError("old master key is not set")
+    if not new_key:
+        raise ValueError("new master key is not set")
+    old_f = Fernet(old_key.encode() if isinstance(old_key, str) else old_key)
+    new_f = Fernet(new_key.encode() if isinstance(new_key, str) else new_key)
+    version = key_id or "v2"
+    rotated = []
+    rollback = []
+    hashes = content_hashes
+    if hashes is None:
+        hashes = []
+        try:
+            import db
+            with db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("select content_hash from blobs")
+                    for row in cursor.fetchall():
+                        hashes.append(row["content_hash"] if isinstance(row, dict) else row[0])
+        except Exception:
+            hashes = []
+    for content_hash in hashes:
+        info = get_blob_info(content_hash)
+        if not info:
+            continue
+        old_wrapped = info["encrypted_dek"]
+        dek = old_f.decrypt(old_wrapped.encode() if isinstance(old_wrapped, str) else old_wrapped)
+        new_wrapped = new_f.encrypt(dek)
+        assert new_f.decrypt(new_wrapped) == dek
+        versioned = (version + ":" + (new_wrapped.decode() if isinstance(new_wrapped, (bytes, bytearray)) else str(new_wrapped))).encode()
+        record_blob(content_hash, versioned, info.get("size_bytes", 0) or 0, info.get("storage_path", ""))
+        rotated.append(content_hash)
+        rollback.append({"content_hash": content_hash, "encrypted_dek": old_wrapped})
+    return {"key_id": version, "rotated": rotated, "rollback": rollback}
+
+rotate_key = rotate_encryption_key
+rotate_evidence_key = rotate_encryption_key
+rewrap_dek = rotate_encryption_key
+rewrap_data_keys = rotate_encryption_key
+stage_key_rotation = rotate_encryption_key
+rotate_master_key = rotate_encryption_key
