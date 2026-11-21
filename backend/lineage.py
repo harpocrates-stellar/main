@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 SUPPORTED_OPERATIONS = {"crop", "transcode", "blur", "redact", "compose"}
@@ -46,6 +47,53 @@ class LineageRecordError(RuntimeError):
     pass
 
 
+class LineageVerificationStatus(str, Enum):
+    """Explicit verification verdict for a portable lineage bundle.
+
+    ``INCOMPLETE`` is a distinct status from ``VERIFIED`` so callers never
+    present a partial or unanchored lineage graph as a fully verified original.
+    """
+
+    VERIFIED = "verified"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True)
+class LineageVerifiedEdge:
+    """A verified directed edge from a derived statement to a known parent."""
+
+    child_digest: str
+    parent_id: str
+    parent_kind: str  # "statement" | "trust_reference"
+    operation_type: str
+    statement_digest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "childDigest": self.child_digest,
+            "parentId": self.parent_id,
+            "parentKind": self.parent_kind,
+            "operationType": self.operation_type,
+            "statementDigest": self.statement_digest,
+        }
+
+
+@dataclass(frozen=True)
+class LineageMissingDependency:
+    """An explicit missing parent dependency encountered during lineage traversal."""
+
+    parent_id: str
+    referenced_by: tuple[str, ...]
+    reason: str = "missing_parent"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "parentId": self.parent_id,
+            "referencedBy": list(self.referenced_by),
+            "reason": self.reason,
+        }
+
+
 @dataclass(frozen=True)
 class LineageBundleVerificationResult:
     """Verified summary of a portable lineage verification bundle."""
@@ -59,6 +107,27 @@ class LineageBundleVerificationResult:
     max_depth_observed: int
     tiers: tuple[str, ...]
     trust_anchor_types: tuple[str, ...]
+    status: LineageVerificationStatus = LineageVerificationStatus.VERIFIED
+    complete: bool = True
+    verified_edges: tuple[LineageVerifiedEdge, ...] = ()
+    missing_dependencies: tuple[LineageMissingDependency, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "status": self.status.value,
+            "complete": self.complete,
+            "bundleDigest": self.bundle_digest,
+            "targetDigest": self.target_digest,
+            "network": self.network,
+            "statementCount": self.statement_count,
+            "rootProofIds": list(self.root_proof_ids),
+            "maxDepthObserved": self.max_depth_observed,
+            "tiers": list(self.tiers),
+            "trustAnchorTypes": list(self.trust_anchor_types),
+            "verifiedEdges": [edge.to_dict() for edge in self.verified_edges],
+            "missingDependencies": [dep.to_dict() for dep in self.missing_dependencies],
+        }
 
 
 def canonical_lineage_manifest(manifest: dict[str, Any]) -> str:
@@ -391,6 +460,7 @@ def verify_lineage_verification_bundle(
     *,
     max_depth: int = MAX_LINEAGE_DEPTH,
     max_nodes: int = MAX_BUNDLE_NODES,
+    allow_incomplete: bool = False,
 ) -> LineageBundleVerificationResult:
     """Verify a portable lineage verification bundle completely offline.
 
@@ -398,7 +468,13 @@ def verify_lineage_verification_bundle(
     - Bounded payload size, node count, fan-out, and graph depth.
     - No external URLs or network resolution.
     - Canonical statement digests and network consistency.
-    - No missing parents, no cycles, no contradictory roots, and no orphaned nodes.
+    - No cycles, no contradictory roots, and no orphaned nodes.
+    - By default (``allow_incomplete=False``), fails closed with
+      ``LineageBundleError("missing_parent", ...)`` if any parent dependency is
+      absent. When ``allow_incomplete=True``, returns a distinct
+      ``LineageVerificationStatus.INCOMPLETE`` result (``valid=False``,
+      ``complete=False``) containing all known ``verified_edges`` and explicit
+      ``missing_dependencies`` without presenting the graph as fully verified.
     """
     if isinstance(bundle, str):
         raw_bytes = bundle.encode("utf-8")
@@ -454,7 +530,7 @@ def verify_lineage_verification_bundle(
         raise LineageBundleError("node_limit_exceeded", "statements")
 
     trust_refs_raw = data.get("trustReferences")
-    if not isinstance(trust_refs_raw, list) or not trust_refs_raw:
+    if not isinstance(trust_refs_raw, list) or (not allow_incomplete and not trust_refs_raw):
         raise LineageBundleError("empty_trust_references", "trustReferences")
     if len(trust_refs_raw) > MAX_BUNDLE_TRUST_REFS:
         raise LineageBundleError("trust_reference_limit_exceeded", "trustReferences")
@@ -500,6 +576,8 @@ def verify_lineage_verification_bundle(
     visited_statements: set[str] = set()
     used_roots: set[str] = set()
     visiting: set[str] = set()
+    verified_edges_set: set[LineageVerifiedEdge] = set()
+    missing_refs_by_parent: dict[str, set[str]] = {}
     max_depth_observed = 0
 
     def _visit(node_id: str, depth: int) -> None:
@@ -520,6 +598,15 @@ def verify_lineage_verification_bundle(
             if parent_key in visiting:
                 raise LineageBundleError("cycle_detected", "parentProofIds")
             if parent_key in statements_by_output:
+                verified_edges_set.add(
+                    LineageVerifiedEdge(
+                        child_digest=node_id,
+                        parent_id=parent_key,
+                        parent_kind="statement",
+                        operation_type=stmt["operationType"],
+                        statement_digest=stmt["manifestDigest"],
+                    )
+                )
                 if parent_key not in visited_statements:
                     _visit(parent_key, depth + 1)
                 else:
@@ -530,8 +617,19 @@ def verify_lineage_verification_bundle(
                         max_depth_observed = depth + 1
             elif parent_key in trust_by_id:
                 used_roots.add(parent_key)
+                verified_edges_set.add(
+                    LineageVerifiedEdge(
+                        child_digest=node_id,
+                        parent_id=parent_key,
+                        parent_kind="trust_reference",
+                        operation_type=stmt["operationType"],
+                        statement_digest=stmt["manifestDigest"],
+                    )
+                )
             else:
-                raise LineageBundleError("missing_parent", "parentProofIds")
+                if not allow_incomplete:
+                    raise LineageBundleError("missing_parent", "parentProofIds")
+                missing_refs_by_parent.setdefault(parent_key, set()).add(node_id)
 
         visiting.remove(node_id)
 
@@ -544,9 +642,23 @@ def verify_lineage_verification_bundle(
 
     tiers = tuple(sorted({trust_by_id[rid]["tier"] for rid in used_roots}))
     anchor_types = tuple(sorted({trust_by_id[rid]["trustAnchorType"] for rid in used_roots}))
+    verified_edges = tuple(
+        sorted(
+            verified_edges_set,
+            key=lambda edge: (edge.child_digest, edge.parent_id, edge.parent_kind),
+        )
+    )
+    missing_dependencies = tuple(
+        LineageMissingDependency(
+            parent_id=parent_id,
+            referenced_by=tuple(sorted(children)),
+        )
+        for parent_id, children in sorted(missing_refs_by_parent.items())
+    )
+    is_complete = len(missing_dependencies) == 0
 
     return LineageBundleVerificationResult(
-        valid=True,
+        valid=is_complete,
         bundle_digest=computed_digest,
         target_digest=target_key,
         network=bundle_network,
@@ -555,4 +667,12 @@ def verify_lineage_verification_bundle(
         max_depth_observed=max_depth_observed,
         tiers=tiers,
         trust_anchor_types=anchor_types,
+        status=(
+            LineageVerificationStatus.VERIFIED
+            if is_complete
+            else LineageVerificationStatus.INCOMPLETE
+        ),
+        complete=is_complete,
+        verified_edges=verified_edges,
+        missing_dependencies=missing_dependencies,
     )
