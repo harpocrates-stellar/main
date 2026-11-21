@@ -26,6 +26,10 @@ import {
   PROOF_PREPARATION_VERIFIER_SCOPE,
   type ProofPreparationPreviewResult,
 } from '../proofPreparationPreview'
+import {
+  classifyInterruptedSession,
+  type InterruptedUploadSession,
+} from '../interruptedUpload'
 
 export const TIERS = [
   {
@@ -49,7 +53,8 @@ export const TIERS = [
     icon: Building2,
     description:
       'Verified issuer account signs the evidence as an official source. The connected wallet must be registered by the admin first.',
-  },]
+  },
+]
 
 const CONTRACT_ID = appConfig.harpocratesRegistryId
 
@@ -94,6 +99,21 @@ export type UseEvidenceReturn = {
   cancelEvidence: () => void
   /** Cancel an in-flight Silent Witness proof generation (no-op if idle). */
   cancelProving: () => void
+  /**
+   * Classification of the most-recently interrupted upload session.
+   * `category === 'none'` means there is no interrupted session to show.
+   */
+  interruptedSession: InterruptedUploadSession
+  /**
+   * Re-submit the interrupted file through the full evidence pipeline.
+   * No-op when `interruptedSession.category !== 'resumable'`.
+   */
+  resumeEvidence: () => Promise<void>
+  /**
+   * Clear the interrupted session without retrying.
+   * Resets stage back to `'idle'` and forgets the interrupted file.
+   */
+  discardEvidence: () => void
 }
 
 type PendingRegistration = {
@@ -137,6 +157,12 @@ export function useEvidence(): UseEvidenceReturn {
     lastModified: number
     digest: string
   } | null>(null)
+
+  // Interrupted-upload recovery: track the file and timestamp of the most
+  // recently interrupted session so the RecoveryBanner can classify it.
+  // Stored in state (not refs) so that updates trigger a re-render of the banner.
+  const [interruptedFile, setInterruptedFile] = useState<File | null>(null)
+  const [interruptedAt, setInterruptedAt] = useState<number | null>(null)
 
   useEffect(() => {
     stageRef.current = stage
@@ -319,6 +345,11 @@ export function useEvidence(): UseEvidenceReturn {
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
       if (!isCurrentFlow()) return
+      // Capture the interrupted file so the recovery banner can classify the
+      // session even when the interruption came from an error rather than
+      // explicit cancellation.
+      setInterruptedFile(nextFile)
+      setInterruptedAt(Date.now())
       setStage('error')
       setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
     } finally {
@@ -468,7 +499,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -486,6 +517,11 @@ export function useEvidence(): UseEvidenceReturn {
     if (currentStage !== 'hashing' && currentStage !== 'embedding' && currentStage !== 'proving') {
       return
     }
+    // Capture the interrupted file and timestamp before resetting state so the
+    // recovery banner can classify the session after the user navigates away
+    // and returns to the studio.
+    setInterruptedFile(file)
+    setInterruptedAt(Date.now())
     evidenceFlowAbortRef.current?.abort()
     evidenceFlowAbortRef.current = null
     if (currentStage === 'proving') {
@@ -495,6 +531,55 @@ export function useEvidence(): UseEvidenceReturn {
     setHashProgress(null)
     setStage('cancelled')
     setMessage(CANCELLED_MESSAGES[currentStage])
+  }
+
+  // ---------------------------------------------------------------------------
+  // Interrupted-upload recovery
+  // ---------------------------------------------------------------------------
+
+  // Classify the current session on every render so the RecoveryBanner always
+  // reflects the latest state without needing a separate subscription.
+  const interruptedSession: InterruptedUploadSession = useMemo(
+    () =>
+      classifyInterruptedSession({
+        stage,
+        currentFile: file,
+        interruptedFile,
+        interruptedAt,
+        errorMessage: stage === 'error' ? message : null,
+      }),
+    [stage, file, interruptedFile, interruptedAt, message],
+  )
+
+  /**
+   * Re-submit the interrupted file through the full evidence pipeline.
+   *
+   * Guards:
+   * - Only acts when the session is classified as 'resumable'.
+   * - Prevents automatic retry when the user has picked a different source
+   *   file (source-changed guard is enforced by classifyInterruptedSession).
+   */
+  async function resumeEvidence(): Promise<void> {
+    if (interruptedSession.category !== 'resumable') return
+    const fileToResume = interruptedFile
+    if (!fileToResume) return
+    // Clear the interrupted session before starting so a new interruption
+    // during the resumed flow is tracked fresh.
+    setInterruptedFile(null)
+    setInterruptedAt(null)
+    await handleEvidence(fileToResume)
+  }
+
+  /**
+   * Clear the interrupted session and return to 'idle' without retrying.
+   */
+  function discardEvidence(): void {
+    setInterruptedFile(null)
+    setInterruptedAt(null)
+    resetFlow()
+    setHashProgress(null)
+    setStage('idle')
+    setMessage('Upload evidence to begin.')
   }
 
   return {
@@ -521,5 +606,8 @@ export function useEvidence(): UseEvidenceReturn {
     registerProof,
     cancelEvidence,
     cancelProving,
+    interruptedSession,
+    resumeEvidence,
+    discardEvidence,
   }
 }

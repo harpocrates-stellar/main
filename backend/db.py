@@ -687,9 +687,15 @@ def find_proof_events_by_video(
 
 def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
     if not database_url():
-        return [
+        rows = [
             dict(r) for r in _INDEXED_EVENTS.values() if r.get("proof_id") == proof_id
         ]
+        rows.sort(key=lambda r: (
+            r.get("ledger") if r.get("ledger") is not None else float("inf"),
+            r.get("event_index") if r.get("event_index") is not None else float("inf"),
+            r.get("tx_hash") or "",
+        ))
+        return rows
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -715,10 +721,14 @@ def find_proof_events_by_proof_id(proof_id: str) -> list[dict[str, Any]]:
                     time_attestation,
                     claimed_capture_time,
                     event_index,
+                    ledger,
                     created_at
                 from proof_events
                 where proof_id = %s
-                order by id desc;
+                order by ledger asc nulls last,
+                         event_index asc nulls last,
+                         tx_hash asc nulls last,
+                         id asc;
                 """,
                 (proof_id,),
             )
@@ -1563,6 +1573,166 @@ def get_job_queue_metrics() -> dict[str, Any]:
 get_job_metrics = get_job_queue_metrics
 
 
+# ---------------------------------------------------------------------------
+# Registration conflict quarantine — in-memory stub (no DATABASE_URL)
+# ---------------------------------------------------------------------------
+
+# Maps idempotency_key → list of conflict records (bounded per key)
+_REGISTRATION_CONFLICTS: dict[str, list[dict[str, Any]]] = {}
+_mock_conflict_id = 200000
+
+
+def insert_registration_conflict(
+    *,
+    idempotency_key: str,
+    conflict_field: str,
+    proof_id: str | None = None,
+    video_hash: str | None = None,
+    source_address: str | None = None,
+    tx_hash: str | None = None,
+    conflict_tier_incoming: str | None = None,
+    per_key_max: int = 10,
+    ttl_days: int = 30,
+) -> bool:
+    """Insert a quarantine record for a registration conflict.
+
+    Enforces a per-idempotency-key cap (``per_key_max``).  When the cap is
+    already reached the record is silently skipped and ``False`` is returned.
+    Returns ``True`` when a new record was stored.
+
+    Privacy: only ``conflict_field`` (name), safe public identifiers
+    (``proof_id``, ``video_hash``, ``source_address``, ``tx_hash``), and
+    the ``conflict_tier_incoming`` enum value are persisted.  Raw hash
+    values for the conflicting field are never stored.
+    """
+    global _mock_conflict_id
+
+    if not database_url():
+        existing = _REGISTRATION_CONFLICTS.get(idempotency_key, [])
+        if len(existing) >= per_key_max:
+            return False
+        _mock_conflict_id += 1
+        now = datetime.now(timezone.utc)
+        record: dict[str, Any] = {
+            "id": _mock_conflict_id,
+            "idempotency_key": idempotency_key,
+            "conflict_field": conflict_field,
+            "proof_id": proof_id,
+            "video_hash": video_hash,
+            "source_address": source_address,
+            "tx_hash": tx_hash,
+            "conflict_tier_incoming": conflict_tier_incoming,
+            "created_at": now,
+            "expires_at": now,  # TTL not enforced in memory
+        }
+        _REGISTRATION_CONFLICTS.setdefault(idempotency_key, []).append(record)
+        return True
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # Enforce per-key cap atomically before inserting.
+            cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM registration_conflicts "
+                "WHERE idempotency_key = %s;",
+                (idempotency_key,),
+            )
+            row = cursor.fetchone()
+            if row and int(row["cnt"]) >= per_key_max:
+                return False
+
+            cursor.execute(
+                """
+                INSERT INTO registration_conflicts (
+                    idempotency_key,
+                    conflict_field,
+                    proof_id,
+                    video_hash,
+                    source_address,
+                    tx_hash,
+                    conflict_tier_incoming,
+                    expires_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s,
+                        now() + (%s || ' days')::interval)
+                RETURNING id, created_at, expires_at;
+                """,
+                (
+                    idempotency_key,
+                    conflict_field,
+                    proof_id,
+                    video_hash,
+                    source_address,
+                    tx_hash,
+                    conflict_tier_incoming,
+                    str(int(ttl_days)),
+                ),
+            )
+            inserted = cursor.fetchone()
+        connection.commit()
+    return inserted is not None
+
+
+def get_registration_conflicts(
+    idempotency_key: str,
+) -> list[dict[str, Any]]:
+    """Return all quarantine records for the given idempotency key.
+
+    Results are ordered by ``created_at ASC``.  Expired records are
+    included; callers that need only live records should filter on
+    ``expires_at > now()``.
+    """
+    if not database_url():
+        return [
+            dict(r)
+            for r in _REGISTRATION_CONFLICTS.get(idempotency_key, [])
+        ]
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, idempotency_key, conflict_field,
+                       proof_id, video_hash, source_address,
+                       tx_hash, conflict_tier_incoming,
+                       created_at, expires_at
+                FROM registration_conflicts
+                WHERE idempotency_key = %s
+                ORDER BY created_at ASC;
+                """,
+                (idempotency_key,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def purge_expired_conflicts(batch_size: int = 500) -> int:
+    """Delete expired quarantine records and return the count removed.
+
+    Safe to call repeatedly (no-op when no rows are expired).  Uses a
+    bounded ``LIMIT`` to avoid long-running deletes on large tables.
+    """
+    if not database_url():
+        # In-memory stubs do not enforce expiry.
+        return 0
+
+    limit = max(1, min(int(batch_size), 10_000))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM registration_conflicts
+                WHERE id IN (
+                    SELECT id FROM registration_conflicts
+                    WHERE expires_at < now()
+                    LIMIT %s
+                );
+                """,
+                (limit,),
+            )
+            deleted = cursor.rowcount or 0
+        connection.commit()
+    return deleted
+
+
 _INDEXED_EVENTS: dict[tuple[str, int], dict[str, Any]] = {}
 _INDEXER_STATE: dict[str, dict[str, Any]] = {}
 _mock_indexed_id = 100000
@@ -1580,12 +1750,18 @@ def insert_indexed_proof_event(
     metadata_hash: str | None = None,
     metadata: dict[str, Any] | None = None,
     created_at: datetime | None = None,
+    ledger: int | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Insert an on-chain indexed proof event idempotently.
 
     Returns ``(row, created)`` where *created* is ``True`` when a new row was
     written and ``False`` when an existing row with the same ``(tx_hash, event_index)``
     was already present.
+
+    ``ledger`` is the Soroban ledger sequence number for this event.  When
+    present it is the primary sort key for canonical chain ordering so that
+    events within the same ledger are further ordered by ``event_index`` and
+    then ``tx_hash`` rather than by database insertion time.
     """
     global _mock_indexed_id
     if not database_url():
@@ -1604,6 +1780,7 @@ def insert_indexed_proof_event(
             "tx_status": tx_status,
             "contract_id": contract_id,
             "event_index": event_index,
+            "ledger": ledger,
             "metadata": metadata,
             "created_at": now,
         }
@@ -1624,11 +1801,12 @@ def insert_indexed_proof_event(
                     tx_status,
                     contract_id,
                     event_index,
+                    ledger,
                     idempotency_key,
                     metadata,
                     created_at
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now()))
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now()))
                 on conflict (tx_hash, event_index)
                 where tx_hash is not null and event_index is not null
                 do nothing
@@ -1652,6 +1830,7 @@ def insert_indexed_proof_event(
                     time_attestation,
                     claimed_capture_time,
                     event_index,
+                    ledger,
                     created_at;
                 """,
                 (
@@ -1663,6 +1842,7 @@ def insert_indexed_proof_event(
                     tx_status,
                     contract_id,
                     event_index,
+                    ledger,
                     idempotency_key,
                     Jsonb(metadata) if metadata is not None else None,
                     created_at,
@@ -1696,6 +1876,7 @@ def insert_indexed_proof_event(
                     time_attestation,
                     claimed_capture_time,
                     event_index,
+                    ledger,
                     created_at
                 from proof_events
                 where tx_hash = %s and event_index = %s
@@ -1714,15 +1895,29 @@ def insert_indexed_proof_event(
 def get_indexed_proof_events(
     event_keys: list[tuple[str, int]],
 ) -> list[dict[str, Any]]:
-    """Read indexed projection rows for the supplied (tx_hash, event_index) keys."""
+    """Read indexed projection rows for the supplied (tx_hash, event_index) keys.
+
+    Results are returned in canonical chain order:
+    ``ledger ASC NULLS LAST, event_index ASC NULLS LAST, tx_hash ASC``.
+    This matches the total order of Soroban ledger paging tokens and avoids
+    ordering by database insertion time (``id``), which is non-deterministic
+    across concurrent or replayed ingestion runs.
+    """
     if not event_keys:
         return []
     if not database_url():
-        return [
+        rows = [
             dict(_INDEXED_EVENTS[key])
             for key in event_keys
             if key in _INDEXED_EVENTS
         ]
+        # Apply canonical in-memory sort: ledger, event_index, tx_hash
+        rows.sort(key=lambda r: (
+            r.get("ledger") if r.get("ledger") is not None else float("inf"),
+            r.get("event_index") if r.get("event_index") is not None else float("inf"),
+            r.get("tx_hash") or "",
+        ))
+        return rows
 
     tx_hashes, event_indexes = zip(*event_keys)
     with get_connection() as connection:
@@ -1730,11 +1925,14 @@ def get_indexed_proof_events(
             cursor.execute(
                 """
                 select tx_hash, event_index, event_type, proof_id, contract_id,
-                       tx_status, metadata
+                       tx_status, ledger, metadata
                 from proof_events
                 where (tx_hash, event_index) in (
                     select * from unnest(%s::text[], %s::integer[])
-                );
+                )
+                order by ledger asc nulls last,
+                         event_index asc nulls last,
+                         tx_hash asc;
                 """,
                 (list(tx_hashes), list(event_indexes)),
             )

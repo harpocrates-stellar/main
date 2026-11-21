@@ -34,6 +34,9 @@ vi.mock("./hooks/useEvidence", () => ({
     proof: null,
     registration: null,
     cancelProving,
+    interruptedSession: { category: "none", fileName: null, interruptedAt: null },
+    resumeEvidence: vi.fn(),
+    discardEvidence: vi.fn(),
   }),
 }));
 vi.mock("./hooks/useVerification", () => ({

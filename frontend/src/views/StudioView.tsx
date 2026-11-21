@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react'
-import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
+import { BadgeCheck, CheckCircle2, Loader2, RefreshCw, Trash2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
@@ -9,7 +9,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
@@ -18,8 +17,88 @@ import { ExportPrivacySummary } from '../components/ExportPrivacySummary'
 import { buildExportPrivacySummary } from '../exportPrivacySummary'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
+import {
+  RECOVERY_CATEGORY_LABELS,
+  RECOVERY_CATEGORY_DESCRIPTIONS,
+  type InterruptedUploadSession,
+} from '../interruptedUpload'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
+
+// ---------------------------------------------------------------------------
+// RecoveryBanner – persists interrupted-upload choices across navigation
+// ---------------------------------------------------------------------------
+
+type RecoveryBannerProps = {
+  session: InterruptedUploadSession
+  onResume: () => void
+  onDiscard: () => void
+}
+
+/**
+ * Shown when the user returns to the studio after an interrupted upload.
+ * The banner survives navigation because useEvidence lives in App, not in
+ * StudioView — the hook's state is never torn down when the view unmounts.
+ *
+ * Recovery choices:
+ *   resumable      → Resume + Discard buttons
+ *   source-changed → Discard only (auto-retry would use the wrong source hash)
+ *   expired        → Start over only (timestamp would be too old)
+ *   unrecoverable  → Start over only (server rejected the payload)
+ */
+function RecoveryBanner({ session, onResume, onDiscard }: RecoveryBannerProps) {
+  if (session.category === 'none') return null
+
+  const label = RECOVERY_CATEGORY_LABELS[session.category]
+  const description = RECOVERY_CATEGORY_DESCRIPTIONS[session.category]
+  const isResumable = session.category === 'resumable'
+
+  return (
+    <div
+      className="recovery-banner"
+      role="region"
+      aria-label="Interrupted upload recovery"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div className="recovery-banner__content">
+        <strong className="recovery-banner__heading">{label}</strong>
+        {session.fileName ? (
+          <span className="recovery-banner__filename" aria-label={`File: ${session.fileName}`}>
+            {session.fileName}
+          </span>
+        ) : null}
+        <p className="recovery-banner__description">{description}</p>
+      </div>
+      <div className="recovery-banner__actions" role="group" aria-label="Recovery actions">
+        {isResumable ? (
+          <button
+            type="button"
+            className="recovery-banner__resume"
+            onClick={onResume}
+            aria-label={`Resume upload${session.fileName ? ` of ${session.fileName}` : ''}`}
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+            Resume
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="recovery-banner__discard"
+          onClick={onDiscard}
+          aria-label="Discard interrupted session and start over"
+        >
+          <Trash2 size={14} aria-hidden="true" />
+          {isResumable ? 'Discard' : 'Start over'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// StudioView
+// ---------------------------------------------------------------------------
 
 type Props = {
   wallet: string
@@ -53,6 +132,9 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     registerProof,
     cancelEvidence,
     cancelProving,
+    interruptedSession,
+    resumeEvidence,
+    discardEvidence,
   } = evidence
 
   const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
@@ -104,6 +186,15 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <span>{networkMismatch}</span>
           </div>
         ) : null}
+
+        {/* Recovery banner — visible whenever the user returns to the studio
+            after an interrupted, cancelled, or failed upload.  It survives
+            navigation because useEvidence state lives in App. */}
+        <RecoveryBanner
+          session={interruptedSession}
+          onResume={() => void resumeEvidence()}
+          onDiscard={discardEvidence}
+        />
 
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
@@ -306,7 +397,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
               className="secondary-action"
               type="button"
               onClick={() => cancelProving()}
-              aria-label="Cancel proof generation"
+              aria-label="Cancel silent witness proving"
             >
               <XCircle size={18} aria-hidden="true" />
               Cancel proving

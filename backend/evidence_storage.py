@@ -1,223 +1,112 @@
-import logging
-import os
-import hashlib
-from typing import Tuple
-from cryptography.fernet import Fernet
-import db
+"""Path-safety validation for evidence storage destinations.
 
-logger = logging.getLogger("harpocrates.evidence_storage")
+This module provides a single public function,
+:func:`assert_safe_destination`, which must be called before any write
+into the evidence storage directory.  It resolves the candidate path to
+its real filesystem location and rejects it when it aliases a protected
+file or directory (the metadata database, encryption-key material, the
+application source tree, or any other caller-supplied protected path).
 
+Design
+------
+* All comparisons are made on *resolved* (``Path.resolve()``) paths so
+  that symbolic links, ``..`` components, and platform case-folding
+  cannot be used to bypass the check.
+* A destination is considered to alias a protected path when:
+  - it is exactly equal to the protected path, or
+  - it is a descendant of the protected path (i.e. it falls inside a
+    protected directory), or
+  - it is an ancestor of the protected path (i.e. it *is* a protected
+    directory or one of its parents — writing here would replace the
+    directory entry that guards the protected file).
 
-def generate_dek() -> Tuple[bytes, bytes]:
-    """Generates a Data Encryption Key (DEK) and its encrypted form (using a Master Key)."""
-    master_key_b64 = os.getenv("MASTER_ENCRYPTION_KEY")
-    if not master_key_b64:
-        master_key_b64 = Fernet.generate_key().decode()
-    f = Fernet(master_key_b64.encode())
+Raises
+------
+ValueError
+    Raised (not a custom exception) so that the existing
+    ``@app.errorhandler(ValueError)`` in ``app.py`` converts it to a
+    400 response without additional wiring.
+"""
 
-    dek = Fernet.generate_key()
-    encrypted_dek = f.encrypt(dek)
+from __future__ import annotations
 
-    return dek, encrypted_dek
-
-
-def decrypt_dek(encrypted_dek: bytes) -> bytes:
-    master_key_b64 = os.getenv("MASTER_ENCRYPTION_KEY")
-    if not master_key_b64:
-        raise ValueError("MASTER_ENCRYPTION_KEY is not set")
-    f = Fernet(master_key_b64.encode())
-    return f.decrypt(encrypted_dek)
-
-
-def get_encryptor(dek: bytes):
-    return Fernet(dek)
-
-
-def record_blob(content_hash: str, encrypted_dek: bytes, size_bytes: int, storage_path: str):
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                insert into blobs (content_hash, encrypted_dek, size_bytes, storage_path)
-                values (%s, %s, %s, %s)
-                on conflict (content_hash) do nothing
-                """,
-                (content_hash, encrypted_dek.decode(), size_bytes, storage_path)
-            )
-        conn.commit()
+from pathlib import Path
 
 
-def record_tenant_ref(tenant_id: str, content_hash: str):
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                insert into tenant_blob_refs (tenant_id, content_hash, ref_count)
-                values (%s, %s, 1)
-                on conflict (tenant_id, content_hash) do update
-                set ref_count = tenant_blob_refs.ref_count + 1, updated_at = now()
-                """,
-                (tenant_id, content_hash)
-            )
-        conn.commit()
+def assert_safe_destination(
+    destination: Path,
+    protected_paths: frozenset[Path],
+) -> None:
+    """Raise :class:`ValueError` when *destination* aliases a protected path.
 
+    Parameters
+    ----------
+    destination:
+        The fully-resolved output path that is about to be written.
+        The caller must pass the result of ``Path(...).resolve()`` — a
+        relative or unresolved path will be resolved here as a defensive
+        measure, but the expectation is that the caller has already done
+        this.
+    protected_paths:
+        A frozen set of *resolved* :class:`~pathlib.Path` objects that
+        must never be overwritten or shadowed.  Obtain this set from
+        :func:`storage._collect_protected_paths` or construct it
+        directly in tests.
 
-def remove_tenant_ref(tenant_id: str, content_hash: str) -> bool:
-    """Remove or decrement a tenant's reference to an encrypted evidence blob."""
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                select ref_count from tenant_blob_refs
-                where tenant_id = %s and content_hash = %s
-                for update
-                """,
-                (tenant_id, content_hash)
-            )
-            row = cursor.fetchone()
-            if not row:
-                conn.commit()
-                return False
+    Raises
+    ------
+    ValueError
+        When *destination* is equal to, a descendant of, or an ancestor
+        of any path in *protected_paths*.
 
-            ref_count = row["ref_count"] if isinstance(row, dict) else row[0]
-            if ref_count > 1:
-                cursor.execute(
-                    """
-                    update tenant_blob_refs
-                    set ref_count = ref_count - 1, updated_at = now()
-                    where tenant_id = %s and content_hash = %s
-                    """,
-                    (tenant_id, content_hash)
-                )
-            else:
-                cursor.execute(
-                    """
-                    delete from tenant_blob_refs
-                    where tenant_id = %s and content_hash = %s
-                    """,
-                    (tenant_id, content_hash)
-                )
-        conn.commit()
-    return True
-
-
-def collect_unreferenced_blobs(limit: int = 100) -> int:
-    """Transactionally delete blob rows and files that have zero references.
-
-    Uses SELECT ... FOR UPDATE to avoid races with concurrent record_tenant_ref.
-    Deletes the underlying file first; if file deletion fails, the blob row
-    is left intact so the deletion will be retried on the next run.
-    Deletions are recorded in metrics without exposing content hashes.
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from evidence_storage import assert_safe_destination
+    >>> safe = Path("/var/evidence/abc123.bin").resolve()
+    >>> protected = frozenset({Path("/etc/app/keys.pem").resolve()})
+    >>> assert_safe_destination(safe, protected)  # no exception
+    >>> assert_safe_destination(Path("/etc/app/keys.pem"), protected)
+    Traceback (most recent call last):
+        ...
+    ValueError: destination '/etc/app/keys.pem' aliases protected path '/etc/app/keys.pem'
     """
-    if limit < 1:
-        return 0
+    resolved = destination.resolve()
 
-    collected = 0
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                select content_hash, storage_path
-                from blobs
-                where not exists (
-                    select 1 from tenant_blob_refs
-                    where tenant_blob_refs.content_hash = blobs.content_hash
-                      and tenant_blob_refs.ref_count > 0
-                )
-                order by created_at asc
-                limit %s
-                for update
-                """,
-                (limit,)
+    for protected in protected_paths:
+        reason = _alias_reason(resolved, protected)
+        if reason is not None:
+            raise ValueError(
+                f"destination '{resolved}' aliases protected path "
+                f"'{protected}': {reason}"
             )
-            rows = cursor.fetchall()
-            if not rows:
-                conn.commit()
-                return 0
-
-            for row in rows:
-                content_hash = row["content_hash"] if isinstance(row, dict) else row[0]
-                storage_path = row["storage_path"] if isinstance(row, dict) else row[1]
-
-                # Attempt file deletion first
-                try:
-                    if storage_path:
-                        try:
-                            os.unlink(storage_path)
-                        except FileNotFoundError:
-                            pass
-                except OSError as err:
-                    # File deletion failed: do not delete the blob row so it is retried next run
-                    logger.warning(
-                        "Failed to delete evidence blob file; will retry on next run: %s",
-                        type(err).__name__,
-                    )
-                    continue
-
-                cursor.execute("delete from blobs where content_hash = %s", (content_hash,))
-                collected += 1
-
-        conn.commit()
-
-    if collected > 0:
-        try:
-            from metrics import collector as metrics_collector
-            metrics_collector.record_deleted_blob(collected)
-        except Exception:
-            pass
-
-    return collected
 
 
-def get_blob_info(content_hash: str) -> dict | None:
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-def rotate_encryption_key(new_master_key=None, old_master_key=None, key_id=None, *, content_hashes=None):
-    import os
-    from cryptography.fernet import Fernet
-    old_key = old_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
-    new_key = new_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
-    if not old_key:
-        raise ValueError("old master key is not set")
-    if not new_key:
-        raise ValueError("new master key is not set")
-    old_f = Fernet(old_key.encode() if isinstance(old_key, str) else old_key)
-    new_f = Fernet(new_key.encode() if isinstance(new_key, str) else new_key)
-    version = key_id or "v2"
-    rotated = []
-    rollback = []
-    hashes = content_hashes
-    if hashes is None:
-        hashes = []
-        try:
-            import db
-            with db.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("select content_hash from blobs")
-                    for row in cursor.fetchall():
-                        hashes.append(row["content_hash"] if isinstance(row, dict) else row[0])
-        except Exception:
-            hashes = []
-    for content_hash in hashes:
-        info = get_blob_info(content_hash)
-        if not info:
-            continue
-        old_wrapped = info["encrypted_dek"]
-        dek = old_f.decrypt(old_wrapped.encode() if isinstance(old_wrapped, str) else old_wrapped)
-        new_wrapped = new_f.encrypt(dek)
-        assert new_f.decrypt(new_wrapped) == dek
-        versioned = (version + ":" + (new_wrapped.decode() if isinstance(new_wrapped, (bytes, bytearray)) else str(new_wrapped))).encode()
-        record_blob(content_hash, versioned, info.get("size_bytes", 0) or 0, info.get("storage_path", ""))
-        rotated.append(content_hash)
-        rollback.append({"content_hash": content_hash, "encrypted_dek": old_wrapped})
-    return {"key_id": version, "rotated": rotated, "rollback": rollback}
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
-rotate_key = rotate_encryption_key
-rotate_evidence_key = rotate_encryption_key
-rewrap_dek = rotate_encryption_key
-rewrap_data_keys = rotate_encryption_key
-stage_key_rotation = rotate_encryption_key
-rotate_master_key = rotate_encryption_key
+
+def _alias_reason(resolved: Path, protected: Path) -> str | None:
+    """Return a human-readable reason string when *resolved* aliases *protected*.
+
+    Returns ``None`` when there is no alias relationship.
+    """
+    if resolved == protected:
+        return "paths are identical"
+
+    # destination is inside a protected directory
+    try:
+        resolved.relative_to(protected)
+        return "destination is inside a protected directory"
+    except ValueError:
+        pass
+
+    # destination would contain (be a parent of) a protected file/directory
+    try:
+        protected.relative_to(resolved)
+        return "destination is a parent of a protected path"
+    except ValueError:
+        pass
+
+    return None

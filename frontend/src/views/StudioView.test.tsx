@@ -13,6 +13,22 @@ import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
 
+vi.mock('../stellar', () => ({
+  CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+}))
+vi.mock('../hooks/useIssuerTrust', () => ({
+  useIssuerTrust: () => ({ trust: null, isLoading: false }),
+}))
+vi.mock('../hooks/useVerifierState', () => ({
+  useVerifierState: () => ({ state: null, isLoading: false }),
+}))
+vi.mock('../hooks/useProofRevocationReason', () => ({
+  useProofRevocationReason: () => ({ reason: null }),
+}))
+vi.mock('../hooks/useWallet', () => ({
+  useWallet: () => ({ wallet: '', connectWallet: vi.fn(), networkMismatch: null }),
+}))
+
 function makeVerification(): UseVerificationReturn {
   return {
     verifyHash: '',
@@ -59,6 +75,10 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
+    interruptedSession: { category: 'none', fileName: null, interruptedAt: null },
+    resumeEvidence: vi.fn(),
+    discardEvidence: vi.fn(),
     ...overrides,
   }
 }
