@@ -60,7 +60,7 @@ describe('--flag=value form', () => {
     ['verify', ['--output=json', '--manifest=m.json'], { output: 'json', manifest: 'm.json' }],
     ['manifest', ['--input=in.json', '--format=text'], { input: 'in.json', format: 'text' }],
     ['hash', ['--file=a.bin'], { file: 'a.bin' }],
-    ['verify-receipt', ['--receipt=r.json', '--keys=k-json'], { receipt: 'r.json', keys: 'k.json' }],
+    ['verify-receipt', ['--receipt=r.json', '--keys=k.json'], { receipt: 'r.json', keys: 'k.json' }],
     ['c2pa', ['--title=a=b', '--output=out.json'], { title: 'a=b', output: 'out.json' }],
   ]
 
@@ -82,7 +82,7 @@ describe('long flags and camelCase fallbacks', () => {
     ],
     [
       'verify',
-      ['--contractId', 'C1', '--tyHash', 'h', '--rpcUrl', 'u', '--sourceAddress', 'G1'],
+      ['--contractId', 'C1', '--txHash', 'h', '--rpcUrl', 'u', '--sourceAddress', 'G1'],
       { contractId: 'C1', txHash: 'h', rpcUrl: 'u', sourceAddress: 'G1' },
     ],
     [
@@ -134,7 +134,15 @@ describe('boolean flags', () => {
 })
 
 describe('stdin dash as a value', () => {
-  it.each<Case>([])
+  it.each<Case>([
+    ['verify', ['--manifest', '-'], { manifest: '-' }],
+    ['manifest', ['-i', '-'], { input: '-' }],
+    ['hash', ['-f', '-'], { file: '-' }],
+    ['verify-receipt', ['--receipt', '-'], { receipt: '-' }],
+    ['c2pa', ['-m', '-'], { manifest: '-' }],
+  ])('%s accepts "-" for stdin', (command, args, flags) => {
+    expect(parseCliArgs([command, ...args]).flags).toEqual(flags)
+  })
 })
 
 describe('env defaults', () => {

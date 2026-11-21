@@ -29,7 +29,8 @@
     "./receipt": "./dist/receipt.js",
     "./normalize": "./dist/normalize.js",
     "./signed-receipt": "./dist/signed-receipt.js",
-    "./proof-verify": "./dist/proof-verify.js"
+    "./proof-verify": "./dist/proof-verify.js",
+    "./compare-receipt": "./dist/compare-receipt.js"
   },
   "dependencies": {
     "@aztec/bb.js": "^0.87.0",

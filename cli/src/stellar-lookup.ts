@@ -328,7 +328,7 @@ async function simulateRead(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   const contract = new Contract(contractId)
-  const operation = contract.call(method, ...(args as Parameters<typeof contract.call>[1]))
+  const operation = (contract as any).call(method, ...args)
 
   if (!source) {
     throw new Error(
