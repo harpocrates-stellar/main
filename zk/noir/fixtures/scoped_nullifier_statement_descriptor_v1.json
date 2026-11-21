@@ -1,0 +1,79 @@
+{
+  "descriptor_sha256": "9d880d31c94a8c92f1f5f201c68bb64ef495d3d9d50c359da36f454070460a9f",
+  "encodings": {
+    "circuit_version": "CURRENT_CIRCUIT_VERSION as Field; value 2",
+    "credential_root": "pedersen([credential_secret])",
+    "domain_tag": "harpocrates_common::expected_domain_tag()",
+    "nullifier": "pedersen([credential_secret, nullifier_secret, pedersen([SHA256_ID, video_hash_hi, video_hash_lo, pedersen([SCOPED_NULLIFIER_V1, verifier_scope, epoch])])])"
+  },
+  "format": "harpocrates.scoped-nullifier-statement-descriptor",
+  "helper": {
+    "function": "silent_witness_helper.main",
+    "private_inputs": [
+      { "name": "credential_secret", "type": "Field", "visibility": "private" },
+      { "name": "nullifier_secret", "type": "Field", "visibility": "private" },
+      { "name": "video_hash_hi", "type": "Field", "visibility": "private" },
+      { "name": "video_hash_lo", "type": "Field", "visibility": "private" },
+      { "name": "verifier_scope", "type": "Field", "visibility": "private" },
+      { "name": "epoch", "type": "Field", "visibility": "private" }
+    ],
+    "public_outputs": [
+      { "name": "credential_root", "type": "Field", "visibility": "public" },
+      { "name": "nullifier", "type": "Field", "visibility": "public" },
+      { "name": "domain_tag", "type": "Field", "visibility": "public" }
+    ]
+  },
+  "id": "silent_witness/scoped-v2",
+  "main": {
+    "function": "silent_witness.main",
+    "private_inputs": [
+      { "name": "credential_secret", "type": "Field", "visibility": "private" },
+      { "name": "nullifier_secret", "type": "Field", "visibility": "private" }
+    ],
+    "public_inputs": [
+      { "name": "video_hash_hi", "type": "Field", "visibility": "public" },
+      { "name": "video_hash_lo", "type": "Field", "visibility": "public" },
+      { "name": "credential_root", "type": "Field", "visibility": "public" },
+      { "name": "nullifier", "type": "Field", "visibility": "public" },
+      { "name": "verifier_scope", "type": "Field", "visibility": "public" },
+      { "name": "epoch", "type": "Field", "visibility": "public" },
+      { "name": "domain_tag", "type": "Field", "visibility": "public" },
+      { "name": "circuit_version", "type": "Field", "visibility": "public" }
+    ]
+  },
+  "public_input_order": [
+    "video_hash_hi",
+    "video_hash_lo",
+    "credential_root",
+    "nullifier",
+    "verifier_scope",
+    "epoch",
+    "domain_tag",
+    "circuit_version"
+  ],
+  "reviewed_artifact_bindings": [
+    {
+      "normalized_sha256": "465e556f5904e7bc5404cfb7557e5648949df36b504d7b7b0a218257cf83d509",
+      "path": "frontend/public/noir/silent_witness.json"
+    },
+    {
+      "normalized_sha256": "a141350e3c2f83fb4d30c9c4c6ba81ff6ef0400a39e81b7a583bf36754719df8",
+      "path": "frontend/public/noir/silent_witness_helper.json"
+    }
+  ],
+  "source_bindings": [
+    {
+      "path": "zk/noir/harpocrates_common/src/lib.nr",
+      "sha256": "8bd9d9ec34b80ede862d9659c138397840436e98ff64cc297a7fcbba0f4e0d04"
+    },
+    {
+      "path": "zk/noir/silent_witness/src/main.nr",
+      "sha256": "a418b2f1eea19a54901b019afb6a42fa96e1616ba608e4ede587a32c1b2c918c"
+    },
+    {
+      "path": "zk/noir/silent_witness_helper/src/main.nr",
+      "sha256": "c0f781aadd239a6fef99192af191157418c6738511717d273ffa02c03d30d901"
+    }
+  ],
+  "version": 1
+}

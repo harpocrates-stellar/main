@@ -260,6 +260,31 @@ pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_confor
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
+## Scoped statement descriptor
+
+[`fixtures/scoped_nullifier_statement_descriptor_v1.json`](fixtures/scoped_nullifier_statement_descriptor_v1.json)
+is the machine-readable scoped-v2 statement descriptor. It lists ordered public
+and private inputs for `silent_witness.main`, the private inputs and public
+outputs for `silent_witness_helper.main`, the public-input order, and the
+canonical encodings. Its `descriptor_sha256` is SHA-256 over canonical JSON
+(sorted keys, compact separators) with that digest field omitted. The descriptor
+also binds to the normalized digests of the reviewed Silent Witness and helper
+ACIR artifacts in [`browser.artifacts.manifest.json`](../browser.artifacts.manifest.json)
+and to LF-normalized hashes of the defining Noir sources.
+
+From the repository root, check the committed descriptor or regenerate it after
+a reviewed statement or artifact change:
+
+```bash
+python zk/tools/scoped_nullifier_descriptor.py check
+python zk/tools/scoped_nullifier_descriptor.py write
+python zk/tools/artifact_manifest.py verify-provenance
+```
+
+The descriptor and its generator are included in the circuit provenance source
+set, so an input, encoding, descriptor, or reviewed artifact change requires an
+explicitly reviewed update rather than silent normalization.
+
 ## Build
 
 For the full local build with the checked-in prover file:
