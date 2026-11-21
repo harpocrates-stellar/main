@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -16,12 +17,37 @@ CHECKPOINT_VERSION = 1
 DEFAULT_CHECKPOINT_FILENAME = "registration-reconcile-checkpoint.json"
 DEFAULT_STATE_DIR = Path(tempfile.gettempdir()) / "harpocrates-registration-reconcile"
 
+LOGGER = logging.getLogger("harpocrates.registration_reconcile")
+if not LOGGER.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    LOGGER.addHandler(handler)
+LOGGER.setLevel(logging.INFO)
+
+MAX_RECONCILE_BATCH = 50
+MAX_TIMELINE_ENTRIES = 100
+DEFAULT_MIN_CONFIRMATIONS = 1
+
 KNOWN_NETWORK_PASSPHRASES = {
     "mainnet": "Public Global Stellar Network ; September 2015",
     "testnet": "Test SDF Network ; September 2015",
     "futurenet": "Test SDF Future Network ; October 2022",
     "local": "Local Sandbox Stellar Network ; September 2022",
     "standalone": "Standalone Network ; February 2017",
+}
+
+# Canonical outcome classes exposed in the reconciliation timeline.
+OUTCOME_SUBMITTED = "submitted"
+OUTCOME_CONFIRMED = "confirmed"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_UNKNOWN = "unknown"
+
+_STATUS_TO_OUTCOME = {
+    "pending": OUTCOME_SUBMITTED,
+    "confirmed": OUTCOME_CONFIRMED,
+    "failed": OUTCOME_REJECTED,
+    "missing": OUTCOME_UNKNOWN,
+    "error": OUTCOME_UNKNOWN,
 }
 
 
@@ -47,6 +73,40 @@ class LedgerRollbackError(CheckpointError):
 
 class TransportError(CheckpointError):
     pass
+
+
+def classify_outcome(status: str | None) -> str:
+    """Map an internal tx status onto the canonical outcome vocabulary."""
+    if status is None:
+        return OUTCOME_UNKNOWN
+    return _STATUS_TO_OUTCOME.get(status, OUTCOME_UNKNOWN)
+
+
+def _result_payload(
+    *,
+    tx_hash: str,
+    previous_status: str | None,
+    verification: TxVerificationResult,
+    updated: bool,
+    proof_id: str | None = None,
+    event_id: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "txHash": tx_hash,
+        "previousStatus": previous_status,
+        "status": verification.status,
+        "outcome": classify_outcome(verification.status),
+        "updated": updated,
+        "reason": verification.reason,
+        "confirmations": verification.confirmations,
+        "ledger": verification.ledger,
+        "minConfirmationsApplied": None,
+    }
+    if proof_id is not None:
+        payload["proofId"] = proof_id
+    if event_id is not None:
+        payload["eventId"] = event_id
+    return payload
 
 
 def _digest(*fields: str) -> str:
@@ -480,6 +540,63 @@ def _call_transport(
     if positional:
         return transport(deployment)
     return transport()
+
+
+def build_reconciliation_timeline(
+    observations: list[dict[str, Any]],
+    *,
+    limit: int = MAX_TIMELINE_ENTRIES,
+) -> dict[str, Any]:
+    """Return a bounded, authorized-requester view of reconciliation history.
+
+    Each observation is a reconciliation result payload (see
+    ``_result_payload``). Only outcome classes, status transitions, and
+    confirmation/ledger metadata are surfaced; no media, envelopes, witness
+    values or credentials are ever included.
+    """
+    if limit < 1:
+        raise ValueError("limit must be a positive integer")
+    bounded_limit = min(int(limit), MAX_TIMELINE_ENTRIES)
+
+    entries: list[dict[str, Any]] = []
+    transitions: list[dict[str, Any]] = []
+    previous_outcome: str | None = None
+
+    for index, obs in enumerate(observations):
+        if not isinstance(obs, dict):
+            continue
+        outcome = classify_outcome(obs.get("status"))
+        entry = {
+            "index": index,
+            "outcome": outcome,
+            "status": obs.get("status"),
+            "reason": obs.get("reason"),
+            "confirmations": obs.get("confirmations"),
+            "ledger": obs.get("ledger"),
+            "updated": bool(obs.get("updated")),
+        }
+        entries.append(entry)
+        if previous_outcome is not None and previous_outcome != outcome:
+            transitions.append(
+                {
+                    "fromOutcome": previous_outcome,
+                    "toOutcome": outcome,
+                    "atIndex": index,
+                }
+            )
+        previous_outcome = outcome
+
+    truncated = len(entries) > bounded_limit
+    entries = entries[-bounded_limit:]
+
+    return {
+        "ok": True,
+        "observations": entries,
+        "transitions": transitions,
+        "currentOutcome": previous_outcome,
+        "truncated": truncated,
+        "limit": bounded_limit,
+    }
 
 
 def reconcile_registration(
