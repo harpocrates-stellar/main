@@ -231,5 +231,136 @@ describe('useEvidence hashing progress', () => {
     expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
     expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
   })
+
+  describe('evidence notes preservation and recoverable API failure retry', () => {
+    it('preserves user-entered evidence notes after a recoverable API failure', async () => {
+      hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+      embedVideoMock.mockRejectedValueOnce(new Error('Steganography service 503 Service Unavailable'))
+
+      const { result } = renderHook(() => useEvidence())
+      const testFile = new File(['evidence-bytes'], 'surveillance.mp4', { lastModified: 1700000001000 })
+
+      act(() => {
+        result.current.setEvidenceNotes('Critical context: captured near east gate at 14:00')
+      })
+      expect(result.current.evidenceNotes).toBe('Critical context: captured near east gate at 14:00')
+
+      await act(async () => {
+        await result.current.handleEvidence(testFile)
+      })
+
+      // Recoverable API failure leaves the hook in error stage
+      expect(result.current.stage).toBe('error')
+      expect(result.current.message).toBe('Steganography service 503 Service Unavailable')
+      // Original user-entered notes MUST be preserved
+      expect(result.current.evidenceNotes).toBe('Critical context: captured near east gate at 14:00')
+    })
+
+    it('keeps the retry action tied to the reviewed file identity and preserves notes across successful recovery', async () => {
+      hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+      embedVideoMock
+        .mockRejectedValueOnce(new Error('Temporary network glitch'))
+        .mockResolvedValueOnce({
+          embeddedBlob: new Blob(['embedded-video']),
+          embeddedHash: 'b'.repeat(64),
+          metadataHash: 'c'.repeat(64),
+        })
+
+      const { result } = renderHook(() => useEvidence())
+      const testFile = new File(['evidence-bytes'], 'surveillance.mp4', { lastModified: 1700000002000 })
+
+      act(() => {
+        result.current.setEvidenceNotes('Initial observation notes')
+      })
+
+      await act(async () => {
+        await result.current.handleEvidence(testFile)
+      })
+      expect(result.current.stage).toBe('error')
+      expect(result.current.evidenceNotes).toBe('Initial observation notes')
+
+      // Retry the reviewed file identity
+      await act(async () => {
+        await result.current.retryEvidence()
+      })
+
+      expect(result.current.stage).toBe('ready')
+      expect(result.current.evidenceNotes).toBe('Initial observation notes')
+      expect(result.current.proof?.evidenceNotes).toBe('Initial observation notes')
+      expect(result.current.proof?.sourceHash).toBe('a'.repeat(64))
+    })
+
+    it('does not overwrite local edits made after failure with stale server results on retry', async () => {
+      hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+      embedVideoMock
+        .mockRejectedValueOnce(new Error('Recoverable 500 error'))
+        .mockResolvedValueOnce({
+          embeddedBlob: new Blob(['embedded-video']),
+          embeddedHash: 'b'.repeat(64),
+          metadataHash: 'c'.repeat(64),
+        })
+
+      const { result } = renderHook(() => useEvidence())
+      const testFile = new File(['evidence-bytes'], 'cam01.mp4', { lastModified: 1700000003000 })
+
+      act(() => {
+        result.current.setEvidenceNotes('First draft of notes')
+      })
+
+      await act(async () => {
+        await result.current.handleEvidence(testFile)
+      })
+      expect(result.current.stage).toBe('error')
+
+      // User modifies notes locally after the failure
+      act(() => {
+        result.current.setEvidenceNotes('Updated notes with corrected timestamp')
+      })
+
+      // Retrying should preserve the updated local edits, not overwrite them
+      await act(async () => {
+        await result.current.retryEvidence()
+      })
+
+      expect(result.current.stage).toBe('ready')
+      expect(result.current.evidenceNotes).toBe('Updated notes with corrected timestamp')
+      expect(result.current.proof?.evidenceNotes).toBe('Updated notes with corrected timestamp')
+    })
+
+    it('boundary case: preserves notes when retrying same file identity, but clears notes when selecting a different file', async () => {
+      hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+      embedVideoMock.mockRejectedValue(new Error('Backend error'))
+
+      const { result } = renderHook(() => useEvidence())
+      const fileA = new File(['bytes-a'], 'fileA.mp4', { lastModified: 1700000004000 })
+      const fileB = new File(['bytes-b'], 'fileB.mp4', { lastModified: 1700000005000 })
+
+      act(() => {
+        result.current.setEvidenceNotes('Notes specific to File A')
+      })
+
+      await act(async () => {
+        await result.current.handleEvidence(fileA)
+      })
+      expect(result.current.stage).toBe('error')
+      // Retrying same file identity preserves notes
+      expect(result.current.evidenceNotes).toBe('Notes specific to File A')
+
+      // Selecting a completely different file clears previous notes
+      await act(async () => {
+        await result.current.handleEvidence(fileB)
+      })
+      expect(result.current.evidenceNotes).toBe('')
+    })
+
+    it('no-ops safely when retryEvidence is invoked with no reviewed file identity', async () => {
+      const { result } = renderHook(() => useEvidence())
+      await act(async () => {
+        await result.current.retryEvidence()
+      })
+      expect(result.current.stage).toBe('idle')
+      expect(result.current.file).toBeNull()
+    })
+  })
 })
 

@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react'
-import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
+import { BadgeCheck, CheckCircle2, Loader2, RotateCcw, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import { TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
@@ -9,7 +9,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
@@ -39,11 +38,14 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    evidenceNotes,
+    setEvidenceNotes,
     message,
     registration,
     networkMismatch,
     isCancellable,
     handleEvidence,
+    retryEvidence,
     registerProof,
     cancelEvidence,
     cancelProving,
@@ -171,6 +173,20 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
+        {stage === 'error' ? (
+          <div className="verify-actions" role="group" aria-label="Evidence studio error actions">
+            <button
+              type="button"
+              className="hero-secondary retry-action-btn"
+              onClick={() => void retryEvidence()}
+              aria-label="Retry evidence processing"
+            >
+              <RotateCcw size={14} aria-hidden="true" />
+              Retry evidence processing
+            </button>
+          </div>
+        ) : null}
+
         {isCancellable ? (
           <div className="verify-actions" role="group" aria-label="Evidence studio actions">
             <button
@@ -184,6 +200,20 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             </button>
           </div>
         ) : null}
+
+        <div className="evidence-notes-panel">
+          <label htmlFor="evidence-notes">
+            <span>Evidence Notes</span>
+            <textarea
+              id="evidence-notes"
+              aria-label="Evidence notes"
+              placeholder="Enter notes or context for this evidence…"
+              value={evidenceNotes}
+              onChange={(event) => setEvidenceNotes(event.target.value)}
+              rows={3}
+            />
+          </label>
+        </div>
 
         <dl className="data-list" aria-label="Evidence data">
           <div>
@@ -222,6 +252,12 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <dt>Tx Status</dt>
             <dd>{registration?.status ?? 'Not submitted'}</dd>
           </div>
+          {proof?.evidenceNotes ? (
+            <div>
+              <dt>Evidence Notes</dt>
+              <dd>{proof.evidenceNotes}</dd>
+            </div>
+          ) : null}
         </dl>
 
         <RedactionPreview
@@ -265,7 +301,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
               className="secondary-action"
               type="button"
               onClick={() => cancelProving()}
-              aria-label="Cancel proof generation"
+              aria-label="Cancel proving"
             >
               <XCircle size={18} aria-hidden="true" />
               Cancel proving

@@ -68,6 +68,14 @@ Run the Vitest and React Testing Library suite:
 npm test
 ```
 
+## Evidence Studio & Recovery
+
+The Evidence Studio (`useEvidence` hook and `StudioView`) allows users to upload source videos, configure identity tiers, and record evidence notes:
+
+- **Evidence Notes Preservation**: Original user-entered evidence notes (`evidenceNotes`) are maintained in memory across recoverable API failures (such as steganography service timeouts or temporary 5xx errors).
+- **Stale Server Result Guard**: In-flight server requests cannot overwrite user edits made in the UI during or after a recoverable failure.
+- **Reviewed File Identity**: The retry action (`retryEvidence`) is strictly tied to the reviewed file identity (matching file name, size, and last modified timestamp). If a user selects a different file, previous notes are safely reset for the new file context.
+
 ## Browser storage policy
 
 All application-owned browser persistence must go through the wrappers in

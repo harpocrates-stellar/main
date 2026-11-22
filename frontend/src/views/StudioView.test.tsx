@@ -48,13 +48,17 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     setCredentialSeed: vi.fn(),
     nullifierSeed: '',
     setNullifierSeed: vi.fn(),
+    evidenceNotes: '',
+    setEvidenceNotes: vi.fn(),
     message: 'Upload evidence to begin.',
     registration: null,
     networkMismatch: null,
     isCancellable: false,
     handleEvidence: vi.fn(),
+    retryEvidence: vi.fn(),
     registerProof: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
     ...overrides,
   }
 }
@@ -121,5 +125,67 @@ describe('StudioView – cancel button', () => {
     cancel.focus()
     await user.keyboard('{Enter}')
     expect(cancelEvidence).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('StudioView – evidence notes and recoverable failure retry', () => {
+  it('renders the evidence notes textarea with current value and invokes setEvidenceNotes on edit', async () => {
+    const user = userEvent.setup()
+    const setEvidenceNotes = vi.fn()
+    renderStudio(
+      makeEvidence({
+        evidenceNotes: 'Initial witness note',
+        setEvidenceNotes,
+      }),
+    )
+
+    const textarea = screen.getByRole('textbox', { name: 'Evidence notes' })
+    expect(textarea).toBeInTheDocument()
+    expect(textarea).toHaveValue('Initial witness note')
+
+    await user.type(textarea, ' - additional detail')
+    expect(setEvidenceNotes).toHaveBeenCalled()
+  })
+
+  it('renders a retry button when in error stage and invokes retryEvidence on click', async () => {
+    const user = userEvent.setup()
+    const retryEvidence = vi.fn()
+    renderStudio(
+      makeEvidence({
+        stage: 'error',
+        message: 'Steganography service did not accept the video.',
+        retryEvidence,
+      }),
+    )
+
+    const retryBtn = screen.getByRole('button', { name: 'Retry evidence processing' })
+    expect(retryBtn).toBeInTheDocument()
+    expect(retryBtn).toHaveTextContent('Retry evidence processing')
+
+    await user.click(retryBtn)
+    expect(retryEvidence).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not render a retry button during non-error stages', () => {
+    renderStudio(makeEvidence({ stage: 'ready' }))
+    expect(screen.queryByRole('button', { name: 'Retry evidence processing' })).not.toBeInTheDocument()
+
+    renderStudio(makeEvidence({ stage: 'idle' }))
+    expect(screen.queryByRole('button', { name: 'Retry evidence processing' })).not.toBeInTheDocument()
+  })
+
+  it('renders evidence notes in the data list when proof includes notes', () => {
+    const proofWithNotes: ProofPackage = {
+      fileName: 'evidence.mp4',
+      sourceHash: 'a'.repeat(64),
+      videoHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+      proofId: 'd'.repeat(64),
+      timestamp: '2026-01-01T00:00:00.000Z',
+      tier: 'silent',
+      evidenceNotes: 'Observed at 14:00 UTC',
+    }
+    renderStudio(makeEvidence({ stage: 'ready', proof: proofWithNotes }))
+    expect(screen.getByText('Observed at 14:00 UTC')).toBeInTheDocument()
   })
 })
