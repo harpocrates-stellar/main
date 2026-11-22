@@ -96,6 +96,10 @@ def build_verification_receipt(
     Any metadata extensions present in ``context['extensions']`` are checked:
     unknown critical extensions are rejected, while optional extensions are
     preserved in the returned mapping under ``extensions``.
+
+    Canonical parent-child statement binding is validated before the unsigned
+    receipt input is returned; conflicting evidence or derivative identifiers
+    are rejected fail-closed.
     """
 
     receipt: VerificationReceiptInput = {
@@ -112,10 +116,60 @@ def build_verification_receipt(
         "circuitVersion": _text(context.get("circuitVersion"), "circuitVersion"),
         "verifierVersion": _text(context.get("verifierVersion"), "verifierVersion"),
     }
+    _validate_statement_binding(receipt, context)
     extensions = _extensions(context.get("extensions"))
     if extensions:
         receipt["extensions"] = extensions  # type: ignore[typeddict-unknown-key]
     return receipt
+
+
+def _validate_statement_binding(
+    receipt: VerificationReceiptInput,
+    context: Mapping[str, object],
+) -> None:
+    """Reject receipt inputs whose evidence and derivative identifiers conflict.
+
+    The receipt's ``proofId`` is a derivative identifier: it must bind the same
+    canonical evidence (``videoHash`` and ``metadataHash``) as the parent
+    statement. If the caller supplies a parent statement, its evidence digests
+    and proof identifier must match the receipt exactly. Any mismatch is a
+    conflicting-evidence error and the receipt is not emitted.
+    """
+
+    parent = context.get("parentStatement")
+    if parent is None:
+        return
+    if not isinstance(parent, Mapping):
+        raise ValueError("parentStatement must be a mapping or null")
+
+    parent_video = _hex32(parent.get("videoHash"), "parentStatement.videoHash")
+    parent_metadata = _hex32(
+        parent.get("metadataHash"), "parentStatement.metadataHash"
+    )
+    parent_proof = _hex32(parent.get("proofId"), "parentStatement.proofId")
+
+    if parent_video != receipt["videoHash"]:
+        raise ValueError(
+            "conflicting evidence: parentStatement.videoHash does not match videoHash"
+        )
+    if parent_metadata != receipt["metadataHash"]:
+        raise ValueError(
+            "conflicting evidence: parentStatement.metadataHash does not match metadataHash"
+        )
+    if parent_proof != receipt["proofId"]:
+        raise ValueError(
+            "conflicting derivative identifier: parentStatement.proofId does not match proofId"
+        )
+
+    parent_tier = parent.get("tier")
+    if parent_tier is not None:
+        parent_tier_norm = _choice(
+            parent_tier, "parentStatement.tier", ("silent", "source", "seal")
+        )
+        if parent_tier_norm != receipt["tier"]:
+            raise ValueError(
+                "conflicting evidence: parentStatement.tier does not match tier"
+            )
 
 
 def _extensions(value: object) -> dict[str, object]:
@@ -187,6 +241,8 @@ _HEX_FIELDS: tuple[str, ...] = (
     "transactionHash",
 )
 
+_DERIVATIVE_IDENTIFIER_FIELDS: tuple[str, ...] = ("proofId",)
+
 
 def _validate_receipt_for_comparison(
     receipt: Mapping[str, object],
@@ -218,6 +274,28 @@ def _validate_receipt_for_comparison(
             "circuitVersion": _text(receipt.get("circuitVersion"), "circuitVersion"),
             "verifierVersion": _text(receipt.get("verifierVersion"), "verifierVersion"),
         }
+    except ValueError as exc:
+        raise ValueError(f"{label} receipt invalid: {exc}") from exc
+
+
+def _validate_receipt_binding(
+    receipt: Mapping[str, object],
+    label: str,
+) -> None:
+    """Reject receipts whose derivative identifiers conflict with evidence."""
+
+    parent = receipt.get("parentStatement")
+    if parent is None:
+        return
+    if not isinstance(parent, Mapping):
+        raise ValueError(
+            f"{label} receipt invalid: parentStatement must be a mapping or null"
+        )
+    try:
+        _validate_statement_binding(
+            _validate_receipt_for_comparison(receipt, label),
+            {"parentStatement": parent},
+        )
     except ValueError as exc:
         raise ValueError(f"{label} receipt invalid: {exc}") from exc
 
@@ -409,6 +487,8 @@ def compare_verification_receipts(
 
     base_norm = _validate_receipt_for_comparison(baseline, "baseline")
     cand_norm = _validate_receipt_for_comparison(candidate, "candidate")
+    _validate_receipt_binding(baseline, "baseline")
+    _validate_receipt_binding(candidate, "candidate")
 
     base_trust = _optional_mapping(baseline, "trust", "baseline")
     cand_trust = _optional_mapping(candidate, "trust", "candidate")
