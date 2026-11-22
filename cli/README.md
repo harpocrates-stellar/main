@@ -38,7 +38,7 @@ node dist/cli.js status --proof-id <64-hex> \
   --rpc-url https://soroban-testnet.stellar.org --output json
 ```
 
-`status` simulates `get_proof_status(proof_id)` against the registry and maps the result to a stable status string (`registered`, `revoked`, `expired`, or `unknown`) and exit code (`0` for `registered`, `1` for `expired`, `2` for `revoked`, `3` for `unknown`). Malformed or missing `--proof-id` values exit `2` immediately without making an RPC call.
+`status` simulates `get_proof_status(proof_id)` against the registry and maps the result to a stable status string (`registered`, `revoked`, `expired`, or `unknown`) and exit code (0` for `registered`, 1` for `expired`, 2` for `revoked`, 3` for `unknown`). Malformed or missing `--proof-id` values exit `2` immediately without making an RPC call.
 
 To verify a signed verification receipt offline without hitting the RPC:
 
@@ -70,6 +70,29 @@ For reproducible, network-free manifest and status fixtures, run from `cli/`:
 ```sh
 npm test -- --run test/manifest.test.ts test/normalize.test.ts test/status.test.ts
 ```
+
+## Reproducible CLI transcript fixtures
+
+For independent implementations, the cli ships synthetic CLI transcript
+fixtures under `cli/test/fixtures/transcripts/`. Each fixture is a single
+JSON document that records the argv invocation, the stdin input, the expected
+stdout/stderr and the exit status. They are purely synthetic: they use
+fake transports and temporary state directories, never contact a production
+endpoint, and never contain private media, witnesses, seeds, credentials or
+signing keys. The schema is documented in
+`cli/test/fixtures/transcripts/README.md` and the format is stable for
+external consumers.
+
+Run the transcript fixture suite (network-free):
+
+```sh
+npm test -- --run test/transcripts.test.ts
+```
+
+The suite replays every fixture through the built CLI and asserts the
+exact stdout, stderr and exit status. A regression in any of those is a
+failure, so independent implementations can use the same fixtures as a
+conformance corpus.
 
 ### Exit codes
 
@@ -109,10 +132,7 @@ can still be sensitive in context; restrict receipt access accordingly.
 Manifest v2 adds `verifierScope` and `epoch`, matching the frontend. V1 input
 remains readable, without silently upgrading its version.
 
-Unknown optional manifest extensions are preserved during normalization. An
-extension is carried through verbatim (round-trip compatible) under its
-original key and never alters the critical statement identity fields used for
-the manifest hash and registry binding. Extensions marked as required
+Extensions marked as required
 (`required: true`) with semantics this CLI does not support are rejected with
 exit code `8` (`error`) rather than silently dropped, so verification fails
 closed. Missing or supported optional extensions behave as before. Existing v1 receipt
@@ -125,18 +145,17 @@ does not verify Noir proof bytes or replace the browser verifier.
 ## Single-file bundle
 
 For air-gapped or audit use there's also a self-contained build. From `cli/`,
-run `npm ci && npm run bundle`. That writes `dist/harpocrates.mjs` (all runtime
+run `npm ci && npm run bundle`. That writes `dist/harpocrates.mmj` (all runtime
 deps, including `@stellar/stellar-sdk`, inlined, with a `#!/usr/bin/env node`
-shebang) and `dist/harpocrates.mjs.sha256` in `sha256sum` format. Copy both
+shebang) and `dist/harpocrates.mmj.sha256` in `sha256sum` format. Copy both
 files anywhere and run:
 
 ```sh
-sha256sum -c harpocrates.mjs.sha256
-node harpocrates.mjs help
+sha256sum -c harpocrates.mmj.sha256
+node harpocrates.mmj help
 ```
 
-No `node_modules` is needed. `@aztec/bb.js` is still loaded lazily and is not
+No `node_modules` is needed. `@azec/bb.js` is still loaded lazily and is not
 bundled, so local proof verification needs it installed next to the bundle.
-`npm run test:bundle` copies the bundle into an empty temp dir and runs `help`
-as a smoke test. CI uploads both files as the `harpocrates-cli-bundle`
+`npm run test:bundle` copies the bundle into an empty temp dir and runs `help` as a smoke test. CI uploads both files as the `harpocrates-cli-bundle`
 artifact. `npm run build` (tsc) output is unaffected.
