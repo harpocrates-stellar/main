@@ -29,7 +29,7 @@ from http_security import (
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from config import load_config
@@ -44,6 +44,7 @@ from errors import (
     NOT_FOUND,
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
+    UPLOAD_TERMINATED_PREMATURELY,
     RATE_LIMITED,
     UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
@@ -165,6 +166,7 @@ from errors import (
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
+    UPLOAD_TERMINATED_PREMATURELY,
     STEGO_LIMIT_EXCEEDED,
     VALIDATION_ERROR,
     error_response,
@@ -194,6 +196,7 @@ from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    PrematureUploadTerminationError,
     ResumableUploadSessionStore,
     SessionNotFoundError,
     StreamingFileStorage,
@@ -483,7 +486,7 @@ def create_app() -> Flask:
     upload_session_store = ResumableUploadSessionStore(
         base_dir=resolve_temp_dir(getattr(config, "upload_temp_dir", None)) or tempfile.gettempdir(),
         default_chunk_size=getattr(config, "upload_chunk_bytes", None),
-        default_max_size=config.upload_max_bytes if config.upload_max_bytes is not None else config.max_video_bytes,
+        default_max_size=getattr(config, "upload_max_bytes", None) if getattr(config, "upload_max_bytes", None) is not None else config.max_video_bytes,
     )
 
     @app.before_request
@@ -770,6 +773,22 @@ def create_app() -> Flask:
             code=PAYLOAD_TOO_LARGE,
             message="request body is too large",
             status=413,
+        )
+
+    @app.errorhandler(PrematureUploadTerminationError)
+    def upload_terminated_prematurely(error: PrematureUploadTerminationError):
+        return error_response(
+            code=error.code,
+            message=str(error),
+            status=error.status_code,
+        )
+
+    @app.errorhandler(ClientDisconnected)
+    def client_disconnected(_error: ClientDisconnected):
+        return error_response(
+            code=UPLOAD_TERMINATED_PREMATURELY,
+            message="upload terminated prematurely before completion",
+            status=400,
         )
 
     @app.errorhandler(ValueError)

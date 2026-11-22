@@ -29,7 +29,10 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import g
 from werkzeug.datastructures import FileStorage
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
+
+UPLOAD_TERMINATED_PREMATURELY = "UPLOAD_TERMINATED_PREMATURELY"
+_DISCONNECT_EXCEPTIONS = (ClientDisconnected, ConnectionError, EOFError)
 
 # ---------------------------------------------------------------------------
 # Bounded chunk sizing
@@ -112,6 +115,7 @@ def hash_stream_to_path(
     chunk_size: int | None = None,
     max_size: int | None = None,
     temp_dir: str | Path | None = None,
+    expected_size: int | None = None,
 ) -> Tuple[str, int]:
     """Copy *source* to *destination* in bounded chunks while hashing SHA-256.
 
@@ -122,6 +126,7 @@ def hash_stream_to_path(
     """
     bounded = resolve_chunk_bytes(chunk_size)
     limit = resolve_max_bytes(max_size)
+    expected = max(0, int(expected_size)) if expected_size is not None else None
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +142,13 @@ def hash_stream_to_path(
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as tmp_file:
             while True:
-                chunk = source.read(bounded)
+                try:
+                    chunk = source.read(bounded)
+                except _DISCONNECT_EXCEPTIONS as exc:
+                    raise PrematureUploadTerminationError(
+                        bytes_received=bytes_written,
+                        expected_bytes=expected,
+                    ) from exc
                 if not chunk:
                     break
                 if limit is not None and bytes_written + len(chunk) > limit:
@@ -145,6 +156,11 @@ def hash_stream_to_path(
                 tmp_file.write(chunk)
                 hasher.update(chunk)
                 bytes_written += len(chunk)
+            if expected is not None and bytes_written < expected:
+                raise PrematureUploadTerminationError(
+                    bytes_received=bytes_written,
+                    expected_bytes=expected,
+                )
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
 
@@ -240,11 +256,13 @@ class StreamingFileStorage(FileStorage):
         max_size: int | None = None,
         chunk_size: int | None = None,
         temp_dir: str | Path | None = None,
+        expected_size: int | None = None,
     ):
         super().__init__(stream, filename, content_type=content_type)
         self._max_size = max_size
         self._chunk_size = resolve_chunk_bytes(chunk_size)
         self._temp_dir = resolve_temp_dir(temp_dir)
+        self._expected_size = expected_size
         self._materialized_path: Optional[Path] = None
         self._bytes_written = 0
         self._hash_computed = False
@@ -281,6 +299,7 @@ class StreamingFileStorage(FileStorage):
             chunk_size=self._chunk_size,
             max_size=self._max_size,
             temp_dir=self._temp_dir,
+            expected_size=self._expected_size,
         )
         self._bytes_written = written
         self._digest = digest
@@ -355,6 +374,25 @@ class SessionStateError(UploadSessionError):
 class ContentHashMismatchError(UploadSessionError):
     def __init__(self, message: str = "content hash verification failed"):
         super().__init__(message, code="CONTENT_HASH_MISMATCH", status_code=422)
+
+
+class PrematureUploadTerminationError(UploadSessionError):
+    """Raised when an upload stream disconnects or ends before completion."""
+
+    def __init__(
+        self,
+        message: str = "upload terminated prematurely before completion",
+        *,
+        bytes_received: int = 0,
+        expected_bytes: int | None = None,
+    ):
+        super().__init__(
+            message,
+            code=UPLOAD_TERMINATED_PREMATURELY,
+            status_code=400,
+        )
+        self.bytes_received = bytes_received
+        self.expected_bytes = expected_bytes
 
 
 def _normalize_sha256(value: str | None) -> str | None:
@@ -696,6 +734,7 @@ class ResumableUploadSessionStore:
         session_token: str | None = None,
         owner: str | None = None,
         chunk_sha256: str | None = None,
+        expected_size: int | None = None,
     ) -> Tuple[ChunkProgress, int]:
         """Read, hash, encrypt, and atomically persist a single bounded chunk.
 
@@ -708,6 +747,7 @@ class ResumableUploadSessionStore:
             raise UploadSessionError("chunk_index is out of bounds", code="INVALID_CHUNK_INDEX", status_code=400)
 
         expected_chunk_hash = _normalize_sha256(chunk_sha256)
+        expected = max(0, int(expected_size)) if expected_size is not None else None
         previous_bytes = session.chunks[chunk_index].bytes_written if chunk_index in session.chunks else 0
         other_bytes = session.total_bytes - previous_bytes
 
@@ -717,7 +757,13 @@ class ResumableUploadSessionStore:
         bytes_read = 0
 
         while True:
-            piece = source.read(bounded)
+            try:
+                piece = source.read(bounded)
+            except _DISCONNECT_EXCEPTIONS as exc:
+                raise PrematureUploadTerminationError(
+                    bytes_received=bytes_read,
+                    expected_bytes=expected,
+                ) from exc
             if not piece:
                 break
             bytes_read += len(piece)
@@ -725,6 +771,12 @@ class ResumableUploadSessionStore:
                 raise RequestEntityTooLarge("Upload exceeds size limit")
             hasher.update(piece)
             buffer.extend(piece)
+
+        if expected is not None and bytes_read < expected:
+            raise PrematureUploadTerminationError(
+                bytes_received=bytes_read,
+                expected_bytes=expected,
+            )
 
         computed_hash = hasher.hexdigest()
         if expected_chunk_hash is not None and not hmac.compare_digest(computed_hash, expected_chunk_hash):

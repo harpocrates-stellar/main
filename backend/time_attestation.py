@@ -35,6 +35,11 @@ except ImportError:  # pragma: no cover - package layout / optional path
 PROFILE_ID = "harpocrates-time-attestation/v1"
 SUPPORTED_VERSIONS = {1}
 
+# Extension keys understood by this implementation. Any extension key that is
+# marked critical (prefixed with "!") but not listed here MUST cause rejection.
+SUPPORTED_CRITICAL_EXTENSIONS: frozenset[str] = frozenset()
+CRITICAL_EXTENSION_PREFIX = "!"
+
 # Maximum allowed future drift: 5 minutes (accounts for clock skew)
 MAX_FUTURE_DRIFT_SECONDS = 300
 
@@ -109,6 +114,8 @@ class TimeAttestation:
     observed_time: ObservedTime | None = None
     stellar_anchors: list[StellarAnchor] = field(default_factory=list)
     rfc3161_anchors: list[RFC3161Anchor] = field(default_factory=list)
+    # Optional extension fields preserved verbatim across round trips.
+    extensions: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Encoding ───────────────────────────────────────────────────────────────
@@ -188,6 +195,9 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
     if time_bounds:
         obj["timeBounds"] = time_bounds
     
+    for key, value in attestation.extensions.items():
+        obj[key] = value
+    
     return obj
 
 
@@ -195,6 +205,8 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
     """Decode and validate a time attestation dictionary."""
     
     _validate_time_attestation_obj(obj)
+    
+    extensions = _extract_extensions(obj)
     
     claimed_time = None
     if "claimedTime" in obj:
@@ -247,6 +259,7 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
         observed_time=observed_time,
         stellar_anchors=stellar_anchors,
         rfc3161_anchors=rfc3161_anchors,
+        extensions=extensions,
     )
 
 
@@ -656,3 +669,21 @@ def _validate_time_attestation_obj(obj: dict[str, Any]) -> None:
     
     if not _is_valid_hex(obj["evidenceDigest"], 64):
         raise ValueError("evidenceDigest must be 64-character hex string")
+
+
+def _extract_extensions(obj: dict[str, Any]) -> dict[str, Any]:
+    """Collect unknown top-level extension keys, failing closed on unknown critical ones."""
+    known = {
+        "version", "protocol", "evidenceDigest", "claimedTime", "observedTime",
+        "stellarAnchors", "rfc3161Anchors",
+    }
+    extensions: dict[str, Any] = {}
+    for key, value in obj.items():
+        if key in known:
+            continue
+        if key.startswith(CRITICAL_EXTENSION_PREFIX):
+            if key not in SUPPORTED_CRITICAL_EXTENSIONS:
+                raise ValueError(f"Unsupported critical extension: {key}")
+            continue
+        extensions[key] = value
+    return extensions

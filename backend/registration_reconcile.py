@@ -1,3 +1,21 @@
+"""Reconcile off-chain registration rows with on-chain Stellar confirmations.
+
+Harpocrates stores registration evidence in Neon (`proof_events`) and anchors
+integrity on Stellar. Clients may submit a `txHash` before Horizon has indexed
+the transaction, or with a stale client-reported `txStatus`. This module is the
+canonical reconciler: it queries Horizon (with failover), applies a confirmation
+depth policy, and updates `tx_status` without creating a second protocol truth.
+
+Race handling: duplicate submissions, delayed indexing and replaced workers all
+converge on a single authoritative terminal status per transaction hash. Once a
+row reaches a terminal status, later reconciliations (from duplicate jobs or a
+replacement worker) observe that status and do not overwrite it unless forced.
+
+Privacy: logs and API responses never include media, metadata envelopes,
+witness values, credentials, or private keys — only status codes and truncated
+transaction hash prefixes.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -483,32 +501,109 @@ def _call_transport(
 
 
 def reconcile_registration(
-    store: CheckpointStore | str | os.PathLike[str],
-    transport: Callable[..., Any],
-    deployment: DeploymentIdentity | None = None,
-) -> RegistrationCheckpoint:
-    if not isinstance(store, CheckpointStore):
-        store = CheckpointStore(store, deployment)
-    active_deployment = deployment or store.deployment
-    try:
-        response = _call_transport(transport, active_deployment)
-        observation = LedgerObservation.from_response(response, active_deployment)
-    except RegistrationReconcileError:
-        raise
-    except Exception as exc:
-        raise TransportError("ledger observation could not be read") from exc
-    observed = DeploymentIdentity(
-        release_id=observation.release_id,
-        network=observation.network,
-        network_passphrase=observation.network_passphrase,
+    tx_hash: object,
+    *,
+    previous_status: str | None = "pending",
+    proof_id: str | None = None,
+    event_id: int | None = None,
+    min_confirmations: int | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """
+    Reconcile a single registration transaction hash against Horizon.
+
+    - Malformed hashes → status ``failed`` / reason ``malformed_tx_hash``
+    - Horizon dependency failures → status ``error`` (no durable write)
+    - Terminal rows are left unchanged unless ``force`` is true
+    - Terminal writes are conditional at the storage layer, so when duplicate
+      or replacement workers race, exactly one terminal write wins and the
+      losers report ``updated: false`` with the authoritative stored status
+    """
+    min_conf = (
+        default_min_confirmations()
+        if min_confirmations is None
+        else int(min_confirmations)
     )
-    if observed.fingerprint != active_deployment.fingerprint:
-        if (
-            observed.network != active_deployment.network
-            or observed.network_passphrase != active_deployment.network_passphrase
-        ):
-            raise NetworkMismatchError("ledger observation came from another network")
-        raise DeploymentMismatchError(
-            "ledger observation came from another deployment configuration"
+    if min_conf < 1:
+        raise ValueError("minConfirmations must be >= 1")
+
+    try:
+        normalized = normalize_tx_hash(tx_hash)
+    except ValueError:
+        LOGGER.info("registration_reconcile_rejected reason=malformed_tx_hash")
+        verification = TxVerificationResult(status="failed", reason="malformed_tx_hash")
+        # Malformed hashes cannot be keyed in proof_events; no durable write.
+        payload = _result_payload(
+            tx_hash="",
+            previous_status=previous_status,
+            verification=verification,
+            updated=False,
+            proof_id=proof_id,
+            event_id=event_id,
         )
-    return store.record(observation.last_trusted_ledger)
+        payload["txHash"] = None
+        payload["error"] = "malformed_tx_hash"
+        return payload
+
+    if (
+        previous_status in TERMINAL_STATUSES
+        and not force
+        and previous_status is not None
+    ):
+        verification = TxVerificationResult(
+            status=previous_status,
+            reason="already_terminal",
+        )
+        return _result_payload(
+            tx_hash=normalized,
+            previous_status=previous_status,
+            verification=verification,
+            updated=False,
+            proof_id=proof_id,
+            event_id=event_id,
+        )
+
+    verification = verify_transaction(normalized, min_confirmations=min_conf)
+    updated = False
+
+    if verification.status in TERMINAL_STATUSES:
+        updated = bool(update_tx_status(normalized, verification.status, force=force))
+        if not updated and not force:
+            # Another worker (duplicate job or replacement) already committed a
+            # terminal status. Treat that stored value as authoritative.
+            verification = TxVerificationResult(
+                status=previous_status or verification.status,
+                reason="already_terminal",
+                confirmations=verification.confirmations,
+                ledger=verification.ledger,
+            )
+        LOGGER.info(
+            "registration_reconcile_terminal tx=%s status=%s reason=%s updated=%s",
+            _short_hash(normalized),
+            verification.status,
+            verification.reason,
+            updated,
+        )
+    elif verification.status == "error":
+        LOGGER.warning(
+            "registration_reconcile_dependency tx=%s reason=%s",
+            _short_hash(normalized),
+            verification.reason,
+        )
+    else:
+        LOGGER.info(
+            "registration_reconcile_pending tx=%s reason=%s confirmations=%s",
+            _short_hash(normalized),
+            verification.reason,
+            verification.confirmations,
+        )
+
+    payload = _result_payload(
+        tx_hash=normalized,
+        previous_status=previous_status,
+        verification=verification,
+        updated=updated,
+        proof_id=proof_id,
+        event_id=event_id,
+    )
+    return payload

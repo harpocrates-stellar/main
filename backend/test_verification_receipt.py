@@ -61,6 +61,30 @@ def test_rejects_incomplete_context_without_inventing_receipt_fields():
         build_verification_receipt({"proofId": "a" * 64})
 
 
+def test_rejects_unsupported_critical_extension_in_metadata():
+    critical = context()
+    critical["extensions"] = {
+        "critical": ["x-unknown-required"],
+        "x-unknown-required": {"mode": "strict"},
+    }
+
+    with pytest.raises(ValueError, match="x-unknown-required"):
+        build_verification_receipt(critical)
+
+
+def test_preserves_compatible_optional_extension_fields():
+    optional = context()
+    optional["extensions"] = {
+        "critical": [],
+        "x-display-hint": {"locale": "en-US"},
+    }
+
+    receipt = build_verification_receipt(optional)
+
+    assert receipt["extensions"]["x-display-hint"] == {"locale": "en-US"}
+    assert receipt["extensions"]["critical"] == []
+
+
 def _receipt(**overrides: object) -> dict[str, object]:
     base = dict(build_verification_receipt(context(), result="verified"))
     base["verifiedAt"] = "2026-10-01T12:00:00+00:00"

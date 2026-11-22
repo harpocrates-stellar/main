@@ -71,6 +71,17 @@ class VerificationReceiptInput(TypedDict):
     verifierVersion: str
 
 
+# Receipt metadata extensions are keyed by name. A key prefixed with "critical:"
+# marks an extension the verifier MUST understand; unknown critical extensions
+# cause the receipt to be rejected (fail closed). Non-critical (optional)
+# extensions are preserved verbatim so they survive round trips.
+CRITICAL_EXTENSION_PREFIX = "critical:"
+
+# Critical extensions this verifier implements. Empty today: any critical
+# extension is unsupported and must be rejected.
+SUPPORTED_CRITICAL_EXTENSIONS: frozenset[str] = frozenset()
+
+
 def build_verification_receipt(
     context: Mapping[str, object],
     *,
@@ -81,9 +92,13 @@ def build_verification_receipt(
     A receipt is only emitted when the caller supplies the complete canonical
     evidence context. This prevents the selective-disclosure endpoint from
     inventing proof IDs or hashes from unrelated request fields.
+
+    Any metadata extensions present in ``context['extensions']`` are checked:
+    unknown critical extensions are rejected, while optional extensions are
+    preserved in the returned mapping under ``extensions``.
     """
 
-    return {
+    receipt: VerificationReceiptInput = {
         "result": result,
         "verifiedAt": datetime.now(timezone.utc).isoformat(),
         "proofId": _hex32(context.get("proofId"), "proofId"),
@@ -97,6 +112,28 @@ def build_verification_receipt(
         "circuitVersion": _text(context.get("circuitVersion"), "circuitVersion"),
         "verifierVersion": _text(context.get("verifierVersion"), "verifierVersion"),
     }
+    extensions = _extensions(context.get("extensions"))
+    if extensions:
+        receipt["extensions"] = extensions  # type: ignore[typeddict-unknown-key]
+    return receipt
+
+
+def _extensions(value: object) -> dict[str, object]:
+    """Validate receipt metadata extensions, failing closed on unknown critical ones."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("extensions must be a mapping or null")
+    preserved: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("extension names must be non-empty strings")
+        if key.startswith(CRITICAL_EXTENSION_PREFIX):
+            if key not in SUPPORTED_CRITICAL_EXTENSIONS:
+                raise ValueError(f"unsupported critical extension: {key}")
+        preserved[key] = item
+    return preserved
 
 
 def _text(value: object, field: str) -> str:

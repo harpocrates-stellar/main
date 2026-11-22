@@ -9,6 +9,7 @@ Covers:
 - Resource bounds
 - Multiple anchor types
 - Offline verification scenarios
+- Rejection of receipt metadata containing unsupported critical extensions
 """
 
 import time

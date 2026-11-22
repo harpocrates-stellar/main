@@ -87,6 +87,7 @@ Failure modes (all fail closed before consuming admission capacity):
 - `401 SESSION_UNAUTHORIZED`: missing or invalid `sessionToken`
 - `403 SESSION_OWNER_MISMATCH`: `X-Upload-Owner` does not match session owner
 - `400 SESSION_INCOMPLETE`: missing chunks (gaps in `0..N-1`)
+- `400 UPLOAD_TERMINATED_PREMATURELY`: client disconnected or upload stream ended before completion (no partial chunk or evidence enters processing)
 - `413 PAYLOAD_TOO_LARGE`: total bytes exceed `UPLOAD_MAX_BYTES` / `MAX_VIDEO_BYTES`
 - `422 CONTENT_HASH_MISMATCH`: final assembled SHA-256 (or size / AEAD tag) does not match
 
