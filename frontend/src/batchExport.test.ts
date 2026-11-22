@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { BatchItemResult } from './batchVerifier'
+import type { BatchItemResult, BatchPreflightReport } from './batchVerifier'
 import {
   exportBatchCSV,
   exportBatchJSON,
+  exportPreflightReportCSV,
+  exportPreflightReportJSON,
   exportReceiptCollection,
   sanitizeBatchResults,
 } from './batchExport'
@@ -76,5 +78,70 @@ describe('batchExport', () => {
     const parsed = JSON.parse(collectionJson) as Record<string, unknown>
     expect(parsed.protocol).toBe('harpocrates-receipt-collection')
     expect(parsed.totalItems).toBe(1)
+  })
+
+  describe('Preflight report exports (issue #1167)', () => {
+    const mockPreflight: BatchPreflightReport = {
+      totalFiles: 3,
+      totalBytes: 5000000,
+      validCount: 1,
+      duplicateCount: 1,
+      unsupportedCount: 1,
+      oversizedCount: 0,
+      hasIssues: true,
+      canProceed: true,
+      completedAt: '2026-11-22T20:00:00.000Z',
+      duplicates: [
+        {
+          index: 1,
+          fileName: 'evidence1.mp4',
+          fileSizeBytes: 1024,
+          duplicateOf: 'evidence1.mp4',
+          reason: "Duplicate input matching 'evidence1.mp4' (1024 bytes).",
+        },
+      ],
+      unsupported: [
+        {
+          index: 2,
+          fileName: 'notes.txt',
+          fileSizeBytes: 200,
+          mimeType: 'text/plain',
+          extension: '.txt',
+          reason: "Unsupported format '.txt'.",
+        },
+      ],
+      oversized: [],
+    }
+
+    it('exportPreflightReportJSON outputs structured preflight JSON', () => {
+      const json = exportPreflightReportJSON(mockPreflight)
+      const parsed = JSON.parse(json) as Record<string, unknown>
+      expect(parsed.protocol).toBe('harpocrates-preflight-report')
+      expect(parsed.totalFiles).toBe(3)
+      expect(parsed.totalBytes).toBe(5000000)
+      expect(parsed.validCount).toBe(1)
+      expect(parsed.duplicateCount).toBe(1)
+      expect(parsed.unsupportedCount).toBe(1)
+      expect(parsed.duplicates).toHaveLength(1)
+      expect(parsed.unsupported).toHaveLength(1)
+    })
+
+    it('exportPreflightReportCSV outputs formatted CSV report', () => {
+      const csv = exportPreflightReportCSV(mockPreflight)
+      expect(csv).toContain('Category,File Name,Size (Bytes),Details,Reason')
+      expect(csv).toContain('Duplicate Input,evidence1.mp4,1024,Duplicate of evidence1.mp4')
+      expect(csv).toContain('Unsupported Format,notes.txt,200')
+    })
+
+    it('exportBatchJSON embeds preflight metrics when provided', () => {
+      const json = exportBatchJSON(mockItems, mockPreflight)
+      const parsed = JSON.parse(json) as Record<string, unknown>
+      expect(parsed.protocol).toBe('harpocrates-batch-report')
+      expect(parsed.preflight).toBeDefined()
+      const pf = parsed.preflight as Record<string, unknown>
+      expect(pf.totalFiles).toBe(3)
+      expect(pf.duplicateCount).toBe(1)
+      expect(pf.unsupportedCount).toBe(1)
+    })
   })
 })

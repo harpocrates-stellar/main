@@ -1,5 +1,6 @@
 import type { ChainProofRecord } from './stellar'
 import { ApiClientError, parseActionableApiError } from './services/apiError'
+import { extractMetadata as extractMetadataLocal, MalformedEvidenceError as StegoError } from './stego'
 
 export type VerificationEvent = {
   id: number
@@ -75,7 +76,6 @@ export async function verifyArtifact({
 }
 
 async function extractMetadata(_apiBase: string, file: File): Promise<unknown> {
-  const { extractMetadata: extractMetadataLocal, MalformedEvidenceError: StegoError } = await import('./stego')
   try {
     return await extractMetadataLocal(file)
   } catch (err) {

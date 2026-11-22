@@ -168,4 +168,49 @@ describe('BatchVerificationWorkspace UI Component', () => {
       expect(dropzone).toHaveAttribute('tabindex', '-1')
     })
   })
+
+  // ─── Batch Preflight Report (issue #1167) ──────────────────────────────────
+
+  it('displays batch preflight report with total bytes upon adding files', async () => {
+    render(
+      <BatchVerificationWorkspace
+        apiBase="http://127.0.0.1:5050"
+        contractId="CC123"
+      />,
+    )
+
+    const file1 = new File(['1234567890'], 'clip.mp4', { type: 'video/mp4' })
+    const input = screen.getByLabelText(/Drop evidence files or standalone JSON receipts/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [file1] } })
+
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: /Batch Preflight Report/i })).toBeInTheDocument()
+      expect(screen.getByText('Preflight Passed')).toBeInTheDocument()
+      expect(screen.getByText('10 B')).toBeInTheDocument()
+    })
+  })
+
+  it('displays preflight notice when duplicate inputs or unsupported formats are added', async () => {
+    render(
+      <BatchVerificationWorkspace
+        apiBase="http://127.0.0.1:5050"
+        contractId="CC123"
+      />,
+    )
+
+    const f1 = new File(['sample video data'], 'clip.mp4', { type: 'video/mp4' })
+    const f2 = new File(['sample video data'], 'clip.mp4', { type: 'video/mp4' }) // Duplicate input
+    const f3 = new File(['text doc'], 'document.txt', { type: 'text/plain' }) // Unsupported format
+
+    const input = screen.getByLabelText(/Drop evidence files or standalone JSON receipts/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [f1, f2, f3] } })
+
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: /Batch Preflight Report/i })).toBeInTheDocument()
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+      expect(screen.getByText(/1 duplicate input\(s\) and 1 unsupported format\(s\) detected/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Preflight JSON/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Preflight CSV/i })).toBeInTheDocument()
+    })
+  })
 })

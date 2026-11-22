@@ -2,9 +2,39 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   BatchVerifier,
   computeChunkedSha256,
+  formatBytes,
+  isSupportedFormat,
+  runBatchPreflight,
   tryParseManifest,
   type BatchConfig,
 } from './batchVerifier'
+
+const { StegoError, extractMetadata } = vi.hoisted(() => {
+  class StegoError extends Error {
+    constructor() {
+      super('Malformed evidence')
+      this.name = 'MalformedEvidenceError'
+    }
+  }
+  return {
+    StegoError,
+    extractMetadata: vi.fn().mockImplementation(async (file: { name?: string }) => {
+      if (file?.name && (file.name.includes('bad') || file.name.includes('corrupt'))) {
+        throw new StegoError()
+      }
+      return { protocol: 'harpocrates' }
+    }),
+  }
+})
+
+vi.mock('./stego', () => ({
+  extractMetadata,
+  MalformedEvidenceError: StegoError,
+}))
+
+vi.mock('./stellar', () => ({
+  getProofByVideoHash: vi.fn().mockResolvedValue(null),
+}))
 
 describe('batchVerifier', () => {
   describe('computeChunkedSha256', () => {
@@ -178,6 +208,121 @@ describe('batchVerifier', () => {
       const { items } = await promise
 
       expect(items.some((i) => i.status === 'cancelled')).toBe(true)
+    })
+  })
+
+  describe('Batch Preflight Report (issue #1167)', () => {
+    describe('formatBytes', () => {
+      it('formats byte boundaries correctly', () => {
+        expect(formatBytes(0)).toBe('0 B')
+        expect(formatBytes(500)).toBe('500 B')
+        expect(formatBytes(1024)).toBe('1.0 KB')
+        expect(formatBytes(1048576)).toBe('1.0 MB')
+        expect(formatBytes(1572864)).toBe('1.5 MB')
+        expect(formatBytes(1073741824)).toBe('1.0 GB')
+      })
+    })
+
+    describe('isSupportedFormat', () => {
+      it('accepts supported video formats and JSON receipts', () => {
+        expect(isSupportedFormat({ name: 'evidence.mp4' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'clip.MOV' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'capture.webm' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'scene.mkv' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'record.avi' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'receipt.json' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'custom', type: 'video/mp4' }).isSupported).toBe(true)
+        expect(isSupportedFormat({ name: 'custom', type: 'application/json' }).isSupported).toBe(true)
+      })
+
+      it('rejects unsupported extensions and formats with helpful reasons', () => {
+        const textResult = isSupportedFormat({ name: 'notes.txt', type: 'text/plain' })
+        expect(textResult.isSupported).toBe(false)
+        expect(textResult.reason).toContain("Unsupported format '.txt'")
+
+        const pdfResult = isSupportedFormat({ name: 'brief.pdf', type: 'application/pdf' })
+        expect(pdfResult.isSupported).toBe(false)
+
+        const exeResult = isSupportedFormat({ name: 'malware.exe' })
+        expect(exeResult.isSupported).toBe(false)
+      })
+    })
+
+    describe('runBatchPreflight', () => {
+      it('calculates totalBytes and detects duplicate inputs and unsupported formats', () => {
+        const f1 = new File(['video-one-data'], 'video1.mp4', { type: 'video/mp4' })
+        const f2 = new File(['video-one-data'], 'video1.mp4', { type: 'video/mp4' }) // Duplicate input
+        const f3 = new File(['doc'], 'notes.txt', { type: 'text/plain' }) // Unsupported format
+        const f4 = new File(['valid-two-data'], 'video2.webm', { type: 'video/webm' })
+
+        const report = runBatchPreflight([f1, f2, f3, f4])
+
+        expect(report.totalFiles).toBe(4)
+        expect(report.totalBytes).toBe(f1.size + f2.size + f3.size + f4.size)
+        expect(report.duplicateCount).toBe(1)
+        expect(report.duplicates[0].fileName).toBe('video1.mp4')
+        expect(report.duplicates[0].duplicateOf).toBe('video1.mp4')
+        expect(report.unsupportedCount).toBe(1)
+        expect(report.unsupported[0].fileName).toBe('notes.txt')
+        expect(report.validCount).toBe(2) // f1 and f4
+        expect(report.hasIssues).toBe(true)
+        expect(report.canProceed).toBe(true)
+      })
+
+      it('handles boundary case: empty file batch', () => {
+        const report = runBatchPreflight([])
+        expect(report.totalFiles).toBe(0)
+        expect(report.totalBytes).toBe(0)
+        expect(report.validCount).toBe(0)
+        expect(report.duplicateCount).toBe(0)
+        expect(report.unsupportedCount).toBe(0)
+        expect(report.oversizedCount).toBe(0)
+        expect(report.hasIssues).toBe(false)
+        expect(report.canProceed).toBe(false)
+      })
+
+      it('handles boundary case: files exceeding size limits', () => {
+        const small = new File(['small'], 'small.mp4')
+        const large = new File(['a'.repeat(500)], 'huge.mp4')
+
+        const report = runBatchPreflight([small, large], { maxFileSizeBytes: 100 })
+        expect(report.oversizedCount).toBe(1)
+        expect(report.oversized[0].fileName).toBe('huge.mp4')
+        expect(report.validCount).toBe(1)
+      })
+    })
+
+    describe('Verifier execution guarantees', () => {
+      it('completes preflight first and does NOT hash or prove unsupported or duplicate input items', async () => {
+        const verifier = new BatchVerifier()
+        const fValid = new File(['valid video content'], 'valid.mp4', { type: 'video/mp4' })
+        const fDup = new File(['valid video content'], 'valid.mp4', { type: 'video/mp4' })
+        const fUnsup = new File(['unsupported binary'], 'unsupported.bin', { type: 'application/octet-stream' })
+
+        const { items, summary, preflight } = await verifier.runBatch([fValid, fDup, fUnsup])
+
+        // Verify preflight report was generated
+        expect(preflight).toBeDefined()
+        expect(preflight.totalFiles).toBe(3)
+        expect(preflight.duplicateCount).toBe(1)
+        expect(preflight.unsupportedCount).toBe(1)
+        expect(preflight.validCount).toBe(1)
+
+        // Verify items terminal statuses
+        const dupItem = items.find((i) => i.id !== items[0].id && i.fileName === 'valid.mp4')
+        expect(dupItem?.status).toBe('duplicate')
+        expect(dupItem?.videoHash).toBeNull() // NO hashing was performed on duplicate input
+
+        const unsupItem = items.find((i) => i.fileName === 'unsupported.bin')
+        expect(unsupItem?.status).toBe('unsupported')
+        expect(unsupItem?.videoHash).toBeNull() // NO hashing was performed on unsupported file
+        expect(unsupItem?.message).toContain("Unsupported format '.bin'")
+
+        // Summary assertions
+        expect(summary.totalFiles).toBe(3)
+        expect(summary.duplicates).toBe(1)
+        expect(summary.unsupported).toBe(1)
+      })
     })
   })
 })

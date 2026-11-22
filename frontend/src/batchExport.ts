@@ -1,6 +1,5 @@
-import type { BatchItemResult } from './batchVerifier'
+import type { BatchItemResult, BatchPreflightReport } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
-import { createProofManifest } from './proofManifest'
 
 export type CleanBatchReportItem = {
   fileName: string
@@ -49,16 +48,94 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
 /**
  * Export privacy-safe JSON representation of batch results.
  */
-export function exportBatchJSON(results: BatchItemResult[]): string {
+export function exportBatchJSON(
+  results: BatchItemResult[],
+  preflight?: BatchPreflightReport | null,
+): string {
   const clean = sanitizeBatchResults(results)
-  const report = {
+  const report: Record<string, unknown> = {
     protocol: 'harpocrates-batch-report',
     version: 1,
     exportedAt: new Date().toISOString(),
     totalCount: clean.length,
     results: clean,
   }
+  if (preflight) {
+    report.preflight = {
+      totalFiles: preflight.totalFiles,
+      totalBytes: preflight.totalBytes,
+      validCount: preflight.validCount,
+      duplicateCount: preflight.duplicateCount,
+      unsupportedCount: preflight.unsupportedCount,
+      oversizedCount: preflight.oversizedCount,
+      canProceed: preflight.canProceed,
+      hasIssues: preflight.hasIssues,
+    }
+  }
   return JSON.stringify(report, null, 2)
+}
+
+/**
+ * Export preflight report as structured JSON.
+ */
+export function exportPreflightReportJSON(report: BatchPreflightReport): string {
+  const exportData = {
+    protocol: 'harpocrates-preflight-report',
+    version: 1,
+    exportedAt: report.completedAt || new Date().toISOString(),
+    totalFiles: report.totalFiles,
+    totalBytes: report.totalBytes,
+    validCount: report.validCount,
+    duplicateCount: report.duplicateCount,
+    unsupportedCount: report.unsupportedCount,
+    oversizedCount: report.oversizedCount,
+    canProceed: report.canProceed,
+    hasIssues: report.hasIssues,
+    duplicates: report.duplicates,
+    unsupported: report.unsupported,
+    oversized: report.oversized,
+  }
+  return JSON.stringify(exportData, null, 2)
+}
+
+/**
+ * Export preflight report issues and summary as CSV.
+ */
+export function exportPreflightReportCSV(report: BatchPreflightReport): string {
+  const headers = ['Category', 'File Name', 'Size (Bytes)', 'Details', 'Reason']
+  const rows: string[][] = []
+
+  for (const item of report.duplicates) {
+    rows.push([
+      'Duplicate Input',
+      escapeCSV(item.fileName),
+      String(item.fileSizeBytes),
+      escapeCSV(`Duplicate of ${item.duplicateOf}`),
+      escapeCSV(item.reason),
+    ])
+  }
+
+  for (const item of report.unsupported) {
+    rows.push([
+      'Unsupported Format',
+      escapeCSV(item.fileName),
+      String(item.fileSizeBytes),
+      escapeCSV(`Type: ${item.mimeType || 'unknown'} | Ext: ${item.extension || 'none'}`),
+      escapeCSV(item.reason),
+    ])
+  }
+
+  for (const item of report.oversized) {
+    rows.push([
+      'Oversized',
+      escapeCSV(item.fileName),
+      String(item.fileSizeBytes),
+      escapeCSV(`Limit: ${item.maxAllowedBytes} bytes`),
+      escapeCSV(item.reason),
+    ])
+  }
+
+  return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n')
 }
 
 /**

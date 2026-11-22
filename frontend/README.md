@@ -68,6 +68,22 @@ Run the Vitest and React Testing Library suite:
 npm test
 ```
 
+## Batch Verification & Preflight Report
+
+The Batch Verification Workspace supports high-throughput verification of evidence files
+and standalone JSON receipts with bounded browser memory and worker concurrency.
+
+Before expensive verification operations (chunked hashing, steganography extraction,
+ZK proving), the verifier performs a synchronous **batch preflight check**:
+- **Duplicate inputs**: Identifies duplicate files in the input batch before computing hashes.
+- **Total bytes**: Calculates aggregate byte counts across the batch upfront.
+- **Unsupported formats**: Flags files that do not match supported video containers
+  (`.mp4`, `.mov`, `.webm`, `.mkv`, `.avi` / `video/*`) or proof manifests (`.json` / `application/json`).
+- **Oversized inputs**: Enforces per-file (`maxFileSizeBytes`) and total batch (`maxTotalSizeBytes`) bounds.
+
+No hashing or proving begins on duplicate inputs or unsupported formats.
+Preflight reports can be exported directly to JSON and CSV.
+
 ## Browser storage policy
 
 All application-owned browser persistence must go through the wrappers in

@@ -9,7 +9,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
@@ -55,8 +54,6 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
   const isProving = stage === 'proving'
   const revocationProofId =
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
-
-  const studioInputRef = useRef<HTMLInputElement | null>(null)
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
 
