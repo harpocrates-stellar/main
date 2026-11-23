@@ -36,6 +36,11 @@ MANIFEST_DIGEST_PREFIX = "mft-v1:"
 MANIFEST_DOMAIN_SEPARATOR = "harpocrates-tenant-export-manifest-v1:"
 REDACTION_POLICY_DIGEST_PREFIX = "rpol-v1:"
 REDACTION_POLICY_DOMAIN_SEPARATOR = "harpocrates-redaction-policy-v1:"
+EXPORT_POLICY_REVISION_PREFIX = "epr-v1:"
+
+# Default upper bound on a single export's date range (90 days in seconds).
+# Requests exceeding this are rejected before any storage access.
+EXPORT_MAX_RANGE_SECONDS_DEFAULT: float = 90 * 86400.0
 
 # Sensitive evidence and credential classes excluded from tenant exports by construction.
 EXCLUDED_SENSITIVE_CLASSES: Tuple[str, ...] = (
@@ -213,6 +218,9 @@ class ExportPolicy:
     require_safety_signature: bool = True
     safety_signature_prefix: str = "sig-v1:"
     validate_dimensions: bool = True
+    # Maximum span in seconds for a single export date-range query.
+    # Zero disables the upper-bound check; negative values are treated as zero.
+    max_export_range_seconds: float = EXPORT_MAX_RANGE_SECONDS_DEFAULT
 
 
 EXPORT_POLICY_DEFAULT: ExportPolicy = ExportPolicy()
@@ -564,6 +572,49 @@ def export_policy_revision(policy: ExportPolicy) -> str:
     return EXPORT_POLICY_REVISION_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def validate_export_date_range(
+    start_time: Optional[float],
+    end_time: Optional[float],
+    *,
+    max_range_seconds: float = EXPORT_MAX_RANGE_SECONDS_DEFAULT,
+) -> Tuple[bool, str, Optional[float], Optional[float]]:
+    """Validate and bound an export date range before any storage access.
+
+    Returns ``(ok, reason, bounded_start, bounded_end)``.  On success ``ok``
+    is True and the two float values are the clamped UTC epoch-second
+    boundaries.  On failure ``ok`` is False, ``reason`` is a machine-readable
+    code, and both boundary values are ``None``.
+
+    Rules:
+    - If both are ``None`` the range is unrestricted; the caller may pass the
+      result to storage with no date filter.
+    - ``start_time`` must be <= ``end_time`` when both are provided.
+    - The span ``end_time - start_time`` must not exceed ``max_range_seconds``
+      when that limit is positive.
+    - Negative timestamps are rejected (pre-epoch dates are not supported).
+    """
+    if start_time is None and end_time is None:
+        return (True, "ok", None, None)
+
+    if start_time is not None and start_time < 0:
+        return (False, "start_time_negative", None, None)
+    if end_time is not None and end_time < 0:
+        return (False, "end_time_negative", None, None)
+
+    if start_time is not None and end_time is not None:
+        if start_time > end_time:
+            # Return the boundaries in deterministic order for the error context.
+            bounded_start = float(start_time)
+            bounded_end = float(end_time)
+            return (False, "start_time_after_end_time", bounded_start, bounded_end)
+        span = end_time - start_time
+        limit = max(0.0, float(max_range_seconds))
+        if limit > 0 and span > limit:
+            return (False, "date_range_exceeds_maximum", float(start_time), float(end_time))
+
+    return (True, "ok", start_time, end_time)
+
+
 class ExportManager:
     def __init__(
         self,
@@ -615,8 +666,16 @@ class ExportManager:
         export_token_verified: bool = False,
         display_label: Optional[str] = None,
         requested_max_entries: int | None = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> Tuple[Optional[ExportArtifact], str, int]:
         """Create an export artifact from the given or stored log entries.
+
+        ``start_time`` and ``end_time`` are UTC epoch-second boundaries that
+        bound which entries are considered before any storage access.  The range
+        is validated via :func:`validate_export_date_range`; a contradictory or
+        excessively large interval is rejected immediately and returns
+        ``(None, "<reason>", 0)`` without touching the store.
 
         Returns a ``(artifact, payload_or_status, count)`` tuple. On success
         ``artifact`` is the :class:`ExportArtifact` and the second element is the
@@ -629,9 +688,20 @@ class ExportManager:
           (its processor is missing or raised while serializing). This status is
           returned instead of a successful zero-record export after a backend
           outage, so an outage can be told apart from a genuinely empty store.
+        - ``"start_time_after_end_time"`` / ``"date_range_exceeds_maximum"`` /
+          ``"start_time_negative"`` / ``"end_time_negative"`` - date-range
+          validation failed before any storage access.
         """
         with self._lock:
             policy = self._policy
+
+            # Validate date range before touching the store.
+            range_ok, range_reason, bounded_start, bounded_end = validate_export_date_range(
+                start_time, end_time, max_range_seconds=policy.max_export_range_seconds
+            )
+            if not range_ok:
+                return None, range_reason, 0
+
             if not export_token_verified and policy.require_export_token and not policy.allow_unauthenticated_export_shadow_mode:
                 return None, "export_token_required", 0
             if self._processor is None:
@@ -640,6 +710,13 @@ class ExportManager:
                 entries_filtered = list(entries)
             else:
                 entries_filtered = list(self._processor._entries[:])
+
+            # Apply date-range filter before any other processing.
+            if bounded_start is not None:
+                entries_filtered = [e for e in entries_filtered if e.timestamp_epoch_seconds >= bounded_start]
+            if bounded_end is not None:
+                entries_filtered = [e for e in entries_filtered if e.timestamp_epoch_seconds <= bounded_end]
+
             if not policy.include_sampled_out_events:
                 entries_filtered = [e for e in entries_filtered if e.export_safe]
             if validate_log_export_safety is not None:
@@ -701,15 +778,6 @@ class ExportManager:
                 server_file_name=self.generate_server_file_name(artifact_id, use_compress),
                 display_label=sanitize_display_label(display_label) if export_token_verified else None,
                 manifest=manifest,
-            )
-            artifact.receipt = self._build_receipt(
-                artifact,
-                policy=policy,
-                entry_source=entry_source,
-                candidate_count=candidate_count,
-                export_token_verified=export_token_verified,
-                requested_max_entries=requested_max_entries,
-                output_digest=output_digest,
             )
             if len(self._artifacts) >= self._max_artifacts_memory:
                 if self._artifact_queue:
