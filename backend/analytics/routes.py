@@ -343,6 +343,7 @@ def register_analytics_routes(
                     compress=None,
                     rollout_phase="shadow",
                     export_token_verified=token_verified,
+                    requested_max_entries=max_entries_int if max_entries_int and max_entries_int > 0 else None,
                 )
             except Exception:
                 artifact = None
@@ -358,6 +359,7 @@ def register_analytics_routes(
             body["checksum_sha256_prefix16"] = getattr(artifact, "checksum_sha256_prefix16", None)
             body["compress"] = getattr(artifact, "compress", False)
             body["count"] = count
+            body["receipt"] = getattr(artifact, "receipt", None)
         else:
             body["artifact_id"] = None
             body["entry_count"] = 0
@@ -391,6 +393,7 @@ def register_analytics_routes(
             body["rollout_phase"] = getattr(artifact, "rollout_phase", None)
             body["redaction_version"] = getattr(artifact, "redaction_version", None)
             body["encryption_at_rest"] = getattr(artifact, "encryption_at_rest", False)
+            body["receipt"] = getattr(artifact, "receipt", None)
         else:
             body["error"] = "artifact_not_found"
             body["artifact_id"] = artifact_id

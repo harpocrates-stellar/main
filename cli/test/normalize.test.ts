@@ -65,6 +65,28 @@ describe('classifyVerification', () => {
   })
 })
 
+describe('unknown optional manifest extensions', () => {
+  const base = {
+    proofId: 'a'.repeat(64), tier: 'silent' as const, network: 'testnet', contractId: 'contract',
+    transactionRef: 'b'.repeat(64), videoHash: 'c'.repeat(64),
+    metadataHash: 'd'.repeat(64), sourceHash: 'e'.repeat(64),
+    timestamp: '2026-07-24T12:00:00.000Z',
+  }
+
+  it('preserves unknown optional extensions through normalization', () => {
+    const manifest = createProofManifest({ ...base, extensions: { 'x-vendor-note': { a: 1 } } } as any)
+    const normalized = createProofManifest({ ...manifest } as any)
+    expect((normalized as any).extensions).toEqual({ 'x-vendor-note': { a: 1 } })
+    expect((normalized as any).proofId).toBe(manifest.proofId)
+  })
+
+  it('rejects unsupported required extensions', () => {
+    expect(() =>
+      createProofManifest({ ...base, extensions: { 'required:x-critical': true } } as any),
+    ).toThrow()
+  })
+})
+
 describe('networkName', () => {
   it('returns human-readable name for known passphrases', () => {
     expect(networkName('Test SDF Network ; September 2015')).toBe('Testnet')
