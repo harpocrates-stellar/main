@@ -25,6 +25,7 @@ class MetricsCollector:
         self._upload_histogram: Dict[Tuple[str, str], Dict[str, float]] = {}
         self._rejections_total: Dict[Tuple[str, str], int] = {}
         self._dependency_status: Dict[Tuple[str, str, str], int] = {}
+        self._stego_limit_breaches: Dict[str, int] = {}
         
         # Verifier cache metrics
         self._cache_hits = 0
@@ -55,6 +56,7 @@ class MetricsCollector:
             self._upload_histogram.clear()
             self._rejections_total.clear()
             self._dependency_status.clear()
+            self._stego_limit_breaches.clear()
             self._cache_hits = 0
             self._cache_misses = 0
             self._cache_evictions = 0
@@ -255,6 +257,11 @@ class MetricsCollector:
         with self._lock:
             self._indexer_events_total[clean] = self._indexer_events_total.get(clean, 0) + 1
 
+    def record_stego_limit_breach(self, operation: str) -> None:
+        """Record a steganography resource limit breach."""
+        with self._lock:
+            self._stego_limit_breaches[operation] = self._stego_limit_breaches.get(operation, 0) + 1
+
     def record_dependency_status(self, name: str, status: str, critical: bool) -> None:
         """Record the latest bounded readiness state for one dependency."""
         clean_name = (name or "unknown").strip() or "unknown"
@@ -382,6 +389,13 @@ class MetricsCollector:
                 lines.append("# TYPE harpocrates_indexer_events_total counter")
                 for event_type, count in sorted(self._indexer_events_total.items()):
                     lines.append(f'harpocrates_indexer_events_total{{event_type="{_escape_label(event_type)}"}} {count}')
+
+            if self._stego_limit_breaches:
+                lines.append("")
+                lines.append("# HELP harpocrates_stego_limit_breaches_total Total steganography resource limit breaches by operation.")
+                lines.append("# TYPE harpocrates_stego_limit_breaches_total counter")
+                for operation, count in sorted(self._stego_limit_breaches.items()):
+                    lines.append(f'harpocrates_stego_limit_breaches_total{{operation="{_escape_label(operation)}"}} {count}')
 
             # 8. Job queue backlog and oldest-job age gauges (refreshed at most every N seconds)
             now = time.monotonic()
