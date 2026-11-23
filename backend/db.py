@@ -4,10 +4,11 @@ import base64
 import binascii
 import hashlib
 import logging
+import re
 import os
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Iterator
 
 import psycopg
@@ -63,6 +64,32 @@ _TRANSIENT_MESSAGE_FRAGMENTS = (
     "couldn't connect to compute",
     "error connecting to compute node",
 )
+
+# Diagnostic bounds for worker exception text persisted on job failure.
+JOB_ERROR_MAX_BYTES = 2048
+_JOB_ERROR_REDACTED = "[redacted]"
+_PRIVATE_PATH_RE = re.compile(r"(?:/(?:home|Users|root|tmp|var|srv|opt|etc)/[^\s'\"]*)")
+_SECRET_SHAPED_RE = re.compile(
+    r"(?i)((?:password|passwd|secret|token|api[_-]?key|authorization|bearer)\s*[=:]?\s*)\S+"
+)
+_LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
+
+
+def sanitize_job_error(error: object) -> str:
+    """Return a bounded, redacted diagnostic string for job-failure storage.
+
+    Strips private filesystem paths and secret-shaped values and caps the
+    result at ``JOB_ERROR_MAX_BYTES`` UTF-8 bytes so arbitrary exception text
+    cannot bloat storage or leak credentials.
+    """
+    text = str(error) if error is not None else ""
+    text = _PRIVATE_PATH_RE.sub(_JOB_ERROR_REDACTED, text)
+    text = _SECRET_SHAPED_RE.sub(lambda m: m.group(1) + _JOB_ERROR_REDACTED, text)
+    text = _LONG_HEX_RE.sub(_JOB_ERROR_REDACTED, text)
+    encoded = text.encode("utf-8")
+    if len(encoded) > JOB_ERROR_MAX_BYTES:
+        text = encoded[:JOB_ERROR_MAX_BYTES].decode("utf-8", errors="ignore")
+    return text
 
 
 def encode_proof_events_cursor(event_id: int) -> str:
@@ -1171,24 +1198,216 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+
+# Bounded per-job attempt history (see docs/job-status.md). Each lease opens an
+# attempt; progress and the terminal outcome are recorded on it. Only the
+# newest JOB_ATTEMPT_HISTORY_LIMIT attempts are kept; ``attempt`` keeps
+# counting, so dropped attempts show up as a gap in the numbering.
+JOB_ATTEMPT_HISTORY_LIMIT = 10
+# Outcomes recorded on an attempt.
+ATTEMPT_COMPLETED = "completed"
+ATTEMPT_FAILED = "failed"
+ATTEMPT_RELEASED = "released"
+# Attempt history is public, so free text (error messages may quote paths or
+# payload values) is never stored. Values that are not a plain code are
+# dropped entirely rather than cleaned, so nothing derived from them leaks.
+_ATTEMPT_REASON_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_ATTEMPT_WORKER_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _attempt_code(value: Any, pattern: re.Pattern[str] = _ATTEMPT_REASON_RE) -> str | None:
+    """Return ``value`` if it is a plain code (e.g. an exception class name), else None."""
+    if isinstance(value, str) and pattern.fullmatch(value):
+        return value
+    return None
+
+
+def _open_attempt(job: dict[str, Any], worker_id: str) -> None:
+    attempts = job.setdefault("attempts", [])
+    number = job.get("_attempt_count", 0) + 1
+    job["_attempt_count"] = number
+    attempts.append(
+        {
+            "attempt": number,
+            "worker_id": _attempt_code(worker_id, _ATTEMPT_WORKER_RE),
+            "leased_at": datetime.now(UTC).isoformat(),
+            "ended_at": None,
+            "outcome": None,
+            "reason": None,
+            "progress": None,
+        }
+    )
+    del attempts[:-JOB_ATTEMPT_HISTORY_LIMIT]
+
+
+def _current_attempt(job: dict[str, Any]) -> dict[str, Any] | None:
+    attempts = job.get("attempts") or []
+    if attempts and attempts[-1].get("outcome") is None:
+        return attempts[-1]
+    return None
+
+
+def _close_attempt(job: dict[str, Any], outcome: str, reason: Any = None) -> None:
+    attempt = _current_attempt(job)
+    if attempt is None:
+        return
+    attempt["outcome"] = outcome
+    attempt["reason"] = _attempt_code(reason)
+    attempt["ended_at"] = datetime.now(UTC).isoformat()
 _next_job_id = 1
+_TENANT_LAST_LEASED_SEQ: dict[str, int] = {}
+_lease_seq = 0
+
+EXPENSIVE_VIDEO_JOB_TYPES = frozenset({"embed", "extract"})
+DEFAULT_TENANT_ID = "default"
+DEFAULT_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT = 2
+DEFAULT_MAX_QUEUED_VIDEO_JOBS_PER_TENANT = 10
+DEADLINE_EXCEEDED_REASON = "processing_deadline_exceeded"
 
 
-def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
-    """Enqueue a background job and return its job id."""
+class TenantQueueLimitExceededError(Exception):
+    """Raised when a tenant exceeds the per-tenant queued video job bound."""
+
+    def __init__(
+        self,
+        *,
+        tenant_id: str,
+        limit: int,
+        queued_count: int,
+        job_type: str,
+    ) -> None:
+        super().__init__(
+            f"tenant '{tenant_id}' exceeded queued {job_type} job limit ({queued_count}/{limit})"
+        )
+        self.tenant_id = tenant_id
+        self.limit = limit
+        self.queued_count = queued_count
+        self.job_type = job_type
+
+
+def max_concurrent_video_jobs_per_tenant() -> int:
+    """Maximum concurrent expensive video jobs allowed per tenant."""
+    return _positive_int_env(
+        "WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT",
+        DEFAULT_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT,
+    )
+
+
+def max_queued_video_jobs_per_tenant() -> int:
+    """Maximum queued (pending) expensive video jobs allowed per tenant."""
+    return _positive_int_env(
+        "WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT",
+        DEFAULT_MAX_QUEUED_VIDEO_JOBS_PER_TENANT,
+    )
+
+
+def _resolve_tenant_id(tenant_id: str | None, payload: dict[str, Any] | None) -> str:
+    raw = tenant_id
+    if raw is None and isinstance(payload, dict):
+        raw = payload.get("tenant_id")
+    if raw is None:
+        return DEFAULT_TENANT_ID
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("tenant_id must be a non-empty string")
+    return raw.strip()
+
+
+def count_tenant_video_jobs(tenant_id: str, *, status: str) -> int:
+    """Count expensive video jobs for *tenant_id* currently in *status*."""
+    return sum(
+        1
+        for job in _JOBS.values()
+        if job.get("status") == status
+        and job.get("type") in EXPENSIVE_VIDEO_JOB_TYPES
+        and job.get("tenant_id", DEFAULT_TENANT_ID) == tenant_id
+    )
+
+
+def get_tenant_video_job_counts() -> dict[str, dict[str, int]]:
+    """Return per-tenant pending and running counts for expensive video jobs."""
+    counts: dict[str, dict[str, int]] = {}
+    for job in _JOBS.values():
+        if job.get("type") not in EXPENSIVE_VIDEO_JOB_TYPES:
+            continue
+        status = job.get("status")
+        if status not in ("pending", "running"):
+            continue
+        tenant = job.get("tenant_id", DEFAULT_TENANT_ID)
+        bucket = counts.setdefault(tenant, {"pending": 0, "running": 0})
+        bucket[status] += 1
+    return counts
+
+
+def enqueue_job(
+    job_type: str,
+    payload: dict[str, Any],
+    *,
+    tenant_id: str | None = None,
+    max_queued_per_tenant: int | None = None,
+    deadline_at: datetime | None = None,
+    deadline_seconds: float | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Enqueue a background job and return its job id.
+
+    Expensive video jobs (``embed``, ``extract``) are bounded per tenant via
+    ``max_queued_per_tenant`` (or ``WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT``).
+    Optional ``deadline_at`` / ``deadline_seconds`` preserve an independent
+    processing deadline on the job record.
+    """
     global _next_job_id
+    resolved_tenant = _resolve_tenant_id(tenant_id, payload)
+
+    if deadline_at is not None and deadline_seconds is not None:
+        raise ValueError("specify at most one of deadline_at or deadline_seconds")
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    resolved_deadline: datetime | None = None
+    if deadline_seconds is not None:
+        if float(deadline_seconds) <= 0:
+            raise ValueError("deadline_seconds must be positive")
+        resolved_deadline = current + timedelta(seconds=float(deadline_seconds))
+    elif deadline_at is not None:
+        resolved_deadline = (
+            deadline_at if deadline_at.tzinfo is not None else deadline_at.replace(tzinfo=timezone.utc)
+        )
+
+    if job_type in EXPENSIVE_VIDEO_JOB_TYPES:
+        limit = (
+            max_queued_per_tenant
+            if max_queued_per_tenant is not None
+            else max_queued_video_jobs_per_tenant()
+        )
+        if limit <= 0:
+            raise ValueError("max_queued_per_tenant must be positive")
+        queued_count = count_tenant_video_jobs(resolved_tenant, status="pending")
+        if queued_count >= limit:
+            raise TenantQueueLimitExceededError(
+                tenant_id=resolved_tenant,
+                limit=limit,
+                queued_count=queued_count,
+                job_type=job_type,
+            )
+
     job_id = _next_job_id
     _next_job_id += 1
-    _JOBS[job_id] = {
+    record: dict[str, Any] = {
         "id": job_id,
         "type": job_type,
+        "tenant_id": resolved_tenant,
         "payload": payload,
         "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
         "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": current.isoformat(),
     }
+    if resolved_deadline is not None:
+        record["deadline_at"] = resolved_deadline.isoformat()
+    _JOBS[job_id] = record
     return job_id
 
 
@@ -1206,32 +1425,266 @@ def cancel_job(job_id: int) -> bool:
     return False
 
 
+DEFAULT_HEARTBEAT_STALE_SECONDS = 300.0
+STALE_HEARTBEAT_REASON = "stale_worker_heartbeat"
+PROCESSING_STATE_CATEGORY = "processing_state"
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
 def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: datetime | None = None,
+    max_concurrent_per_tenant: int | None = None,
 ) -> dict[str, Any] | None:
-    """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
+    """Lease the next eligible pending in-memory job matching ``job_types``.
+
+    Expensive video jobs (``embed``, ``extract``) are fairly scheduled across
+    tenants (fewest running video jobs first, then least-recently-leased
+    tenant, then FIFO within a tenant) and bounded by
+    ``max_concurrent_per_tenant`` (or
+    ``WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT``). Jobs whose independent
+    ``deadline_at`` has already elapsed are failed without consuming a tenant
+    concurrency slot or blocking other tenants.
+    """
+    global _lease_seq
+    lease_seconds = float(lease_duration)
+    if lease_seconds <= 0:
+        raise ValueError("lease_duration must be positive")
+    concurrent_limit = (
+        max_concurrent_per_tenant
+        if max_concurrent_per_tenant is not None
+        else max_concurrent_video_jobs_per_tenant()
+    )
+    if concurrent_limit <= 0:
+        raise ValueError("max_concurrent_per_tenant must be positive")
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.isoformat()
+
+    running_video_by_tenant: dict[str, int] = {}
     for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
-    return None
+        if job.get("status") == "running" and job.get("type") in EXPENSIVE_VIDEO_JOB_TYPES:
+            tenant = job.get("tenant_id", DEFAULT_TENANT_ID)
+            running_video_by_tenant[tenant] = running_video_by_tenant.get(tenant, 0) + 1
+
+    eligible_video: list[dict[str, Any]] = []
+    eligible_other: list[dict[str, Any]] = []
+    for job in _JOBS.values():
+        if job.get("status") != "pending" or job.get("type") not in job_types:
+            continue
+        deadline = _parse_iso_utc(job.get("deadline_at"))
+        if deadline is not None and current >= deadline:
+            job["status"] = "failed"
+            job["error"] = "processing deadline exceeded"
+            job["failed_at"] = current_iso
+            job["processing_state"] = {
+                "reason": DEADLINE_EXCEEDED_REASON,
+                "retryable": False,
+                "category": PROCESSING_STATE_CATEGORY,
+                "cryptographic_failure": False,
+                "detected_at": current_iso,
+            }
+            continue
+        if job.get("type") in EXPENSIVE_VIDEO_JOB_TYPES:
+            tenant = job.get("tenant_id", DEFAULT_TENANT_ID)
+            if running_video_by_tenant.get(tenant, 0) >= concurrent_limit:
+                continue
+            eligible_video.append(job)
+        else:
+            eligible_other.append(job)
+
+    chosen: dict[str, Any] | None = None
+    best_video: dict[str, Any] | None = None
+    if eligible_video:
+        best_video = min(
+            eligible_video,
+            key=lambda j: (
+                running_video_by_tenant.get(j.get("tenant_id", DEFAULT_TENANT_ID), 0),
+                _TENANT_LAST_LEASED_SEQ.get(j.get("tenant_id", DEFAULT_TENANT_ID), -1),
+                j["id"],
+            ),
+        )
+    best_other = min(eligible_other, key=lambda j: j["id"]) if eligible_other else None
+
+    if best_video is not None and best_other is not None:
+        chosen = best_other if best_other["id"] < best_video["id"] else best_video
+    else:
+        chosen = best_video if best_video is not None else best_other
+
+    if chosen is None:
+        return None
+
+    chosen["status"] = "running"
+    chosen["worker_id"] = worker_id
+    chosen["leased_at"] = current_iso
+    chosen["heartbeat_at"] = current_iso
+    chosen["lease_duration_seconds"] = lease_seconds
+    chosen.pop("processing_state", None)
+    _open_attempt(chosen, worker_id)
+    if chosen.get("type") in EXPENSIVE_VIDEO_JOB_TYPES:
+        _lease_seq += 1
+        _TENANT_LAST_LEASED_SEQ[chosen.get("tenant_id", DEFAULT_TENANT_ID)] = _lease_seq
+    leased = dict(chosen)
+    leased["attempts"] = [dict(attempt) for attempt in chosen["attempts"]]
+    return leased
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def heartbeat_job(
+    job_id: int,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    now: datetime | None = None,
+) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
     """
-    del lease_duration, progress
+    del progress
+    lease_seconds = float(lease_duration)
+    if lease_seconds <= 0:
+        raise ValueError("lease_duration must be positive")
     job = _JOBS.get(job_id)
     if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        current = now if now is not None else datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        job["heartbeat_at"] = current.isoformat()
+        job["lease_duration_seconds"] = lease_seconds
+        job.pop("processing_state", None)
+
+
+def get_job_heartbeat_state(
+    job: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Assess whether a running job's worker heartbeat is stale.
+
+    Returns a retryable processing-state descriptor that is strictly
+    independent of cryptographic/proof validity so unverified output is never
+    classified as a cryptographic failure.
+    """
+    raw_threshold = (
+        stale_after_seconds
+        if stale_after_seconds is not None
+        else job.get("lease_duration_seconds", DEFAULT_HEARTBEAT_STALE_SECONDS)
+    )
+    threshold = float(raw_threshold)
+    if threshold <= 0:
+        raise ValueError("stale_after_seconds must be positive")
+
+    if job.get("status") != "running":
+        return {
+            "stale": False,
+            "reason": None,
+            "retryable": False,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "heartbeat_age_seconds": None,
+            "stale_after_seconds": threshold,
+        }
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    reference = (
+        _parse_iso_utc(job.get("heartbeat_at"))
+        or _parse_iso_utc(job.get("leased_at"))
+        or _parse_iso_utc(job.get("created_at"))
+    )
+    if reference is None:
+        return {
+            "stale": False,
+            "reason": None,
+            "retryable": False,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "heartbeat_age_seconds": None,
+            "stale_after_seconds": threshold,
+        }
+
+    age_seconds = max(0.0, (current - reference).total_seconds())
+    is_stale = age_seconds >= threshold
+    return {
+        "stale": is_stale,
+        "reason": STALE_HEARTBEAT_REASON if is_stale else None,
+        "retryable": is_stale,
+        "category": PROCESSING_STATE_CATEGORY,
+        "cryptographic_failure": False,
+        "heartbeat_age_seconds": round(age_seconds, 3),
+        "stale_after_seconds": threshold,
+    }
+
+
+def reclaim_stale_jobs(
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float | None = None,
+) -> list[dict[str, Any]]:
+    """Re-queue running jobs whose worker heartbeat has gone stale.
+
+    Stale jobs are transitioned back to ``pending`` with a retryable
+    ``processing_state`` reason (``stale_worker_heartbeat``) rather than being
+    marked ``failed`` or classified as a cryptographic failure.
+    """
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.isoformat()
+
+    reclaimed: list[dict[str, Any]] = []
+    for job in _JOBS.values():
+        if job.get("status") != "running":
+            continue
+        state = get_job_heartbeat_state(
+            job,
+            now=current,
+            stale_after_seconds=stale_after_seconds,
+        )
+        if not state["stale"]:
+            continue
+        _close_attempt(job, ATTEMPT_RELEASED, STALE_HEARTBEAT_REASON)
+        job["status"] = "pending"
+        job.pop("worker_id", None)
+        job["processing_state"] = {
+            "reason": STALE_HEARTBEAT_REASON,
+            "retryable": True,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "detected_at": current_iso,
+            "heartbeat_age_seconds": state["heartbeat_age_seconds"],
+            "stale_after_seconds": state["stale_after_seconds"],
+        }
+        reclaimed.append(
+            {
+                "id": job["id"],
+                "type": job["type"],
+                "status": job["status"],
+                "processing_state": dict(job["processing_state"]),
+            }
+        )
+    return reclaimed
 
 
 # Processors may call report_job_progress as often as they like (for example
@@ -1275,25 +1728,42 @@ def report_job_progress(
         return False
     job["_progress_at"] = current
     job["progress"] = {"phase": phase, "percent": percent}
+    attempt = _current_attempt(job)
+    if attempt is not None:
+        attempt["progress"] = {"phase": phase, "percent": percent}
     return True
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
-    """Mark an in-memory job completed."""
+    """Mark an in-memory job completed and close its current attempt."""
     job = _JOBS.get(job_id)
     if not job:
         return
+    _close_attempt(job, ATTEMPT_COMPLETED)
     job["status"] = "completed"
     job["result"] = result
     job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
-def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
-    """Mark an in-memory job failed (fatal) or pending for retry."""
+def fail_job(
+    job_id: int,
+    error: str,
+    *,
+    is_fatal: bool = False,
+    reason: str | None = None,
+) -> None:
+    """Mark an in-memory job failed (fatal) or pending for retry.
+
+    The current attempt is closed as ``"failed"`` (fatal) or ``"released"``
+    (back to the queue). ``reason`` is a short machine code for the attempt
+    history, such as the exception class name; the free-text ``error`` is
+    never copied into the history.
+    """
     job = _JOBS.get(job_id)
     if not job:
         return
-    job["error"] = error
+    _close_attempt(job, ATTEMPT_FAILED if is_fatal else ATTEMPT_RELEASED, reason)
+    job["error"] = sanitize_job_error(error)
     job["failed_at"] = datetime.now(timezone.utc).isoformat()
     if is_fatal:
         job["status"] = "failed"
@@ -1525,6 +1995,36 @@ def insert_indexed_proof_event(
     if existing:
         return dict(existing), False
     raise RuntimeError(f"Conflict on tx {tx_hash}:{event_index} but row not found")
+
+
+def get_indexed_proof_events(
+    event_keys: list[tuple[str, int]],
+) -> list[dict[str, Any]]:
+    """Read indexed projection rows for the supplied (tx_hash, event_index) keys."""
+    if not event_keys:
+        return []
+    if not database_url():
+        return [
+            dict(_INDEXED_EVENTS[key])
+            for key in event_keys
+            if key in _INDEXED_EVENTS
+        ]
+
+    tx_hashes, event_indexes = zip(*event_keys)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select tx_hash, event_index, event_type, proof_id, contract_id,
+                       tx_status, metadata
+                from proof_events
+                where (tx_hash, event_index) in (
+                    select * from unnest(%s::text[], %s::integer[])
+                );
+                """,
+                (list(tx_hashes), list(event_indexes)),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
 
 def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:

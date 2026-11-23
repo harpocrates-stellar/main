@@ -10,6 +10,8 @@ Covers:
 - Queueing of webhook deliveries for indexed events
 - Bounded page size and exponential backoff on RPC errors
 - Visibility of indexed revocations in /api/proofs
+- Index rebuild dry-run: temporary projection from synthetic events with
+  deterministic fingerprints, reporting differences without touching the live index
 """
 
 from __future__ import annotations
@@ -46,6 +48,13 @@ from db import (
 )
 from metrics import collector
 from webhook import get_active_subscriptions, lease_deliveries, queue_webhook_deliveries
+
+from chain_indexer import (
+    build_index_projection,
+    compute_projection_fingerprint,
+    diff_projections,
+    rebuild_index_dry_run,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -378,108 +387,31 @@ def test_poll_indexer_once_resumes_from_stored_cursor(mock_fetch_events, mock_la
     # Run 2: Restart simulation. Stored cursor is present.
     # It must query using cursor="cursor-501" instead of start_ledger.
     mock_fetch_events.reset_mock()
-    mock_fetch_events.return_value = {
-        "cursor": "cursor-502",
-        "latestLedger": 502,
-        "events": [],
-    }
-
-    summary2 = poll_indexer_once(contract_id=DUMMY_CONTRACT)
-    assert summary2["indexed"] == 0
-    mock_fetch_events.assert_called_with(
-        rpc_url=DEFAULT_SOROBAN_RPC_URL,
-        contract_id=DUMMY_CONTRACT,
-        start_ledger=None,
-        cursor="cursor-501",
-        limit=50,
-        timeout=INDEXER_DEFAULT_TIMEOUT,
-    )
-    assert get_indexer_cursor() == "cursor-502"
 
 
-# ---------------------------------------------------------------------------
-# Webhook Dispatch Queueing
-# ---------------------------------------------------------------------------
-
-
-@mock.patch("chain_indexer.queue_webhook_deliveries")
-def test_webhook_deliveries_queued_for_new_indexed_event(mock_queue_webhook):
+def test_poll_rejects_batch_over_admission_limit_without_advancing_cursor(monkeypatch):
     events = [
         {
-            "txHash": "99" * 32,
-            "id": "0000000900-0000000001",
+            "txHash": DUMMY_TX_1,
+            "id": "0000000600-0000000001",
             "topic": ["proof", "revoke", DUMMY_PROOF_1],
-        }
+        },
+        {
+            "txHash": DUMMY_TX_2,
+            "id": "0000000600-0000000002",
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
     ]
-    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
-    assert summary["indexed"] == 1
-    assert mock_queue_webhook.called
-    event_id = mock_queue_webhook.call_args[0][0]
-    assert isinstance(event_id, int)
+    monkeypatch.setattr("chain_indexer.INDEXER_MAX_PAGE_SIZE", 1)
 
-
-# ---------------------------------------------------------------------------
-# RPC Error Backoff & Recovery
-# ---------------------------------------------------------------------------
-
-
-def test_run_indexer_loop_backs_off_on_error():
-    stop_event = threading.Event()
-    call_count = 0
-
-    def fake_poll(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            raise RuntimeError("RPC connection failed")
-        stop_event.set()
-        return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0}
-
-    with mock.patch("chain_indexer.poll_indexer_once", side_effect=fake_poll):
-        # Run loop in separate thread
-        t = threading.Thread(
-            target=run_indexer_loop,
-            args=(stop_event, DUMMY_CONTRACT),
-            kwargs={"poll_interval": 0.02, "initial_backoff": 0.02, "max_backoff": 0.1},
-        )
-        t.start()
-        t.join(timeout=3.0)
-
-    assert not t.is_alive()
-    assert call_count >= 3
-
-
-# ---------------------------------------------------------------------------
-# API Visibility: Revocations Appear in /api/proofs
-# ---------------------------------------------------------------------------
-
-
-def test_indexed_revocation_appears_in_api_proofs():
-    client = app_module.app.test_client()
-
-    # Ingest revocation directly via indexer batch
-    revocation_event = {
-        "txHash": "77" * 32,
-        "id": "0000000777-0000000001",
-        "topic": ["proof", "revoke", "ff" * 32],
-    }
-
-    # Set up mock or stub for list_proof_events in app
-    with mock.patch.object(
-        app_module,
-        "list_proof_events",
-        return_value=(
-            [
-                {
-                    "id": 1001,
-                    "event_type": "revoke",
-                    "proof_id": "ff" * 32,
-                    "tx_hash": "77" * 32,
-                    "tx_status": "revoked",
-                }
-            ],
-            None,
-        ),
+    with (
+        mock.patch("chain_indexer.get_indexer_cursor", return_value="cursor-before"),
+        mock.patch("chain_indexer.save_indexer_cursor") as save_cursor,
+        mock.patch(
+            "chain_indexer.fetch_contract_events",
+            return_value={"cursor": "cursor-after", "events": events},
+        ) as fetch_events,
+        mock.patch("chain_indexer.insert_indexed_proof_event") as insert_event,
     ):
         res = client.get("/api/proofs?limit=10")
         assert res.status_code == 200

@@ -7,6 +7,8 @@ video_hash_hi = "1"
 video_hash_lo = "2"
 credential_root = "0"
 nullifier = "0"
+# Verifier scope identifier — must be a canonical decimal field element
+# (no whitespace, leading zeros, or hex prefix).
 verifier_scope = "0"
 epoch = "0"
 
