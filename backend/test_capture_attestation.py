@@ -351,6 +351,32 @@ class TestCaptureAttestationRoute(unittest.TestCase):
         self.assertTrue(data.get("valid"))
         self.assertEqual(data.get("attestation_hash"), canonical_attestation_hash(self.attestation))
         self.assertEqual(data.get("checks"), {"evidence_binding": True})
+        self.assertEqual(
+            data["assurance"],
+            {
+                "schema": "harpocrates-capture-assurance/v1",
+                "deviceClaims": {
+                    "status": "reported",
+                    "trustLevel": {"code": 2, "label": "hardware_backed"},
+                    "claimedIntegrity": "raw_sensor",
+                },
+                "issuerCertification": {
+                    "status": "not_evaluated",
+                    "reasonCode": "issuer_transparency_not_checked",
+                },
+                "captureVerification": {
+                    "verifiedProperties": ["attested_digest_matches_request"],
+                    "failedProperties": [],
+                    "notEvaluatedProperties": [
+                        "device_commitment_matches_supplied_key",
+                        "evidence_content_digest",
+                        "secure_time",
+                        "camera_pipeline_integrity",
+                        "platform_claims",
+                    ],
+                },
+            },
+        )
         self.assertIn("request_id", data)
 
     def test_mismatched_evidence_digest_reports_failing_check(self):
@@ -368,6 +394,10 @@ class TestCaptureAttestationRoute(unittest.TestCase):
         self.assertFalse(data.get("valid"))
         self.assertEqual(data.get("attestation_hash"), canonical_attestation_hash(self.attestation))
         self.assertEqual(data.get("checks"), {"evidence_binding": False})
+        self.assertEqual(
+            data["assurance"]["captureVerification"]["failedProperties"],
+            ["attested_digest_matches_request"],
+        )
 
     def test_device_commitment_verification_with_matching_device_key(self):
         res = self.client.post(
@@ -385,6 +415,16 @@ class TestCaptureAttestationRoute(unittest.TestCase):
         self.assertEqual(
             data.get("checks"),
             {"evidence_binding": True, "device_commitment": True},
+        )
+        self.assertEqual(
+            data["assurance"]["captureVerification"]["verifiedProperties"],
+            [
+                "attested_digest_matches_request",
+                "device_commitment_matches_supplied_key",
+            ],
+        )
+        self.assertEqual(
+            data["assurance"]["issuerCertification"]["status"], "not_evaluated"
         )
 
     def test_device_commitment_verification_with_mismatched_device_key(self):
@@ -404,6 +444,10 @@ class TestCaptureAttestationRoute(unittest.TestCase):
         self.assertEqual(
             data.get("checks"),
             {"evidence_binding": True, "device_commitment": False},
+        )
+        self.assertEqual(
+            data["assurance"]["captureVerification"]["failedProperties"],
+            ["device_commitment_matches_supplied_key"],
         )
 
     def test_camel_case_input_fields_accepted(self):
