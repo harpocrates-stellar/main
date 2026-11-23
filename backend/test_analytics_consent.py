@@ -9,6 +9,8 @@ Covers:
 - ConsentManager invalidation (existing and new accounts)
 - ConsentManager prune_expired respecting grace period and max_to_prune
 - ConsentManager generate_consent_token stability and account tag redaction
+- Policy revision recorded at collection time, and withdrawn consent distinguished
+  from data never collected
 """
 
 from __future__ import annotations
@@ -27,11 +29,13 @@ from analytics.consent import (
     CONSENT_GRACE_PERIOD_SECONDS,
     CONSENT_SCHEMA_VERSION,
     ConsentDecision,
+    ConsentDeletionAudit,
     ConsentManager,
     ConsentSource,
     ConsentStatus,
     ConsentState,
     DEFAULT_CONSENT_STATE,
+    RetentionCheckpoint,
 )
 
 
@@ -581,3 +585,88 @@ class TestConsentManagerGenerateConsentToken:
             assert base_token != different_account
             assert base_token != different_status
             assert base_token != different_scope
+
+
+# ===========================================================================
+# ConsentManager prune_expired_batch (resumable retention checkpoint) tests
+# ===========================================================================
+
+
+class TestPruneExpiredBatch:
+    """Bounded, resumable consent cleanup with a deletion audit trail."""
+
+    def _aged_terminal_manager(self, count: int, grace: float = 1800.0):
+        cm = ConsentManager(grace_period_seconds=grace)
+        now = 100_000.0
+        old_time = now - grace - 100.0
+        for i in range(count):
+            tag = f"acct_{i:03d}"
+            cm.withdraw_consent(tag)
+            cm._consent_states[tag].last_modified_epoch_seconds = old_time
+        return cm, now
+
+    def test_processes_bounded_batches_and_resumes_until_complete(self) -> None:
+        cm, now = self._aged_terminal_manager(15)
+        cp = None
+        batches = 0
+        while True:
+            cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=6, checkpoint=cp)
+            batches += 1
+            if cp.complete:
+                break
+            # Each non-final batch prunes no more than the batch size.
+            assert cp.removed <= batches * 6
+        assert batches == 3  # 6 + 6 + 3
+        assert cp.removed == 15
+        assert len(cm._consent_states) == 0
+        assert len(cp.deletion_audits) == 15
+
+    def test_single_batch_leaves_remainder_and_is_not_complete(self) -> None:
+        cm, now = self._aged_terminal_manager(10)
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=4)
+        assert cp.removed == 4
+        assert cp.complete is False
+        assert len(cm._consent_states) == 6
+        assert len(cp.deletion_audits) == 4
+
+    def test_records_deletion_audit_references(self) -> None:
+        cm, now = self._aged_terminal_manager(3)
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=100)
+        assert cp.complete is True
+        assert len(cp.deletion_audits) == 3
+        for audit in cp.deletion_audits:
+            assert isinstance(audit, ConsentDeletionAudit)
+            assert audit.account_tag.startswith("acct_")
+            assert audit.prior_status == ConsentStatus.WITHDRAWN
+            assert audit.deleted_at_epoch_seconds == now
+            assert audit.audit_ref.startswith("del-v1:")
+            assert len(audit.audit_ref) == len("del-v1:") + 16
+
+    def test_preserves_active_consent(self) -> None:
+        cm, now = self._aged_terminal_manager(2)
+        granted = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["telemetry"],
+            expires_at_epoch_seconds=now + 10_000,
+            granted_at_epoch_seconds=now - 5000,
+        )
+        cm.set_consent("acct_granted", granted)
+        cm._consent_states["acct_granted"].last_modified_epoch_seconds = now - 5000
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=100)
+        assert cp.complete is True
+        assert cp.removed == 2
+        assert "acct_granted" in cm._consent_states
+
+    def test_empty_manager_is_immediately_complete(self) -> None:
+        cm = ConsentManager()
+        cp = cm.prune_expired_batch(now_epoch_seconds=100_000.0)
+        assert cp.complete is True
+        assert cp.removed == 0
+        assert cp.deletion_audits == []
+
+    def test_non_positive_batch_size_is_coerced_to_one(self) -> None:
+        cm, now = self._aged_terminal_manager(3)
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=0)
+        assert cp.removed == 1
+        assert cp.complete is False

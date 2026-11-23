@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -56,11 +57,25 @@ except Exception:
     SamplingOutcome = None
 
 try:
-    from analytics.log_processor import LogEntry, LogProcessor, sanitize_error_context
+    from analytics.log_processor import (
+        LogEntry,
+        LogProcessor,
+        sanitize_error_context,
+        validate_dimension,
+    )
 except Exception:
-    LogEntry = None
-    LogProcessor = None
-    sanitize_error_context = None
+    try:
+        from backend.analytics.log_processor import (
+            LogEntry,
+            LogProcessor,
+            sanitize_error_context,
+            validate_dimension,
+        )
+    except Exception:
+        LogEntry = None
+        LogProcessor = None
+        sanitize_error_context = None
+        validate_dimension = None
 
 try:
     from analytics.export_manager import ExportManager
@@ -192,7 +207,15 @@ class AnalyticsEngine:
         if log_processor is not None:
             self.log_processor = log_processor
         elif LogProcessor is not None:
-            self.log_processor = LogProcessor(redaction_engine=self.redaction)
+            consent_policy_revision = None
+            if self.config is not None and getattr(
+                getattr(self.config, "export", None), "include_consent_policy_revision", True
+            ):
+                consent_policy_revision = getattr(self.config, "consent_policy_revision", None)
+            self.log_processor = LogProcessor(
+                redaction_engine=self.redaction,
+                consent_policy_revision=consent_policy_revision,
+            )
         else:
             self.log_processor = None
 
@@ -226,8 +249,6 @@ class AnalyticsEngine:
     ) -> TrackedEvent:
         if context is None:
             context = RequestContext()
-        if self.metrics is not None:
-            self.metrics.record_event_seen(event_name)
 
         extra_fields: Dict[str, Any] = {}
         if context.account_id_tag:
@@ -244,6 +265,49 @@ class AnalyticsEngine:
             extra_fields.update(extra)
 
         event = create_event(event_name, category, payload, **extra_fields)
+
+        # Validate the allowed dimension vocabulary before aggregation,
+        # preventing hashes and raw filenames from becoming metric labels.
+        dimension_validation_enabled = True
+        if self.config is not None and hasattr(self.config, "features"):
+            dimension_validation_enabled = getattr(self.config.features, "dimension_validation_enabled", True)
+
+        if dimension_validation_enabled and event.payload:
+            labels = None
+            if isinstance(event.payload, dict):
+                labels = event.payload.get("labels")
+            elif hasattr(event.payload, "labels"):
+                labels = getattr(event.payload, "labels")
+
+            if isinstance(labels, dict):
+                for k, v in labels.items():
+                    valid = True
+                    reason = None
+                    if validate_dimension is not None:
+                        valid, reason = validate_dimension(str(k), v)
+                    else:
+                        v_str = str(v) if v is not None else ""
+                        clean = v_str.strip()
+                        if clean.startswith("0x") or clean.startswith("0X"):
+                            clean = clean[2:]
+                        if len(clean) >= 32 and re.fullmatch(r"[a-fA-F0-9]{32,}", clean):
+                            valid, reason = False, "dimension_rejected_hash"
+                        elif "." in v_str and ("/" in v_str or "\\" in v_str or any(v_str.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".mp4", ".mov", ".avi", ".pdf", ".bin"))):
+                            valid, reason = False, "dimension_rejected_filename"
+                    if not valid:
+                        if transition_event_state is not None and EventLifecycleState is not None:
+                            event = transition_event_state(
+                                event,
+                                EventLifecycleState.DROPPED,
+                                reason=reason,
+                                new_operation_status=EventOperationStatus.INVALID if EventOperationStatus is not None else None,
+                            )
+                        if self.metrics is not None and hasattr(self.metrics, "record_failure"):
+                            self.metrics.record_failure(reason or "dimension_rejected", category="privacy")
+                        return event
+
+        if self.metrics is not None:
+            self.metrics.record_event_seen(event_name)
 
         features_enabled = True
         if self.config is not None and hasattr(self.config, "features"):
@@ -310,7 +374,7 @@ class AnalyticsEngine:
                         event = transition_event_state(event, EventLifecycleState.CONSENT_PENDING)
                     event.annotations["consent_grace"] = "true"
 
-        replay_enabled = True
+
         if self.config is not None and hasattr(self.config, "features"):
             replay_enabled = getattr(self.config.features, "session_replay_protection_enabled", True)
 
