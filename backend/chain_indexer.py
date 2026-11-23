@@ -17,6 +17,7 @@ admits at most one bounded page at a time, and backs off on RPC or database erro
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ from typing import Any
 from db import (
     get_indexer_cursor,
     insert_indexed_proof_event,
+    list_proof_events,
     save_indexer_cursor,
 )
 from fetch_external import safe_urlopen
@@ -602,3 +604,136 @@ def run_indexer_loop(
             )
             stop_event.wait(backoff)
             backoff = min(max_backoff, backoff * 2.0)
+
+
+
+# ---------------------------------------------------------------------------
+# Index rebuild dry-run: deterministic projection fingerprints
+# ---------------------------------------------------------------------------
+
+_PROJECTION_DOMAIN = "harpocrates:index-projection:v1"
+
+
+def _projection_tx_hash(event: dict[str, Any]) -> str:
+    value = event.get("txHash") or event.get("tx_hash") or ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _projection_event_id(event: dict[str, Any]) -> str:
+    value = event.get("id") or event.get("event_id") or event.get("eventId")
+    return str(value) if value is not None else ""
+
+
+def _projection_topic(event: dict[str, Any]) -> list[Any]:
+    value = event.get("topic")
+    return value if isinstance(value, list) else []
+
+
+def build_index_projection(
+    events: list[dict[str, Any]],
+    *,
+    contract_id: str | None = None,
+    skipped: list[Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build an in-memory proof projection from decoded or synthetic events.
+
+    The projection is keyed by ``"<txHash>:<eventId>"`` so a rebuild is
+    invariant to the order events are fed in. Malformed events (missing hash,
+    empty topic) are skipped and appended to ``skipped`` when provided.
+    """
+    projection: dict[str, dict[str, Any]] = {}
+    for position, event in enumerate(events):
+        if not isinstance(event, dict):
+            if skipped is not None:
+                skipped.append(position)
+            continue
+        tx_hash = _projection_tx_hash(event)
+        topic = _projection_topic(event)
+        if not tx_hash or not topic:
+            if skipped is not None:
+                skipped.append(position)
+            continue
+        event_id = _projection_event_id(event) or str(position)
+        key = f"{tx_hash}:{event_id}"
+        event_type = topic[0] if isinstance(topic[0], str) else "unknown"
+        projection[key] = {
+            "tx_hash": tx_hash,
+            "event_id": event_id,
+            "event_type": event_type,
+            "topic": list(topic),
+            "contract_id": event.get("contract_id") or contract_id,
+            "value": event.get("value"),
+        }
+    return projection
+
+
+def compute_projection_fingerprint(projection: dict[str, dict[str, Any]]) -> str:
+    """Return a canonical SHA-256 fingerprint for a projection."""
+    canonical = {
+        key: projection[key] for key in sorted(projection)
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256((_PROJECTION_DOMAIN + payload).encode("utf-8")).hexdigest()
+
+
+def diff_projections(
+    live: dict[str, dict[str, Any]],
+    rebuilt: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Report keys added, removed or changed between two projections."""
+    live_keys = set(live)
+    rebuilt_keys = set(rebuilt)
+    added = sorted(rebuilt_keys - live_keys)
+    removed = sorted(live_keys - rebuilt_keys)
+    changed = sorted(
+        key for key in live_keys & rebuilt_keys if live[key] != rebuilt[key]
+    )
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def rebuild_index_dry_run(
+    events: list[dict[str, Any]],
+    *,
+    contract_id: str | None = None,
+    live_projection: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Rebuild the projection in memory and diff it against the live index.
+
+    Nothing is written: the live projection and indexer cursor are untouched.
+    """
+    skipped: list[Any] = []
+    rebuilt = build_index_projection(events, contract_id=contract_id, skipped=skipped)
+    live = live_projection if live_projection is not None else {}
+    diff = diff_projections(live, rebuilt)
+    differences = len(diff["added"]) + len(diff["removed"]) + len(diff["changed"])
+    return {
+        "dry_run": True,
+        "contract_id": contract_id,
+        "fingerprint": compute_projection_fingerprint(rebuilt),
+        "rebuilt_fingerprint": compute_projection_fingerprint(rebuilt),
+        "live_fingerprint": compute_projection_fingerprint(live),
+        "added": diff["added"],
+        "removed": diff["removed"],
+        "changed": diff["changed"],
+        "differences": differences,
+        "skipped": len(skipped),
+        "rebuilt_entries": len(rebuilt),
+        "live_entries": len(live),
+    }
+
+
+def dry_run_index_rebuild(*, limit: int = 1000) -> dict[str, Any]:
+    """CLI entrypoint: rebuild the projection from stored proof events."""
+    rows, _ = list_proof_events(limit=limit)
+    events = [
+        {
+            "txHash": row.get("tx_hash"),
+            "id": row.get("id"),
+            "topic": [row.get("event_type") or "unknown"],
+            "value": None,
+            "contract_id": row.get("contract_id"),
+        }
+        for row in rows
+    ]
+    live = build_index_projection(events)
+    return rebuild_index_dry_run(events, live_projection=live)
