@@ -1,8 +1,15 @@
 type StorageName = 'localStorage' | 'sessionStorage'
 
+export type SafeStorageLike = {
+  setItem(key: string, value: string): void
+  getItem(key: string): string | null
+  removeItem(key: string): void
+}
+
 export type PersistedUiPreferences = {
   currentView?: 'landing' | 'studio' | 'verify'
   selectedTier?: 'silent' | 'source' | 'seal'
+  vaultRecoveryRehearsed?: boolean
 }
 
 const STORAGE_KEY = 'harpocrates:ui-preferences'
@@ -13,12 +20,15 @@ const TIERS = new Set(['silent', 'source', 'seal'])
  * The only application data permitted in browser storage is:
  * - currentView: the active public navigation view
  * - selectedTier: the active public identity-tier selection
+ * - vaultRecoveryRehearsed: whether the one-time vault recovery rehearsal has completed
  *
  * Everything else is excluded by construction. In particular, seeds, proof
  * witnesses, generated proofs, and raw private inputs must remain in memory.
  * 
  * Note: Credential seeds may be stored locally ONLY in the encrypted VaultEnvelope 
  * managed by `CredentialVault`, which provides explicit lock/unlock semantics.
+ * Vault backup export destinations and encrypted backup payloads are never persisted
+ * in `safeStorage`; destinations must be explicitly selected by the user per export.
  */
 function sanitizePreferences(value: unknown): PersistedUiPreferences {
   if (!value || typeof value !== 'object') return {}
@@ -32,6 +42,9 @@ function sanitizePreferences(value: unknown): PersistedUiPreferences {
   if (typeof candidate.selectedTier === 'string' && TIERS.has(candidate.selectedTier)) {
     safe.selectedTier = candidate.selectedTier as PersistedUiPreferences['selectedTier']
   }
+  if (typeof candidate.vaultRecoveryRehearsed === 'boolean') {
+    safe.vaultRecoveryRehearsed = candidate.vaultRecoveryRehearsed
+  }
 
   return safe
 }
@@ -40,27 +53,67 @@ function browserStorage(name: StorageName): Storage {
   return window[name]
 }
 
-function createSafeStorage(name: StorageName) {
+/**
+ * In-memory storage container conforming to the standard Web Storage interface.
+ * Used for isolated testing and synthetic vault recovery rehearsals without touching
+ * the browser's live persistence or active private credentials.
+ */
+export function createIsolatedStateContainer(): Storage {
+  const store = new Map<string, string>()
+
+  return {
+    get length(): number {
+      return store.size
+    },
+    clear(): void {
+      store.clear()
+    },
+    getItem(key: string): string | null {
+      return store.has(key) ? store.get(key)! : null
+    },
+    key(index: number): string | null {
+      const keys = Array.from(store.keys())
+      return keys[index] ?? null
+    },
+    removeItem(key: string): void {
+      store.delete(key)
+    },
+    setItem(key: string, value: string): void {
+      store.set(key, String(value))
+    },
+  }
+}
+
+export type StorageTarget = StorageName | Storage
+
+export function createSafeStorage(target: StorageTarget) {
+  function getStorage(): Storage {
+    if (typeof target === 'string') {
+      return browserStorage(target)
+    }
+    return target
+  }
+
   return {
     setItem(key: string, value: string) {
-      browserStorage(name).setItem(key, value)
+      getStorage().setItem(key, value)
     },
 
     getItem(key: string): string | null {
-      return browserStorage(name).getItem(key)
+      return getStorage().getItem(key)
     },
 
     removeItem(key: string) {
-      browserStorage(name).removeItem(key)
+      getStorage().removeItem(key)
     },
 
     setUiPreferences(value: PersistedUiPreferences) {
       const safe = sanitizePreferences(value)
-      browserStorage(name).setItem(STORAGE_KEY, JSON.stringify(safe))
+      getStorage().setItem(STORAGE_KEY, JSON.stringify(safe))
     },
 
     getUiPreferences(): PersistedUiPreferences {
-      const stored = browserStorage(name).getItem(STORAGE_KEY)
+      const stored = getStorage().getItem(STORAGE_KEY)
       if (!stored) return {}
 
       try {
@@ -71,9 +124,13 @@ function createSafeStorage(name: StorageName) {
     },
 
     clearUiPreferences() {
-      browserStorage(name).removeItem(STORAGE_KEY)
+      getStorage().removeItem(STORAGE_KEY)
     },
   }
+}
+
+export function createIsolatedSafeStorage(container: Storage = createIsolatedStateContainer()) {
+  return createSafeStorage(container)
 }
 
 export const safeLocalStorage = createSafeStorage('localStorage')

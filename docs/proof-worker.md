@@ -17,7 +17,8 @@ Implementation:
 - `src/workers/proofWorker.ts` — runs inside the worker, wraps `noirClient.ts`
 - `src/workers/proofWorker.types.ts` — shared message/state/runtime types
 - `src/workers/proofWorkerClient.ts` — main-thread client (`ProofWorkerClient`)
-- `src/proofWorkerMemory.ts` — worker memory and artifact-size budget checks
+- `src/workers/proof-worker-manager.ts` — CSP-configured worker manager & pre-flight resource admission (`getResourceAdmissionDecision()`)
+- `src/proofWorkerMemory.ts` — worker memory, artifact-size budget checks, and resource admission evaluator (`evaluateProofWorkerResourceAdmission()`)
 - `src/hooks/useEvidence.ts` — Evidence Studio integration + Cancel button
 - `src/workers/multiBrowserWorkerSupport.ts` — multi-browser capability floor for module-worker proving
 
@@ -47,6 +48,13 @@ Implementation:
 - Cancel / timeout / destroy / unmount all settle with a stable `CANCELLED`
   (or `TIMEOUT` / `CRASHED`) code whose message never contains witness values,
   seeds, proof hex, or media identifiers beyond stage names.
+- Proof-worker diagnostic messages forwarded to telemetry via
+  `boundProofWorkerDiagnostic` / `ProofWorkerManager.forwardDiagnosticToTelemetry`
+  redact witness-shaped values (witness/secret/proof/evidence fields, byte
+  buffers, bigints, witness arrays, hex and field-element tokens) and cap the
+  serialized UTF-8 payload at `PROOF_WORKER_MEMORY_LIMITS.maxDiagnosticBytes`
+  (4096 bytes by default) while retaining stable `stage` and `errorCode`/`code`
+  identifiers.
 
 ## State machine
 
@@ -181,6 +189,24 @@ invoked.
   surfacing as a benign "unhandled rejection" in test output. This has been
   observed not to affect real-browser behavior (verified manually).
 
+## Offline worker capability report
+
+`ProofWorkerManager.getOfflineCapabilityReport()` (and standalone
+`buildOfflineWorkerCapabilityReport()` in `src/workers/proof-worker-manager.ts`)
+plus `inspectProofWorkerArtifactMetadata()` in `src/proofWorkerMemory.ts`
+produce a synchronous, offline readiness report:
+
+- Inspects required browser capabilities (`Worker`, `moduleWorkerType`,
+  `WebAssembly`, `SubtleCrypto`, `BigInt`, `ArrayBuffer`) via
+  `multiBrowserWorkerSupport.ts`.
+- Inspects configured proving artifact metadata and memory ceilings from the
+  statically bundled `zk/browser.artifacts.manifest.json` and
+  `zk/bench/bench.lock.json` without loading proving artifacts or contacting
+  network endpoints.
+- Fails closed (`ready: false`) with privacy-safe capability/metadata issue
+  descriptions when required browser features are missing or configured
+  artifact metadata is empty or exceeds worker/CSP limits.
+
 ## Multi-browser worker support
 
 Browser proving is gated by the same support floor documented in
@@ -208,6 +234,16 @@ Focused coverage lives in:
 
 ```bash
 cd frontend
-npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
+npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts src/workers/proof-worker-manager.test.ts
 ```
+
+## Resource admission decisions
+
+Before proving starts, callers can inspect memory, thread, and concurrency restrictions via `evaluateProofWorkerResourceAdmission()` (`src/proofWorkerMemory.ts`) or `ProofWorkerManager.getResourceAdmissionDecision()` (`src/workers/proof-worker-manager.ts`).
+
+The returned `ProofWorkerResourceAdmissionDecision` is privacy-safe (byte counts, thread counts, concurrency slots, and reason codes only — never witness or secret material) and reports:
+
+- **Memory**: estimated bytes vs. canonical `PROOF_WORKER_MEMORY_LIMITS` runtime ceiling and optional CSP `maxMemoryMB` cap, plus whether `deviceMemoryGB` (`<= 2 GB`) marks the browser as memory-constrained.
+- **Threads**: multithreaded WASM (`1–8` threads) when `crossOriginIsolated` is true and the device is not memory-constrained; otherwise preserves a safe `single-threaded-fallback` (`1` thread) with explicit reason codes (`fallback_single_thread_not_isolated`, `fallback_single_thread_memory_constrained`, or `fallback_single_thread_low_concurrency`).
+- **Concurrency**: active tasks vs. `maxConcurrentTasks` (default `1`), failing closed with `concurrency_limit_reached` when no slot is available.
 

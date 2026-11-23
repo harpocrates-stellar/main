@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import benchLock from '../../zk/bench/bench.lock.json'
 import browserArtifactManifest from '../../zk/browser.artifacts.manifest.json'
 import { CircuitInputError } from './circuitInputSchema'
@@ -7,6 +7,7 @@ import {
   assertProofWorkerMemoryBudget,
   browserArtifactByteLimit,
   byteLengthOfProofWorkerValue,
+  evaluateProofWorkerResourceAdmission,
   readBoundedCircuitArtifact,
 } from './proofWorkerMemory'
 
@@ -86,6 +87,54 @@ describe('proof worker memory limits', () => {
     }
   })
 
+  it('inspects configured browser artifact metadata offline without network access', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('network access is forbidden during offline inspection')
+    })
+
+    try {
+      const report = inspectProofWorkerArtifactMetadata()
+      expect(report.format).toBe(browserArtifactManifest.format)
+      expect(report.version).toBe(browserArtifactManifest.version)
+      expect(report.publishedArtifactCount).toBe(browserArtifactManifest.artifacts.length)
+      expect(report.skippedArtifactCount).toBe(browserArtifactManifest.skipped.length)
+      expect(report.allArtifactsWithinLimit).toBe(true)
+      expect(report.totalPublishedArtifactBytes).toBeGreaterThan(0)
+      expect(report.toolchain.barretenberg).toBe(browserArtifactManifest.toolchain.barretenberg)
+      expect(report.toolchain.provingScheme).toBe(browserArtifactManifest.toolchain.proving_scheme)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('flags artifacts that exceed the byte limit or have invalid byte metadata', () => {
+    const oversizedReport = inspectProofWorkerArtifactMetadata({
+      format: 'harpocrates.zk-browser-artifact-manifest',
+      version: 1,
+      artifacts: [
+        {
+          path: 'frontend/public/noir/boundary_ok.json',
+          raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes,
+        },
+        {
+          path: 'frontend/public/noir/too_large.json',
+          raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes + 1,
+        },
+      ],
+    })
+
+    expect(oversizedReport.allArtifactsWithinLimit).toBe(false)
+    expect(oversizedReport.artifacts[0].withinArtifactLimit).toBe(true)
+    expect(oversizedReport.artifacts[1].withinArtifactLimit).toBe(false)
+
+    const missingSizeReport = inspectProofWorkerArtifactMetadata({
+      artifacts: [{ path: 'frontend/public/noir/missing_size.json' }],
+    })
+    expect(missingSizeReport.allArtifactsWithinLimit).toBe(false)
+    expect(missingSizeReport.artifacts[0].rawBytes).toBe(0)
+  })
+
   it('rejects malformed artifact JSON as a dependency failure', async () => {
     const response = new Response('{not json}', {
       headers: { 'content-length': '10' },
@@ -94,5 +143,92 @@ describe('proof worker memory limits', () => {
     await expect(
       readBoundedCircuitArtifact(response, '/noir/test.json', 64),
     ).rejects.toThrowError(new CircuitInputError('circuit_load_failed'))
+  })
+})
+
+describe('proof worker resource admission decisions', () => {
+  it('admits multithreaded proving and clamps threads to 8 when resources are healthy', () => {
+    const decision = evaluateProofWorkerResourceAdmission({
+      usage: {
+        witnessBytes: PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes,
+        proofBytes: PROOF_WORKER_MEMORY_LIMITS.maxProofBytes,
+        publicInputBytes: PROOF_WORKER_MEMORY_LIMITS.maxPublicInputBytes,
+      },
+      crossOriginIsolated: true,
+      hardwareConcurrency: 16,
+      deviceMemoryGB: 8,
+      activeTasks: 0,
+      maxConcurrentTasks: 1,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('multithreaded')
+    expect(decision.fallbackApplied).toBe(false)
+    expect(decision.reasonCodes).toEqual(['admitted'])
+    expect(decision.threads.admitted).toBe(8)
+    expect(decision.threads.fallbackSingleThread).toBe(false)
+    expect(decision.memory.admitted).toBe(true)
+    expect(decision.concurrency.admitted).toBe(true)
+    expect(decision.concurrency.availableSlots).toBe(1)
+    expect(decision.summary).toContain('Multithreaded WASM proving admitted with 8 threads.')
+  })
+
+  it('preserves a safe single-threaded fallback when not cross-origin isolated', () => {
+    const decision = evaluateProofWorkerResourceAdmission({
+      crossOriginIsolated: false,
+      hardwareConcurrency: 8,
+      deviceMemoryGB: 8,
+      activeTasks: 0,
+      maxConcurrentTasks: 1,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('single-threaded-fallback')
+    expect(decision.fallbackApplied).toBe(true)
+    expect(decision.reasonCodes).toEqual(['fallback_single_thread_not_isolated'])
+    expect(decision.threads.admitted).toBe(1)
+    expect(decision.threads.fallbackSingleThread).toBe(true)
+    expect(decision.threads.detail).toContain('Cross-origin isolation unavailable')
+  })
+
+  it('preserves a safe single-threaded fallback on memory-constrained browsers', () => {
+    const decision = evaluateProofWorkerResourceAdmission({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 8,
+      deviceMemoryGB: 2,
+      activeTasks: 0,
+      maxConcurrentTasks: 1,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('single-threaded-fallback')
+    expect(decision.fallbackApplied).toBe(true)
+    expect(decision.reasonCodes).toEqual(['fallback_single_thread_memory_constrained'])
+    expect(decision.memory.constrained).toBe(true)
+    expect(decision.threads.admitted).toBe(1)
+  })
+
+  it('rejects when memory budget or concurrency limit is exceeded', () => {
+    const decision = evaluateProofWorkerResourceAdmission({
+      usage: {
+        witnessBytes: PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes + 1,
+      },
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+      activeTasks: 1,
+      maxConcurrentTasks: 1,
+    })
+
+    expect(decision.admitted).toBe(false)
+    expect(decision.mode).toBe('rejected')
+    expect(decision.fallbackApplied).toBe(false)
+    expect(decision.reasonCodes).toEqual([
+      'memory_budget_exceeded',
+      'concurrency_limit_reached',
+    ])
+    expect(decision.memory.admitted).toBe(false)
+    expect(decision.concurrency.admitted).toBe(false)
+    expect(decision.concurrency.availableSlots).toBe(0)
+    expect(decision.threads.admitted).toBe(0)
   })
 })

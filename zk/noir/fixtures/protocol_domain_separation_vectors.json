@@ -1,0 +1,71 @@
+{
+  "format": "harpocrates.noir-protocol-domain-separation",
+  "version": 1,
+  "derivation": {
+    "implementation": "@aztec/bb.js",
+    "version": "0.87.0",
+    "operation": "pedersenHash",
+    "hash_index": 0,
+    "note": "Derived independently from the Noir helper using the shared Pedersen primitive. All values are synthetic protocol fields."
+  },
+  "domain_tuple": {
+    "status": "only configured Noir tuple at this baseline",
+    "protocol_field": "0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201",
+    "domain_version_field": "0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623",
+    "network_field": "0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f",
+    "domain_tag": "0x1a73cc6eda5fc8454c3bf62ef9defb0e6e1f7d999ab6857a39692821856ad61d"
+  },
+  "rejected_replays": [
+    {
+      "axis": "protocol",
+      "protocol_field": "0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c202",
+      "domain_version_field": "0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623",
+      "network_field": "0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f",
+      "domain_tag": "0x01d5e3d337c18d80777ac6785087144ff034cc5f1f703ff8b4ae0c2fbf263e67",
+      "accepted": false
+    },
+    {
+      "axis": "protocol_version",
+      "protocol_field": "0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201",
+      "domain_version_field": "0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac624",
+      "network_field": "0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f",
+      "domain_tag": "0x0172dc3f418a724af1c3778eb5b3a24bc5a96c4d4c320aba68a2fb29722359c4",
+      "accepted": false
+    },
+    {
+      "axis": "network",
+      "protocol_field": "0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201",
+      "domain_version_field": "0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623",
+      "network_field": "0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a510",
+      "domain_tag": "0x2ef92ae38e6abf555c6afd50e9f35b903f023727a3dfe2bd003073ad032fd2cc",
+      "accepted": false
+    }
+  ],
+  "scoped_nullifier_vectors": [
+    {
+      "credential_secret": "12345",
+      "nullifier_secret": "67890",
+      "video_hash_hi": "1",
+      "video_hash_lo": "2",
+      "verifier_scope": "0",
+      "epoch": "0",
+      "scope_hash": "0x0a71919661731c0e0a03ce8c8c74b7612cf6cf734cdd81e842e4c533434aa24a",
+      "nullifier": "0x23b876d6275425fcc79864672ee8f33b5c5c8aea5ec8b7c8b923a5c6107a3950"
+    },
+    {
+      "credential_secret": "12345",
+      "nullifier_secret": "67890",
+      "video_hash_hi": "1",
+      "video_hash_lo": "2",
+      "verifier_scope": "42",
+      "epoch": "0",
+      "scope_hash": "0x2098ea89384cfc7f9267fc399116380f686ec5b8e2a1853e928d4475a6322ae5",
+      "nullifier": "0x1d9f95ada531dc716ca8e29e50fc90cbabcda89f6d56cb3738f9ca0701275ab5"
+    }
+  ],
+  "circuit_version": {
+    "current": 2,
+    "rejected_downgrade": 1,
+    "note": "The proof-envelope circuit_version is a separate public input from DOMAIN_VERSION_FIELD and is covered by test_circuit_version_downgrade."
+  }
+}

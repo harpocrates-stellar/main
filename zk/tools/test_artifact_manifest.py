@@ -1195,3 +1195,42 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+def test_digest_artifact_rejects_parent_traversal(tmp_path: Path, lock: am.Lock):
+    root = tmp_path / "release"
+    root.mkdir()
+    (tmp_path / "outside.bin").write_bytes(b"outside release")
+
+    declaration = {
+        "path": "../outside.bin",
+        "kind": "binary",
+        "role": "test",
+        "required": True,
+    }
+
+    with pytest.raises(am.ArtifactPathEscapeError):
+        am.digest_artifact(declaration, lock, root)
+
+
+def test_digest_artifact_rejects_symlink_escape(tmp_path: Path, lock: am.Lock):
+    root = tmp_path / "release"
+    root.mkdir()
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside release")
+
+    link = root / "artifact.bin"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlink creation is not supported in this environment")
+
+    declaration = {
+        "path": "artifact.bin",
+        "kind": "binary",
+        "role": "test",
+        "required": True,
+    }
+
+    with pytest.raises(am.ArtifactPathEscapeError):
+        am.digest_artifact(declaration, lock, root)

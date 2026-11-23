@@ -24,7 +24,13 @@ import {
   type BatchProgress,
   type BatchSummary,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  EXPORT_PRIVACY_PROFILES,
+  exportBatchCSV,
+  exportBatchJSON,
+  exportReceiptCollection,
+  type ExportPrivacyProfile,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -44,6 +50,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const [searchQuery, setSearchQuery] = useState('')
   const [detailItem, setDetailItem] = useState<BatchItemResult | null>(null)
   const [showConfig, setShowConfig] = useState(false)
+  const [exportPrivacyProfile, setExportPrivacyProfile] = useState<ExportPrivacyProfile>('public')
 
   // Config settings
   const [concurrency, setConcurrency] = useState(3)
@@ -211,8 +218,18 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     URL.revokeObjectURL(url)
   }
 
-  const exportJSON = () => triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
-  const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
+  const exportJSON = () =>
+    triggerDownload(
+      exportBatchJSON(items, exportPrivacyProfile),
+      `harpocrates-batch-report-${exportPrivacyProfile}.json`,
+      'application/json',
+    )
+  const exportCSV = () =>
+    triggerDownload(
+      exportBatchCSV(items, exportPrivacyProfile),
+      `harpocrates-batch-report-${exportPrivacyProfile}.csv`,
+      'text/csv',
+    )
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
 
@@ -369,12 +386,26 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
             </button>
 
             <div className="export-group">
+              <label className="export-privacy-selector" htmlFor="batch-export-privacy-profile">
+                <span className="sr-only">Export privacy profile</span>
+                <select
+                  id="batch-export-privacy-profile"
+                  aria-label="Export privacy profile"
+                  value={exportPrivacyProfile}
+                  onChange={(e) => setExportPrivacyProfile(e.target.value as ExportPrivacyProfile)}
+                  disabled={items.length === 0 || isRunning}
+                  title={EXPORT_PRIVACY_PROFILES[exportPrivacyProfile].description}
+                >
+                  <option value="public">{EXPORT_PRIVACY_PROFILES.public.label}</option>
+                  <option value="owner-only">{EXPORT_PRIVACY_PROFILES['owner-only'].label}</option>
+                </select>
+              </label>
               <button
                 className="icon-button secondary"
                 type="button"
                 onClick={exportJSON}
                 disabled={items.length === 0 || isRunning}
-                title="Export JSON Report"
+                title={`Export JSON Report (${EXPORT_PRIVACY_PROFILES[exportPrivacyProfile].label})`}
               >
                 <Download size={16} aria-hidden="true" />
                 <span>JSON</span>
@@ -384,7 +415,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 type="button"
                 onClick={exportCSV}
                 disabled={items.length === 0 || isRunning}
-                title="Export CSV Report"
+                title={`Export CSV Report (${EXPORT_PRIVACY_PROFILES[exportPrivacyProfile].label})`}
               >
                 <Download size={16} aria-hidden="true" />
                 <span>CSV</span>

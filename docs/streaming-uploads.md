@@ -12,7 +12,7 @@ destination artifact is retained.
 |---------|----------|
 | Chunk size | Configurable via `UPLOAD_CHUNK_BYTES` (clamped to 4 KiB–1 MiB; default 64 KiB) |
 | Hashing | SHA-256 updated per chunk during copy (`hash_stream_to_path` / `StreamingFileStorage.save`) |
-| Size limit | Enforced mid-stream; raises `RequestEntityTooLarge` without logging payload bytes |
+| Size limit | Enforced mid-stream in bytes; raises `RequestEntityTooLarge` without logging payload bytes. Distinguishes an absent limit (unlimited) from a zero-byte allowance (`0`, rejecting non-empty uploads) |
 | Session commit | Chunk files are concatenated with the same bounded reader (`hash_paths_concat`) |
 | Streaming trigger | Multipart bodies larger than `UPLOAD_STREAM_THRESHOLD_BYTES` (default 1 MiB) wrap `FileStorage` |
 
@@ -22,7 +22,7 @@ destination artifact is retained.
 |----------|---------|-------------|
 | `UPLOAD_CHUNK_BYTES` | `65536` | Bounded read/write size for stream hashing |
 | `UPLOAD_STREAM_THRESHOLD_BYTES` | `1048576` | Content-Length above which embed/extract wrap uploads |
-| `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream size ceiling |
+| `UPLOAD_MAX_BYTES` | `MAX_VIDEO_BYTES` | Hard mid-stream size ceiling in bytes; `0` enforces a zero-byte allowance (rejects non-empty uploads fail-closed), while absent (`None`) falls back or allows unlimited |
 | `UPLOAD_TEMP_DIR` | OS temp | Optional temp directory for stream scratch files |
 
 ## Trust boundary, privacy, migration, rollback
@@ -35,8 +35,8 @@ destination artifact is retained.
   media bytes, secrets, witness values, and private keys are never logged by
   this module.
 - **Migration:** Additive. Compatible callers that already post multipart video
-  continue to work. Digests match whole-file SHA-256, so stored evidence remains
-  interoperable.
+  continue to work. Units are consistently measured in bytes across declared headers,
+  streaming limit enforcement, and rejection bodies.
 - **Rollback:** Revert this change set; no schema or protocol version bump is
   required. Temporary stream files live under the process temp directory and are
   removed on success or size-abort.
@@ -44,5 +44,5 @@ destination artifact is retained.
 ## Testing
 
 `backend/test_streaming_focused.py` covers positive hashing, oversized abort,
-exact-limit boundary, memory-bounded reads, concat hashing, and empty-stream
-regression.
+exact-limit boundary, zero-byte allowance, absent limit, memory-bounded reads, concat
+hashing, and empty-stream regression.

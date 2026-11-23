@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProofWorkerManager } from './proof-worker-manager'
+import { ProofWorkerManager, buildOfflineWorkerCapabilityReport } from './proof-worker-manager'
+import { PROOF_WORKER_MEMORY_LIMITS } from '../proofWorkerMemory'
 import { ProofWorkerLogger } from './proof-worker-logger'
 import type { ProofWorkerResponse } from './proof.worker.types'
 
@@ -312,6 +313,93 @@ describe('getStatus and getCSPHeaders', () => {
   })
 })
 
+describe('offline worker capability report', () => {
+  const capableGlobal = {
+    Worker: FakeWorker,
+    WebAssembly: function WebAssembly() {},
+    crypto: { subtle: {} },
+    BigInt,
+    ArrayBuffer,
+  } as unknown as typeof globalThis
+
+  it('inspects required browser features and configured artifact metadata offline without network or worker init', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('fetch must not be called during offline capability inspection')
+    })
+    const manager = createManager({ maxMemoryMB: 256, maxExecutionTimeMs: 45000 })
+
+    const report = manager.getOfflineCapabilityReport({ globalObj: capableGlobal })
+
+    expect(report.offline).toBe(true)
+    expect(report.ready).toBe(true)
+    expect(report.issues).toEqual([])
+    expect(report.browser.ok).toBe(true)
+    expect(report.browser.tier).toBe('supported')
+    expect(report.browser.missing).toEqual([])
+    expect(report.artifacts.publishedArtifactCount).toBeGreaterThan(0)
+    expect(report.artifacts.allArtifactsWithinLimit).toBe(true)
+    expect(report.csp).toEqual({
+      sandbox: true,
+      maxMemoryMB: 256,
+      maxExecutionTimeMs: 45000,
+      allowedOriginsCount: 2,
+    })
+    expect(internals(manager).isInitialized).toBe(false)
+    expect(internals(manager).worker).toBeNull()
+    expect(FakeWorker.live.size).toBe(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when required browser capabilities are missing', () => {
+    const missingCapabilitiesGlobal = {
+      BigInt,
+      ArrayBuffer,
+    } as unknown as typeof globalThis
+
+    const report = createManager().getOfflineCapabilityReport({
+      globalObj: missingCapabilitiesGlobal,
+    })
+
+    expect(report.offline).toBe(true)
+    expect(report.ready).toBe(false)
+    expect(report.browser.ok).toBe(false)
+    expect(report.browser.tier).toBe('unsupported')
+    expect(report.browser.missing).toEqual(['Worker', 'moduleWorkerType', 'WebAssembly', 'SubtleCrypto'])
+    expect(report.issues).toContain(report.browser.reason)
+  })
+
+  it('fails closed when configured artifact metadata is empty or exceeds limits', () => {
+    const emptyManifestReport = buildOfflineWorkerCapabilityReport({
+      globalObj: capableGlobal,
+      manifest: { format: 'test', version: 1, artifacts: [] },
+    })
+    expect(emptyManifestReport.ready).toBe(false)
+    expect(emptyManifestReport.issues).toContain(
+      'No published proving artifacts configured in manifest.',
+    )
+
+    const oversizedArtifactReport = buildOfflineWorkerCapabilityReport({
+      globalObj: capableGlobal,
+      cspConfig: { maxMemoryMB: 1 },
+      manifest: {
+        format: 'test',
+        version: 1,
+        artifacts: [
+          {
+            path: 'frontend/public/noir/oversized.json',
+            raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes + 1,
+          },
+        ],
+      },
+    })
+    expect(oversizedArtifactReport.ready).toBe(false)
+    expect(oversizedArtifactReport.artifacts.allArtifactsWithinLimit).toBe(false)
+    expect(oversizedArtifactReport.issues).toContain(
+      'One or more configured proving artifacts exceed the worker artifact byte limit.',
+    )
+  })
+})
+
 describe('destroy', () => {
   it('terminates the worker, clears handlers and resets initialization', async () => {
     vi.useFakeTimers()
@@ -342,5 +430,70 @@ describe('destroy', () => {
     expect(() => manager.destroy()).not.toThrow()
     await manager.init()
     expect(internals(manager).isInitialized).toBe(true)
+  })
+})
+
+describe('getResourceAdmissionDecision', () => {
+  it('explains memory, thread, and concurrency decisions before proving starts', () => {
+    const manager = createManager({ maxMemoryMB: 256 })
+    const decision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+      deviceMemoryGB: 8,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('multithreaded')
+    expect(decision.threads.admitted).toBe(4)
+    expect(decision.memory.maxMemoryBytes).toBe(256 * 1024 * 1024)
+    expect(decision.concurrency.activeTasks).toBe(0)
+    expect(decision.concurrency.maxConcurrentTasks).toBe(1)
+    expect(decision.summary).toContain('Memory within budget')
+    expect(decision.summary).toContain('4 threads')
+    expect(decision.summary).toContain('0/1 active')
+  })
+
+  it('preserves a safe single-threaded fallback for constrained browsers', () => {
+    const manager = createManager()
+    const decision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: false,
+      hardwareConcurrency: 8,
+      deviceMemoryGB: 2,
+    })
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.mode).toBe('single-threaded-fallback')
+    expect(decision.fallbackApplied).toBe(true)
+    expect(decision.threads.admitted).toBe(1)
+    expect(decision.memory.constrained).toBe(true)
+  })
+
+  it('reflects live active tasks and rejects when concurrency limit is reached', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 100)
+    const assertion = expect(pending).rejects.toThrow('Verification timed out')
+
+    const busyDecision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+    })
+    expect(busyDecision.admitted).toBe(false)
+    expect(busyDecision.mode).toBe('rejected')
+    expect(busyDecision.reasonCodes).toContain('concurrency_limit_reached')
+    expect(busyDecision.concurrency.activeTasks).toBe(1)
+    expect(busyDecision.concurrency.availableSlots).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(100)
+    await assertion
+
+    const idleDecision = manager.getResourceAdmissionDecision({
+      crossOriginIsolated: true,
+      hardwareConcurrency: 4,
+    })
+    expect(idleDecision.admitted).toBe(true)
+    expect(idleDecision.concurrency.activeTasks).toBe(0)
   })
 })

@@ -125,7 +125,7 @@ describe('fetchProofEventsByVideo', () => {
       }),
     )
 
-    await expect(fetchProofEventsByVideo('x'.repeat(64))).rejects.toThrow('video hash must be 32 bytes')
+    await expect(fetchProofEventsByVideo('a'.repeat(64))).rejects.toThrow('video hash must be 32 bytes')
   })
 
   it('falls back to generic message when JSON parsing fails', async () => {

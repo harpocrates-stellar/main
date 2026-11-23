@@ -149,6 +149,14 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
         RegistryError::ReporterDisputesSaturated => "ReporterDisputesSaturated",
         RegistryError::InsufficientApprovals => "InsufficientApprovals",
+        RegistryError::InvalidCursor => "InvalidCursor",
+        RegistryError::ListLimitExceeded => "ListLimitExceeded",
+        RegistryError::ExpiredCredentialRoot => "ExpiredCredentialRoot",
+        RegistryError::RoleConflict => "RoleConflict",
+        RegistryError::InvalidInclusionProof => "InvalidInclusionProof",
+        RegistryError::IssuerQuotaExhausted => "IssuerQuotaExhausted",
+        RegistryError::LineageDepthMismatch => "LineageDepthMismatch",
+        RegistryError::LineageFanOutSaturated => "LineageFanOutSaturated",
     }
 }
 
@@ -245,6 +253,14 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::CircuitVersionMismatch,
     RegistryError::ReporterDisputesSaturated,
     RegistryError::InsufficientApprovals,
+    RegistryError::InvalidCursor,
+    RegistryError::ListLimitExceeded,
+    RegistryError::ExpiredCredentialRoot,
+    RegistryError::RoleConflict,
+    RegistryError::InvalidInclusionProof,
+    RegistryError::IssuerQuotaExhausted,
+    RegistryError::LineageDepthMismatch,
+    RegistryError::LineageFanOutSaturated,
 ];
 
 #[cfg(test)]
@@ -381,7 +397,7 @@ fn retryable_codes_require_external_condition_only() {
             retryable.push(row.code);
         }
     }
-    let expected: &[u32] = &[21, 32, 41, 66, 86, 88];
+    let expected: &[u32] = &[21, 32, 41, 66, 86, 95];
     assert_eq!(
         retryable.as_slice(),
         expected,

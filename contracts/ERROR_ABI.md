@@ -139,6 +139,14 @@ call can succeed.
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
 | 88 | `ReporterDisputesSaturated` | resource | no | The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`. |
 | 89 | `InsufficientApprovals` | auth | no | The action requires admin council threshold approvals. |
+| 90 | `InvalidCursor` | malformed | no | The verifier-list cursor is outside the supported range. |
+| 91 | `ListLimitExceeded` | oversized | no | The verifier-list page limit exceeds `MAX_VERIFIER_LIST_LIMIT`. |
+| 92 | `ExpiredCredentialRoot` | expired | no | The credential root has expired and cannot be used. |
+| 93 | `RoleConflict` | conflict | no | The configured roles conflict with the requested operation. |
+| 94 | `InvalidInclusionProof` | malformed | no | The source-batch inclusion proof is invalid. |
+| 95 | `IssuerQuotaExhausted` | resource | yes | The issuer reached its registration quota; retry after the quota window rolls over. |
+| 96 | `LineageDepthMismatch` | malformed | no | The claimed lineage depth differs from the depth derived from its parents. |
+| 97 | `LineageFanOutSaturated` | resource | no | A parent reached `MAX_LINEAGE_FANOUT` registered children. |
 
 ## Privacy Rules
 
@@ -155,7 +163,7 @@ call can succeed.
 
 ## Compatibility And Migration
 
-- **Additive only.** Codes `1..=88` are frozen at this ABI version. A future change
+- **Additive only.** Codes `1..=97` are frozen at this ABI version. A future change
   that needs a new failure appends the next unused discriminant and adds a row here;
   it must not insert, reorder, or reuse a code.
 - **No storage impact.** The ABI describes revert values. It does not add storage

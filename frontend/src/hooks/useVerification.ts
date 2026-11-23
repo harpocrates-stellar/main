@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
 import { ApiClientError, toVerificationErrorCode } from '../services/apiError'
+import { createVerificationRevisionGuard } from '../services/verificationFlow'
 import type { VerificationSharePayload } from '../verificationShareLink'
 
 export type VerificationStatus = 'idle' | 'validating' | 'hashing' | 'verifying' | 'success' | 'error' | 'cancelled'
@@ -120,7 +121,7 @@ export function useVerification(): UseVerificationReturn {
     setOfflineState(next)
   }, [])
 
-  const seqRef = useRef(0)
+  const revisionGuardRef = useRef(createVerificationRevisionGuard())
   const abortRef = useRef<AbortController | null>(null)
   const lastFileRef = useRef<{ file: File; wallet?: string } | null>(null)
 
@@ -129,7 +130,7 @@ export function useVerification(): UseVerificationReturn {
   const clear = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
-    seqRef.current += 1
+    revisionGuardRef.current.invalidate()
     setVerifyHash('')
     setVerifyResult('')
     setEvents([])
@@ -141,6 +142,8 @@ export function useVerification(): UseVerificationReturn {
 
   const cancel = useCallback(() => {
     abortRef.current?.abort()
+    abortRef.current = null
+    revisionGuardRef.current.invalidate()
     // Immediately reflect cancellation in UI so mobile user sees feedback, even if
     // in-flight mocks do not reject with AbortError
     setStatus('cancelled')
@@ -151,9 +154,11 @@ export function useVerification(): UseVerificationReturn {
   const loadEvents = useCallback(async () => {
     // Offline mode never reaches the NeonDB feed.
     if (offlineRef.current) return
+    const revision = revisionGuardRef.current.current()
     try {
       const { fetchRecentEvents } = await import('../services/evidenceService')
       const loaded = await fetchRecentEvents(6)
+      if (revision !== revisionGuardRef.current.current()) return
       setEvents(loaded)
     } catch {
       // keep existing events; surface no sensitive detail
@@ -161,16 +166,23 @@ export function useVerification(): UseVerificationReturn {
   }, [])
 
   const loadSharedVerification = useCallback(async (payload: VerificationSharePayload) => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    const revision = revisionGuardRef.current.next()
+
     setVerifyHash(payload.videoHash)
     setErrorCode(null)
     setStatus('verifying')
     setVerifyResult('Loading the public verification record…')
     try {
       const { fetchProofEventsByVideo, getOnChainProof } = await import('../services/verificationService')
+      if (controller.signal.aborted || !revisionGuardRef.current.isCurrent(revision)) return
       const [dbMatches, onChain] = await Promise.all([
-        fetchProofEventsByVideo(payload.videoHash),
+        fetchProofEventsByVideo(payload.videoHash, controller.signal),
         getOnChainProof(payload.videoHash),
       ])
+      if (controller.signal.aborted || !revisionGuardRef.current.isCurrent(revision)) return
       setEvents(dbMatches)
       setChainProof(onChain)
       setVerifyResult(
@@ -180,6 +192,9 @@ export function useVerification(): UseVerificationReturn {
       )
       setStatus('success')
     } catch (error) {
+      if (isAbortError(error) || controller.signal.aborted || !revisionGuardRef.current.isCurrent(revision)) {
+        return
+      }
       setStatus('error')
       setErrorCode(toVerificationErrorCode(error) ?? 'DEPENDENCY_UNAVAILABLE')
       setVerifyResult('The public verification record could not be loaded.')
@@ -190,7 +205,7 @@ export function useVerification(): UseVerificationReturn {
     // Validate synchronously before any expensive work
     const validated = validateFile(file)
     if (!validated.ok) {
-      if (seq !== seqRef.current) return
+      if (!revisionGuardRef.current.isCurrent(seq)) return
       setStatus('error')
       setErrorCode(validated.code)
       setVerifyResult(SAFE_MESSAGES[validated.code])
@@ -213,17 +228,17 @@ export function useVerification(): UseVerificationReturn {
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
       videoHash = await sha256(buffer)
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      if (seq !== seqRef.current) return
+      if (!revisionGuardRef.current.isCurrent(seq)) return
       setVerifyHash(videoHash)
     } catch (error) {
       if (isAbortError(error) || signal.aborted) {
-        if (seq !== seqRef.current) return
+        if (!revisionGuardRef.current.isCurrent(seq)) return
         setStatus('cancelled')
         setErrorCode('CANCELLED')
         setVerifyResult(SAFE_MESSAGES.CANCELLED)
         return
       }
-      if (seq !== seqRef.current) return
+      if (!revisionGuardRef.current.isCurrent(seq)) return
       setStatus('error')
       setErrorCode('INVALID_EVIDENCE')
       setVerifyResult(SAFE_MESSAGES.INVALID_EVIDENCE)
@@ -248,7 +263,7 @@ export function useVerification(): UseVerificationReturn {
       // If signal aborts, chainP will still resolve but we will discard due to stale guard
       const [extractResult, dbMatches, onChain] = await Promise.all([extractP, dbP, chainP])
 
-      if (seq !== seqRef.current) return
+      if (!revisionGuardRef.current.isCurrent(seq)) return
       if (signal.aborted) {
         setStatus('cancelled')
         setErrorCode('CANCELLED')
@@ -286,7 +301,7 @@ export function useVerification(): UseVerificationReturn {
         })()
         : null
 
-      if (seq !== seqRef.current) return
+      if (!revisionGuardRef.current.isCurrent(seq)) return
       if (signal.aborted) {
         setStatus('cancelled')
         setErrorCode('CANCELLED')
@@ -333,13 +348,13 @@ export function useVerification(): UseVerificationReturn {
       setErrorCode(null)
     } catch (error) {
       if (isAbortError(error) || signal.aborted) {
-        if (seq !== seqRef.current) return
+        if (!revisionGuardRef.current.isCurrent(seq)) return
         setStatus('cancelled')
         setErrorCode('CANCELLED')
         setVerifyResult(SAFE_MESSAGES.CANCELLED)
         return
       }
-      if (seq !== seqRef.current) return
+      if (!revisionGuardRef.current.isCurrent(seq)) return
       // Map structured backend errors to actionable verification codes; keep wallet heuristic.
       const mapped = toVerificationErrorCode(error)
       if (mapped) {
@@ -378,8 +393,12 @@ export function useVerification(): UseVerificationReturn {
     }
     // Offline mode is a separate code path that never touches the network.
     if (offlineRef.current) {
+      abortRef.current?.abort()
+      abortRef.current = null
+      const revision = revisionGuardRef.current.next()
       const { runOfflineVerification } = await import('../offlineVerification')
       const result = await runOfflineVerification(file)
+      if (!revisionGuardRef.current.isCurrent(revision)) return
       setVerifyHash(result.videoHash)
       setVerifyResult(result.message)
       setStatus(result.ok ? 'success' : 'error')
@@ -389,8 +408,7 @@ export function useVerification(): UseVerificationReturn {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    const seq = seqRef.current + 1
-    seqRef.current = seq
+    const seq = revisionGuardRef.current.next()
     lastFileRef.current = { file, wallet: walletAddress }
     await runVerify(file, walletAddress, seq, controller.signal)
   }, [runVerify])
@@ -401,8 +419,7 @@ export function useVerification(): UseVerificationReturn {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    const seq = seqRef.current + 1
-    seqRef.current = seq
+    const seq = revisionGuardRef.current.next()
     await runVerify(last.file, last.wallet, seq, controller.signal)
   }, [runVerify])
 

@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { CredentialVault } from './credentialVault'
+import {
+  CredentialVault,
+  buildVaultBackupPreview,
+  type VaultExportDestination,
+} from './credentialVault'
 
 describe('CredentialVault', () => {
   let vault: CredentialVault
@@ -115,5 +119,104 @@ describe('CredentialVault', () => {
     window.localStorage.setItem('harpocrates:credential-vault', 'this is not valid json')
     const restoredVault = new CredentialVault()
     await expect(restoredVault.unlock('secret')).rejects.toThrow('Vault corrupted: unable to parse envelope')
+  })
+
+  describe('backup export preview and destination selection', () => {
+    it('returns envelope version and nonsecret compatibility metadata even when locked', async () => {
+      const seeds = {
+        credentialSeed: 'synthetic-cred-seed-secret-01',
+        nullifierSeed: 'synthetic-null-seed-secret-02',
+      }
+      await vault.setup('synthetic-passphrase-99!', seeds)
+      vault.lock()
+
+      const storedRaw = window.localStorage.getItem('harpocrates:credential-vault')!
+      const storedEnvelope = JSON.parse(storedRaw) as { salt: string; iv: string; ct: string }
+
+      const preview = vault.getBackupExportPreview()
+      expect(preview.ok).toBe(true)
+      if (!preview.ok) return
+
+      expect(preview.requiresDestinationSelection).toBe(true)
+      expect(preview.metadata).toMatchObject({
+        envelopeVersion: 1,
+        compatible: true,
+        kdf: 'PBKDF2-SHA256',
+        kdfIterations: 600000,
+        cipher: 'AES-256-GCM',
+        saltBytes: 16,
+        ivBytes: 12,
+        containsSecretsInPreview: false,
+      })
+      expect(preview.metadata.ciphertextBytes).toBeGreaterThan(0)
+      expect(preview.metadata.encryptedPayloadBytes).toBeGreaterThan(0)
+
+      // Ensure no secret or raw cryptographic field values leak into preview metadata
+      const serializedPreview = JSON.stringify(preview)
+      expect(serializedPreview).not.toContain(seeds.credentialSeed)
+      expect(serializedPreview).not.toContain(seeds.nullifierSeed)
+      expect(serializedPreview).not.toContain('synthetic-passphrase-99!')
+      expect(serializedPreview).not.toContain(storedEnvelope.salt)
+      expect(serializedPreview).not.toContain(storedEnvelope.iv)
+      expect(serializedPreview).not.toContain(storedEnvelope.ct)
+    })
+
+    it('fails closed when no vault exists, envelope is corrupted, or version is unsupported', () => {
+      expect(vault.getBackupExportPreview()).toMatchObject({
+        ok: false,
+        code: 'NO_VAULT',
+      })
+
+      expect(buildVaultBackupPreview('not-json')).toMatchObject({
+        ok: false,
+        code: 'CORRUPTED_ENVELOPE',
+      })
+
+      expect(
+        buildVaultBackupPreview(JSON.stringify({ v: 2, salt: 'aa', iv: 'bb', ct: 'cc' })),
+      ).toMatchObject({
+        ok: false,
+        code: 'UNSUPPORTED_VERSION',
+        envelopeVersion: 2,
+      })
+
+      expect(
+        buildVaultBackupPreview(JSON.stringify({ v: 1, salt: 'not-hex!', iv: 'bb', ct: 'cc' })),
+      ).toMatchObject({
+        ok: false,
+        code: 'INVALID_ENVELOPE_FIELDS',
+        envelopeVersion: 1,
+      })
+    })
+
+    it('requires explicit user selection of a valid encrypted export destination', async () => {
+      const seeds = { credentialSeed: 'cred-export', nullifierSeed: 'null-export' }
+      await vault.setup('export-passphrase', seeds)
+
+      expect(vault.prepareEncryptedBackupExport(null)).toMatchObject({
+        ok: false,
+        code: 'DESTINATION_REQUIRED',
+      })
+      expect(vault.prepareEncryptedBackupExport(undefined)).toMatchObject({
+        ok: false,
+        code: 'DESTINATION_REQUIRED',
+      })
+      expect(
+        vault.prepareEncryptedBackupExport('unknown-dest' as unknown as VaultExportDestination),
+      ).toMatchObject({
+        ok: false,
+        code: 'INVALID_DESTINATION',
+      })
+
+      const result = vault.prepareEncryptedBackupExport('file-download')
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+
+      expect(result.destination).toBe('file-download')
+      expect(result.metadata.envelopeVersion).toBe(1)
+      expect(result.serializedEnvelope).toBe(
+        window.localStorage.getItem('harpocrates:credential-vault'),
+      )
+    })
   })
 })

@@ -75,7 +75,24 @@ All application-owned browser persistence must go through the wrappers in
 
 - `currentView`: the active navigation view
 - `selectedTier`: the active identity-tier selection
+- `vaultRecoveryRehearsed`: flag indicating whether the one-time vault recovery rehearsal has completed
 
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+## Vault backup export preview
+
+`CredentialVault` (`src/credentialVault.ts`) and `VaultBackupExportPreview`
+(`src/components/VaultBackupExportPreview.tsx`) provide a fail-closed backup
+export preview:
+
+- `getBackupExportPreview()` / `buildVaultBackupPreview()` inspect the stored
+  encrypted `VaultEnvelope` without decrypting it and return only the envelope
+  version and nonsecret compatibility metadata (`kdf`, `kdfIterations`, `cipher`,
+  and byte lengths). Passphrases, seeds, and raw `salt`/`iv`/`ct` values are
+  never included in preview metadata.
+- `prepareEncryptedBackupExport(destination)` and `VaultBackupExportPreview`
+  require explicit user selection of an encrypted export destination
+  (`file-download` or `encrypted-clipboard`) before releasing the serialized
+  encrypted envelope. Export destinations are never persisted in `safeStorage`.
