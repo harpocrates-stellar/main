@@ -131,6 +131,11 @@ succeeding.
 
 ## State machine
 
+Before an artifact is inspected, its declared path is resolved against the
+selected release directory. Paths that resolve outside that directory,
+including paths escaping through symlinks, are rejected as fatal build errors
+before the external file is read. No manifest is written after such an error.
+
 Each declared artifact reaches exactly one terminal state per run:
 
 ```

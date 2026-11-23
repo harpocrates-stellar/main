@@ -1,20 +1,112 @@
-from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
-import json
-import logging
+from __future__ import annotations
+
 import os
-import hashlib
-import re
-from typing import Any, Tuple
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Tuple
+
 from cryptography.fernet import Fernet
 import db
+import storage
 from storage import _parse_timestamp
 
-logger = logging.getLogger("harpocrates.evidence_storage")
+DEFAULT_VERIFY_BATCH_SIZE = 50
+MAX_VERIFY_BATCH_SIZE = 500
+PROGRESS_SCHEMA_VERSION = 1
+
+STATUS_VERIFIED = "verified"
+STATUS_FAILED = "failed"
+STATUS_UNVERIFIABLE_LEGACY = "unverifiable_legacy"
+
+ENVELOPE_VERSION_FERNET_V1 = "fernet-v1"
+DEFAULT_ENVELOPE_VERSION = ENVELOPE_VERSION_FERNET_V1
+SUPPORTED_ENVELOPE_VERSIONS: frozenset[str] = frozenset({ENVELOPE_VERSION_FERNET_V1})
+KNOWN_LEGACY_ENVELOPE_VERSIONS: frozenset[str] = frozenset({"legacy-v0", "fernet-v0"})
+
+ENVELOPE_CLASS_SUPPORTED = "supported"
+ENVELOPE_CLASS_LEGACY = "legacy"
+ENVELOPE_CLASS_UNSUPPORTED = "unsupported"
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+STORAGE_METADATA_ERROR_CODE = "DEPENDENCY_UNAVAILABLE"
+STORAGE_METADATA_ERROR_STATUS = 503
+
+COLLECTED = "collected"
+REFERENCED = "referenced"
+MISSING = "missing"
+UNLINK_FAILED = "collected_unlink_failed"
+
+
+class StorageMetadataRetryableError(RuntimeError):
+    def __init__(
+        self,
+        message: str = "storage metadata update is temporarily unavailable",
+        attempts: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.code = STORAGE_METADATA_ERROR_CODE
+        self.status = STORAGE_METADATA_ERROR_STATUS
+
+
+RetryableStorageError = StorageMetadataRetryableError
+StorageRetryableError = StorageMetadataRetryableError
+
+
+@dataclass(frozen=True)
+class BlobCollectionResult:
+    status: str
+    content_hash: str
+    storage_path: str | None = None
+    attempts: int = 1
 
 EXPORT_MANIFEST_VERSION = 1
 DEFAULT_ENVELOPE_VERSION = "fernet-v1"
 _HEX_32_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
+
+
+class UnsupportedEnvelopeVersionError(ValueError):
+    """Raised when an encryption envelope version is unknown or unsupported."""
+
+
+class LegacyEnvelopeVersionError(ValueError):
+    """Raised when a known legacy envelope version cannot be decrypted directly."""
+
+
+def classify_envelope_version(envelope_version: object) -> str:
+    """Classify an encryption envelope version as supported, known legacy, or unsupported.
+
+    A ``None`` value represents a pre-versioning legacy metadata row and is
+    classified as ``legacy``. Explicit legacy identifiers in
+    ``KNOWN_LEGACY_ENVELOPE_VERSIONS`` are also classified as ``legacy``.
+    Any other unrecognized, empty, or non-string value is ``unsupported``.
+    """
+    if envelope_version is None:
+        return ENVELOPE_CLASS_LEGACY
+    if not isinstance(envelope_version, str):
+        return ENVELOPE_CLASS_UNSUPPORTED
+    normalized = envelope_version.strip()
+    if normalized in SUPPORTED_ENVELOPE_VERSIONS:
+        return ENVELOPE_CLASS_SUPPORTED
+    if normalized in KNOWN_LEGACY_ENVELOPE_VERSIONS:
+        return ENVELOPE_CLASS_LEGACY
+    return ENVELOPE_CLASS_UNSUPPORTED
+
+
+def validate_envelope_version(envelope_version: object) -> str:
+    """Validate and return a supported envelope version for new evidence blobs."""
+    if not isinstance(envelope_version, str):
+        raise UnsupportedEnvelopeVersionError("envelope_version must be a supported string identifier")
+    normalized = envelope_version.strip()
+    if normalized in SUPPORTED_ENVELOPE_VERSIONS:
+        return normalized
+    if normalized in KNOWN_LEGACY_ENVELOPE_VERSIONS:
+        raise LegacyEnvelopeVersionError(
+            f"legacy envelope_version {normalized!r} cannot be used for new evidence blobs"
+        )
+    raise UnsupportedEnvelopeVersionError(f"unsupported envelope_version: {envelope_version!r}")
 
 
 def generate_dek() -> Tuple[bytes, bytes]:
@@ -30,45 +122,107 @@ def generate_dek() -> Tuple[bytes, bytes]:
     return dek, encrypted_dek
 
 
-def decrypt_dek(encrypted_dek: bytes) -> bytes:
-    master_key_b64 = os.getenv("MASTER_ENCRYPTION_KEY")
-    if not master_key_b64:
-        raise ValueError("MASTER_ENCRYPTION_KEY is not set")
-    f = Fernet(master_key_b64.encode())
-    return f.decrypt(encrypted_dek)
+class LegacyEnvelopeVersionError(ValueError):
+    """Raised when a known legacy envelope version cannot be decrypted directly."""
 
 
-def get_encryptor(dek: bytes):
-    return Fernet(dek)
+def get_encryptor(dek: bytes, envelope_version: str = DEFAULT_ENVELOPE_VERSION):
+    validated = validate_envelope_version(envelope_version)
+    if validated == ENVELOPE_VERSION_FERNET_V1:
+        return Fernet(dek)
+    raise UnsupportedEnvelopeVersionError(f"unsupported envelope_version: {envelope_version!r}")
 
 
-def record_blob(content_hash: str, encrypted_dek: bytes, size_bytes: int, storage_path: str):
+def decrypt_blob_ciphertext(
+    dek: bytes,
+    ciphertext: bytes,
+    *,
+    envelope_version: object = DEFAULT_ENVELOPE_VERSION,
+) -> bytes:
+    """Decrypt blob ciphertext using only the algorithm declared by ``envelope_version``.
+
+    Never inspects or guesses a decryption algorithm from malformed ciphertext.
+    A ``None`` ``envelope_version`` represents a pre-versioning legacy Fernet
+    row and is decrypted strictly with Fernet (no fallback). Explicit known
+    legacy versions raise ``LegacyEnvelopeVersionError``; unknown or malformed
+    version identifiers raise ``UnsupportedEnvelopeVersionError``.
+    """
+    if envelope_version is None:
+        return Fernet(dek).decrypt(ciphertext)
+
+    classification = classify_envelope_version(envelope_version)
+    if classification == ENVELOPE_CLASS_SUPPORTED:
+        normalized = envelope_version.strip()  # type: ignore[union-attr]
+        if normalized == ENVELOPE_VERSION_FERNET_V1:
+            return Fernet(dek).decrypt(ciphertext)
+    if classification == ENVELOPE_CLASS_LEGACY:
+        raise LegacyEnvelopeVersionError(
+            f"known legacy envelope_version cannot be decrypted directly: {envelope_version!r}"
+        )
+    raise UnsupportedEnvelopeVersionError(
+        f"unsupported envelope_version: {envelope_version!r}"
+    )
+
+
+def record_blob(
+    content_hash: str,
+    encrypted_dek: bytes,
+    size_bytes: int,
+    storage_path: str,
+    envelope_version: str = DEFAULT_ENVELOPE_VERSION,
+):
+    validated_version = validate_envelope_version(envelope_version)
     with db.get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                insert into blobs (content_hash, encrypted_dek, size_bytes, storage_path)
-                values (%s, %s, %s, %s)
+                insert into blobs (content_hash, encrypted_dek, size_bytes, storage_path, envelope_version)
+                values (%s, %s, %s, %s, %s)
                 on conflict (content_hash) do nothing
                 """,
-                (content_hash, encrypted_dek.decode(), size_bytes, storage_path)
+                (content_hash, encrypted_dek.decode(), size_bytes, storage_path, validated_version),
             )
         conn.commit()
 
 
-def record_tenant_ref(tenant_id: str, content_hash: str):
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                insert into tenant_blob_refs (tenant_id, content_hash, ref_count)
-                values (%s, %s, 1)
-                on conflict (tenant_id, content_hash) do update
-                set ref_count = tenant_blob_refs.ref_count + 1, updated_at = now()
-                """,
-                (tenant_id, content_hash)
-            )
-        conn.commit()
+def record_tenant_ref(
+    tenant_id: str,
+    content_hash: str,
+    *,
+    connection_factory: Callable[[], Any] | None = None,
+):
+    """Record a tenant reference after locking the blob row.
+
+    The lock makes concurrent collection wait for this committed reference, so
+    a collector cannot observe a blob as unreferenced while a reference update
+    is still in flight. Exhausted retries raise a bounded retryable error.
+    """
+    factory = connection_factory or db.get_connection
+
+    def attempt(_attempt: int) -> None:
+        with factory() as conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "select 1 from blobs where content_hash = %s for update",
+                        (content_hash,),
+                    )
+                    cursor.execute(
+                        """
+                        insert into tenant_blob_refs (tenant_id, content_hash, ref_count)
+                        values (%s, %s, 1)
+                        on conflict (tenant_id, content_hash) do update
+                        set ref_count = tenant_blob_refs.ref_count + 1, updated_at = now()
+                        """,
+                        (tenant_id, content_hash),
+                    )
+                conn.commit()
+            except Exception:
+                _safe_rollback(conn)
+                raise
+
+    _with_bounded_retry(attempt, "tenant reference metadata update")
+
 
 
 def remove_tenant_ref(tenant_id: str, content_hash: str) -> bool:
@@ -110,6 +264,34 @@ def remove_tenant_ref(tenant_id: str, content_hash: str) -> bool:
     return True
 
 
+def _audit_ref(content_hash: str) -> str:
+    """Return a non-reversible audit reference for a blob without exposing its hash."""
+    return hashlib.sha256(("audit:" + content_hash).encode("utf-8")).hexdigest()[:32]
+
+
+def record_deletion_receipt(receipt_id: str, phase: str, selected: list, completed: list):
+    """Persist a two-phase deletion receipt.
+
+    phase 'approved' records the selection before any storage action runs.
+    phase 'completed' records audit references for storage actions that finished.
+    Only audit references are stored: no content hashes, storage paths, or keys.
+    """
+    with db.get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into blob_deletion_receipts (receipt_id, phase, selected_refs, completed_refs)
+                values (%s, %s, %s, %s)
+                on conflict (receipt_id) do update
+                set phase = excluded.phase,
+                    completed_refs = excluded.completed_refs,
+                    updated_at = now()
+                """,
+                (receipt_id, phase, ",".join(selected), ",".join(completed))
+            )
+        conn.commit()
+
+
 def collect_unreferenced_blobs(limit: int = 100) -> int:
     """Transactionally delete blob rows and files that have zero references.
 
@@ -118,12 +300,23 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
     is left intact so the deletion will be retried on the next run.
     Deletions are recorded in metrics without exposing content hashes.
     """
-    if limit < 1:
-        return 0
+    if envelope_version is None:
+        return ENVELOPE_CLASS_LEGACY
+    if not isinstance(envelope_version, str):
+        return ENVELOPE_CLASS_UNSUPPORTED
+    normalized = envelope_version.strip()
+    if normalized in SUPPORTED_ENVELOPE_VERSIONS:
+        return ENVELOPE_CLASS_SUPPORTED
+    if normalized in KNOWN_LEGACY_ENVELOPE_VERSIONS:
+        return ENVELOPE_CLASS_LEGACY
+    return ENVELOPE_CLASS_UNSUPPORTED
 
     collected = 0
     with db.get_connection() as conn:
         with conn.cursor() as cursor:
+            receipt_id = uuid.uuid4().hex
+            selected_refs: list = []
+            completed_refs: list = []
             cursor.execute(
                 """
                 select content_hash, storage_path
@@ -147,6 +340,7 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
             for row in rows:
                 content_hash = row["content_hash"] if isinstance(row, dict) else row[0]
                 storage_path = row["storage_path"] if isinstance(row, dict) else row[1]
+                selected_refs.append(_audit_ref(content_hash))
 
                 # Attempt file deletion first
                 try:
@@ -164,6 +358,7 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
                     continue
 
                 cursor.execute("delete from blobs where content_hash = %s", (content_hash,))
+                completed_refs.append(_audit_ref(content_hash))
                 collected += 1
 
         conn.commit()
@@ -181,332 +376,116 @@ def collect_unreferenced_blobs(limit: int = 100) -> int:
 def get_blob_info(content_hash: str) -> dict | None:
     with db.get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
+            cursor.execute(
+                "select encrypted_dek, storage_path, envelope_version from blobs where content_hash = %s",
+                (content_hash,),
+            )
             row = cursor.fetchone()
             return dict(row) if row else None
-def preview_tenant_retention(
-    tenant_id: str,
+
+
+def collect_unreferenced_blob(
+    content_hash: str,
     *,
-    now: datetime | int | float | str | None = None,
-    ttl_seconds: int | float | None = None,
-) -> dict[str, Any]:
-    """Return a read-only retention preview for a single authenticated tenant.
+    connection_factory: Callable[[], Any] | None = None,
+) -> BlobCollectionResult:
+    """Collect an unreferenced encrypted blob without risking live evidence.
 
-    Reports blob counts, ages, and deletion eligibility scoped strictly to
-    ``tenant_id``. Other tenants' content hashes, tenant identifiers, and all
-    filesystem storage paths are never queried or returned.
+    The blob row is locked, tenant references are checked, and the metadata
+    deletion is committed before the encrypted file is removed. If either
+    metadata step fails, the file is left untouched and a bounded retryable
+    storage error is raised.
     """
-    if not isinstance(tenant_id, str) or not tenant_id.strip():
-        raise ValueError("tenant_id must be a non-empty string")
-    normalized_tenant = tenant_id.strip()
+    factory = connection_factory or db.get_connection
 
-    if ttl_seconds is not None:
-        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or ttl_seconds < 0:
-            raise ValueError("ttl_seconds must be a non-negative number")
+    def attempt(attempt_number: int) -> BlobCollectionResult:
+        result, storage_path = _collect_once(factory, content_hash)
+        if result.status == COLLECTED and storage_path:
+            try:
+                Path(storage_path).unlink(missing_ok=True)
+            except OSError:
+                result = BlobCollectionResult(UNLINK_FAILED, content_hash, storage_path, attempt_number)
+        return BlobCollectionResult(result.status, content_hash, storage_path, attempt_number)
 
-    now_dt = datetime.now(timezone.utc) if now is None else _parse_timestamp(now)
-
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                select
-                    r.content_hash,
-                    r.ref_count,
-                    b.size_bytes,
-                    b.created_at,
-                    exists (
-                        select 1
-                        from tenant_blob_refs other
-                        where other.content_hash = r.content_hash
-                          and other.tenant_id <> r.tenant_id
-                          and other.ref_count > 0
-                    ) as shared_with_other_tenants
-                from tenant_blob_refs r
-                join blobs b on b.content_hash = r.content_hash
-                where r.tenant_id = %s
-                  and r.ref_count > 0
-                order by b.created_at asc, r.content_hash asc
-                """,
-                (normalized_tenant,),
-            )
-            rows = cursor.fetchall()
-
-    items: list[dict[str, Any]] = []
-    ages: list[float] = []
-    total_ref_count = 0
-    total_size_bytes = 0
-    eligible_count = 0
-    shared_count = 0
-
-    for row in rows:
-        if isinstance(row, dict):
-            content_hash = row["content_hash"]
-            ref_count = int(row["ref_count"])
-            size_bytes = int(row["size_bytes"])
-            created_at = row["created_at"]
-            shared = bool(row["shared_with_other_tenants"])
-        else:
-            content_hash, ref_count, size_bytes, created_at, shared = row
-            ref_count = int(ref_count)
-            size_bytes = int(size_bytes)
-            shared = bool(shared)
-
-        created_dt = _parse_timestamp(created_at)
-        age_seconds = max(0.0, (now_dt - created_dt).total_seconds())
-        ages.append(age_seconds)
-
-        total_ref_count += ref_count
-        total_size_bytes += size_bytes
-        if shared:
-            shared_count += 1
-
-        if shared:
-            deletion_eligible = False
-            ineligible_reason: str | None = "shared_with_other_tenants"
-        elif ttl_seconds is not None and age_seconds < ttl_seconds:
-            deletion_eligible = False
-            ineligible_reason = "within_retention_window"
-        else:
-            deletion_eligible = True
-            ineligible_reason = None
-            eligible_count += 1
-
-        items.append(
-            {
-                "content_hash": content_hash,
-                "ref_count": ref_count,
-                "size_bytes": size_bytes,
-                "age_seconds": age_seconds,
-                "deletion_eligible": deletion_eligible,
-                "deletion_ineligible_reason": ineligible_reason,
-            }
-        )
-
-    blob_count = len(items)
-    return {
-        "tenant_id": normalized_tenant,
-        "evaluated_at": now_dt.isoformat(),
-        "ttl_seconds": ttl_seconds,
-        "blob_count": blob_count,
-        "total_ref_count": total_ref_count,
-        "total_size_bytes": total_size_bytes,
-        "eligible_for_deletion_count": eligible_count,
-        "retained_count": blob_count - eligible_count,
-        "shared_blob_count": shared_count,
-        "oldest_age_seconds": max(ages) if ages else None,
-        "newest_age_seconds": min(ages) if ages else None,
-        "average_age_seconds": (sum(ages) / blob_count) if ages else None,
-        "blobs": items,
-    }
+    return _with_bounded_retry(attempt, "blob collection metadata update")
 
 
-def rotate_encryption_key(new_master_key=None, old_master_key=None, key_id=None, *, content_hashes=None):
-    import os
-    from cryptography.fernet import Fernet
-    old_key = old_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
-    new_key = new_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
-    if not old_key:
-        raise ValueError("old master key is not set")
-    if not new_key:
-        raise ValueError("new master key is not set")
-    old_f = Fernet(old_key.encode() if isinstance(old_key, str) else old_key)
-    new_f = Fernet(new_key.encode() if isinstance(new_key, str) else new_key)
-    version = key_id or "v2"
-    rotated = []
-    rollback = []
-    hashes = content_hashes
-    if hashes is None:
-        hashes = []
+collect_blob = collect_unreferenced_blob
+
+
+def _collect_once(
+    factory: Callable[[], Any], content_hash: str
+) -> tuple[BlobCollectionResult, str | None]:
+    with factory() as conn:
         try:
-            import db
-            with db.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("select content_hash from blobs")
-                    for row in cursor.fetchall():
-                        hashes.append(row["content_hash"] if isinstance(row, dict) else row[0])
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "select storage_path from blobs where content_hash = %s for update",
+                    (content_hash,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    conn.commit()
+                    return BlobCollectionResult(MISSING, content_hash), None
+                storage_path = str(dict(row)["storage_path"])
+                cursor.execute(
+                    "select 1 from tenant_blob_refs where content_hash = %s and ref_count > 0 limit 1",
+                    (content_hash,),
+                )
+                if cursor.fetchone() is not None:
+                    conn.commit()
+                    return BlobCollectionResult(REFERENCED, content_hash, storage_path), storage_path
+                cursor.execute("delete from blobs where content_hash = %s", (content_hash,))
+            conn.commit()
         except Exception:
-            hashes = []
-    for content_hash in hashes:
-        info = get_blob_info(content_hash)
-        if not info:
-            continue
-        old_wrapped = info["encrypted_dek"]
-        dek = old_f.decrypt(old_wrapped.encode() if isinstance(old_wrapped, str) else old_wrapped)
-        new_wrapped = new_f.encrypt(dek)
-        assert new_f.decrypt(new_wrapped) == dek
-        versioned = (version + ":" + (new_wrapped.decode() if isinstance(new_wrapped, (bytes, bytearray)) else str(new_wrapped))).encode()
-        record_blob(content_hash, versioned, info.get("size_bytes", 0) or 0, info.get("storage_path", ""))
-        rotated.append(content_hash)
-        rollback.append({"content_hash": content_hash, "encrypted_dek": old_wrapped})
-    return {"key_id": version, "rotated": rotated, "rollback": rollback}
-
-rotate_key = rotate_encryption_key
-rotate_evidence_key = rotate_encryption_key
-rewrap_dek = rotate_encryption_key
-rewrap_data_keys = rotate_encryption_key
-stage_key_rotation = rotate_encryption_key
-rotate_master_key = rotate_encryption_key
+            _safe_rollback(conn)
+            raise
+    return BlobCollectionResult(COLLECTED, content_hash, storage_path), storage_path
 
 
-def _normalize_authorized_tenants(authorized_tenants: Iterable[str]) -> list[str]:
-    if isinstance(authorized_tenants, (str, bytes)):
-        raise ValueError("authorized_tenants must be an iterable of tenant identifiers, not a string")
-    normalized: set[str] = set()
-    for tenant in authorized_tenants:
-        if not isinstance(tenant, str) or not tenant.strip():
-            raise ValueError("authorized tenant identifier must be a non-empty string")
-        normalized.add(tenant.strip())
-    if not normalized:
-        raise ValueError("authorized_tenants must contain at least one tenant identifier")
-    return sorted(normalized)
+def _safe_rollback(conn: Any) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
 
 
-def _normalize_digest(value: object) -> str:
-    if not isinstance(value, str) or _HEX_32_PATTERN.fullmatch(value) is None:
-        raise ValueError("blob digest must be a 32-byte hex string")
-    return value.lower()
+def _positive_env(name: str, default: float, maximum: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return min(value, maximum)
 
 
-def _normalize_envelope_version(value: object) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("envelope_version must be a non-empty string")
-    return value.strip()
+def _with_bounded_retry(operation: Callable[[int], Any], description: str) -> Any:
+    max_attempts = int(_positive_env("DB_CONNECT_MAX_ATTEMPTS", 4, 10))
+    deadline_seconds = _positive_env("DB_CONNECT_DEADLINE_SECONDS", 15.0, 60.0)
+    retry_base_seconds = _positive_env("DB_CONNECT_RETRY_BASE_SECONDS", 0.05, 1.0)
+    started = time.monotonic()
+    last_error: Exception | None = None
 
+    for attempt_number in range(1, max_attempts + 1):
+        try:
+            return operation(attempt_number)
+        except StorageMetadataRetryableError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            elapsed = time.monotonic() - started
+            remaining = deadline_seconds - elapsed
+            if attempt_number >= max_attempts or remaining <= 0:
+                break
+            delay = min(retry_base_seconds * (2 ** (attempt_number - 1)), remaining, 0.5)
+            if delay > 0:
+                time.sleep(delay)
 
-def _normalize_non_negative_int(value: object, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{field} must be a non-negative integer")
-    return value
-
-
-def _normalize_generated_at(generated_at: datetime | None) -> str:
-    if generated_at is None:
-        dt = datetime.now(timezone.utc)
-    else:
-        if not isinstance(generated_at, datetime) or generated_at.tzinfo is None:
-            raise ValueError("generated_at must be a timezone-aware datetime")
-        dt = generated_at.astimezone(timezone.utc)
-    return dt.isoformat()
-
-
-def serialize_evidence_export_manifest(manifest: Mapping[str, Any]) -> str:
-    """Serialize an export manifest to canonical JSON."""
-    return json.dumps(manifest, separators=(",", ":"), sort_keys=True)
-
-
-def build_evidence_export_manifest(
-    rows: Iterable[Mapping[str, Any]],
-    authorized_tenants: Iterable[str],
-    *,
-    envelope_version: str = DEFAULT_ENVELOPE_VERSION,
-    generated_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Build a read-only encrypted evidence export manifest from storage rows.
-
-    Only allowlisted fields (blob digest, envelope version, size_bytes, and
-    authorized tenant references with positive ref_count) are included.
-    Unwrapped data keys, wrapped DEKs, local storage paths, and sensitive media
-    metadata are strictly excluded.
-    """
-    tenants = _normalize_authorized_tenants(authorized_tenants)
-    allowed_set = set(tenants)
-    default_env_version = _normalize_envelope_version(envelope_version)
-    timestamp = _normalize_generated_at(generated_at)
-
-    grouped: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        tenant_id = row.get("tenant_id")
-        if not isinstance(tenant_id, str) or tenant_id.strip() not in allowed_set:
-            continue
-        tenant_id = tenant_id.strip()
-
-        ref_count = _normalize_non_negative_int(row.get("ref_count", 0), "ref_count")
-        if ref_count <= 0:
-            continue
-
-        digest = _normalize_digest(row.get("content_hash"))
-        size_bytes = _normalize_non_negative_int(row.get("size_bytes"), "size_bytes")
-        row_env_version = _normalize_envelope_version(
-            row.get("envelope_version") or default_env_version
-        )
-
-        entry = grouped.get(digest)
-        if entry is None:
-            grouped[digest] = {
-                "blob_digest": digest,
-                "envelope_version": row_env_version,
-                "size_bytes": size_bytes,
-                "_refs": {tenant_id: ref_count},
-            }
-        else:
-            if entry["size_bytes"] != size_bytes:
-                raise ValueError(f"conflicting size_bytes for blob {digest}")
-            if entry["envelope_version"] != row_env_version:
-                raise ValueError(f"conflicting envelope_version for blob {digest}")
-            entry["_refs"][tenant_id] = entry["_refs"].get(tenant_id, 0) + ref_count
-
-    entries: list[dict[str, Any]] = []
-    for digest in sorted(grouped.keys()):
-        raw_entry = grouped[digest]
-        refs = [
-            {"tenant_id": tid, "ref_count": raw_entry["_refs"][tid]}
-            for tid in sorted(raw_entry["_refs"].keys())
-        ]
-        entries.append(
-            {
-                "blob_digest": raw_entry["blob_digest"],
-                "envelope_version": raw_entry["envelope_version"],
-                "size_bytes": raw_entry["size_bytes"],
-                "authorized_references": refs,
-            }
-        )
-
-    payload: dict[str, Any] = {
-        "manifest_version": EXPORT_MANIFEST_VERSION,
-        "read_only": True,
-        "generated_at": timestamp,
-        "authorized_tenants": tenants,
-        "entry_count": len(entries),
-        "entries": entries,
-    }
-    canonical = serialize_evidence_export_manifest(payload).encode("utf-8")
-    payload["manifest_digest"] = hashlib.sha256(canonical).hexdigest()
-    return payload
-
-
-def export_evidence_manifest(
-    authorized_tenants: Iterable[str],
-    *,
-    envelope_version: str = DEFAULT_ENVELOPE_VERSION,
-    generated_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Query encrypted evidence metadata in read-only mode and build an export manifest.
-
-    Never unwraps DEKs, never selects encrypted_dek or storage_path, and never
-    mutates database state.
-    """
-    tenants = _normalize_authorized_tenants(authorized_tenants)
-    default_env_version = _normalize_envelope_version(envelope_version)
-    _normalize_generated_at(generated_at)
-
-    with db.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                select b.content_hash, b.size_bytes, r.tenant_id, r.ref_count
-                from blobs b
-                inner join tenant_blob_refs r on r.content_hash = b.content_hash
-                where r.tenant_id = any(%s) and r.ref_count > 0
-                order by b.content_hash asc, r.tenant_id asc
-                """,
-                (tenants,),
-            )
-            rows = [dict(row) for row in cursor.fetchall()]
-
-    return build_evidence_export_manifest(
-        rows,
-        tenants,
-        envelope_version=default_env_version,
-        generated_at=generated_at,
-    )
+    raise StorageMetadataRetryableError(
+        f"{description} failed after {attempt_number} attempt(s)",
+        attempts=attempt_number,
+    ) from last_error

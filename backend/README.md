@@ -29,6 +29,14 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+## Receipt Signing-Key History
+
+`GET /api/receipts/signing-keys` returns the public receipt signing-key history
+as a bounded, read-only list. Each entry carries the public key, its
+`valid_from` and `valid_until` validity interval, and a key identifier. The
+endpoint never exposes or loads private signing material; signing remains
+owned by the frontend.
+
 
 ## Configuration
 
@@ -383,6 +391,8 @@ HARPOCRATES_RELEASE_ID=harpocrates-1.0.0
 HARPOCRATES_RELEASE_NETWORK=testnet
 STELLAR_NETWORK_PASSPHRASE=
 HARPOCRATES_REGISTRATION_RECONCILE_DIR=/tmp/harpocrates-registration-reconcile
+HARPOCRATES_STORAGE_DIR=/tmp/harpocrates_jobs
+MASTER_ENCRYPTION_KEY=
 DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
@@ -452,32 +462,26 @@ store = CheckpointStore(deployment=deployment)
 checkpoint = store.record(1_250)
 ```
 
-## Offline Upload Integrity Report
+## Encrypted Blob Collection
 
-`streaming_upload.py` provides offline integrity inspection for failed upload
-sessions without exposing uploaded media bytes, filesystem paths, or private
-filenames:
+`evidence_storage.py` never removes an encrypted blob file until the metadata
+transaction has committed. `collect_unreferenced_blob()` locks the blob row,
+checks for committed `tenant_blob_refs`, deletes the `blobs` row, commits, and
+only then unlinks the ciphertext. A failed reference check or metadata deletion
+leaves the file in place and raises `StorageMetadataRetryableError` after a
+bounded number of attempts.
 
-- `inspect_failed_upload_session(session_dir, ...)` scans only `chunk-<N>`
-  files in bounded chunks, computing SHA-256 digests and byte counts for each
-  chunk and for the assembled stream.
-- `build_upload_integrity_report(...)` constructs a report directly from
-  session metrics (for example, when admission control rejects a session before
-  any chunks are written).
-- `write_upload_integrity_report(report, destination)` persists the report as
-  canonical JSON.
-
-Each `UploadIntegrityReport` records `expected_bytes`, `observed_bytes`,
-`byte_count_status` (`matched`, `underflow`, `overflow`, `unknown`),
-`expected_digest`, `observed_digest`, `digest_status` (`matched`, `mismatch`,
-`unverified`, `unavailable`), `missing_chunk_indices`, and per-chunk numeric
-summaries. Path-like `session_id` values are rejected (recorded as `null`),
-and non-`chunk-<N>` files in the session directory are ignored.
+`record_tenant_ref()` takes the same blob-row lock before writing a reference,
+so concurrent collection cannot classify an in-flight reference as unreferenced.
+Both operations reuse the existing `DB_CONNECT_MAX_ATTEMPTS`,
+`DB_CONNECT_DEADLINE_SECONDS`, and `DB_CONNECT_RETRY_BASE_SECONDS` retry budget.
+At an HTTP boundary, map the error to the existing `DEPENDENCY_UNAVAILABLE`
+(503) envelope.
 
 ## Test
 
 ```powershell
-python -m unittest test_app.py test_stego.py test_registration_reconcile.py
+python -m unittest test_app.py test_stego.py test_registration_reconcile.py test_evidence_storage.py
 ```
 
 The service uses temporary files while processing and does not persist uploaded
@@ -498,3 +502,10 @@ source videos.
 - Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
 - Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
 - Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.
+
+## Evidence Storage Consistency Report
+
+`evidence_storage.generate_consistency_report(storage_dir=None, *, now=None)` returns a read-only consistency report comparing `blobs` metadata, active `tenant_blob_refs` (`ref_count > 0`), and physical files under `storage_dir` (defaulting to `HARPOCRATES_STORAGE_DIR` / `storage.default_storage_dir` without creating or mutating directories):
+
+- Reports `consistent` (`bool`), aggregate `summary` counts, and itemized discrepancies: `missing_files`, `orphaned_blobs`, `orphaned_tenant_refs`, `orphaned_files`, and `size_mismatches`.
+- Strictly read-only: never modifies database rows, never deletes physical files, and never queries or returns `encrypted_dek`.

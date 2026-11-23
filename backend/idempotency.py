@@ -3,11 +3,177 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import hmac
+import json
 from typing import Any, Optional, Tuple
 
 from flask import Response, has_request_context, jsonify, request
 
 from db import Jsonb, get_connection
+
+INTENT_STATEMENT_VERSION = "harpocrates.registration_intent.v1"
+_INTENT_DOMAIN_PREFIX = b"harpocrates:registration-intent:v1:"
+REGISTRATION_INTENT_REQUEST_TYPE = "registration_intent"
+
+
+class IntentConflictError(ValueError):
+    """Raised when a tx_hash is already bound to a different intent digest."""
+
+
+def _normalize_hex_32(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a 32-byte hex string")
+    normalized = value.strip().lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 64 or not all(c in "0123456789abcdef" for c in normalized):
+        raise ValueError(f"{field_name} must be a 32-byte hex string")
+    return normalized
+
+
+def normalize_intent_digest(value: object) -> str:
+    """Validate and normalize a 32-byte hex intent digest."""
+    return _normalize_hex_32(value, "intent_digest")
+
+
+def _normalize_optional_str(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("optional statement field must be a string or None")
+    stripped = value.strip()
+    return stripped if stripped else None
+
+
+def canonical_evidence_statement(
+    *,
+    video_hash: object,
+    metadata_hash: object,
+    proof_id: object,
+    tier: object,
+    source_address: object = None,
+    contract_id: object = None,
+) -> dict[str, Any]:
+    """Build the canonical evidence statement bound to a proof registration intent.
+
+    Privacy: contains only content/metadata hashes, proof identifier, tier,
+    and public Stellar identifiers — never raw media, metadata envelopes,
+    witness values, or credentials.
+    """
+    if not isinstance(tier, str) or not tier.strip():
+        raise ValueError("tier must be a non-empty string")
+    return {
+        "version": INTENT_STATEMENT_VERSION,
+        "video_hash": _normalize_hex_32(video_hash, "video_hash"),
+        "metadata_hash": _normalize_hex_32(metadata_hash, "metadata_hash"),
+        "proof_id": _normalize_hex_32(proof_id, "proof_id"),
+        "tier": tier.strip().lower(),
+        "source_address": _normalize_optional_str(source_address),
+        "contract_id": _normalize_optional_str(contract_id),
+    }
+
+
+def compute_intent_digest(statement: dict[str, Any]) -> str:
+    """Compute the domain-separated SHA-256 digest of a canonical evidence statement."""
+    if not isinstance(statement, dict):
+        raise ValueError("statement must be a mapping")
+    canonical = canonical_evidence_statement(
+        video_hash=statement.get("video_hash") if "video_hash" in statement else statement.get("videoHash"),
+        metadata_hash=statement.get("metadata_hash") if "metadata_hash" in statement else statement.get("metadataHash"),
+        proof_id=statement.get("proof_id") if "proof_id" in statement else statement.get("proofId"),
+        tier=statement.get("tier"),
+        source_address=statement.get("source_address") if "source_address" in statement else statement.get("sourceAddress"),
+        contract_id=statement.get("contract_id") if "contract_id" in statement else statement.get("contractId"),
+    )
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(_INTENT_DOMAIN_PREFIX + encoded).hexdigest()
+
+
+def registration_intent_digest(
+    *,
+    video_hash: object,
+    metadata_hash: object,
+    proof_id: object,
+    tier: object,
+    source_address: object = None,
+    contract_id: object = None,
+) -> str:
+    """Convenience helper to build and hash a canonical evidence statement."""
+    return compute_intent_digest(
+        canonical_evidence_statement(
+            video_hash=video_hash,
+            metadata_hash=metadata_hash,
+            proof_id=proof_id,
+            tier=tier,
+            source_address=source_address,
+            contract_id=contract_id,
+        )
+    )
+
+
+def get_registration_intent(tx_hash: str) -> Optional[dict[str, Any]]:
+    """Return the persisted registration intent record for ``tx_hash``, if any."""
+    if not _db_available():
+        return None
+    normalized_tx = _normalize_hex_32(tx_hash, "tx_hash")
+    record = get_idempotency_record(normalized_tx, REGISTRATION_INTENT_REQUEST_TYPE)
+    if not record:
+        return None
+    payload = record.get("response_payload")
+    if isinstance(payload, dict) and isinstance(payload.get("intent_digest"), str):
+        return payload
+    return None
+
+
+def persist_registration_intent(
+    tx_hash: str,
+    intent_digest: str,
+    *,
+    expires_at: Optional[datetime.datetime] = None,
+) -> str:
+    """Persist an approved registration intent digest keyed by ``tx_hash``.
+
+    Idempotent when the same ``(tx_hash, intent_digest)`` is persisted again.
+    Raises ``IntentConflictError`` if ``tx_hash`` is already bound to a
+    different intent digest.
+    """
+    normalized_tx = _normalize_hex_32(tx_hash, "tx_hash")
+    normalized_digest = normalize_intent_digest(intent_digest)
+    if not _db_available():
+        return normalized_digest
+
+    existing = get_registration_intent(normalized_tx)
+    if existing is not None:
+        existing_digest = existing.get("intent_digest", "")
+        if not hmac.compare_digest(existing_digest, normalized_digest):
+            raise IntentConflictError(
+                "transaction hash is already bound to a different registration intent digest"
+            )
+        return normalized_digest
+
+    record_id, status = create_idempotency_record(
+        normalized_tx,
+        REGISTRATION_INTENT_REQUEST_TYPE,
+        expires_at=expires_at,
+    )
+    if status == "COMPLETED":
+        reread = get_registration_intent(normalized_tx)
+        if reread is not None:
+            existing_digest = reread.get("intent_digest", "")
+            if not hmac.compare_digest(existing_digest, normalized_digest):
+                raise IntentConflictError(
+                    "transaction hash is already bound to a different registration intent digest"
+                )
+        return normalized_digest
+
+    store_response(
+        record_id,
+        {
+            "version": INTENT_STATEMENT_VERSION,
+            "intent_digest": normalized_digest,
+        },
+    )
+    return normalized_digest
 
 
 # Table: idempotency_records
@@ -30,6 +196,22 @@ from db import Jsonb, get_connection
 #     next caller so a replacement worker can proceed exactly once.
 #   * Only one caller may transition a reclaimed record back to PENDING; the
 #     reclaim is a conditional UPDATE, so concurrent reclaimers cannot both win.
+
+
+# Outcome classification for reconciliation timeline consumers.
+OUTCOME_SUBMITTED = "submitted"
+OUTCOME_CONFIRMED = "confirmed"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_UNKNOWN = "unknown"
+
+_STATUS_TO_OUTCOME = {
+    "PENDING": OUTCOME_SUBMITTED,
+    "COMPLETED": OUTCOME_CONFIRMED,
+    "FAILED": OUTCOME_REJECTED,
+}
+
+# Upper bound on records returned by timeline queries (bounded output).
+TIMELINE_MAX_RECORDS = 100
 
 
 def _now() -> datetime.datetime:
@@ -109,6 +291,57 @@ def get_idempotency_record(request_digest: str, request_type: str) -> Optional[d
             if row:
                 return dict(row)
             return None
+
+
+def get_reconciliation_timeline(
+    request_type: str, limit: int = TIMELINE_MAX_RECORDS
+) -> list[dict]:
+    """Return bounded observation/transition records for a request type.
+
+    Each entry exposes only the classified outcome, lifecycle timestamps and
+    record id. Request digests, response payloads and error payloads are
+    deliberately omitted to preserve evidence privacy. Callers are expected to
+    have already authorized the requester.
+
+    Outcomes are one of: submitted (PENDING), confirmed (COMPLETED),
+    rejected (FAILED), or unknown (any other/unrecognized status).
+    """
+    bounded_limit = max(1, min(int(limit), TIMELINE_MAX_RECORDS))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, created_at, expires_at
+                FROM idempotency_records
+                WHERE request_type = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (request_type, bounded_limit),
+            )
+            rows = cur.fetchall()
+    return [classify_observation(dict(row)) for row in rows]
+
+
+def classify_observation(record: dict) -> dict:
+    """Map a stored record to a privacy-safe timeline entry."""
+    status = record.get("status")
+    outcome = _STATUS_TO_OUTCOME.get(status, OUTCOME_UNKNOWN)
+    return {
+        "id": record.get("id"),
+        "outcome": outcome,
+        "status": status if status in _STATUS_TO_OUTCOME else None,
+        "created_at": _iso(record.get("created_at")),
+        "expires_at": _iso(record.get("expires_at")),
+    }
+
+
+def _iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def store_response(record_id: int, payload: Any) -> None:

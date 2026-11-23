@@ -3,11 +3,13 @@ import { parseArgs } from 'node:util'
 export type Command =
   | 'verify'
   | 'status'
+  | 'check-compat'
   | 'manifest'
   | 'hash'
   | 'verify-receipt'
   | 'c2pa'
   | 'verify-lineage'
+  | 'verify-bundle'
   | 'help'
 
 export interface ParsedArgs {
@@ -67,6 +69,14 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  'check-compat': {
+    manifest: alias('m'),
+    'contract-id': text,
+    contractId: text,
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
   manifest: {
     ...ON_CHAIN,
     input: alias('i'),
@@ -111,6 +121,12 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     output: alias('o'),
     debug: toggle,
   },
+  'verify-bundle': {
+    bundle: alias('b'),
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
 }
 
 // Environment variable defaults for flags that are otherwise required on every call.
@@ -137,6 +153,10 @@ const ENV_DEFAULTS: Partial<Record<Exclude<Command, 'help'>, { keys: string[]; e
     env: '',
   },
   'verify-lineage': {
+    keys: [],
+    env: '',
+  },
+  'verify-bundle': {
     keys: [],
     env: '',
   },

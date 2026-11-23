@@ -1,0 +1,380 @@
+{
+  "fixtureVersion": 1,
+  "description": "Deterministic backend and CLI verification receipt interoperability vectors (synthetic test-only data).",
+  "keys": {
+    "verifier-interop-2026-07": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "Q-wwkbJUukAHcrtsz7cjyoSE5ZVgCqHOaU1rag5cB6A",
+      "y": "c_002CRpaAEB1aN9WkkAzo_PB1Tioo-_-p9OLh86dKw"
+    }
+  },
+  "keyValidity": {
+    "verifier-interop-2026-07": {
+      "notBefore": "2026-07-01T00:00:00.000Z",
+      "notAfter": "2026-08-01T00:00:00.000Z"
+    }
+  },
+  "verificationNow": "2026-07-26T12:30:00.000Z",
+  "validVectors": [
+    {
+      "name": "verified-source-with-ledger",
+      "unsignedInput": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1"
+      },
+      "canonicalPayload": "{\"circuitVersion\":\"source-witness-v1\",\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M\",\"ledgerSequence\":12345,\"metadataHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"networkPassphrase\":\"Test SDF Network ; September 2015\",\"proofId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"protocol\":\"harpocrates-verification-receipt\",\"result\":\"verified\",\"signer\":{\"algorithm\":\"ECDSA_P256_SHA256\",\"keyId\":\"verifier-interop-2026-07\"},\"tier\":\"source\",\"transactionHash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"verifiedAt\":\"2026-07-26T12:00:00.000Z\",\"verifierVersion\":\"registry-v1\",\"version\":1,\"videoHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "signedReceipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "serializedReceipt": "{\"circuitVersion\":\"source-witness-v1\",\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M\",\"ledgerSequence\":12345,\"metadataHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"networkPassphrase\":\"Test SDF Network ; September 2015\",\"proofId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"protocol\":\"harpocrates-verification-receipt\",\"result\":\"verified\",\"signature\":\"uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ\",\"signer\":{\"algorithm\":\"ECDSA_P256_SHA256\",\"keyId\":\"verifier-interop-2026-07\"},\"tier\":\"source\",\"transactionHash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"verifiedAt\":\"2026-07-26T12:00:00.000Z\",\"verifierVersion\":\"registry-v1\",\"version\":1,\"videoHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "qrPayload": "eyJjaXJjdWl0VmVyc2lvbiI6InNvdXJjZS13aXRuZXNzLXYxIiwiY29udHJhY3RJZCI6IkNBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFISzNNIiwibGVkZ2VyU2VxdWVuY2UiOjEyMzQ1LCJtZXRhZGF0YUhhc2giOiJjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjIiwibmV0d29ya1Bhc3NwaHJhc2UiOiJUZXN0IFNERiBOZXR3b3JrIDsgU2VwdGVtYmVyIDIwMTUiLCJwcm9vZklkIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsInByb3RvY29sIjoiaGFycG9jcmF0ZXMtdmVyaWZpY2F0aW9uLXJlY2VpcHQiLCJyZXN1bHQiOiJ2ZXJpZmllZCIsInNpZ25hdHVyZSI6InVlaG42ajNyYjEyMElqcmgxN09WM0xKSFZIVElLRjlrRFV5SjBWT0NlMHlnUF9qVHdhTVlMRk1UbHBzQTBQMndRYkNFZUExM0JRZ2diMzlCN1VxM1VRIiwic2lnbmVyIjp7ImFsZ29yaXRobSI6IkVDRFNBX1AyNTZfU0hBMjU2Iiwia2V5SWQiOiJ2ZXJpZmllci1pbnRlcm9wLTIwMjYtMDcifSwidGllciI6InNvdXJjZSIsInRyYW5zYWN0aW9uSGFzaCI6ImRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQiLCJ2ZXJpZmllZEF0IjoiMjAyNi0wNy0yNlQxMjowMDowMC4wMDBaIiwidmVyaWZpZXJWZXJzaW9uIjoicmVnaXN0cnktdjEiLCJ2ZXJzaW9uIjoxLCJ2aWRlb0hhc2giOiJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIn0"
+    },
+    {
+      "name": "unverified-silent-without-ledger",
+      "unsignedInput": {
+        "result": "unverified",
+        "verifiedAt": "2026-07-26T12:05:00.000Z",
+        "proofId": "1111111111111111111111111111111111111111111111111111111111111111",
+        "videoHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "metadataHash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "tier": "silent",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": null,
+        "transactionHash": null,
+        "circuitVersion": "silent-witness-v1",
+        "verifierVersion": "registry-v1"
+      },
+      "canonicalPayload": "{\"circuitVersion\":\"silent-witness-v1\",\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M\",\"ledgerSequence\":null,\"metadataHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"networkPassphrase\":\"Test SDF Network ; September 2015\",\"proofId\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"protocol\":\"harpocrates-verification-receipt\",\"result\":\"unverified\",\"signer\":{\"algorithm\":\"ECDSA_P256_SHA256\",\"keyId\":\"verifier-interop-2026-07\"},\"tier\":\"silent\",\"transactionHash\":null,\"verifiedAt\":\"2026-07-26T12:05:00.000Z\",\"verifierVersion\":\"registry-v1\",\"version\":1,\"videoHash\":\"2222222222222222222222222222222222222222222222222222222222222222\"}",
+      "signedReceipt": {
+        "result": "unverified",
+        "verifiedAt": "2026-07-26T12:05:00.000Z",
+        "proofId": "1111111111111111111111111111111111111111111111111111111111111111",
+        "videoHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "metadataHash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "tier": "silent",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": null,
+        "transactionHash": null,
+        "circuitVersion": "silent-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "a7tgIB6JWM8t8v6xyqRk8Cgh8-jCj_1s7_X40Wj3Cm-5EZUJNR32q04OJ4toC1DvRxA8smEZ9aF1OVDNgBR2Hw"
+      },
+      "serializedReceipt": "{\"circuitVersion\":\"silent-witness-v1\",\"contractId\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M\",\"ledgerSequence\":null,\"metadataHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"networkPassphrase\":\"Test SDF Network ; September 2015\",\"proofId\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"protocol\":\"harpocrates-verification-receipt\",\"result\":\"unverified\",\"signature\":\"a7tgIB6JWM8t8v6xyqRk8Cgh8-jCj_1s7_X40Wj3Cm-5EZUJNR32q04OJ4toC1DvRxA8smEZ9aF1OVDNgBR2Hw\",\"signer\":{\"algorithm\":\"ECDSA_P256_SHA256\",\"keyId\":\"verifier-interop-2026-07\"},\"tier\":\"silent\",\"transactionHash\":null,\"verifiedAt\":\"2026-07-26T12:05:00.000Z\",\"verifierVersion\":\"registry-v1\",\"version\":1,\"videoHash\":\"2222222222222222222222222222222222222222222222222222222222222222\"}",
+      "qrPayload": "eyJjaXJjdWl0VmVyc2lvbiI6InNpbGVudC13aXRuZXNzLXYxIiwiY29udHJhY3RJZCI6IkNBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFISzNNIiwibGVkZ2VyU2VxdWVuY2UiOm51bGwsIm1ldGFkYXRhSGFzaCI6IjMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMiLCJuZXR3b3JrUGFzc3BocmFzZSI6IlRlc3QgU0RGIE5ldHdvcmsgOyBTZXB0ZW1iZXIgMjAxNSIsInByb29mSWQiOiIxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwicHJvdG9jb2wiOiJoYXJwb2NyYXRlcy12ZXJpZmljYXRpb24tcmVjZWlwdCIsInJlc3VsdCI6InVudmVyaWZpZWQiLCJzaWduYXR1cmUiOiJhN3RnSUI2SldNOHQ4djZ4eXFSazhDZ2g4LWpDal8xczdfWDQwV2ozQ20tNUVaVUpOUjMycTA0T0o0dG9DMUR2UnhBOHNtRVo5YUYxT1ZETmdCUjJIdyIsInNpZ25lciI6eyJhbGdvcml0aG0iOiJFQ0RTQV9QMjU2X1NIQTI1NiIsImtleUlkIjoidmVyaWZpZXItaW50ZXJvcC0yMDI2LTA3In0sInRpZXIiOiJzaWxlbnQiLCJ0cmFuc2FjdGlvbkhhc2giOm51bGwsInZlcmlmaWVkQXQiOiIyMDI2LTA3LTI2VDEyOjA1OjAwLjAwMFoiLCJ2ZXJpZmllclZlcnNpb24iOiJyZWdpc3RyeS12MSIsInZlcnNpb24iOjEsInZpZGVvSGFzaCI6IjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIifQ"
+    }
+  ],
+  "mutatedStatements": [
+    {
+      "name": "mutated-result",
+      "receipt": {
+        "result": "unverified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "mutated-proof-id",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "mutated-video-hash",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "9999999999999999999999999999999999999999999999999999999999999999",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "mutated-metadata-hash",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "8888888888888888888888888888888888888888888888888888888888888888",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "mutated-tier",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "seal",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "mutated-network-passphrase",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Public Global Stellar Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "mutated-ledger-sequence",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12346,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "tampered-signature-bytes",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "Ruhn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "signature"
+    },
+    {
+      "name": "unknown-signer-key",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 1,
+        "signer": {
+          "keyId": "unknown-key-id",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "unknown"
+    },
+    {
+      "name": "unsupported-version",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "harpocrates-verification-receipt",
+        "version": 2,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "version"
+    },
+    {
+      "name": "unsupported-protocol",
+      "receipt": {
+        "result": "verified",
+        "verifiedAt": "2026-07-26T12:00:00.000Z",
+        "proofId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "videoHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadataHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "tier": "source",
+        "networkPassphrase": "Test SDF Network ; September 2015",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "ledgerSequence": 12345,
+        "transactionHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitVersion": "source-witness-v1",
+        "verifierVersion": "registry-v1",
+        "protocol": "other-protocol",
+        "version": 1,
+        "signer": {
+          "keyId": "verifier-interop-2026-07",
+          "algorithm": "ECDSA_P256_SHA256"
+        },
+        "signature": "uehn6j3rb120Ijrh17OV3LJHVHTIKF9kDUyJ0VOCe0ygP_jTwaMYLFMTlpsA0P2wQbCEeA13BQggb39B7Uq3UQ"
+      },
+      "expectedReasonPattern": "version"
+    }
+  ]
+}

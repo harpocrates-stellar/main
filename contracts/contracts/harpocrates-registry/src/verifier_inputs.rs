@@ -75,9 +75,12 @@ pub const CRITICAL_FIELDS_ALL_SUPPORTED: u32 =
 
 pub const FIELD_LEN: usize = 32;
 pub const SILENT_WITNESS_FIELD_COUNT: usize = 5;
+pub const SILENT_WITNESS_BROWSER_FIELD_COUNT: usize = 4;
 pub const REVOCATION_FIELD_COUNT: usize = 4;
 pub const PUBLIC_INPUTS_LEN: usize = FIELD_LEN * SILENT_WITNESS_FIELD_COUNT; // 160
 pub const SILENT_WITNESS_PUBLIC_INPUTS_LEN: usize = 160;
+pub const SILENT_WITNESS_BROWSER_PUBLIC_INPUTS_LEN: usize =
+    FIELD_LEN * SILENT_WITNESS_BROWSER_FIELD_COUNT; // 128
 pub const REVOCATION_PUBLIC_INPUTS_LEN: usize = 128;
 
 /// `silent_witness/v2` is the scoped frame (7 fields) plus a trailing 8th field
@@ -217,6 +220,15 @@ pub struct ScopedSilentWitnessFields {
     /// the codec stays a pure byte-level boundary and never interprets it.
     pub epoch: [u8; FIELD_LEN],
     pub domain_tag: [u8; FIELD_LEN],
+    pub circuit_version: u32,
+}
+
+/// Parsed `silent_witness` 4-field browser v1 public inputs (128 bytes).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrowserSilentWitnessFields {
+    pub video_hash: [u8; FIELD_LEN],
+    pub credential_root: [u8; FIELD_LEN],
+    pub nullifier: [u8; FIELD_LEN],
     pub circuit_version: u32,
 }
 
@@ -437,6 +449,48 @@ pub fn parse_silent_witness_v2(
         epoch: fields[5],
         domain_tag: fields[6],
         circuit_version: EXPECTED_CIRCUIT_VERSION,
+    })
+}
+
+/// Parse the 128-byte browser `silent_witness` v1 public inputs in canonical
+/// check order (`length` -> `padding` -> `non_canonical_field` -> `zero_field`).
+pub fn parse_browser_silent_witness(
+    frame: &[u8],
+) -> Result<BrowserSilentWitnessFields, RejectCode> {
+    if frame.len() != SILENT_WITNESS_BROWSER_PUBLIC_INPUTS_LEN {
+        return Err(RejectCode::Length);
+    }
+
+    let fields = [
+        field_at(frame, 0),
+        field_at(frame, 1),
+        field_at(frame, 2),
+        field_at(frame, 3),
+    ];
+
+    if !has_half_padding(&fields[0]) || !has_half_padding(&fields[1]) {
+        return Err(RejectCode::Padding);
+    }
+
+    for element in fields.iter() {
+        if !is_canonical_field(element) {
+            return Err(RejectCode::NonCanonicalField);
+        }
+    }
+
+    if is_zero(&fields[2]) || is_zero(&fields[3]) {
+        return Err(RejectCode::ZeroField);
+    }
+
+    let mut video_hash = [0u8; FIELD_LEN];
+    video_hash[..16].copy_from_slice(&fields[0][16..]);
+    video_hash[16..].copy_from_slice(&fields[1][16..]);
+
+    Ok(BrowserSilentWitnessFields {
+        video_hash,
+        credential_root: fields[2],
+        nullifier: fields[3],
+        circuit_version: 1,
     })
 }
 
@@ -753,6 +807,45 @@ mod constant_time_tests {
                 "byte {index}"
             );
         }
+    }
+
+    #[test]
+    fn browser_silent_witness_enforces_canonical_field_structure() {
+        let mut valid = [0u8; SILENT_WITNESS_BROWSER_PUBLIC_INPUTS_LEN];
+        for (i, part) in [half(), half(), field(7), field(9)].iter().enumerate() {
+            valid[i * FIELD_LEN..(i + 1) * FIELD_LEN].copy_from_slice(part);
+        }
+
+        let parsed = parse_browser_silent_witness(&valid).expect("valid 128-byte browser frame");
+        assert_eq!(parsed.circuit_version, 1);
+        assert_eq!(parsed.credential_root, field(7));
+        assert_eq!(parsed.nullifier, field(9));
+
+        assert_eq!(
+            parse_browser_silent_witness(&valid[..96]).err(),
+            Some(RejectCode::Length)
+        );
+
+        let mut bad_padding = valid;
+        bad_padding[0] = 0x01;
+        assert_eq!(
+            parse_browser_silent_witness(&bad_padding).err(),
+            Some(RejectCode::Padding)
+        );
+
+        let mut non_canonical = valid;
+        non_canonical[64..96].copy_from_slice(&BN254_SCALAR_FIELD_MODULUS_BE);
+        assert_eq!(
+            parse_browser_silent_witness(&non_canonical).err(),
+            Some(RejectCode::NonCanonicalField)
+        );
+
+        let mut zero_nullifier = valid;
+        zero_nullifier[96..128].fill(0);
+        assert_eq!(
+            parse_browser_silent_witness(&zero_nullifier).err(),
+            Some(RejectCode::ZeroField)
+        );
     }
 }
 

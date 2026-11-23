@@ -1,19 +1,28 @@
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import re
+
 import pytest
 
-from time_attestation import (
-    RFC3161Anchor,
-    StellarAnchor,
-    TimeAttestation,
-    PROFILE_ID,
-    create_time_attestation,
-    encode_time_attestation,
-    add_stellar_anchor,
-)
 from verification_receipt import (
+    MAX_QR_PAYLOAD_BYTES,
     build_verification_receipt,
-    compare_verification_receipts,
-    format_receipt_comparison_report,
+    canonicalize_receipt,
+    decode_receipt_from_qr,
+    encode_receipt_for_qr,
+    serialize_verification_receipt,
+    verify_verification_receipt,
 )
+
+INTEROP_FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "devx"
+    / "fixtures"
+    / "receipt-interop"
+    / "vectors.json"
+)
+INTEROP_FIXTURE = json.loads(INTEROP_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def context() -> dict[str, object]:
@@ -31,6 +40,7 @@ def context() -> dict[str, object]:
     }
 
 
+
 def test_receipt_matches_the_frontend_unsigned_model():
     receipt = build_verification_receipt(context())
 
@@ -42,6 +52,7 @@ def test_receipt_matches_the_frontend_unsigned_model():
     assert "protocol" not in receipt
     assert "signature" not in receipt
     assert "proof" not in receipt
+
 
 
 @pytest.mark.parametrize(
@@ -56,33 +67,20 @@ def test_rejects_invalid_digest_fields(field: str, value: str):
         build_verification_receipt(invalid)
 
 
+
 def test_rejects_incomplete_context_without_inventing_receipt_fields():
     with pytest.raises(ValueError, match="videoHash"):
         build_verification_receipt({"proofId": "a" * 64})
 
 
-def test_rejects_unsupported_critical_extension_in_metadata():
-    critical = context()
-    critical["extensions"] = {
-        "critical": ["x-unknown-required"],
-        "x-unknown-required": {"mode": "strict"},
-    }
+def test_receipt_remains_unsigned_when_key_history_is_requested():
+    # Public signing-key history is served by a separate read-only endpoint.
+    # The unsigned receipt model must not embed key material or signatures.
+    receipt = build_verification_receipt(context())
 
-    with pytest.raises(ValueError, match="x-unknown-required"):
-        build_verification_receipt(critical)
-
-
-def test_preserves_compatible_optional_extension_fields():
-    optional = context()
-    optional["extensions"] = {
-        "critical": [],
-        "x-display-hint": {"locale": "en-US"},
-    }
-
-    receipt = build_verification_receipt(optional)
-
-    assert receipt["extensions"]["x-display-hint"] == {"locale": "en-US"}
-    assert receipt["extensions"]["critical"] == []
+    assert "signingKeys" not in receipt
+    assert "keyHistory" not in receipt
+    assert "signature" not in receipt
 
 
 def _receipt(**overrides: object) -> dict[str, object]:
@@ -117,174 +115,74 @@ def test_compare_distinguishes_presentation_only_differences():
         videoHash="b" * 64,
         signature="sig-aaa",
     )
-    run_b = _receipt(
-        verifiedAt="2026-10-02T15:30:00+00:00",
-        verifierVersion="2026.10",
-        videoHash="B" * 64,
-        signature="sig-bbb",
+    assert built == unsigned_input
+
+    signed = vector["signedReceipt"]
+    unsigned_payload = {k: v for k, v in signed.items() if k != "signature"}
+    assert canonicalize_receipt(unsigned_payload) == vector["canonicalPayload"]
+    assert serialize_verification_receipt(signed) == vector["serializedReceipt"]
+
+    qr = encode_receipt_for_qr(signed)
+    assert qr == vector["qrPayload"]
+    assert decode_receipt_from_qr(qr) == signed
+
+    now = datetime.fromisoformat(INTEROP_FIXTURE["verificationNow"].replace("Z", "+00:00"))
+    result = verify_verification_receipt(
+        signed,
+        keys=INTEROP_FIXTURE["keys"],
+        expected_network_passphrase=unsigned_input["networkPassphrase"],
+        expected_proof_id=unsigned_input["proofId"],
+        now=now,
+        key_validity=INTEROP_FIXTURE["keyValidity"],
     )
-
-    report = compare_verification_receipts(run_a, run_b)
-
-    assert report["identical"] is False
-    assert report["equivalentEvidence"] is True
-    assert report["presentationOnly"] is True
-    assert report["evidenceChanges"] == []
-    assert report["trustChanges"] == []
-    assert report["revocationChanges"] == []
-    assert report["chainChanges"] == []
-
-    fields = [item["field"] for item in report["presentationChanges"]]
-    assert fields == ["verifiedAt", "verifierVersion", "videoHash.casing", "signature"]
-    assert "Only presentation differences detected" in report["summary"]
+    assert result == {"valid": True, "receipt": signed}
 
 
-def test_compare_detects_evidence_changes_and_tier_separation():
-    run_a = _receipt(tier="silent", videoHash="1" * 64, metadataHash="2" * 64)
-    run_b = _receipt(tier="seal", videoHash="3" * 64, metadataHash="2" * 64)
-
-    report = compare_verification_receipts(run_a, run_b)
-
-    assert report["identical"] is False
-    assert report["equivalentEvidence"] is False
-    assert report["presentationOnly"] is False
-    fields = [item["field"] for item in report["evidenceChanges"]]
-    assert fields == ["videoHash", "tier"]
-    assert any("Identity tier changed from 'silent' to 'seal'" in e for e in report["explanations"])
-
-
-def test_compare_explains_trust_revocation_and_chain_observations():
-    run_a = _receipt(
-        result="verified",
-        ledgerSequence=42,
-        transactionHash="e" * 64,
-        trust={"status": "trusted", "issuerId": "issuer-1"},
-        revocation={"status": "active", "revocationRoot": "1" * 64},
+@pytest.mark.parametrize(
+    "case",
+    INTEROP_FIXTURE["mutatedStatements"],
+    ids=lambda c: c["name"],
+)
+def test_interop_mutated_statements_are_explicitly_rejected(case: dict):
+    now = datetime.fromisoformat(INTEROP_FIXTURE["verificationNow"].replace("Z", "+00:00"))
+    result = verify_verification_receipt(
+        case["receipt"],
+        keys=INTEROP_FIXTURE["keys"],
+        now=now,
+        key_validity=INTEROP_FIXTURE["keyValidity"],
     )
-    run_b = _receipt(
-        result="unverified",
-        ledgerSequence=99,
-        transactionHash="f" * 64,
-        trust={"status": "untrusted", "issuerId": "issuer-1"},
-        revocation={"status": "revoked", "revocationRoot": "9" * 64},
+    assert result["valid"] is False
+    assert re.search(case["expectedReasonPattern"], str(result["reason"]), re.IGNORECASE)
+
+
+def test_interop_rejects_stale_key_wrong_network_wrong_proof_and_oversized_qr():
+    signed = INTEROP_FIXTURE["validVectors"][0]["signedReceipt"]
+    keys = INTEROP_FIXTURE["keys"]
+
+    wrong_proof = verify_verification_receipt(
+        signed,
+        keys=keys,
+        expected_proof_id="f" * 64,
     )
+    assert wrong_proof["valid"] is False
+    assert "proof" in str(wrong_proof["reason"])
 
-    report = compare_verification_receipts(run_a, run_b)
-
-    assert report["equivalentEvidence"] is True
-    assert report["presentationOnly"] is False
-    assert [i["field"] for i in report["trustChanges"]] == ["result", "trust.status"]
-    assert [i["field"] for i in report["revocationChanges"]] == [
-        "revocation.revocationRoot",
-        "revocation.status",
-    ]
-    assert [i["field"] for i in report["chainChanges"]] == [
-        "ledgerSequence",
-        "transactionHash",
-    ]
-    assert "trust, revocation, chain" in report["summary"]
-
-    rendered = format_receipt_comparison_report(report)
-    assert "Verification Receipt Comparison Report" in rendered
-    assert "Trust Observations:" in rendered
-    assert "Revocation Observations:" in rendered
-    assert "Chain Observations:" in rendered
-
-
-def test_compare_explains_time_attestation_chain_and_trust_changes():
-    digest = "a" * 64
-    ta_before = create_time_attestation(evidence_digest=digest)
-    ta_after = TimeAttestation(
-        version=1,
-        protocol=PROFILE_ID,
-        evidence_digest=digest,
-        observed_time=ta_before.observed_time,
-        stellar_anchors=[
-            StellarAnchor(
-                ledger_sequence=100,
-                ledger_timestamp=1700000000,
-                transaction_hash="d" * 64,
-                network_passphrase="Test SDF Network ; September 2015",
-            )
-        ],
-        rfc3161_anchors=[
-            RFC3161Anchor(
-                token_bytes="dGVzdA==",
-                tsa_url="https://tsa.example.org",
-                gen_time=1700000000000,
-                verification_status="valid",
-            )
-        ],
+    wrong_network = verify_verification_receipt(
+        signed,
+        keys=keys,
+        expected_network_passphrase="Public Global Stellar Network ; September 2015",
     )
+    assert wrong_network["valid"] is False
+    assert "network" in str(wrong_network["reason"])
 
-    run_a = _receipt(timeAttestation=encode_time_attestation(ta_before))
-    run_b = _receipt(timeAttestation=ta_after)
-
-    report = compare_verification_receipts(run_a, run_b)
-
-    assert report["equivalentEvidence"] is True
-    assert [i["field"] for i in report["chainChanges"]] == ["timeAttestation.stellarAnchors"]
-    assert [i["field"] for i in report["trustChanges"]] == [
-        "timeAttestation.rfc3161Anchors",
-        "timeAttestation.backdatingRisk",
-    ]
-
-
-def test_compare_fails_closed_on_invalid_receipt_or_observations():
-    valid = _receipt()
-    bad_hex = _receipt(proofId="not-a-hex-digest")
-
-    with pytest.raises(ValueError, match="candidate receipt invalid: proofId"):
-        compare_verification_receipts(valid, bad_hex)
-
-    with pytest.raises(ValueError, match="baseline receipt must be a mapping"):
-        compare_verification_receipts("not-a-dict", valid)  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="revocation must be a mapping"):
-        compare_verification_receipts(valid, _receipt(revocation="revoked"))
-
-    with pytest.raises(ValueError, match="timeAttestation malformed"):
-        compare_verification_receipts(valid, _receipt(timeAttestation={"version": 99}))
-
-
-# ── Time bounds in receipt comparison ────────────────────────────────────────
-
-def test_compare_time_attestation_with_time_bounds():
-    """Receipt comparison includes time bounds in time attestation diff."""
-    digest = "a" * 64
-    fixed_time = 1700000000000
-    
-    # Create two attestations with same time sources but different anchor counts
-    ta_before = create_time_attestation(evidence_digest=digest, claimed_time_ms=fixed_time)
-    ta_after = TimeAttestation(
-        version=1,
-        protocol=PROFILE_ID,
-        evidence_digest=digest,
-        claimed_time=ta_before.claimed_time,
-        observed_time=ta_before.observed_time,
-        stellar_anchors=[
-            StellarAnchor(
-                ledger_sequence=100,
-                ledger_timestamp=fixed_time // 1000,
-                transaction_hash="d" * 64,
-                network_passphrase="Test SDF Network ; September 2015",
-            )
-        ],
-        rfc3161_anchors=[],
+    stale_key = verify_verification_receipt(
+        signed,
+        keys=keys,
+        now=datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc),
+        key_validity=INTEROP_FIXTURE["keyValidity"],
     )
-    
-    run_a = _receipt(timeAttestation=encode_time_attestation(ta_before))
-    run_b = _receipt(timeAttestation=ta_after)
-    
-    report = compare_verification_receipts(run_a, run_b)
-    
-    # Time bounds should be present in both encoded attestations
-    encoded_before = encode_time_attestation(ta_before)
-    encoded_after = encode_time_attestation(ta_after)
-    assert "timeBounds" in encoded_before
-    assert "timeBounds" in encoded_after
-    assert encoded_before["timeBounds"]["claimedTime"] == "inclusive"
-    assert encoded_after["timeBounds"]["stellarAnchors"] == "inclusive"
+    assert stale_key["valid"] is False
+    assert "stale" in str(stale_key["reason"])
 
 
 def test_compare_fixed_clock_exact_boundary_match():

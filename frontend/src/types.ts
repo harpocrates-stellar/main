@@ -5,6 +5,25 @@ export type { IdentityTier }
 
 export type Stage = 'idle' | 'hashing' | 'embedding' | 'proving' | 'ready' | 'registered' | 'error' | 'cancelled'
 
+export type UploadAdmissionStatus = 'idle' | 'admitted' | 'rejected'
+
+export type UploadAdmissionReason =
+  | 'queue_full'
+  | 'identity_limit'
+  | 'timeout'
+  | 'rate_limited'
+
+export type UploadErrorKind = 'none' | 'admission_rejected' | 'invalid_evidence' | 'unknown'
+
+export type UploadAdmissionState = {
+  status: UploadAdmissionStatus
+  reason: UploadAdmissionReason | null
+  message: string
+  retryAfter: number | null
+  retryable: boolean
+  actionHint: 'retry' | 'fix_input' | 'reduce_file_size' | 'use_supported_format' | 'check_resource' | 'none'
+}
+
 export type View = 'landing' | 'studio' | 'verify'
 
 export type SilentWitnessProof = {

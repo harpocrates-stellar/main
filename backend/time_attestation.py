@@ -13,6 +13,7 @@ graduated trust levels without breaking privacy guarantees.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ except ImportError:  # pragma: no cover - package layout / optional path
     trust_store_from_b64_roots = None  # type: ignore[misc, assignment]
 
 # ── Constants ──────────────────────────────────────────────────────────────
+
 
 PROFILE_ID = "harpocrates-time-attestation/v1"
 SUPPORTED_VERSIONS = {1}
@@ -55,6 +57,12 @@ VerificationStatus = Literal["valid", "invalid", "unverified", "expired", "untru
 
 # Time bound semantics for explicit boundary interpretation
 TimeBoundType = Literal["inclusive", "exclusive"]
+
+# Canonical parent-child statement binding profile. The parent statement digest
+# is bound to the child evidence digest via a domain-separated SHA-256 over the
+# canonical JSON of the binding payload.
+STATEMENT_BINDING_PROFILE = "harpocrates-statement-binding/v1"
+STATEMENT_BINDING_DOMAIN = b"harpocrates/statement-binding/v1\x00"
 
 
 # ── Data model ─────────────────────────────────────────────────────────────
@@ -116,6 +124,11 @@ class TimeAttestation:
     rfc3161_anchors: list[RFC3161Anchor] = field(default_factory=list)
     # Optional extension fields preserved verbatim across round trips.
     extensions: dict[str, Any] = field(default_factory=dict)
+    # Optional canonical parent-child statement binding. When present, the
+    # parent statement digest MUST bind to evidence_digest via the canonical
+    # binding digest. Absence keeps historical behavior (no binding declared).
+    parent_statement_digest: str | None = None
+    statement_binding_digest: str | None = None
 
 
 # ── Encoding ───────────────────────────────────────────────────────────────
@@ -140,6 +153,12 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
         "protocol": attestation.protocol,
         "evidenceDigest": attestation.evidence_digest,
     }
+
+    if attestation.parent_statement_digest is not None or attestation.statement_binding_digest is not None:
+        obj["statementBinding"] = {
+            "parentStatementDigest": attestation.parent_statement_digest,
+            "bindingDigest": attestation.statement_binding_digest,
+        }
     
     time_bounds: dict[str, TimeBoundType] = {}
     
@@ -204,6 +223,13 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
     _validate_time_attestation_obj(obj)
     
     extensions = _extract_extensions(obj)
+
+    parent_statement_digest = None
+    statement_binding_digest = None
+    if "statementBinding" in obj:
+        sb = obj["statementBinding"]
+        parent_statement_digest = sb.get("parentStatementDigest")
+        statement_binding_digest = sb.get("bindingDigest")
     
     claimed_time = None
     if "claimedTime" in obj:
@@ -257,6 +283,8 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
         stellar_anchors=stellar_anchors,
         rfc3161_anchors=rfc3161_anchors,
         extensions=extensions,
+        parent_statement_digest=parent_statement_digest,
+        statement_binding_digest=statement_binding_digest,
     )
 
 
@@ -284,6 +312,31 @@ def validate_time_attestation(attestation: TimeAttestation, evidence_digest: str
             f"got {attestation.evidence_digest}"
         )
     
+    # Validate canonical parent-child statement binding (fail-closed).
+    if attestation.parent_statement_digest is not None or attestation.statement_binding_digest is not None:
+        if attestation.parent_statement_digest is None:
+            errors.append("Statement binding: parentStatementDigest is required when bindingDigest is present")
+        elif not _is_valid_hex(attestation.parent_statement_digest, 64):
+            errors.append("Statement binding: parentStatementDigest must be 64-character hex string")
+        if attestation.statement_binding_digest is None:
+            errors.append("Statement binding: bindingDigest is required when parentStatementDigest is present")
+        elif not _is_valid_hex(attestation.statement_binding_digest, 64):
+            errors.append("Statement binding: bindingDigest must be 64-character hex string")
+        if (
+            attestation.parent_statement_digest is not None
+            and attestation.statement_binding_digest is not None
+            and _is_valid_hex(attestation.parent_statement_digest, 64)
+            and _is_valid_hex(attestation.statement_binding_digest, 64)
+        ):
+            expected_binding = compute_statement_binding_digest(
+                attestation.parent_statement_digest,
+                attestation.evidence_digest,
+            )
+            if not hmac.compare_digest(expected_binding, attestation.statement_binding_digest):
+                errors.append(
+                    "Statement binding: bindingDigest does not match canonical parent-child binding"
+                )
+
     current_time_ms = int(time.time() * 1000)
     
     # Validate claimed time
@@ -484,6 +537,9 @@ def add_stellar_anchor(
         observed_time=attestation.observed_time,
         stellar_anchors=[*attestation.stellar_anchors, new_anchor],
         rfc3161_anchors=attestation.rfc3161_anchors,
+        extensions=attestation.extensions,
+        parent_statement_digest=attestation.parent_statement_digest,
+        statement_binding_digest=attestation.statement_binding_digest,
     )
 
 
@@ -524,6 +580,9 @@ def add_rfc3161_anchor(
         observed_time=attestation.observed_time,
         stellar_anchors=attestation.stellar_anchors,
         rfc3161_anchors=[*attestation.rfc3161_anchors, new_anchor],
+        extensions=attestation.extensions,
+        parent_statement_digest=attestation.parent_statement_digest,
+        statement_binding_digest=attestation.statement_binding_digest,
     )
 
 
@@ -624,10 +683,53 @@ def verify_rfc3161_anchors(
         observed_time=attestation.observed_time,
         stellar_anchors=attestation.stellar_anchors,
         rfc3161_anchors=verified,
+        extensions=attestation.extensions,
+        parent_statement_digest=attestation.parent_statement_digest,
+        statement_binding_digest=attestation.statement_binding_digest,
     )
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────
+
+
+def compute_statement_binding_digest(parent_statement_digest: str, evidence_digest: str) -> str:
+    """Compute the canonical parent-child statement binding digest.
+
+    The binding is a domain-separated SHA-256 over the canonical JSON of the
+    binding payload. Both inputs MUST be 64-character lowercase hex strings.
+    """
+    if not _is_valid_hex(parent_statement_digest, 64):
+        raise ValueError("parent_statement_digest must be 64-character hex string")
+    if not _is_valid_hex(evidence_digest, 64):
+        raise ValueError("evidence_digest must be 64-character hex string")
+    payload = {
+        "profile": STATEMENT_BINDING_PROFILE,
+        "parentStatementDigest": parent_statement_digest.lower(),
+        "evidenceDigest": evidence_digest.lower(),
+    }
+    canonical = _canonical_json(payload)
+    return hashlib.sha256(STATEMENT_BINDING_DOMAIN + canonical).hexdigest()
+
+
+def bind_statement(
+    attestation: TimeAttestation,
+    parent_statement_digest: str,
+) -> TimeAttestation:
+    """Return a copy of attestation with canonical parent-child statement binding."""
+    binding = compute_statement_binding_digest(parent_statement_digest, attestation.evidence_digest)
+    return TimeAttestation(
+        version=attestation.version,
+        protocol=attestation.protocol,
+        evidence_digest=attestation.evidence_digest,
+        claimed_time=attestation.claimed_time,
+        observed_time=attestation.observed_time,
+        stellar_anchors=attestation.stellar_anchors,
+        rfc3161_anchors=attestation.rfc3161_anchors,
+        extensions=attestation.extensions,
+        parent_statement_digest=parent_statement_digest,
+        statement_binding_digest=binding,
+    )
+
 
 def _canonical_json(obj: dict[str, Any]) -> bytes:
     """Encode dictionary to canonical JSON bytes."""
@@ -667,12 +769,28 @@ def _validate_time_attestation_obj(obj: dict[str, Any]) -> None:
     if not _is_valid_hex(obj["evidenceDigest"], 64):
         raise ValueError("evidenceDigest must be 64-character hex string")
 
+    if "statementBinding" in obj:
+        sb = obj["statementBinding"]
+        if not isinstance(sb, dict):
+            raise TypeError("statementBinding must be a dictionary")
+        parent = sb.get("parentStatementDigest")
+        binding = sb.get("bindingDigest")
+        if parent is not None and (not isinstance(parent, str) or not _is_valid_hex(parent, 64)):
+            raise ValueError("statementBinding.parentStatementDigest must be 64-character hex string")
+        if binding is not None and (not isinstance(binding, str) or not _is_valid_hex(binding, 64)):
+            raise ValueError("statementBinding.bindingDigest must be 64-character hex string")
+        if parent is None and binding is None:
+            raise ValueError("statementBinding must include parentStatementDigest and bindingDigest")
+        if parent is None or binding is None:
+            raise ValueError("statementBinding must include both parentStatementDigest and bindingDigest")
+
 
 def _extract_extensions(obj: dict[str, Any]) -> dict[str, Any]:
     """Collect unknown top-level extension keys, failing closed on unknown critical ones."""
     known = {
         "version", "protocol", "evidenceDigest", "claimedTime", "observedTime",
         "stellarAnchors", "rfc3161Anchors",
+        "statementBinding",
     }
     extensions: dict[str, Any] = {}
     for key, value in obj.items():

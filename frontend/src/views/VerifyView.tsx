@@ -1,26 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { CheckCircle2, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
+import { useIssuerTrust } from '../hooks/useIssuerTrust'
+import { explainVerificationTrust } from '../services/verificationFlow'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { DisputePanel } from '../components/DisputePanel'
 import { EventList } from '../components/EventList'
+import { ReceiptComparisonView } from '../components/ReceiptComparisonView'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import VerificationTimeline from '../components/VerificationTimeline'
+import { VerificationResultTabs } from '../components/VerificationResultTabs'
+import { resolveVerifiedStatementIdentity } from '../services/verificationFlow'
 import { shortHash } from '../utils'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
-import {
-  buildVerificationDimensions,
-  createCachedVerificationEntry,
-  resolveCachedVerificationResult,
-  type CachedVerificationEntry,
-  type TrustDimensionState,
-  type VerificationContextIdentity,
-} from '../services/verificationFlow'
+import { parseReceiptComparisonShareUrl } from '../services/receiptComparison'
 
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
 const MAX_MANIFEST_SIZE_BYTES = 64 * 1024 // 64 KB cap
@@ -78,24 +76,31 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
 
   const inputRef = useRef<HTMLInputElement | null>(null)
   const manifestInputRef = useRef<HTMLInputElement | null>(null)
+  const selectionRevisionRef = useRef(createVerificationRevisionGuard())
   const [videoHashInput, setVideoHashInput] = useState('')
   const [proofIdInput, setProofIdInput] = useState('')
   const [manifestError, setManifestError] = useState<string | null>(null)
 
-  // Keep videoHashInput synced when verifyHash updates externally
-  useEffect(() => {
-    if (verifyHash && !videoHashInput) {
+  const [prevVerifyHash, setPrevVerifyHash] = useState(verifyHash)
+  if (verifyHash !== prevVerifyHash) {
+    setPrevVerifyHash(verifyHash)
+    if (verifyHash) {
       setVideoHashInput(verifyHash)
+      setProofIdInput('')
     }
-  }, [verifyHash, videoHashInput])
+  }
 
   const handleManifestFile = async (file: File) => {
+    const revision = selectionRevisionRef.current.next()
     if (file.size > MAX_MANIFEST_SIZE_BYTES) {
       setManifestError(`Manifest file exceeds the 64 KB size limit (${(file.size / 1024).toFixed(1)} KB).`)
       return
     }
 
     const manifest = await tryParseManifest(file)
+    if (!selectionRevisionRef.current.isCurrent(revision)) {
+      return
+    }
     if (!manifest) {
       setManifestError('Invalid or malformed proof manifest JSON.')
       return
@@ -125,6 +130,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
     const vHash = videoHashInput.trim()
     const pId = proofIdInput.trim()
     if (!vHash) return
+    selectionRevisionRef.current.invalidate()
     setManifestError(null)
     if (typeof loadSharedVerification === 'function') {
       void loadSharedVerification({
@@ -139,7 +145,18 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
     }
   }
 
+  const statementIdentity = useMemo(() => {
+    return resolveVerifiedStatementIdentity({
+      verifyHash,
+      videoHashInput,
+      proofIdInput,
+      events,
+      chainProof,
+    })
+  }, [verifyHash, videoHashInput, proofIdInput, events, chainProof])
+
   const revocationProofId =
+    statementIdentity.proofId ??
     events.find((event) => event.video_hash === (videoHashInput || verifyHash) && event.proof_id)?.proof_id ??
     proofIdInput ??
     null
@@ -212,12 +229,18 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
     : null
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
-    const activeHash = videoHashInput || verifyHash
-    if (effectiveStatus !== 'success' || !activeHash || !CONTRACT_ID) return null
-    const matchedEvent = events.find((event) => event.proof_id && event.video_hash === activeHash)
-      ?? events.find((event) => !!event.proof_id)
-    const proofId = matchedEvent?.proof_id ?? proofIdInput ?? null
-    const metadataHash = chainProof?.metadataHash ?? provenanceRecord?.metadata.metadataHash ?? null
+    const activeHash = statementIdentity.statementDigest || videoHashInput || verifyHash
+    if (status !== 'success' || !activeHash || !CONTRACT_ID) return null
+    const matchedEvent =
+      statementIdentity.matchingEvents[0] ??
+      events.find((event) => event.proof_id && event.video_hash === activeHash) ??
+      events.find((event) => !!event.proof_id)
+    const proofId = statementIdentity.proofId ?? matchedEvent?.proof_id ?? proofIdInput ?? null
+    const metadataHash =
+      statementIdentity.metadataHash ??
+      chainProof?.metadataHash ??
+      provenanceRecord?.metadata.metadataHash ??
+      null
     if (!proofId || !metadataHash) return null
     const tierRaw = matchedEvent?.tier
     const tier =
@@ -231,26 +254,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
       transactionRef: provenanceRecord?.ledger.transactionHash || matchedEvent?.tx_hash || undefined,
       tier,
     }
-  }, [effectiveStatus, videoHashInput, verifyHash, events, proofIdInput, chainProof, provenanceRecord])
-
-  const showTrustDimensions =
-    !isStaleSuccess && (status !== 'idle' || !!chainProof || events.length > 0 || !!errorCode)
-
-  const trustModel = useMemo(() => {
-    const hasHarpocratesMetadata =
-      errorCode === 'METADATA_ENVELOPE_MISMATCH'
-        ? false
-        : effectiveStatus === 'success' &&
-          /(Confirmed:|Metadata only:|Locally verified:)/i.test(verifyResult)
-    return buildVerificationDimensions({
-      hasHarpocratesMetadata,
-      metadataEnvelopeMismatch: errorCode === 'METADATA_ENVELOPE_MISMATCH',
-      onChain: chainProof,
-      events,
-      offline,
-      errorCode,
-    })
-  }, [effectiveStatus, verifyResult, chainProof, events, offline, errorCode])
+  }, [status, statementIdentity, videoHashInput, verifyHash, events, proofIdInput, chainProof, provenanceRecord])
 
   return (
     <section className="workspace app-page verify-page" id="verify">
@@ -300,6 +304,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               if (f.name.endsWith('.json') || f.type === 'application/json') {
                 void handleManifestFile(f)
               } else {
+                selectionRevisionRef.current.invalidate()
                 void verifyEvidence(f, wallet || undefined)
               }
             }
@@ -323,6 +328,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
             disabled={isVerifying}
             onChange={(event) => {
               const f = event.target.files?.[0] ?? null
+              selectionRevisionRef.current.invalidate()
               void verifyEvidence(f, wallet || undefined)
               // allow re-selecting the same file
               event.target.value = ''
@@ -395,6 +401,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               name="videoHash"
               value={videoHashInput}
               onChange={(e) => {
+                selectionRevisionRef.current.invalidate()
                 setVideoHashInput(e.target.value)
                 setManifestError(null)
               }}
@@ -411,6 +418,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               name="proofId"
               value={proofIdInput}
               onChange={(e) => {
+                selectionRevisionRef.current.invalidate()
                 setProofIdInput(e.target.value)
                 setManifestError(null)
               }}
@@ -532,13 +540,23 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           errorCode={errorCode}
         />
 
+        <VerificationResultTabs
+          identity={statementIdentity}
+          status={status}
+          offline={offline}
+          chainProof={chainProof}
+        />
+
         {/* Action row — reachable on mobile, adequate touch targets */}
         <div className="verify-actions" role="group" aria-label="Verification actions">
           {isVerifying ? (
             <button
               type="button"
               className="hero-secondary verify-action-btn"
-              onClick={cancel}
+              onClick={() => {
+                selectionRevisionRef.current.invalidate()
+                cancel()
+              }}
               aria-label="Cancel verification"
             >
               Cancel
@@ -560,6 +578,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
               type="button"
               className="hero-secondary verify-action-btn"
               onClick={() => {
+                selectionRevisionRef.current.invalidate()
                 setVideoHashInput('')
                 setProofIdInput('')
                 setManifestError(null)
@@ -582,14 +601,16 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
           <ShareVerificationLink input={shareLinkInput} />
         )}
 
+        <VerificationDetailExplorer details={verificationDetails} />
+
         <dl className="data-list">
           <div>
             <dt>Received Hash</dt>
-            <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>{shortHash(videoHashInput || verifyHash)}</dd>
+            <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>{shortHash(statementIdentity.statementDigest || videoHashInput || verifyHash)}</dd>
           </div>
           <div>
             <dt>Proof ID</dt>
-            <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>{shortHash(proofIdInput || revocationProofId || '')}</dd>
+            <dd style={{ overflowWrap: 'anywhere', wordBreak: 'break-all', textAlign: 'right' }}>{shortHash(statementIdentity.proofId || proofIdInput || revocationProofId || '')}</dd>
           </div>
           <div>
             <dt>Chain Status</dt>
@@ -600,6 +621,24 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
             <dd>{wallet ? `${wallet.slice(0, 5)}…${wallet.slice(-4)}` : 'Not connected'}</dd>
           </div>
         </dl>
+
+        <div style={{ marginTop: '1rem' }}>
+          <button
+            type="button"
+            className="hero-secondary"
+            aria-expanded={showComparison}
+            onClick={() => setShowComparison((prev) => !prev)}
+          >
+            <ArrowLeftRight size={14} aria-hidden="true" />
+            <span>{showComparison ? 'Hide receipt comparison' : 'Compare two receipts'}</span>
+          </button>
+          {showComparison ? (
+            <ReceiptComparisonView
+              initialLeft={initialComparison?.left ?? null}
+              initialRight={initialComparison?.right ?? null}
+            />
+          ) : null}
+        </div>
       </div>
 
       <aside className="side-rail">
@@ -615,6 +654,7 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
                 chainProof={chainProof}
                 proofId={revocationProofId}
                 sourceAddress={wallet || undefined}
+                issuerTrust={issuerTrust}
               />
               <DisputePanel
                 proofId={revocationProofId}

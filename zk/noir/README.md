@@ -278,23 +278,30 @@ pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_confor
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
 
-## Protocol domain separation
+## Scoped statement descriptor
 
-[`fixtures/protocol_domain_separation_vectors.json`](fixtures/protocol_domain_separation_vectors.json)
-publishes independently derived Pedersen vectors for the configured protocol,
-domain-version, and network fields, plus rejected one-field replay mutations
-and scope-specific nullifiers. The baseline has one configured deployment
-tuple; the frontend's `testnet` / `mainnet` descriptor strings are not separate
-Noir field configurations. Verifier scope and epoch are intentionally bound in
-the scoped-nullifier derivation, not in the deployment-level `domain_tag`.
-`DOMAIN_VERSION_FIELD` and the proof-envelope `circuit_version` are independent
-axes; the latter is constrained by `CURRENT_CIRCUIT_VERSION`.
+[`fixtures/scoped_nullifier_statement_descriptor_v1.json`](fixtures/scoped_nullifier_statement_descriptor_v1.json)
+is the machine-readable scoped-v2 statement descriptor. It lists ordered public
+and private inputs for `silent_witness.main`, the private inputs and public
+outputs for `silent_witness_helper.main`, the public-input order, and the
+canonical encodings. Its `descriptor_sha256` is SHA-256 over canonical JSON
+(sorted keys, compact separators) with that digest field omitted. The descriptor
+also binds to the normalized digests of the reviewed Silent Witness and helper
+ACIR artifacts in [`browser.artifacts.manifest.json`](../browser.artifacts.manifest.json)
+and to LF-normalized hashes of the defining Noir sources.
 
-The vector tags were calculated using the pinned `@aztec/bb.js` 0.87.0
-Pedersen implementation, separately from `expected_domain_tag()` in Noir. The
-Silent Witness tests pin the canonical vector, reject alternate protocol,
-domain-version, and network tags, and prove that a nullifier from one verifier
-scope cannot be reused in another.
+From the repository root, check the committed descriptor or regenerate it after
+a reviewed statement or artifact change:
+
+```bash
+python zk/tools/scoped_nullifier_descriptor.py check
+python zk/tools/scoped_nullifier_descriptor.py write
+python zk/tools/artifact_manifest.py verify-provenance
+```
+
+The descriptor and its generator are included in the circuit provenance source
+set, so an input, encoding, descriptor, or reviewed artifact change requires an
+explicitly reviewed update rather than silent normalization.
 
 ## Build
 

@@ -11,7 +11,14 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, Fingerprint, KeyRound } from 'lucide-react'
-import type { IdentityTier, ProofPackage, SilentWitnessProof, Stage } from '../types'
+import type {
+  IdentityTier,
+  ProofPackage,
+  SilentWitnessProof,
+  Stage,
+  UploadAdmissionState,
+  UploadErrorKind,
+} from '../types'
 import type { RegisterProofResult } from '../stellarTypes'
 import type { HashProgress } from '../utils'
 import {
@@ -20,12 +27,12 @@ import {
 } from '../workers/proofWorkerClient'
 import { hashFileInWorker } from '../workers/fileHashWorkerClient'
 import { appConfig } from '../config'
-import { CIRCUIT_INPUT_SCHEMA_VERSION, silentWitnessEpoch } from '../circuitInputSchema'
 import {
-  buildProofPreparationPreview,
-  PROOF_PREPARATION_VERIFIER_SCOPE,
-  type ProofPreparationPreviewResult,
-} from '../proofPreparationPreview'
+  ApiClientError,
+  isAdmissionError,
+  toAdmissionReason,
+  isInvalidEvidenceError,
+} from '../services/apiError'
 
 export const TIERS = [
   {
@@ -54,6 +61,9 @@ export const TIERS = [
 const CONTRACT_ID = appConfig.harpocratesRegistryId
 
 // Privacy-safe stable copy — never includes file names, hashes, or secrets.
+export const EVIDENCE_REPLACED_MESSAGE =
+  'Evidence file replaced. Previous proof, registration, and verification state were cleared; verify or register the newly selected file.'
+
 const CANCELLED_MESSAGES: Record<Stage, string> = {
   idle: 'Request cancelled.',
   hashing: 'Upload cancelled.',
@@ -112,7 +122,12 @@ export type UseEvidenceReturn = {
   /** Guided recovery state when the wallet network does not match the required contract network. */
   networkMismatchRecovery: NetworkMismatchRecoveryState | null
   isCancellable: boolean
+  admissionState: UploadAdmissionState | null
+  uploadErrorKind: UploadErrorKind
+  isRejectedUpload: boolean
+  isInvalidEvidence: boolean
   handleEvidence: (nextFile: File | null) => Promise<void>
+  retryUpload: () => Promise<void>
   registerProof: (wallet: string) => Promise<void>
   /** Re-validate the wallet network and selected evidence intent before allowing registration to resume. */
   revalidateNetworkMismatch: (wallet: string) => Promise<boolean>
@@ -138,15 +153,17 @@ export function useEvidence(): UseEvidenceReturn {
   const [credentialSeed, setCredentialSeed] = useState<string>('')
   const [nullifierSeed, setNullifierSeed] = useState<string>('')
   const [message, setMessage] = useState<string>('Upload evidence to begin.')
+  const [evidenceChangeNotice, setEvidenceChangeNotice] = useState<string | null>(null)
   const [registration, setRegistration] = useState<RegisterProofResult | null>(null)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
-  const [networkMismatchRecovery, setNetworkMismatchRecovery] =
-    useState<NetworkMismatchRecoveryState | null>(null)
-  const [acknowledgedSensitiveFields, setAcknowledgedSensitiveFields] = useState<string[]>([])
+  const [admissionState, setAdmissionState] = useState<UploadAdmissionState | null>(null)
+  const [uploadErrorKind, setUploadErrorKind] = useState<UploadErrorKind>('none')
   // Keep retries safe: a completed proof/wallet pair must never be submitted twice.
   const registrationInFlightedRef = useRef<boolean>(false)
   const completedRegistrationRef = useRef<string | null>(null)
   const pendingPersistenceRef = useRef<PendingRegistration | null>(null)
+  const processedVideoUrlRef = useRef<string>('')
+  const hasSelectedEvidenceRef = useRef<boolean>(false)
 
   // Sequence guard + abort plumbing so stale uploads/proofs cannot clobber a
   // newer flow or a reset caused by cancellation.
@@ -212,6 +229,18 @@ export function useEvidence(): UseEvidenceReturn {
 
   const isCancellable = stage === 'hashing' || stage === 'embedding' || stage === 'proving'
 
+  function clearProcessedVideoUrl() {
+    if (processedVideoUrlRef.current) {
+      URL.revokeObjectURL(processedVideoUrlRef.current)
+      processedVideoUrlRef.current = ''
+    }
+    setProcessedVideoUrl('')
+  }
+
+  function clearEvidenceChangeNotice() {
+    setEvidenceChangeNotice(null)
+  }
+
   function resetFlow() {
     abortRef.current?.abort()
     abortRef.current = null
@@ -222,27 +251,14 @@ export function useEvidence(): UseEvidenceReturn {
     proofRequestIdRef.current = null
     proofClientRef.current?.destroy()
     proofClientRef.current = null
-    if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
-    setProcessedVideoUrl('')
+    pendingPersistenceRef.current = null
+    hasSelectedEvidenceRef.current = false
+    clearProcessedVideoUrl()
     setProof(null)
     setFile(null)
     setRegistration(null)
-    setNetworkMismatch(null)
-    setNetworkMismatchRecovery(null)
-    setAcknowledgedSensitiveFields([])
-  }
-
-  function acknowledgeSensitiveFields(keys: string[]) {
-    if (!keys.length) return
-    setAcknowledgedSensitiveFields((prev) => {
-      const merged = new Set(prev)
-      for (const key of keys) {
-        if (typeof key === 'string' && key.length > 0) {
-          merged.add(key)
-        }
-      }
-      return Array.from(merged)
-    })
+    setAdmissionState(null)
+    setUploadErrorKind('none')
   }
 
   function getProofClient(): ProofWorkerClient {
@@ -264,12 +280,25 @@ export function useEvidence(): UseEvidenceReturn {
   async function handleEvidence(nextFile: File | null) {
     if (!nextFile) return
 
+    setAdmissionState(null)
+    setUploadErrorKind('none')
+
     evidenceFlowAbortRef.current?.abort()
     const controller = new AbortController()
     evidenceFlowAbortRef.current = controller
     const isCurrentFlow = () =>
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
+    // Clear stale proof, download URL, and registration state before processing
+    // the replacement file so previous evidence state can never leak onto it.
+    cancelProving()
+    seqRef.current += 1
+    pendingPersistenceRef.current = null
+    clearProcessedVideoUrl()
+    setProof(null)
+    setRegistration(null)
+    hasSelectedEvidenceRef.current = true
+    setEvidenceChangeNotice(hadPriorEvidence ? EVIDENCE_REPLACED_MESSAGE : null)
     setFile(nextFile)
 
     const cached = cachedFileHashRef.current
@@ -307,9 +336,10 @@ export function useEvidence(): UseEvidenceReturn {
           (progress) => {
             if (!isCurrentFlow()) return
             setHashProgress(progress)
-            setMessage(
-              `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
-            )
+            if (progress.percentage !== lastAnnouncedPercentageRef.current) {
+              setMessage(`Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`);
+              lastAnnouncedPercentageRef.current = progress.percentage;
+            }
           },
           controller.signal,
         )
@@ -343,8 +373,10 @@ export function useEvidence(): UseEvidenceReturn {
       )
       if (!isCurrentFlow()) return
 
-      if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl)
-      setProcessedVideoUrl(URL.createObjectURL(embeddedBlob))
+      clearProcessedVideoUrl()
+      const nextUrl = URL.createObjectURL(embeddedBlob)
+      processedVideoUrlRef.current = nextUrl
+      setProcessedVideoUrl(nextUrl)
       setProof({
         fileName: `harpocrates-${nextFile.name.replace(/[^.]+$/, '')}.mp4`,
         sourceHash,
@@ -354,12 +386,44 @@ export function useEvidence(): UseEvidenceReturn {
         timestamp,
         tier: selectedTier,
       })
+      setAdmissionState({
+        status: 'admitted',
+        reason: null,
+        message: 'Upload admitted and processed successfully.',
+        retryAfter: null,
+        retryable: false,
+        actionHint: 'none',
+      })
+      setUploadErrorKind('none')
       setStage('ready')
       setMessage('Embedded evidence package is ready for Stellar registration.')
     } catch (error) {
       if (!isCurrentFlow()) return
       setStage('error')
-      setMessage(error instanceof Error ? error.message : 'Evidence processing failed.')
+      const errorMessage = error instanceof Error ? error.message : 'Evidence processing failed.'
+      setMessage(errorMessage)
+
+      if (isAdmissionError(error)) {
+        const admissionReason = toAdmissionReason(error)
+        const retryAfter = error instanceof ApiClientError ? error.retryAfter : null
+        const actionHint =
+          error instanceof ApiClientError ? (error.action as UploadAdmissionState['actionHint']) : 'retry'
+        setUploadErrorKind('admission_rejected')
+        setAdmissionState({
+          status: 'rejected',
+          reason: admissionReason,
+          message: errorMessage,
+          retryAfter,
+          retryable: true,
+          actionHint: actionHint ?? 'retry',
+        })
+      } else if (isInvalidEvidenceError(error)) {
+        setUploadErrorKind('invalid_evidence')
+        setAdmissionState(null)
+      } else {
+        setUploadErrorKind('unknown')
+        setAdmissionState(null)
+      }
     } finally {
       if (evidenceFlowAbortRef.current === controller) {
         evidenceFlowAbortRef.current = null
@@ -455,6 +519,7 @@ export function useEvidence(): UseEvidenceReturn {
         pendingPersistenceRef.current = null
         completedRegistrationRef.current = registrationKey
         setRegistration(pendingPersistence.result)
+        setEvidenceChangeNotice(null)
         setStage('registered')
         setMessage(`Registration submitted with Stellar status: ${pendingPersistence.result.status}.`)
       } catch (error) {
@@ -497,6 +562,7 @@ export function useEvidence(): UseEvidenceReturn {
       pendingPersistenceRef.current = null
       completedRegistrationRef.current = registrationKey
       setRegistration(result)
+      setEvidenceChangeNotice(null)
       setStage('registered')
       setMessage(`Registration submitted with Stellar status: ${result.status}.`)
     } catch (error) {
@@ -658,7 +724,7 @@ export function useEvidence(): UseEvidenceReturn {
       return { ...baseProof, silentWitness }
     } catch (error) {
       if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
-        throw new Error('Proof generation cancelled.')
+        throw new Error('Proof generation cancelled.', { cause: error })
       }
       throw error
     } finally {
@@ -687,6 +753,16 @@ export function useEvidence(): UseEvidenceReturn {
     setMessage(CANCELLED_MESSAGES[currentStage])
   }
 
+  async function retryUpload() {
+    if (file) {
+      await handleEvidence(file)
+    }
+  }
+
+  const isRejectedUpload =
+    uploadErrorKind === 'admission_rejected' && admissionState?.status === 'rejected'
+  const isInvalidEvidence = uploadErrorKind === 'invalid_evidence'
+
   return {
     selectedTier,
     setSelectedTier,
@@ -708,7 +784,12 @@ export function useEvidence(): UseEvidenceReturn {
     networkMismatch,
     networkMismatchRecovery,
     isCancellable,
+    admissionState,
+    uploadErrorKind,
+    isRejectedUpload,
+    isInvalidEvidence,
     handleEvidence,
+    retryUpload,
     registerProof,
     revalidateNetworkMismatch,
     cancelEvidence,
