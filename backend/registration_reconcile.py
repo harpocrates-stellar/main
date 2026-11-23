@@ -11,6 +11,12 @@ converge on a single authoritative terminal status per transaction hash. Once a
 row reaches a terminal status, later reconciliations (from duplicate jobs or a
 replacement worker) observe that status and do not overwrite it unless forced.
 
+Repair preview: `preview_registration_repairs` computes the database updates a
+reconciliation would apply, together with the chain evidence and the expected
+revision of each row. It performs no writes. A row whose stored state
+contradicts the chain evidence is reported as contradictory and never receives
+a proposed update.
+
 Privacy: logs and API responses never include media, metadata envelopes,
 witness values, credentials, or private keys — only status codes and truncated
 transaction hash prefixes.
@@ -24,10 +30,10 @@ import json
 import os
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Mapping
 
 DOMAIN_TAG = "harpocrates:registration-reconcile:v1"
 CHECKPOINT_VERSION = 1
@@ -41,6 +47,8 @@ KNOWN_NETWORK_PASSPHRASES = {
     "local": "Local Sandbox Stellar Network ; September 2022",
     "standalone": "Standalone Network ; February 2017",
 }
+
+TERMINAL_STATUSES = frozenset({"confirmed", "failed"})
 
 
 class RegistrationReconcileError(RuntimeError):
@@ -329,281 +337,129 @@ class LedgerObservation:
         )
 
 
-class CheckpointStore:
-    def __init__(
-        self,
-        state_dir: str | os.PathLike[str] | None = None,
-        deployment: DeploymentIdentity | None = None,
-        filename: str = DEFAULT_CHECKPOINT_FILENAME,
-    ) -> None:
-        if Path(filename).name != filename or not filename:
-            raise CheckpointError("checkpoint filename must be a plain file name")
-        raw_state_dir = state_dir or os.getenv(
-            "HARPOCRATES_REGISTRATION_RECONCILE_DIR"
-        )
-        self.state_dir = Path(raw_state_dir) if raw_state_dir else DEFAULT_STATE_DIR
-        self.deployment = deployment or DeploymentIdentity.from_config()
-        self.filename = filename
-        self._lock = threading.RLock()
+@dataclass(frozen=True)
+class ChainEvidence:
+    """Redacted on-chain evidence for one transaction hash."""
+
+    tx_hash: str
+    status: str
+    ledger: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"txHashPrefix": self.tx_hash[:12], "status": self.status, "ledger": self.ledger}
+
+
+@dataclass(frozen=True)
+class RepairPreviewItem:
+    """One proposed database update. Previewing never applies it."""
+
+    row_id: str
+    tx_hash: str
+    expected_revision: int
+    current_status: str
+    proposed_status: str | None
+    chain_evidence: ChainEvidence | None
+    contradictory: bool = False
+    reason: str = ""
 
     @property
-    def path(self) -> Path:
-        return self.state_dir / self.filename
+    def will_update(self) -> bool:
+        return (not self.contradictory) and self.proposed_status is not None
 
-    def load(self) -> RegistrationCheckpoint | None:
-        with self._lock:
-            payload = self._read_payload()
-            if payload is None:
-                return None
-            try:
-                checkpoint = RegistrationCheckpoint.from_dict(payload)
-            except CheckpointError:
-                raise
-            except Exception as exc:
-                raise CheckpointError("malformed checkpoint") from exc
-            self._require_matching_deployment(checkpoint)
-            return checkpoint
-
-    def save(self, checkpoint: RegistrationCheckpoint) -> RegistrationCheckpoint:
-        with self._lock:
-            existing = self.load()
-            if existing is not None:
-                if checkpoint.last_trusted_ledger < existing.last_trusted_ledger:
-                    raise LedgerRollbackError("checkpoint ledger cannot move backwards")
-                if checkpoint.last_trusted_ledger == existing.last_trusted_ledger:
-                    return existing
-            self._require_matching_deployment(checkpoint)
-            self._write_payload(checkpoint.to_dict())
-            return checkpoint
-
-    def record(
-        self,
-        last_trusted_ledger: int,
-        *,
-        updated_at: str | None = None,
-    ) -> RegistrationCheckpoint:
-        checkpoint = RegistrationCheckpoint(
-            last_trusted_ledger=last_trusted_ledger,
-            network=self.deployment.network,
-            network_passphrase=self.deployment.network_passphrase,
-            release_id=self.deployment.release_id,
-            updated_at=updated_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        )
-        return self.save(checkpoint)
-
-    def _read_payload(self) -> dict[str, Any] | None:
-        try:
-            text = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise CheckpointError("checkpoint cannot be read") from exc
-        try:
-            payload = json.loads(text)
-        except (TypeError, ValueError) as exc:
-            raise CheckpointError("checkpoint is not valid JSON") from exc
-        if not isinstance(payload, dict):
-            raise CheckpointError("checkpoint must be a JSON object")
-        return payload
-
-    def _write_payload(self, payload: dict[str, Any]) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=f".{self.filename}.", dir=str(self.state_dir)
-        )
-        try:
-            os.chmod(temp_name, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, self.path)
-        except OSError as exc:
-            raise CheckpointError("checkpoint cannot be persisted") from exc
-        finally:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-
-    def _require_matching_deployment(
-        self, checkpoint: RegistrationCheckpoint
-    ) -> None:
-        if (
-            checkpoint.network.lower() != self.deployment.network
-            or checkpoint.network_passphrase != self.deployment.network_passphrase
-        ):
-            raise NetworkMismatchError("checkpoint belongs to a different Stellar network")
-        expected_fingerprint = _digest(
-            "deployment",
-            self.deployment.release_id,
-            self.deployment.network,
-            self.deployment.network_passphrase,
-        )
-        if checkpoint.deployment_fingerprint != expected_fingerprint:
-            raise DeploymentMismatchError(
-                "checkpoint belongs to a different deployment configuration"
-            )
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rowId": self.row_id,
+            "txHashPrefix": self.tx_hash[:12],
+            "expectedRevision": self.expected_revision,
+            "currentStatus": self.current_status,
+            "proposedStatus": self.proposed_status,
+            "chainEvidence": (
+                self.chain_evidence.to_dict() if self.chain_evidence is not None else None
+            ),
+            "contradictory": self.contradictory,
+            "willUpdate": self.will_update,
+            "reason": self.reason,
+        }
 
 
-NetworkCheckpoint = LedgerObservation
+@dataclass(frozen=True)
+class RepairPreview:
+    items: tuple[RepairPreviewItem, ...] = field(default_factory=tuple)
+
+    @property
+    def writes_planned(self) -> int:
+        return sum(1 for item in self.items if item.will_update)
+
+    @property
+    def contradictions(self) -> int:
+        return sum(1 for item in self.items if item.contradictory)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "writesPlanned": self.writes_planned,
+            "contradictions": self.contradictions,
+            "items": [item.to_dict() for item in self.items],
+        }
 
 
-def load_checkpoint(
-    state_dir: str | os.PathLike[str] | None = None,
-    deployment: DeploymentIdentity | None = None,
-) -> RegistrationCheckpoint | None:
-    return CheckpointStore(state_dir, deployment).load()
+def preview_registration_repairs(
+    rows: Iterable[Mapping[str, Any]],
+    chain_lookup: Callable[[str], ChainEvidence | None],
+) -> RepairPreview:
+    """Compute proposed updates for registration rows without writing anything.
 
-
-def save_checkpoint(
-    checkpoint: RegistrationCheckpoint,
-    state_dir: str | os.PathLike[str] | None = None,
-    deployment: DeploymentIdentity | None = None,
-) -> RegistrationCheckpoint:
-    return CheckpointStore(state_dir, deployment).save(checkpoint)
-
-
-def record_checkpoint(
-    last_trusted_ledger: int,
-    state_dir: str | os.PathLike[str] | None = None,
-    deployment: DeploymentIdentity | None = None,
-    *,
-    updated_at: str | None = None,
-) -> RegistrationCheckpoint:
-    return CheckpointStore(state_dir, deployment).record(
-        last_trusted_ledger, updated_at=updated_at
-    )
-
-
-def _call_transport(
-    transport: Callable[..., Any], deployment: DeploymentIdentity
-) -> Any:
-    try:
-        signature = inspect.signature(transport)
-    except (TypeError, ValueError):
-        return transport(deployment)
-    parameters = list(signature.parameters.values())
-    if any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
-        return transport(deployment)
-    positional = [
-        parameter
-        for parameter in parameters
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    if positional:
-        return transport(deployment)
-    return transport()
-
-
-def reconcile_registration(
-    tx_hash: object,
-    *,
-    previous_status: str | None = "pending",
-    proof_id: str | None = None,
-    event_id: int | None = None,
-    min_confirmations: int | None = None,
-    force: bool = False,
-) -> dict[str, Any]:
+    Each row mapping must provide `id`, `tx_hash`, `tx_status` and `revision`.
+    `chain_lookup` is a read-only query returning chain evidence or None when the
+    transaction is not yet indexed. A row whose stored terminal status disagrees
+    with chain evidence is flagged contradictory and receives no proposed update.
     """
-    Reconcile a single registration transaction hash against Horizon.
+    items: list[RepairPreviewItem] = []
+    for row in rows:
+        row_id = str(row["id"])
+        tx_hash = _require_text("tx_hash", row["tx_hash"])
+        revision = int(row["revision"])
+        current = str(row.get("tx_status") or "pending")
+        evidence = chain_lookup(tx_hash)
 
-    - Malformed hashes → status ``failed`` / reason ``malformed_tx_hash``
-    - Horizon dependency failures → status ``error`` (no durable write)
-    - Terminal rows are left unchanged unless ``force`` is true
-    - Terminal writes are conditional at the storage layer, so when duplicate
-      or replacement workers race, exactly one terminal write wins and the
-      losers report ``updated: false`` with the authoritative stored status
-    """
-    min_conf = (
-        default_min_confirmations()
-        if min_confirmations is None
-        else int(min_confirmations)
-    )
-    if min_conf < 1:
-        raise ValueError("minConfirmations must be >= 1")
-
-    try:
-        normalized = normalize_tx_hash(tx_hash)
-    except ValueError:
-        LOGGER.info("registration_reconcile_rejected reason=malformed_tx_hash")
-        verification = TxVerificationResult(status="failed", reason="malformed_tx_hash")
-        # Malformed hashes cannot be keyed in proof_events; no durable write.
-        payload = _result_payload(
-            tx_hash="",
-            previous_status=previous_status,
-            verification=verification,
-            updated=False,
-            proof_id=proof_id,
-            event_id=event_id,
-        )
-        payload["txHash"] = None
-        payload["error"] = "malformed_tx_hash"
-        return payload
-
-    if (
-        previous_status in TERMINAL_STATUSES
-        and not force
-        and previous_status is not None
-    ):
-        verification = TxVerificationResult(
-            status=previous_status,
-            reason="already_terminal",
-        )
-        return _result_payload(
-            tx_hash=normalized,
-            previous_status=previous_status,
-            verification=verification,
-            updated=False,
-            proof_id=proof_id,
-            event_id=event_id,
-        )
-
-    verification = verify_transaction(normalized, min_confirmations=min_conf)
-    updated = False
-
-    if verification.status in TERMINAL_STATUSES:
-        updated = bool(update_tx_status(normalized, verification.status, force=force))
-        if not updated and not force:
-            # Another worker (duplicate job or replacement) already committed a
-            # terminal status. Treat that stored value as authoritative.
-            verification = TxVerificationResult(
-                status=previous_status or verification.status,
-                reason="already_terminal",
-                confirmations=verification.confirmations,
-                ledger=verification.ledger,
+        if evidence is None:
+            items.append(
+                RepairPreviewItem(
+                    row_id=row_id,
+                    tx_hash=tx_hash,
+                    expected_revision=revision,
+                    current_status=current,
+                    proposed_status=None,
+                    chain_evidence=None,
+                    reason="transaction not yet indexed on chain",
+                )
             )
-        LOGGER.info(
-            "registration_reconcile_terminal tx=%s status=%s reason=%s updated=%s",
-            _short_hash(normalized),
-            verification.status,
-            verification.reason,
-            updated,
-        )
-    elif verification.status == "error":
-        LOGGER.warning(
-            "registration_reconcile_dependency tx=%s reason=%s",
-            _short_hash(normalized),
-            verification.reason,
-        )
-    else:
-        LOGGER.info(
-            "registration_reconcile_pending tx=%s reason=%s confirmations=%s",
-            _short_hash(normalized),
-            verification.reason,
-            verification.confirmations,
-        )
+            continue
 
-    payload = _result_payload(
-        tx_hash=normalized,
-        previous_status=previous_status,
-        verification=verification,
-        updated=updated,
-        proof_id=proof_id,
-        event_id=event_id,
-    )
-    return payload
+        if current in TERMINAL_STATUSES and current != evidence.status:
+            items.append(
+                RepairPreviewItem(
+                    row_id=row_id,
+                    tx_hash=tx_hash,
+                    expected_revision=revision,
+                    current_status=current,
+                    proposed_status=None,
+                    chain_evidence=evidence,
+                    contradictory=True,
+                    reason="stored terminal status contradicts chain evidence",
+                )
+            )
+            continue
+
+        proposed = evidence.status if evidence.status != current else None
+        items.append(
+            RepairPreviewItem(
+                row_id=row_id,
+                tx_hash=tx_hash,
+                expected_revision=revision,
+                current_status=current,
+                proposed_status=proposed,
+                chain_evidence=evidence,
+                reason="status update proposed" if proposed else "already consistent",
+            )
+        )
+    return RepairPreview(items=tuple(items))

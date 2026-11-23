@@ -151,6 +151,60 @@ class ReconcileTransportTest(unittest.TestCase):
         self.assertIsNone(store.load())
 
 
+class RepairPreviewTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self._tmp.name)
+        self.deployment = rr.DeploymentIdentity(
+            release_id=RELEASE_ID,
+            network=NETWORK,
+            network_passphrase=PASSPHRASE,
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_preview_shows_proposed_update_without_writing(self) -> None:
+        store = rr.CheckpointStore(self.state_dir, self.deployment)
+        store.record(100)
+        before = store.path.read_text(encoding="utf-8")
+
+        preview = rr.preview_repair(
+            store,
+            lambda deployment: {
+                "ledger": 150,
+                "network": NETWORK,
+                "networkPassphrase": PASSPHRASE,
+                "releaseId": RELEASE_ID,
+            },
+        )
+
+        self.assertEqual(preview["proposedLastTrustedLedger"], 150)
+        self.assertEqual(preview["expectedRevision"], 100)
+        self.assertIn("chainEvidence", preview)
+        self.assertEqual(store.path.read_text(encoding="utf-8"), before)
+
+    def test_preview_of_contradictory_record_applies_no_write(self) -> None:
+        store = rr.CheckpointStore(self.state_dir, self.deployment)
+        store.record(500)
+        before = store.path.read_text(encoding="utf-8")
+
+        preview = rr.preview_repair(
+            store,
+            lambda deployment: {
+                "ledger": 400,
+                "network": NETWORK,
+                "networkPassphrase": PASSPHRASE,
+                "releaseId": RELEASE_ID,
+            },
+        )
+
+        self.assertEqual(preview["status"], "contradictory")
+        self.assertIsNone(preview.get("proposedLastTrustedLedger"))
+        self.assertEqual(store.path.read_text(encoding="utf-8"), before)
+        self.assertEqual(store.load().last_trusted_ledger, 500)
+
+
 class DeploymentIdentityTest(unittest.TestCase):
     def test_from_config_uses_existing_release_network(self) -> None:
         config = SimpleNamespace(release_id=RELEASE_ID, release_network=NETWORK)
