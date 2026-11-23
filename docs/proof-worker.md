@@ -47,6 +47,13 @@ Implementation:
 - Cancel / timeout / destroy / unmount all settle with a stable `CANCELLED`
   (or `TIMEOUT` / `CRASHED`) code whose message never contains witness values,
   seeds, proof hex, or media identifiers beyond stage names.
+- Proof-worker diagnostic messages forwarded to telemetry via
+  `boundProofWorkerDiagnostic` / `ProofWorkerManager.forwardDiagnosticToTelemetry`
+  redact witness-shaped values (witness/secret/proof/evidence fields, byte
+  buffers, bigints, witness arrays, hex and field-element tokens) and cap the
+  serialized UTF-8 payload at `PROOF_WORKER_MEMORY_LIMITS.maxDiagnosticBytes`
+  (4096 bytes by default) while retaining stable `stage` and `errorCode`/`code`
+  identifiers.
 
 ## State machine
 
@@ -181,6 +188,24 @@ invoked.
   surfacing as a benign "unhandled rejection" in test output. This has been
   observed not to affect real-browser behavior (verified manually).
 
+## Offline worker capability report
+
+`ProofWorkerManager.getOfflineCapabilityReport()` (and standalone
+`buildOfflineWorkerCapabilityReport()` in `src/workers/proof-worker-manager.ts`)
+plus `inspectProofWorkerArtifactMetadata()` in `src/proofWorkerMemory.ts`
+produce a synchronous, offline readiness report:
+
+- Inspects required browser capabilities (`Worker`, `moduleWorkerType`,
+  `WebAssembly`, `SubtleCrypto`, `BigInt`, `ArrayBuffer`) via
+  `multiBrowserWorkerSupport.ts`.
+- Inspects configured proving artifact metadata and memory ceilings from the
+  statically bundled `zk/browser.artifacts.manifest.json` and
+  `zk/bench/bench.lock.json` without loading proving artifacts or contacting
+  network endpoints.
+- Fails closed (`ready: false`) with privacy-safe capability/metadata issue
+  descriptions when required browser features are missing or configured
+  artifact metadata is empty or exceeds worker/CSP limits.
+
 ## Multi-browser worker support
 
 Browser proving is gated by the same support floor documented in
@@ -208,6 +233,15 @@ Focused coverage lives in:
 
 ```bash
 cd frontend
-npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
+npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts src/workers/crashRecoveryFixtureProtocol.test.ts
 ```
 
+
+
+## Worker / Main-Thread Protocol Versioning
+
+`ProofWorkerManager` (`frontend/src/workers/proof-worker-manager.ts`) and `proof.worker.ts` enforce a strict integer protocol version (`PROOF_WORKER_PROTOCOL_VERSION = 1` in `frontend/src/workers/proof.worker.types.ts`) on worker/main-thread messages:
+
+- **Fail-closed before buffer transfer**: `validateWorkerProtocolVersion()` and `ProofWorkerManager.handleWorkerMessage()` check `protocolVersion` before invoking buffer-acceptance callbacks or parsing payload fields.
+- **No unsafe fallback parsing**: Missing, non-integer, stringified (e.g. `"1"`), zero, negative, `NaN`, or mismatched versions are rejected immediately without coercion.
+- **Clear reload-required result**: Mismatches return a privacy-safe `ProofWorkerResponse` with `type: 'error'`, `error.code = 'PROTOCOL_VERSION_MISMATCH'`, `error.reloadRequired = true`, and `error.privacySafe = true`, settling any matching pending request immediately.

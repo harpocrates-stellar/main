@@ -26,6 +26,60 @@ cargo test
 stellar contract build
 ```
 
+## Proof status and revocation ledger
+
+`get_proof_status(proof_id)` keeps returning `Valid`, `Revoked`, `Expired`, or
+`NotFound`. Existing status batch queries and assurance responses are unchanged.
+`get_proof_status_details(proof_id)` adds a detailed response:
+
+```rust
+pub struct ProofStatusDetails {
+    pub status: ProofVerificationStatus,
+    pub revoked_effective_ledger: Option<u32>,
+}
+```
+
+`revoked_effective_ledger` is the ledger sequence recorded when the proof first
+became revoked, not a Unix timestamp or the ledger in which a query runs. Single
+and batch revocation share this rule. Repeated revocation keeps the original
+effective ledger while preserving the existing lifecycle history and events.
+Revocation takes precedence over expiry, including after the expiry timestamp.
+
+For example, revoke a proof in ledger 100 and query it in ledger 150:
+
+```text
+Existing get_proof_status:         Revoked
+New get_proof_status_details:      { status: Revoked, revoked_effective_ledger: Some(100) }
+After another revocation at 150:   { status: Revoked, revoked_effective_ledger: Some(100) }
+```
+
+Valid, expired, and unknown proofs have `revoked_effective_ledger: None`. Proofs
+revoked before this feature also return `Revoked` with `None`: their historical
+ledger was not recorded. Neither querying nor repeating a legacy revocation
+backfills a ledger from the current sequence or guesses one from a timestamp.
+
+The effective ledger is stored under the additive persistent key
+`DataKey::ProofRevocationLedger(proof_id)`. Existing `ProofRecord` encodings,
+proof IDs, statement hashes, verifier-input encodings, and identity tiers are
+unchanged. No schema migration or new configuration is required. Storage
+maintenance must extend and restore this key together with `DataKey::Proof(proof_id)`
+for revoked proofs; read queries do not extend storage lifetimes. New code must
+not interpret an unknown effective ledger as a valid proof.
+
+Security: the existing admin authorization and atomic batch behavior apply to
+the new record. The query is public and read-only and exposes only existing
+status and a ledger number, never media, proof bytes, witnesses, or secrets.
+
+Focused coverage (synthetic fixtures only):
+
+```sh
+cd contracts
+cargo test -p harpocrates-registry test_proof_status_details
+cargo fmt --check
+cargo test
+cargo build --target wasm32v1-none --release
+```
+
 ## Schema Lifecycle
 
 Schemas are registered by the admin via `add_schema(admin, schema_hash, issuer_namespace, version, attribute_count)`. Each registration produces a `SchemaRecord` with `active = true`. The lifecycle is deliberately reversible so a schema deprecated by mistake can be restored without requiring a new hash:
@@ -265,10 +319,12 @@ init
 get_storage_schema_version
 upgrade_storage
 propose_admin
+propose_admin_with_expiry
 cancel_admin_transfer
 accept_admin
 get_admin
 get_pending_admin
+get_role_invitation
 get_schema_version
 is_admin
 is_issuer
@@ -285,6 +341,8 @@ register_anonymous
 register_anonymous_verified
 register_source
 register_seal
+preflight_statement
+preflight_tier_statement
 revoke_proof
 get_proof
 get_by_video
@@ -294,13 +352,22 @@ rotate_issuer
 finalize_issuer_rotation
 get_issuer_rotation
 is_issuer_verifiable
+get_role_revocation_readiness
+get_institutional_role_revocation_readiness
 set_revocation_root
 get_revocation_root
 check_non_revocation
 get_proof_status
+get_proof_status_details
 get_proof_history
 get_proof_history_at
 get_proof_history_count
+get_institutional_authority_history
+get_authority_history
+get_approver_authority_history
+get_authority_history_at
+get_authority_history_count
+get_approver_authority_history_count
 open_dispute
 respond_dispute
 resolve_dispute
@@ -355,21 +422,28 @@ The rotation state is persisted and can be inspected via `get_verifier_state`.
 
 Admin control uses a two-step transfer:
 
-1. The current admin calls `propose_admin`, which creates or replaces the pending
-   admin proposal.
-2. The pending admin calls `accept_admin` to complete the transfer.
+1. The current admin calls `propose_admin` (no expiry) or
+   `propose_admin_with_expiry` (bounded by `MAX_ROLE_INVITATION_TTL_SECS`),
+   which creates or replaces the pending admin proposal.
+2. The pending admin calls `accept_admin` before expiry to complete the transfer.
 
-The current admin may call `cancel_admin_transfer` before acceptance. Proposals,
-cancellations, and acceptances emit `["admin", "propose"]`,
-`["admin", "cancel"]`, and `["admin", "accept"]` lifecycle events.
+Callers can inspect the invitation's lifecycle state (`Nonexistent`, `Active`,
+or `Expired`) and `expires_at` timestamp via `get_role_invitation` without
+mutating contract state or performing hidden cleanup. `get_pending_admin`
+remains read-only and returns `None` once an expiring invitation has lapsed.
+
+The current admin may call `cancel_admin_transfer` before acceptance (including
+to clear an expired invitation). Proposals, cancellations, and acceptances emit
+`["admin", "propose"]`, `["admin", "cancel"]`, and `["admin", "accept"]`
+lifecycle events.
 
 ### Storage compatibility
 
 The existing `DataKey::Admin` value and all existing record layouts are
-unchanged. `DataKey::PendingAdmin` is appended as a new, independent persistent
-storage key, so upgrading an initialized contract preserves its current admin
-and all existing registry data. An upgraded contract starts with no pending
-admin proposal.
+unchanged. `DataKey::PendingAdmin` and `DataKey::PendingAdminExpiry` are
+independent persistent storage keys, so upgrading an initialized contract
+preserves its current admin and all existing registry data. An upgraded
+contract starts with no pending admin proposal.
 
 ## Admin and issuer role separation (storage V2)
 
@@ -408,6 +482,32 @@ that older artifact does not enforce disjoint roles and can grant the admin an
 issuer record again. Re-upgrade and revoke that issuer record before resuming
 issuer operations.
 
+## Institutional role revocation readiness report
+
+Before revoking an institutional key (e.g. Tier 3 Public Seal issuer or council member), operators and monitoring scripts can evaluate revocation impact and policy prerequisites in a single read-only call:
+
+```text
+get_role_revocation_readiness(role_address)
+```
+
+(Also available under the alias `get_institutional_role_revocation_readiness`).
+
+The call returns a `RoleRevocationReadinessReport` containing:
+- `role`: Evaluated account address.
+- `is_issuer`: True if an issuer record exists for the address.
+- `is_active_issuer`: True if the address holds active issuer authority.
+- `is_council_member`: True if the address is a member of the active admin council.
+- `is_admin`: True if the address holds registry administrator authority.
+- `delegations_affected`: Count of active delegations issued by this role that will be impacted by revocation.
+- `outstanding_approvals`: Count of open, unexpired council proposals currently approved by this role.
+- `pending_revocation_proposals`: Count of pending unexecuted revocation proposals targeting this role.
+- `revocation_proposal_approvals`: Highest approval count among pending revocation council proposals targeting this role.
+- `has_active_rotation_grace`: True if an unexpired rotation grace window is active for this issuer.
+- `council_governance_active`: True if multi-party admin council governance is currently effective.
+- `revocation_ready`: True if all prerequisites under the approved revocation policy are met. When council governance is active, this requires threshold approvals on a revocation proposal; under single-admin governance, active issuers can be revoked directly.
+
+The query is strictly read-only, non-panicking, and preserves evidence privacy.
+
 ## Timelocked Administration
 
 High-impact registry administrative actions (such as setting the primary verifier, revoking an issuer, setting proof TTL, and revoking credential roots) can be governed through a timelock mechanism to ensure transparency and community notice before execution. The workflow supports advance notice, admin cancellation, open execution after delay expiry, and admin emergency execution when immediate remediation is required.
@@ -442,6 +542,23 @@ Current Testnet verifier:
 ```text
 CCP2EQPKT5XAYTOARX3LGHNMJ37A6W2WY3H54MRIHEZVTVAZZPUSGZQJ
 ```
+
+## Statement Registration Preflight (#1199)
+
+Read-only entry points evaluate canonical public-field framing and active on-chain registry policy without mutating state, consuming caller quotas, or executing cryptographic verification:
+
+- `preflight_statement(env, video_hash, metadata_hash, envelope_version, proof_id, public_inputs, proof_len) -> StatementPreflightResult`
+- `preflight_tier_statement(env, tier, actor, video_hash, metadata_hash, envelope_version, proof_id) -> StatementPreflightResult`
+
+Both methods return a `StatementPreflightResult` struct:
+- `preflight_accepted`: `true` if public-field framing and current policy accept the candidate statement.
+- `cryptographically_verified`: **always `false`**.
+- `proof_stored`: **always `false`**.
+- `requires_crypto_verify`: **always `true`**.
+- `stage`: **always `PreflightStage::StructureAndPolicyOnly`**.
+- `registry_error_code`: non-zero `RegistryError` code when rejected by policy.
+- `codec_reject_code`: non-zero `RejectCode` when rejected by framing/canonicity.
+
 
 ## Receipt Digest Commitment (#337)
 
@@ -559,6 +676,51 @@ All registration functions and `revoke_proof` automatically record history.
 
 Proofs registered before this feature have zero history entries. `get_proof_history`
 returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
+
+## Institutional Authority History
+
+The registry maintains an append-only, privacy-preserving audit trail of institutional authority transitions across administrative governance and evidence authorization boundaries:
+- Admin transfers (proposals, cancellations, acceptances).
+- Institutional issuer authority (additions, metadata updates, rotations, grace settlements, and direct/conflict revocations).
+- Emergency pause guardians (assignment and clearing).
+
+### Bounds and Anti-Denial-of-Service Properties
+
+- `MAX_AUTHORITY_HISTORY_PAGE = 50` caps the maximum number of entries returned by a single paginated query, protecting against unbounded iteration costs.
+- **Unbounded Iteration Protection**: In addition to global sequential indexing, every approver maintains an independent, 1-based sequential sequence index (`DataKey::ApproverAuthorityHistoryEntry(approver, seq)`). Approver-specific queries index directly into this sequential mapping in O(limit) time without scanning or iterating through historical approvers across the registry.
+- Queries with `limit == 0` or `limit > MAX_AUTHORITY_HISTORY_PAGE` fail closed with `RegistryError::HistoryLimitExceeded` (`#16`).
+
+### Query Interface
+
+```text
+get_institutional_authority_history(offset: u32, limit: u32) -> AuthorityHistoryPage
+get_authority_history(offset: u32, limit: u32) -> AuthorityHistoryPage
+get_approver_authority_history(approver: Address, offset: u32, limit: u32) -> AuthorityHistoryPage
+get_authority_history_at(reference: u32) -> Option<AuthorityHistoryEntry>
+get_authority_history_count() -> u32
+get_approver_authority_history_count(approver: Address) -> u32
+```
+
+`AuthorityHistoryEntry` fields:
+- `reference: u32` — stable 1-based sequential reference.
+- `ledger_timestamp: u64` — ledger timestamp when the transition was committed on-chain.
+- `approver: Address` — the authority principal / approver whose role transitioned.
+- `role: u32` — institutional role code (`1 = Admin`, `2 = Issuer`, `3 = Guardian`).
+- `transition: u32` — transition code (`1 = Initialized`, `2 = Proposed`, `3 = Cancelled`, `4 = Accepted`, `5 = Added`, `6 = Revoked`, `7 = Rotated`, `8 = Finalized`, `9 = MetadataUpdated`, `10 = ConflictRevoked`).
+- `actor: Option<Address>` — authorized actor who executed the change.
+- `metadata_hash: Option<BytesN<32>>` — metadata commitment (e.g. issuer metadata hash), if applicable.
+
+`AuthorityHistoryPage` fields:
+- `entries: Vec<AuthorityHistoryEntry>`
+- `next_offset: u32`
+- `next_cursor: Option<u32>`
+- `total: u32`
+
+### Privacy and Fail-Closed Boundaries
+
+- Entries preserve evidence privacy: no media hashes, proof bytes, witnesses, or private keys are ever stored or emitted in authority history.
+- Historical queries are permissionless and read-only.
+- All newly added storage keys (`AuthorityHistorySeq`, `AuthorityHistoryEntry`, `ApproverAuthorityHistorySeq`, `ApproverAuthorityHistoryEntry`) are additive and backward-compatible.
 
 ## Dispute And Supersession
 

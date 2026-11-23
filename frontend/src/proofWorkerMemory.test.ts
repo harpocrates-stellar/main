@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import benchLock from '../../zk/bench/bench.lock.json'
 import browserArtifactManifest from '../../zk/browser.artifacts.manifest.json'
 import { CircuitInputError } from './circuitInputSchema'
@@ -7,6 +7,7 @@ import {
   assertProofWorkerMemoryBudget,
   browserArtifactByteLimit,
   byteLengthOfProofWorkerValue,
+  inspectProofWorkerArtifactMetadata,
   readBoundedCircuitArtifact,
 } from './proofWorkerMemory'
 
@@ -84,6 +85,54 @@ describe('proof worker memory limits', () => {
       expect((error as CircuitInputError).code).toBe('proof_worker_memory_exceeded')
       expect(error instanceof Error ? error.message : String(error)).not.toContain(secret)
     }
+  })
+
+  it('inspects configured browser artifact metadata offline without network access', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('network access is forbidden during offline inspection')
+    })
+
+    try {
+      const report = inspectProofWorkerArtifactMetadata()
+      expect(report.format).toBe(browserArtifactManifest.format)
+      expect(report.version).toBe(browserArtifactManifest.version)
+      expect(report.publishedArtifactCount).toBe(browserArtifactManifest.artifacts.length)
+      expect(report.skippedArtifactCount).toBe(browserArtifactManifest.skipped.length)
+      expect(report.allArtifactsWithinLimit).toBe(true)
+      expect(report.totalPublishedArtifactBytes).toBeGreaterThan(0)
+      expect(report.toolchain.barretenberg).toBe(browserArtifactManifest.toolchain.barretenberg)
+      expect(report.toolchain.provingScheme).toBe(browserArtifactManifest.toolchain.proving_scheme)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('flags artifacts that exceed the byte limit or have invalid byte metadata', () => {
+    const oversizedReport = inspectProofWorkerArtifactMetadata({
+      format: 'harpocrates.zk-browser-artifact-manifest',
+      version: 1,
+      artifacts: [
+        {
+          path: 'frontend/public/noir/boundary_ok.json',
+          raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes,
+        },
+        {
+          path: 'frontend/public/noir/too_large.json',
+          raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes + 1,
+        },
+      ],
+    })
+
+    expect(oversizedReport.allArtifactsWithinLimit).toBe(false)
+    expect(oversizedReport.artifacts[0].withinArtifactLimit).toBe(true)
+    expect(oversizedReport.artifacts[1].withinArtifactLimit).toBe(false)
+
+    const missingSizeReport = inspectProofWorkerArtifactMetadata({
+      artifacts: [{ path: 'frontend/public/noir/missing_size.json' }],
+    })
+    expect(missingSizeReport.allArtifactsWithinLimit).toBe(false)
+    expect(missingSizeReport.artifacts[0].rawBytes).toBe(0)
   })
 
   it('rejects malformed artifact JSON as a dependency failure', async () => {

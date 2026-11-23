@@ -21,6 +21,8 @@ export type LineageTreeResult = {
   expiredCount: number
   disputedCount: number
   missingCount: number
+  incompleteCount: number
+  unavailableCount: number
   cycleDetected: boolean
 }
 
@@ -48,6 +50,8 @@ export async function verifyLineageTree(
   let expiredCount = 0
   let disputedCount = 0
   let missingCount = 0
+  let incompleteCount = 0
+  let unavailableCount = 0
   let cycleDetected = false
 
   async function walk(
@@ -69,6 +73,7 @@ export async function verifyLineageTree(
     }
 
     if (currentDepth > maxDepth) {
+      incompleteCount++
       return {
         digest,
         type: 'derivative',
@@ -83,7 +88,8 @@ export async function verifyLineageTree(
     try {
       lineage = await fetcher.getLineage(digest)
     } catch (err) {
-      // If fetching lineage fails with an error, record error
+      // If fetching lineage fails with an error, record unavailable dependency
+      unavailableCount++
       return {
         digest,
         type: 'derivative',
@@ -98,8 +104,15 @@ export async function verifyLineageTree(
       let status: ProofStatus
       try {
         status = await fetcher.getProofStatus(digest)
-      } catch {
-        status = 'missing'
+      } catch (err) {
+        unavailableCount++
+        return {
+          digest,
+          type: 'original',
+          depth: currentDepth,
+          parents: [],
+          error: `failed to query proof status: ${err instanceof Error ? err.message : String(err)}`,
+        }
       }
 
       if (status === 'revoked') revokedCount++
@@ -119,6 +132,7 @@ export async function verifyLineageTree(
     // It's a derivative
     const parents = lineage.parentProofIds ?? []
     if (parents.length > maxFanout) {
+      incompleteCount++
       return {
         digest,
         type: 'derivative',
@@ -161,7 +175,15 @@ export async function verifyLineageTree(
   }
   checkErrors(root)
 
-  const success = !hasError && !cycleDetected && revokedCount === 0 && expiredCount === 0 && disputedCount === 0 && missingCount === 0
+  const success =
+    !hasError &&
+    !cycleDetected &&
+    revokedCount === 0 &&
+    expiredCount === 0 &&
+    disputedCount === 0 &&
+    missingCount === 0 &&
+    incompleteCount === 0 &&
+    unavailableCount === 0
 
   let failureReason: string | undefined
   if (!success) {
@@ -171,6 +193,8 @@ export async function verifyLineageTree(
     if (expiredCount > 0) reasons.push(`${expiredCount} ancestor(s) expired`)
     if (disputedCount > 0) reasons.push(`${disputedCount} ancestor(s) disputed`)
     if (missingCount > 0) reasons.push(`${missingCount} ancestor(s) missing or unregistered`)
+    if (unavailableCount > 0) reasons.push(`${unavailableCount} verification lookup(s) unavailable`)
+    if (incompleteCount > 0) reasons.push(`${incompleteCount} lineage branch(es) incomplete: lineage tree contains errors or bound violations`)
     if (hasError && reasons.length === 0) reasons.push('lineage tree contains errors or bound violations')
     failureReason = reasons.join('; ')
   }
@@ -183,6 +207,8 @@ export async function verifyLineageTree(
     expiredCount,
     disputedCount,
     missingCount,
+    incompleteCount,
+    unavailableCount,
     cycleDetected,
   }
 }

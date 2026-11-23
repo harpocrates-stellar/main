@@ -25,6 +25,7 @@ DEFAULT_SCHEMA_PATH = (
 # Field element pattern: decimal or hex integer
 _DECIMAL_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
 _HEX_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
+SCOPE_IDENTIFIER_FIELDS = frozenset({"verifier_scope"})
 
 
 class ProverInputValidationError(ValueError):
@@ -93,6 +94,35 @@ def validate_field_element(
     return parsed
 
 
+def validate_scope_identifier(
+    val: Any,
+    field_name: str,
+    field_modulus: int,
+) -> int:
+    """Validate that a scope identifier uses exact canonical decimal encoding.
+
+    Rejects leading/trailing whitespace, leading zeros, hex/prefixed forms,
+    signs, booleans, and non-integer/non-string values so equivalent-looking
+    textual identifiers cannot produce ambiguous statements.
+    """
+    if isinstance(val, bool):
+        raise ProverInputValidationError("noncanonical_scope_identifier", field_name)
+    if isinstance(val, int):
+        if val < 0:
+            raise ProverInputValidationError("noncanonical_scope_identifier", field_name)
+        parsed = val
+    elif isinstance(val, str):
+        if not val or len(val) > 80 or not _DECIMAL_RE.match(val):
+            raise ProverInputValidationError("noncanonical_scope_identifier", field_name)
+        parsed = int(val, 10)
+    else:
+        raise ProverInputValidationError("noncanonical_scope_identifier", field_name)
+
+    if parsed >= field_modulus:
+        raise ProverInputValidationError("field_element_out_of_range", field_name)
+    return parsed
+
+
 def validate_prover_inputs(
     prover_data: Mapping[str, Any],
     schema: Mapping[str, Any] | None = None,
@@ -124,7 +154,9 @@ def validate_prover_inputs(
             raise ProverInputValidationError("missing_required_field", field)
 
     for field, val in prover_data.items():
-        if isinstance(val, (int, str)):
+        if field in SCOPE_IDENTIFIER_FIELDS:
+            validate_scope_identifier(val, field, field_modulus)
+        elif isinstance(val, (int, str)):
             validate_field_element(val, field, field_modulus)
 
 
