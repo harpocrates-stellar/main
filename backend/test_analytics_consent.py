@@ -9,6 +9,8 @@ Covers:
 - ConsentManager invalidation (existing and new accounts)
 - ConsentManager prune_expired respecting grace period and max_to_prune
 - ConsentManager generate_consent_token stability and account tag redaction
+- Policy revision recorded at collection time, and withdrawn consent distinguished
+  from data never collected
 """
 
 from __future__ import annotations
