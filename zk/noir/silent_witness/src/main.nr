@@ -26,6 +26,14 @@ fn main(
     domain_tag: pub Field,
     circuit_version: pub Field,
 ) {
+    // Validate circuit_version first so unsupported versions fail with a
+    // stable error category distinct from unsatisfied circuit constraints
+    // ("malformed") or domain mismatches ("unsupported").
+    assert(
+        circuit_version == CURRENT_CIRCUIT_VERSION as Field,
+        "circuit version mismatch",
+    );
+
     let scope_hash = std::hash::pedersen_hash([
         SCOPED_NULLIFIER_V1,
         verifier_scope,
@@ -51,15 +59,8 @@ fn main(
     assert(derived_root == credential_root, "malformed");
     assert(derived_nullifier == nullifier, "malformed");
 
-    // --- domain separation constraint ---
-    // Bind this proof to the Harpocrates protocol, circuit version 1, and
-    // the target network.
-    let expected_domain_tag = std::hash::pedersen_hash([
-        DOMAIN_PROTOCOL_FIELD,
-        DOMAIN_VERSION_FIELD,
-        DOMAIN_NETWORK_FIELD,
-    ]);
-    assert(domain_tag == expected_domain_tag, "unsupported");
+    // Domain version is independent of the envelope's circuit_version input.
+    assert(domain_tag == expected_domain_tag(), "unsupported");
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +383,126 @@ fn test_zero_domain_tag_rejected() {
     main(cs, ns, vhi, vlo, root, nul, scope, ep, 0, CURRENT_CIRCUIT_VERSION as Field);
 }
 
+// Independently derived with @aztec/bb.js 0.87.0, Pedersen hash index 0.
+#[test]
+fn test_protocol_domain_vectors() {
+    let supported = expected_domain_tag();
+    let wrong_protocol = std::hash::pedersen_hash([
+        DOMAIN_PROTOCOL_FIELD + 1,
+        DOMAIN_VERSION_FIELD,
+        DOMAIN_NETWORK_FIELD,
+    ]);
+    let wrong_version = std::hash::pedersen_hash([
+        DOMAIN_PROTOCOL_FIELD,
+        DOMAIN_VERSION_FIELD + 1,
+        DOMAIN_NETWORK_FIELD,
+    ]);
+    let wrong_network = std::hash::pedersen_hash([
+        DOMAIN_PROTOCOL_FIELD,
+        DOMAIN_VERSION_FIELD,
+        DOMAIN_NETWORK_FIELD + 1,
+    ]);
+
+    assert(supported == 0x1a73cc6eda5fc8454c3bf62ef9defb0e6e1f7d999ab6857a39692821856ad61d);
+    assert(wrong_protocol == 0x01d5e3d337c18d80777ac6785087144ff034cc5f1f703ff8b4ae0c2fbf263e67);
+    assert(wrong_version == 0x0172dc3f418a724af1c3778eb5b3a24bc5a96c4d4c320aba68a2fb29722359c4);
+    assert(wrong_network == 0x2ef92ae38e6abf555c6afd50e9f35b903f023727a3dfe2bd003073ad032fd2cc);
+    assert(supported != wrong_protocol);
+    assert(supported != wrong_version);
+    assert(supported != wrong_network);
+}
+
+#[test(should_fail_with = "unsupported")]
+fn test_wrong_protocol_domain_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 1;
+    let vlo: Field = 2;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    let wrong_tag: Field = 0x01d5e3d337c18d80777ac6785087144ff034cc5f1f703ff8b4ae0c2fbf263e67;
+    main(cs, ns, vhi, vlo, root, null, scope, ep, wrong_tag, CURRENT_CIRCUIT_VERSION as Field);
+}
+
+#[test(should_fail_with = "unsupported")]
+fn test_wrong_protocol_version_domain_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 1;
+    let vlo: Field = 2;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    let wrong_tag: Field = 0x0172dc3f418a724af1c3778eb5b3a24bc5a96c4d4c320aba68a2fb29722359c4;
+    main(cs, ns, vhi, vlo, root, null, scope, ep, wrong_tag, CURRENT_CIRCUIT_VERSION as Field);
+}
+
+#[test(should_fail_with = "unsupported")]
+fn test_wrong_network_domain_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 1;
+    let vlo: Field = 2;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    let wrong_tag: Field = 0x2ef92ae38e6abf555c6afd50e9f35b903f023727a3dfe2bd003073ad032fd2cc;
+    main(cs, ns, vhi, vlo, root, null, scope, ep, wrong_tag, CURRENT_CIRCUIT_VERSION as Field);
+}
+
+#[test]
+fn test_scoped_nullifier_vectors() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let scope_zero = compute_scoped_nullifier(cs, ns, 1, 2, 0, 0);
+    let scope_42 = compute_scoped_nullifier(cs, ns, 1, 2, 42, 0);
+
+    assert(scope_zero == 0x23b876d6275425fcc79864672ee8f33b5c5c8aea5ec8b7c8b923a5c6107a3950);
+    assert(scope_42 == 0x1d9f95ada531dc716ca8e29e50fc90cbabcda89f6d56cb3738f9ca0701275ab5);
+    assert(scope_zero != scope_42);
+
+    let root = std::hash::pedersen_hash([cs]);
+    main(
+        cs,
+        ns,
+        1,
+        2,
+        root,
+        scope_42,
+        42,
+        0,
+        expected_domain_tag(),
+        CURRENT_CIRCUIT_VERSION as Field,
+    );
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_nullifier_reuse_across_verifier_scope_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 1;
+    let vlo: Field = 2;
+    let root = std::hash::pedersen_hash([cs]);
+    let scope_zero_nullifier: Field = 0x23b876d6275425fcc79864672ee8f33b5c5c8aea5ec8b7c8b923a5c6107a3950;
+
+    main(
+        cs,
+        ns,
+        vhi,
+        vlo,
+        root,
+        scope_zero_nullifier,
+        42,
+        0,
+        expected_domain_tag(),
+        CURRENT_CIRCUIT_VERSION as Field,
+    );
+}
+
 // ============================================================
 // Negative -- evidence digest algorithm binding
 // ============================================================
@@ -445,6 +566,49 @@ fn test_circuit_version_downgrade() {
     let root = std::hash::pedersen_hash([cs]);
     let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
     main(cs, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 1);
+}
+
+// Zero circuit version is unsupported and must fail with the version mismatch category.
+#[test(should_fail_with = "circuit version mismatch")]
+fn test_circuit_version_zero_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 0);
+}
+
+// Future circuit version (v3) is unsupported by this v2 circuit.
+#[test(should_fail_with = "circuit version mismatch")]
+fn test_circuit_version_future_rejected() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(cs, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 3);
+}
+
+// Version mismatch must be reported before unsatisfied circuit constraints
+// ("malformed") when both an unsupported version and an invalid witness are supplied.
+#[test(should_fail_with = "circuit version mismatch")]
+fn test_circuit_version_mismatch_precedes_constraint_failure() {
+    let cs: Field = 12345;
+    let ns: Field = 67890;
+    let vhi: Field = 22685491128062564230891640495451214097;
+    let vlo: Field = 45370982256125128461783280990902428194;
+    let scope: Field = 0;
+    let ep: Field = 0;
+    let root = std::hash::pedersen_hash([cs]);
+    let null = compute_scoped_nullifier(cs, ns, vhi, vlo, scope, ep);
+    main(99999, ns, vhi, vlo, root, null, scope, ep, expected_domain_tag(), 1);
 }
 
 // ============================================================

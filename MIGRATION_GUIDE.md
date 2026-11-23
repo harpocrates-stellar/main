@@ -4,6 +4,23 @@
 **Date:** 2026-07-26  
 **Status:** Active
 
+## Additive proof revocation status (#1200)
+
+`get_proof_status_details(proof_id)` returns the existing verification status
+and an optional first effective revocation ledger sequence. Existing status
+queries and `ProofRecord` encodings remain compatible; no stored proof rewrite
+or verifier/circuit migration is required.
+
+The new `DataKey::ProofRevocationLedger(proof_id)` persistent row must be retained
+and restored with `DataKey::Proof(proof_id)`. Previously revoked proofs without
+this row return `Revoked` with `None`; retries must not invent a historical
+ledger. Operators must not treat `None` as evidence that a proof is valid.
+
+Rolling back the contract code leaves the additive row in storage for a later
+upgrade. Revocations performed by older code cannot record their effective
+ledger and therefore remain unknown after upgrading again. This change does
+not deploy or upgrade a live contract.
+
 ---
 
 ## 1. Overview

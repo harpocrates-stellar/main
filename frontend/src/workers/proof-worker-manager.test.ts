@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProofWorkerManager } from './proof-worker-manager'
+import { ProofWorkerManager, buildOfflineWorkerCapabilityReport } from './proof-worker-manager'
+import { PROOF_WORKER_MEMORY_LIMITS } from '../proofWorkerMemory'
 import { ProofWorkerLogger } from './proof-worker-logger'
 import type { ProofWorkerResponse } from './proof.worker.types'
 
@@ -312,6 +313,93 @@ describe('getStatus and getCSPHeaders', () => {
   })
 })
 
+describe('offline worker capability report', () => {
+  const capableGlobal = {
+    Worker: FakeWorker,
+    WebAssembly: function WebAssembly() {},
+    crypto: { subtle: {} },
+    BigInt,
+    ArrayBuffer,
+  } as unknown as typeof globalThis
+
+  it('inspects required browser features and configured artifact metadata offline without network or worker init', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('fetch must not be called during offline capability inspection')
+    })
+    const manager = createManager({ maxMemoryMB: 256, maxExecutionTimeMs: 45000 })
+
+    const report = manager.getOfflineCapabilityReport({ globalObj: capableGlobal })
+
+    expect(report.offline).toBe(true)
+    expect(report.ready).toBe(true)
+    expect(report.issues).toEqual([])
+    expect(report.browser.ok).toBe(true)
+    expect(report.browser.tier).toBe('supported')
+    expect(report.browser.missing).toEqual([])
+    expect(report.artifacts.publishedArtifactCount).toBeGreaterThan(0)
+    expect(report.artifacts.allArtifactsWithinLimit).toBe(true)
+    expect(report.csp).toEqual({
+      sandbox: true,
+      maxMemoryMB: 256,
+      maxExecutionTimeMs: 45000,
+      allowedOriginsCount: 2,
+    })
+    expect(internals(manager).isInitialized).toBe(false)
+    expect(internals(manager).worker).toBeNull()
+    expect(FakeWorker.live.size).toBe(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when required browser capabilities are missing', () => {
+    const missingCapabilitiesGlobal = {
+      BigInt,
+      ArrayBuffer,
+    } as unknown as typeof globalThis
+
+    const report = createManager().getOfflineCapabilityReport({
+      globalObj: missingCapabilitiesGlobal,
+    })
+
+    expect(report.offline).toBe(true)
+    expect(report.ready).toBe(false)
+    expect(report.browser.ok).toBe(false)
+    expect(report.browser.tier).toBe('unsupported')
+    expect(report.browser.missing).toEqual(['Worker', 'moduleWorkerType', 'WebAssembly', 'SubtleCrypto'])
+    expect(report.issues).toContain(report.browser.reason)
+  })
+
+  it('fails closed when configured artifact metadata is empty or exceeds limits', () => {
+    const emptyManifestReport = buildOfflineWorkerCapabilityReport({
+      globalObj: capableGlobal,
+      manifest: { format: 'test', version: 1, artifacts: [] },
+    })
+    expect(emptyManifestReport.ready).toBe(false)
+    expect(emptyManifestReport.issues).toContain(
+      'No published proving artifacts configured in manifest.',
+    )
+
+    const oversizedArtifactReport = buildOfflineWorkerCapabilityReport({
+      globalObj: capableGlobal,
+      cspConfig: { maxMemoryMB: 1 },
+      manifest: {
+        format: 'test',
+        version: 1,
+        artifacts: [
+          {
+            path: 'frontend/public/noir/oversized.json',
+            raw_bytes: PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes + 1,
+          },
+        ],
+      },
+    })
+    expect(oversizedArtifactReport.ready).toBe(false)
+    expect(oversizedArtifactReport.artifacts.allArtifactsWithinLimit).toBe(false)
+    expect(oversizedArtifactReport.issues).toContain(
+      'One or more configured proving artifacts exceed the worker artifact byte limit.',
+    )
+  })
+})
+
 describe('destroy', () => {
   it('terminates the worker, clears handlers and resets initialization', async () => {
     vi.useFakeTimers()
@@ -342,5 +430,242 @@ describe('destroy', () => {
     expect(() => manager.destroy()).not.toThrow()
     await manager.init()
     expect(internals(manager).isInitialized).toBe(true)
+  })
+})
+
+
+describe('protocol version compatibility', () => {
+  it('accepts the exact supported protocol version and rejects mismatched or non-integer versions without fallback parsing', async () => {
+    const {
+      PROOF_WORKER_PROTOCOL_VERSION,
+      validateWorkerProtocolVersion,
+    } = await import('./proof-worker-manager')
+
+    expect(validateWorkerProtocolVersion(PROOF_WORKER_PROTOCOL_VERSION)).toEqual({
+      compatible: true,
+      protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
+      reloadRequired: false,
+    })
+
+    // Mismatched integer versions (older/newer)
+    expect(validateWorkerProtocolVersion(PROOF_WORKER_PROTOCOL_VERSION + 1)).toMatchObject({
+      compatible: false,
+      code: 'PROTOCOL_VERSION_MISMATCH',
+      expectedVersion: PROOF_WORKER_PROTOCOL_VERSION,
+      receivedVersion: PROOF_WORKER_PROTOCOL_VERSION + 1,
+      reloadRequired: true,
+      privacySafe: true,
+    })
+
+    // Boundary & malformed inputs: must fail closed without coercing strings/floats/zero
+    for (const invalid of [undefined, null, 0, -1, 1.5, Number.NaN, '1', { version: 1 }]) {
+      expect(validateWorkerProtocolVersion(invalid)).toMatchObject({
+        compatible: false,
+        code: 'PROTOCOL_VERSION_MISMATCH',
+        expectedVersion: PROOF_WORKER_PROTOCOL_VERSION,
+        receivedVersion: null,
+        reloadRequired: true,
+        privacySafe: true,
+      })
+    }
+  })
+
+  it('fails before accepting transferred buffers and returns a reload-required response on mismatch', async () => {
+    vi.useFakeTimers()
+    const { PROOF_WORKER_PROTOCOL_VERSION } = await import('./proof-worker-manager')
+    const manager = createManager()
+    await manager.init()
+
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 1000)
+    const [id] = [...internals(manager).messageHandlers.keys()]
+    const acceptBuffers = vi.fn(() => [new ArrayBuffer(16)])
+
+    const result = manager.handleWorkerMessage(
+      {
+        protocolVersion: PROOF_WORKER_PROTOCOL_VERSION + 1,
+        type: 'success',
+        id,
+        data: { valid: true, result: { evidence: EVIDENCE, proof: PROOF } },
+      },
+      acceptBuffers,
+    )
+
+    expect(acceptBuffers).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      type: 'error',
+      id,
+      protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
+      error: {
+        code: 'PROTOCOL_VERSION_MISMATCH',
+        privacySafe: true,
+        reloadRequired: true,
+      },
+    })
+    expect(result.error?.message).toContain('Reload required')
+    await expect(pending).resolves.toEqual(result)
+    expect(internals(manager).messageHandlers.size).toBe(0)
+
+    const text = loggedText()
+    expect(text).not.toContain(EVIDENCE)
+    expect(text).not.toContain(PROOF)
+  })
+
+  it('rejects stringified or missing protocol versions without unsafe fallback parsing or accepting buffers', async () => {
+    const manager = createManager()
+    await manager.init()
+    const acceptBuffers = vi.fn(() => [new ArrayBuffer(8)])
+
+    const missing = manager.handleWorkerMessage({ type: 'success', id: 'req-1' }, acceptBuffers)
+    const stringified = manager.handleWorkerMessage(
+      { protocolVersion: String(manager.getProtocolVersion()), type: 'success', id: 'req-2' },
+      acceptBuffers,
+    )
+    const primitive = manager.handleWorkerMessage('not-an-object', acceptBuffers)
+
+    expect(acceptBuffers).not.toHaveBeenCalled()
+    for (const res of [missing, stringified, primitive]) {
+      expect(res.type).toBe('error')
+      expect(res.error?.code).toBe('PROTOCOL_VERSION_MISMATCH')
+      expect(res.error?.reloadRequired).toBe(true)
+      expect(res.error?.privacySafe).toBe(true)
+    }
+  })
+
+  it('accepts transferred buffers and settles normally when protocolVersion matches', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 1000)
+    const [id] = [...internals(manager).messageHandlers.keys()]
+    const buffer = new ArrayBuffer(16)
+    const acceptBuffers = vi.fn(() => [buffer])
+
+    const response: ProofWorkerResponse = {
+      protocolVersion: manager.getProtocolVersion(),
+      type: 'success',
+      id,
+      data: { valid: true },
+    }
+    const handled = manager.handleWorkerMessage(response, acceptBuffers)
+
+    expect(acceptBuffers).toHaveBeenCalledTimes(1)
+    expect(handled).toEqual(response)
+    await expect(pending).resolves.toEqual(response)
+    expect(internals(manager).messageHandlers.size).toBe(0)
+  })
+})
+
+
+describe('per-operation proof memory accounting', () => {
+  it('accounts allocated and released buffer classes across verify lifecycle without exposing witness contents', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 1000)
+    const [id] = [...internals(manager).messageHandlers.keys()]
+
+    const activeReport = manager.getOperationMemoryReport(id)
+    expect(activeReport).toBeDefined()
+    expect(activeReport?.status).toBe('active')
+    expect(activeReport?.precision).toBe('operation-buffer-estimate')
+    expect(activeReport?.browserWidePrecision).toBe(false)
+    expect(activeReport?.classes.witness.allocatedCount).toBe(1)
+    expect(activeReport?.classes.witness.activeBytes).toBe(new TextEncoder().encode(EVIDENCE).byteLength)
+    expect(activeReport?.classes.proof.allocatedCount).toBe(1)
+    expect(activeReport?.classes.publicInput.allocatedCount).toBe(1)
+    expect(activeReport?.totals.releasedBytes).toBe(0)
+
+    const response: ProofWorkerResponse = {
+      protocolVersion: manager.getProtocolVersion(),
+      type: 'success',
+      id,
+      data: { valid: true },
+    }
+    manager.handleWorkerMessage(response, () => [new ArrayBuffer(32)])
+    await expect(pending).resolves.toEqual(response)
+
+    const completedReport = manager.getOperationMemoryReport(id)
+    expect(completedReport?.status).toBe('completed')
+    expect(completedReport?.classes.proof.allocatedCount).toBe(2)
+    expect(completedReport?.classes.proof.releasedCount).toBe(2)
+    expect(completedReport?.totals.activeBytes).toBe(0)
+    expect(completedReport?.totals.allocatedBytes).toBe(completedReport?.totals.releasedBytes)
+
+    const serialized = JSON.stringify(completedReport)
+    expect(serialized).not.toContain(EVIDENCE)
+    expect(serialized).not.toContain(PROOF)
+    expect(serialized).not.toContain(CONTRACT)
+  })
+
+  it('releases buffers on timeout, protocol mismatch failure, and manager destroy', async () => {
+    vi.useFakeTimers()
+    const manager = createManager()
+    await manager.init()
+
+    // Timeout path
+    const timedOut = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 100)
+    const [timeoutId] = [...internals(manager).messageHandlers.keys()]
+    const timeoutAssertion = expect(timedOut).rejects.toThrow('Verification timed out')
+    await vi.advanceTimersByTimeAsync(100)
+    await timeoutAssertion
+    expect(manager.getOperationMemoryReport(timeoutId)).toMatchObject({
+      status: 'timed_out',
+      totals: { activeBytes: 0 },
+    })
+
+    // Protocol mismatch path (no transferred buffers allocated)
+    const mismatched = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 500)
+    const [mismatchId] = [...internals(manager).messageHandlers.keys()]
+    manager.handleWorkerMessage(
+      { protocolVersion: manager.getProtocolVersion() + 1, type: 'success', id: mismatchId },
+      () => [new ArrayBuffer(64)],
+    )
+    await mismatched
+    const mismatchReport = manager.getOperationMemoryReport(mismatchId)
+    expect(mismatchReport?.status).toBe('failed')
+    expect(mismatchReport?.classes.proof.allocatedCount).toBe(1)
+    expect(mismatchReport?.totals.activeBytes).toBe(0)
+
+    // Destroy path
+    const cancelled = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 500)
+    const [cancelId] = [...internals(manager).messageHandlers.keys()]
+    cancelled.catch(() => {})
+    manager.destroy()
+    expect(manager.getOperationMemoryReport(cancelId)).toMatchObject({
+      status: 'cancelled',
+      totals: { activeBytes: 0 },
+    })
+  })
+
+  it('bounds tracked operation history and rejects oversized inputs fail-closed', async () => {
+    vi.useFakeTimers()
+    const { PROOF_MEMORY_ACCOUNTING_LIMITS } = await import('./proof-worker-manager')
+    const { PROOF_WORKER_MEMORY_LIMITS } = await import('../proofWorkerMemory')
+    const manager = createManager()
+    await manager.init()
+
+    const totalOps = PROOF_MEMORY_ACCOUNTING_LIMITS.maxTrackedOperations + 5
+    for (let i = 0; i < totalOps; i++) {
+      const pending = manager.verifyProof(EVIDENCE, PROOF, CONTRACT, 50)
+      const [id] = [...internals(manager).messageHandlers.keys()]
+      manager.handleWorkerMessage({
+        protocolVersion: manager.getProtocolVersion(),
+        type: 'success',
+        id,
+        data: { valid: true },
+      })
+      await pending
+    }
+
+    const snapshot = manager.getMemoryAccountingSnapshot()
+    expect(snapshot.length).toBe(PROOF_MEMORY_ACCOUNTING_LIMITS.maxTrackedOperations)
+
+    const oversizedWitness = 'x'.repeat(PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes + 1)
+    await expect(
+      manager.verifyProof(oversizedWitness, PROOF, CONTRACT, 50),
+    ).rejects.toThrow('proof_worker_memory_exceeded')
+    expect(internals(manager).messageHandlers.size).toBe(0)
   })
 })

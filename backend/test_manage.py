@@ -141,17 +141,27 @@ def test_retention_dry_run_counts_without_deleting(mock_count, mock_purge, capsy
     assert code == manage.EXIT_OK
     assert payload["dry_run"] is True
     assert payload["expired"] == 7
+    assert "upload_sessions" in payload
+    assert "expired" in payload["upload_sessions"]
+    assert "reclaimable_bytes" in payload["upload_sessions"]
     mock_purge.assert_not_called()
 
 
+@patch("streaming_upload.purge_expired_upload_sessions", return_value=(2, 1024, 1))
 @patch("db.purge_expired_events")
-def test_retention_run_purges_until_short_batch(mock_purge, capsys):
+def test_retention_run_purges_until_short_batch(mock_purge, mock_session_purge, capsys):
     mock_purge.side_effect = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
-    code, payload = run_json(capsys, "retention", "--run", "--batch-size", "2")
+    code, payload = run_json(capsys, "retention", "--run", "--batch-size", "2", "--session-limit", "50")
     assert code == manage.EXIT_OK
     assert payload["deleted"] == 3
     assert payload["batches"] == 2
+    assert payload["upload_sessions"] == {
+        "deleted": 2,
+        "reclaimed_bytes": 1024,
+        "active_skipped": 1,
+    }
     assert all(c.kwargs == {"batch_size": 2} for c in mock_purge.call_args_list)
+    mock_session_purge.assert_called_once_with(limit=50)
 
 
 def test_retention_requires_a_mode(capsys):

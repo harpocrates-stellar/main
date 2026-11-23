@@ -285,6 +285,27 @@ Verification requires:
 
 Time attestations support offline verification:
 
+### Timestamp-Chain Validation Report
+
+An offline timestamp-chain validation report lists each attestation dependency and its bounded trust result. Each dependency is reported separately so that an invalid signature is never conflated with trust material that is merely unavailable:
+
+- `evidence_digest_binding`: digest binding to the evidence package.
+- `claimed_time`: capture-device claim (low assurance, user-controlled).
+- `observed_time`: backend observation (medium assurance).
+- `stellar_anchor`: ledger inclusion (verified against a local ledger archive).
+- `rfc3161_anchor`: TSA token (verified against the configured local trust store).
+
+Each dependency resolves to one of these states:
+
+- `valid`: the dependency was present and verified.
+- `invalid`: the dependency was present but failed verification (for example, an invalid signature or a digest mismatch). Invalid signatures are reported as `invalid`, never as `unavailable`.
+- `unavailable`: the trust material needed to verify the dependency (ledger archive, trust store, certificate chain) is missing or cannot be loaded offline. Unavailable material is reported as `unavailable`, never as `invalid`.
+- `absent`: the attestation does not include this dependency.
+
+The report is computed purely from the stored attestation and locally provided trust material. Evidence privacy is preserved: the report contains only stable status codes and dependency labels, never raw tokens, certificates, media or device identifiers. Verification fails closed: a dependency that cannot be proven valid is never reported as `valid`.
+
+An offline timestamp-chain validation report is produced for every attestation and includes the overall trust result, derived from the strongest dependency that is `valid`. An `invalid` dependency lowers the overall result regardless of other valid dependencies.
+
 1. Parse attestation from stored JSONB
 2. Verify digest binding locally
 3. Check Stellar anchor against local ledger archive

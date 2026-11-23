@@ -29,6 +29,8 @@ Each issuer publishes a versioned manifest (`protocol: harpocrates-issuer-key-tr
 
 Canonical encoding is deterministic JSON (`sort_keys`, compact separators). Digest = SHA-256 of the unsigned body.
 
+Manifest `version` must be the integer `1`; booleans and non-integer values are rejected rather than coerced. An optional `criticalExtensions` list must be empty because manifest version 1 understands no extensions. Any non-empty list, or a non-list value, raises `TransparencyError` instead of being ignored, so an issuer cannot make a client accept a manifest whose required semantics it does not implement. Unknown top-level manifest fields remain forward-compatible and are ignored.
+
 ## Append-only lifecycle events
 
 Event types: `activation`, `rotation`, `compromise`, `retirement`, `checkpoint`.
@@ -47,6 +49,15 @@ A checkpoint binds:
 
 Clients detect **split views** (diverging heads at the same count), **rollback** (shrinking `eventCount` after a higher head was observed), **stale checkpoints**, **broken rotation links**, **conflicting manifests**, and **compromised keys**.
 
+## Portable consistency proof bundles
+
+A `ConsistencyProofBundle` (`protocol: harpocrates-issuer-key-transparency`, `version: 1`) binds an `earlierCheckpoint` and `laterCheckpoint` to the ordered `interveningEvents` slice between them.
+
+- Build from an authoritative directory with `build_consistency_proof_bundle(directory, earlier, later)` (or `directory.make_consistency_proof_bundle(earlier, later)`).
+- Serialize/deserialize canonically with `bundle.to_json()` / `ConsistencyProofBundle.from_json(raw)` and hash with `consistency_proof_bundle_hash(bundle)`.
+- Verify continuity offline without trusting a live directory response via `verify_consistency_proof_bundle(bundle, expected_organization_identity_hash=..., expected_earlier_checkpoint=...)` or fail-closed `require_valid_consistency_proof_bundle(...)`.
+- Verification confirms non-regression (`detect_rollback` and checkpoint timestamps), contiguous monotonic sequences, `previousEventHash` chaining, and `advance_tree_head(earlier.tree_head_hash, intervening_events) == later.tree_head_hash`.
+
 ## Caching & freshness (fail-closed)
 
 | Mode | Max age | Behavior |
@@ -63,6 +74,22 @@ Key rotation sets `validUntil` on the predecessor. Signatures whose timestamp fa
 Use `explain_historical_key_validity(directory, key_id, signature_timestamp, max_events=MAX_EXPLANATION_EVENTS)` to obtain a bounded `HistoricalKeyValidityExplanation` record. It reuses `key_valid_for_historical_signature` and `key_was_compromised_at`, attaches a stable `HistoricalValidityReason` code (`valid_active_key`, `valid_before_rotation`, `valid_before_retirement`, `valid_before_compromise`, `unknown_key`, `before_activation`, `rotated_before_signature_time`, `retired_before_signature_time`, `compromised_at_signature_time`, `expired_before_signature_time`), and includes up to `MAX_EXPLANATION_EVENTS` (`16`) public `LifecycleEventRef` entries (capped at `MAX_EXPLANATION_BYTES = 4096` in canonical JSON). Private evidence identifiers, media digests, and raw organization fields are never included in the explanation record.
 
 The registry expresses the same window on chain: `rotate_issuer` retires the predecessor key immediately (it can no longer sign new seals, directly or through a delegation) and records a bounded `grace_expires_at` during which `is_issuer_verifiable(predecessor)` keeps pre-rotation evidence verifiable. The window lapses on its own against ledger time and `finalize_issuer_rotation` settles the record. Because the on-chain window is capped by `MAX_ISSUER_ROTATION_GRACE_SECS`, a retired key’s manifest `validUntil` should not be set beyond that bound; `revoke_issuer` and `add_issuer` clear the on-chain record, so a compromised or re-onboarded key is never covered by a stale grace window.
+
+## Trust changes across verification runs
+
+Use `assess_issuer_trust(directory, key_id, ...)` to evaluate an issuer key for a single verification run and `compare_issuer_trust(previous, current, ...)` to explain why trust changed between runs without collapsing distinct causes into a generic invalid-issuer error.
+
+- **States (`TrustState`)**: `trusted`, `historically_valid`, `untrusted`, `stale`.
+- **Reasons (`TrustChangeReason`)**:
+  - `unchanged` — trust state and reason did not change between runs.
+  - `activated` — key is active and within its validity window.
+  - `key_rotated` — key was rotated to a successor (`successorKeyId` populated); pre-rotation historical signatures remain `historically_valid`.
+  - `key_expired` — key or manifest `validUntil` window elapsed.
+  - `key_retired` — key was explicitly retired (optional opaque `reasonHash`).
+  - `key_compromised` — key was marked compromised (optional opaque `reasonHash`); pre-compromise signatures remain `historically_valid` while surfacing compromise status.
+  - `stale_directory` — cached checkpoint exceeded its standard or high-assurance freshness window (fail-closed `stale` state).
+  - `directory_inconsistent` — checkpoint consistency check or cross-run rollback/equivocation check failed.
+  - `unknown_key` / `not_yet_valid` — key missing from directory or signature predates `validFrom`.
 
 ## Operational procedures
 

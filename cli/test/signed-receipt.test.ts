@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   decodeReceiptFromQr,
@@ -5,8 +7,33 @@ import {
   signVerificationReceipt,
   serializeVerificationReceipt,
   verifyVerificationReceipt,
+  type SignedVerificationReceipt,
   type VerificationReceiptInput,
 } from '../src/signed-receipt.js'
+
+type InteropFixture = {
+  fixtureVersion: number
+  keys: Record<string, JsonWebKey>
+  keyValidity: Record<string, { notBefore?: string; notAfter?: string }>
+  verificationNow: string
+  validVectors: Array<{
+    name: string
+    unsignedInput: VerificationReceiptInput
+    canonicalPayload: string
+    signedReceipt: SignedVerificationReceipt
+    serializedReceipt: string
+    qrPayload: string
+  }>
+  mutatedStatements: Array<{
+    name: string
+    receipt: SignedVerificationReceipt
+    expectedReasonPattern: string
+  }>
+}
+
+const interopFixture: InteropFixture = JSON.parse(
+  readFileSync(resolve(process.cwd(), '../devx/fixtures/receipt-interop/vectors.json'), 'utf8'),
+)
 
 const input: VerificationReceiptInput = {
   result: 'verified',
@@ -60,4 +87,36 @@ describe('signed verification receipts', () => {
       now: new Date('2026-07-26T12:00:00.000Z'),
     })).resolves.toMatchObject({ valid: false, reason: expect.stringMatching(/stale/) })
   })
+})
+
+describe('backend and CLI receipt interoperability fixtures', () => {
+  for (const vector of interopFixture.validVectors) {
+    it(`parses, encodes, and verifies shared vector: ${vector.name}`, async () => {
+      expect(serializeVerificationReceipt(vector.signedReceipt)).toBe(vector.serializedReceipt)
+      expect(encodeReceiptForQr(vector.signedReceipt)).toBe(vector.qrPayload)
+      expect(decodeReceiptFromQr(vector.qrPayload)).toEqual(vector.signedReceipt)
+
+      await expect(verifyVerificationReceipt(vector.signedReceipt, {
+        keys: interopFixture.keys,
+        expectedNetworkPassphrase: vector.unsignedInput.networkPassphrase,
+        expectedProofId: vector.unsignedInput.proofId,
+        keyValidity: interopFixture.keyValidity,
+        now: new Date(interopFixture.verificationNow),
+      })).resolves.toEqual({ valid: true, receipt: vector.signedReceipt })
+    })
+  }
+
+  for (const mutated of interopFixture.mutatedStatements) {
+    it(`explicitly rejects mutated statement: ${mutated.name}`, async () => {
+      const result = await verifyVerificationReceipt(mutated.receipt, {
+        keys: interopFixture.keys,
+        keyValidity: interopFixture.keyValidity,
+        now: new Date(interopFixture.verificationNow),
+      })
+      expect(result.valid).toBe(false)
+      if (!result.valid) {
+        expect(result.reason).toMatch(new RegExp(mutated.expectedReasonPattern, 'i'))
+      }
+    })
+  }
 })

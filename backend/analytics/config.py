@@ -124,6 +124,35 @@ class AnalyticsFeatureFlags:
     export_safety_validation_enabled: bool = True
     operational_signals_enabled: bool = True
     middleware_auto_instrument: bool = True
+    dimension_validation_enabled: bool = True
+
+
+@dataclass
+class DimensionConfig:
+    enabled: bool = True
+    reject_hashes: bool = True
+    reject_filenames: bool = True
+    allowed_vocabulary: Tuple[str, ...] = (
+        "endpoint",
+        "method",
+        "status",
+        "error_code",
+        "category",
+        "operation",
+        "retry_attempt",
+        "source",
+        "version",
+        "schema",
+        "rollout",
+        "host",
+        "service",
+        "error_type",
+        "lifecycle",
+        "event_name",
+        "status_code",
+        "environment",
+        "domain",
+    )
 
 
 @dataclass
@@ -146,6 +175,7 @@ class AnalyticsConfig:
     export: ExportConfig = field(default_factory=ExportConfig)
     persistence: AnalyticsPersistenceConfig = field(default_factory=AnalyticsPersistenceConfig)
     features: AnalyticsFeatureFlags = field(default_factory=AnalyticsFeatureFlags)
+    dimensions: DimensionConfig = field(default_factory=DimensionConfig)
     rollout: AnalyticsRolloutConfig = field(default_factory=AnalyticsRolloutConfig)
     crypto_domains: Tuple[CryptoDomainVersion, ...] = (
         REDACTION_DOMAIN,
@@ -255,6 +285,12 @@ def load_analytics_config(**overrides) -> AnalyticsConfig:
             raw_export_token_required, config.export.export_token_required_in_production
         )
 
+    raw_dimension_validation = os.getenv("ANALYTICS_DIMENSION_VALIDATION_ENABLED")
+    if raw_dimension_validation is not None:
+        config.features.dimension_validation_enabled = _safe_bool(
+            raw_dimension_validation, config.features.dimension_validation_enabled
+        )
+
     for key, value in overrides.items():
         if key == "limits" and isinstance(value, dict):
             for k, v in value.items():
@@ -276,6 +312,10 @@ def load_analytics_config(**overrides) -> AnalyticsConfig:
             for k, v in value.items():
                 if hasattr(config.features, k):
                     setattr(config.features, k, v)
+        elif key == "dimensions" and isinstance(value, dict):
+            for k, v in value.items():
+                if hasattr(config.dimensions, k):
+                    setattr(config.dimensions, k, v)
         elif key == "rollout" and isinstance(value, dict):
             for k, v in value.items():
                 if hasattr(config.rollout, k):

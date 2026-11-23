@@ -29,6 +29,14 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+## Receipt Signing-Key History
+
+`GET /api/receipts/signing-keys` returns the public receipt signing-key history
+as a bounded, read-only list. Each entry carries the public key, its
+`valid_from` and `valid_until` validity interval, and a key identifier. The
+endpoint never exposes or loads private signing material; signing remains
+owned by the frontend.
+
 
 ## Configuration
 
@@ -102,9 +110,12 @@ This section documents all environment variables that can be used to configure t
 | SECURITY_HEADERS_ENABLED | boolean | true |  | Enable or disable security headers (X-Content-Type-Options, etc.) | no | no |
 | TRUSTED_PROXIES | list of strings |  |  | Comma-separated list of trusted proxy CIDR ranges for IP address resolution | no | no |
 | UPLOAD_CHUNK_BYTES | string |  |  | Size of upload chunks in bytes (clamped between 4096 and 1048576) | no | no |
+| UPLOAD_SESSION_TTL_SECONDS | integer | 3600 | must be positive | Time-to-live for upload sessions in seconds | no | no |
 | VERIFIER_CACHE_MAX_SIZE | integer | 10000 | must be positive | Maximum number of entries in the verifier proof cache | no | no |
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
+| WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT | integer | 2 | must be positive | Maximum concurrent expensive video jobs (`embed`, `extract`) leased per tenant | no | no |
+| WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT | integer | 10 | must be positive | Maximum queued (pending) expensive video jobs (`embed`, `extract`) per tenant | no | no |
 
 ## Chain Indexer Backpressure
 
@@ -119,6 +130,64 @@ cursor at the last fully processed page; the worker backs off and retries from
 that cursor. Replayed projections are idempotent on `(tx_hash, event_index)`,
 so rows committed before a failed page retry are treated as duplicates. No
 additional configuration or database migration is required.
+
+## Upload Admission Decision Schema
+
+Admission-controlled upload routes return a stable decision payload when they
+reject work. The legacy top-level `reason` (`identity_limit`, `queue_full`, or
+`timeout`) is retained for existing callers; new callers should use
+`error.admission`.
+
+| Stable code | Stable reason | HTTP | Meaning |
+| --- | --- | --- | --- |
+| `ADMISSION_IDENTITY_QUOTA` | `identity_quota` | 429 | The caller has reached its configured concurrent-upload quota. |
+| `ADMISSION_QUEUE_SATURATION` | `queue_saturation` | 503 | The bounded admission queue is full. |
+| `ADMISSION_PROCESSING_CAPACITY` | `processing_capacity` | 503 | A processing slot did not become available before the admission timeout. |
+
+Rejections use the standard error envelope plus an `admission` object:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "ADMISSION_QUEUE_SATURATION",
+    "message": "upload admission queue is full",
+    "request_id": "a1b2c3d4-...",
+    "admission": {
+      "code": "ADMISSION_QUEUE_SATURATION",
+      "reason": "queue_saturation",
+      "message": "upload admission queue is full",
+      "retryAfterSeconds": 10,
+      "retryable": true
+    }
+  },
+  "reason": "queue_full",
+  "admissionReason": "queue_saturation",
+  "retryAfterSeconds": 10
+}
+```
+
+`retryAfterSeconds` is bounded to 1–60 seconds and always matches the
+`Retry-After` response header. Messages never include client identity, queue
+depth, concurrency counters, or other callers' state. No new environment
+variables are required.
+
+## Upload Session Cancellation
+
+Upload sessions created by `POST /api/stego/upload-session` can be cancelled with
+`POST /api/stego/upload-session/<session_id>/cancel`. Cancellation is accepted
+while the session is queued, receiving chunks, or committing; terminal sessions
+return `409 UPLOAD_NOT_CANCELLABLE`, and unknown sessions return `404`.
+
+A queued admission ticket is released immediately. An active ticket moves to the
+`cancelling` state and is released when the in-flight chunk or commit request
+finishes. Cancellation removes the session's temporary directory only after all
+active writers stop, so a concurrent chunk never loses bytes mid-write. Further
+chunk, commit, or bounded-hash work on the cancelled session returns
+`409 UPLOAD_CANCELLED`.
+
+No additional environment variables are required; cancellation reuses the
+existing admission and upload settings.
 
 ## Upload and Verification Load Test
 
@@ -156,6 +225,27 @@ stale heartbeats via `get_job_heartbeat_state` and `reclaim_stale_jobs`.
 - Stale heartbeats are reported independently of proof validity: unverified or
   incomplete worker output is never classified as a cryptographic failure, and
   private job payloads are never included in reclaimed-job summaries or logs.
+
+## Per-Tenant Fair Scheduling for Expensive Video Jobs
+
+Expensive video jobs (`embed`, `extract`) are bounded and fairly scheduled per
+tenant in `backend/db.py` and `backend/worker.py`:
+
+- **Per-tenant queue bound**: `enqueue_job` enforces
+  `WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT` (default: `10`, must be positive)
+  for pending `embed`/`extract` jobs per `tenant_id`, raising
+  `TenantQueueLimitExceededError` when exceeded without affecting other tenants
+  or non-video jobs (`verify_tx`, `silent_witness`).
+- **Per-tenant concurrency bound & fair leasing**: `lease_job` enforces
+  `WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT` (default: `2`, must be
+  positive) for running `embed`/`extract` jobs per tenant and schedules
+  eligible tenants fairly (fewest running video jobs first, then
+  least-recently-leased tenant, then FIFO within a tenant).
+- **Independent deadlines & admission controls**: Each job preserves its own
+  optional `deadline_at` / `deadline_seconds` independently of other tenants'
+  delays and existing HTTP `AdmissionController` limits. Expired pending jobs
+  are failed on lease without consuming a tenant concurrency slot, and running
+  jobs that exceed their independent deadline are failed by the worker loop.
 
 ## Noir Developer Worker
 
@@ -217,23 +307,18 @@ new numbered migration instead.
 python manage.py migrate                    # apply pending migrations
 python manage.py migrate --check            # verify checksums, list pending; applies nothing
 python manage.py drift                      # compare live schema with the expected schema
-python manage.py retention --dry-run        # count expired, non-held proof events
-python manage.py retention --run            # purge them (batch: HARPOCRATES_RETENTION_BATCH_SIZE)
-python manage.py retention --run --batch-size 500
+python manage.py retention --dry-run        # preview expired proof events and upload sessions
+python manage.py retention --run            # purge expired proof events and upload sessions
+python manage.py retention --run --batch-size 500 --session-limit 1000
 python manage.py reconcile --limit 25       # reconcile pending registration txs (max 50)
 python manage.py projection-reconcile --start-ledger 1000 --end-ledger 1100 --contract-id C... --limit 1000
 python manage.py --json drift               # machine-readable JSON output
 ```
 
-`projection-reconcile` is read-only. It compares recognized lifecycle events
-in the inclusive ledger range with `proof_events` rows keyed by
-`(tx_hash, event_index)`, reporting absent projections separately from rows
-whose projected fields conflict with chain data. The range is limited to
-10,000 ledgers and the event limit defaults to 1,000 (maximum 10,000); an
-exceeded event limit returns an incomplete report rather than a clean result.
-Exit code `1` indicates a discrepancy or incomplete range. The command needs
-`DATABASE_URL` and `--contract-id`; the RPC endpoint can be selected with
-`--rpc-url`, `SOROBAN_RPC_URL`, or `STELLAR_RPC_URL`.
+`retention --dry-run` and `retention --run` evaluate both database proof events and disk-backed streaming upload sessions:
+- `--session-limit` bounds upload session directory scanning (default: 500).
+- Upload session preview reports `total_sessions_scanned`, `expired_sessions_count`, `active_worker_sessions_skipped`, `reclaimable_bytes`, `bounded_limit_reached`, and per-session previews.
+- Sessions actively in use by workers (`AdmissionController`) are strictly preserved and skipped.
 
 Exit codes:
 
@@ -275,6 +360,7 @@ behaviour. Temporary state directories are deleted automatically.
 
 - Metric labels strictly record generic HTTP attributes: HTTP `method`, parameterized route rule `endpoint` (e.g., `/api/proofs/by-video/<video_hash>`), and HTTP `status`.
 - Filenames, video hashes, metadata hashes, wallet addresses, proof payload data, and secret seeds are strictly excluded.
+- Analytics telemetry dimensions are strictly validated against an allowed vocabulary (`ALLOWED_DIMENSION_VOCABULARY`) prior to aggregation; raw filenames and cryptographic hashes are rejected from becoming metric labels.
 - Upload sizes are recorded in bounded histogram buckets.
 
 ### Endpoint Protection
@@ -359,6 +445,8 @@ HARPOCRATES_RELEASE_ID=harpocrates-1.0.0
 HARPOCRATES_RELEASE_NETWORK=testnet
 STELLAR_NETWORK_PASSPHRASE=
 HARPOCRATES_REGISTRATION_RECONCILE_DIR=/tmp/harpocrates-registration-reconcile
+HARPOCRATES_STORAGE_DIR=/tmp/harpocrates_jobs
+MASTER_ENCRYPTION_KEY=
 DATABASE_URL=postgresql://...
 VERIFIER_CACHE_MAX_SIZE=10000
 VERIFIER_CACHE_POSITIVE_TTL_SECONDS=86400.0
@@ -428,10 +516,26 @@ store = CheckpointStore(deployment=deployment)
 checkpoint = store.record(1_250)
 ```
 
+## Encrypted Blob Collection
+
+`evidence_storage.py` never removes an encrypted blob file until the metadata
+transaction has committed. `collect_unreferenced_blob()` locks the blob row,
+checks for committed `tenant_blob_refs`, deletes the `blobs` row, commits, and
+only then unlinks the ciphertext. A failed reference check or metadata deletion
+leaves the file in place and raises `StorageMetadataRetryableError` after a
+bounded number of attempts.
+
+`record_tenant_ref()` takes the same blob-row lock before writing a reference,
+so concurrent collection cannot classify an in-flight reference as unreferenced.
+Both operations reuse the existing `DB_CONNECT_MAX_ATTEMPTS`,
+`DB_CONNECT_DEADLINE_SECONDS`, and `DB_CONNECT_RETRY_BASE_SECONDS` retry budget.
+At an HTTP boundary, map the error to the existing `DEPENDENCY_UNAVAILABLE`
+(503) envelope.
+
 ## Test
 
 ```powershell
-python -m unittest test_app.py test_stego.py test_registration_reconcile.py
+python -m unittest test_app.py test_stego.py test_registration_reconcile.py test_evidence_storage.py
 ```
 
 The service uses temporary files while processing and does not persist uploaded
@@ -452,3 +556,10 @@ source videos.
 - Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
 - Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
 - Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.
+
+## Evidence Storage Consistency Report
+
+`evidence_storage.generate_consistency_report(storage_dir=None, *, now=None)` returns a read-only consistency report comparing `blobs` metadata, active `tenant_blob_refs` (`ref_count > 0`), and physical files under `storage_dir` (defaulting to `HARPOCRATES_STORAGE_DIR` / `storage.default_storage_dir` without creating or mutating directories):
+
+- Reports `consistent` (`bool`), aggregate `summary` counts, and itemized discrepancies: `missing_files`, `orphaned_blobs`, `orphaned_tenant_refs`, `orphaned_files`, and `size_mismatches`.
+- Strictly read-only: never modifies database rows, never deletes physical files, and never queries or returns `encrypted_dek`.

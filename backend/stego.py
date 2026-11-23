@@ -34,14 +34,8 @@ BORDER_BLOCK = 6
 BORDER_STRIDE = 2
 
 
-class StegoError(Exception):
-    """Base exception for steganography errors."""
-    pass
-
-
-class StegoLimitExceededError(StegoError):
-    """Raised when steganography processing exceeds resource limits."""
-    pass
+class StegoLimitExceededError(Exception):
+    """Raised when stego processing exceeds memory or CPU limits."""
 
 
 @dataclass(frozen=True)

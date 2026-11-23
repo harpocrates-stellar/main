@@ -1,190 +1,168 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { ChainProofRecord } from '../stellarTypes'
+import type { ProofEvent } from '../types'
 import {
-  buildVerificationDimensions,
-  runVerificationFlow,
-  verifyUploadedVideo,
+  DEFAULT_OBSERVATION_STALE_MS,
+  evaluateVerificationObservations,
+  formatLedgerBounds,
 } from './verificationFlow'
 
-vi.mock('./verificationService', () => ({
-  extractMetadata: vi.fn(),
-  fetchProofEventsByVideo: vi.fn(),
-  getOnChainProof: vi.fn(),
-}))
+const NOW_MS = Date.parse('2026-06-01T12:00:00Z')
+const VIDEO_HASH = 'a'.repeat(64)
 
-import {
-  extractMetadata,
-  fetchProofEventsByVideo,
-  getOnChainProof,
-} from './verificationService'
-
-const VALID_HASH = 'a'.repeat(64)
-
-function makeChainProof(overrides: Partial<ChainProofRecord> = {}): ChainProofRecord {
+function makeEvent(overrides: Partial<ProofEvent> = {}): ProofEvent {
   return {
-    videoHash: VALID_HASH,
-    metadataHash: 'b'.repeat(64),
-    tier: 2,
-    status: 1,
-    createdAt: '2026-01-01T00:00:00Z',
-    expiresAt: 2_000_000_000,
-    source: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-    issuer: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBQW2',
+    id: 1,
+    event_type: 'registered',
+    file_name: null,
+    video_hash: VIDEO_HASH,
+    proof_id: 'b'.repeat(64),
+    tier: 'silent',
+    created_at: '2026-06-01T11:00:00Z',
+    time_attestation: {
+      version: 1,
+      protocol: 'harpocrates-time',
+      evidenceDigest: VIDEO_HASH,
+      stellarAnchors: [
+        {
+          ledgerSequence: 1024,
+          ledgerTimestamp: Math.floor(NOW_MS / 1000) - 3600,
+          transactionHash: 'c'.repeat(64),
+          networkPassphrase: 'Test SDF Network ; September 2015',
+        },
+      ],
+      rfc3161Anchors: [],
+    },
     ...overrides,
   }
 }
 
-describe('buildVerificationDimensions', () => {
-  it('marks overall verified when all four trust dimensions pass', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      onChain: makeChainProof(),
-      issuerRecord: { metadataHash: 'c'.repeat(64), active: true },
-      nowUnixSeconds: 1_900_000_000,
+function makeChainProof(overrides: Partial<ChainProofRecord> = {}): ChainProofRecord {
+  return {
+    videoHash: VIDEO_HASH,
+    metadataHash: 'd'.repeat(64),
+    tier: 1,
+    status: 1,
+    createdAt: '2026-06-01T11:00:00Z',
+    expiresAt: 0,
+    source: null,
+    issuer: null,
+    ...overrides,
+  }
+}
+
+describe('evaluateVerificationObservations', () => {
+  it('marks fresh and matching backend + Soroban observations as aligned with ledger bounds', () => {
+    const result = evaluateVerificationObservations({
+      events: [
+        makeEvent(),
+        makeEvent({
+          id: 2,
+          time_attestation: {
+            version: 1,
+            protocol: 'harpocrates-time',
+            evidenceDigest: VIDEO_HASH,
+            stellarAnchors: [
+              {
+                ledgerSequence: 1050,
+                ledgerTimestamp: Math.floor(NOW_MS / 1000) - 1200,
+                transactionHash: 'e'.repeat(64),
+                networkPassphrase: 'Test SDF Network ; September 2015',
+              },
+            ],
+            rfc3161Anchors: [],
+          },
+        }),
+      ],
+      chainProof: makeChainProof(),
+      nowMs: NOW_MS,
     })
 
-    expect(result.overall).toBe('verified')
-    expect(result.hasFailure).toBe(false)
-    expect(result.failedDimensions).toEqual([])
-    expect(result.dimensions.contentIntegrity.state).toBe('verified')
-    expect(result.dimensions.chainRegistration.state).toBe('verified')
-    expect(result.dimensions.issuerTrust.state).toBe('verified')
-    expect(result.dimensions.freshness.state).toBe('verified')
+    expect(result.agreement).toBe('aligned')
+    expect(result.freshness).toBe('fresh')
+    expect(result.ledgerBounds.minLedger).toBe(1024)
+    expect(result.ledgerBounds.maxLedger).toBe(1050)
+    expect(result.ledgerBounds.expiresAt).toBe(0)
+    expect(formatLedgerBounds(result.ledgerBounds)).toBe('Ledgers #1024–#1050 · No expiry bound')
   })
 
-  it('treats silent tier issuer trust as not_applicable without failing overall verdict', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      onChain: makeChainProof({ tier: 0, issuer: null, source: null, expiresAt: 0 }),
+  it('classifies expired chain ledger bounds as stale evidence rather than contradictory', () => {
+    const expiredUnix = Math.floor(NOW_MS / 1000) - 60
+    const result = evaluateVerificationObservations({
+      events: [makeEvent()],
+      chainProof: makeChainProof({ status: 3, expiresAt: expiredUnix }),
+      errorCode: 'EXPIRED_EVIDENCE',
+      nowMs: NOW_MS,
     })
 
-    expect(result.overall).toBe('verified')
-    expect(result.dimensions.issuerTrust.state).toBe('not_applicable')
-    expect(result.dimensions.issuerTrust.code).toBe('SILENT_TIER_NO_ISSUER')
-    expect(result.dimensions.freshness.state).toBe('verified')
+    expect(result.agreement).toBe('stale')
+    expect(result.freshness).toBe('stale')
+    expect(result.disagreementReasons).toHaveLength(0)
+    expect(result.staleReasons.length).toBeGreaterThan(0)
+    expect(result.sources.soroban.freshness).toBe('stale')
   })
 
-  it('does not let valid content, chain, and issuer mask an expired freshness failure', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      onChain: makeChainProof({ expiresAt: 1_800_000_000 }),
-      issuerRecord: { metadataHash: 'c'.repeat(64), active: true },
-      nowUnixSeconds: 1_900_000_000,
+  it('classifies backend observations older than the freshness window as stale evidence', () => {
+    const oldTimestamp = new Date(NOW_MS - DEFAULT_OBSERVATION_STALE_MS - 60_000).toISOString()
+    const result = evaluateVerificationObservations({
+      events: [makeEvent({ created_at: oldTimestamp })],
+      chainProof: makeChainProof(),
+      nowMs: NOW_MS,
     })
 
-    expect(result.dimensions.contentIntegrity.state).toBe('verified')
-    expect(result.dimensions.chainRegistration.state).toBe('verified')
-    expect(result.dimensions.issuerTrust.state).toBe('verified')
-    expect(result.dimensions.freshness.state).toBe('failed')
-    expect(result.dimensions.freshness.code).toBe('RECORD_EXPIRED')
-    expect(result.overall).toBe('failed')
-    expect(result.hasFailure).toBe(true)
-    expect(result.failedDimensions).toEqual(['freshness'])
+    expect(result.agreement).toBe('stale')
+    expect(result.freshness).toBe('stale')
+    expect(result.sources.backend.freshness).toBe('stale')
+    expect(result.sources.soroban.freshness).toBe('fresh')
   })
 
-  it('does not let valid content, chain, and freshness mask a revoked issuer failure', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      onChain: makeChainProof(),
-      issuerRecord: { metadataHash: 'c'.repeat(64), active: false },
-      nowUnixSeconds: 1_900_000_000,
+  it('distinguishes contradictory tier observations from stale evidence', () => {
+    const result = evaluateVerificationObservations({
+      events: [makeEvent({ tier: 'seal' })],
+      chainProof: makeChainProof({ tier: 1 }),
+      nowMs: NOW_MS,
     })
 
-    expect(result.dimensions.contentIntegrity.state).toBe('verified')
-    expect(result.dimensions.chainRegistration.state).toBe('verified')
-    expect(result.dimensions.freshness.state).toBe('verified')
-    expect(result.dimensions.issuerTrust.state).toBe('failed')
-    expect(result.dimensions.issuerTrust.code).toBe('ISSUER_REVOKED')
-    expect(result.overall).toBe('failed')
-    expect(result.failedDimensions).toEqual(['issuerTrust'])
+    expect(result.agreement).toBe('contradictory')
+    expect(result.disagreementReasons).toContain(
+      'Backend tier observation disagrees with the Soroban registry tier.',
+    )
   })
 
-  it('does not let valid chain, issuer, and freshness mask a metadata envelope mismatch', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      metadataEnvelopeMismatch: true,
-      onChain: makeChainProof(),
-      issuerRecord: { metadataHash: 'c'.repeat(64), active: true },
-      nowUnixSeconds: 1_900_000_000,
+  it('flags revoked Soroban status vs active backend events as contradictory', () => {
+    const result = evaluateVerificationObservations({
+      events: [makeEvent({ event_type: 'registered' })],
+      chainProof: makeChainProof({ status: 2 }),
+      errorCode: 'REVOKED_EVIDENCE',
+      nowMs: NOW_MS,
     })
 
-    expect(result.dimensions.contentIntegrity.state).toBe('failed')
-    expect(result.dimensions.contentIntegrity.code).toBe('METADATA_ENVELOPE_MISMATCH')
-    expect(result.dimensions.chainRegistration.state).toBe('verified')
-    expect(result.dimensions.issuerTrust.state).toBe('verified')
-    expect(result.dimensions.freshness.state).toBe('verified')
-    expect(result.overall).toBe('failed')
-    expect(result.failedDimensions).toEqual(['contentIntegrity'])
+    expect(result.agreement).toBe('contradictory')
+    expect(result.disagreementReasons[0]).toMatch(/revoked status/i)
   })
 
-  it('does not let valid content and freshness mask a revoked chain record', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      onChain: makeChainProof({ status: 2, expiresAt: 0 }),
-      issuerRecord: { metadataHash: 'c'.repeat(64), active: true },
+  it('flags metadata envelope mismatch as contradictory even without backend events', () => {
+    const result = evaluateVerificationObservations({
+      events: [],
+      chainProof: makeChainProof(),
+      errorCode: 'METADATA_ENVELOPE_MISMATCH',
+      nowMs: NOW_MS,
     })
 
-    expect(result.dimensions.chainRegistration.state).toBe('failed')
-    expect(result.dimensions.chainRegistration.code).toBe('CHAIN_REVOKED')
-    expect(result.dimensions.contentIntegrity.state).toBe('verified')
-    expect(result.overall).toBe('failed')
-    expect(result.failedDimensions).toEqual(['chainRegistration'])
+    expect(result.agreement).toBe('contradictory')
+    expect(result.disagreementReasons[0]).toMatch(/contradicts the on-chain envelope/i)
   })
 
-  it('marks network-dependent dimensions unverified in offline mode and never verified overall', () => {
-    const result = buildVerificationDimensions({
-      hasHarpocratesMetadata: true,
-      onChain: null,
+  it('reports incomplete observations in offline mode without fabricating ledger bounds', () => {
+    const result = evaluateVerificationObservations({
+      events: [],
+      chainProof: null,
       offline: true,
+      nowMs: NOW_MS,
     })
 
-    expect(result.dimensions.contentIntegrity.state).toBe('verified')
-    expect(result.dimensions.chainRegistration.state).toBe('unverified')
-    expect(result.dimensions.issuerTrust.state).toBe('unverified')
-    expect(result.dimensions.freshness.state).toBe('unverified')
-    expect(result.overall).toBe('incomplete')
-    expect(result.hasFailure).toBe(false)
-  })
-})
-
-describe('runVerificationFlow & verifyUploadedVideo', () => {
-  it('returns structured trust dimensions alongside existing result fields', async () => {
-    vi.mocked(fetchProofEventsByVideo).mockResolvedValueOnce([
-      {
-        id: 1,
-        event_type: 'proof_registered',
-        file_name: 'sample.mp4',
-        video_hash: VALID_HASH,
-        proof_id: 'p'.repeat(64),
-        tier: 'source',
-        created_at: '2026-01-01T00:00:00Z',
-      },
-    ])
-    vi.mocked(getOnChainProof).mockResolvedValueOnce(
-      makeChainProof({ tier: 1, expiresAt: 0 }),
-    )
-
-    const result = await runVerificationFlow(VALID_HASH)
-
-    expect(result.videoHash).toBe(VALID_HASH)
-    expect(result.hasHarpocratesMetadata).toBe(true)
-    expect(result.trust.overall).toBe('verified')
-    expect(result.trust.dimensions.issuerTrust.code).toBe('SOURCE_ATTRIBUTED')
-  })
-
-  it('recomputes trust dimensions using extracted metadata in verifyUploadedVideo', async () => {
-    vi.mocked(extractMetadata).mockResolvedValueOnce({ hasHarpocratesMetadata: false })
-    vi.mocked(fetchProofEventsByVideo).mockResolvedValueOnce([])
-    vi.mocked(getOnChainProof).mockResolvedValueOnce(
-      makeChainProof({ tier: 0, expiresAt: 0 }),
-    )
-
-    const file = new File(['synthetic'], 'synthetic.mp4', { type: 'video/mp4' })
-    const result = await verifyUploadedVideo(file, VALID_HASH)
-
-    expect(result.hasHarpocratesMetadata).toBe(false)
-    expect(result.trust.dimensions.contentIntegrity.state).toBe('unverified')
-    expect(result.trust.dimensions.chainRegistration.state).toBe('verified')
-    expect(result.trust.overall).toBe('incomplete')
+    expect(result.agreement).toBe('incomplete')
+    expect(result.freshness).toBe('unknown')
+    expect(formatLedgerBounds(result.ledgerBounds)).toBe('Ledger bounds unavailable')
   })
 })

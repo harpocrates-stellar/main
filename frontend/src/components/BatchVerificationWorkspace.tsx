@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -21,10 +21,18 @@ import {
   BatchVerifier,
   type BatchItemResult,
   type BatchOutcome,
+  type BatchPreflightReport,
   type BatchProgress,
   type BatchSummary,
+  formatBytes,
 } from '../batchVerifier'
-import { exportBatchCSV, exportBatchJSON, exportReceiptCollection } from '../batchExport'
+import {
+  exportBatchCSV,
+  exportBatchJSON,
+  exportPreflightReportCSV,
+  exportPreflightReportJSON,
+  exportReceiptCollection,
+} from '../batchExport'
 
 type Props = {
   apiBase: string
@@ -37,6 +45,7 @@ type FilterType = 'all' | 'confirmed' | 'revoked' | 'unconfirmed' | 'duplicate' 
 export default function BatchVerificationWorkspace({ apiBase, contractId, wallet }: Props) {
   const [verifier] = useState(() => new BatchVerifier({ apiBase, contractId, wallet }))
   const [items, setItems] = useState<BatchItemResult[]>([])
+  const [preflight, setPreflight] = useState<BatchPreflightReport | null>(null)
   const [progress, setProgress] = useState<BatchProgress | null>(null)
   const [summary, setSummary] = useState<BatchSummary | null>(null)
   const [isRunning, setIsRunning] = useState(false)
@@ -44,6 +53,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
   const [searchQuery, setSearchQuery] = useState('')
   const [detailItem, setDetailItem] = useState<BatchItemResult | null>(null)
   const [showConfig, setShowConfig] = useState(false)
+  const [exportPrivacyProfile, setExportPrivacyProfile] = useState<ExportPrivacyProfile>('public')
 
   // Config settings
   const [concurrency, setConcurrency] = useState(3)
@@ -55,6 +65,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
 
   // Ref for programmatic keyboard-triggered file picker
   const batchInputRef = useRef<HTMLInputElement | null>(null)
+  const dropzoneRef = useRef<HTMLLabelElement | null>(null)
 
   const handleFilesAdded = (files: FileList | File[]) => {
     const fileArray = Array.from(files)
@@ -70,38 +81,81 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       wallet,
     })
 
-    const initialItems = fileArray.map((file, idx) => ({
-      id: `item-${idx}-${Date.now()}`,
-      file,
-      fileName: file.name,
-      fileSizeBytes: file.size,
-      status: 'pending' as BatchOutcome,
-      videoHash: null,
-      metadataHash: null,
-      sourceHash: null,
-      tier: null,
-      chainStatus: null,
-      message: 'Queued for verification.',
-      events: [],
-      chainProof: null,
-      duplicateOf: null,
-      manifest: null,
-      durationMs: null,
-      failureReason: null,
-    }))
+    // Execute preflight report before expensive verification
+    const report = verifier.runPreflight(fileArray)
+    setPreflight(report)
+
+    const unsupMap = new Map(report.unsupported.map((u) => [u.index, u]))
+    const dupMap = new Map(report.duplicates.map((d) => [d.index, d]))
+    const overMap = new Map(report.oversized.map((o) => [o.index, o]))
+
+    const initialItems = fileArray.map((file, idx) => {
+      let status: BatchOutcome = 'pending'
+      let message = 'Queued for verification.'
+      let duplicateOf: string | null = null
+      let failureReason: string | null = null
+
+      if (unsupMap.has(idx)) {
+        status = 'unsupported'
+        message = unsupMap.get(idx)!.reason
+        failureReason = message
+      } else if (dupMap.has(idx)) {
+        status = 'duplicate'
+        duplicateOf = dupMap.get(idx)!.duplicateOf
+        message = dupMap.get(idx)!.reason
+        failureReason = message
+      } else if (overMap.has(idx)) {
+        status = 'oversized'
+        message = overMap.get(idx)!.reason
+        failureReason = message
+      }
+
+      return {
+        id: `item-${idx}-${Date.now()}`,
+        file,
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        status,
+        videoHash: null,
+        metadataHash: null,
+        sourceHash: null,
+        tier: null,
+        chainStatus: null,
+        message,
+        events: [],
+        chainProof: null,
+        duplicateOf,
+        manifest: null,
+        durationMs: null,
+        failureReason,
+      }
+    })
 
     setItems(initialItems)
     setProgress({
       totalFiles: fileArray.length,
       completedFiles: 0,
       processedBytes: 0,
-      totalBytes: fileArray.reduce((acc, f) => acc + f.size, 0),
+      totalBytes: report.totalBytes,
       activeCount: 0,
       isCancelled: false,
       isDone: false,
     })
     setSummary(null)
   }
+
+  useEffect(() => {
+    const el = dropzoneRef.current
+    if (!el) return
+    const listener = (e: Event) => {
+      const files = (e.target as unknown as { files?: FileList | File[] })?.files || (e as unknown as { files?: FileList | File[] }).files
+      if (files && files.length > 0) {
+        handleFilesAdded(files)
+      }
+    }
+    el.addEventListener('change', listener)
+    return () => el.removeEventListener('change', listener)
+  })
 
   const startBatch = async () => {
     if (items.length === 0 || isRunning) return
@@ -124,6 +178,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
         setItems(currentItems)
       })
       setSummary(res.summary)
+      setPreflight(res.preflight)
     } finally {
       setIsRunning(false)
     }
@@ -139,6 +194,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     setItems([])
     setProgress(null)
     setSummary(null)
+    setPreflight(null)
     setDetailItem(null)
   }
 
@@ -180,7 +236,8 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
         selectedFilter === 'error' &&
         item.status !== 'error' &&
         item.status !== 'malformed' &&
-        item.status !== 'oversized'
+        item.status !== 'oversized' &&
+        item.status !== 'unsupported'
       )
         return false
       if (selectedFilter === 'manifest' && item.status !== 'manifest-valid') return false
@@ -211,10 +268,14 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
     URL.revokeObjectURL(url)
   }
 
-  const exportJSON = () => triggerDownload(exportBatchJSON(items), 'harpocrates-batch-report.json', 'application/json')
+  const exportJSON = () => triggerDownload(exportBatchJSON(items, preflight), 'harpocrates-batch-report.json', 'application/json')
   const exportCSV = () => triggerDownload(exportBatchCSV(items), 'harpocrates-batch-report.csv', 'text/csv')
   const exportReceipts = () =>
     triggerDownload(exportReceiptCollection(items), 'harpocrates-receipt-collection.json', 'application/json')
+  const exportPreflightJSON = () =>
+    preflight && triggerDownload(exportPreflightReportJSON(preflight), 'harpocrates-preflight-report.json', 'application/json')
+  const exportPreflightCSV = () =>
+    preflight && triggerDownload(exportPreflightReportCSV(preflight), 'harpocrates-preflight-report.csv', 'text/csv')
 
   const announcementText = useMemo(() => {
     if (!progress) return 'Workspace idle.'
@@ -295,6 +356,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
         {/* Keyboard: Tab focuses label, Enter/Space opens file picker. Drag-and-drop also supported. */}
         {/* The input is a sibling, not a descendant: an interactive control nested in role="button" is a WCAG 4.1.2 violation. */}
         <label
+          ref={dropzoneRef}
           className={`batch-dropzone ${isDragging ? 'dragging' : ''} ${items.length > 0 ? 'compact' : ''}`}
           role="button"
           tabIndex={isRunning ? -1 : 0}
@@ -316,6 +378,9 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
             e.preventDefault()
             setIsDragging(false)
             if (e.dataTransfer.files) handleFilesAdded(e.dataTransfer.files)
+          }}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            if (e.target.files) handleFilesAdded(e.target.files)
           }}
         >
           <Upload size={24} aria-hidden="true" />
@@ -369,12 +434,26 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
             </button>
 
             <div className="export-group">
+              <label className="export-privacy-selector" htmlFor="batch-export-privacy-profile">
+                <span className="sr-only">Export privacy profile</span>
+                <select
+                  id="batch-export-privacy-profile"
+                  aria-label="Export privacy profile"
+                  value={exportPrivacyProfile}
+                  onChange={(e) => setExportPrivacyProfile(e.target.value as ExportPrivacyProfile)}
+                  disabled={items.length === 0 || isRunning}
+                  title={EXPORT_PRIVACY_PROFILES[exportPrivacyProfile].description}
+                >
+                  <option value="public">{EXPORT_PRIVACY_PROFILES.public.label}</option>
+                  <option value="owner-only">{EXPORT_PRIVACY_PROFILES['owner-only'].label}</option>
+                </select>
+              </label>
               <button
                 className="icon-button secondary"
                 type="button"
                 onClick={exportJSON}
                 disabled={items.length === 0 || isRunning}
-                title="Export JSON Report"
+                title={`Export JSON Report (${EXPORT_PRIVACY_PROFILES[exportPrivacyProfile].label})`}
               >
                 <Download size={16} aria-hidden="true" />
                 <span>JSON</span>
@@ -384,7 +463,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 type="button"
                 onClick={exportCSV}
                 disabled={items.length === 0 || isRunning}
-                title="Export CSV Report"
+                title={`Export CSV Report (${EXPORT_PRIVACY_PROFILES[exportPrivacyProfile].label})`}
               >
                 <Download size={16} aria-hidden="true" />
                 <span>CSV</span>
@@ -399,10 +478,159 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
                 <FileCheck size={16} aria-hidden="true" />
                 <span>Receipts</span>
               </button>
+              {preflight ? (
+                <>
+                  <button
+                    className="icon-button secondary"
+                    type="button"
+                    onClick={exportPreflightJSON}
+                    disabled={isRunning}
+                    title="Export Preflight JSON"
+                  >
+                    <Download size={16} aria-hidden="true" />
+                    <span>Preflight JSON</span>
+                  </button>
+                  <button
+                    className="icon-button secondary"
+                    type="button"
+                    onClick={exportPreflightCSV}
+                    disabled={isRunning}
+                    title="Export Preflight CSV"
+                  >
+                    <Download size={16} aria-hidden="true" />
+                    <span>Preflight CSV</span>
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
         ) : null}
       </section>
+
+      {/* Batch Preflight Report Section */}
+      {preflight ? (
+        <section
+          className="preflight-report-panel"
+          aria-label="Batch Preflight Report"
+          style={{
+            margin: '1.25rem 0',
+            padding: '1.25rem',
+            borderRadius: '8px',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            background: 'rgba(255, 255, 255, 0.03)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '1rem',
+              flexWrap: 'wrap',
+              gap: '0.75rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <FileCheck
+                size={20}
+                aria-hidden="true"
+                style={{ color: preflight.hasIssues ? '#f59e0b' : '#10b981' }}
+              />
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Batch Preflight Report</h3>
+            </div>
+            <span
+              style={{
+                fontSize: '0.85rem',
+                padding: '0.2rem 0.6rem',
+                borderRadius: '4px',
+                background: preflight.hasIssues ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                color: preflight.hasIssues ? '#f59e0b' : '#10b981',
+                fontWeight: 500,
+              }}
+            >
+              {preflight.hasIssues ? 'Issues Detected' : 'Preflight Passed'}
+            </span>
+          </div>
+
+          <div
+            className="metrics-banner"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+              gap: '0.75rem',
+              margin: '0.5rem 0 1rem',
+            }}
+          >
+            <div className="metric-card">
+              <span>Total Bytes</span>
+              <strong>{formatBytes(preflight.totalBytes)}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Total Inputs</span>
+              <strong>{preflight.totalFiles}</strong>
+            </div>
+            <div className={`metric-card ${preflight.duplicateCount > 0 ? 'purple' : ''}`}>
+              <span>Duplicate Inputs</span>
+              <strong>{preflight.duplicateCount}</strong>
+            </div>
+            <div className={`metric-card ${preflight.unsupportedCount > 0 ? 'danger' : ''}`}>
+              <span>Unsupported Formats</span>
+              <strong>{preflight.unsupportedCount}</strong>
+            </div>
+            <div className="metric-card success">
+              <span>Valid to Verify</span>
+              <strong>{preflight.validCount}</strong>
+            </div>
+          </div>
+
+          {preflight.hasIssues ? (
+            <div
+              className="preflight-alert"
+              role="alert"
+              style={{
+                padding: '0.75rem 1rem',
+                borderRadius: '6px',
+                background: 'rgba(245, 158, 11, 0.1)',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+                color: '#f59e0b',
+                fontSize: '0.9rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                <AlertTriangle size={16} aria-hidden="true" />
+                <strong>Preflight Notice:</strong>
+                <span>
+                  {preflight.duplicateCount > 0 && `${preflight.duplicateCount} duplicate input(s) `}
+                  {preflight.duplicateCount > 0 && preflight.unsupportedCount > 0 && 'and '}
+                  {preflight.unsupportedCount > 0 && `${preflight.unsupportedCount} unsupported format(s) `}
+                  detected. No hashing or proving will occur on these items.
+                </span>
+              </div>
+              <ul style={{ margin: '0.35rem 0 0 1.5rem', padding: 0, fontSize: '0.85rem' }}>
+                {preflight.unsupported.map((u) => (
+                  <li key={u.fileName}>
+                    <code>{u.fileName}</code> ({formatBytes(u.fileSizeBytes)}): {u.reason}
+                  </li>
+                ))}
+                {preflight.duplicates.map((d) => (
+                  <li key={d.fileName}>
+                    <code>{d.fileName}</code> ({formatBytes(d.fileSizeBytes)}): {d.reason}
+                  </li>
+                ))}
+                {preflight.oversized.map((o) => (
+                  <li key={o.fileName}>
+                    <code>{o.fileName}</code> ({formatBytes(o.fileSizeBytes)}): {o.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem', color: '#10b981' }}>
+              ✓ All {preflight.totalFiles} inputs passed preflight format and uniqueness checks ({formatBytes(preflight.totalBytes)}). Ready for verification.
+            </p>
+          )}
+        </section>
+      ) : null}
 
       {/* Aggregate Metrics Bar */}
       {progress ? (
@@ -490,7 +718,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
               type="button"
               onClick={() => setSelectedFilter('error')}
             >
-              Errors ({items.filter((i) => i.status === 'error' || i.status === 'malformed' || i.status === 'oversized').length})
+              Errors ({items.filter((i) => i.status === 'error' || i.status === 'malformed' || i.status === 'oversized' || i.status === 'unsupported').length})
             </button>
           </div>
 
@@ -666,6 +894,12 @@ function StatusBadge({ status }: { status: BatchOutcome }) {
       return (
         <span className="badge badge-duplicate">
           <Copy size={12} aria-hidden="true" /> Duplicate
+        </span>
+      )
+    case 'unsupported':
+      return (
+        <span className="badge badge-error">
+          <AlertCircle size={12} aria-hidden="true" /> Unsupported
         </span>
       )
     case 'oversized':

@@ -141,12 +141,7 @@ from metadata_errors import (
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
-from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
-try:
-    from stego import StegoLimitExceededError
-except (ImportError, AttributeError):
-    class StegoLimitExceededError(RuntimeError):  # type: ignore[no-redef]
-        pass
+from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file, StegoLimitExceededError
 from capture_attestation import (
     build_assurance_schema,
     canonical_attestation_hash,
@@ -156,13 +151,14 @@ from capture_attestation import (
 from c2pa import (
     C2paParseError,
     C2paTrustStatus,
-    compute_privacy_flags,
+    build_assertion_compatibility_report,
     corroborate_binding,
     export_c2pa_manifest,
     parse_c2pa_manifest,
 )
 from logging_utils import log_structured, redact_sensitive
 from errors import (
+    GONE,
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
@@ -185,25 +181,28 @@ from tracing import (
 )
 from readiness import ReadinessManager
 from verifier_cache import VerifierCache
-from admission import (
-    AdmissionController,
-    AdmissionRejectedError,
-    _get_client_identity,
-    admit_verified_work,
-    require_capacity,
-)
+from admission import AdmissionController, require_capacity, _get_client_identity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
+try:
+    from chain_indexer import index_freshness_summary
+except ImportError:
+    index_freshness_summary = None
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     PrematureUploadTerminationError,
     ResumableUploadSessionStore,
     SessionNotFoundError,
     StreamingFileStorage,
-    UploadSessionError,
+    UploadCancelledError,
+    UploadSessionRegistry,
+    UploadState,
     create_streaming_file_storage,
+    get_session_dir,
     hash_paths_concat,
-    resolve_temp_dir,
+    init_session_dir,
+    is_session_expired,
+    touch_session,
 )
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -481,13 +480,16 @@ def create_app() -> Flask:
         max_queue=config.max_queue_size,
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
+        max_temp_storage_per_identity=config.upload_temp_budget_bytes,
     )
+    upload_session_registry = UploadSessionRegistry()
 
     upload_session_store = ResumableUploadSessionStore(
         base_dir=resolve_temp_dir(getattr(config, "upload_temp_dir", None)) or tempfile.gettempdir(),
         default_chunk_size=getattr(config, "upload_chunk_bytes", None),
         default_max_size=getattr(config, "upload_max_bytes", None) if getattr(config, "upload_max_bytes", None) is not None else config.max_video_bytes,
     )
+    upload_session_registry = UploadSessionRegistry()
 
     @app.before_request
     def start_request_context():
@@ -909,6 +911,27 @@ def create_app() -> Flask:
         video.seek(0)
         return size <= effective_max
 
+    def _expected_upload_size(video) -> int:
+        """
+        Estimate the expected upload size for storage budget reservation.
+        
+        Returns the maximum possible size based on:
+        - Content-Length header (if available and reasonable)
+        - Configured max_video_bytes / upload_max_bytes
+        - Falls back to max_video_bytes
+        """
+        # Use Content-Length if available (includes multipart overhead)
+        if request.content_length is not None and request.content_length > 0:
+            # Cap at the configured maximum to avoid reserving more than needed
+            upload_max = getattr(config, "upload_max_bytes", None)
+            effective_max = max(0, int(upload_max)) if upload_max is not None else config.max_video_bytes
+            return min(request.content_length, effective_max + UPLOAD_MULTIPART_OVERHEAD_BYTES)
+        
+        # Fall back to the configured maximum
+        upload_max = getattr(config, "upload_max_bytes", None)
+        effective_max = max(0, int(upload_max)) if upload_max is not None else config.max_video_bytes
+        return effective_max + UPLOAD_MULTIPART_OVERHEAD_BYTES
+
     def _enable_streaming_for_large_uploads():
         """Wrap large multipart uploads with bounded-chunk stream hashing."""
         threshold = getattr(
@@ -954,73 +977,87 @@ def create_app() -> Flask:
                 MetadataError(METADATA_OVERSIZED, "metadata is too large")
             )
 
+        # Reserve temporary upload storage budget
+        identity = _get_client_identity()
+        expected_size = _expected_upload_size(video)
+        reserved_ok, reserve_reason = admission_controller.reserve_storage(identity, expected_size)
+        if not reserved_ok:
+            return jsonify({
+                "error": "storage budget exceeded",
+                "reason": reserve_reason
+            }), 503
+
         try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return metadata_error_response(
-                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                return metadata_error_response(
+                    MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+                )
+            try:
+                validate_embed_metadata(metadata)
+            except MetadataError as exc:
+                return metadata_error_response(exc)
+            except ValueError as exc:
+                return metadata_error_response(classify_validation_error(exc))
+
+            normalized_name = normalize_filename(video.filename)
+            try:
+                quarantine_context = isolate_upload(
+                    video,
+                    filename=normalized_name,
+                    content_type=video.content_type,
+                )
+                with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                    source_url = workspace.get_url("source.video")
+                    output_url = workspace.get_url("embedded.mp4")
+                    with quarantined_path.open("rb") as quarantined:
+                        workspace.write_encrypted(
+                            "source.video",
+                            quarantined,
+                            size=quarantined_path.stat().st_size,
+                        )
+
+                    embed_metadata(source_url, output_url, metadata)
+                    output_bytes = workspace.read_decrypted("embedded.mp4")
+                    source_hash = workspace.sha256("source.video")
+                    embedded_hash = workspace.sha256("embedded.mp4")
+                    metadata_hash = canonical_metadata_hash(metadata)
+            except QuarantineError as exc:
+                return error_response(
+                    code=UNSUPPORTED_MEDIA_TYPE,
+                    message=str(exc),
+                    status=400,
+                )
+
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=normalized_name,
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                metadata=redact_metadata(metadata),
             )
-        try:
-            validate_embed_metadata(metadata)
-        except MetadataError as exc:
-            return metadata_error_response(exc)
-        except ValueError as exc:
-            return metadata_error_response(classify_validation_error(exc))
 
-        normalized_name = normalize_filename(video.filename)
-        try:
-            quarantine_context = isolate_upload(
-                video,
-                filename=normalized_name,
-                content_type=video.content_type,
-            )
-            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
-                source_url = workspace.get_url("source.video")
-                output_url = workspace.get_url("embedded.mp4")
-                with quarantined_path.open("rb") as quarantined:
-                    workspace.write_encrypted(
-                        "source.video",
-                        quarantined,
-                        size=quarantined_path.stat().st_size,
-                    )
+            if db_event and db_event.get("id"):
+                queue_webhook_deliveries(db_event["id"])
 
-                embed_metadata(source_url, output_url, metadata)
-                output_bytes = workspace.read_decrypted("embedded.mp4")
-                source_hash = workspace.sha256("source.video")
-                embedded_hash = workspace.sha256("embedded.mp4")
-                metadata_hash = canonical_metadata_hash(metadata)
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
-            )
-
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=normalized_name,
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
-
-        if db_event and db_event.get("id"):
-            queue_webhook_deliveries(db_event["id"])
-
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-        return response
+            response = Response(output_bytes, mimetype="video/mp4")
+            response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+            response.headers["X-Harpocrates-Source-Hash"] = source_hash
+            response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+            response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+            response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+            if config.expose_metadata_header:
+                response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                ).decode("ascii")
+            return response
+        finally:
+            # Release the storage reservation regardless of outcome
+            admission_controller.release_storage(identity, expected_size)
 
     def _extract_upload_session_auth() -> tuple[str | None, str | None]:
         auth_header = request.headers.get("Authorization", "").strip()
@@ -1035,90 +1072,45 @@ def create_app() -> Flask:
     @app.post("/api/stego/upload-session")
     @limiter.limit(config.ratelimit_upload_session)
     def create_upload_session():
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, dict):
-            return error_response(
-                code=VALIDATION_ERROR,
-                message="upload session payload must be a JSON object",
-                status=400,
-            )
-        owner = payload.get("owner") or request.headers.get("X-Upload-Owner")
-        owner_tier = payload.get("ownerTier") or request.headers.get("X-Upload-Owner-Tier")
-        expected_sha256 = payload.get("expectedSha256") or request.headers.get("X-Expected-Sha256")
-        expected_size = payload.get("expectedSize")
-        try:
-            session, session_token = upload_session_store.create_session(
-                owner=owner,
-                owner_tier=owner_tier,
-                expected_sha256=expected_sha256,
-                expected_size=expected_size,
-            )
-        except RequestEntityTooLarge:
-            return error_response(
-                code=PAYLOAD_TOO_LARGE,
-                message="upload exceeds size limit",
-                status=413,
-            )
-        except UploadSessionError as exc:
-            return error_response(code=exc.code, message=str(exc), status=exc.status_code)
-
-        body = {
-            "sessionId": session.session_id,
-            "encrypted": True,
-        }
-        if session.owner is not None:
-            body["owner"] = session.owner
-        if session.owner_tier is not None:
-            body["ownerTier"] = session.owner_tier
-        if session_token is not None:
-            body["sessionToken"] = session_token
-        if session.expected_sha256 is not None:
-            body["expectedSha256"] = session.expected_sha256
-        if session.expected_size is not None:
-            body["expectedSize"] = session.expected_size
-        return jsonify(body)
-
-    @app.get("/api/stego/upload-session/<session_id>")
-    @limiter.limit(config.ratelimit_upload_session)
-    def get_upload_session(session_id: str):
-        session_token, owner = _extract_upload_session_auth()
-        try:
-            progress = upload_session_store.get_progress(
-                session_id,
-                session_token=session_token,
-                owner=owner,
-            )
-        except UploadSessionError as exc:
-            return error_response(code=exc.code, message=str(exc), status=exc.status_code)
-        return jsonify(progress)
+        session_id = str(uuid.uuid4())
+        session_dir = Path(tempfile.gettempdir()) / f"harpocrates-session-{session_id}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        session = upload_session_registry.create(session_id, session_dir)
+        ticket = admission_controller.create_ticket(session_id)
+        session.attach_queued_admission(ticket.id if ticket is not None else None)
+        return jsonify({"sessionId": session_id})
 
     @app.put("/api/stego/upload-session/<session_id>/chunk/<int:chunk_index>")
     @limiter.limit(config.ratelimit_upload_chunk)
+    @require_capacity(admission_controller)
     def upload_chunk(session_id: str, chunk_index: int):
+        session = upload_session_registry.get(session_id)
+        if session is None:
+            return jsonify({"error": "session not found"}), 404
+        session_dir = session.session_dir
+        if not session_dir.exists():
+            return jsonify({"error": "session not found"}), 404
+
         chunk = request.files.get("chunk")
         if chunk is None:
             return jsonify({"error": "chunk is required"}), 400
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
-        session_token, owner = _extract_upload_session_auth()
-        chunk_sha256 = (request.headers.get("X-Chunk-Sha256") or "").strip() or None
+        admission_ticket = getattr(g, "admission_ticket", None)
+        if admission_ticket is not None:
+            session.attach_admission(admission_ticket.id)
+
+        g.upload_config = config
+        streaming_chunk = create_streaming_file_storage(chunk, cancellation=session)
+        chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
-            progress, total_bytes = upload_session_store.write_chunk(
-                session_id,
-                chunk_index,
-                chunk.stream,
-                session_token=session_token,
-                owner=owner,
-                chunk_sha256=chunk_sha256,
-            )
+            with session.writer():
+                streaming_chunk.save(str(chunk_path))
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
         except RequestEntityTooLarge:
             return jsonify({"error": "chunk exceeds size limit"}), 413
-        except SessionNotFoundError:
-            return jsonify({"error": "session not found"}), 404
-        except UploadSessionError as exc:
-            return error_response(code=exc.code, message=str(exc), status=exc.status_code)
-
         return jsonify({
             "ok": True,
             "chunkIndex": progress.index,
@@ -1128,27 +1120,43 @@ def create_app() -> Flask:
             "encrypted": True,
         })
 
+    @app.post("/api/stego/upload-session/<session_id>/cancel")
+    @limiter.limit(config.ratelimit_upload_session)
+    def cancel_upload_session(session_id: str):
+        cancelled = upload_session_registry.cancel(session_id, admission_controller)
+        if cancelled is None:
+            return jsonify({"error": "session not found"}), 404
+        if not cancelled:
+            return jsonify({
+                "error": "session cannot be cancelled",
+                "code": "UPLOAD_NOT_CANCELLABLE",
+            }), 409
+        return jsonify({"ok": True, "state": UploadState.CANCELLED.value})
+
     @app.post("/api/stego/upload-session/<session_id>/commit")
     @limiter.limit(config.ratelimit_upload_session)
     def commit_upload_session(session_id: str):
-        session_token, owner = _extract_upload_session_auth()
-        expected_sha256 = (
-            request.form.get("expectedSha256")
-            or request.headers.get("X-Expected-Sha256")
-            or None
-        )
-
-        # Authenticate session before parsing metadata or admitting processing work.
-        try:
-            session = upload_session_store.authenticate_session(
-                session_id,
-                session_token=session_token,
-                owner=owner,
-            )
-        except SessionNotFoundError:
+        session = upload_session_registry.get(session_id)
+        if session is None:
             return jsonify({"error": "session not found"}), 404
-        except UploadSessionError as exc:
-            return error_response(code=exc.code, message=str(exc), status=exc.status_code)
+        session_dir = session.session_dir
+        if not session_dir.exists():
+            return jsonify({"error": "session not found"}), 404
+        if is_session_expired(session_dir, ttl_seconds=config.upload_session_ttl_seconds):
+            return error_response(
+                code=GONE,
+                message="upload session has expired",
+                status=410,
+            )
+
+        admission_ticket = getattr(g, "admission_ticket", None)
+        if admission_ticket is not None:
+            session.attach_admission(admission_ticket.id)
+        session.mark_committing()
+        try:
+            session.check_cancelled()
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:
@@ -1167,26 +1175,39 @@ def create_app() -> Flask:
         except ValueError as exc:
             return metadata_error_response(classify_validation_error(exc))
 
-        with tempfile.TemporaryDirectory(prefix="harpocrates-") as tmp_dir:
-            combined_path = Path(tmp_dir) / "combined.video"
-            # Decrypt, assemble, and verify the final content hash BEFORE
-            # acquiring an admission slot for processing work.
-            try:
-                session, source_hash, _written = upload_session_store.assemble_and_verify(
-                    session_id,
+        combined_path = session_dir / "combined.video"
+        chunk_files = sorted(
+            [f for f in session_dir.iterdir() if f.name.startswith("chunk-")],
+            key=lambda f: int(f.name.split("-")[1]),
+        )
+        if not chunk_files:
+            return jsonify({"error": "session has no chunks"}), 400
+
+        # Bounded-chunk concat + SHA-256 so commit never buffers whole chunks.
+        try:
+            with session.writer():
+                source_hash, _written = hash_paths_concat(
+                    chunk_files,
                     combined_path,
-                    session_token=session_token,
-                    owner=owner,
-                    expected_sha256=expected_sha256,
+                    chunk_size=getattr(config, "upload_chunk_bytes", None),
+                    max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+                    cancellation=session,
                 )
-            except RequestEntityTooLarge:
-                return error_response(
-                    code=PAYLOAD_TOO_LARGE,
-                    message="upload exceeds size limit",
-                    status=413,
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
+
+        # Sniff assembled file before handing it to ffmpeg.
+        try:
+            with session.writer():
+                source_hash, _written = hash_paths_concat(
+                    chunk_files,
+                    combined_path,
+                    chunk_size=getattr(config, "upload_chunk_bytes", None),
+                    max_size=getattr(config, "upload_max_bytes", config.max_video_bytes),
+                    cancellation=session,
                 )
-            except UploadSessionError as exc:
-                return error_response(code=exc.code, message=str(exc), status=exc.status_code)
+        except UploadCancelledError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
 
             # Sniff assembled file before handing it to ffmpeg.
             try:
@@ -1256,7 +1277,11 @@ def create_app() -> Flask:
                 json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
 
-        upload_session_store.cleanup_session(session_id)
+        if session.queued_admission_ticket_id:
+            admission_controller.release_ticket(session.queued_admission_ticket_id)
+        session.complete()
+        upload_session_registry.remove(session_id)
+        shutil.rmtree(session_dir, ignore_errors=True)
 
         return response
 
@@ -1275,62 +1300,76 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        normalized_name = normalize_filename(video.filename)
+        # Reserve temporary upload storage budget
+        identity = _get_client_identity()
+        expected_size = _expected_upload_size(video)
+        reserved_ok, reserve_reason = admission_controller.reserve_storage(identity, expected_size)
+        if not reserved_ok:
+            return jsonify({
+                "error": "storage budget exceeded",
+                "reason": reserve_reason
+            }), 503
+
         try:
-            quarantine_context = isolate_upload(
-                video,
-                filename=normalized_name,
-                content_type=video.content_type,
+            normalized_name = normalize_filename(video.filename)
+            try:
+                quarantine_context = isolate_upload(
+                    video,
+                    filename=normalized_name,
+                    content_type=video.content_type,
+                )
+                with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                    source_url = workspace.get_url("source.video")
+                    with quarantined_path.open("rb") as quarantined:
+                        workspace.write_encrypted(
+                            "source.video",
+                            quarantined,
+                            size=quarantined_path.stat().st_size,
+                        )
+                    metadata = extract_metadata(source_url)
+                    video_hash = workspace.sha256("source.video")
+                    metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+            except QuarantineError as exc:
+                return error_response(
+                    code=UNSUPPORTED_MEDIA_TYPE,
+                    message=str(exc),
+                    status=400,
+                )
+
+            retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
+            if retention_class not in config.retention_classes:
+                return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+            retention_days = config.retention_classes[retention_class]
+            expires_at = None
+            if retention_days >= 0:
+                expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
+            db_event = insert_proof_event(
+                event_type="extract",
+                file_name=normalized_name,
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId") if metadata else None,
+                tier=metadata.get("tier") if metadata else None,
+                retention_class=retention_class,
+                expires_at=expires_at,
+                metadata=redact_metadata(metadata),
             )
-            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
-                source_url = workspace.get_url("source.video")
-                with quarantined_path.open("rb") as quarantined:
-                    workspace.write_encrypted(
-                        "source.video",
-                        quarantined,
-                        size=quarantined_path.stat().st_size,
-                    )
-                metadata = extract_metadata(source_url)
-                video_hash = workspace.sha256("source.video")
-                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
+
+            if db_event and db_event.get("id"):
+                queue_webhook_deliveries(db_event["id"])
+
+            return jsonify(
+                {
+                    "video_hash": video_hash,
+                    "metadata_hash": metadata_hash,
+                    "metadata": metadata,
+                    "db_event": db_event,
+                }
             )
-
-        retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
-        if retention_class not in config.retention_classes:
-            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
-        retention_days = config.retention_classes[retention_class]
-        expires_at = None
-        if retention_days >= 0:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
-
-        db_event = insert_proof_event(
-            event_type="extract",
-            file_name=normalized_name,
-            video_hash=video_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId") if metadata else None,
-            tier=metadata.get("tier") if metadata else None,
-            retention_class=retention_class,
-            expires_at=expires_at,
-            metadata=redact_metadata(metadata),
-        )
-
-        if db_event and db_event.get("id"):
-            queue_webhook_deliveries(db_event["id"])
-
-        return jsonify(
-            {
-                "video_hash": video_hash,
-                "metadata_hash": metadata_hash,
-                "metadata": metadata,
-                "db_event": db_event,
-            }
-        )
+        finally:
+            # Release the storage reservation regardless of outcome
+            admission_controller.release_storage(identity, expected_size)
 
     @app.get("/api/proofs")
     def proofs():
@@ -1743,6 +1782,23 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        intent_digest = None
+        if normalized_tx_hash:
+            intent_digest = registration_intent_digest(
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=proof_id,
+                tier=tier,
+                source_address=validated_source_address,
+                contract_id=validated_contract_id,
+            )
+            try:
+                persist_registration_intent(normalized_tx_hash, intent_digest)
+            except IntentConflictError:
+                return jsonify({
+                    "error": "transaction hash is already bound to a different registration intent",
+                }), 409
+
         if db_event and db_event.get("id") and created:
             # A newly registered proof can change the on-chain verification
             # result. Evict all cached results for this proof before clients
@@ -1750,10 +1806,21 @@ def create_app() -> Flask:
             app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
+                enqueue_job(
+                    "verify_tx",
+                    {
+                        "proof_id": proof_id,
+                        "tx_hash": normalized_tx_hash,
+                        "contract_id": validated_contract_id,
+                        "intent_digest": intent_digest,
+                    },
+                )
 
         status = 201 if created else 200
-        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+        body = {"ok": True, "db_event": db_event, "created": created}
+        if intent_digest is not None:
+            body["intentDigest"] = intent_digest
+        return jsonify(body), status
 
     @app.post("/api/proofs/reconcile")
     def reconcile_registration_confirmations():
@@ -2637,13 +2704,74 @@ def create_app() -> Flask:
             "hashes_verified": bool(corroboration is not None and corroboration.ok),
             "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
-            "privacy_flags": compute_privacy_flags(parsed).to_dict(),
+            "compatibility_report": parsed.compatibility_report.to_dict(),
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
                 "verification. A matching 'expected' block is integrity "
                 "corroboration only. Corroborate this binding against on-chain "
                 "records before making any trust decision."
             ),
+        })
+
+    @app.post("/api/c2pa/compatibility")
+    def c2pa_compatibility():
+        """
+        Return a C2PA critical-assertion compatibility report for a manifest.
+
+        Classifies assertions into supported, optional unknown, and required
+        unknown assertions. Unsupported critical semantics are reported with
+        ``compatible: false`` and ``fail_closed: true`` (and rejected fail-closed
+        by ``POST /api/c2pa/import``).
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        if isinstance(manifest_raw, dict):
+            try:
+                import json as _json
+                manifest_bytes = _json.dumps(manifest_raw, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="manifest object could not be serialised",
+                    status=400,
+                )
+        elif isinstance(manifest_raw, str):
+            manifest_bytes = manifest_raw.encode("utf-8")
+        else:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            report = build_assertion_compatibility_report(manifest_bytes)
+        except C2paParseError as exc:
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        return ok_response({
+            "compatibility_report": report.to_dict(),
+            "trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
         })
 
     return app
