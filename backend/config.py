@@ -4,6 +4,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from register_auth import ScopedKey, parse_scoped_keys
 
@@ -11,7 +12,8 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
+
+    def redacted_summary(self) -> dict[str, Any]:
         """Return a dict representation of the config where secret fields are redacted.
         Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
         presence (True if set, False otherwise). Non‑secret fields retain their original
@@ -29,6 +31,7 @@ class AppConfig:
             if field in raw:
                 raw[field] = raw[field] is not None
         return raw
+
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -85,6 +88,12 @@ class AppConfig:
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
     retention_dry_run: bool = False
+    # None falls back to MAX_VIDEO_BYTES; zero allows no file payload.
+    upload_max_bytes: int | None = None
+    # Per-tenant temporary upload storage budget in bytes (None = unlimited).
+    # This limits the total temporary disk space a single tenant can reserve
+    # for in-flight uploads.
+    upload_temp_budget_bytes: int | None = None
 
 
 
@@ -165,6 +174,8 @@ def load_config() -> AppConfig:
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        upload_max_bytes=_optional_nonnegative_int_env("UPLOAD_MAX_BYTES"),
+        upload_temp_budget_bytes=_optional_nonnegative_int_env("UPLOAD_TEMP_BUDGET_BYTES"),
     )
 
 
@@ -185,6 +196,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:
@@ -276,7 +300,10 @@ RETENTION_BATCH_SIZE_DEFAULT = 100
 RETENTION_BATCH_SIZE_MAX = 5000
 
 
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
+def _retention_batch_size_env(
+    name: str = "HARPOCRATES_RETENTION_BATCH_SIZE",
+    default: int = RETENTION_BATCH_SIZE_DEFAULT,
+) -> int:
     """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -320,4 +347,3 @@ def _blob_gc_enabled_env() -> bool:
         if val is not None:
             return val.strip().lower() in {"1", "true", "yes", "on"}
     return False
-

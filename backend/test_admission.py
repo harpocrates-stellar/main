@@ -124,3 +124,157 @@ def test_admission_controller_decorator():
         if code != 200:
             assert "error" in data
             assert data["reason"] in ["identity_limit", "queue_full"]
+
+
+# ── Storage budget tests ────────────────────────────────────────────────────────
+
+def test_storage_budget_unlimited_by_default():
+    """When no budget is configured, storage reservation always succeeds."""
+    controller = AdmissionController(
+        max_concurrent=10,
+        max_queue=10,
+        max_per_identity=5,
+        timeout_seconds=0.1,
+        # max_temp_storage_per_identity not set = unlimited
+    )
+
+    ok, reason = controller.reserve_storage("client1", 1_000_000)
+    assert ok is True
+    assert reason == "ok"
+
+    # Multiple reservations for same identity should succeed
+    ok2, reason2 = controller.reserve_storage("client1", 5_000_000)
+    assert ok2 is True
+
+    # Release should work
+    controller.release_storage("client1", 1_000_000)
+    controller.release_storage("client1", 5_000_000)
+
+    # Reserved storage should be zero after full release
+    assert controller.get_reserved_storage("client1") == 0
+
+
+def test_storage_budget_enforced_per_identity():
+    """Storage budget is enforced per identity."""
+    budget = 10_000_000  # 10 MB per identity
+    controller = AdmissionController(
+        max_concurrent=10,
+        max_queue=10,
+        max_per_identity=5,
+        timeout_seconds=0.1,
+        max_temp_storage_per_identity=budget,
+    )
+
+    # First reservation succeeds
+    ok1, reason1 = controller.reserve_storage("client1", 6_000_000)
+    assert ok1 is True
+    assert reason1 == "ok"
+
+    # Second reservation for same identity succeeds if within budget
+    ok2, reason2 = controller.reserve_storage("client1", 3_000_000)
+    assert ok2 is True
+
+    # Total reserved: 9 MB, 1 MB remaining
+    assert controller.get_reserved_storage("client1") == 9_000_000
+
+    # Third reservation exceeds budget
+    ok3, reason3 = controller.reserve_storage("client1", 2_000_000)
+    assert ok3 is False
+    assert reason3 == "storage_budget_exceeded"
+
+    # Different identity has separate budget
+    ok4, reason4 = controller.reserve_storage("client2", budget)
+    assert ok4 is True
+    assert controller.get_reserved_storage("client2") == budget
+
+
+def test_storage_budget_release():
+    """Released storage becomes available for new reservations."""
+    budget = 10_000_000
+    controller = AdmissionController(
+        max_concurrent=10,
+        max_queue=10,
+        max_per_identity=5,
+        timeout_seconds=0.1,
+        max_temp_storage_per_identity=budget,
+    )
+
+    # Reserve full budget
+    ok1, _ = controller.reserve_storage("client1", budget)
+    assert ok1 is True
+
+    # Release half
+    controller.release_storage("client1", 5_000_000)
+    assert controller.get_reserved_storage("client1") == 5_000_000
+
+    # Can now reserve up to remaining budget
+    ok2, _ = controller.reserve_storage("client1", 5_000_000)
+    assert ok2 is True
+
+    # Release more than reserved (should clamp to zero)
+    controller.release_storage("client1", 10_000_000)
+    assert controller.get_reserved_storage("client1") == 0
+
+    # Can reserve full budget again
+    ok3, _ = controller.reserve_storage("client1", budget)
+    assert ok3 is True
+
+
+def test_storage_budget_zero_budget():
+    """Zero budget means no storage allowed."""
+    controller = AdmissionController(
+        max_concurrent=10,
+        max_queue=10,
+        max_per_identity=5,
+        timeout_seconds=0.1,
+        max_temp_storage_per_identity=0,
+    )
+
+    ok, reason = controller.reserve_storage("client1", 1)
+    assert ok is False
+    assert reason == "storage_budget_exceeded"
+
+
+def test_storage_budget_invalid_size():
+    """Negative size is rejected."""
+    controller = AdmissionController(
+        max_concurrent=10,
+        max_queue=10,
+        max_per_identity=5,
+        timeout_seconds=0.1,
+        max_temp_storage_per_identity=10_000_000,
+    )
+
+    ok, reason = controller.reserve_storage("client1", -1)
+    assert ok is False
+    assert reason == "invalid_size"
+
+    # Negative release is no-op
+    controller.release_storage("client1", -100)
+    assert controller.get_reserved_storage("client1") == 0
+
+
+def test_storage_budget_concurrent_identities():
+    """Multiple identities can reserve up to their individual budgets."""
+    budget = 5_000_000
+    controller = AdmissionController(
+        max_concurrent=10,
+        max_queue=10,
+        max_per_identity=5,
+        timeout_seconds=0.1,
+        max_temp_storage_per_identity=budget,
+    )
+
+    identities = [f"client{i}" for i in range(10)]
+    
+    # All identities can reserve their full budget
+    for identity in identities:
+        ok, _ = controller.reserve_storage(identity, budget)
+        assert ok is True
+        assert controller.get_reserved_storage(identity) == budget
+
+    # Total reserved across all identities: 10 * 5MB = 50MB
+    # (There's no global limit, only per-identity)
+    for identity in identities:
+        controller.release_storage(identity, budget)
+        assert controller.get_reserved_storage(identity) == 0
