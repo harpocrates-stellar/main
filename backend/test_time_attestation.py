@@ -9,6 +9,7 @@ Covers:
 - Resource bounds
 - Multiple anchor types
 - Offline verification scenarios
+- Rejection of receipt metadata containing unsupported critical extensions
 """
 
 import time
@@ -31,6 +32,7 @@ from time_attestation import (
     MAX_TIMESTAMP_TOKEN_SIZE,
     MAX_ANCHOR_COUNT,
     PROFILE_ID,
+    validate_receipt_input,
 )
 
 
@@ -39,6 +41,8 @@ from time_attestation import (
 VALID_EVIDENCE_DIGEST = "a" * 64
 VALID_TX_HASH = "b" * 64
 STELLAR_TESTNET_PASSPHRASE = "Test SDF Network ; September 2015"
+PARENT_STATEMENT_ID = "e" * 64
+CHILD_STATEMENT_ID = "f" * 64
 
 
 @pytest.fixture
@@ -56,6 +60,18 @@ def valid_attestation(current_time_ms):
     )
 
 
+@pytest.fixture
+def bound_attestation(current_time_ms):
+    return create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 1000,
+        claimed_source_label="device_clock",
+        uncertainty_ms=500,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id=CHILD_STATEMENT_ID,
+    )
+
+
 # ── Creation and encoding ──────────────────────────────────────────────────
 
 def test_create_time_attestation_minimal():
@@ -69,6 +85,8 @@ def test_create_time_attestation_minimal():
     assert attestation.claimed_time is None
     assert attestation.stellar_anchors == []
     assert attestation.rfc3161_anchors == []
+    assert attestation.parent_statement_id is None
+    assert attestation.child_statement_id is None
 
 
 def test_create_time_attestation_with_claimed(current_time_ms):
@@ -85,6 +103,18 @@ def test_create_time_attestation_with_claimed(current_time_ms):
     assert attestation.claimed_time.uncertainty_ms == 200
 
 
+def test_create_time_attestation_with_statement_binding(current_time_ms):
+    attestation = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 5000,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id=CHILD_STATEMENT_ID,
+    )
+
+    assert attestation.parent_statement_id == PARENT_STATEMENT_ID
+    assert attestation.child_statement_id == CHILD_STATEMENT_ID
+
+
 def test_encode_decode_roundtrip(valid_attestation):
     encoded = encode_time_attestation(valid_attestation)
     decoded = decode_time_attestation(encoded)
@@ -96,6 +126,16 @@ def test_encode_decode_roundtrip(valid_attestation):
     assert decoded.observed_time.unix_ms == valid_attestation.observed_time.unix_ms
 
 
+def test_encode_decode_roundtrip_statement_binding(bound_attestation):
+    encoded = encode_time_attestation(bound_attestation)
+    decoded = decode_time_attestation(encoded)
+
+    assert decoded.parent_statement_id == PARENT_STATEMENT_ID
+    assert decoded.child_statement_id == CHILD_STATEMENT_ID
+    assert encoded["parentStatementId"] == PARENT_STATEMENT_ID
+    assert encoded["childStatementId"] == CHILD_STATEMENT_ID
+
+
 def test_canonical_hash_deterministic(valid_attestation):
     hash1 = canonical_time_attestation_hash(valid_attestation)
     hash2 = canonical_time_attestation_hash(valid_attestation)
@@ -103,6 +143,23 @@ def test_canonical_hash_deterministic(valid_attestation):
     assert hash1 == hash2
     assert len(hash1) == 64
     int(hash1, 16)  # Verify it's valid hex
+
+
+def test_canonical_hash_binds_statement_ids(valid_attestation, current_time_ms):
+    base = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 1000,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id=CHILD_STATEMENT_ID,
+    )
+    other = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 1000,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id="1" * 64,
+    )
+
+    assert canonical_time_attestation_hash(base) != canonical_time_attestation_hash(other)
 
 
 # ── Validation ─────────────────────────────────────────────────────────────
@@ -118,6 +175,15 @@ def test_validate_wrong_evidence_digest(valid_attestation):
     
     assert len(errors) > 0
     assert any("digest mismatch" in err.lower() for err in errors)
+
+
+def test_validate_rejects_conflicting_statement_binding(bound_attestation):
+    errors = validate_time_attestation(
+        bound_attestation,
+        VALID_EVIDENCE_DIGEST,
+        expected_parent_statement_id="2" * 64,
+    )
+    assert any("parent statement" in err.lower() for err in errors)
 
 
 def test_validate_rejects_future_time(current_time_ms):
@@ -523,3 +589,185 @@ def test_multiple_stellar_anchors_from_different_networks(valid_attestation, cur
     
     assert len(with_both.stellar_anchors) == 2
     assert with_both.stellar_anchors[0].network_passphrase != with_both.stellar_anchors[1].network_passphrase
+
+
+# ── Receipt input binding ──────────────────────────────────────────────────
+
+def test_receipt_input_accepts_canonical_binding(bound_attestation):
+    receipt_input = validate_receipt_input(
+        bound_attestation,
+        VALID_EVIDENCE_DIGEST,
+        expected_parent_statement_id=PARENT_STATEMENT_ID,
+        expected_child_statement_id=CHILD_STATEMENT_ID,
+    )
+
+    assert receipt_input["evidenceDigest"] == VALID_EVIDENCE_DIGEST
+    assert receipt_input["parentStatementId"] == PARENT_STATEMENT_ID
+    assert receipt_input["childStatementId"] == CHILD_STATEMENT_ID
+    # Frontend retains signing and envelope versioning ownership.
+    assert "signature" not in receipt_input
+    assert "envelopeVersion" not in receipt_input
+
+
+def test_receipt_input_rejects_conflicting_parent(bound_attestation):
+    with pytest.raises(ValueError, match="parent statement"):
+        validate_receipt_input(
+            bound_attestation,
+            VALID_EVIDENCE_DIGEST,
+            expected_parent_statement_id="2" * 64,
+            expected_child_statement_id=CHILD_STATEMENT_ID,
+        )
+
+
+def test_receipt_input_rejects_conflicting_child(bound_attestation):
+    with pytest.raises(ValueError, match="child statement"):
+        validate_receipt_input(
+            bound_attestation,
+            VALID_EVIDENCE_DIGEST,
+            expected_parent_statement_id=PARENT_STATEMENT_ID,
+            expected_child_statement_id="3" * 64,
+        )
+
+
+# ── Time bounds (explicit inclusive/exclusive) ────────────────────────────────
+
+def test_encode_includes_time_bounds(valid_attestation, current_time_ms):
+    """Encoded time attestation includes explicit time bounds metadata."""
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    with_both = add_rfc3161_anchor(
+        with_stellar,
+        token_bytes="test_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=current_time_ms,
+    )
+    
+    encoded = encode_time_attestation(with_both)
+    
+    assert "timeBounds" in encoded
+    bounds = encoded["timeBounds"]
+    assert bounds["claimedTime"] == "inclusive"
+    assert bounds["observedTime"] == "inclusive"
+    assert bounds["stellarAnchors"] == "inclusive"
+    assert bounds["rfc3161Anchors"] == "inclusive"
+
+
+def test_encode_time_bounds_minimal_attestation():
+    """Minimal attestation (only observed time) includes time bounds."""
+    attestation = create_time_attestation(VALID_EVIDENCE_DIGEST)
+    encoded = encode_time_attestation(attestation)
+    
+    assert "timeBounds" in encoded
+    bounds = encoded["timeBounds"]
+    assert bounds["observedTime"] == "inclusive"
+    assert "claimedTime" not in bounds
+    assert "stellarAnchors" not in bounds
+    assert "rfc3161Anchors" not in bounds
+    assert "parentStatementId" not in bounds
+    assert "childStatementId" not in bounds
+
+
+def test_decode_ignores_time_bounds_for_backward_compatibility(valid_attestation, current_time_ms):
+    """Decoding works with or without timeBounds field (backward compatibility)."""
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    encoded = encode_time_attestation(with_stellar)
+    # Remove timeBounds to simulate old format
+    encoded_without_bounds = {k: v for k, v in encoded.items() if k != "timeBounds"}
+    
+    decoded = decode_time_attestation(encoded_without_bounds)
+    
+    assert decoded.stellar_anchors[0].ledger_sequence == 100
+    assert decoded.evidence_digest == VALID_EVIDENCE_DIGEST
+
+
+def test_fixed_clock_boundary_exact_match(valid_attestation):
+    """Exact timestamp boundary matching with fixed clock."""
+    # Use a fixed timestamp for deterministic testing
+    fixed_time_ms = 1700000000000  # Fixed reference time
+    
+    # Create attestation with claimed time exactly at fixed time
+    attestation = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=fixed_time_ms,
+    )
+    
+    # Manually set observed time to same fixed time for exact boundary test
+    attestation = TimeAttestation(
+        version=attestation.version,
+        protocol=attestation.protocol,
+        evidence_digest=attestation.evidence_digest,
+        claimed_time=attestation.claimed_time,
+        observed_time=ObservedTime(unix_ms=fixed_time_ms, source_label="fixed_clock"),
+        stellar_anchors=attestation.stellar_anchors,
+        rfc3161_anchors=attestation.rfc3161_anchors,
+    )
+    
+    encoded = encode_time_attestation(attestation)
+    decoded = decode_time_attestation(encoded)
+    
+    # Exact boundary: claimed and observed time are identical
+    assert decoded.claimed_time.unix_ms == fixed_time_ms
+    assert decoded.observed_time.unix_ms == fixed_time_ms
+    assert encoded["timeBounds"]["claimedTime"] == "inclusive"
+    assert encoded["timeBounds"]["observedTime"] == "inclusive"
+
+
+def test_fixed_clock_stellar_anchor_boundary(valid_attestation):
+    """Stellar ledger timestamp at exact boundary with fixed clock."""
+    fixed_ledger_ts = 1700000000  # Fixed ledger timestamp (Unix seconds)
+    fixed_gen_time_ms = 1700000000000  # Fixed gen time (Unix ms)
+    
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=fixed_ledger_ts,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    with_rfc3161 = add_rfc3161_anchor(
+        with_stellar,
+        token_bytes="boundary_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=fixed_gen_time_ms,
+    )
+    
+    encoded = encode_time_attestation(with_rfc3161)
+    decoded = decode_time_attestation(encoded)
+    
+    # Verify exact boundary values preserved
+    assert decoded.stellar_anchors[0].ledger_timestamp == fixed_ledger_ts
+    assert decoded.rfc3161_anchors[0].gen_time == fixed_gen_time_ms
+    assert encoded["timeBounds"]["stellarAnchors"] == "inclusive"
+    assert encoded["timeBounds"]["rfc3161Anchors"] == "inclusive"
+
+
+def test_time_bounds_canonical_hash_deterministic(valid_attestation, current_time_ms):
+    """Canonical hash includes time bounds for deterministic verification."""
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    hash1 = canonical_time_attestation_hash(with_stellar)
+    hash2 = canonical_time_attestation_hash(with_stellar)
+    
+    assert hash1 == hash2
+    # Hash should be deterministic and include time bounds
+    assert len(hash1) == 64

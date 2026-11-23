@@ -23,6 +23,7 @@ import pytest
 
 from c2pa import (
     C2PA_HARPOCRATES_MAPPING_VERSION,
+    C2paAssertionCompatibilityReport,
     C2paExportedManifest,
     C2paHarpocratesBinding,
     C2paHashCorroboration,
@@ -34,6 +35,7 @@ from c2pa import (
     _MAX_ASSERTION_LABEL_LEN,
     _MAX_JSON_DEPTH,
     _MAX_MANIFEST_BYTES,
+    build_assertion_compatibility_report,
     corroborate_binding,
     export_c2pa_manifest,
     parse_c2pa_manifest,
@@ -919,3 +921,138 @@ class TestHashCorroboration:
         assert corroborate_binding(self._parsed(), **args) == corroborate_binding(
             self._parsed(), **args
         )
+
+
+# ---------------------------------------------------------------------------
+# Critical-assertion compatibility report tests
+# ---------------------------------------------------------------------------
+
+
+class TestCriticalAssertionCompatibilityReport:
+    def test_supported_only_manifest_is_compatible(self):
+        d = _valid_manifest_dict()
+        report = build_assertion_compatibility_report(_encode(d))
+        assert isinstance(report, C2paAssertionCompatibilityReport)
+        assert report.supported_assertions == ("harpocrates.binding/v1",)
+        assert report.optional_unknown_assertions == ()
+        assert report.required_unknown_assertions == ()
+        assert report.compatible is True
+        assert report.fail_closed is False
+
+    def test_optional_unknown_assertions_are_classified_and_allowed(self):
+        d = _valid_manifest_dict()
+        d["assertions"].append({"label": "c2pa.actions", "data": {"actions": []}})
+        d["assertions"].append(
+            {"label": "c2pa.thumbnail", "data": "thumb", "critical": False, "required": False}
+        )
+        raw = _encode(d)
+
+        parsed = parse_c2pa_manifest(raw)
+        report = parsed.compatibility_report
+        assert report.supported_assertions == ("harpocrates.binding/v1",)
+        assert report.optional_unknown_assertions == ("c2pa.actions", "c2pa.thumbnail")
+        assert report.required_unknown_assertions == ()
+        assert report.compatible is True
+        assert report.fail_closed is False
+        assert report == build_assertion_compatibility_report(raw)
+
+    def test_supported_assertion_marked_critical_remains_compatible(self):
+        d = _valid_manifest_dict()
+        d["assertions"][0]["critical"] = True
+        d["assertions"][0]["required"] = True
+        raw = _encode(d)
+
+        parsed = parse_c2pa_manifest(raw)
+        assert parsed.compatibility_report.supported_assertions == ("harpocrates.binding/v1",)
+        assert parsed.compatibility_report.required_unknown_assertions == ()
+        assert parsed.compatibility_report.compatible is True
+        assert parsed.compatibility_report.fail_closed is False
+
+    def test_critical_unknown_assertion_fails_closed_on_parse(self):
+        d = _valid_manifest_dict()
+        d["assertions"].append(
+            {
+                "label": "c2pa.custom.critical",
+                "critical": True,
+                "data": {"secret": "SENSITIVE_ASSERTION_VALUE"},
+            }
+        )
+        raw = _encode(d)
+
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(raw)
+        assert exc_info.value.reason == "unsupported_critical_assertion"
+        assert exc_info.value.field == "assertions[1]"
+        assert "SENSITIVE_ASSERTION_VALUE" not in str(exc_info.value)
+
+        report = build_assertion_compatibility_report(raw)
+        assert report.supported_assertions == ("harpocrates.binding/v1",)
+        assert report.optional_unknown_assertions == ()
+        assert report.required_unknown_assertions == ("c2pa.custom.critical",)
+        assert report.compatible is False
+        assert report.fail_closed is True
+
+    def test_required_unknown_assertion_fails_closed_on_parse(self):
+        d = _valid_manifest_dict()
+        d["assertions"].append(
+            {"label": "org.example.policy.v2", "required": True, "data": {"rule": "strict"}}
+        )
+        raw = _encode(d)
+
+        with pytest.raises(C2paParseError) as exc_info:
+            parse_c2pa_manifest(raw)
+        assert exc_info.value.reason == "unsupported_critical_assertion"
+        assert exc_info.value.field == "assertions[1]"
+
+        report = build_assertion_compatibility_report(raw)
+        assert report.required_unknown_assertions == ("org.example.policy.v2",)
+        assert report.compatible is False
+        assert report.fail_closed is True
+
+    def test_mixed_assertions_report_lists_all_three_categories_and_is_privacy_safe(self):
+        d = _valid_manifest_dict()
+        d["assertions"].extend(
+            [
+                {"label": "c2pa.actions", "data": {"secret_opt": "OPT_SECRET"}},
+                {"label": "c2pa.custom.critical", "critical": True, "data": {"secret_req": "REQ_SECRET"}},
+                {"label": "c2pa.thumbnail", "required": False, "data": "thumb"},
+                {"label": "org.example.required", "required": True, "data": {}},
+            ]
+        )
+        report = build_assertion_compatibility_report(_encode(d))
+        payload = report.to_dict()
+        assert payload == {
+            "supported_assertions": ["harpocrates.binding/v1"],
+            "optional_unknown_assertions": ["c2pa.actions", "c2pa.thumbnail"],
+            "required_unknown_assertions": ["c2pa.custom.critical", "org.example.required"],
+            "compatible": False,
+            "fail_closed": True,
+        }
+        rendered = json.dumps(payload)
+        assert "OPT_SECRET" not in rendered
+        assert "REQ_SECRET" not in rendered
+        assert VALID_VIDEO_HASH not in rendered
+
+    @pytest.mark.parametrize(
+        "flag_name,bad_value",
+        [
+            ("critical", "true"),
+            ("critical", 1),
+            ("required", "yes"),
+            ("required", 0),
+        ],
+    )
+    def test_non_boolean_critical_or_required_flag_fails_closed(self, flag_name, bad_value):
+        d = _valid_manifest_dict()
+        d["assertions"].append({"label": "c2pa.actions", flag_name: bad_value, "data": {}})
+        raw = _encode(d)
+
+        with pytest.raises(C2paParseError) as parse_exc:
+            parse_c2pa_manifest(raw)
+        assert parse_exc.value.reason == "invalid_type"
+        assert parse_exc.value.field == f"assertions[1].{flag_name}"
+
+        with pytest.raises(C2paParseError) as report_exc:
+            build_assertion_compatibility_report(raw)
+        assert report_exc.value.reason == "invalid_type"
+        assert report_exc.value.field == f"assertions[1].{flag_name}"

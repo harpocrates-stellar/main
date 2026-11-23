@@ -60,6 +60,8 @@ from typing import Any, Iterable
 
 MANIFEST_FORMAT = "harpocrates.zk-artifact-manifest"
 MANIFEST_VERSION = 1
+REPRODUCIBILITY_REPORT_FORMAT = "harpocrates.zk-reproducibility-report"
+REPRODUCIBILITY_REPORT_VERSION = 1
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -98,6 +100,15 @@ FATAL_STATES = frozenset({ArtifactState.OVERSIZE, ArtifactState.UNREADABLE})
 
 class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
+
+
+class ArtifactSizeMismatchError(BuildError):
+    """A declared artifact size disagrees with the on-disk size.
+
+    Raised *before* the file is hashed or decompressed, so a size mismatch
+    costs only a stat() rather than the full read/normalize/digest pipeline.
+    The message names the declared path and the two sizes only.
+    """
 
 
 # ── Signals ─────────────────────────────────────────────────────────────────
@@ -295,12 +306,35 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _rel(path: Path) -> str:
+def _rel(path: Path, root: Path = REPO_ROOT) -> str:
     """Repo-relative, forward-slashed path — the only path form ever logged."""
     try:
-        return path.resolve().relative_to(REPO_ROOT).as_posix()
+        return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return path.name
+
+
+def resolve_within_root(declared: str, root: Path) -> Path:
+    """Resolve *declared* against *root* and require the result to stay inside.
+
+    Aliases (``..`` segments and symlinks) are resolved first, then the result
+    is required to live under the resolved *root*. On any escape the helper
+    raises :class:`ArtifactPathEscapeError` naming only the declared path and
+    the root name — never the absolute host path.
+    """
+    try:
+        root_resolved = root.resolve()
+        resolved = (root_resolved / declared).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ArtifactPathEscapeError(
+            f"artifact path {declared!r} cannot be resolved: {type(exc).__name__}"
+        ) from exc
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise ArtifactPathEscapeError(
+            f"artifact path {declared!r} resolves outside the release directory "
+            f"{root.name!r}; refusing to read it"
+        )
+    return resolved
 
 
 @dataclass
@@ -321,9 +355,27 @@ class ArtifactResult:
             "role": self.role,
             "raw_bytes": self.raw_bytes,
             "normalized_bytes": self.normalized_bytes,
+            "size_bytes": self.raw_bytes,
             "raw_sha256": self.raw_sha256,
             "normalized_sha256": self.normalized_sha256,
         }
+
+
+@dataclass
+class DependencyRecord:
+    """One content-addressed input that an artifact was built from.
+
+    ``kind`` is one of ``source``, ``helper``, or ``toolchain``. ``sha256``
+    is the digest of the file content (for source/helper) or of the pinned
+    toolchain version record (for toolchain). Paths are repo-relative.
+    """
+
+    path: str
+    kind: str
+    sha256: str
+
+    def to_entry(self) -> dict:
+        return {"path": self.path, "kind": self.kind, "sha256": self.sha256}
 
 
 def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult:
@@ -331,7 +383,7 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
     kind = declaration["kind"]
     role = declaration.get("role", "unknown")
     required = bool(declaration.get("required", False))
-    target = root / relative
+    target = resolve_within_root(relative, root)
 
     result = ArtifactResult(path=relative, kind=kind, role=role, state=ArtifactState.MISSING)
 
@@ -340,6 +392,7 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
         signal("artifact.state", path=relative, state=result.state, required=required)
         return result
 
+    # Use the resolved path for subsequent filesystem operations.
     size = target.stat().st_size
     if size > lock.limits.max_artifact_bytes:
         result.state = ArtifactState.OVERSIZE
@@ -352,6 +405,27 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
             limit=lock.limits.max_artifact_bytes,
         )
         return result
+
+    # Size validation (#1218): if the lock declares an expected size, check it
+    # against the on-disk stat *before* reading, normalizing, or hashing. A
+    # mismatch is rejected explicitly and deterministically; the error names
+    # the declared path and both sizes, never the absolute host path.
+    declared_size = declaration.get("size_bytes")
+    if declared_size is not None:
+        try:
+            declared_int = int(declared_size)
+        except (TypeError, ValueError) as exc:
+            raise BuildError(
+                f"artifact {relative}: declared size_bytes is not an integer"
+            ) from exc
+        if declared_int < 0:
+            raise BuildError(
+                f"artifact {relative}: declared size_bytes is negative"
+            )
+        if declared_int != size:
+            raise ArtifactSizeMismatchError(
+                f"artifact {relative}: declared size {declared_int} != actual {size}"
+            )
 
     try:
         data = target.read_bytes()
@@ -397,7 +471,7 @@ def collect_provenance(lock: Lock, root: Path) -> dict[str, str]:
                 raise BuildError(
                     f"provenance set exceeds {lock.limits.max_provenance_files} files"
                 )
-            found[_rel(path)] = sha256_hex(path.read_bytes())
+            found[_rel(path, root)] = sha256_hex(path.read_bytes())
     return dict(sorted(found.items()))
 
 
@@ -422,22 +496,38 @@ def build_manifest(lock: Lock, root: Path) -> tuple[dict, ManifestRun]:
     for declaration in lock.artifacts:
         run.entries.append(digest_artifact(declaration, lock, root))
 
+    provenance = collect_provenance(lock, root)
+    toolchain = {
+        "nargo": lock.toolchain["nargo"]["version"],
+        "barretenberg": lock.toolchain["barretenberg"]["version"],
+        "proving_scheme": lock.toolchain["proving_scheme"],
+        "oracle_hash": lock.toolchain["oracle_hash"],
+    }
+    # Content-addressed dependency graph (#1215): every artifact entry carries
+    # the source files, helper files, and pinned toolchain record it was
+    # built from. The toolchain record is hashed as canonical JSON so the
+    # digest is stable across hosts; source/helper digests come from the
+    # provenance map already collected above.
+    toolchain_sha = sha256_hex(
+        json.dumps(toolchain, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    dependencies = {
+        "toolchain": {"sha256": toolchain_sha},
+        "sources": dict(sorted(provenance.items())),
+    }
+
     manifest = {
         "format": MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
-        "toolchain": {
-            "nargo": lock.toolchain["nargo"]["version"],
-            "barretenberg": lock.toolchain["barretenberg"]["version"],
-            "proving_scheme": lock.toolchain["proving_scheme"],
-            "oracle_hash": lock.toolchain["oracle_hash"],
-        },
+        "toolchain": toolchain,
         "environment": dict(sorted(lock.environment.items())),
         "normalization_policy_sha256": sha256_hex(
             json.dumps(lock.raw["normalization"], sort_keys=True, separators=(",", ":")).encode(
                 "utf-8"
             )
         ),
-        "provenance": collect_provenance(lock, root),
+        "provenance": provenance,
+        "dependencies": dependencies,
         "artifacts": [
             entry.to_entry()
             for entry in run.entries
@@ -512,6 +602,12 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
         if after is None:
             findings.append(f"artifact {path}: missing from the rebuilt tree")
             continue
+        before_size = before.get("size_bytes", before.get("raw_bytes"))
+        after_size = after.get("size_bytes", after.get("raw_bytes"))
+        if before_size is not None and after_size is not None and before_size != after_size:
+            findings.append(
+                f"artifact {path}: size {before_size} -> {after_size}"
+            )
         if before.get("normalized_sha256") != after.get("normalized_sha256"):
             findings.append(
                 f"artifact {path}: normalized digest "
@@ -527,10 +623,221 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
     return findings
 
 
+def stale_artifacts(manifest: dict, current_inputs: dict) -> list[str]:
+    """Return a list of dependency paths whose recorded digest no longer
+    matches ``current_inputs`` (path -> sha256).
+
+    ``current_inputs`` is what ``collect_provenance`` returns right now. Any
+    source or helper file present in the manifest's ``dependencies.sources``
+    whose digest has changed (or which no longer exists) is reported. A tool
+    chain record mismatch is reported under the synthetic path
+    ``toolchain`` so a bumped compiler version flags every artifact.
+    """
+    findings: list[str] = []
+    recorded_sources = (manifest.get("dependencies") or {}).get("sources", {})
+    for path, recorded_sha in sorted(recorded_sources.items()):
+        actual_sha = current_inputs.get(path)
+        if actual_sha is None:
+            findings.append(f"dependency {path}: recorded but not present on disk")
+        elif actual_sha != recorded_sha:
+            findings.append(
+                f"dependency {path}: {_short(recorded_sha)} -> {_short(actual_sha)}"
+            )
+    for path in sorted(set(current_inputs) - set(recorded_sources)):
+        findings.append(f"dependency {path}: new input, not recorded in manifest")
+    return findings
+
+
 def _short(digest: str | None) -> str:
     if digest is None:
         return "absent"
     return digest[:16]
+
+
+def build_comparison_report(
+    first: dict,
+    second: dict,
+    *,
+    first_dir: str | None = None,
+    second_dir: str | None = None,
+) -> dict:
+    """Build a structured two-build reproducibility comparison report.
+
+    Distinguishes nondeterministic metadata-only drift (raw digest differs,
+    canonical/normalized digest matches) from changed executable artifacts
+    (normalized digest differs) and missing/unexpected artifacts.
+
+    Privacy: carries only repo-relative paths, roles, kinds, byte counts, and
+    digests — never artifact bytes.
+    """
+    policy_drift: list[str] = []
+
+    for key in ("format", "version"):
+        if first.get(key) != second.get(key):
+            policy_drift.append(
+                f"manifest {key}: expected {first.get(key)!r}, got {second.get(key)!r}"
+            )
+
+    for key, expected_value in sorted(first.get("toolchain", {}).items()):
+        actual_value = second.get("toolchain", {}).get(key)
+        if expected_value != actual_value:
+            policy_drift.append(
+                f"toolchain.{key}: expected {expected_value!r}, got {actual_value!r}"
+            )
+
+    if first.get("normalization_policy_sha256") != second.get("normalization_policy_sha256"):
+        policy_drift.append(
+            "normalization policy changed; artifacts digested under different rules"
+        )
+
+    first_prov = first.get("provenance", {})
+    second_prov = second.get("provenance", {})
+    for path in sorted(set(first_prov) | set(second_prov)):
+        before = first_prov.get(path)
+        after = second_prov.get(path)
+        if before != after:
+            policy_drift.append(f"source {path}: {_short(before)} -> {_short(after)}")
+
+    first_artifacts = {entry["path"]: entry for entry in first.get("artifacts", [])}
+    second_artifacts = {entry["path"]: entry for entry in second.get("artifacts", [])}
+
+    artifact_rows: list[dict[str, Any]] = []
+    counts = {
+        "reproducible": 0,
+        "metadata_only_drift": 0,
+        "executable_drift": 0,
+        "missing": 0,
+    }
+
+    for path in sorted(set(first_artifacts) | set(second_artifacts)):
+        before = first_artifacts.get(path)
+        after = second_artifacts.get(path)
+        ref = before or after or {}
+        kind = ref.get("kind", "unknown")
+        role = ref.get("role", "unknown")
+
+        if before is None:
+            classification = "missing_in_first"
+            detail = f"artifact {path}: present only in second build"
+            counts["missing"] += 1
+        elif after is None:
+            classification = "missing_in_second"
+            detail = f"artifact {path}: missing from second build"
+            counts["missing"] += 1
+        elif before.get("normalized_sha256") != after.get("normalized_sha256"):
+            classification = "executable_drift"
+            detail = (
+                f"artifact {path}: canonical/normalized digest changed "
+                f"({_short(before.get('normalized_sha256'))} -> "
+                f"{_short(after.get('normalized_sha256'))}); executable artifact differs"
+            )
+            counts["executable_drift"] += 1
+        elif before.get("raw_sha256") != after.get("raw_sha256"):
+            classification = "metadata_only_drift"
+            detail = (
+                f"artifact {path}: raw digest differs "
+                f"({_short(before.get('raw_sha256'))} -> {_short(after.get('raw_sha256'))}) "
+                "but canonical/normalized digest matches (nondeterministic metadata only)"
+            )
+            counts["metadata_only_drift"] += 1
+        else:
+            classification = "reproducible"
+            detail = "byte-for-byte identical across both builds"
+            counts["reproducible"] += 1
+
+        artifact_rows.append(
+            {
+                "path": path,
+                "kind": kind,
+                "role": role,
+                "classification": classification,
+                "first_raw_bytes": before.get("raw_bytes") if before else None,
+                "second_raw_bytes": after.get("raw_bytes") if after else None,
+                "first_normalized_bytes": before.get("normalized_bytes") if before else None,
+                "second_normalized_bytes": after.get("normalized_bytes") if after else None,
+                "first_raw_sha256": before.get("raw_sha256") if before else None,
+                "second_raw_sha256": after.get("raw_sha256") if after else None,
+                "first_normalized_sha256": before.get("normalized_sha256") if before else None,
+                "second_normalized_sha256": after.get("normalized_sha256") if after else None,
+                "detail": detail,
+            }
+        )
+
+    has_executable_drift = counts["executable_drift"] > 0
+    has_metadata_only_drift = counts["metadata_only_drift"] > 0
+    has_blocking_drift = has_executable_drift or counts["missing"] > 0 or bool(policy_drift)
+
+    if has_blocking_drift:
+        status = "non_reproducible"
+    elif has_metadata_only_drift:
+        status = "reproducible_with_metadata_drift"
+    else:
+        status = "reproducible"
+
+    return {
+        "format": REPRODUCIBILITY_REPORT_FORMAT,
+        "version": REPRODUCIBILITY_REPORT_VERSION,
+        "status": status,
+        "has_executable_drift": has_executable_drift,
+        "has_metadata_only_drift": has_metadata_only_drift,
+        "isolated_output_dirs": {
+            "first": first_dir,
+            "second": second_dir,
+        },
+        "toolchain": first.get("toolchain", {}),
+        "normalization_policy_sha256": first.get("normalization_policy_sha256"),
+        "summary": {
+            "total": len(artifact_rows),
+            "reproducible": counts["reproducible"],
+            "metadata_only_drift": counts["metadata_only_drift"],
+            "executable_drift": counts["executable_drift"],
+            "missing": counts["missing"],
+            "policy_drift": len(policy_drift),
+        },
+        "policy_drift": policy_drift,
+        "artifacts": artifact_rows,
+    }
+
+
+def format_comparison_report_markdown(report: dict) -> str:
+    """Render a reproducibility comparison report as a deterministic Markdown summary."""
+    summary = report["summary"]
+    lines = [
+        "# Two-Build Artifact Reproducibility Comparison Report",
+        "",
+        f"- **Status:** `{report['status']}`",
+        f"- **Total artifacts:** {summary['total']}",
+        f"- **Reproducible (byte-identical):** {summary['reproducible']}",
+        f"- **Metadata-only drift (canonical match):** {summary['metadata_only_drift']}",
+        f"- **Executable drift (canonical mismatch):** {summary['executable_drift']}",
+        f"- **Missing/unexpected:** {summary['missing']}",
+        f"- **Policy/provenance drift:** {summary['policy_drift']}",
+        "",
+    ]
+
+    if report.get("policy_drift"):
+        lines.append("## Policy & Provenance Drift")
+        lines.append("")
+        for item in report["policy_drift"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Artifacts",
+            "",
+            "| Artifact | Kind | Role | Classification | Build 1 Canonical | Build 2 Canonical |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in report.get("artifacts", []):
+        lines.append(
+            f"| `{row['path']}` | `{row['kind']}` | `{row['role']}` | "
+            f"`{row['classification']}` | `{_short(row['first_normalized_sha256'])}` | "
+            f"`{_short(row['second_normalized_sha256'])}` |"
+        )
+    lines.append("")
+    return "\n".join(lines)
 
 
 
@@ -790,11 +1097,6 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
     for declaration in published_acir_declarations(lock):
         published_path = declaration["path"]
         target_path = published_to_build_target(published_path)
-        published = root / published_path
-        target = root / target_path
-        if not published.is_file() or not target.is_file():
-            continue
-
         published_decl = {
             "path": published_path,
             "kind": declaration.get("kind", "json"),
@@ -809,6 +1111,12 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
         }
         published_result = digest_artifact(published_decl, lock, root)
         target_result = digest_artifact(target_decl, lock, root)
+
+        # Missing files are not drift: either side may await a later publish.
+        if published_result.state in (ArtifactState.MISSING, ArtifactState.SKIPPED):
+            continue
+        if target_result.state in (ArtifactState.MISSING, ArtifactState.SKIPPED):
+            continue
 
         if published_result.state != ArtifactState.DIGESTED:
             findings.append(
@@ -1099,7 +1407,8 @@ def _fail_on_fatal(run: ManifestRun) -> None:
 
 def command_write(args: argparse.Namespace) -> int:
     lock = load_lock(Path(args.lock))
-    manifest, run = build_manifest(lock, REPO_ROOT)
+    root = Path(args.root) if getattr(args, "root", None) else REPO_ROOT
+    manifest, run = build_manifest(lock, root)
     _fail_on_fatal(run)
 
     output = Path(args.output)
@@ -1123,6 +1432,11 @@ def command_verify(args: argparse.Namespace) -> int:
     _fail_on_fatal(run)
 
     findings = compare_manifests(expected, actual)
+    # Stale-input check (#1215): flag any source or helper file whose digest
+    # has changed since the manifest was recorded, before reporting success.
+    stale = stale_artifacts(expected, actual.get("provenance", {}))
+    for finding in stale:
+        findings.append(f"stale: {finding}")
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
@@ -1149,15 +1463,198 @@ def command_compare(args: argparse.Namespace) -> int:
     first = _load_manifest(Path(args.first))
     second = _load_manifest(Path(args.second))
 
+    report = build_comparison_report(
+        first,
+        second,
+        first_dir=getattr(args, "first_dir", None),
+        second_dir=getattr(args, "second_dir", None),
+    )
+
+    report_path = getattr(args, "report", None)
+    if report_path:
+        report_format = getattr(args, "report_format", "json") or "json"
+        out = Path(report_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if report_format == "markdown":
+            out.write_text(format_comparison_report_markdown(report), encoding="utf-8")
+        else:
+            out.write_text(serialize_manifest(report), encoding="utf-8")
+        signal(
+            "compare.report.written",
+            path=_rel(out),
+            format=report_format,
+            status=report["status"],
+        )
+
+    allow_metadata_drift = bool(getattr(args, "allow_metadata_drift", False))
     findings = compare_manifests(first, second)
+    if allow_metadata_drift:
+        blocking_findings = list(report["policy_drift"]) + [
+            row["detail"]
+            for row in report["artifacts"]
+            if row["classification"] in ("executable_drift", "missing_in_first", "missing_in_second")
+        ]
+        if blocking_findings:
+            for finding in blocking_findings:
+                signal("drift.finding", detail=finding)
+            signal(
+                "compare.failed",
+                findings=len(blocking_findings),
+                executable_drift=report["summary"]["executable_drift"],
+                metadata_only_drift=report["summary"]["metadata_only_drift"],
+            )
+            return EXIT_DRIFT
+        if report["has_metadata_only_drift"]:
+            signal(
+                "compare.metadata_drift",
+                count=report["summary"]["metadata_only_drift"],
+                status=report["status"],
+            )
+        signal("compare.ok", artifacts=len(first.get("artifacts", [])), status=report["status"])
+        return EXIT_OK
+
     if findings:
         for finding in findings:
             signal("drift.finding", detail=finding)
-        signal("compare.failed", findings=len(findings))
+        signal(
+            "compare.failed",
+            findings=len(findings),
+            executable_drift=report["summary"]["executable_drift"],
+            metadata_only_drift=report["summary"]["metadata_only_drift"],
+        )
         return EXIT_DRIFT
 
-    signal("compare.ok", artifacts=len(first.get("artifacts", [])))
+    signal("compare.ok", artifacts=len(first.get("artifacts", [])), status=report["status"])
     return EXIT_OK
+
+
+# ── Signed release manifest (#1214) ─────────────────────────────────────────
+#
+# A release manifest binds three things into one signed payload:
+#   - the pinned compiler lock (canonical sha256 of the lock file)
+#   - the circuit source revision (canonical sha256 of every provenance file)
+#   - every exported artifact digest (path -> normalized sha256)
+#
+# The signing primitive is HMAC-SHA256 with a caller-supplied key, stdlib
+# only — the repo has no Ed25519 signer and the issue's boundaries forbid
+# adding a dependency. Verification runs entirely offline: given the signed
+# manifest and the same key, the recomputed MAC must equal the recorded one,
+# and the payload must match the recorded artifact digests.
+#
+# Canonical serialization: JSON with sorted keys, no whitespace drift, the
+# signature field removed before hashing. This makes the signed bytes
+# reproducible across hosts and Python versions.
+
+import hmac as _hmac
+
+
+def _canonical_release_payload(
+    *,
+    toolchain: dict,
+    source_revision: str,
+    artifacts: dict,
+) -> bytes:
+    """Return the deterministic bytes that are signed.
+
+    Excludes any signature field, so sign and verify hash the same input.
+    """
+    payload = {
+        "format": "harpocrates.zk-release-manifest",
+        "version": MANIFEST_VERSION,
+        "toolchain": {k: toolchain[k] for k in sorted(toolchain)},
+        "source_revision": source_revision,
+        "artifacts": {k: artifacts[k] for k in sorted(artifacts)},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sign_manifest(
+    *,
+    toolchain: dict,
+    source_revision: str,
+    artifacts: dict,
+    signing_key: bytes,
+) -> dict:
+    """Return a signed release manifest.
+
+    ``artifacts`` maps repo-relative path -> normalized sha256. The returned
+    dict is JSON-serializable and stable across hosts.
+    """
+    if not signing_key:
+        raise ManifestVerificationError("signing key must be non-empty")
+    body = _canonical_release_payload(
+        toolchain=toolchain,
+        source_revision=source_revision,
+        artifacts=artifacts,
+    )
+    mac = _hmac.new(signing_key, body, "sha256").hexdigest()
+    return {
+        "format": "harpocrates.zk-release-manifest",
+        "version": MANIFEST_VERSION,
+        "toolchain": {k: toolchain[k] for k in sorted(toolchain)},
+        "source_revision": source_revision,
+        "artifacts": {k: artifacts[k] for k in sorted(artifacts)},
+        "signature": {"scheme": "hmac-sha256", "mac": mac},
+    }
+
+
+def verify_manifest(manifest: dict, signing_key: bytes) -> None:
+    """Fail-closed offline verification.
+
+    Raises :class:`ManifestVerificationError` if the manifest is missing the
+    signature, the scheme is unsupported, the MAC does not match, or the
+    payload shape is wrong. No artifact bytes are read here.
+    """
+    if not signing_key:
+        raise ManifestVerificationError("signing key must be non-empty")
+    if manifest.get("format") != "harpocrates.zk-release-manifest":
+        raise ManifestVerificationError("not a release manifest")
+    sig = manifest.get("signature") or {}
+    if sig.get("scheme") != "hmac-sha256":
+        raise ManifestVerificationError("unsupported signature scheme")
+    recorded = sig.get("mac")
+    if not isinstance(recorded, str) or len(recorded) != 64:
+        raise ManifestVerificationError("malformed signature MAC")
+    try:
+        body = _canonical_release_payload(
+            toolchain=manifest["toolchain"],
+            source_revision=manifest["source_revision"],
+            artifacts=manifest["artifacts"],
+        )
+    except (KeyError, TypeError) as exc:
+        raise ManifestVerificationError(
+            f"release manifest missing required field: {type(exc).__name__}"
+        ) from exc
+    expected = _hmac.new(signing_key, body, "sha256").hexdigest()
+    if not _hmac.compare_digest(recorded, expected):
+        raise ManifestVerificationError("signature mismatch")
+
+
+def load_verified_artifacts(manifest: dict, directory: Path, signing_key: bytes) -> dict[str, bytes]:
+    """Verify *manifest*, then load artifact bytes from *directory*.
+
+    Any verification failure raises :class:`ManifestVerificationError` before
+    a single byte is read from disk. On success, returns path -> bytes for
+    every declared artifact whose digest matches the manifest.
+    """
+    verify_manifest(manifest, signing_key)
+    directory = directory.resolve()
+    out: dict[str, bytes] = {}
+    for path, expected_sha in manifest["artifacts"].items():
+        target = directory / path
+        try:
+            data = target.read_bytes()
+        except OSError as exc:
+            raise ManifestVerificationError(
+                f"artifact {path}: cannot be read ({type(exc).__name__})"
+            ) from exc
+        actual = sha256_hex(data)
+        if actual != expected_sha:
+            raise ManifestVerificationError(
+                f"artifact {path}: digest mismatch"
+            )
+        out[path] = data
+    return out
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1169,6 +1666,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     write = subparsers.add_parser("write", help="write a manifest from the working tree")
     write.add_argument("--output", default=str(DEFAULT_MANIFEST))
+    write.add_argument("--root", default=None, help="root directory to digest (defaults to repo root)")
     write.set_defaults(handler=command_write)
 
     verify = subparsers.add_parser("verify", help="fail on drift from a manifest")
@@ -1178,6 +1676,20 @@ def build_parser() -> argparse.ArgumentParser:
     compare = subparsers.add_parser("compare", help="diff two manifests (double build)")
     compare.add_argument("first")
     compare.add_argument("second")
+    compare.add_argument("--report", default=None, help="write structured comparison report to this path")
+    compare.add_argument(
+        "--report-format",
+        choices=("json", "markdown"),
+        default="json",
+        help="format for --report output (default: json)",
+    )
+    compare.add_argument(
+        "--allow-metadata-drift",
+        action="store_true",
+        help="exit 0 when only nondeterministic metadata differs and canonical digests match",
+    )
+    compare.add_argument("--first-dir", default=None, help="label for first isolated output directory")
+    compare.add_argument("--second-dir", default=None, help="label for second isolated output directory")
     compare.set_defaults(handler=command_compare)
 
     coverage = subparsers.add_parser(

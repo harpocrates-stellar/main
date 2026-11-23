@@ -399,3 +399,36 @@ errors, so the on-chain error surface discloses nothing new.
 ## Protocol regression suite
 
 See `zk/regression/` for the protocol-level proof regression runner that reuses this corpus without introducing a second protocol truth.
+
+
+## Proof statement compatibility descriptor
+
+The Soroban registry exposes a bounded, read-only compatibility surface so
+clients and operators can pre-flight accepted schemas, verifier-input codec
+versions, active circuit-version bounds, proof-blob size bounds, and supported
+critical fields without touching private witness state:
+
+- `get_proof_statement_compatibility() -> ProofStatementCompatibilityDescriptor`
+  - Reports `descriptor_version` (`1`), `min_verifier_input_version` (`1`,
+    `hpx-vi/1`), `max_verifier_input_version` (`2`, `hpx-vi/2`), the active
+    verifier's `min_circuit_version` / `max_circuit_version` window,
+    `min_proof_bytes` (`64`), `max_proof_bytes` (`65_536`),
+    `supported_critical_fields`, `fail_closed_on_unknown_critical_fields`
+    (`true`), and the bounded `schemas` list (capped at
+    `MAX_COMPATIBILITY_SCHEMAS = 8`):
+    - `schema_id = 1` (`silent_witness/v1`): `verifier_input_version = 1`, `circuit_version = 1`, `public_inputs_len = 160`
+    - `schema_id = 2` (`revocation_witness/v1`): `verifier_input_version = 1`, `circuit_version = 1`, `public_inputs_len = 128`
+    - `schema_id = 3` (`silent_witness/v2`): `verifier_input_version = 2`, `circuit_version = 2`, `public_inputs_len = 256`
+- `check_proof_statement_compatibility(schema_id, verifier_input_version, required_critical_fields) -> u32`
+  - Returns `0` (`ACCEPTED_CODE`) when compatible, or fails closed with a
+    stable numeric `RejectCode`:
+    - `9` (`unknown_schema`) for an unrecognized `schema_id`
+    - `10` (`version_mismatch`) when `verifier_input_version` does not match
+      the schema's codec version or the schema's `circuit_version` is outside
+      the active verifier window
+    - `11` (`unsupported_critical_field`) when any bit in
+      `required_critical_fields` is unknown or not supported by the selected
+      schema
+
+Both entry points are side-effect free, require no authentication, and remain
+callable while any registration domain is paused.

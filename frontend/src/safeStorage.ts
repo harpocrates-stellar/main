@@ -51,24 +51,50 @@ function browserStorage(name: StorageName): Storage {
 function createSafeStorage(name: StorageName) {
   return {
     setItem(key: string, value: string) {
-      browserStorage(name).setItem(key, value)
+      try {
+        browserStorage(name).setItem(key, value)
+      } catch (err) {
+        const code = classifyErrorCode(err, 'VAULT_STORAGE_WRITE_FAILED')
+        throw new VaultStorageError(code, 'setItem', { cause: err })
+      }
     },
 
     getItem(key: string): string | null {
-      return browserStorage(name).getItem(key)
+      try {
+        return browserStorage(name).getItem(key)
+      } catch (err) {
+        const code = classifyErrorCode(err, 'VAULT_STORAGE_READ_FAILED')
+        throw new VaultStorageError(code, 'getItem', { cause: err })
+      }
     },
 
     removeItem(key: string) {
-      browserStorage(name).removeItem(key)
+      try {
+        browserStorage(name).removeItem(key)
+      } catch (err) {
+        const code = classifyErrorCode(err, 'VAULT_STORAGE_REMOVE_FAILED')
+        throw new VaultStorageError(code, 'removeItem', { cause: err })
+      }
     },
 
     setUiPreferences(value: PersistedUiPreferences) {
       const safe = sanitizePreferences(value)
-      browserStorage(name).setItem(STORAGE_KEY, JSON.stringify(safe))
+      try {
+        browserStorage(name).setItem(STORAGE_KEY, JSON.stringify(safe))
+      } catch (err) {
+        const code = classifyErrorCode(err, 'VAULT_STORAGE_WRITE_FAILED')
+        throw new VaultStorageError(code, 'setUiPreferences', { cause: err })
+      }
     },
 
     getUiPreferences(): PersistedUiPreferences {
-      const stored = browserStorage(name).getItem(STORAGE_KEY)
+      let stored: string | null
+      try {
+        stored = browserStorage(name).getItem(STORAGE_KEY)
+      } catch (err) {
+        const code = classifyErrorCode(err, 'VAULT_STORAGE_READ_FAILED')
+        throw new VaultStorageError(code, 'getUiPreferences', { cause: err })
+      }
       if (!stored) return {}
 
       try {
@@ -79,7 +105,12 @@ function createSafeStorage(name: StorageName) {
     },
 
     clearUiPreferences() {
-      browserStorage(name).removeItem(STORAGE_KEY)
+      try {
+        browserStorage(name).removeItem(STORAGE_KEY)
+      } catch (err) {
+        const code = classifyErrorCode(err, 'VAULT_STORAGE_REMOVE_FAILED')
+        throw new VaultStorageError(code, 'clearUiPreferences', { cause: err })
+      }
     },
   }
 }

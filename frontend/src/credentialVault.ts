@@ -7,6 +7,10 @@ export const VAULT_VERSION_V1 = 1
 export const VAULT_VERSION = 2
 
 const PBKDF2_ITERATIONS = 600000
+const PBKDF2_HASH = 'SHA-256' as const
+const SALT_BYTES = 16
+const AES_KEY_LENGTH_BITS = 256
+const AES_IV_BYTES = 12
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
 const V2_AAD_TEXT = 'harpocrates:credential-vault:v2|PBKDF2-SHA256|AES-GCM-256'
 
@@ -15,6 +19,190 @@ export interface VaultEnvelopeV1 {
   salt: string // hex
   iv: string // hex
   ct: string // hex (ciphertext)
+  kdf?: string
+  cipher?: string
+  iterations?: number
+  hash?: string
+  keyLengthBits?: number
+}
+
+function assertHexField(value: unknown, fieldName: string, expectedBytes?: number): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length % 2 !== 0 || !HEX_PATTERN.test(value)) {
+    throw new Error(`Unsupported vault parameter: ${fieldName} must be a non-empty hex string`)
+  }
+  if (expectedBytes !== undefined && value.length !== expectedBytes * 2) {
+    throw new Error(
+      `Unsupported vault parameter: ${fieldName} must be ${expectedBytes} bytes (${expectedBytes * 2} hex chars)`
+    )
+  }
+  return value
+}
+
+/**
+ * Validate a parsed vault envelope against `VAULT_FORMAT_COMPATIBILITY`.
+ * Fails closed on unsupported envelope versions, invalid required parameters,
+ * or incompatible KDF/cipher parameter overrides.
+ */
+export function validateVaultEnvelope(candidate: unknown): VaultEnvelope {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new Error('Vault corrupted: envelope must be an object')
+  }
+
+  const record = candidate as Record<string, unknown>
+
+  if (
+    typeof record.v !== 'number' ||
+    !(VAULT_FORMAT_COMPATIBILITY.supportedEnvelopeVersions as readonly number[]).includes(record.v)
+  ) {
+    throw new Error(`Unsupported vault version: ${String(record.v)}`)
+  }
+
+  if (
+    record.kdf !== undefined &&
+    (typeof record.kdf !== 'string' ||
+      !(VAULT_FORMAT_COMPATIBILITY.supportedKdfVersions as readonly string[]).includes(record.kdf))
+  ) {
+    throw new Error(`Unsupported vault parameter: kdf "${String(record.kdf)}"`)
+  }
+
+  if (record.cipher !== undefined && record.cipher !== VAULT_FORMAT_COMPATIBILITY.cipher.algorithm) {
+    throw new Error(`Unsupported vault parameter: cipher "${String(record.cipher)}"`)
+  }
+
+  if (record.iterations !== undefined && record.iterations !== VAULT_FORMAT_COMPATIBILITY.kdf.iterations) {
+    throw new Error(`Unsupported vault parameter: iterations "${String(record.iterations)}"`)
+  }
+
+  if (record.hash !== undefined && record.hash !== VAULT_FORMAT_COMPATIBILITY.kdf.hash) {
+    throw new Error(`Unsupported vault parameter: hash "${String(record.hash)}"`)
+  }
+
+  if (record.keyLengthBits !== undefined && record.keyLengthBits !== VAULT_FORMAT_COMPATIBILITY.cipher.keyLengthBits) {
+    throw new Error(`Unsupported vault parameter: keyLengthBits "${String(record.keyLengthBits)}"`)
+  }
+
+  const salt = assertHexField(record.salt, 'salt', VAULT_FORMAT_COMPATIBILITY.kdf.saltBytes)
+  const iv = assertHexField(record.iv, 'iv', VAULT_FORMAT_COMPATIBILITY.cipher.ivBytes)
+  const ct = assertHexField(record.ct, 'ct')
+
+  return {
+    v: record.v,
+    salt,
+    iv,
+    ct,
+    ...(record.kdf !== undefined ? { kdf: record.kdf as string } : {}),
+    ...(record.cipher !== undefined ? { cipher: record.cipher as string } : {}),
+    ...(record.iterations !== undefined ? { iterations: record.iterations as number } : {}),
+    ...(record.hash !== undefined ? { hash: record.hash as string } : {}),
+    ...(record.keyLengthBits !== undefined ? { keyLengthBits: record.keyLengthBits as number } : {}),
+  }
+}
+
+export class VaultEnvelopeSizeError extends Error {
+  readonly actualBytes: number
+  readonly maxBytes: number
+
+  constructor(message: string, actualBytes: number, maxBytes: number) {
+    super(message)
+    this.name = 'VaultEnvelopeSizeError'
+    this.actualBytes = actualBytes
+    this.maxBytes = maxBytes
+  }
+}
+
+/**
+ * Validates a parsed vault envelope object and enforces ciphertext size bounds
+ * before hex decoding or key derivation.
+ */
+export function validateVaultEnvelope(candidate: unknown): VaultEnvelope {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  const record = candidate as Record<string, unknown>
+  if (record.v !== VAULT_VERSION) {
+    throw new Error(`Unsupported vault version: ${String(record.v)}`)
+  }
+
+  if (
+    typeof record.salt !== 'string' ||
+    typeof record.iv !== 'string' ||
+    typeof record.ct !== 'string'
+  ) {
+    throw new Error('Vault corrupted: malformed envelope fields')
+  }
+
+  if (record.ct.length > MAX_CIPHERTEXT_HEX_LENGTH) {
+    const actualCiphertextBytes = Math.ceil(record.ct.length / 2)
+    throw new VaultEnvelopeSizeError(
+      `Vault ciphertext exceeds maximum size of ${MAX_VAULT_CIPHERTEXT_BYTES} bytes (got ${actualCiphertextBytes} bytes)`,
+      actualCiphertextBytes,
+      MAX_VAULT_CIPHERTEXT_BYTES
+    )
+  }
+
+  if (record.salt.length !== SALT_HEX_LENGTH || !HEX_PATTERN.test(record.salt)) {
+    throw new Error('Vault corrupted: invalid salt encoding')
+  }
+
+  if (record.iv.length !== IV_HEX_LENGTH || !HEX_PATTERN.test(record.iv)) {
+    throw new Error('Vault corrupted: invalid iv encoding')
+  }
+
+  if (
+    record.ct.length < MIN_CIPHERTEXT_HEX_LENGTH ||
+    record.ct.length % 2 !== 0 ||
+    !HEX_PATTERN.test(record.ct)
+  ) {
+    throw new Error('Vault corrupted: invalid ciphertext encoding')
+  }
+
+  return {
+    v: VAULT_VERSION,
+    salt: record.salt,
+    iv: record.iv,
+    ct: record.ct,
+  }
+}
+
+/**
+ * Parses and validates a serialized vault envelope, rejecting oversized inputs
+ * before JSON parsing, ciphertext decoding, or PBKDF2 key derivation.
+ */
+export function parseVaultEnvelope(
+  serialized: string,
+  maxEnvelopeBytes = MAX_VAULT_ENVELOPE_BYTES
+): VaultEnvelope {
+  if (typeof serialized !== 'string') {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  // Fast-path lower bound: UTF-8 byte length is always >= UTF-16 code-unit length.
+  if (serialized.length > maxEnvelopeBytes) {
+    throw new VaultEnvelopeSizeError(
+      `Vault envelope exceeds maximum size of ${maxEnvelopeBytes} bytes`,
+      serialized.length,
+      maxEnvelopeBytes
+    )
+  }
+
+  const byteLength = new TextEncoder().encode(serialized).byteLength
+  if (byteLength > maxEnvelopeBytes) {
+    throw new VaultEnvelopeSizeError(
+      `Vault envelope exceeds maximum size of ${maxEnvelopeBytes} bytes (got ${byteLength} bytes)`,
+      byteLength,
+      maxEnvelopeBytes
+    )
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  return validateVaultEnvelope(parsed)
 }
 
 export interface VaultEnvelopeV2 {
