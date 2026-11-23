@@ -47,6 +47,21 @@ crypto-domain, metadata, and digest outcomes. Digest drift is reported as
 artifact pins are refreshed. Use `--strict` when digests must match exactly.
 The report never includes media, witnesses, credentials, proofs, or secrets.
 
+## Protocol helper consolidation report
+
+The read-only DevX report inventories matching exported entry points in the
+browser and backend verifier-input codecs, along with production import paths:
+
+```bash
+python devx/client_consolidation_report.py
+python -m pytest devx/test_client_consolidation_report.py
+```
+
+The JSON output identifies duplicate entry points for human review; it does not
+delete, rewrite, or select a canonical implementation. Test and spec imports are
+excluded from the active-import list. The report includes source paths and
+symbol names only, not implementation text or protocol data.
+
 ## Synthetic media fixtures
 
 Generate synthetic video locally for API, interoperability, or packaging
