@@ -1,14 +1,36 @@
 {
   "format": "harpocrates.zk-bench-baselines",
   "version": 1,
-  "description": "Published proof generation/verification benchmark thresholds for Harpocrates. CI enforces the `ci` target against synthetic envelopes. Native/browser ceilings bound real UltraHonk prove/verify on operator hardware within bench.lock timeouts. Reports never include witness, proof hex, or secrets \u2014 only timings, sizes, and digests. See docs/zk-benchmarks.md.",
+  "description": "Published proof generation/verification benchmark thresholds for Harpocrates. CI enforces the `ci` and `revocation_ci` targets against synthetic envelopes. Native/browser ceilings bound real UltraHonk prove/verify on operator hardware within bench.lock timeouts, including revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves). Reports never include witness, proof hex, or secrets — only timings, sizes, and digests. See docs/zk-benchmarks.md.",
   "circuit": "silent_witness",
   "fixture_id": "silent_witness.synthetic.v1",
+  "revocation_witness": {
+    "circuit": "revocation_witness",
+    "fixture_id": "revocation_witness.depth16.v1",
+    "max_depth": 16,
+    "max_leaves": 65536,
+    "public_input_bytes": 128,
+    "browser_prove_ms": {
+      "cold_ms": 4820.0,
+      "p50": 3450.0,
+      "p95": 4680.0,
+      "p99": 4950.0,
+      "budget_ms": 180000.0
+    },
+    "browser_verify_ms": {
+      "p50": 420.0,
+      "p95": 610.0,
+      "p99": 690.0
+    }
+  },
   "calibrated_from": {
     "ci": "synthetic driver (deterministic envelope); headroom for runner jitter",
     "native": "host CLI UltraHonk within zk/bench/bench.lock.json native.timeout_ms",
     "browser": "Node/bb.js UltraHonk within browser.timeout_ms (Evidence Studio worker stack)",
-    "soroban_adjacent": "host CPU/memory budget envelope for register_anonymous_verified / classify"
+    "soroban_adjacent": "host CPU/memory budget envelope for register_anonymous_verified / classify",
+    "revocation_ci": "synthetic driver for revocation_witness at depth=16 (65536 leaves)",
+    "revocation_native": "host CLI UltraHonk for revocation_witness at depth=16 within revocation_native.timeout_ms",
+    "revocation_browser": "Node/bb.js UltraHonk for revocation_witness at depth=16 within revocation_browser.timeout_ms"
   },
   "rollback": "Delete this file to make compare inert (exit 0). No protocol or proof-format migration.",
   "privacy": {
@@ -109,6 +131,104 @@
           "public_input_bytes": 160
         },
         "max_peak_rss_bytes": 536870912
+      }
+    },
+    "revocation_ci": {
+      "description": "Hermetic CI gate for revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves).",
+      "depth": 16,
+      "leaf_count": 65536,
+      "prove": {
+        "max_ms": {
+          "p50": 60.0,
+          "p95": 110.0,
+          "p99": 130.0
+        },
+        "max_sizes": {
+          "proof_bytes": 2048,
+          "public_input_bytes": 128
+        },
+        "max_peak_rss_bytes": 536870912
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 45.0,
+          "p95": 85.0,
+          "p99": 105.0
+        },
+        "max_sizes": {
+          "proof_bytes": 2048,
+          "public_input_bytes": 128
+        },
+        "max_peak_rss_bytes": 536870912
+      }
+    },
+    "revocation_native": {
+      "description": "Host nargo/bb prove+verify for revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves).",
+      "depth": 16,
+      "leaf_count": 65536,
+      "prove": {
+        "max_ms": {
+          "p50": 95000.0,
+          "p95": 155000.0,
+          "p99": 175000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 128
+        },
+        "max_peak_rss_bytes": 4294967296
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 8500.0,
+          "p95": 20000.0,
+          "p99": 30000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 128
+        },
+        "max_peak_rss_bytes": 2147483648
+      }
+    },
+    "revocation_browser": {
+      "description": "Node/bb.js UltraHonk browser proving baseline for revocation_witness at MAX_REVOCATION_WITNESS_DEPTH=16 (65536 leaves).",
+      "depth": 16,
+      "leaf_count": 65536,
+      "recorded_prove_ms": {
+        "cold_ms": 4820.0,
+        "p50": 3450.0,
+        "p95": 4680.0,
+        "p99": 4950.0
+      },
+      "recorded_verify_ms": {
+        "p50": 420.0,
+        "p95": 610.0,
+        "p99": 690.0
+      },
+      "prove": {
+        "max_ms": {
+          "p50": 120000.0,
+          "p95": 160000.0,
+          "p99": 170000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 128
+        },
+        "max_peak_rss_bytes": 4294967296
+      },
+      "verify": {
+        "max_ms": {
+          "p50": 10000.0,
+          "p95": 25000.0,
+          "p99": 40000.0
+        },
+        "max_sizes": {
+          "proof_bytes": 65536,
+          "public_input_bytes": 128
+        },
+        "max_peak_rss_bytes": 2147483648
       }
     }
   }

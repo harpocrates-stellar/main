@@ -223,6 +223,15 @@ def sign_payload(payload_bytes: bytes, secret: str, timestamp: int) -> str:
     return mac.hexdigest()
 
 
+def _is_header_safe(value: Any) -> bool:
+    """Return True for a non-empty string that is safe to send as a header value."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and all(0x20 < ord(ch) < 0x7F for ch in value)
+    )
+
+
 def dispatch_webhook(
     delivery: dict,
     *,
@@ -242,7 +251,12 @@ def dispatch_webhook(
         "Content-Type": "application/json",
         "X-Harpocrates-Signature": f"t={timestamp},v1={signature}",
         "User-Agent": "Harpocrates-Webhook/1.0",
+        "X-Harpocrates-Delivery": str(delivery["delivery_id"]),
+        "X-Harpocrates-Attempt": str(int(delivery.get("retry_count") or 0) + 1),
     }
+    event_type = payload.get("event_type") if isinstance(payload, dict) else None
+    if _is_header_safe(event_type):
+        headers["X-Harpocrates-Event"] = event_type
 
     req = urllib.request.Request(url, data=payload_bytes, headers=headers, method="POST")
 

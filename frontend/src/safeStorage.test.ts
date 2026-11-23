@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { safeLocalStorage, safeSessionStorage } from './safeStorage'
+import { safeLocalStorage, safeSessionStorage, VaultStorageError } from './safeStorage'
 
 const STORAGE_KEY = 'harpocrates:ui-preferences'
 
@@ -76,6 +76,53 @@ describe.each([
     expect(safeStorage.getUiPreferences()).toEqual({
       currentView: 'landing',
       selectedTier: 'seal',
+    })
+  })
+
+  it('redacts private vault values and nested causes from storage error serialization', () => {
+    const innerCause = Object.assign(
+      new Error('raw inner secret: credential-seed-secret nullifier-seed-secret'),
+      { name: 'OperationError', credentialSeed: 'credential-seed-secret' },
+    )
+    const quotaError = Object.assign(
+      new Error('QuotaExceededError: value={"credentialSeed":"credential-seed-secret"}'),
+      { name: 'QuotaExceededError', cause: innerCause },
+    )
+
+    vi.spyOn(window[storageName], 'setItem').mockImplementation(() => {
+      throw quotaError
+    })
+
+    let caught: unknown
+    try {
+      safeStorage.setItem('harpocrates:test', 'secret-payload')
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(VaultStorageError)
+    const serialized = JSON.stringify(caught)
+    expect(serialized).not.toContain('credential-seed-secret')
+    expect(serialized).not.toContain('nullifier-seed-secret')
+    expect(serialized).not.toContain('secret-payload')
+
+    const parsed = JSON.parse(serialized)
+    expect(parsed).toEqual({
+      name: 'VaultStorageError',
+      code: 'STORAGE_QUOTA_EXCEEDED',
+      operation: 'setItem',
+      redacted: true,
+      message: 'Vault storage operation "setItem" failed (STORAGE_QUOTA_EXCEEDED)',
+      cause: {
+        name: 'QuotaExceededError',
+        code: 'STORAGE_QUOTA_EXCEEDED',
+        redacted: true,
+        cause: {
+          name: 'OperationError',
+          code: 'VAULT_DECRYPTION_FAILED',
+          redacted: true,
+        },
+      },
     })
   })
 })

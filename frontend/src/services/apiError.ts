@@ -25,6 +25,13 @@ export type BackendErrorCode =
   | 'NOT_FOUND'
   | 'INTERNAL_ERROR'
   | 'UNSUPPORTED_MEDIA_TYPE'
+  | 'REPORTER_ON_COOLDOWN'
+  | 'TOO_MANY_OPEN_DISPUTES'
+  | 'DISPUTE_WINDOW_EXPIRED'
+  | 'UNAUTHORIZED_RESPONDER'
+  | 'DISPUTE_NOT_FOUND'
+  | 'DISPUTE_ALREADY_CLOSED'
+  | 'INVALID_DISPUTE_TRANSITION'
   | 'UNKNOWN'
 
 /** What the UI should nudge the user to do next. */
@@ -54,6 +61,13 @@ const KNOWN_CODES: ReadonlySet<string> = new Set([
   'NOT_FOUND',
   'INTERNAL_ERROR',
   'UNSUPPORTED_MEDIA_TYPE',
+  'REPORTER_ON_COOLDOWN',
+  'TOO_MANY_OPEN_DISPUTES',
+  'DISPUTE_WINDOW_EXPIRED',
+  'UNAUTHORIZED_RESPONDER',
+  'DISPUTE_NOT_FOUND',
+  'DISPUTE_ALREADY_CLOSED',
+  'INVALID_DISPUTE_TRANSITION',
 ])
 
 type CodeGuidance = {
@@ -89,10 +103,48 @@ const CODE_GUIDANCE: Record<Exclude<BackendErrorCode, 'UNKNOWN'>, CodeGuidance> 
     retryable: false,
     fallbackMessage: 'Unsupported file type. Use an MP4, WebM, or MOV video.',
   },
+  REPORTER_ON_COOLDOWN: {
+    action: 'retry',
+    retryable: true,
+    fallbackMessage: 'You are on cooldown. Please wait 24 hours between dispute submissions for this proof before trying again.',
+  },
+  TOO_MANY_OPEN_DISPUTES: {
+    action: 'check_resource',
+    retryable: false,
+    fallbackMessage: 'Maximum open disputes reached for this proof (limit: 4). Existing disputes must be resolved before a new one can be opened.',
+  },
+  DISPUTE_WINDOW_EXPIRED: {
+    action: 'none',
+    retryable: false,
+    fallbackMessage: 'The dispute window has expired. The deadline for responding or resolving this dispute has passed.',
+  },
+  UNAUTHORIZED_RESPONDER: {
+    action: 'fix_input',
+    retryable: false,
+    fallbackMessage: 'Unauthorized responder. Only the proof issuer or source may submit a dispute response.',
+  },
+  DISPUTE_NOT_FOUND: {
+    action: 'check_resource',
+    retryable: false,
+    fallbackMessage: 'Dispute or proof record not found. Verify the identifiers and try again.',
+  },
+  DISPUTE_ALREADY_CLOSED: {
+    action: 'none',
+    retryable: false,
+    fallbackMessage: 'This dispute is already closed and cannot be transitioned.',
+  },
+  INVALID_DISPUTE_TRANSITION: {
+    action: 'fix_input',
+    retryable: false,
+    fallbackMessage: 'Invalid dispute transition. The dispute is not in a state that permits this action.',
+  },
 }
 
 function stripHtml(input: string): string {
-  return input.replace(/<[^>]*>/g, '')
+  return input
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<[^>]*>/g, '')
 }
 
 function truncate(input: string): string {
@@ -121,12 +173,12 @@ function buildActionableMessage(code: BackendErrorCode, detail: string | null): 
   if (code !== 'UNKNOWN') {
     const guidance = CODE_GUIDANCE[code]
     // Prefer backend detail when it already sounds actionable; otherwise use guidance.
-    if (detail && detail.length >= 12) {
+    if (detail && detail.length > 0) {
       // Ensure size/type codes always include a concrete next step.
       if (code === 'PAYLOAD_TOO_LARGE' && !/smaller|size|large|limit|MB|bytes/i.test(detail)) {
         return sanitizeText(`${detail} Choose a smaller video and try again.`)
       }
-      if (code === 'UNSUPPORTED_MEDIA_TYPE' && !/MP4|WebM|MOV|supported|type/i.test(detail)) {
+      if (code === 'UNSUPPORTED_MEDIA_TYPE' && !/MP4|WebM|MOV/i.test(detail)) {
         return sanitizeText(`${detail} Use an MP4, WebM, or MOV video.`)
       }
       if (code === 'INTERNAL_ERROR' && !/retry|try again|moment/i.test(detail)) {
@@ -254,8 +306,13 @@ export function toVerificationErrorCode(
   | 'UNSUPPORTED_ARTIFACT'
   | 'OVERSIZED_ARTIFACT'
   | 'INVALID_EVIDENCE'
+  | 'TIMEOUT'
   | 'DEPENDENCY_UNAVAILABLE'
   | null {
+  if (
+    error instanceof Error &&
+    ((('code' in error) && error.code === 'timeout') || error.name === 'TimeoutError')
+  ) return 'TIMEOUT'
   if (!(error instanceof ApiClientError)) return null
   switch (error.code) {
     case 'PAYLOAD_TOO_LARGE':
@@ -272,3 +329,71 @@ export function toVerificationErrorCode(
       return 'DEPENDENCY_UNAVAILABLE'
   }
 }
+
+/**
+ * Parse an on-chain / Soroban RPC error and map it to an actionable message.
+ * Surfaces contract dispute errors (cooldown #66, cap #61, deadline #62, etc.).
+ */
+export function parseContractError(
+  error: unknown,
+  fallback = 'Transaction failed. Please check your inputs and try again.',
+): ActionableApiError {
+  const str =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : JSON.stringify(error ?? '')
+
+  let matchedCode: BackendErrorCode | null = null
+
+  if (/Error\(Contract,\s*#?66\)|ContractError\(66\)|#66\b|\bReporterOnCooldown\b|cooldown/i.test(str)) {
+    matchedCode = 'REPORTER_ON_COOLDOWN'
+  } else if (/Error\(Contract,\s*#?61\)|ContractError\(61\)|#61\b|\bTooManyOpenDisputes\b|dispute\s*cap|open\s*dispute.*cap/i.test(str)) {
+    matchedCode = 'TOO_MANY_OPEN_DISPUTES'
+  } else if (/Error\(Contract,\s*#?62\)|ContractError\(62\)|#62\b|\bDisputeWindowExpired\b|deadline/i.test(str)) {
+    matchedCode = 'DISPUTE_WINDOW_EXPIRED'
+  } else if (/Error\(Contract,\s*#?65\)|ContractError\(65\)|#65\b|\bUnauthorizedResponder\b|unauthorized\s*responder/i.test(str)) {
+    matchedCode = 'UNAUTHORIZED_RESPONDER'
+  } else if (/Error\(Contract,\s*#?45\)|ContractError\(45\)|#45\b|\bDisputeNotFound\b|dispute\s*not\s*found/i.test(str)) {
+    matchedCode = 'DISPUTE_NOT_FOUND'
+  } else if (/Error\(Contract,\s*#?63\)|ContractError\(63\)|#63\b|\bDisputeAlreadyClosed\b|dispute\s*already\s*closed/i.test(str)) {
+    matchedCode = 'DISPUTE_ALREADY_CLOSED'
+  } else if (/Error\(Contract,\s*#?67\)|ContractError\(67\)|#67\b|\bInvalidDisputeTransition\b|invalid\s*dispute\s*transition/i.test(str)) {
+    matchedCode = 'INVALID_DISPUTE_TRANSITION'
+  }
+
+  if (matchedCode && matchedCode in CODE_GUIDANCE) {
+    const guidance = CODE_GUIDANCE[matchedCode as Exclude<BackendErrorCode, 'UNKNOWN'>]
+    return {
+      code: matchedCode,
+      message: guidance.fallbackMessage,
+      detail: sanitizeText(str),
+      requestId: null,
+      action: guidance.action,
+      retryable: guidance.retryable,
+      status: 400,
+    }
+  }
+
+  return {
+    code: 'UNKNOWN',
+    message: sanitizeText(str) || fallback,
+    detail: null,
+    requestId: null,
+    action: 'none',
+    retryable: false,
+    status: 400,
+  }
+}
+
+/**
+ * Format a contract error into a user-facing actionable error string.
+ */
+export function formatContractErrorMessage(
+  error: unknown,
+  fallback = 'Transaction failed. Please check your inputs and try again.',
+): string {
+  return parseContractError(error, fallback).message
+}
+

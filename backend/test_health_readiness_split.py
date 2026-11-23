@@ -110,7 +110,8 @@ class ReadinessRecoveryTest(unittest.TestCase):
     def _manager(self, healthy: dict[str, bool]) -> ReadinessManager:
         # ttl of 0 keeps the probe fresh so each check reflects `healthy` now.
         manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
-        manager.add_dependency("database", lambda: healthy["up"], critical=True)
+        manager.add_dependency("database", lambda: healthy["up"], critical=True,
+                               ok_status="connected", fail_status="not_configured")
         return manager
 
     def test_flips_to_ready_once_the_dependency_comes_back(self):
@@ -147,12 +148,38 @@ class ReadinessRecoveryTest(unittest.TestCase):
         # A dependency that has been probed and failed must report a terminal
         # status, otherwise the readiness body can never explain a 503.
         manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
-        manager.add_dependency("database", lambda: False, critical=True)
+        manager.add_dependency("database", lambda: False, critical=True,
+                               ok_status="connected", fail_status="not_configured")
 
         result = manager.check()
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["database"], "not_configured")
+
+    def test_ready_body_is_unchanged_with_both_dependencies_down(self):
+        with _client_with_dependencies(database_ok=False, video_tools_ok=False) as client:
+            response = client.get("/ready")
+
+        self.assertEqual(
+            response.json,
+            {"database": "not_configured", "video_tools": "missing", "ok": False},
+        )
+
+    def test_ready_body_is_unchanged_with_both_dependencies_up(self):
+        with _client_with_dependencies(database_ok=True, video_tools_ok=True) as client:
+            response = client.get("/ready")
+
+        self.assertEqual(
+            response.json,
+            {"database": "connected", "video_tools": "available", "ok": True},
+        )
+
+    def test_custom_label_dependency_is_reported_by_the_manager(self):
+        manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+        manager.add_dependency("search", lambda: False, critical=False,
+                               ok_status="indexed", fail_status="reindexing")
+
+        self.assertEqual(manager.check(), {"search": "reindexing", "ok": True})
 
     def test_slow_dependency_stays_within_the_configured_deadline(self):
         def slow_probe() -> bool:

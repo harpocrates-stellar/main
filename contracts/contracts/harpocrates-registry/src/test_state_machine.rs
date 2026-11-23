@@ -278,6 +278,7 @@ struct Model {
     verifier: Option<u8>,
     proof_ttl: u64,
     revocation_root: Option<u8>,
+    revocation_roots: StdVec<u8>,
     now: u64,
     schema_version: u32,
     proofs: StdVec<ModelProof>,
@@ -309,6 +310,7 @@ impl Model {
             verifier: None,
             proof_ttl: 0,
             revocation_root: None,
+            revocation_roots: StdVec::new(),
             now: START_TIMESTAMP,
             schema_version: 2,
             proofs: StdVec::new(),
@@ -1302,7 +1304,13 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 "set_revocation_root",
             )?;
             if expected.is_ok() {
-                model.revocation_root = Some(slot(root));
+                let s = slot(root);
+                model.revocation_root = Some(s);
+                model.revocation_roots.retain(|&r| r != s);
+                while model.revocation_roots.len() >= MAX_REVOCATION_ROOT_HISTORY as usize {
+                    model.revocation_roots.remove(0);
+                }
+                model.revocation_roots.push(s);
                 1
             } else {
                 0
@@ -1323,7 +1331,7 @@ fn apply_command(fixture: &Fixture, model: &mut Model, command: Command) -> Chec
                 RevocationInputMode::Correct | RevocationInputMode::WrongRoot => {
                     if model.revocation_root.is_none() {
                         Err(RegistryError::NotInitialized)
-                    } else if Some(slot(revocation_root)) != model.revocation_root
+                    } else if !model.revocation_roots.contains(&slot(revocation_root))
                         || input_mode == RevocationInputMode::WrongRoot
                     {
                         Err(RegistryError::InvalidPublicInputs)

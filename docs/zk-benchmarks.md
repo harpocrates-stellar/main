@@ -20,6 +20,9 @@ rollout/rollback, and limitations.
 | `zk/bench/browser_runner.mjs` | Node/bb.js prove+verify timings (browser-equivalent) |
 | `zk/bench/results/` | Local reports (gitignored; never commit proof material) |
 | `zk/bench/baselines.lock.json` | Published proof benchmark thresholds (absent ⇒ compare is inert) |
+| `zk/bench/gates.lock.json` | Committed circuit ACIR opcode and backend gate counts |
+| `zk/bench/gates.py` | Circuit gate and opcode regression check tool (`check`, `--update`) |
+| `zk/bench/test_gates.py` | Unit tests for gate check comparison and parser logic |
 | `.github/workflows/zk-ci.yml` | Runs `pytest zk/bench` alongside artifact tooling |
 
 ## Targets
@@ -30,6 +33,9 @@ rollout/rollback, and limitations.
 | `browser` | Node + `@aztec/bb.js` UltraHonk prove/verify (same stack as the Evidence Studio worker and its non-worker fallback) |
 | `ci` | CI-tagged run; synthetic driver allowed so PR checks stay hermetic without the proving toolchain |
 | `soroban_adjacent` | Host CPU/memory budget envelope for `register_anonymous_verified` / public-input classify (see `test_budget.rs`) |
+| `revocation_native` | Host CLI path for `revocation_witness` at `MAX_REVOCATION_WITNESS_DEPTH = 16` (65,536 leaves) |
+| `revocation_browser` | Node + `@aztec/bb.js` UltraHonk prove/verify for `revocation_witness` at `MAX_REVOCATION_WITNESS_DEPTH = 16` |
+| `revocation_ci` | Hermetic CI gate for `revocation_witness` at `MAX_REVOCATION_WITNESS_DEPTH = 16` (65,536 leaves, 128-byte public inputs) |
 
 Cold samples approximate a fresh process/worker. Warm samples discard
 `warm_discard` iterations, then record `warm_samples`. Percentiles are computed

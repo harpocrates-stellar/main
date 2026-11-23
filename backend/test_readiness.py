@@ -85,5 +85,31 @@ class TestReadinessManager(unittest.TestCase):
         self.assertEqual(set(status), {"db", "ok"})
         self.assertIn(status["db"], {"connected", "disconnected", "error", "initializing", "not_configured"})
 
+    def test_default_labels_are_connected_and_disconnected(self):
+        manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+        manager.add_dependency("up", lambda: True)
+        manager.add_dependency("down", lambda: False, critical=False)
+
+        status = manager.check()
+
+        self.assertEqual(status, {"up": "connected", "down": "disconnected", "ok": True})
+
+    def test_custom_labels_are_reported_per_dependency(self):
+        manager = ReadinessManager(timeout_seconds=0.5, cache_ttl_seconds=0.0)
+        manager.add_dependency("cache", lambda: True, ok_status="warm", fail_status="cold")
+        manager.add_dependency("queue", lambda: False, critical=False, ok_status="warm", fail_status="cold")
+
+        status = manager.check()
+
+        self.assertEqual(status, {"cache": "warm", "queue": "cold", "ok": True})
+
+    def test_readiness_module_does_not_reference_dependency_names(self):
+        import inspect
+        import readiness
+
+        source = inspect.getsource(readiness)
+        self.assertNotIn("video_tools", source)
+        self.assertNotIn("database", source)
+
 if __name__ == "__main__":
     unittest.main()

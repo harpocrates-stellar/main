@@ -8,11 +8,11 @@
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
 import { ApiClientError, parseActionableApiError } from './apiError'
+import { fetchWithTimeout, JSON_REQUEST_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from './http'
 import { assertValidVideoHash } from './videoHash'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
-
 export type ExtractResult = {
   hasHarpocratesMetadata: boolean
 }
@@ -22,11 +22,11 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
   const form = new FormData()
   form.append('video', file)
 
-  const response = await fetch(`${API_BASE}/api/stego/extract`, {
+  const response = await fetchWithTimeout(`${API_BASE}/api/stego/extract`, {
     method: 'POST',
     body: form,
     signal,
-  })
+  }, UPLOAD_TIMEOUT_MS)
   if (!response.ok) {
     throw new ApiClientError(await parseActionableApiError(response, 'Extraction service is unavailable.'))
   }
@@ -37,10 +37,15 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
 }
 
 /** Look up all NeonDB proof events for a given video hash. */
-export async function fetchProofEventsByVideo(videoHash: string, signal?: AbortSignal): Promise<ProofEvent[]> {
+export async function fetchProofEventsByVideo(
+  videoHash: string,
+  signal?: AbortSignal,
+  apiBase: string = API_BASE,
+): Promise<ProofEvent[]> {
   // Validate before building the URL so malformed hashes never reach the network.
   const safeHash = assertValidVideoHash(videoHash)
-  const response = await fetch(`${API_BASE}/api/proofs/by-video/${safeHash}`, { signal })
+  const base = apiBase || API_BASE
+  const response = await fetchWithTimeout(`${base}/api/proofs/by-video/${safeHash}`, { signal }, JSON_REQUEST_TIMEOUT_MS)
   if (!response.ok) {
     throw new ApiClientError(await parseActionableApiError(response, 'Database lookup failed.'))
   }

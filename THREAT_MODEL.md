@@ -273,8 +273,8 @@ and `metadata_hash` for content they did not actually review.
 | An issuer read that does not complete is surfaced as `Issuer lookup unavailable` with no trust decision, never as a trusted or unknown issuer | `frontend/src/hooks/useIssuerTrust.ts` |
 
 **Control (#357):** The `revocation_witness` Merkle tree is protocol-bounded at
-`MAX_REVOCATION_WITNESS_DEPTH = 3` (`MAX_REVOCATION_LEAVES = 8`). The Noir
-circuit is fixed at this depth; host tooling (`zk/tools/revocation_depth.py`,
+`MAX_REVOCATION_WITNESS_DEPTH = 16` (`MAX_REVOCATION_LEAVES = 65536`). The Noir
+circuit is parameterised and bounded at this depth; host tooling (`zk/tools/revocation_depth.py`,
 verifier codec) rejects oversized depth before proving so hostile trees cannot
 inflate witness size or proving cost at this boundary. Depth changes require a
 new circuit version.

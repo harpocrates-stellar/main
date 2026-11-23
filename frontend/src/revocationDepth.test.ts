@@ -12,34 +12,37 @@ import {
 
 describe('revocation witness depth bound', () => {
   it('exposes protocol constants', () => {
-    expect(MAX_REVOCATION_WITNESS_DEPTH).toBe(3)
-    expect(MAX_REVOCATION_LEAVES).toBe(8)
+    expect(MAX_REVOCATION_WITNESS_DEPTH).toBe(16)
+    expect(MAX_REVOCATION_LEAVES).toBe(65536)
     expect(MAX_REVOCATION_LEAVES).toBe(2 ** MAX_REVOCATION_WITNESS_DEPTH)
   })
 
-  it('accepts depths within the bound', () => {
+  it('accepts depths within the bound including max depth 16', () => {
     for (let depth = 1; depth <= MAX_REVOCATION_WITNESS_DEPTH; depth += 1) {
       expect(() => checkRevocationWitnessDepth(depth)).not.toThrow()
     }
+    expect(() => checkRevocationWitnessDepth(16)).not.toThrow()
   })
 
   it('rejects oversized depth without leaking witness material', () => {
-    let caught: unknown
-    try {
-      checkRevocationWitnessDepth(MAX_REVOCATION_WITNESS_DEPTH + 1)
-    } catch (err) {
-      caught = err
+    for (const overDepth of [MAX_REVOCATION_WITNESS_DEPTH + 1, 17, 32]) {
+      let caught: unknown
+      try {
+        checkRevocationWitnessDepth(overDepth)
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeInstanceOf(VerifierInputError)
+      const rejection = caught as VerifierInputError
+      expect(rejection.code).toBe('proof_oversize')
+      expect(rejection.field).toBe('depth')
+      expect(rejection.signal()).toEqual({
+        codec: 'hpx-vi/1',
+        rejectCode: 'proof_oversize',
+        field: 'depth',
+      })
+      expect(rejection.message).not.toMatch(/leaf|secret|witness/i)
     }
-    expect(caught).toBeInstanceOf(VerifierInputError)
-    const rejection = caught as VerifierInputError
-    expect(rejection.code).toBe('proof_oversize')
-    expect(rejection.field).toBe('depth')
-    expect(rejection.signal()).toEqual({
-      codec: 'hpx-vi/1',
-      rejectCode: 'proof_oversize',
-      field: 'depth',
-    })
-    expect(rejection.message).not.toMatch(/leaf|secret|witness/i)
   })
 
   it('rejects undersized and non-integer depth', () => {

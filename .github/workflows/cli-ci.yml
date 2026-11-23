@@ -56,6 +56,21 @@ jobs:
       - name: Build CLI
         run: npm run build
 
+      - name: Build single-file bundle
+        run: npm run bundle
+
+      - name: Smoke test bundle without node_modules
+        run: npm run test:bundle
+
+      - name: Upload bundle and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: harpocrates-cli-bundle
+          path: |
+            cli/dist/harpocrates.mjs
+            cli/dist/harpocrates.mjs.sha256
+          if-no-files-found: error
+
       - name: Run unit tests
         run: npm test
 

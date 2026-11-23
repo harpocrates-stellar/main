@@ -8,10 +8,14 @@ import { EventList } from '../components/EventList'
 import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
-import { useA11yStage } from '../hooks/useA11y'
+import { useA11yStage, useStageFocus } from '../hooks/useA11y'
+import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
+import { ProofPreparationPreview } from '../components/ProofPreparationPreview'
+import { ExportPrivacySummary } from '../components/ExportPrivacySummary'
+import { buildExportPrivacySummary } from '../exportPrivacySummary'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
@@ -39,11 +43,16 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     nullifierSeed,
     setNullifierSeed,
     message,
+    proofPreparation,
+    acknowledgedSensitiveFields = [],
+    acknowledgeSensitiveFields,
     registration,
     networkMismatch,
+    networkMismatchRecovery = null,
     isCancellable,
     handleEvidence,
     registerProof,
+    revalidateNetworkMismatch,
     cancelEvidence,
     cancelProving,
   } = evidence
@@ -56,6 +65,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const stageHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const registerActionRef = useRef<HTMLButtonElement | null>(null)
+
+  useStageFocus(stage, stageHeadingRef, registerActionRef)
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -70,16 +83,92 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     }
   }, [proof, registration?.hash])
 
+  const exportPrivacySummary = useMemo(
+    () =>
+      buildExportPrivacySummary({
+        proof,
+        wallet,
+        acknowledgedSensitiveKeys: acknowledgedSensitiveFields,
+      }),
+    [proof, wallet, acknowledgedSensitiveFields],
+  )
+  const canExportArtifact =
+    exportPrivacySummary.ok && !exportPrivacySummary.requiresAcknowledgement
+
   return (
     <section className="workspace app-page" id="studio" aria-busy={isBusy || undefined} aria-label="Evidence Studio workspace">
       <div className="studio">
         <header className="page-header">
           <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
-          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
-          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
+          <p id="studio-status" role="status" aria-live="polite" aria-atomic="true">{message}</p>
+          <h3
+            id="studio-stage-heading"
+            ref={stageHeadingRef}
+            tabIndex={-1}
+            className="sr-only"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {statusLabel}
+          </h3>
         </header>
 
-        {networkMismatch ? (
+        {networkMismatchRecovery ? (
+          <div
+            className="network-mismatch-banner network-mismatch-recovery"
+            role="alert"
+            aria-label="Guided network mismatch recovery"
+          >
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <div className="network-mismatch-recovery__body">
+              <strong className="network-mismatch-recovery__title">
+                Network mismatch — switch wallet network to resume
+              </strong>
+              <p className="network-mismatch-recovery__reason">{networkMismatchRecovery.reason}</p>
+              <dl className="network-mismatch-recovery__details">
+                <div>
+                  <dt>Required network</dt>
+                  <dd>{networkMismatchRecovery.requiredNetwork}</dd>
+                </div>
+                <div>
+                  <dt>Current wallet network</dt>
+                  <dd>{networkMismatchRecovery.currentWalletNetwork}</dd>
+                </div>
+              </dl>
+              <ol className="network-mismatch-recovery__steps">
+                <li>{networkMismatchRecovery.remediation}</li>
+                <li>
+                  Run fresh validation of your wallet network and selected evidence intent before
+                  resuming registration.
+                </li>
+              </ol>
+              {networkMismatchRecovery.validationError ? (
+                <p className="network-mismatch-recovery__error">
+                  {networkMismatchRecovery.validationError}
+                </p>
+              ) : null}
+              <div className="network-mismatch-recovery__actions">
+                <button
+                  type="button"
+                  className="secondary-action network-mismatch-recovery__action"
+                  disabled={
+                    networkMismatchRecovery.isValidating || isBusy || !revalidateNetworkMismatch
+                  }
+                  aria-busy={networkMismatchRecovery.isValidating || undefined}
+                  onClick={() => {
+                    if (revalidateNetworkMismatch) {
+                      void revalidateNetworkMismatch(wallet)
+                    }
+                  }}
+                >
+                  {networkMismatchRecovery.isValidating
+                    ? 'Validating network...'
+                    : 'Re-validate & resume'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : networkMismatch ? (
           <div className="network-mismatch-banner" role="alert">
             <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
             <span>{networkMismatch}</span>
@@ -223,6 +312,10 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         </dl>
 
+        {selectedTier === 'silent' && proof ? (
+          <ProofPreparationPreview preparation={proofPreparation} />
+        ) : null}
+
         <RedactionPreview
           proof={proof}
           secrets={{
@@ -232,22 +325,42 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         />
 
+        {proof ? (
+          <ExportPrivacySummary
+            summary={exportPrivacySummary}
+            onAcknowledgeSensitiveFields={acknowledgeSensitiveFields}
+          />
+        ) : null}
+
         {processedVideoUrl ? (
-          <a
-            className="download-link"
-            href={processedVideoUrl}
-            download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
-            aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
-          >
-            Download embedded evidence video
-          </a>
+          canExportArtifact ? (
+            <a
+              className="download-link"
+              href={processedVideoUrl}
+              download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
+            >
+              Download embedded evidence video
+            </a>
+          ) : (
+            <button
+              type="button"
+              className="download-link download-link--blocked"
+              disabled
+              aria-disabled="true"
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'} (acknowledge newly exposed sensitive fields first)`}
+            >
+              Download embedded evidence video
+            </button>
+          )
         ) : null}
 
         <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <button
+            ref={registerActionRef}
             className="primary-action"
             type="button"
-            disabled={!proof || !!networkMismatch || isBusy}
+            disabled={!proof || !!networkMismatch || !!networkMismatchRecovery || isBusy}
             aria-busy={isBusy || undefined}
             onClick={() => void registerProof(wallet)}
           >

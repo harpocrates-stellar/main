@@ -4,6 +4,8 @@ import {
   parseActionableApiError,
   ApiClientError,
   toVerificationErrorCode,
+  parseContractError,
+  formatContractErrorMessage,
 } from './apiError'
 
 function makeResponse(body: unknown, status = 400): Response {
@@ -196,6 +198,59 @@ describe('ApiClientError / toVerificationErrorCode', () => {
     })
     expect(toVerificationErrorCode(unsupported)).toBe('UNSUPPORTED_ARTIFACT')
 
+    expect(toVerificationErrorCode(Object.assign(new Error('request timed out'), { code: 'timeout' }))).toBe('TIMEOUT')
     expect(toVerificationErrorCode(new Error('nope'))).toBeNull()
   })
 })
+
+describe('parseContractError & formatContractErrorMessage', () => {
+  it('maps cooldown error (#66 / ReporterOnCooldown) to actionable message', () => {
+    const error = new Error('HostError: Error(Contract, #66)')
+    const parsed = parseContractError(error)
+    expect(parsed.code).toBe('REPORTER_ON_COOLDOWN')
+    expect(parsed.retryable).toBe(true)
+    expect(parsed.action).toBe('retry')
+    expect(parsed.message.toLowerCase()).toContain('cooldown')
+    expect(formatContractErrorMessage(error).toLowerCase()).toContain('cooldown')
+  })
+
+  it('maps max open disputes error (#61 / TooManyOpenDisputes) to actionable message', () => {
+    const error = new Error('HostError: Error(Contract, #61)')
+    const parsed = parseContractError(error)
+    expect(parsed.code).toBe('TOO_MANY_OPEN_DISPUTES')
+    expect(parsed.retryable).toBe(false)
+    expect(parsed.action).toBe('check_resource')
+    expect(parsed.message.toLowerCase()).toContain('maximum open disputes')
+  })
+
+  it('maps dispute window expired error (#62 / DisputeWindowExpired) to actionable message', () => {
+    const error = new Error('Error(Contract, #62)')
+    const parsed = parseContractError(error)
+    expect(parsed.code).toBe('DISPUTE_WINDOW_EXPIRED')
+    expect(parsed.retryable).toBe(false)
+    expect(parsed.message.toLowerCase()).toContain('deadline')
+  })
+
+  it('maps unauthorized responder error (#65 / UnauthorizedResponder)', () => {
+    const error = new Error('ContractError(65)')
+    const parsed = parseContractError(error)
+    expect(parsed.code).toBe('UNAUTHORIZED_RESPONDER')
+    expect(parsed.action).toBe('fix_input')
+    expect(parsed.message.toLowerCase()).toContain('unauthorized responder')
+  })
+
+  it('maps dispute not found error (#45 / DisputeNotFound)', () => {
+    const error = new Error('DisputeNotFound')
+    const parsed = parseContractError(error)
+    expect(parsed.code).toBe('DISPUTE_NOT_FOUND')
+    expect(parsed.message.toLowerCase()).toContain('not found')
+  })
+
+  it('handles unknown contract error with fallback', () => {
+    const error = new Error('Random unexpected failure')
+    const parsed = parseContractError(error)
+    expect(parsed.code).toBe('UNKNOWN')
+    expect(parsed.message).toBe('Random unexpected failure')
+  })
+})
+

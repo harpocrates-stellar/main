@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::String;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger},
@@ -82,8 +83,40 @@ fn silent_public_inputs(
     Bytes::from_array(env, &bytes)
 }
 
+fn browser_silent_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+) -> Bytes {
+    let mut video_hash_bytes = [0u8; 32];
+    video_hash.copy_into_slice(&mut video_hash_bytes);
+
+    let mut credential_root_bytes = [0u8; 32];
+    credential_root.copy_into_slice(&mut credential_root_bytes);
+
+    let mut nullifier_bytes = [0u8; 32];
+    nullifier.copy_from_slice(&mut nullifier_bytes);
+
+    // 4 public inputs × 32 bytes = 128 bytes
+    let mut bytes = [0u8; 128];
+    bytes[16..32].copy_from_slice(&video_hash_bytes[..16]);
+    bytes[48..64].copy_from_slice(&video_hash_bytes[16..]);
+    bytes[64..96].copy_from_slice(&credential_root_bytes);
+    bytes[96..128].copy_from_slice(&nullifier_bytes);
+
+    Bytes::from_array(env, &bytes)
+}
+
 fn expected_domain_tag_test(env: &Env) -> BytesN<32> {
     expected_domain_tag(env)
+}
+
+#[test]
+fn returns_cargo_package_version() {
+    let env = Env::default();
+    let expected = String::from_str(&env, env!("CARGO_PKG_VERSION"));
+    assert_eq!(version(env), expected);
 }
 
 #[test]
@@ -220,6 +253,38 @@ fn registers_silent_witness_through_external_verifier() {
     assert_eq!(record.nullifier, Some(nullifier.clone()));
     assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
     // Non-batch registration has batch_size = 0
+    assert_eq!(record.batch_size, 0);
+}
+
+#[test]
+fn registers_silent_witness_browser_128_byte_frame() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let verifier_id = env.register(MockNoirVerifier, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let video_hash = bytes32(&env, 41);
+    let credential_root = bytes32(&env, 9);
+    let nullifier = bytes32(&env, 42);
+
+    client.init(&admin);
+    client.set_verifier(&admin, &verifier_id);
+    client.add_credential_root(&admin, &credential_root, &bytes32(&env, 45));
+
+    let record = client.register_anonymous_verified(
+        &video_hash,
+        &bytes32(&env, 43),
+        &bytes32(&env, 44),
+        &browser_silent_public_inputs(&env, &video_hash, &credential_root, &nullifier),
+        &proof_bytes(&env),
+    );
+
+    assert_eq!(record.tier, TIER_SILENT_WITNESS);
+    assert_eq!(record.video_hash, video_hash);
+    assert_eq!(record.nullifier, Some(nullifier.clone()));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
     assert_eq!(record.batch_size, 0);
 }
 
@@ -401,10 +466,21 @@ fn transfers_admin_after_proposal_is_accepted() {
     let new_admin = Address::generate(&env);
     let issuer = Address::generate(&env);
 
+    assert_eq!(client.get_admin(), None);
+    assert_eq!(client.get_pending_admin(), None);
+
     client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
     client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
     assert_eq!(env.events().all().events().len(), 1);
+
     client.accept_admin(&new_admin);
+    assert_eq!(client.get_admin(), Some(new_admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
     assert_eq!(env.events().all().events().len(), 1);
 
     client.add_issuer(&new_admin, &issuer, &bytes32(&env, 61));
@@ -423,8 +499,16 @@ fn cancelled_admin_transfer_cannot_be_accepted() {
     let pending_admin = Address::generate(&env);
 
     client.init(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
+
     client.propose_admin(&admin, &pending_admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), Some(pending_admin.clone()));
+
     client.cancel_admin_transfer(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_pending_admin(), None);
     assert_eq!(env.events().all().events().len(), 1);
     client.accept_admin(&pending_admin);
 }
@@ -793,4 +877,89 @@ fn test_assurance_disputed_proof() {
     assert_eq!(assurance.open_dispute_count, client.get_open_dispute_count(&proof_id));
     assert_eq!(assurance.status, ProofVerificationStatus::Valid);
     assert_eq!(assurance.status, client.get_proof_status(&proof_id));
+}
+
+
+#[test]
+fn test_get_statuses_by_video_mixed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    // 1. Valid proof
+    let v_valid = bytes32(&env, 0x11);
+    let p_valid = bytes32(&env, 0x21);
+    client.register_source(&source, &v_valid, &bytes32(&env, 0x31), &p_valid);
+
+    // 2. Revoked proof
+    let v_revoked = bytes32(&env, 0x12);
+    let p_revoked = bytes32(&env, 0x22);
+    client.register_source(&source, &v_revoked, &bytes32(&env, 0x32), &p_revoked);
+    client.revoke_proof(&admin, &p_revoked);
+
+    // 3. Expired proof (explicitly set expires_at or expired status)
+    let v_expired = bytes32(&env, 0x13);
+    let p_expired = bytes32(&env, 0x23);
+    client.register_source(&source, &v_expired, &bytes32(&env, 0x33), &p_expired);
+    // Advance ledger timestamp beyond TTL (proof TTL is 30 days = 2_592_000s)
+    env.ledger().set_timestamp(1_000_000 + 3_000_000);
+
+    // 4. Unknown hash
+    let v_unknown = bytes32(&env, 0x99);
+
+    let mut query = soroban_sdk::Vec::new(&env);
+    query.push_back(v_valid.clone());
+    query.push_back(v_unknown.clone());
+    query.push_back(v_revoked.clone());
+    query.push_back(v_expired.clone());
+
+    let statuses = client.get_statuses_by_video(&query);
+    assert_eq!(statuses.len(), 4);
+    assert_eq!(statuses.get(0).unwrap(), ProofVerificationStatus::Valid);
+    assert_eq!(statuses.get(1).unwrap(), ProofVerificationStatus::NotFound);
+    assert_eq!(statuses.get(2).unwrap(), ProofVerificationStatus::Revoked);
+    assert_eq!(statuses.get(3).unwrap(), ProofVerificationStatus::Expired);
+}
+
+#[test]
+fn test_get_statuses_by_video_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    let query = soroban_sdk::Vec::new(&env);
+    let statuses = client.get_statuses_by_video(&query);
+    assert_eq!(statuses.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #43)")]
+fn test_get_statuses_by_video_oversized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init(&admin);
+
+    let mut query = soroban_sdk::Vec::new(&env);
+    for i in 0..101u8 {
+        let mut hash = [0xEEu8; 32];
+        hash[0] = i;
+        query.push_back(BytesN::from_array(&env, &hash));
+    }
+
+    client.get_statuses_by_video(&query);
 }

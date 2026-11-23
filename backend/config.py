@@ -4,6 +4,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from register_auth import ScopedKey, parse_scoped_keys
 
@@ -11,7 +12,8 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
+
+    def redacted_summary(self) -> dict[str, Any]:
         """Return a dict representation of the config where secret fields are redacted.
         Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
         presence (True if set, False otherwise). Non‑secret fields retain their original
@@ -29,6 +31,7 @@ class AppConfig:
             if field in raw:
                 raw[field] = raw[field] is not None
         return raw
+
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -71,13 +74,27 @@ class AppConfig:
     verifier_cache_max_size: int
     verifier_cache_positive_ttl_seconds: float
     verifier_cache_negative_ttl_seconds: float
+    # Stego process pool and resource limits
+    stego_memory_limit_bytes: int = 536_870_912
+    stego_cpu_limit_seconds: int = 60
+    stego_pool_max_workers: int = 4
     # External evidence fetch safety bounds
-    external_fetch_connect_timeout_seconds: float
-    external_fetch_read_timeout_seconds: float
-    external_fetch_max_response_bytes: int
+    external_fetch_connect_timeout_seconds: float = 5.0
+    external_fetch_read_timeout_seconds: float = 10.0
+    external_fetch_max_response_bytes: int = 65_536
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
     job_file_ttl_seconds: int = 86_400
+    retention_blob_gc_enabled: bool = False
+    retention_unreferenced_blobs_enabled: bool = False
+    retention_dry_run: bool = False
+    # None falls back to MAX_VIDEO_BYTES; zero allows no file payload.
+    upload_max_bytes: int | None = None
+    # Per-tenant temporary upload storage budget in bytes (None = unlimited).
+    # This limits the total temporary disk space a single tenant can reserve
+    # for in-flight uploads.
+    upload_temp_budget_bytes: int | None = None
+
 
 
 def load_config() -> AppConfig:
@@ -146,11 +163,19 @@ def load_config() -> AppConfig:
         verifier_cache_max_size=_int_env("VERIFIER_CACHE_MAX_SIZE", 10000),
         verifier_cache_positive_ttl_seconds=_float_env("VERIFIER_CACHE_POSITIVE_TTL_SECONDS", 86400.0),
         verifier_cache_negative_ttl_seconds=_float_env("VERIFIER_CACHE_NEGATIVE_TTL_SECONDS", 300.0),
+        stego_memory_limit_bytes=_int_env("STEGO_MEMORY_LIMIT_BYTES", 536_870_912),
+        stego_cpu_limit_seconds=_int_env("STEGO_CPU_LIMIT_SECONDS", 60),
+        stego_pool_max_workers=_int_env("STEGO_POOL_MAX_WORKERS", 4),
         external_fetch_connect_timeout_seconds=_float_env("EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS", 5.0),
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
         job_file_ttl_seconds=_job_file_ttl_env(),
+        retention_blob_gc_enabled=_blob_gc_enabled_env(),
+        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
+        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        upload_max_bytes=_optional_nonnegative_int_env("UPLOAD_MAX_BYTES"),
+        upload_temp_budget_bytes=_optional_nonnegative_int_env("UPLOAD_TEMP_BUDGET_BYTES"),
     )
 
 
@@ -171,6 +196,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:
@@ -243,52 +281,4 @@ def _float_env(name: str, default: float) -> float:
     return parsed
 
 
-def _sample_ratio_env(name: str, default: float) -> float:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    try:
-        parsed = float(value)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be between 0 and 1") from exc
-    if not 0.0 <= parsed <= 1.0:
-        raise RuntimeError(f"{name} must be between 0 and 1")
-    return parsed
-
-
-# Retention worker batch bounds. The upper bound must match
-# db.RETENTION_BATCH_MAX_SIZE, which clamps the value again at the SQL layer.
-RETENTION_BATCH_SIZE_DEFAULT = 100
-RETENTION_BATCH_SIZE_MAX = 5000
-
-
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
-    """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    return max(1, min(parsed, RETENTION_BATCH_SIZE_MAX))
-
-
-JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
-
-
-def _job_file_ttl_env(
-    name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
-    default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
-) -> int:
-    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    if parsed < 0:
-        raise RuntimeError(f"{name} must be non-negative")
-    return parsed
+def _s

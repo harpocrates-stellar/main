@@ -353,6 +353,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       {/* Dropzone & Actions Bar */}
       <section className="batch-actions-panel">
         {/* Keyboard: Tab focuses label, Enter/Space opens file picker. Drag-and-drop also supported. */}
+        {/* The input is a sibling, not a descendant: an interactive control nested in role="button" is a WCAG 4.1.2 violation. */}
         <label
           ref={dropzoneRef}
           className={`batch-dropzone ${isDragging ? 'dragging' : ''} ${items.length > 0 ? 'compact' : ''}`}
@@ -360,6 +361,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
           tabIndex={isRunning ? -1 : 0}
           aria-label="Drop evidence files or standalone JSON receipts. Press Enter or Space to open file picker"
           aria-disabled={isRunning}
+          htmlFor="batch-evidence-input"
           onKeyDown={(e) => {
             if ((e.key === 'Enter' || e.key === ' ') && !isRunning) {
               e.preventDefault()
@@ -388,12 +390,12 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
         </label>
         <input
           ref={batchInputRef}
+          id="batch-evidence-input"
           type="file"
           multiple
           accept="video/*,.json,application/json"
           tabIndex={-1}
           aria-hidden="true"
-          style={{ display: 'none' }}
           onChange={(e) => {
             if (e.target.files) handleFilesAdded(e.target.files)
           }}
@@ -660,7 +662,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       {/* Filter and Search Controls */}
       {items.length > 0 ? (
         <section className="table-controls-bar">
-          <div className="filter-tabs" aria-label="Filter results">
+          <div className="filter-tabs" role="group" aria-label="Filter results">
             <button
               className={`tab-btn ${selectedFilter === 'all' ? 'active' : ''}`}
               type="button"

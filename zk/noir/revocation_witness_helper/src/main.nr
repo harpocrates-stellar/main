@@ -1,90 +1,103 @@
-// =============================================================================
-// Revocation Witness Helper — field derivation + Merkle helpers
-//
-// Depth bound (#357): helpers assume MAX_REVOCATION_WITNESS_DEPTH = 3
-// (MAX_REVOCATION_LEAVES = 8).  Host tooling must reject depth > 3 before
-// building Prover.toml inputs for the main circuit.
-// =============================================================================
+use std::hash::pedersen_hash;
 
-global MAX_REVOCATION_WITNESS_DEPTH: Field = 3;
-global MAX_REVOCATION_LEAVES: Field = 8;
+// Protocol revocation witness Merkle-depth bounds (#357).
+global MIN_REVOCATION_WITNESS_DEPTH: u32 = 1;
+global MAX_REVOCATION_WITNESS_DEPTH: Field = 16;
+global MAX_REVOCATION_LEAVES: Field = 65536;
+global MAX_REVOCATION_WITNESS_DEPTH_U32: u32 = 16;
 
-fn main(
-    credential_secret: Field,
-    nullifier_secret: Field,
-) -> pub (Field, Field) {
-    let credential_root = std::hash::pedersen_hash([credential_secret]);
-    let nullifier = std::hash::pedersen_hash([credential_secret, nullifier_secret]);
-    (credential_root, nullifier)
-}
-
-// =============================================================================
-// Test helpers: compute Merkle tree nodes and domain separator for the
-// revocation witness non‑membership circuit.
-//
-// Run `nargo test --show-output` to extract field values for Prover.toml
-// and shared conformance vectors.
-// =============================================================================
-
-/// Compute the test domain separator.
-/// Must match the value in the Soroban contract test vectors.
-fn test_domain_separator() -> Field {
-    // pedersen(["HARPOCRATES_REVOCATION_V1", 0, 0])
-    std::hash::pedersen_hash([0x484152504f4352415445535f5245564f434154494f4e5f5631, 0, 0])
-}
-
-/// Compute the Merkle root for MAX_REVOCATION_LEAVES (= 8) leaves
-/// at MAX_REVOCATION_WITNESS_DEPTH (= 3), Pedersen.
-fn compute_merkle_root(
-    l0: Field, l1: Field, l2: Field, l3: Field,
-    l4: Field, l5: Field, l6: Field, l7: Field,
+fn compute_merkle_root_from_path<let D: u32>(
+    leaf: Field,
+    path_indices: [Field; D],
+    siblings: [Field; D],
+    active_depth: u32,
 ) -> Field {
-    let n01 = std::hash::pedersen_hash([l0, l1]);
-    let n23 = std::hash::pedersen_hash([l2, l3]);
-    let n45 = std::hash::pedersen_hash([l4, l5]);
-    let n67 = std::hash::pedersen_hash([l6, l7]);
-    let n0123 = std::hash::pedersen_hash([n01, n23]);
-    let n4567 = std::hash::pedersen_hash([n45, n67]);
-    std::hash::pedersen_hash([n0123, n4567])
+    assert(active_depth >= MIN_REVOCATION_WITNESS_DEPTH, "depth_undersize");
+    assert(active_depth <= MAX_REVOCATION_WITNESS_DEPTH_U32, "depth_oversize");
+    assert(active_depth <= D, "depth_oversize");
+
+    let mut current = leaf;
+    for i in 0..D {
+        if i < active_depth {
+            let idx = path_indices[i];
+            let sibling = siblings[i];
+            let left = if idx == 0 { current } else { sibling };
+            let right = if idx == 0 { sibling } else { current };
+            current = pedersen_hash([left, right]);
+        }
+    }
+    current
 }
 
-/// Compute all parameters for the base test fixture and print them.
-/// Credential: cs=12345, ns=67890
-/// Revoked leaves: 0, root(33333), root(44444), ..., root(99999)
-#[test]
-fn test_compute_revocation_tree_params() {
-    let cs: Field = 12345;
-    let ns: Field = 67890;
-    let (credential_root, nullifier) = main(cs, ns);
+fn main() {
+    let credential_secret: Field = 12345;
+    let nullifier_secret: Field = 67890;
 
-    let l0: Field = 0;
-    let l1 = std::hash::pedersen_hash([33333]);
-    let l2 = std::hash::pedersen_hash([44444]);
-    let l3 = std::hash::pedersen_hash([55555]);
-    let l4 = std::hash::pedersen_hash([66666]);
-    let l5 = std::hash::pedersen_hash([77777]);
-    let l6 = std::hash::pedersen_hash([88888]);
-    let l7 = std::hash::pedersen_hash([99999]);
+    let credential_root = pedersen_hash([credential_secret]);
+    let nullifier = pedersen_hash([credential_secret, nullifier_secret]);
 
-    let tree_root = compute_merkle_root(l0, l1, l2, l3, l4, l5, l6, l7);
-    let ds = test_domain_separator();
+    // Revoked credentials at leaves 0 and 1; remaining leaves are empty (0).
+    let leaf_0 = pedersen_hash([111]);
+    let leaf_1 = pedersen_hash([222]);
+    let leaf_2: Field = 0;
+    let leaf_3: Field = 0;
+    let leaf_4: Field = 0;
+    let leaf_5: Field = 0;
+    let leaf_6: Field = 0;
+    let leaf_7: Field = 0;
 
-    // Verify all computed values are non-zero (proof of work).
-    assert(credential_root != 0);
-    assert(nullifier != 0);
-    assert(tree_root != 0);
-    assert(ds != 0);
-    assert(l1 != 0);
-    assert(l7 != 0);
+    // Level 1
+    let node_01 = pedersen_hash([leaf_0, leaf_1]);
+    let node_23 = pedersen_hash([leaf_2, leaf_3]);
+    let node_45 = pedersen_hash([leaf_4, leaf_5]);
+    let node_67 = pedersen_hash([leaf_6, leaf_7]);
 
-    // Bind the values so the compiler doesn't optimize them away.
-    // Run `nargo test --show-output` to see the computed fields.
-    let _ = (credential_root, nullifier, tree_root, ds, l0, l1, l2, l3, l4, l5, l6, l7);
+    // Level 2
+    let node_0123 = pedersen_hash([node_01, node_23]);
+    let node_4567 = pedersen_hash([node_45, node_67]);
+
+    // Root (depth 3 default witness fixture)
+    let revocation_root = pedersen_hash([node_0123, node_4567]);
+
+    // Root at maximum depth (depth 16)
+    let max_depth_indices: [Field; 16] = [0; 16];
+    let max_depth_siblings: [Field; 16] = [
+        leaf_1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+    let max_depth_revocation_root = compute_merkle_root_from_path(
+        leaf_0,
+        max_depth_indices,
+        max_depth_siblings,
+        MAX_REVOCATION_WITNESS_DEPTH_U32,
+    );
+
+    assert(MAX_REVOCATION_WITNESS_DEPTH == 16);
+    assert(MAX_REVOCATION_LEAVES == 65536);
+
+    std::println(f"credential_root = {credential_root}");
+    std::println(f"nullifier = {nullifier}");
+    std::println(f"leaf_0 = {leaf_0}");
+    std::println(f"leaf_1 = {leaf_1}");
+    std::println(f"revocation_root = {revocation_root}");
+    std::println(f"max_depth_revocation_root = {max_depth_revocation_root}");
 }
 
 #[test]
-fn test_revocation_depth_bound_constants() {
-    assert(MAX_REVOCATION_WITNESS_DEPTH == 3);
-    assert(MAX_REVOCATION_LEAVES == 8);
-    let _ = (MAX_REVOCATION_WITNESS_DEPTH, MAX_REVOCATION_LEAVES);
+fn print_hashes() {
+    main();
 }
