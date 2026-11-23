@@ -1,6 +1,7 @@
-"""Horizon-backed Stellar transaction status checks for registration reconcile."""
+"""Horizon-backed Stellar transaction status checks and proof identifier normalization for registration reconcile."""
 
 from __future__ import annotations
+import re
 from dataclasses import dataclass
 
 @dataclass
@@ -12,6 +13,18 @@ class TxVerificationResult:
     confirmations: int | None = None
     successful: bool | None = None
     source: str | None = None
+    # Freshness/coverage metadata so read views can distinguish a stale
+    # index from an invalid on-chain proof.
+    last_trusted_ledger: int | None = None
+    known_gaps: list[tuple[int, int]] = field(default_factory=list)
+    index_stale: bool = False
+
+
+class NetworkMismatchError(ValueError):
+    """Raised when a transaction belongs to a different Stellar network."""
+
+
+_EXPONENT_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+$")
 
 
 def normalize_tx_hash(value: object) -> str:
@@ -23,6 +36,98 @@ def normalize_tx_hash(value: object) -> str:
     if len(normalized) != 64 or not all(c in "0123456789abcdef" for c in normalized):
         raise ValueError("txHash must be a 32-byte hex string")
     return normalized
+
+
+def normalize_proof_id(value: object) -> str:
+    """Validate and normalize an indexed proof identifier.
+
+    Preserves exact decimal IDs across JSON and database boundaries,
+    normalizes 32-byte (64-character) hex strings to lowercase, and
+    rejects unsafe integer coercion, including booleans, floating-point numbers,
+    fractional inputs, exponent notation, negative values, and malformed strings.
+
+    Parameters
+    ----------
+    value:
+        A 32-byte hex string (with or without 0x prefix), raw 32 bytes,
+        a non-negative integer, or an exact decimal string of digits.
+
+    Returns
+    -------
+    str:
+        The normalized proof ID as a lowercase hex string or exact decimal string.
+
+    Raises
+    ------
+    ValueError:
+        If the identifier is malformed, fractional, uses exponent notation,
+        is boolean, is negative, or cannot be safely represented.
+    """
+    if value is None:
+        raise ValueError("proofId must not be None")
+
+    if isinstance(value, bool):
+        raise ValueError("proofId cannot be a boolean; boolean coercion is rejected")
+
+    if isinstance(value, float):
+        raise ValueError("proofId cannot be a float; fractional and exponent inputs are rejected")
+
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) == 32:
+            return value.hex().lower()
+        raise ValueError("bytes proofId must be exactly 32 bytes")
+
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("proofId must be a non-negative integer")
+        return str(value)
+
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            raise ValueError("proofId must not be empty")
+
+        if s.startswith("-"):
+            raise ValueError("proofId must be non-negative")
+
+        if "." in s:
+            raise ValueError("proofId cannot be fractional; fractional and exponent inputs are rejected")
+
+        if _EXPONENT_RE.match(s):
+            raise ValueError("proofId cannot use exponent notation; fractional and exponent inputs are rejected")
+
+        if s.lower().startswith("0x"):
+            hex_part = s[2:]
+            if len(hex_part) == 64 and all(c in "0123456789abcdef" for c in hex_part.lower()):
+                return hex_part.lower()
+            raise ValueError("hex proofId must be a 32-byte (64-character) hex string")
+
+        if len(s) == 64 and all(c in "0123456789abcdef" for c in s.lower()):
+            return s.lower()
+
+        if s.isdecimal():
+            return s
+
+        raise ValueError("proofId must be a 64-character hex string or an exact decimal integer")
+
+    try:
+        from decimal import Decimal
+
+        if isinstance(value, Decimal):
+            if value.is_nan() or value.is_infinite():
+                raise ValueError("proofId cannot be NaN or Infinite")
+            if value < 0:
+                raise ValueError("proofId must be non-negative")
+            if value % 1 != 0:
+                raise ValueError("proofId cannot be fractional; fractional and exponent inputs are rejected")
+            str_val = str(value)
+            if "e" in str_val.lower():
+                raise ValueError("proofId cannot use exponent notation; fractional and exponent inputs are rejected")
+            return str(int(value))
+    except ImportError:
+        pass
+
+    raise ValueError(f"unsupported proofId type: {type(value).__name__}")
 
 
 import json
@@ -53,6 +158,11 @@ _DEFAULT_RPC_URLS = (
 
 TERMINAL_STATUSES = frozenset({"confirmed", "failed", "missing"})
 ALLOWED_STATUSES = frozenset({"pending", "confirmed", "failed", "missing", "error"})
+NETWORK_MISMATCH_REASON = "network_passphrase_mismatch"
+
+# Maximum ledger lag tolerated before a read index is considered stale.
+# Override with HORIZON_MAX_INDEX_LAG_LEDGERS.
+_DEFAULT_MAX_INDEX_LAG_LEDGERS = 20
 
 
 def horizon_urls() -> tuple[str, ...]:
@@ -60,6 +170,17 @@ def horizon_urls() -> tuple[str, ...]:
     if urls:
         return tuple(u.strip() for u in urls.split(",") if u.strip())
     return _DEFAULT_RPC_URLS
+
+
+def max_index_lag_ledgers() -> int:
+    raw = os.getenv("HORIZON_MAX_INDEX_LAG_LEDGERS")
+    if raw is None or not raw.strip():
+        return _DEFAULT_MAX_INDEX_LAG_LEDGERS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_INDEX_LAG_LEDGERS
+    return value if value >= 0 else _DEFAULT_MAX_INDEX_LAG_LEDGERS
 
 
 def _short_hash(tx_hash: str) -> str:
@@ -82,6 +203,73 @@ def _latest_ledger(rpc_url: str, timeout: float = 10.0) -> int | None:
     return None
 
 
+def index_freshness(
+    *,
+    indexed_ledger: int | None,
+    latest_ledger: int | None,
+    known_gaps: list[tuple[int, int]] | None = None,
+    max_lag: int | None = None,
+) -> dict:
+    """
+    Describe how fresh and complete the read index is.
+
+    ``last_trusted_ledger`` is the highest ledger the index has fully covered
+    with no gaps below it. ``index_stale`` is True when the index lags the
+    chain tip beyond ``max_lag``, or when the lag cannot be determined. Stale
+    indexes must never be read as evidence that a proof is invalid.
+    """
+    gaps = sorted(known_gaps or [])
+    lag_limit = max_index_lag_ledgers() if max_lag is None else max_lag
+
+    last_trusted: int | None = None
+    if indexed_ledger is not None:
+        last_trusted = indexed_ledger
+        for start, end in gaps:
+            if start <= last_trusted:
+                last_trusted = start - 1 if start - 1 >= 0 else None
+                break
+
+    if indexed_ledger is None or latest_ledger is None:
+        stale = True
+        lag = None
+    else:
+        lag = max(0, latest_ledger - indexed_ledger)
+        stale = lag > lag_limit
+
+    return {
+        "last_trusted_ledger": last_trusted,
+        "indexed_ledger": indexed_ledger,
+        "latest_ledger": latest_ledger,
+        "lag_ledgers": lag,
+        "known_gaps": [list(g) for g in gaps],
+        "index_stale": stale,
+    }
+
+
+def annotate_with_freshness(
+    result: TxVerificationResult,
+    *,
+    indexed_ledger: int | None,
+    known_gaps: list[tuple[int, int]] | None = None,
+) -> TxVerificationResult:
+    """
+    Attach freshness/coverage to a verification result.
+
+    Staleness is reported only; it never changes ``status``. A stale index
+    must not turn a confirmed proof into a failed or invalid one, and a
+    transaction at or below the last trusted ledger is unaffected by lag.
+    """
+    info = index_freshness(
+        indexed_ledger=indexed_ledger,
+        latest_ledger=result.latest_ledger,
+        known_gaps=known_gaps,
+    )
+    result.last_trusted_ledger = info["last_trusted_ledger"]
+    result.known_gaps = [tuple(g) for g in info["known_gaps"]]
+    result.index_stale = info["index_stale"]
+    return result
+
+
 @traced(
     "stellar.horizon.verify_transaction",
     attributes={"rpc.system": "stellar", "peer.service": "stellar-horizon"},
@@ -91,6 +279,7 @@ def verify_transaction(
     *,
     min_confirmations: int = 1,
     timeout: float = 10.0,
+    expected_network_passphrase: str | None = None,
 ) -> TxVerificationResult:
     """
     Check a transaction against Horizon with failover.
@@ -127,6 +316,22 @@ def verify_transaction(
                 )
                 saw_dependency_failure = True
                 continue
+
+            try:
+                _check_network_binding(data, expected_network_passphrase)
+            except NetworkMismatchError as exc:
+                # Wrong-network evidence is terminal: retrying the same
+                # incompatible transaction cannot succeed, so do not fail over.
+                LOGGER.warning(
+                    "horizon_network_mismatch source=%s tx=%s",
+                    rpc_url,
+                    _short_hash(normalized),
+                )
+                return TxVerificationResult(
+                    status="failed",
+                    source=rpc_url,
+                    reason=str(exc).split(":", 1)[0],
+                )
 
             successful = bool(data.get("successful", False))
             ledger_raw = data.get("ledger")
@@ -181,6 +386,12 @@ def verify_transaction(
                 reason="confirmed",
             )
         except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) == "malformed_network_passphrase":
+                return TxVerificationResult(
+                    status="failed",
+                    source=rpc_url,
+                    reason="malformed_network_passphrase",
+                )
             saw_dependency_failure = True
             LOGGER.warning(
                 "horizon_query_error source=%s tx=%s err_type=%s",

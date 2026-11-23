@@ -222,3 +222,14 @@ fn test_deprecate_schema_requires_admin() {
     let non_admin = Address::generate(&env);
     client.deprecate_schema(&non_admin, &bytes32(&env, 1));
 }
+
+#[test]
+fn test_get_registry_limits() {
+    let (env, client, _) = setup_env();
+    let limits = client.get_registry_limits();
+    assert_eq!(limits.silent_witness_v1_inputs_len, 160);
+    assert_eq!(limits.silent_witness_v2_inputs_len, 256);
+    assert_eq!(limits.revocation_inputs_len, 128);
+    assert_eq!(limits.evidence_metadata_hash_bytes, 32);
+    assert_eq!(limits.schema_version, 2);
+}

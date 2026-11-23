@@ -75,7 +75,13 @@ All application-owned browser persistence must go through the wrappers in
 
 - `currentView`: the active navigation view
 - `selectedTier`: the active identity-tier selection
+- `vaultRecoveryRehearsed`: flag indicating whether the one-time vault recovery rehearsal has completed
 
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+Credential seeds may be stored locally only in the encrypted VaultEnvelope
+managed by `CredentialVault`. To verify recovery preparedness without exposing
+live credentials, use `rehearseVaultRecovery()` which executes export and
+import roundtrips exclusively through isolated in-memory state containers.

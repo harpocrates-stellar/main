@@ -40,6 +40,7 @@ def context() -> dict[str, object]:
     }
 
 
+
 def test_receipt_matches_the_frontend_unsigned_model():
     receipt = build_verification_receipt(context())
 
@@ -53,6 +54,7 @@ def test_receipt_matches_the_frontend_unsigned_model():
     assert "proof" not in receipt
 
 
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("proofId", "short"), ("transactionHash", "not-hex")],
@@ -63,6 +65,7 @@ def test_rejects_invalid_digest_fields(field: str, value: str):
 
     with pytest.raises(ValueError, match=field):
         build_verification_receipt(invalid)
+
 
 
 def test_rejects_incomplete_context_without_inventing_receipt_fields():

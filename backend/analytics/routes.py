@@ -343,6 +343,7 @@ def register_analytics_routes(
                     compress=None,
                     rollout_phase="shadow",
                     export_token_verified=token_verified,
+                    requested_max_entries=max_entries_int if max_entries_int and max_entries_int > 0 else None,
                 )
             except Exception:
                 artifact = None
@@ -358,12 +359,23 @@ def register_analytics_routes(
             body["checksum_sha256_prefix16"] = getattr(artifact, "checksum_sha256_prefix16", None)
             body["compress"] = getattr(artifact, "compress", False)
             body["count"] = count
+            body["receipt"] = getattr(artifact, "receipt", None)
         else:
             body["artifact_id"] = None
             body["entry_count"] = 0
             body["count"] = 0
-            body["error"] = "export_failed_or_token_required"
-        status_code = 200 if artifact is not None else 401 if (not token_verified and require_token and not allow_shadow) else 200
+            if serialized == "analytics_store_unavailable":
+                body["error"] = "analytics_store_unavailable"
+            else:
+                body["error"] = "export_failed_or_token_required"
+        if artifact is not None:
+            status_code = 200
+        elif not token_verified and require_token and not allow_shadow:
+            status_code = 401
+        elif serialized == "analytics_store_unavailable":
+            status_code = 503
+        else:
+            status_code = 200
         return make_response(body, status_code)
 
     def _export_artifact_view(artifact_id: str) -> Any:
@@ -391,6 +403,7 @@ def register_analytics_routes(
             body["rollout_phase"] = getattr(artifact, "rollout_phase", None)
             body["redaction_version"] = getattr(artifact, "redaction_version", None)
             body["encryption_at_rest"] = getattr(artifact, "encryption_at_rest", False)
+            body["receipt"] = getattr(artifact, "receipt", None)
         else:
             body["error"] = "artifact_not_found"
             body["artifact_id"] = artifact_id

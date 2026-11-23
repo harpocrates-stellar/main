@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProofWorkerManager } from './proof-worker-manager'
+import {
+  ProofWorkerManager,
+  boundProofWorkerDiagnostic,
+  PROOF_WORKER_DIAGNOSTIC_MAX_BYTES,
+} from './proof-worker-manager'
 import { ProofWorkerLogger } from './proof-worker-logger'
 import type { ProofWorkerResponse } from './proof.worker.types'
 
@@ -342,5 +346,97 @@ describe('destroy', () => {
     expect(() => manager.destroy()).not.toThrow()
     await manager.init()
     expect(internals(manager).isInitialized).toBe(true)
+  })
+})
+
+describe('boundProofWorkerDiagnostic and telemetry forwarding', () => {
+  it('redacts witness-shaped values while retaining stable stage and error identifiers', () => {
+    const witnessHex = '0x' + 'ab'.repeat(32)
+    const fieldElement = '1234567890123456789012345678901234567890'
+    const bounded = boundProofWorkerDiagnostic({
+      level: 'error',
+      stage: 'generating_witness',
+      errorCode: 'PROOF_GENERATION_FAILED',
+      code: 'proof_worker_memory_exceeded',
+      id: 'msg_123',
+      message: `Witness execution failed for witness=${witnessHex} scalar=${fieldElement} evidence=${EVIDENCE} proof=${PROOF}`,
+      context: {
+        witness: [1n, 2n, 3n],
+        credentialSecret: 'super-secret-value',
+        rawBytes: new Uint8Array([1, 2, 3, 4]),
+        witnessVector: [11, 22, 33, 44, 55],
+        duration_ms: 42,
+      },
+    })
+
+    const serialized = JSON.stringify(bounded)
+    expect(bounded.stage).toBe('generating_witness')
+    expect(bounded.errorCode).toBe('PROOF_GENERATION_FAILED')
+    expect(bounded.code).toBe('proof_worker_memory_exceeded')
+    expect(bounded.id).toBe('msg_123')
+    expect(bounded.redactedWitnessValues).toBeGreaterThan(0)
+    expect(serialized).not.toContain(witnessHex)
+    expect(serialized).not.toContain(fieldElement)
+    expect(serialized).not.toContain(EVIDENCE)
+    expect(serialized).not.toContain(PROOF)
+    expect(serialized).not.toContain('super-secret-value')
+    expect(bounded.context?.duration_ms).toBe(42)
+  })
+
+  it('caps oversized diagnostic payloads to maxBytes while preserving stage and errorCode', () => {
+    const maxBytes = 256
+    const oversizedMessage = 'prover diagnostic failure: ' + 'x'.repeat(2000)
+    const bounded = boundProofWorkerDiagnostic(
+      {
+        level: 'error',
+        stage: 'proving',
+        errorCode: 'MEMORY_LIMIT_EXCEEDED',
+        message: oversizedMessage,
+        context: {
+          extra: 'y'.repeat(1000),
+        },
+      },
+      { maxBytes },
+    )
+
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(bounded)).byteLength
+    expect(bounded.truncated).toBe(true)
+    expect(bounded.stage).toBe('proving')
+    expect(bounded.errorCode).toBe('MEMORY_LIMIT_EXCEEDED')
+    expect(bounded.context).toBeUndefined()
+    expect(serializedBytes).toBeLessThanOrEqual(maxBytes)
+    expect(bounded.byteLength).toBe(serializedBytes)
+  })
+
+  it('forwards bounded diagnostics to telemetry via ProofWorkerManager', () => {
+    const manager = createManager()
+    const emit = vi.fn()
+    const secretHex = 'deadbeef'.repeat(8)
+
+    const result = manager.forwardDiagnosticToTelemetry(
+      {
+        level: 'warn',
+        stage: 'verifying',
+        errorCode: 'TIMEOUT',
+        message: `Verification timed out with ${secretHex}`,
+        context: { proof: PROOF, retryable: true },
+      },
+      { maxBytes: PROOF_WORKER_DIAGNOSTIC_MAX_BYTES, emit },
+    )
+
+    expect(emit).toHaveBeenCalledTimes(1)
+    expect(emit).toHaveBeenCalledWith(
+      'warn',
+      'proof_worker.diagnostic',
+      expect.objectContaining({
+        stage: 'verifying',
+        errorCode: 'TIMEOUT',
+        truncated: false,
+      }),
+    )
+    const emittedJson = JSON.stringify(emit.mock.calls[0])
+    expect(emittedJson).not.toContain(secretHex)
+    expect(emittedJson).not.toContain(PROOF)
+    expect(result.byteLength).toBeLessThanOrEqual(PROOF_WORKER_DIAGNOSTIC_MAX_BYTES)
   })
 })

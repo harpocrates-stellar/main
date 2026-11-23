@@ -47,6 +47,13 @@ Implementation:
 - Cancel / timeout / destroy / unmount all settle with a stable `CANCELLED`
   (or `TIMEOUT` / `CRASHED`) code whose message never contains witness values,
   seeds, proof hex, or media identifiers beyond stage names.
+- Proof-worker diagnostic messages forwarded to telemetry via
+  `boundProofWorkerDiagnostic` / `ProofWorkerManager.forwardDiagnosticToTelemetry`
+  redact witness-shaped values (witness/secret/proof/evidence fields, byte
+  buffers, bigints, witness arrays, hex and field-element tokens) and cap the
+  serialized UTF-8 payload at `PROOF_WORKER_MEMORY_LIMITS.maxDiagnosticBytes`
+  (4096 bytes by default) while retaining stable `stage` and `errorCode`/`code`
+  identifiers.
 
 ## State machine
 
@@ -208,6 +215,23 @@ Focused coverage lives in:
 
 ```bash
 cd frontend
-npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
+npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts src/workers/crashRecoveryFixtureProtocol.test.ts
 ```
+
+## Synthetic worker crash-recovery fixture protocol
+
+`frontend/src/workers/crashRecoveryFixtureProtocol.ts` provides a deterministic,
+non-secret fixture protocol for verifying browser proof-worker failure and UI
+recovery paths without live cryptographic secrets or real media.
+
+Modelled failure scenarios:
+- `init_failure` — worker startup failure or CSP origin rejection (`INIT_FAILED`, `ORIGIN_REJECTED`).
+- `malformed_message` — malformed, untyped, or mismatched-id worker frames and `onmessageerror` deserialization failures (`MALFORMED_WORKER_MESSAGE`).
+- `interrupted_proving` — mid-proof worker crash, forced termination, or `proofWorkerMemory` ceiling violations (`WORKER_CRASHED`, `MEMORY_LIMIT_EXCEEDED`).
+
+Protocol guarantees:
+- **Fail-closed frame validation** (`isValidWorkerResponse`) rejects invalid frames before they can influence UI state.
+- **Generation fencing** drops late/stale frames from terminated workers after `recover()` spawns a fresh generation.
+- **Deterministic UI recovery** records explicit `RecoveryTransition` sequences (`idle -> initializing -> failed -> recovering -> recovered -> proving -> ready`) with privacy-safe error codes.
+
 
