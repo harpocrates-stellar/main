@@ -1708,14 +1708,7 @@ def reclaim_stale_jobs(
                 "status": job["status"],
                 "processing_state": dict(job["processing_state"]),
             }
-            reclaimed.append(
-                {
-                    "id": job["id"],
-                    "type": job["type"],
-                    "status": job["status"],
-                    "processing_state": dict(job["processing_state"]),
-                }
-            )
+        )
     return reclaimed
 
 
@@ -2337,3 +2330,19 @@ def save_indexer_checkpoint_manifest(
         cursor=cursor_val,
         ledger=ledger_val if isinstance(ledger_val, int) else None,
     )
+
+
+DEFAULT_HEARTBEAT_STALE_SECONDS = 300.0
+STALE_HEARTBEAT_REASON = "stale_worker_heartbeat"
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)

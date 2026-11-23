@@ -261,7 +261,6 @@ def embed_metadata(
     *,
     memory_limit_bytes: int | None = None,
     cpu_limit_seconds: int | None = None,
-    progress_callback: Callable[[int, int | None], None] | None = None,
 ) -> None:
     if progress_callback is not None:
         _embed_metadata_process(

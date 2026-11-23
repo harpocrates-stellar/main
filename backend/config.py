@@ -12,6 +12,26 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
+
+    def redacted_summary(self) -> dict[str, Any]:
+        """Return a dict representation of the config where secret fields are redacted.
+        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
+        presence (True if set, False otherwise). Non‑secret fields retain their original
+        values.
+        """
+        from dataclasses import asdict
+        secret_fields = {
+            "metrics_token",
+            "tracing_endpoint",
+            "register_api_key",
+            "register_api_key_previous",
+        }
+        raw = asdict(self)
+        for field in secret_fields:
+            if field in raw:
+                raw[field] = raw[field] is not None
+        return raw
+
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -64,8 +84,21 @@ class AppConfig:
     external_fetch_max_response_bytes: int = 65_536
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
-    registration_reconcile_state_dir: str = ""
-    stellar_network_passphrase: str = ""
+    job_file_ttl_seconds: int = 86_400
+    retention_blob_gc_enabled: bool = False
+    retention_unreferenced_blobs_enabled: bool = False
+    retention_dry_run: bool = False
+    # None falls back to MAX_VIDEO_BYTES; zero allows no file payload.
+    upload_max_bytes: int | None = None
+    # Per-tenant temporary upload storage budget in bytes (None = unlimited).
+    # This limits the total temporary disk space a single tenant can reserve
+    # for in-flight uploads.
+    upload_temp_budget_bytes: int | None = None
+    job_execution_timeout_seconds: int = 0
+    job_queue_ttl_seconds: int = 0
+    upload_session_ttl_seconds: int = 3600
+    max_batch_size: int = 100
+
 
 
 def load_config() -> AppConfig:
@@ -87,11 +120,6 @@ def load_config() -> AppConfig:
         raise RuntimeError(
             "REGISTER_API_KEY_PREVIOUS is required when REGISTER_API_KEY_PREVIOUS_EXPIRES is set"
         )
-
-    deletion_receipts_enabled = _bool_env("HARPOCRATES_DELETION_RECEIPTS_ENABLED", False)
-    deletion_receipt_salt = _str_env("DELETION_RECEIPT_SALT")
-    if deletion_receipts_enabled and deletion_receipt_salt is None:
-        raise RuntimeError("DELETION_RECEIPT_SALT is required when deletion receipts are enabled")
 
     return AppConfig(
         app_env=app_env,
@@ -146,13 +174,18 @@ def load_config() -> AppConfig:
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
-        registration_reconcile_state_dir=_str_env("HARPOCRATES_REGISTRATION_RECONCILE_DIR") or "",
-        stellar_network_passphrase=(
-            _str_env("STELLAR_NETWORK_PASSPHRASE")
-            or _str_env("HARPOCRATES_NETWORK_PASSPHRASE")
-            or ""
-        ),
+        job_file_ttl_seconds=_job_file_ttl_env(),
+        retention_blob_gc_enabled=_blob_gc_enabled_env(),
+        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
+        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        upload_max_bytes=_optional_nonnegative_int_env("UPLOAD_MAX_BYTES"),
+        upload_temp_budget_bytes=_optional_nonnegative_int_env("UPLOAD_TEMP_BUDGET_BYTES"),
+        job_queue_ttl_seconds=_job_file_ttl_env("HARPOCRATES_JOB_QUEUE_TTL_SECONDS", JOB_QUEUE_TTL_SECONDS_DEFAULT),
+        job_execution_timeout_seconds=_job_file_ttl_env("HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS", JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT),
+        upload_session_ttl_seconds=_upload_session_ttl_env(),
+        max_batch_size=_int_env("MAX_BATCH_SIZE", 100),
     )
+
 
 
 def _upload_chunk_bytes() -> int:
@@ -240,10 +273,19 @@ def _datetime_env(name: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise RuntimeError(f"{name} must be an ISO-8601 datetime") from except ValueError as exc:
         raise RuntimeError(f"{name} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        raise RuntimeError(f"{name} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise RuntimeError(f"{name} must be positive")
     return parsed
 
 
@@ -266,7 +308,10 @@ RETENTION_BATCH_SIZE_DEFAULT = 100
 RETENTION_BATCH_SIZE_MAX = 5000
 
 
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
+def _retention_batch_size_env(
+    name: str = "HARPOCRATES_RETENTION_BATCH_SIZE",
+    default: int = RETENTION_BATCH_SIZE_DEFAULT,
+) -> int:
     """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -279,21 +324,13 @@ def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", de
 
 
 JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
-# Queue expiry (time a job may wait as ``pending``) and execution timeout (time a
-# leased job may run) are separate limits. 0 disables a limit.
-JOB_QUEUE_TTL_SECONDS_DEFAULT = 0
-JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT = 0
 
 
 def _job_file_ttl_env(
     name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
     default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
 ) -> int:
-    """Load a non-negative integer seconds setting.
-
-    Defaults to HARPOCRATES_JOB_FILE_TTL_SECONDS (24h = 86400s); also used for
-    HARPOCRATES_JOB_QUEUE_TTL_SECONDS and HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS.
-    """
+    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -319,7 +356,10 @@ def _blob_gc_enabled_env() -> bool:
             return val.strip().lower() in {"1", "true", "yes", "on"}
     return False
 
-
+# Queue expiry (time a job may wait as ``pending``) and execution timeout (time a
+# leased job may run) are separate limits. 0 disables a limit.
+JOB_QUEUE_TTL_SECONDS_DEFAULT = 0
+JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT = 0
 UPLOAD_SESSION_TTL_SECONDS_DEFAULT = 3600
 
 
