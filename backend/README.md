@@ -105,6 +105,8 @@ This section documents all environment variables that can be used to configure t
 | VERIFIER_CACHE_MAX_SIZE | integer | 10000 | must be positive | Maximum number of entries in the verifier proof cache | no | no |
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
+| WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT | integer | 2 | must be positive | Maximum concurrent expensive video jobs (`embed`, `extract`) leased per tenant | no | no |
+| WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT | integer | 10 | must be positive | Maximum queued (pending) expensive video jobs (`embed`, `extract`) per tenant | no | no |
 
 ## Chain Indexer Backpressure
 
@@ -156,6 +158,27 @@ stale heartbeats via `get_job_heartbeat_state` and `reclaim_stale_jobs`.
 - Stale heartbeats are reported independently of proof validity: unverified or
   incomplete worker output is never classified as a cryptographic failure, and
   private job payloads are never included in reclaimed-job summaries or logs.
+
+## Per-Tenant Fair Scheduling for Expensive Video Jobs
+
+Expensive video jobs (`embed`, `extract`) are bounded and fairly scheduled per
+tenant in `backend/db.py` and `backend/worker.py`:
+
+- **Per-tenant queue bound**: `enqueue_job` enforces
+  `WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT` (default: `10`, must be positive)
+  for pending `embed`/`extract` jobs per `tenant_id`, raising
+  `TenantQueueLimitExceededError` when exceeded without affecting other tenants
+  or non-video jobs (`verify_tx`, `silent_witness`).
+- **Per-tenant concurrency bound & fair leasing**: `lease_job` enforces
+  `WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT` (default: `2`, must be
+  positive) for running `embed`/`extract` jobs per tenant and schedules
+  eligible tenants fairly (fewest running video jobs first, then
+  least-recently-leased tenant, then FIFO within a tenant).
+- **Independent deadlines & admission controls**: Each job preserves its own
+  optional `deadline_at` / `deadline_seconds` independently of other tenants'
+  delays and existing HTTP `AdmissionController` limits. Expired pending jobs
+  are failed on lease without consuming a tenant concurrency slot, and running
+  jobs that exceed their independent deadline are failed by the worker loop.
 
 ## Noir Developer Worker
 
@@ -275,6 +298,7 @@ behaviour. Temporary state directories are deleted automatically.
 
 - Metric labels strictly record generic HTTP attributes: HTTP `method`, parameterized route rule `endpoint` (e.g., `/api/proofs/by-video/<video_hash>`), and HTTP `status`.
 - Filenames, video hashes, metadata hashes, wallet addresses, proof payload data, and secret seeds are strictly excluded.
+- Analytics telemetry dimensions are strictly validated against an allowed vocabulary (`ALLOWED_DIMENSION_VOCABULARY`) prior to aggregation; raw filenames and cryptographic hashes are rejected from becoming metric labels.
 - Upload sizes are recorded in bounded histogram buckets.
 
 ### Endpoint Protection
@@ -404,29 +428,33 @@ changes: it orphans every previously cached entry instead of silently reusing
 results derived under a different scheme. Keys are digests only — proof
 material is never stored in plaintext or logged.
 
-## Registration Reconciliation Checkpoint
+## Verified Indexer Checkpoint Manifest
 
-`registration_reconcile.py` persists a single checkpoint containing the last
-trusted Stellar ledger, the network name/passphrase identity, and a fingerprint
-of the deployment configuration (`HARPOCRATES_RELEASE_ID`,
-`HARPOCRATES_RELEASE_NETWORK`, and the passphrase). The file is written atomically
-under `HARPOCRATES_REGISTRATION_RECONCILE_DIR` with owner-only permissions.
+The Soroban event indexer (`chain_indexer.py`) binds each persisted checkpoint
+to a canonical, SHA-256-verified manifest (`IndexerCheckpointManifest`) that
+records:
 
-`CheckpointStore.record()` is idempotent for the same ledger and rejects lower
-ledgers. `load()`, `save()`, and `reconcile_registration()` refuse a checkpoint
-whose network or deployment fingerprint differs from the current configuration,
-so a stale or cross-network state file cannot advance confirmed registration
-state. The passphrase defaults to the known value for the configured release
-network; set `STELLAR_NETWORK_PASSPHRASE` explicitly for local or forked
-networks.
+- `manifest_version` (`1`)
+- `indexer_id` (default `soroban_events`)
+- `network` (canonical Stellar network, e.g. `testnet`, `mainnet`, `futurenet`, `standalone`)
+- `contract_id` (registry contract ID)
+- `schema_version` (projection schema version, default `"1"`)
+- `cursor` (Soroban RPC paging cursor)
+- `observed_ledger` (non-negative observed ledger sequence)
+- `manifest_hash` (domain-separated SHA-256 digest of the canonical JSON payload)
 
-```python
-from registration_reconcile import CheckpointStore, DeploymentIdentity
+On resume, `poll_indexer_once()` verifies the manifest digest and checks
+compatibility against the active `network`, `contract_id`, `schema_version`,
+and `observed_ledger` monotonicity before fetching events or mutating
+`proof_events`. Any tampered manifest, target mismatch, or ledger regression
+fails closed with `CheckpointVerificationError` or `IncompatibleCheckpointError`
+without mutating the trusted projection.
 
-deployment = DeploymentIdentity.from_config()
-store = CheckpointStore(deployment=deployment)
-checkpoint = store.record(1_250)
-```
+Optional environment variables:
+
+- `STELLAR_NETWORK` / `HARPOCRATES_NETWORK`: Explicit network name bound to the checkpoint (inferred from `SOROBAN_RPC_URL` if unset).
+- `INDEXER_SCHEMA_VERSION`: Projection schema version bound to the checkpoint (default `"1"`).
+- `INDEXER_CHECKPOINT_MANIFEST_PATH`: Optional file path for atomic on-disk checkpoint manifest persistence.
 
 ## Test
 
@@ -452,3 +480,10 @@ source videos.
 - Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
 - Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
 - Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.
+
+## Evidence Storage Consistency Report
+
+`evidence_storage.generate_consistency_report(storage_dir=None, *, now=None)` returns a read-only consistency report comparing `blobs` metadata, active `tenant_blob_refs` (`ref_count > 0`), and physical files under `storage_dir` (defaulting to `HARPOCRATES_STORAGE_DIR` / `storage.default_storage_dir` without creating or mutating directories):
+
+- Reports `consistent` (`bool`), aggregate `summary` counts, and itemized discrepancies: `missing_files`, `orphaned_blobs`, `orphaned_tenant_refs`, `orphaned_files`, and `size_mismatches`.
+- Strictly read-only: never modifies database rows, never deletes physical files, and never queries or returns `encrypted_dek`.

@@ -32,6 +32,22 @@ from db import Jsonb, get_connection
 #     reclaim is a conditional UPDATE, so concurrent reclaimers cannot both win.
 
 
+# Outcome classification for reconciliation timeline consumers.
+OUTCOME_SUBMITTED = "submitted"
+OUTCOME_CONFIRMED = "confirmed"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_UNKNOWN = "unknown"
+
+_STATUS_TO_OUTCOME = {
+    "PENDING": OUTCOME_SUBMITTED,
+    "COMPLETED": OUTCOME_CONFIRMED,
+    "FAILED": OUTCOME_REJECTED,
+}
+
+# Upper bound on records returned by timeline queries (bounded output).
+TIMELINE_MAX_RECORDS = 100
+
+
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -109,6 +125,57 @@ def get_idempotency_record(request_digest: str, request_type: str) -> Optional[d
             if row:
                 return dict(row)
             return None
+
+
+def get_reconciliation_timeline(
+    request_type: str, limit: int = TIMELINE_MAX_RECORDS
+) -> list[dict]:
+    """Return bounded observation/transition records for a request type.
+
+    Each entry exposes only the classified outcome, lifecycle timestamps and
+    record id. Request digests, response payloads and error payloads are
+    deliberately omitted to preserve evidence privacy. Callers are expected to
+    have already authorized the requester.
+
+    Outcomes are one of: submitted (PENDING), confirmed (COMPLETED),
+    rejected (FAILED), or unknown (any other/unrecognized status).
+    """
+    bounded_limit = max(1, min(int(limit), TIMELINE_MAX_RECORDS))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, created_at, expires_at
+                FROM idempotency_records
+                WHERE request_type = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (request_type, bounded_limit),
+            )
+            rows = cur.fetchall()
+    return [classify_observation(dict(row)) for row in rows]
+
+
+def classify_observation(record: dict) -> dict:
+    """Map a stored record to a privacy-safe timeline entry."""
+    status = record.get("status")
+    outcome = _STATUS_TO_OUTCOME.get(status, OUTCOME_UNKNOWN)
+    return {
+        "id": record.get("id"),
+        "outcome": outcome,
+        "status": status if status in _STATUS_TO_OUTCOME else None,
+        "created_at": _iso(record.get("created_at")),
+        "expires_at": _iso(record.get("expires_at")),
+    }
+
+
+def _iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def store_response(record_id: int, payload: Any) -> None:

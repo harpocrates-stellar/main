@@ -55,10 +55,14 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     acknowledgeSensitiveFields: vi.fn(),
     registration: null,
     networkMismatch: null,
+    networkMismatchRecovery: null,
     isCancellable: false,
     handleEvidence: vi.fn(),
     registerProof: vi.fn(),
+    revalidateNetworkMismatch: vi.fn(),
     cancelEvidence: vi.fn(),
+    cancelProving: vi.fn(),
+    hashProgress: null,
     ...overrides,
   }
 }
@@ -243,5 +247,94 @@ describe('StudioView – export privacy summary', () => {
 
     const downloadLink = screen.getByRole('link', { name: /Download harpocrates-clip\.mp4/i })
     expect(downloadLink).toHaveAttribute('href', 'blob:synthetic-source-evidence')
+  })
+})
+
+describe('StudioView – guided network mismatch recovery', () => {
+  it('shows required and current wallet networks, blocks registration, and triggers fresh re-validation', async () => {
+    const user = userEvent.setup()
+    const revalidateNetworkMismatch = vi.fn().mockResolvedValue(true)
+
+    renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        networkMismatch:
+          'Wallet is on Mainnet but the contract is deployed on Testnet. Open Freighter, switch to Testnet, then reconnect your wallet.',
+        networkMismatchRecovery: {
+          requiredNetwork: 'Testnet',
+          currentWalletNetwork: 'Mainnet',
+          reason: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+          remediation: 'Open Freighter, switch to Testnet, then reconnect your wallet.',
+          isValidating: false,
+          intent: {
+            proofId: proof.proofId,
+            tier: 'silent',
+            videoHash: proof.videoHash,
+          },
+          validationError: null,
+        },
+        revalidateNetworkMismatch,
+      }),
+    )
+
+    const alert = screen.getByRole('alert', { name: 'Guided network mismatch recovery' })
+    expect(alert).toHaveTextContent('Required network')
+    expect(alert).toHaveTextContent('Testnet')
+    expect(alert).toHaveTextContent('Current wallet network')
+    expect(alert).toHaveTextContent('Mainnet')
+    expect(alert).not.toHaveTextContent('GSOURCEGAUTH')
+
+    expect(screen.getByRole('button', { name: /register proof/i })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: /re-validate & resume/i }))
+    expect(revalidateNetworkMismatch).toHaveBeenCalledWith('GSOURCEGAUTH')
+  })
+
+  it('displays validation errors and keeps registration blocked until fresh validation clears the mismatch', () => {
+    const { rerender } = renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        networkMismatch: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+        networkMismatchRecovery: {
+          requiredNetwork: 'Testnet',
+          currentWalletNetwork: 'Mainnet',
+          reason: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+          remediation: 'Open Freighter, switch to Testnet, then reconnect your wallet.',
+          isValidating: false,
+          intent: {
+            proofId: proof.proofId,
+            tier: 'silent',
+            videoHash: proof.videoHash,
+          },
+          validationError:
+            'Selected identity tier changed since evidence preparation. Re-upload or switch back to the prepared tier before resuming.',
+        },
+      }),
+    )
+
+    const alert = screen.getByRole('alert', { name: 'Guided network mismatch recovery' })
+    expect(alert).toHaveTextContent(/Selected identity tier changed since evidence preparation/i)
+    expect(screen.getByRole('button', { name: /register proof/i })).toBeDisabled()
+
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          stage: 'ready',
+          proof,
+          networkMismatch: null,
+          networkMismatchRecovery: null,
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.queryByRole('alert', { name: 'Guided network mismatch recovery' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /register proof/i })).not.toBeDisabled()
   })
 })

@@ -409,5 +409,62 @@ class TestPrematureUploadTermination(unittest.TestCase):
             self.assertEqual(progress["totalBytes"], 0)
 
 
+class TestUploadHashingProgress(unittest.TestCase):
+    def test_progress_reports_bounded_counters_and_completion_without_paths(self):
+        payload = b"chunk-progress-" * 20
+        snapshots = []
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "out.bin"
+            storage = StreamingFileStorage(
+                io.BytesIO(payload),
+                filename="sample.bin",
+                max_size=len(payload),
+                chunk_size=64,
+                temp_dir=tmp,
+            )
+            storage.save(dest, progress_callback=snapshots.append)
+
+            self.assertGreater(len(snapshots), 1)
+            final = storage.progress_snapshot()
+            self.assertTrue(final["completed"])
+            self.assertFalse(final["failed"])
+            self.assertEqual(final["bytes_hashed"], len(payload))
+            self.assertEqual(final["max_bytes"], len(payload))
+            self.assertGreater(final["chunks_processed"], 1)
+            self.assertEqual(final["digest"], hashlib.sha256(payload).hexdigest())
+            self.assertIsNone(final["error"])
+
+            for snap in [*snapshots, final]:
+                serialized = repr(snap)
+                self.assertNotIn(str(tmp), serialized)
+                self.assertNotIn(str(dest), serialized)
+                self.assertNotIn("harpocrates-stream-", serialized)
+
+    def test_progress_failure_on_oversized_upload_sanitizes_error_and_hides_paths(self):
+        payload = b"x" * 200
+        snapshots = []
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "too_big.bin"
+            with self.assertRaises(RequestEntityTooLarge):
+                hash_stream_to_path(
+                    io.BytesIO(payload),
+                    dest,
+                    chunk_size=64,
+                    max_size=100,
+                    temp_dir=tmp,
+                    progress_callback=snapshots.append,
+                )
+
+            self.assertTrue(snapshots)
+            last = snapshots[-1]
+            self.assertFalse(last["completed"])
+            self.assertTrue(last["failed"])
+            self.assertIsNone(last["digest"])
+            self.assertLessEqual(last["bytes_hashed"], 100)
+            self.assertEqual(last["error"], "Upload exceeds size limit")
+            self.assertNotIn(str(tmp), repr(last))
+            self.assertNotIn(str(dest), repr(last))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

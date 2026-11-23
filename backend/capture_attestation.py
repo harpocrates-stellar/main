@@ -13,7 +13,7 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -34,6 +34,68 @@ TRUST_LEVEL_LABELS: dict[int, str] = {
 VALID_TIME_SOURCES = {"hardware_clock", "ntp_synchronized", "platform_clock"}
 VALID_PRIVACY_SCOPES = {"per_session", "per_relying_party", "per_device_group"}
 VALID_INTEGRITY_CLAIMS = {"raw_sensor", "processed", "screen_capture", "unknown"}
+
+REQUIRED_ATTESTATION_FIELDS = frozenset(
+    {
+        "profile",
+        "version",
+        "trustLevel",
+        "captureNonce",
+        "appIdentity",
+        "deviceCommitment",
+        "privacyScope",
+        "evidenceDigestBinding",
+    }
+)
+KNOWN_OPTIONAL_ATTESTATION_FIELDS = frozenset(
+    {
+        "secureTime",
+        "cameraPipeline",
+        "platformClaims",
+        "criticalFields",
+        "criticalExtensions",
+        "optionalMetadata",
+    }
+)
+KNOWN_ATTESTATION_FIELDS = REQUIRED_ATTESTATION_FIELDS | KNOWN_OPTIONAL_ATTESTATION_FIELDS
+
+# A profile may declare a field as required only if this verifier understands it.
+KNOWN_DECLARABLE_CRITICAL_FIELDS = REQUIRED_ATTESTATION_FIELDS | frozenset(
+    {"secureTime", "cameraPipeline", "platformClaims"}
+)
+KNOWN_APP_IDENTITY_FIELDS = frozenset(
+    {"packageName", "versionCode", "buildFingerprint", "signingDigest"}
+)
+KNOWN_SECURE_TIME_FIELDS = frozenset({"unixMs", "source", "driftMs"})
+KNOWN_CAMERA_PIPELINE_FIELDS = frozenset(
+    {"sensorOrientation", "hasWatermark", "claimedIntegrity"}
+)
+
+# These identifiers have verifier semantics; a profile must not silently require
+# a critical extension whose semantics this version cannot enforce.
+SUPPORTED_CRITICAL_EXTENSIONS = frozenset(
+    {
+        "harpocrates.evidence-binding/v1",
+        "harpocrates.per-session-commitment/v1",
+    }
+)
+
+# Optional metadata is preserved for display and policy input, never treated as
+# proof of a higher trust level.
+KNOWN_OPTIONAL_METADATA_KEYS = frozenset(
+    {
+        "attestationBackend",
+        "captureMode",
+        "lensProfile",
+        "osPatchLevel",
+        "sensorModelClass",
+    }
+)
+MAX_OPTIONAL_METADATA_STR_LEN = 128
+
+
+class AttestationProfileValidationError(ValueError):
+    """Raised when a profile declaration or metadata field is not understood."""
 
 
 # ── Data model ─────────────────────────────────────────────────────────────
@@ -81,6 +143,9 @@ class CaptureAttestation:
     secure_time: SecureTime | None = None
     camera_pipeline: CameraPipeline | None = None
     platform_claims: dict[str, Any] = field(default_factory=dict)
+    critical_fields: tuple[str, ...] = ()
+    critical_extensions: tuple[str, ...] = ()
+    optional_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_attestation(self)
@@ -130,7 +195,13 @@ def encode_attestation(attestation: CaptureAttestation) -> dict[str, Any]:
             obj["cameraPipeline"] = cam
 
     if attestation.platform_claims:
-        obj["platformClaims"] = attestation.platform_claims
+        obj["platformClaims"] = dict(attestation.platform_claims)
+    if attestation.critical_fields:
+        obj["criticalFields"] = sorted(set(attestation.critical_fields))
+    if attestation.critical_extensions:
+        obj["criticalExtensions"] = sorted(set(attestation.critical_extensions))
+    if attestation.optional_metadata:
+        obj["optionalMetadata"] = dict(attestation.optional_metadata)
 
     return obj
 
@@ -157,8 +228,28 @@ def decode_attestation(obj: dict[str, Any]) -> CaptureAttestation:
         evidence_digest_binding=obj["evidenceDigestBinding"],
         secure_time=_decode_secure_time(obj.get("secureTime")),
         camera_pipeline=_decode_camera_pipeline(obj.get("cameraPipeline")),
-        platform_claims=obj.get("platformClaims", {}),
+        platform_claims=dict(obj.get("platformClaims") or {}),
+        critical_fields=tuple(obj.get("criticalFields", ())),
+        critical_extensions=tuple(obj.get("criticalExtensions", ())),
+        optional_metadata=dict(obj.get("optionalMetadata") or {}),
     )
+
+
+def inspect_attestation_profile_metadata(attestation: CaptureAttestation) -> dict[str, Any]:
+    """Describe profile declarations without promoting untrusted metadata to trust."""
+    _validate_attestation(attestation)
+    return {
+        "broadTrustAssumed": False,
+        "criticalExtensions": list(attestation.critical_extensions),
+        "criticalFields": list(attestation.critical_fields),
+        "optionalMetadata": dict(attestation.optional_metadata),
+        "optionalMetadataVerified": False,
+        "platformClaimKeys": sorted(attestation.platform_claims.keys()),
+        "profile": PROFILE_ID,
+        "trustLevel": attestation.trust_level,
+        "trustLevelLabel": TRUST_LEVEL_LABELS[attestation.trust_level],
+        "version": attestation.version,
+    }
 
 
 def canonical_attestation_hash(attestation: CaptureAttestation) -> str:
@@ -258,6 +349,24 @@ def make_device_commitment(capture_nonce: str, per_session_device_key: bytes) ->
 
 # ── Internal helpers ───────────────────────────────────────────────────────
 
+_DATACLASS_FIELD_NAMES = {
+    "trustLevel": "trust_level",
+    "captureNonce": "capture_nonce",
+    "appIdentity": "app_identity",
+    "deviceCommitment": "device_commitment",
+    "privacyScope": "privacy_scope",
+    "evidenceDigestBinding": "evidence_digest_binding",
+    "secureTime": "secure_time",
+    "cameraPipeline": "camera_pipeline",
+    "platformClaims": "platform_claims",
+}
+
+
+def _attestation_field_value(attestation: CaptureAttestation, field_name: str) -> Any:
+    if field_name == "profile":
+        return PROFILE_ID
+    return getattr(attestation, _DATACLASS_FIELD_NAMES.get(field_name, field_name), None)
+
 
 def _is_hex32(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
@@ -267,9 +376,88 @@ def _canonical_json(obj: object) -> bytes:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
+def _validate_optional_metadata(meta: object) -> None:
+    if not isinstance(meta, dict):
+        raise AttestationProfileValidationError("optionalMetadata must be a JSON object")
+    for key, value in meta.items():
+        if not isinstance(key, str) or key not in KNOWN_OPTIONAL_METADATA_KEYS:
+            raise AttestationProfileValidationError(
+                "optionalMetadata contains an unknown metadata field"
+            )
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            continue
+        if isinstance(value, str) and len(value) <= MAX_OPTIONAL_METADATA_STR_LEN:
+            continue
+        raise AttestationProfileValidationError(
+            "optionalMetadata values must be bounded scalar strings, booleans, or integers"
+        )
+
+
+def _validate_platform_claims(claims: object) -> None:
+    if not isinstance(claims, dict):
+        raise AttestationProfileValidationError("platformClaims must be a JSON object")
+    for key, value in claims.items():
+        if not isinstance(key, str) or not 1 <= len(key) <= 64:
+            raise AttestationProfileValidationError(
+                "platformClaims keys must be bounded strings"
+            )
+        if isinstance(value, dict) and any(
+            marker in value and value[marker] not in (None, False)
+            for marker in ("critical", "required")
+        ):
+            raise AttestationProfileValidationError(
+                "platformClaims cannot declare unrecognised critical or required extensions"
+            )
+
+
+def _validate_critical_declarations(
+    critical_fields: object,
+    critical_extensions: object,
+) -> None:
+    if not isinstance(critical_fields, (tuple, list)):
+        raise AttestationProfileValidationError(
+            "criticalFields must be a list of field names"
+        )
+    for field_name in critical_fields:
+        if not isinstance(field_name, str) or field_name not in KNOWN_DECLARABLE_CRITICAL_FIELDS:
+            raise AttestationProfileValidationError(
+                "attestation declares an unknown required field"
+            )
+
+    if not isinstance(critical_extensions, (tuple, list)):
+        raise AttestationProfileValidationError(
+            "criticalExtensions must be a list of extension identifiers"
+        )
+    for extension in critical_extensions:
+        if not isinstance(extension, str) or extension not in SUPPORTED_CRITICAL_EXTENSIONS:
+            raise AttestationProfileValidationError(
+                "attestation declares an unsupported critical extension"
+            )
+
+
+def _validate_declared_critical_present(
+    critical_fields: tuple[str, ...] | list[Any],
+    get_value: Callable[[str], Any],
+) -> None:
+    for field_name in critical_fields:
+        value = get_value(field_name)
+        if value is None or (
+            isinstance(value, (str, dict, list, tuple)) and not value
+        ):
+            raise AttestationProfileValidationError(
+                f"attestation omits a field declared in criticalFields: {field_name}"
+            )
+
+
 def _validate_attestation(attestation: CaptureAttestation) -> None:
+    if isinstance(attestation.version, bool) or not isinstance(attestation.version, int):
+        raise ValueError(f"Unsupported attestation version: {attestation.version}")
     if attestation.version not in SUPPORTED_VERSIONS:
         raise ValueError(f"Unsupported attestation version: {attestation.version}")
+    if isinstance(attestation.trust_level, bool) or not isinstance(attestation.trust_level, int):
+        raise ValueError(f"Invalid trust level: {attestation.trust_level}")
     if attestation.trust_level not in VALID_TRUST_LEVELS:
         raise ValueError(f"Invalid trust level: {attestation.trust_level}")
     if not _is_hex32(attestation.capture_nonce):
@@ -283,18 +471,39 @@ def _validate_attestation(attestation: CaptureAttestation) -> None:
     if attestation.secure_time is not None:
         if attestation.secure_time.source not in VALID_TIME_SOURCES:
             raise ValueError(f"Invalid time source: {attestation.secure_time.source}")
+    _validate_critical_declarations(
+        attestation.critical_fields,
+        attestation.critical_extensions,
+    )
+    _validate_optional_metadata(attestation.optional_metadata)
+    _validate_platform_claims(attestation.platform_claims)
+    _validate_declared_critical_present(
+        attestation.critical_fields,
+        lambda field_name: _attestation_field_value(attestation, field_name),
+    )
 
 
 def _validate_attestation_obj(obj: dict[str, Any]) -> None:
     if not isinstance(obj, dict):
         raise TypeError("attestation object must be a JSON object")
 
-    if obj.get("profile") != PROFILE_ID:
-        raise ValueError(f"attestation profile must be {PROFILE_ID}")
-
     version = obj.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError(f"Unsupported attestation version: {version}")
     if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"Unsupported attestation version: {version}")
+    expected_profile = f"harpocrates-capture-attestation/v{version}"
+    if obj.get("profile") != expected_profile:
+        raise AttestationProfileValidationError(
+            f"attestation profile must be {expected_profile} "
+            "(profile identifier conflicts with version)"
+        )
+
+    unknown_top_level = set(obj.keys()) - KNOWN_ATTESTATION_FIELDS
+    if unknown_top_level:
+        raise AttestationProfileValidationError(
+            "attestation profile contains unknown top-level fields"
+        )
 
     required = [
         "trustLevel",
@@ -314,6 +523,39 @@ def _validate_attestation_obj(obj: dict[str, Any]) -> None:
         raise ValueError("appIdentity.packageName is required")
     if "versionCode" not in obj["appIdentity"]:
         raise ValueError("appIdentity.versionCode is required")
+    if set(obj["appIdentity"].keys()) - KNOWN_APP_IDENTITY_FIELDS:
+        raise AttestationProfileValidationError("appIdentity contains unknown fields")
+
+    if obj.get("secureTime") is not None:
+        if not isinstance(obj["secureTime"], dict):
+            raise ValueError("secureTime must be a JSON object")
+        if set(obj["secureTime"].keys()) - KNOWN_SECURE_TIME_FIELDS:
+            raise AttestationProfileValidationError("secureTime contains unknown fields")
+        if any(field not in obj["secureTime"] for field in KNOWN_SECURE_TIME_FIELDS):
+            raise ValueError("secureTime missing required fields")
+
+    if obj.get("cameraPipeline") is not None:
+        if not isinstance(obj["cameraPipeline"], dict):
+            raise AttestationProfileValidationError(
+                "cameraPipeline must be a JSON object"
+            )
+        if set(obj["cameraPipeline"].keys()) - KNOWN_CAMERA_PIPELINE_FIELDS:
+            raise AttestationProfileValidationError(
+                "cameraPipeline contains unknown fields"
+            )
+
+    critical_fields = obj.get("criticalFields", [])
+    critical_extensions = obj.get("criticalExtensions", [])
+    _validate_critical_declarations(critical_fields, critical_extensions)
+    _validate_declared_critical_present(
+        critical_fields,
+        lambda field_name: obj.get(field_name),
+    )
+
+    if "optionalMetadata" in obj:
+        _validate_optional_metadata(obj["optionalMetadata"])
+    if "platformClaims" in obj:
+        _validate_platform_claims(obj["platformClaims"])
 
 
 def _decode_secure_time(data: object) -> SecureTime | None:

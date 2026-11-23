@@ -1,5 +1,29 @@
-import type { BatchItemResult } from './batchVerifier'
+import { orderBatchResults, type BatchItemResult } from './batchVerifier'
 import type { ProofManifest } from './proofManifest'
+
+export const BATCH_REPORT_PROTOCOL = 'harpocrates-batch-report' as const
+export const BATCH_REPORT_VERSION = 1 as const
+export const BATCH_COMPARISON_PROTOCOL = 'harpocrates-batch-comparison' as const
+export const BATCH_COMPARISON_VERSION = 1 as const
+
+export const DEFAULT_MAX_ARCHIVE_FILENAME_LENGTH = 96
+export const MIN_ARCHIVE_FILENAME_LENGTH = 16
+export const MAX_ARCHIVE_FILENAME_LENGTH = 255
+export const MAX_ARCHIVE_EXTENSION_LENGTH = 16
+
+const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/g
+const UNSAFE_FILENAME_CHARS_RE = /[^A-Za-z0-9._-]+/g
+
+export type ArchiveFilenameOptions = {
+  /** Maximum length of the generated filename (excluding optional directory prefix). Defaults to 96. */
+  maxLength?: number
+  /** Optional replacement extension (e.g. ".json"). */
+  extension?: string
+  /** Optional sanitized relative directory prefix (e.g. "receipts"). */
+  directory?: string
+}
 
 export type StatementConflict = {
   identifier: string
@@ -29,8 +53,14 @@ export class BatchExportConflictError extends Error {
   }
 }
 
+/**
+ * Privacy-safe, serializable batch report entry bound to its original selected
+ * input identity (`id` and `inputIndex`) without raw `File` handles or media bytes.
+ */
 export type CleanBatchReportItem = {
+  sourceItemId: string
   fileName: string
+  archiveFileName: string
   fileSizeBytes: number
   status: string
   videoHash: string | null
@@ -44,6 +74,78 @@ export type CleanBatchReportItem = {
   durationMs: number | null
 }
 
+export type BatchResultManifest = {
+  protocol: typeof BATCH_REPORT_PROTOCOL
+  version: typeof BATCH_REPORT_VERSION
+  exportedAt: string
+  totalCount: number
+  results: CleanBatchReportItem[]
+}
+
+export type TrustContextField =
+  | 'chainStatus'
+  | 'metadataHash'
+  | 'sourceHash'
+  | 'status'
+  | 'tier'
+
+export type TrustContextSnapshot = {
+  status: string
+  tier: string | null
+  chainStatus: string | null
+  metadataHash: string | null
+  sourceHash: string | null
+}
+
+export type BatchComparisonFileEntry = {
+  statementId: string
+  fileName: string
+  fileSizeBytes: number
+  videoHash: string | null
+  trustContext: TrustContextSnapshot
+}
+
+export type BatchTrustContextChange = {
+  statementId: string
+  fileName: string
+  baselineFileName: string
+  videoHash: string | null
+  changedFields: TrustContextField[]
+  before: TrustContextSnapshot
+  after: TrustContextSnapshot
+}
+
+export type BatchComparisonSummary = {
+  baselineCount: number
+  candidateCount: number
+  addedCount: number
+  removedCount: number
+  trustContextChangedCount: number
+  unchangedCount: number
+}
+
+export type BatchComparisonReport = {
+  protocol: typeof BATCH_COMPARISON_PROTOCOL
+  version: typeof BATCH_COMPARISON_VERSION
+  baseline: {
+    protocol: typeof BATCH_REPORT_PROTOCOL
+    version: typeof BATCH_REPORT_VERSION
+    exportedAt: string
+    totalCount: number
+  }
+  candidate: {
+    protocol: typeof BATCH_REPORT_PROTOCOL
+    version: typeof BATCH_REPORT_VERSION
+    exportedAt: string
+    totalCount: number
+  }
+  summary: BatchComparisonSummary
+  trustContextChanges: BatchTrustContextChange[]
+  added: BatchComparisonFileEntry[]
+  removed: BatchComparisonFileEntry[]
+  unchanged: string[]
+}
+
 export type ReceiptCollection = {
   protocol: 'harpocrates-receipt-collection'
   version: 1
@@ -52,127 +154,317 @@ export type ReceiptCollection = {
   receipts: ProofManifest[]
 }
 
-/**
- * Detects contradictory result rows that share a statement identifier
- * (`videoHash`, `metadataHash`, or `manifest.proofId`) with conflicting
- * verification outcomes or claims.
- *
- * Rows marked with `status === 'duplicate'` are excluded from conflict checks
- * because they represent expected duplicate-file detections from batch hashing.
- */
-export function detectConflictingStatements(results: BatchItemResult[]): StatementConflict[] {
-  const conflicts: StatementConflict[] = []
-  const byVideoHash = new Map<string, BatchItemResult>()
-  const byMetadataHash = new Map<string, BatchItemResult>()
-  const byProofId = new Map<string, BatchItemResult>()
+const TRUST_CONTEXT_FIELDS: readonly TrustContextField[] = [
+  'chainStatus',
+  'metadataHash',
+  'sourceHash',
+  'status',
+  'tier',
+]
 
-  for (const item of results) {
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function normalizeNullableHash(value: string | null): string | null {
+  return value === null ? null : value.toLowerCase()
+}
+
+function extractTrustContext(item: CleanBatchReportItem): TrustContextSnapshot {
+  return {
+    status: item.status,
+    tier: item.tier,
+    chainStatus: item.chainStatus,
+    metadataHash: normalizeNullableHash(item.metadataHash),
+    sourceHash: normalizeNullableHash(item.sourceHash),
+  }
+}
+
+/**
+ * Derives a deterministic statement identity for a batch report item.
+ * Hashed items are keyed by their canonical videoHash (with duplicate entries
+ * disambiguated by filename), while unhashed items fall back to filename + size.
+ */
+export function deriveStatementIdentity(item: CleanBatchReportItem): string {
+  const normalizedVideoHash = item.videoHash?.trim().toLowerCase() ?? ''
+  if (normalizedVideoHash.length > 0) {
     if (item.status === 'duplicate') {
+      return `duplicate:${normalizedVideoHash}:${item.fileName}`
+    }
+    return `video:${normalizedVideoHash}`
+  }
+  return `file:${item.fileName}:${item.fileSizeBytes}`
+}
+
+/**
+ * Parses and validates a versioned Harpocrates batch result manifest.
+ * Fails closed on malformed JSON, unsupported protocol/version, or invalid items.
+ */
+export function parseBatchResultManifest(
+  input: string | BatchResultManifest,
+): BatchResultManifest {
+  let raw: unknown
+  if (typeof input === 'string') {
+    try {
+      raw = JSON.parse(input) as unknown
+    } catch {
+      throw new Error('Invalid batch result manifest: malformed JSON.')
+    }
+  } else {
+    raw = input
+  }
+
+  if (!isRecord(raw)) {
+    throw new Error('Invalid batch result manifest: expected a JSON object.')
+  }
+
+  if (raw.protocol !== BATCH_REPORT_PROTOCOL) {
+    throw new Error(
+      `Unsupported batch result manifest protocol: expected "${BATCH_REPORT_PROTOCOL}".`,
+    )
+  }
+
+  if (raw.version !== BATCH_REPORT_VERSION) {
+    throw new Error(
+      `Unsupported batch result manifest version: expected ${BATCH_REPORT_VERSION}.`,
+    )
+  }
+
+  if (typeof raw.exportedAt !== 'string' || raw.exportedAt.trim().length === 0) {
+    throw new Error('Invalid batch result manifest: missing exportedAt timestamp.')
+  }
+
+  if (!Array.isArray(raw.results)) {
+    throw new Error('Invalid batch result manifest: results must be an array.')
+  }
+
+  if (
+    typeof raw.totalCount !== 'number' ||
+    !Number.isInteger(raw.totalCount) ||
+    raw.totalCount !== raw.results.length
+  ) {
+    throw new Error(
+      'Invalid batch result manifest: totalCount must match results.length.',
+    )
+  }
+
+  const validatedResults: CleanBatchReportItem[] = raw.results.map((entry, idx) => {
+    if (!isRecord(entry)) {
+      throw new Error(`Invalid batch result item at index ${idx}: expected an object.`)
+    }
+    if (typeof entry.fileName !== 'string' || entry.fileName.length === 0) {
+      throw new Error(`Invalid batch result item at index ${idx}: missing fileName.`)
+    }
+    if (
+      typeof entry.fileSizeBytes !== 'number' ||
+      !Number.isFinite(entry.fileSizeBytes) ||
+      entry.fileSizeBytes < 0
+    ) {
+      throw new Error(`Invalid batch result item at index ${idx}: invalid fileSizeBytes.`)
+    }
+    if (typeof entry.status !== 'string' || entry.status.length === 0) {
+      throw new Error(`Invalid batch result item at index ${idx}: missing status.`)
+    }
+    if (
+      !isNullableString(entry.videoHash) ||
+      !isNullableString(entry.metadataHash) ||
+      !isNullableString(entry.sourceHash) ||
+      !isNullableString(entry.tier) ||
+      !isNullableString(entry.chainStatus) ||
+      typeof entry.message !== 'string' ||
+      !isNullableString(entry.duplicateOf) ||
+      !isNullableString(entry.failureReason) ||
+      !isNullableNumber(entry.durationMs)
+    ) {
+      throw new Error(`Invalid batch result item at index ${idx}: invalid field types.`)
+    }
+
+    return {
+      fileName: entry.fileName,
+      fileSizeBytes: entry.fileSizeBytes,
+      status: entry.status,
+      videoHash: entry.videoHash,
+      metadataHash: entry.metadataHash,
+      sourceHash: entry.sourceHash,
+      tier: entry.tier,
+      chainStatus: entry.chainStatus,
+      message: entry.message,
+      duplicateOf: entry.duplicateOf,
+      failureReason: entry.failureReason,
+      durationMs: entry.durationMs,
+    }
+  })
+
+  return {
+    protocol: BATCH_REPORT_PROTOCOL,
+    version: BATCH_REPORT_VERSION,
+    exportedAt: raw.exportedAt,
+    totalCount: validatedResults.length,
+    results: validatedResults,
+  }
+}
+
+function indexManifestByStatement(
+  manifest: BatchResultManifest,
+  label: 'baseline' | 'candidate',
+): Map<string, CleanBatchReportItem> {
+  const indexed = new Map<string, CleanBatchReportItem>()
+  for (const item of manifest.results) {
+    const statementId = deriveStatementIdentity(item)
+    if (indexed.has(statementId)) {
+      throw new Error(
+        `Duplicate statement identity in ${label} manifest: "${statementId}".`,
+      )
+    }
+    indexed.set(statementId, item)
+  }
+  return indexed
+}
+
+/**
+ * Deterministically compares two versioned batch result manifests by statement identity,
+ * separating trust-context changes from added or removed files.
+ */
+export function compareBatchManifests(
+  baselineInput: string | BatchResultManifest,
+  candidateInput: string | BatchResultManifest,
+): BatchComparisonReport {
+  const baseline = parseBatchResultManifest(baselineInput)
+  const candidate = parseBatchResultManifest(candidateInput)
+
+  const baselineMap = indexManifestByStatement(baseline, 'baseline')
+  const candidateMap = indexManifestByStatement(candidate, 'candidate')
+
+  const allStatementIds = Array.from(
+    new Set([...baselineMap.keys(), ...candidateMap.keys()]),
+  ).sort(compareCodeUnits)
+
+  const trustContextChanges: BatchTrustContextChange[] = []
+  const added: BatchComparisonFileEntry[] = []
+  const removed: BatchComparisonFileEntry[] = []
+  const unchanged: string[] = []
+
+  for (const statementId of allStatementIds) {
+    const beforeItem = baselineMap.get(statementId)
+    const afterItem = candidateMap.get(statementId)
+
+    if (!beforeItem && afterItem) {
+      added.push({
+        statementId,
+        fileName: afterItem.fileName,
+        fileSizeBytes: afterItem.fileSizeBytes,
+        videoHash: normalizeNullableHash(afterItem.videoHash),
+        trustContext: extractTrustContext(afterItem),
+      })
       continue
     }
 
-    if (item.videoHash) {
-      const existing = byVideoHash.get(item.videoHash)
-      if (existing) {
-        const diff = describeRowConflict(existing, item)
-        if (diff) {
-          conflicts.push({
-            identifier: item.videoHash,
-            identifierType: 'videoHash',
-            firstFileName: existing.fileName,
-            conflictingFileName: item.fileName,
-            reason: diff,
-          })
-        }
-      } else {
-        byVideoHash.set(item.videoHash, item)
-      }
+    if (beforeItem && !afterItem) {
+      removed.push({
+        statementId,
+        fileName: beforeItem.fileName,
+        fileSizeBytes: beforeItem.fileSizeBytes,
+        videoHash: normalizeNullableHash(beforeItem.videoHash),
+        trustContext: extractTrustContext(beforeItem),
+      })
+      continue
     }
 
-    if (item.metadataHash) {
-      const existing = byMetadataHash.get(item.metadataHash)
-      if (existing) {
-        const diff = describeRowConflict(existing, item)
-        if (diff) {
-          conflicts.push({
-            identifier: item.metadataHash,
-            identifierType: 'metadataHash',
-            firstFileName: existing.fileName,
-            conflictingFileName: item.fileName,
-            reason: diff,
-          })
-        }
-      } else {
-        byMetadataHash.set(item.metadataHash, item)
-      }
-    }
+    if (beforeItem && afterItem) {
+      const beforeContext = extractTrustContext(beforeItem)
+      const afterContext = extractTrustContext(afterItem)
 
-    const proofId = item.manifest?.proofId
-    if (proofId) {
-      const existing = byProofId.get(proofId)
-      if (existing) {
-        const diff = describeManifestConflict(existing, item)
-        if (diff) {
-          conflicts.push({
-            identifier: proofId,
-            identifierType: 'proofId',
-            firstFileName: existing.fileName,
-            conflictingFileName: item.fileName,
-            reason: diff,
-          })
-        }
+      const changedFields = TRUST_CONTEXT_FIELDS.filter(
+        (field) => beforeContext[field] !== afterContext[field],
+      )
+
+      if (changedFields.length > 0) {
+        trustContextChanges.push({
+          statementId,
+          fileName: afterItem.fileName,
+          baselineFileName: beforeItem.fileName,
+          videoHash: normalizeNullableHash(afterItem.videoHash),
+          changedFields,
+          before: beforeContext,
+          after: afterContext,
+        })
       } else {
-        byProofId.set(proofId, item)
+        unchanged.push(statementId)
       }
     }
   }
 
-  return conflicts
-}
-
-function describeRowConflict(a: BatchItemResult, b: BatchItemResult): string | null {
-  const diffs: string[] = []
-  if (a.status !== b.status) diffs.push(`status (${a.status} vs ${b.status})`)
-  if (a.videoHash !== b.videoHash) diffs.push(`videoHash (${a.videoHash} vs ${b.videoHash})`)
-  if (a.metadataHash !== b.metadataHash) diffs.push(`metadataHash (${a.metadataHash} vs ${b.metadataHash})`)
-  if (a.sourceHash !== b.sourceHash) diffs.push(`sourceHash (${a.sourceHash} vs ${b.sourceHash})`)
-  if (a.tier !== b.tier) diffs.push(`tier (${a.tier} vs ${b.tier})`)
-  if (a.chainStatus !== b.chainStatus) diffs.push(`chainStatus (${a.chainStatus} vs ${b.chainStatus})`)
-  return diffs.length > 0 ? `conflicting ${diffs.join(', ')}` : null
-}
-
-function describeManifestConflict(a: BatchItemResult, b: BatchItemResult): string | null {
-  const ma = a.manifest
-  const mb = b.manifest
-  if (!ma || !mb) return null
-  const diffs: string[] = []
-  if (ma.videoHash !== mb.videoHash) diffs.push(`videoHash (${ma.videoHash} vs ${mb.videoHash})`)
-  if (ma.metadataHash !== mb.metadataHash) diffs.push(`metadataHash (${ma.metadataHash} vs ${mb.metadataHash})`)
-  if (ma.tier !== mb.tier) diffs.push(`tier (${ma.tier} vs ${mb.tier})`)
-  if (ma.contractId !== mb.contractId) diffs.push(`contractId (${ma.contractId} vs ${mb.contractId})`)
-  return diffs.length > 0 ? `conflicting manifest ${diffs.join(', ')}` : null
+  return {
+    protocol: BATCH_COMPARISON_PROTOCOL,
+    version: BATCH_COMPARISON_VERSION,
+    baseline: {
+      protocol: baseline.protocol,
+      version: baseline.version,
+      exportedAt: baseline.exportedAt,
+      totalCount: baseline.totalCount,
+    },
+    candidate: {
+      protocol: candidate.protocol,
+      version: candidate.version,
+      exportedAt: candidate.exportedAt,
+      totalCount: candidate.totalCount,
+    },
+    summary: {
+      baselineCount: baseline.totalCount,
+      candidateCount: candidate.totalCount,
+      addedCount: added.length,
+      removedCount: removed.length,
+      trustContextChangedCount: trustContextChanges.length,
+      unchangedCount: unchanged.length,
+    },
+    trustContextChanges,
+    added,
+    removed,
+    unchanged,
+  }
 }
 
 /**
- * Validates batch results before serialization, throwing
- * {@link BatchExportConflictError} if any duplicate conflicting statement
- * identifiers are found. Preserves and returns valid unique results.
+ * Exports a deterministic, privacy-safe JSON comparison report between two
+ * versioned batch result manifests.
  */
-export function validateBatchExportResults(results: BatchItemResult[]): BatchItemResult[] {
-  const conflicts = detectConflictingStatements(results)
-  if (conflicts.length > 0) {
-    throw new BatchExportConflictError(conflicts)
-  }
-  return results
+export function exportBatchComparisonJSON(
+  baselineInput: string | BatchResultManifest,
+  candidateInput: string | BatchResultManifest,
+): string {
+  const report = compareBatchManifests(baselineInput, candidateInput)
+  return JSON.stringify(report, null, 2)
 }
 
 /**
  * Strips raw File handles and sensitive memory states, returning a clean,
- * privacy-safe serializable representation of batch verification results.
+ * privacy-safe serializable representation of batch verification results
+ * with bounded, collision-safe deterministic archive filenames.
  */
-export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchReportItem[] {
-  return results.map((item) => ({
+export function sanitizeBatchResults(
+  results: BatchItemResult[],
+  options: ArchiveFilenameOptions = {},
+): CleanBatchReportItem[] {
+  const archivePaths = allocateArchivePaths(results, options)
+
+  return results.map((item, index) => ({
+    sourceItemId: item.id,
     fileName: item.fileName,
+    archiveFileName: archivePaths[index],
     fileSizeBytes: item.fileSizeBytes,
     status: item.status,
     videoHash: item.videoHash,
@@ -183,8 +475,46 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
     message: item.message,
     duplicateOf: item.duplicateOf,
     failureReason: item.failureReason,
-    durationMs: item.durationMs ? Math.round(item.durationMs) : null,
+    durationMs: item.durationMs !== null ? Math.round(item.durationMs) : null,
   }))
+}
+
+/**
+ * Builds collision-safe archive entries preserving the 1:1 association between
+ * every exported result, its bounded output path, and its source batch item.
+ */
+export function buildBatchArchiveEntries(
+  results: BatchItemResult[],
+  options: ArchiveFilenameOptions = {},
+): BatchArchiveEntry[] {
+  const sanitized = sanitizeBatchResults(results, options)
+  return sanitized.map((result, index) => ({
+    sourceItemId: results[index].id,
+    sourceFileName: results[index].fileName,
+    outputPath: result.archiveFileName,
+    result,
+  }))
+}
+
+/**
+ * Exports a deterministic JSON archive manifest mapping every source batch item
+ * to its bounded, collision-safe output path and sanitized verification result.
+ */
+export function exportBatchArchiveManifest(
+  results: BatchItemResult[],
+  options: ArchiveFilenameOptions = {},
+): string {
+  const maxFileNameLength = resolveMaxArchiveFilenameLength(options.maxLength)
+  const entries = buildBatchArchiveEntries(results, options)
+  const manifest: BatchArchiveManifest = {
+    protocol: 'harpocrates-batch-archive',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    maxFileNameLength,
+    totalEntries: entries.length,
+    entries,
+  }
+  return JSON.stringify(manifest, null, 2)
 }
 
 /**
@@ -193,11 +523,10 @@ export function sanitizeBatchResults(results: BatchItemResult[]): CleanBatchRepo
  * identifiers are detected.
  */
 export function exportBatchJSON(results: BatchItemResult[]): string {
-  const validated = validateBatchExportResults(results)
-  const clean = sanitizeBatchResults(validated)
-  const report = {
-    protocol: 'harpocrates-batch-report',
-    version: 1,
+  const clean = sanitizeBatchResults(results)
+  const report: BatchResultManifest = {
+    protocol: BATCH_REPORT_PROTOCOL,
+    version: BATCH_REPORT_VERSION,
     exportedAt: new Date().toISOString(),
     totalCount: clean.length,
     results: clean,
@@ -226,6 +555,8 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
     'Duplicate Of',
     'Failure Reason',
     'Duration (ms)',
+    'Input Index',
+    'Input ID',
   ]
 
   const rows = clean.map((item) => [
@@ -241,6 +572,8 @@ export function exportBatchCSV(results: BatchItemResult[]): string {
     escapeCSV(item.duplicateOf ?? ''),
     escapeCSV(item.failureReason ?? ''),
     item.durationMs !== null ? String(item.durationMs) : '',
+    String(item.inputIndex),
+    escapeCSV(item.id),
   ])
 
   return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n')

@@ -11,8 +11,10 @@ SUPPORTED_OPERATIONS = {"crop", "transcode", "blur", "redact", "compose"}
 MAX_LINEAGE_DEPTH = 4
 MAX_LINEAGE_FANOUT = 4
 MAX_LINEAGE_PAYLOAD_BYTES = 4096
+MAX_LINEAGE_REPORT_ENTRIES = 50
 
 LINEAGE_BUNDLE_VERSION = 1
+LINEAGE_COMPARISON_REPORT_VERSION = 1
 MAX_BUNDLE_BYTES = 128 * 1024
 MAX_BUNDLE_NODES = 64
 MAX_BUNDLE_TRUST_REFS = 64
@@ -455,7 +457,7 @@ def build_lineage_verification_bundle(
     return bundle
 
 
-def verify_lineage_verification_bundle(
+def _parse_and_verify_bundle_graph(
     bundle: dict[str, Any] | str | bytes,
     *,
     max_depth: int = MAX_LINEAGE_DEPTH,
@@ -547,6 +549,7 @@ def verify_lineage_verification_bundle(
 
     # Index and validate statements.
     statements_by_output: dict[str, dict[str, Any]] = {}
+    statement_order: list[str] = []
     for idx, stmt in enumerate(statements_raw):
         norm = _normalize_bundle_statement(stmt, idx)
         if norm["network"].strip() != bundle_network:
@@ -555,9 +558,11 @@ def verify_lineage_verification_bundle(
         if out_key in statements_by_output:
             raise LineageBundleError("duplicate_statement", f"statements[{idx}].outputDigest")
         statements_by_output[out_key] = norm
+        statement_order.append(out_key)
 
     # Index and validate trust references (roots).
     trust_by_id: dict[str, dict[str, Any]] = {}
+    trust_order: list[str] = []
     for idx, ref in enumerate(trust_refs_raw):
         norm_ref = _normalize_trust_reference(ref, idx)
         if norm_ref["network"] != bundle_network:
@@ -568,6 +573,7 @@ def verify_lineage_verification_bundle(
         if pid in statements_by_output:
             raise LineageBundleError("contradictory_root", f"trustReferences[{idx}].proofId")
         trust_by_id[pid] = norm_ref
+        trust_order.append(pid)
 
     if target_key not in statements_by_output:
         raise LineageBundleError("missing_target_statement", "targetDigest")
@@ -675,4 +681,419 @@ def verify_lineage_verification_bundle(
         complete=is_complete,
         verified_edges=verified_edges,
         missing_dependencies=missing_dependencies,
+    )
+    return result, statements_by_output, trust_by_id, statement_order, trust_order
+
+
+def verify_lineage_verification_bundle(
+    bundle: dict[str, Any] | str | bytes,
+    *,
+    max_depth: int = MAX_LINEAGE_DEPTH,
+    max_nodes: int = MAX_BUNDLE_NODES,
+) -> LineageBundleVerificationResult:
+    """Verify a portable lineage verification bundle completely offline.
+
+    Enforces:
+    - Bounded payload size, node count, fan-out, and graph depth.
+    - No external URLs or network resolution.
+    - Canonical statement digests and network consistency.
+    - No missing parents, no cycles, no contradictory roots, and no orphaned nodes.
+    """
+    result, _, _, _, _ = _parse_and_verify_bundle_graph(
+        bundle, max_depth=max_depth, max_nodes=max_nodes
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Deterministic lineage graph comparison report
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LineageAssertionEntry:
+    """An added or removed assertion in a lineage graph comparison."""
+
+    kind: str  # "statement" | "trust_reference"
+    assertion_id: str
+    canonical_digest: str
+    provenance_digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "assertionId": self.assertion_id,
+            "canonicalDigest": self.canonical_digest,
+            "provenanceDigest": self.provenance_digest,
+        }
+
+
+@dataclass(frozen=True)
+class LineageAssertionChange:
+    """A provenance-level change to an assertion present in both lineage graphs."""
+
+    kind: str  # "statement" | "trust_reference"
+    assertion_id: str
+    before_digest: str
+    after_digest: str
+    before_provenance_digest: str
+    after_provenance_digest: str
+    changed_fields: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "assertionId": self.assertion_id,
+            "beforeDigest": self.before_digest,
+            "afterDigest": self.after_digest,
+            "beforeProvenanceDigest": self.before_provenance_digest,
+            "afterProvenanceDigest": self.after_provenance_digest,
+            "changedFields": list(self.changed_fields),
+        }
+
+
+@dataclass(frozen=True)
+class LineageOrderingDifference:
+    """A pure ordering difference that does not alter provenance semantics."""
+
+    scope: str  # "statements" | "trust_references" | "statement_parents"
+    assertion_id: str | None
+    before_digest: str
+    after_digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "assertionId": self.assertion_id,
+            "beforeDigest": self.before_digest,
+            "afterDigest": self.after_digest,
+        }
+
+
+@dataclass(frozen=True)
+class LineageGraphComparisonReport:
+    """Deterministic comparison report between two verified lineage graphs."""
+
+    before_bundle_digest: str
+    after_bundle_digest: str
+    before_target_digest: str
+    after_target_digest: str
+    before_network: str
+    after_network: str
+    target_changed: bool
+    network_changed: bool
+    added_assertions: tuple[LineageAssertionEntry, ...]
+    removed_assertions: tuple[LineageAssertionEntry, ...]
+    changed_assertions: tuple[LineageAssertionChange, ...]
+    unchanged_assertion_count: int
+    ordering_differences: tuple[LineageOrderingDifference, ...]
+    has_provenance_changes: bool
+    has_ordering_differences: bool
+    equivalent_provenance: bool
+    report_digest: str
+    protocol: str = "harpocrates"
+    report_version: int = LINEAGE_COMPARISON_REPORT_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol": self.protocol,
+            "reportVersion": self.report_version,
+            "beforeBundleDigest": self.before_bundle_digest,
+            "afterBundleDigest": self.after_bundle_digest,
+            "beforeTargetDigest": self.before_target_digest,
+            "afterTargetDigest": self.after_target_digest,
+            "beforeNetwork": self.before_network,
+            "afterNetwork": self.after_network,
+            "targetChanged": self.target_changed,
+            "networkChanged": self.network_changed,
+            "addedAssertions": [entry.to_dict() for entry in self.added_assertions],
+            "removedAssertions": [entry.to_dict() for entry in self.removed_assertions],
+            "changedAssertions": [entry.to_dict() for entry in self.changed_assertions],
+            "unchangedAssertionCount": self.unchanged_assertion_count,
+            "orderingDifferences": [diff.to_dict() for diff in self.ordering_differences],
+            "hasProvenanceChanges": self.has_provenance_changes,
+            "hasOrderingDifferences": self.has_ordering_differences,
+            "equivalentProvenance": self.equivalent_provenance,
+            "reportDigest": self.report_digest,
+        }
+
+
+def _statement_provenance_payload(stmt: dict[str, Any]) -> dict[str, Any]:
+    """Return an order-independent canonical representation of a normalized statement."""
+    return {
+        "protocol": stmt["protocol"],
+        "version": stmt["version"],
+        "parentProofIds": sorted(p.lower() for p in stmt["parentProofIds"]),
+        "operationType": stmt["operationType"],
+        "parametersDigest": stmt["parametersDigest"],
+        "toolIdentity": stmt["toolIdentity"],
+        "toolVersion": stmt["toolVersion"],
+        "outputDigest": stmt["outputDigest"].lower(),
+        "network": stmt["network"],
+        "actorAddress": stmt["actorAddress"],
+    }
+
+
+def _statement_provenance_digest(stmt: dict[str, Any]) -> str:
+    payload = _statement_provenance_payload(stmt)
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _trust_reference_digest(ref: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(ref, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def canonical_lineage_comparison_report(
+    report: LineageGraphComparisonReport | dict[str, Any],
+) -> str:
+    """Return the canonical compact JSON encoding of a comparison report (excluding ``reportDigest``)."""
+    raw = report.to_dict() if isinstance(report, LineageGraphComparisonReport) else report
+    if not isinstance(raw, dict):
+        raise LineageBundleError("invalid_comparison_report", "report")
+    payload = {k: v for k, v in raw.items() if k != "reportDigest"}
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def lineage_comparison_report_digest(
+    report: LineageGraphComparisonReport | dict[str, Any],
+) -> str:
+    """Return the SHA-256 hex digest of the canonical lineage comparison report."""
+    return hashlib.sha256(
+        canonical_lineage_comparison_report(report).encode("utf-8")
+    ).hexdigest()
+
+
+def compare_lineage_graphs(
+    before: dict[str, Any] | str | bytes,
+    after: dict[str, Any] | str | bytes,
+    *,
+    max_depth: int = MAX_LINEAGE_DEPTH,
+    max_nodes: int = MAX_BUNDLE_NODES,
+) -> LineageGraphComparisonReport:
+    """Produce a deterministic comparison report between two lineage verification bundles.
+
+    Both ``before`` and ``after`` are verified offline (fail-closed) before comparison.
+    Assertions (statements and root trust references) are compared by canonical digest,
+    while separating genuine provenance changes from pure ordering differences (bundle
+    list order or ``parentProofIds`` permutation).
+    """
+    (
+        before_res,
+        before_stmts,
+        before_trust,
+        before_stmt_order,
+        before_trust_order,
+    ) = _parse_and_verify_bundle_graph(before, max_depth=max_depth, max_nodes=max_nodes)
+    (
+        after_res,
+        after_stmts,
+        after_trust,
+        after_stmt_order,
+        after_trust_order,
+    ) = _parse_and_verify_bundle_graph(after, max_depth=max_depth, max_nodes=max_nodes)
+
+    added: list[LineageAssertionEntry] = []
+    removed: list[LineageAssertionEntry] = []
+    changed: list[LineageAssertionChange] = []
+    ordering_diffs: list[LineageOrderingDifference] = []
+    unchanged_count = 0
+
+    # 1. Compare lineage statements keyed by canonical outputDigest.
+    all_stmt_ids = sorted(set(before_stmts) | set(after_stmts))
+    for oid in all_stmt_ids:
+        b_stmt = before_stmts.get(oid)
+        a_stmt = after_stmts.get(oid)
+        if b_stmt is None and a_stmt is not None:
+            added.append(
+                LineageAssertionEntry(
+                    kind="statement",
+                    assertion_id=oid,
+                    canonical_digest=a_stmt["manifestDigest"],
+                    provenance_digest=_statement_provenance_digest(a_stmt),
+                )
+            )
+        elif a_stmt is None and b_stmt is not None:
+            removed.append(
+                LineageAssertionEntry(
+                    kind="statement",
+                    assertion_id=oid,
+                    canonical_digest=b_stmt["manifestDigest"],
+                    provenance_digest=_statement_provenance_digest(b_stmt),
+                )
+            )
+        elif b_stmt is not None and a_stmt is not None:
+            b_digest = b_stmt["manifestDigest"]
+            a_digest = a_stmt["manifestDigest"]
+            b_prov = _statement_provenance_digest(b_stmt)
+            a_prov = _statement_provenance_digest(a_stmt)
+            if b_digest == a_digest:
+                unchanged_count += 1
+            elif b_prov == a_prov:
+                unchanged_count += 1
+                ordering_diffs.append(
+                    LineageOrderingDifference(
+                        scope="statement_parents",
+                        assertion_id=oid,
+                        before_digest=b_digest,
+                        after_digest=a_digest,
+                    )
+                )
+            else:
+                b_payload = _statement_provenance_payload(b_stmt)
+                a_payload = _statement_provenance_payload(a_stmt)
+                diff_fields = tuple(
+                    sorted(
+                        k
+                        for k in (set(b_payload) | set(a_payload))
+                        if b_payload.get(k) != a_payload.get(k)
+                    )
+                )
+                changed.append(
+                    LineageAssertionChange(
+                        kind="statement",
+                        assertion_id=oid,
+                        before_digest=b_digest,
+                        after_digest=a_digest,
+                        before_provenance_digest=b_prov,
+                        after_provenance_digest=a_prov,
+                        changed_fields=diff_fields,
+                    )
+                )
+
+    # 2. Compare root trust references keyed by canonical proofId.
+    all_trust_ids = sorted(set(before_trust) | set(after_trust))
+    for pid in all_trust_ids:
+        b_ref = before_trust.get(pid)
+        a_ref = after_trust.get(pid)
+        if b_ref is None and a_ref is not None:
+            a_digest = _trust_reference_digest(a_ref)
+            added.append(
+                LineageAssertionEntry(
+                    kind="trust_reference",
+                    assertion_id=pid,
+                    canonical_digest=a_digest,
+                    provenance_digest=a_digest,
+                )
+            )
+        elif a_ref is None and b_ref is not None:
+            b_digest = _trust_reference_digest(b_ref)
+            removed.append(
+                LineageAssertionEntry(
+                    kind="trust_reference",
+                    assertion_id=pid,
+                    canonical_digest=b_digest,
+                    provenance_digest=b_digest,
+                )
+            )
+        elif b_ref is not None and a_ref is not None:
+            b_digest = _trust_reference_digest(b_ref)
+            a_digest = _trust_reference_digest(a_ref)
+            if b_digest == a_digest:
+                unchanged_count += 1
+            else:
+                diff_fields = tuple(
+                    sorted(
+                        k
+                        for k in (set(b_ref) | set(a_ref))
+                        if b_ref.get(k) != a_ref.get(k)
+                    )
+                )
+                changed.append(
+                    LineageAssertionChange(
+                        kind="trust_reference",
+                        assertion_id=pid,
+                        before_digest=b_digest,
+                        after_digest=a_digest,
+                        before_provenance_digest=b_digest,
+                        after_provenance_digest=a_digest,
+                        changed_fields=diff_fields,
+                    )
+                )
+
+    # 3. Detect bundle-level list ordering differences among shared assertions.
+    shared_stmt_before = [oid for oid in before_stmt_order if oid in after_stmts]
+    shared_stmt_after = [oid for oid in after_stmt_order if oid in before_stmts]
+    if shared_stmt_before != shared_stmt_after:
+        ordering_diffs.append(
+            LineageOrderingDifference(
+                scope="statements",
+                assertion_id=None,
+                before_digest=before_res.bundle_digest,
+                after_digest=after_res.bundle_digest,
+            )
+        )
+
+    shared_trust_before = [pid for pid in before_trust_order if pid in after_trust]
+    shared_trust_after = [pid for pid in after_trust_order if pid in before_trust]
+    if shared_trust_before != shared_trust_after:
+        ordering_diffs.append(
+            LineageOrderingDifference(
+                scope="trust_references",
+                assertion_id=None,
+                before_digest=before_res.bundle_digest,
+                after_digest=after_res.bundle_digest,
+            )
+        )
+
+    # Deterministic sorting of all report collections.
+    added_tuple = tuple(sorted(added, key=lambda e: (e.kind, e.assertion_id)))
+    removed_tuple = tuple(sorted(removed, key=lambda e: (e.kind, e.assertion_id)))
+    changed_tuple = tuple(sorted(changed, key=lambda c: (c.kind, c.assertion_id)))
+    ordering_tuple = tuple(
+        sorted(ordering_diffs, key=lambda d: (d.scope, d.assertion_id or ""))
+    )
+
+    target_changed = before_res.target_digest != after_res.target_digest
+    network_changed = before_res.network != after_res.network
+    has_provenance_changes = bool(
+        target_changed
+        or network_changed
+        or added_tuple
+        or removed_tuple
+        or changed_tuple
+    )
+    has_ordering_differences = bool(ordering_tuple)
+
+    draft = LineageGraphComparisonReport(
+        before_bundle_digest=before_res.bundle_digest,
+        after_bundle_digest=after_res.bundle_digest,
+        before_target_digest=before_res.target_digest,
+        after_target_digest=after_res.target_digest,
+        before_network=before_res.network,
+        after_network=after_res.network,
+        target_changed=target_changed,
+        network_changed=network_changed,
+        added_assertions=added_tuple,
+        removed_assertions=removed_tuple,
+        changed_assertions=changed_tuple,
+        unchanged_assertion_count=unchanged_count,
+        ordering_differences=ordering_tuple,
+        has_provenance_changes=has_provenance_changes,
+        has_ordering_differences=has_ordering_differences,
+        equivalent_provenance=not has_provenance_changes,
+        report_digest="",
+    )
+    digest = lineage_comparison_report_digest(draft)
+    return LineageGraphComparisonReport(
+        before_bundle_digest=draft.before_bundle_digest,
+        after_bundle_digest=draft.after_bundle_digest,
+        before_target_digest=draft.before_target_digest,
+        after_target_digest=draft.after_target_digest,
+        before_network=draft.before_network,
+        after_network=draft.after_network,
+        target_changed=draft.target_changed,
+        network_changed=draft.network_changed,
+        added_assertions=draft.added_assertions,
+        removed_assertions=draft.removed_assertions,
+        changed_assertions=draft.changed_assertions,
+        unchanged_assertion_count=draft.unchanged_assertion_count,
+        ordering_differences=draft.ordering_differences,
+        has_provenance_changes=draft.has_provenance_changes,
+        has_ordering_differences=draft.has_ordering_differences,
+        equivalent_provenance=draft.equivalent_provenance,
+        report_digest=digest,
     )

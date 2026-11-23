@@ -33,27 +33,39 @@ Phases reported today:
 - `silent_witness`: `generating_proof` (the proof runs as one external command, so
   only the phase name is reported).
 
-Processors call `db.report_job_progress(job_id, phase, percent)` as often as they
-like; the value is stored at most once per second per job
+Processors call `db.report_job_progress(job_id, phase, percent, stage_revision=...)`
+as often as they like; the value is stored at most once per second per job
 (`JOB_PROGRESS_MIN_INTERVAL_SECONDS`), and only while the job is `running`.
+When `stage_revision` is provided, revisions are enforced monotonically so
+delayed updates from an already-completed stage are rejected regardless of
+wall-clock ordering. Terminal jobs (`completed`, `failed`, `cancelled`) never
+transition back to `running` and ignore further progress updates.
 Heartbeats extend the lease only and never overwrite progress.
 
-## Worker recovery plan (read-only)
+## Cancellation vs. processing failure
 
-After an unclean shutdown, `build_recovery_plan()` (also exposed as
-`worker_recovery_plan`, `plan_recovery`, `get_recovery_plan`, ...) inspects the
-in-memory job queue and on-disk job artifacts and returns a read-only plan
-listing abandoned leases and partial artifacts with explicit uncertainty.
-It never mutates job state or deletes files. Each plan carries a bounded
-`actions` list (default 10, configurable via `max_actions`).
+Intentional cancellation (via `POST /api/jobs/<id>/cancel` or a worker raising
+`worker.JobCancelledError`) is kept distinct from processing failures:
 
-```python
-from worker import build_recovery_plan
+- `status` transitions to `"cancelled"` and `cancelled_at` is recorded.
+- `result` preserves a stable object for the requester:
+  `{"cancelled": true, "reason": "<reason>"}` (defaults to `"Job cancelled"`).
+- `retry_count` is **not** incremented, and cancelled jobs are never re-queued
+  for automatic failure retries.
+- Failure fields (`error`, `failed_at`) are not set, and late `complete_job` or
+  `fail_job` calls do not overwrite an already-cancelled job.
 
-plan = build_recovery_plan(now=..., max_actions=5)
-assert plan["read_only"] is True
-assert len(plan["actions"]) <= 5
-```
+## Claim generations (stale-worker fencing)
+
+Every lease and every retryable release (`fail_job(..., is_fatal=False)`, used
+for example when the shutdown grace period expires) increments the job's
+internal `_claim_generation`. The worker passes the generation it leased to
+`complete_job`, `fail_job`, `report_job_progress` and `heartbeat_job`
+(`generation=`); a write from an older generation is ignored, returns `False`
+and logs `job_claim_stale`. This keeps a worker that lost its claim from
+overwriting a newer result, progress or failure state. Calls without
+`generation` behave as before. The field is internal and never part of the
+response above.
 
 ## What the response never contains
 
@@ -75,3 +87,35 @@ they reach the logger or the job-failure record:
 
 Sanitized diagnostics are stored in the job's `result` error fields; the raw
 exception is never persisted.
+
+## `attempts` (worker attempt history)
+
+Every lease opens an attempt; the job keeps the newest
+`JOB_ATTEMPT_HISTORY_LIMIT` (10) attempts, oldest dropped first. The field is
+absent until the first lease.
+
+```json
+"attempts": [
+  { "attempt": 1, "worker_id": "worker-4182", "leased_at": "2026-10-18T16:00:01+00:00",
+    "ended_at": "2026-10-18T16:01:10+00:00", "outcome": "released",
+    "reason": "shutdown_grace_exceeded", "progress": { "phase": "embedding", "percent": 63.0 } },
+  { "attempt": 2, "worker_id": "worker-4190", "leased_at": "2026-10-18T16:01:12+00:00",
+    "ended_at": null, "outcome": null, "reason": null, "progress": null }
+]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `attempt` | 1-based attempt number. It keeps counting past the limit, so dropped attempts show as a gap. |
+| `worker_id` | Worker that held the lease. |
+| `leased_at` / `ended_at` | ISO 8601 UTC; `ended_at` is `null` while the attempt runs. |
+| `outcome` | `null` (running), `completed`, `failed` (fatal) or `released` (back to the queue for a retry). |
+| `reason` | Machine code for a failure or release: the exception class name (`ValueError`) or `shutdown_grace_exceeded`. |
+| `progress` | Last stored `{"phase", "percent"}` of that attempt, same rules as `progress` above. |
+
+The history holds metadata only. It never contains the request payload,
+uploaded media bytes, file paths, proof secrets or free-text error messages:
+`reason` and `worker_id` are stored only when they are plain codes
+(`[A-Za-z_][A-Za-z0-9_]*` and `[A-Za-z0-9_.-]+`, at most 64 characters) and
+are otherwise recorded as `null`. `fail_job(..., reason=...)` takes that code;
+the free-text `error` field is unchanged and never copied into the history.

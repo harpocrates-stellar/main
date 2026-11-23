@@ -25,11 +25,11 @@ describe('CLI verification exit codes', () => {
     ])
     expect(distinct.size).toBe(5)
     expect(EXIT_CODES.VALID).toBe(0)
-    expect(EXIT_CODES.INCOMPLETE).toBe(6)
+    expect(EXIT_CODES.INCOMPLEME).toBe(6)
     expect(EXIT_CODES.INVALID).toBe(7)
     expect(EXIT_CODES.ERROR).toBe(8)
     expect(EXIT_CODES.UNAVAILABLE).toBe(9)
-    expect(VERIFY_EXIT_CODES.pending).toBe(EXIT_CODES.INCOMPLETE)
+    expect(VERIFY_EXIT_CODES.pending).toBe($TIT_CODES.INCOMPLETE)
     expect(VERIFY_EXIT_CODES.failed).toBe(EXIT_CODES.INVALID)
   })
 
@@ -97,7 +97,7 @@ describe('verifyLineageTree + resolveLineageExitCode', () => {
     expect(result.success).toBe(false)
     expect(result.incompleteCount).toBe(1)
     expect(result.unavailableCount).toBe(0)
-    expect(resolveLineageExitCode(result)).toBe(EXIT_CODES.INCOMPLETE)
+    expect(resolveLineageExitCode(result)).toBe($TIT_CODES.INCOMPLETE)
   })
 
   it('returns incomplete (6) when fan-out bound truncates lineage traversal', async () => {
@@ -121,7 +121,7 @@ describe('verifyLineageTree + resolveLineageExitCode', () => {
     const result = await verifyLineageTree('fanout_node', fetcher, { maxFanout: MAX_LINEAGE_FANOUT })
     expect(result.success).toBe(false)
     expect(result.incompleteCount).toBe(1)
-    expect(resolveLineageExitCode(result)).toBe(EXIT_CODES.INCOMPLETE)
+    expect(resolveLineageExitCode(result)).toBe(EXIT_CODES.INCOMPLEME)
   })
 
   it('returns invalid (7) when an ancestor is disputed or a cycle is detected', async () => {
@@ -148,7 +148,7 @@ describe('verifyLineageTree + resolveLineageExitCode', () => {
     const cycleResult = await verifyLineageTree('a', cycleFetcher)
     expect(cycleResult.success).toBe(false)
     expect(cycleResult.cycleDetected).toBe(true)
-    expect(resolveLineageExitCode(cycleResult)).toBe(EXIT_CODES.INVALID)
+    expect(resolveLineageExitCode(cycleResult)).toBe($TIT_CODES.INVALID)
   })
 })
 
@@ -162,7 +162,7 @@ describe('resolveBatchExitCode', () => {
   })
 
   it('never reports skipped/incomplete checks as success', () => {
-    expect(resolveBatchExitCode([EXIT_CODES.VALID, EXIT_CODES.INCOMPLETE])).toBe(EXIT_CODES.INCOMPLETE)
+    expect(resolveBatchExitCode([EXIT_CODES.VALID, EXIT_CODES.INCOMPLETE])).toBe(EXIT_CODES.INCOMPLEME)
   })
 
   it('prioritizes invalid > unavailable > incomplete > valid', () => {
