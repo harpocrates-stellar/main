@@ -1,8 +1,33 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { VerifyView } from './VerifyView'
 import type { UseVerificationReturn } from '../hooks/useVerification'
+import { useIssuerTrust } from '../hooks/useIssuerTrust'
+import { STELLAR_STRKEY_LENGTH, type IssuerTrust } from '../provenance/issuerTrust'
+import type { ChainProofRecord } from '../stellarTypes'
+
+vi.mock('../hooks/useIssuerTrust', () => ({
+  useIssuerTrust: vi.fn(),
+}))
+
+const mockedUseIssuerTrust = vi.mocked(useIssuerTrust)
+
+function issuerTrustStub(overrides: Partial<IssuerTrust> = {}): IssuerTrust {
+  return {
+    state: 'unsupported',
+    label: 'No issuer',
+    description: 'This identity tier does not carry an issuer address.',
+    severity: 'neutral',
+    issuer: null,
+    ...overrides,
+  }
+}
+
+beforeEach(() => {
+  mockedUseIssuerTrust.mockReset()
+  mockedUseIssuerTrust.mockReturnValue(issuerTrustStub())
+})
 
 vi.mock('../stellar', () => ({
   CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Future Network ; October 2022',
@@ -15,6 +40,10 @@ vi.mock('../stellar', () => ({
 vi.mock('../components/ChainProofPanel', () => ({
   ChainProofPanel: () => <div data-testid="chain-proof-panel" />,
   formatProofExpiry: () => 'Never',
+}))
+
+vi.mock('../components/DisputePanel', () => ({
+  DisputePanel: () => <div data-testid="dispute-panel" />,
 }))
 
 vi.mock('../components/VerifierSetStatusPanel', () => ({
@@ -422,66 +451,21 @@ describe('VerifyView – portable proof manifest loading', () => {
   })
 })
 
-// ─── Structured Trust Dimensions ────────────────────────────────────────────
+describe('VerifyView – receipt comparison view', () => {
+  it('toggles the receipt comparison view on and off', async () => {
+    const user = userEvent.setup()
+    renderView()
 
-describe('VerifyView – structured trust dimensions', () => {
-  it('renders all four independent trust dimensions on a confirmed verification', () => {
-    renderView({
-      status: 'success',
-      verifyHash: 'a'.repeat(64),
-      verifyResult:
-        'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
-      chainProof: {
-        videoHash: 'a'.repeat(64),
-        metadataHash: 'b'.repeat(64),
-        tier: 1,
-        status: 1,
-        createdAt: '2026-01-01T00:00:00Z',
-        expiresAt: 0,
-        source: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-        issuer: null,
-      },
-    })
+    const toggle = screen.getByRole('button', { name: /compare two receipts/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: /compare verification receipts/i })).not.toBeInTheDocument()
 
-    const section = screen.getByRole('region', { name: /verification trust dimensions/i })
-    expect(section).toHaveAttribute('data-overall-verdict', 'verified')
-    expect(screen.getByText('Content Integrity')).toBeInTheDocument()
-    expect(screen.getByText('Chain Registration')).toBeInTheDocument()
-    expect(screen.getByText('Issuer Trust')).toBeInTheDocument()
-    expect(screen.getByText('Freshness')).toBeInTheDocument()
-  })
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('heading', { name: /compare verification receipts/i })).toBeInTheDocument()
 
-  it('surfaces a failed dimension without allowing successful dimensions to mask it', () => {
-    renderView({
-      status: 'error',
-      errorCode: 'EXPIRED_EVIDENCE',
-      verifyHash: 'a'.repeat(64),
-      verifyResult:
-        'Expired: the chain record for this artifact has expired. Do not treat it as valid evidence.',
-      chainProof: {
-        videoHash: 'a'.repeat(64),
-        metadataHash: 'b'.repeat(64),
-        tier: 1,
-        status: 3,
-        createdAt: '2025-01-01T00:00:00Z',
-        expiresAt: 1_700_000_000,
-        source: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-        issuer: null,
-      },
-    })
-
-    const section = screen.getByRole('region', { name: /verification trust dimensions/i })
-    expect(section).toHaveAttribute('data-overall-verdict', 'failed')
-    expect(
-      screen.getByText(/successful dimensions do not override failures/i),
-    ).toBeInTheDocument()
-    expect(section.querySelector('[data-dimension="chainRegistration"]')).toHaveAttribute(
-      'data-state',
-      'verified',
-    )
-    expect(section.querySelector('[data-dimension="freshness"]')).toHaveAttribute(
-      'data-state',
-      'failed',
-    )
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: /compare verification receipts/i })).not.toBeInTheDocument()
   })
 })

@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import unittest
 
+from capture_attestation import (
+    AppIdentity,
+    CameraPipeline,
+    CaptureAttestation,
+    SecureTime,
+)
 from issuer_key_transparency import (
     DEFAULT_FRESHNESS_SECONDS,
     HIGH_ASSURANCE_FRESHNESS_SECONDS,
-    MAX_EXPLANATION_EVENTS,
+    ConsistencyProofBundle,
     DirectoryCache,
     DirectoryCheckpoint,
     DirectoryEvent,
+    DirectoryImportPreview,
     EventType,
     FreshnessError,
     HistoricalKeyValidityExplanation,
@@ -18,22 +25,32 @@ from issuer_key_transparency import (
     IssuerDirectory,
     IssuerKey,
     IssuerManifest,
+    IssuerTrustAssessment,
+    IssuerTrustChange,
     KeyStatus,
-    LifecycleEventRef,
+    PolicyVersion,
     TransparencyError,
-    canonicalize_validity_explanation,
+    advance_tree_head,
+    build_consistency_proof_bundle,
+    canonicalize_consistency_proof_bundle,
     compute_tree_head,
+    consistency_proof_bundle_hash,
     create_activation_event,
     create_rotation_event,
     detect_rollback,
+    evaluate_captured_evidence,
     event_hash,
-    explain_historical_key_validity,
+    export_offline_trust_snapshot,
+    import_offline_trust_snapshot,
     key_valid_for_historical_signature,
     key_was_compromised_at,
     manifest_hash,
+    preview_directory_import,
     rebuild_directory,
     require_fresh_checkpoint,
+    require_valid_consistency_proof_bundle,
     verify_checkpoint_consistency,
+    verify_consistency_proof_bundle,
 )
 
 ORG = "a" * 64
@@ -376,6 +393,192 @@ class PrivacyTests(unittest.TestCase):
         for forbidden in ("email", "legalname", "phone", "street", "employee"):
             self.assertNotIn(forbidden, blob)
         self.assertIn("organizationIdentityHash", encoded)
+
+
+class ConsistencyProofBundleTests(unittest.TestCase):
+    def _build_two_checkpoint_history(
+        self,
+    ) -> tuple[IssuerDirectory, DirectoryCheckpoint, DirectoryCheckpoint]:
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        d = rebuild_directory(ORG, [e0])
+        m1 = _manifest([IssuerKey("k1", KEY_A, "ed25519", 1000)], valid_from=1000)
+        d.publish_manifest(m1)
+        cp1 = d.make_checkpoint(timestamp=1500, signature_hash=SIG)
+
+        e1 = create_rotation_event(ORG, "k2", KEY_B, "k1", 1, 2000, event_hash(e0))
+        d.append_event(e1)
+        e2 = DirectoryEvent(
+            event_type=EventType.RETIREMENT,
+            sequence=2,
+            timestamp=2500,
+            organization_identity_hash=ORG,
+            key_id="k1",
+            public_key_hash=KEY_A,
+            previous_event_hash=event_hash(e1),
+            reason_hash="1" * 64,
+        )
+        d.append_event(e2)
+        m2 = _manifest(
+            [IssuerKey("k2", KEY_B, "ed25519", 2000)],
+            predecessor=manifest_hash(m1),
+            valid_from=2000,
+        )
+        d.publish_manifest(m2)
+        cp2 = d.make_checkpoint(timestamp=3000, signature_hash=SIG)
+        return d, cp1, cp2
+
+    def test_portable_bundle_roundtrip_and_offline_verification(self) -> None:
+        d, cp1, cp2 = self._build_two_checkpoint_history()
+        bundle = d.make_consistency_proof_bundle(cp1, cp2)
+        self.assertEqual(len(bundle.intervening_events), 2)
+        self.assertEqual(
+            advance_tree_head(cp1.tree_head_hash, bundle.intervening_events),
+            cp2.tree_head_hash,
+        )
+
+        # Serialize to canonical JSON and verify completely offline (no directory).
+        raw_json = bundle.to_json()
+        restored = ConsistencyProofBundle.from_json(raw_json)
+        self.assertEqual(
+            consistency_proof_bundle_hash(bundle),
+            consistency_proof_bundle_hash(restored),
+        )
+        self.assertEqual(canonicalize_consistency_proof_bundle(restored), raw_json)
+        self.assertEqual(
+            verify_consistency_proof_bundle(
+                restored,
+                expected_organization_identity_hash=ORG,
+                expected_earlier_checkpoint=cp1,
+            ),
+            [],
+        )
+        self.assertIs(
+            require_valid_consistency_proof_bundle(
+                restored,
+                expected_organization_identity_hash=ORG,
+                expected_earlier_checkpoint=cp1,
+            ),
+            restored,
+        )
+
+    def test_zero_event_identity_bundle_and_genesis_bundle(self) -> None:
+        d, cp1, _ = self._build_two_checkpoint_history()
+        # Same checkpoint -> 0 intervening events
+        identity_bundle = build_consistency_proof_bundle(d, cp1, cp1)
+        self.assertEqual(identity_bundle.intervening_events, ())
+        self.assertEqual(verify_consistency_proof_bundle(identity_bundle), [])
+
+        # Genesis (0 events) -> cp1 (1 event)
+        d_gen = IssuerDirectory(ORG)
+        m0 = _manifest([], valid_from=500)
+        d_gen.publish_manifest(m0)
+        cp0 = d_gen.make_checkpoint(timestamp=500, signature_hash=SIG)
+        e0 = create_activation_event(ORG, "k1", KEY_A, 0, 1000)
+        d_gen.append_event(e0)
+        m1 = _manifest(
+            [IssuerKey("k1", KEY_A, "ed25519", 1000)],
+            predecessor=manifest_hash(m0),
+            valid_from=1000,
+        )
+        d_gen.publish_manifest(m1)
+        cp_after = d_gen.make_checkpoint(timestamp=1200, signature_hash=SIG)
+        genesis_bundle = d_gen.make_consistency_proof_bundle(cp0, cp_after)
+        self.assertEqual(len(genesis_bundle.intervening_events), 1)
+        self.assertEqual(verify_consistency_proof_bundle(genesis_bundle), [])
+
+    def test_rejects_tampered_intervening_event(self) -> None:
+        d, cp1, cp2 = self._build_two_checkpoint_history()
+        bundle = d.make_consistency_proof_bundle(cp1, cp2)
+        ev0 = bundle.intervening_events[0]
+        tampered_ev0 = DirectoryEvent(
+            event_type=ev0.event_type,
+            sequence=ev0.sequence,
+            timestamp=ev0.timestamp + 1,
+            organization_identity_hash=ev0.organization_identity_hash,
+            key_id=ev0.key_id,
+            public_key_hash=ev0.public_key_hash,
+            previous_event_hash=ev0.previous_event_hash,
+            related_key_id=ev0.related_key_id,
+        )
+        tampered = ConsistencyProofBundle(
+            earlier_checkpoint=cp1,
+            later_checkpoint=cp2,
+            intervening_events=(tampered_ev0, bundle.intervening_events[1]),
+        )
+        errors = verify_consistency_proof_bundle(tampered)
+        self.assertTrue(any("broken continuity" in e.lower() for e in errors))
+        with self.assertRaises(TransparencyError):
+            require_valid_consistency_proof_bundle(tampered)
+
+    def test_rejects_missing_intervening_event(self) -> None:
+        d, cp1, cp2 = self._build_two_checkpoint_history()
+        bundle = d.make_consistency_proof_bundle(cp1, cp2)
+        truncated = ConsistencyProofBundle(
+            earlier_checkpoint=cp1,
+            later_checkpoint=cp2,
+            intervening_events=(bundle.intervening_events[0],),
+        )
+        errors = verify_consistency_proof_bundle(truncated)
+        self.assertTrue(any("count mismatch" in e.lower() for e in errors))
+
+    def test_rejects_rollback_and_equivocation(self) -> None:
+        d, cp1, cp2 = self._build_two_checkpoint_history()
+        # Rollback: later < earlier
+        with self.assertRaises(TransparencyError) as ctx:
+            d.make_consistency_proof_bundle(cp2, cp1)
+        self.assertIn("rollback", str(ctx.exception).lower())
+
+        rollback_bundle = ConsistencyProofBundle(
+            earlier_checkpoint=cp2,
+            later_checkpoint=cp1,
+            intervening_events=(),
+        )
+        errors = verify_consistency_proof_bundle(rollback_bundle)
+        self.assertTrue(any("rollback" in e.lower() for e in errors))
+
+        # Equivocation: same eventCount, diverging tree head
+        forged_same_count = DirectoryCheckpoint(
+            tree_head_hash="9" * 64,
+            event_count=cp1.event_count,
+            timestamp=cp1.timestamp + 10,
+            organization_identity_hash=ORG,
+            manifest_hash=cp1.manifest_hash,
+            signature_hash=SIG,
+        )
+        equiv_bundle = ConsistencyProofBundle(
+            earlier_checkpoint=cp1,
+            later_checkpoint=forged_same_count,
+            intervening_events=(),
+        )
+        errors = verify_consistency_proof_bundle(equiv_bundle)
+        self.assertTrue(any("equivocat" in e.lower() for e in errors))
+
+    def test_rejects_anchor_and_org_mismatch(self) -> None:
+        d, cp1, cp2 = self._build_two_checkpoint_history()
+        bundle = d.make_consistency_proof_bundle(cp1, cp2)
+        errors = verify_consistency_proof_bundle(
+            bundle,
+            expected_organization_identity_hash="9" * 64,
+            expected_earlier_checkpoint=cp2,
+        )
+        self.assertTrue(any("organizationidentityhash mismatch" in e.lower() for e in errors))
+        self.assertTrue(any("expected anchor" in e.lower() for e in errors))
+
+    def test_rejects_malformed_or_unsupported_bundle_json(self) -> None:
+        with self.assertRaises(TransparencyError):
+            ConsistencyProofBundle.from_json("{not-json")
+        with self.assertRaises(TransparencyError):
+            ConsistencyProofBundle.from_dict({"protocol": "wrong", "version": 1})
+        with self.assertRaises(TransparencyError):
+            ConsistencyProofBundle.from_dict(
+                {"protocol": "harpocrates-issuer-key-transparency", "version": 99}
+            )
+
+    def test_bundle_preserves_privacy(self) -> None:
+        d, cp1, cp2 = self._build_two_checkpoint_history()
+        raw = d.make_consistency_proof_bundle(cp1, cp2).to_json().lower()
+        for forbidden in ("email", "legalname", "phone", "street", "employee"):
+            self.assertNotIn(forbidden, raw)
 
 
 if __name__ == "__main__":

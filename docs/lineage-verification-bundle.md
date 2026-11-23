@@ -84,10 +84,58 @@ bounded graph closure.
 - `disconnected_statement` / `unused_trust_reference`: Orphaned statements or
   unreferenced trust anchors are not permitted in a closed bundle.
 
+## Incomplete Lineage Verification (`allow_incomplete=True`)
+
+By default (`allow_incomplete=False`), `verify_lineage_verification_bundle` fails
+closed with `LineageBundleError("missing_parent", "parentProofIds")` whenever
+any referenced parent is absent from `statements` and `trustReferences`.
+
+When callers explicitly opt in with `allow_incomplete=True`, missing parent
+dependencies are exposed as a distinct verification result instead of raising:
+
+- `status`: `LineageVerificationStatus.INCOMPLETE` (`"incomplete"`) rather than
+  `LineageVerificationStatus.VERIFIED` (`"verified"`).
+- `valid`: `False` and `complete`: `False` — an incomplete graph is never
+  presented as a fully verified original.
+- `verified_edges`: deterministic tuple of `LineageVerifiedEdge` entries for
+  every known verified edge (`parentKind`: `"statement"` or `"trust_reference"`).
+- `missing_dependencies`: deterministic tuple of `LineageMissingDependency`
+  entries listing each absent `parentId`, the sorted `referencedBy` child
+  statement digests, and `reason: "missing_parent"`.
+
+All other fail-closed checks (cycles, digest integrity, bounds, forbidden URLs,
+network consistency, disconnected statements, and unused trust references)
+continue to raise `LineageBundleError`.
+
 ## Python API (`backend/lineage.py`)
 
 - `build_lineage_verification_bundle(*, target_digest, network, statements, trust_references, max_depth=MAX_LINEAGE_DEPTH, max_nodes=MAX_BUNDLE_NODES) -> dict`
-- `verify_lineage_verification_bundle(bundle, *, max_depth=MAX_LINEAGE_DEPTH, max_nodes=MAX_BUNDLE_NODES) -> LineageBundleVerificationResult`
+- `verify_lineage_verification_bundle(bundle, *, max_depth=MAX_LINEAGE_DEPTH, max_nodes=MAX_BUNDLE_NODES, allow_incomplete=False) -> LineageBundleVerificationResult`
+- `LineageVerificationStatus` (`VERIFIED`, `INCOMPLETE`), `LineageVerifiedEdge`, `LineageMissingDependency`
 - `canonical_lineage_bundle(bundle) -> str`
 - `lineage_bundle_digest(bundle) -> str`
 - `trust_reference_from_c2pa_binding(binding, *, c2pa_digest=None) -> dict`
+- `compare_lineage_graphs(before, after, *, max_depth=MAX_LINEAGE_DEPTH, max_nodes=MAX_BUNDLE_NODES) -> LineageGraphComparisonReport`
+- `canonical_lineage_comparison_report(report) -> str`
+- `lineage_comparison_report_digest(report) -> str`
+
+## Deterministic Graph Comparison Report (`reportVersion = 1`)
+
+`compare_lineage_graphs(before, after)` verifies both bundles offline (fail-closed)
+before comparing their statements and root trust references by canonical digest:
+
+- **Provenance changes (`addedAssertions`, `removedAssertions`, `changedAssertions`):**
+  - Statements are keyed by canonical lowercase `outputDigest` and compared by
+    `manifestDigest` and order-independent provenance digest.
+  - Trust references are keyed by canonical lowercase `proofId` and compared by
+    canonical SHA-256 digest, preserving identity `tier` and `trustAnchorType`
+    separation.
+  - `changedAssertions` reports only canonical digests and `changedFields`
+    names—never raw actor identifiers or media values.
+- **Ordering differences (`orderingDifferences`):**
+  - Bundle-level list order differences (`scope: "statements"` or
+    `"trust_references"`) and statement-level `parentProofIds` permutations
+    (`scope: "statement_parents"`) are reported separately from provenance
+    changes so `equivalentProvenance` remains `true` when only ordering differs.
+- **Deterministic encoding:** All report collections are sorted canonically and
+  sealed with `reportDigest` (`SHA-256` of `canonical_lineage_comparison_report`).

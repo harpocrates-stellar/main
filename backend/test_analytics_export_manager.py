@@ -357,3 +357,60 @@ def test_reset_on_empty_manager_is_safe():
     mgr = _manager()
     mgr.reset()
     assert mgr.list_artifacts() == []
+
+
+def test_memory_cap_evicts_oldest_artifact():
+    mgr = ExportManager(policy=ExportPolicy(), processor=LogProcessor(), max_artifacts_memory=2)
+    a, _, _ = _export(mgr, [_safe_entry("a")])
+    b, _, _ = _export(mgr, [_safe_entry("b")])
+    c, _, _ = _export(mgr, [_safe_entry("c")])
+    assert mgr.get_artifact(a.artifact_id) is None
+    assert [x.artifact_id for x in mgr.list_artifacts()] == [c.artifact_id, b.artifact_id]
+
+
+def test_default_policy_values_are_bounded():
+    assert EXPORT_POLICY_DEFAULT.max_artifacts_per_export > 0
+    assert EXPORT_POLICY_DEFAULT.max_artifact_bytes > 0
+    assert EXPORT_POLICY_DEFAULT.require_safety_signature is True
+
+
+# ------------------------------------------------ analytics store unavailability
+
+
+def test_create_export_store_unavailable_when_processor_missing():
+    # An outage where the log processor is absent must NOT be reported as a
+    # successful zero-record export; it returns a distinct status instead.
+    mgr = _manager()
+    mgr._processor = None
+    art, status, count = mgr.create_export(
+        entries=[_safe_entry("a")], export_token_verified=True
+    )
+    assert art is None
+    assert status == "analytics_store_unavailable"
+    assert count == 0
+
+
+def test_create_export_store_unavailable_when_serialization_raises():
+    # A runtime store outage (serialization raises) is also surfaced as the
+    # distinct unavailable status rather than a fabricated empty export.
+    class _BrokenProcessor(LogProcessor):
+        def export_json_logs(self, *a, **kw):
+            raise RuntimeError("analytics store down")
+
+    mgr = ExportManager(policy=ExportPolicy(), processor=_BrokenProcessor())
+    art, status, count = mgr.create_export(
+        entries=[_safe_entry("a")], export_token_verified=True
+    )
+    assert art is None
+    assert status == "analytics_store_unavailable"
+    assert count == 0
+
+
+def test_create_export_empty_store_is_distinct_from_unavailable():
+    # Boundary: a reachable-but-empty store still yields a successful, empty
+    # export, which must stay distinct from the unavailable status above.
+    mgr = _manager()
+    art, serialized, count = mgr.create_export(entries=[], export_token_verified=True)
+    assert art is not None
+    assert count == 0
+    assert json.loads(serialized) == []

@@ -6,6 +6,8 @@ Usage (run from ``backend/`` with ``DATABASE_URL`` set)::
     python manage.py [--json] drift
     python manage.py [--json] retention (--dry-run | --run) [--batch-size N]
     python manage.py [--json] reconcile [--limit N]
+    python manage.py [--json] rebuild-index [--limit N]
+    python manage.py [--json] projection-reconcile --start-ledger N --end-ledger N --contract-id ID
 
 Exit codes:
 
@@ -131,13 +133,34 @@ def _cmd_drift(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 def _cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     import db
+    from streaming_upload import (
+        preview_upload_session_retention,
+        purge_expired_upload_sessions,
+    )
+
+    session_limit = getattr(args, "session_limit", None)
 
     if args.dry_run:
+        preview = preview_upload_session_retention(limit=session_limit)
         return EXIT_OK, {
             "command": "retention",
             "ok": True,
             "dry_run": True,
             "expired": db.count_expired_events(),
+            "upload_sessions": {
+                "expired": preview.expired_count,
+                "reclaimable_bytes": preview.reclaimable_bytes,
+                "active_skipped": preview.active_skipped_count,
+                "sessions": [
+                    {
+                        "session_id": s["session_id"],
+                        "age_seconds": s["age_seconds"],
+                        "chunk_count": s["chunk_count"],
+                        "reclaimable_bytes": s["reclaimable_bytes"],
+                    }
+                    for s in preview.expired_sessions
+                ],
+            },
         }
 
     batch_size = args.batch_size
@@ -155,6 +178,10 @@ def _cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         if len(receipts) < batch_size:
             break
 
+    purged_sessions, reclaimed_bytes, active_skipped = purge_expired_upload_sessions(
+        limit=session_limit
+    )
+
     return EXIT_OK, {
         "command": "retention",
         "ok": True,
@@ -162,6 +189,26 @@ def _cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         "batch_size": batch_size,
         "batches": batches,
         "deleted": deleted,
+        "upload_sessions": {
+            "deleted": purged_sessions,
+            "reclaimed_bytes": reclaimed_bytes,
+            "active_skipped": active_skipped,
+        },
+    }
+
+
+def _cmd_rebuild_index(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    import chain_indexer
+
+    # Dry-run only: builds a temporary projection from synthetic events and
+    # reports differences against the live index without replacing it.
+    report = chain_indexer.dry_run_index_rebuild(limit=args.limit)
+    return (EXIT_PROBLEMS if report["differences"] else EXIT_OK), {
+        "command": "rebuild-index",
+        "ok": not report["differences"],
+        "dry_run": True,
+        "fingerprint": report["fingerprint"],
+        "differences": report["differences"],
     }
 
 
@@ -223,6 +270,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="rows per purge batch (default: HARPOCRATES_RETENTION_BATCH_SIZE)",
     )
+    retention.add_argument(
+        "--session-limit",
+        type=_positive_int,
+        default=500,
+        help="maximum expired upload sessions to preview or purge (default: 500)",
+    )
     retention.set_defaults(handler=_cmd_retention)
 
     reconcile = sub.add_parser("reconcile", help="reconcile pending registration txs")
@@ -233,6 +286,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum pending rows to reconcile (capped at 50)",
     )
     reconcile.set_defaults(handler=_cmd_reconcile)
+
+    rebuild = sub.add_parser(
+        "rebuild-index",
+        help="dry-run an index rebuild and report differences (live index untouched)",
+    )
+    rebuild.add_argument("--limit", type=_positive_int, default=1000)
+    rebuild.set_defaults(handler=_cmd_rebuild_index)
 
     projection_reconcile = sub.add_parser(
         "projection-reconcile",
@@ -283,6 +343,14 @@ def _render_text(payload: dict[str, Any]) -> str:
         if isinstance(value, list):
             lines.append(f"{key}: {len(value)}")
             lines.extend(f"  - {_format_value(item)}" for item in value)
+        elif isinstance(value, dict):
+            lines.append(f"{key}:")
+            for sub_k, sub_v in value.items():
+                if isinstance(sub_v, list):
+                    lines.append(f"  {sub_k}: {len(sub_v)}")
+                    lines.extend(f"    - {_format_value(item)}" for item in sub_v)
+                else:
+                    lines.append(f"  {sub_k}: {_format_value(sub_v)}")
         else:
             lines.append(f"{key}: {_format_value(value)}")
     return "\n".join(lines)
