@@ -29,6 +29,8 @@ Each issuer publishes a versioned manifest (`protocol: harpocrates-issuer-key-tr
 
 Canonical encoding is deterministic JSON (`sort_keys`, compact separators). Digest = SHA-256 of the unsigned body.
 
+Manifest `version` must be the integer `1`; booleans and non-integer values are rejected rather than coerced. An optional `criticalExtensions` list must be empty because manifest version 1 understands no extensions. Any non-empty list, or a non-list value, raises `TransparencyError` instead of being ignored, so an issuer cannot make a client accept a manifest whose required semantics it does not implement. Unknown top-level manifest fields remain forward-compatible and are ignored.
+
 ## Append-only lifecycle events
 
 Event types: `activation`, `rotation`, `compromise`, `retirement`, `checkpoint`.
@@ -59,6 +61,8 @@ Use `require_fresh_checkpoint(..., high_assurance=True)` before accepting high-a
 ## Historical signatures after rotation
 
 Key rotation sets `validUntil` on the predecessor. Signatures whose timestamp falls inside the key’s validity window remain valid after rotation. Compromised keys similarly retain validity for pre-compromise timestamps; verifiers must surface compromise status for post-compromise risk decisions.
+
+Use `explain_historical_key_validity(directory, key_id, signature_timestamp, max_events=MAX_EXPLANATION_EVENTS)` to obtain a bounded `HistoricalKeyValidityExplanation` record. It reuses `key_valid_for_historical_signature` and `key_was_compromised_at`, attaches a stable `HistoricalValidityReason` code (`valid_active_key`, `valid_before_rotation`, `valid_before_retirement`, `valid_before_compromise`, `unknown_key`, `before_activation`, `rotated_before_signature_time`, `retired_before_signature_time`, `compromised_at_signature_time`, `expired_before_signature_time`), and includes up to `MAX_EXPLANATION_EVENTS` (`16`) public `LifecycleEventRef` entries (capped at `MAX_EXPLANATION_BYTES = 4096` in canonical JSON). Private evidence identifiers, media digests, and raw organization fields are never included in the explanation record.
 
 The registry expresses the same window on chain: `rotate_issuer` retires the predecessor key immediately (it can no longer sign new seals, directly or through a delegation) and records a bounded `grace_expires_at` during which `is_issuer_verifiable(predecessor)` keeps pre-rotation evidence verifiable. The window lapses on its own against ledger time and `finalize_issuer_rotation` settles the record. Because the on-chain window is capped by `MAX_ISSUER_ROTATION_GRACE_SECS`, a retired key’s manifest `validUntil` should not be set beyond that bound; `revoke_issuer` and `add_issuer` clear the on-chain record, so a compromised or re-onboarded key is never covered by a stale grace window.
 

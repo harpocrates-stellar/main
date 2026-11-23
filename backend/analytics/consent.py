@@ -66,6 +66,7 @@ class ConsentDecision:
     withdrawal_epoch_seconds: Optional[float] = None
     reason: Optional[str] = None
     stable_account_tag: Optional[str] = None
+    policy_revision: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.status not in _VALID_STATUSES:
@@ -87,6 +88,7 @@ class ConsentState:
     consent_token: Optional[str] = None
     last_modified_epoch_seconds: float = 0.0
     version: str = CONSENT_SCHEMA_VERSION
+    policy_revision: Optional[str] = None
 
     def is_active(self, now_epoch_seconds: float | None = None) -> bool:
         if self.status in {ConsentStatus.GRANTED, ConsentStatus.GRACE}:
@@ -109,6 +111,7 @@ class ConsentState:
             version=self.version,
             consent_token=self.consent_token,
             withdrawal_epoch_seconds=self.withdrawal_epoch_seconds,
+            policy_revision=self.policy_revision,
             stable_account_tag=self.account_tag,
         )
 
@@ -188,6 +191,7 @@ class ConsentManager:
                 consent_token=decision.consent_token,
                 last_modified_epoch_seconds=now,
                 version=decision.version,
+                policy_revision=decision.policy_revision,
             )
             if existing is not None:
                 same = (
@@ -195,6 +199,7 @@ class ConsentManager:
                     and existing.source == new_state.source
                     and existing.granted_scopes == new_state.granted_scopes
                     and existing.expires_at_epoch_seconds == new_state.expires_at_epoch_seconds
+                    and existing.policy_revision == new_state.policy_revision
                     and existing.consent_token == new_state.consent_token
                     and existing.withdrawal_epoch_seconds == new_state.withdrawal_epoch_seconds
                 )
@@ -261,3 +266,43 @@ class ConsentManager:
         raw = (account_tag + status + scopes_str).encode("utf-8") + random_bytes
         hashed = hashlib.sha256(raw).hexdigest()[:24]
         return "cst-v1:" + hashed
+
+    def preview_tenant_consent_deletion(
+        self,
+        account_tag: str,
+        now_epoch_seconds: float | None = None,
+    ) -> Optional[Dict[str, object]]:
+        """Return a non-mutating deletion eligibility summary for a single tenant.
+
+        Only inspects the consent state keyed by ``account_tag`` and never
+        returns tokens or data belonging to other tenants.
+        """
+        if not isinstance(account_tag, str) or not account_tag.strip():
+            return None
+        now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+        with self._lock:
+            state = self._consent_states.get(account_tag)
+            if state is None:
+                return None
+            effective_status = state.status
+            if state.status == ConsentStatus.GRANTED and state.expires_at_epoch_seconds > 0:
+                if now > state.expires_at_epoch_seconds:
+                    effective_status = ConsentStatus.EXPIRED
+            if effective_status in {ConsentStatus.EXPIRED, ConsentStatus.WITHDRAWN, ConsentStatus.INVALID}:
+                age = now - state.last_modified_epoch_seconds
+                if age > self._grace_period:
+                    retention_policy = "grace_period_expired"
+                    eligible = True
+                else:
+                    retention_policy = "grace_period_hold"
+                    eligible = False
+            else:
+                retention_policy = "active_consent"
+                eligible = False
+            return {
+                "data_class": "consent_records",
+                "retention_policy": retention_policy,
+                "eligible": eligible,
+                "effective_status": effective_status,
+                "policy_revision": state.policy_revision,
+            }

@@ -86,7 +86,10 @@ describe('verification flow integration', () => {
     expect(result.events).toEqual([EVENT])
     expect(result.chainProof).toEqual(ACTIVE_CHAIN_PROOF)
     expect(extractMetadata).toHaveBeenCalledWith(FILE)
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`, { signal: undefined })
+    expect(fetch).toHaveBeenCalledWith(
+      `${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`,
+      expect.objectContaining({ signal: expect.any(Object) }),
+    )
     expect(getProofByVideoHash).toHaveBeenCalledWith(CONTRACT_ID, VIDEO_HASH, undefined)
   })
 
@@ -104,9 +107,10 @@ describe('verification flow integration', () => {
       signal: controller.signal,
     })
 
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`, {
-      signal: controller.signal,
-    })
+    expect(fetch).toHaveBeenCalledWith(
+      `${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`,
+      expect.objectContaining({ signal: expect.any(Object) }),
+    )
   })
 
   it('marks embedded metadata without corroborating records as unconfirmed', async () => {

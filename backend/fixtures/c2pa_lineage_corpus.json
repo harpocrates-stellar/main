@@ -1,0 +1,1320 @@
+{
+  "cases": [
+    {
+      "corroborate": {
+        "tier": "silent",
+        "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "description": "Valid C2PA manifest for silent identity tier with round-trip digest check",
+      "expected": {
+        "check_round_trip": true,
+        "corroboration_mismatches": [],
+        "corroboration_ok": true,
+        "export_digest": "b813e909febfa5bad187f37635199e6f0672d350b011296bb286cb87de5cac83",
+        "status": "accept",
+        "tier": "silent",
+        "trust_status": "signature_not_checked",
+        "unknown_assertion_labels": []
+      },
+      "id": "c2pa_valid_tier_silent",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "3333333333333333333333333333333333333333333333333333333333333333",
+              "tier": "silent",
+              "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "3333333333333333333333333333333333333333333333333333333333333333",
+          "tier": "silent",
+          "video_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "corroborate": {
+        "tier": "source",
+        "video_hash": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "description": "Valid C2PA manifest for source identity tier with round-trip digest check",
+      "expected": {
+        "check_round_trip": true,
+        "corroboration_mismatches": [],
+        "corroboration_ok": true,
+        "export_digest": "c7c17b1288d4f3c68b8a6659581abe01f34735a0bff029e34a5192882609e224",
+        "status": "accept",
+        "tier": "source",
+        "trust_status": "signature_not_checked",
+        "unknown_assertion_labels": []
+      },
+      "id": "c2pa_valid_tier_source",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "6666666666666666666666666666666666666666666666666666666666666666",
+              "tier": "source",
+              "video_hash": "4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "6666666666666666666666666666666666666666666666666666666666666666",
+          "tier": "source",
+          "video_hash": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "corroborate": {
+        "tier": "seal",
+        "video_hash": "7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "description": "Valid C2PA manifest for seal identity tier with round-trip digest check",
+      "expected": {
+        "check_round_trip": true,
+        "corroboration_mismatches": [],
+        "corroboration_ok": true,
+        "export_digest": "d6a3d9d86fa71d31d8e3d5df402cf9033803c9e53195d0538d3faa550c31ee6a",
+        "status": "accept",
+        "tier": "seal",
+        "trust_status": "signature_not_checked",
+        "unknown_assertion_labels": []
+      },
+      "id": "c2pa_valid_tier_seal",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "9999999999999999999999999999999999999999999999999999999999999999",
+              "tier": "seal",
+              "video_hash": "7777777777777777777777777777777777777777777777777777777777777777"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "9999999999999999999999999999999999999999999999999999999999999999",
+          "tier": "seal",
+          "video_hash": "7777777777777777777777777777777777777777777777777777777777777777"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "corroborate": {
+        "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "description": "Manifest combining supported harpocrates.binding/v1 with unsupported C2PA and vendor ingredient assertions",
+      "expected": {
+        "check_round_trip": true,
+        "corroboration_mismatches": [],
+        "corroboration_ok": true,
+        "export_digest": "ac4b1d26979fb5c0fd23f5825bc9906212e2704d2521b4220f1bec28c7641174",
+        "status": "accept",
+        "tier": "source",
+        "trust_status": "signature_not_checked",
+        "unknown_assertion_labels": [
+          "c2pa.ingredient",
+          "c2pa.actions",
+          "vendor.acme.ingredient.v2"
+        ]
+      },
+      "id": "c2pa_mixed_supported_and_unsupported_ingredients",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "source",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "format": "video/mp4",
+              "relationship": "parentOf",
+              "title": "synthetic-parent-clip.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "actions": [
+                {
+                  "action": "c2pa.cropped"
+                }
+              ]
+            },
+            "label": "c2pa.actions"
+          },
+          {
+            "data": {
+              "opaque": true
+            },
+            "label": "vendor.acme.ingredient.v2"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "source",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "corroborate": {
+        "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "video_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "description": "Valid manifest whose embedded binding disagrees with caller-submitted video_hash",
+      "expected": {
+        "corroboration_mismatches": [
+          "video_hash"
+        ],
+        "corroboration_ok": false,
+        "status": "accept",
+        "trust_status": "signature_not_checked",
+        "unknown_assertion_labels": [
+          "c2pa.ingredient",
+          "c2pa.actions",
+          "vendor.acme.ingredient.v2"
+        ]
+      },
+      "id": "c2pa_corroboration_mismatch",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "source",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "format": "video/mp4",
+              "relationship": "parentOf",
+              "title": "synthetic-parent-clip.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "actions": [
+                {
+                  "action": "c2pa.cropped"
+                }
+              ]
+            },
+            "label": "c2pa.actions"
+          },
+          {
+            "data": {
+              "opaque": true
+            },
+            "label": "vendor.acme.ingredient.v2"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "source",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "description": "Reject manifest when top-level harpocrates_binding disagrees with assertion copy",
+      "expected": {
+        "field": "video_hash",
+        "reason": "embedded_binding_mismatch",
+        "status": "reject"
+      },
+      "id": "c2pa_reject_embedded_binding_mismatch",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "silent",
+          "video_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "description": "Reject manifest with duplicate harpocrates.binding/v1 assertions",
+      "expected": {
+        "field": "harpocrates.binding/v1",
+        "reason": "embedded_binding_duplicate",
+        "status": "reject"
+      },
+      "id": "c2pa_reject_duplicate_binding_assertion",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "silent",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "description": "Reject manifest declaring unsupported hash algorithm sha512",
+      "expected": {
+        "field": "alg",
+        "reason": "unsupported_algorithm",
+        "status": "reject"
+      },
+      "id": "c2pa_reject_unsupported_algorithm",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha512",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "seal",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "seal",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "description": "Reject manifest with unsupported mapping_version",
+      "expected": {
+        "field": "assertions[0].data.mapping_version",
+        "reason": "mapping_version_mismatch",
+        "status": "reject"
+      },
+      "id": "c2pa_reject_mapping_version_mismatch",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 99,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "seal",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 99,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "seal",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "description": "Reject manifest exceeding the 64-assertion boundary",
+      "expected": {
+        "field": "assertions",
+        "reason": "assertion_count_exceeded",
+        "status": "reject"
+      },
+      "id": "c2pa_reject_assertion_count_exceeded",
+      "kind": "c2pa",
+      "manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "i": 0
+            },
+            "label": "vendor.extra.0"
+          },
+          {
+            "data": {
+              "i": 1
+            },
+            "label": "vendor.extra.1"
+          },
+          {
+            "data": {
+              "i": 2
+            },
+            "label": "vendor.extra.2"
+          },
+          {
+            "data": {
+              "i": 3
+            },
+            "label": "vendor.extra.3"
+          },
+          {
+            "data": {
+              "i": 4
+            },
+            "label": "vendor.extra.4"
+          },
+          {
+            "data": {
+              "i": 5
+            },
+            "label": "vendor.extra.5"
+          },
+          {
+            "data": {
+              "i": 6
+            },
+            "label": "vendor.extra.6"
+          },
+          {
+            "data": {
+              "i": 7
+            },
+            "label": "vendor.extra.7"
+          },
+          {
+            "data": {
+              "i": 8
+            },
+            "label": "vendor.extra.8"
+          },
+          {
+            "data": {
+              "i": 9
+            },
+            "label": "vendor.extra.9"
+          },
+          {
+            "data": {
+              "i": 10
+            },
+            "label": "vendor.extra.10"
+          },
+          {
+            "data": {
+              "i": 11
+            },
+            "label": "vendor.extra.11"
+          },
+          {
+            "data": {
+              "i": 12
+            },
+            "label": "vendor.extra.12"
+          },
+          {
+            "data": {
+              "i": 13
+            },
+            "label": "vendor.extra.13"
+          },
+          {
+            "data": {
+              "i": 14
+            },
+            "label": "vendor.extra.14"
+          },
+          {
+            "data": {
+              "i": 15
+            },
+            "label": "vendor.extra.15"
+          },
+          {
+            "data": {
+              "i": 16
+            },
+            "label": "vendor.extra.16"
+          },
+          {
+            "data": {
+              "i": 17
+            },
+            "label": "vendor.extra.17"
+          },
+          {
+            "data": {
+              "i": 18
+            },
+            "label": "vendor.extra.18"
+          },
+          {
+            "data": {
+              "i": 19
+            },
+            "label": "vendor.extra.19"
+          },
+          {
+            "data": {
+              "i": 20
+            },
+            "label": "vendor.extra.20"
+          },
+          {
+            "data": {
+              "i": 21
+            },
+            "label": "vendor.extra.21"
+          },
+          {
+            "data": {
+              "i": 22
+            },
+            "label": "vendor.extra.22"
+          },
+          {
+            "data": {
+              "i": 23
+            },
+            "label": "vendor.extra.23"
+          },
+          {
+            "data": {
+              "i": 24
+            },
+            "label": "vendor.extra.24"
+          },
+          {
+            "data": {
+              "i": 25
+            },
+            "label": "vendor.extra.25"
+          },
+          {
+            "data": {
+              "i": 26
+            },
+            "label": "vendor.extra.26"
+          },
+          {
+            "data": {
+              "i": 27
+            },
+            "label": "vendor.extra.27"
+          },
+          {
+            "data": {
+              "i": 28
+            },
+            "label": "vendor.extra.28"
+          },
+          {
+            "data": {
+              "i": 29
+            },
+            "label": "vendor.extra.29"
+          },
+          {
+            "data": {
+              "i": 30
+            },
+            "label": "vendor.extra.30"
+          },
+          {
+            "data": {
+              "i": 31
+            },
+            "label": "vendor.extra.31"
+          },
+          {
+            "data": {
+              "i": 32
+            },
+            "label": "vendor.extra.32"
+          },
+          {
+            "data": {
+              "i": 33
+            },
+            "label": "vendor.extra.33"
+          },
+          {
+            "data": {
+              "i": 34
+            },
+            "label": "vendor.extra.34"
+          },
+          {
+            "data": {
+              "i": 35
+            },
+            "label": "vendor.extra.35"
+          },
+          {
+            "data": {
+              "i": 36
+            },
+            "label": "vendor.extra.36"
+          },
+          {
+            "data": {
+              "i": 37
+            },
+            "label": "vendor.extra.37"
+          },
+          {
+            "data": {
+              "i": 38
+            },
+            "label": "vendor.extra.38"
+          },
+          {
+            "data": {
+              "i": 39
+            },
+            "label": "vendor.extra.39"
+          },
+          {
+            "data": {
+              "i": 40
+            },
+            "label": "vendor.extra.40"
+          },
+          {
+            "data": {
+              "i": 41
+            },
+            "label": "vendor.extra.41"
+          },
+          {
+            "data": {
+              "i": 42
+            },
+            "label": "vendor.extra.42"
+          },
+          {
+            "data": {
+              "i": 43
+            },
+            "label": "vendor.extra.43"
+          },
+          {
+            "data": {
+              "i": 44
+            },
+            "label": "vendor.extra.44"
+          },
+          {
+            "data": {
+              "i": 45
+            },
+            "label": "vendor.extra.45"
+          },
+          {
+            "data": {
+              "i": 46
+            },
+            "label": "vendor.extra.46"
+          },
+          {
+            "data": {
+              "i": 47
+            },
+            "label": "vendor.extra.47"
+          },
+          {
+            "data": {
+              "i": 48
+            },
+            "label": "vendor.extra.48"
+          },
+          {
+            "data": {
+              "i": 49
+            },
+            "label": "vendor.extra.49"
+          },
+          {
+            "data": {
+              "i": 50
+            },
+            "label": "vendor.extra.50"
+          },
+          {
+            "data": {
+              "i": 51
+            },
+            "label": "vendor.extra.51"
+          },
+          {
+            "data": {
+              "i": 52
+            },
+            "label": "vendor.extra.52"
+          },
+          {
+            "data": {
+              "i": 53
+            },
+            "label": "vendor.extra.53"
+          },
+          {
+            "data": {
+              "i": 54
+            },
+            "label": "vendor.extra.54"
+          },
+          {
+            "data": {
+              "i": 55
+            },
+            "label": "vendor.extra.55"
+          },
+          {
+            "data": {
+              "i": 56
+            },
+            "label": "vendor.extra.56"
+          },
+          {
+            "data": {
+              "i": 57
+            },
+            "label": "vendor.extra.57"
+          },
+          {
+            "data": {
+              "i": 58
+            },
+            "label": "vendor.extra.58"
+          },
+          {
+            "data": {
+              "i": 59
+            },
+            "label": "vendor.extra.59"
+          },
+          {
+            "data": {
+              "i": 60
+            },
+            "label": "vendor.extra.60"
+          },
+          {
+            "data": {
+              "i": 61
+            },
+            "label": "vendor.extra.61"
+          },
+          {
+            "data": {
+              "i": 62
+            },
+            "label": "vendor.extra.62"
+          },
+          {
+            "data": {
+              "i": 63
+            },
+            "label": "vendor.extra.63"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "silent",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      }
+    },
+    {
+      "description": "Valid compose lineage manifest at max fan-out (4) and max depth (4)",
+      "expected": {
+        "canonical_manifest": "{\"actorAddress\":\"GAJC1234567890TESTACTOR\",\"network\":\"testnet\",\"operationType\":\"compose\",\"outputDigest\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"parametersDigest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"parentProofIds\":[\"1111111111111111111111111111111111111111111111111111111111111111\",\"2222222222222222222222222222222222222222222222222222222222222222\",\"3333333333333333333333333333333333333333333333333333333333333333\",\"4444444444444444444444444444444444444444444444444444444444444444\"],\"protocol\":\"harpocrates\",\"toolIdentity\":\"harpocrates-studio\",\"toolVersion\":\"1.0.0\",\"version\":2}",
+        "lineage_digest": "c1e0b52a90cf457dbed1a7d4e6c72560dc550de018962ca20c721386b15721ef",
+        "status": "accept"
+      },
+      "graph": {
+        "depth": 4
+      },
+      "id": "lineage_valid_compose_max_bounds",
+      "kind": "lineage",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "testnet",
+        "operationType": "compose",
+        "outputDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "parametersDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222",
+          "3333333333333333333333333333333333333333333333333333333333333333",
+          "4444444444444444444444444444444444444444444444444444444444444444"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "description": "Reject lineage manifest with unsupported operationType",
+      "expected": {
+        "error_contains": "Unsupported lineage operation",
+        "status": "reject"
+      },
+      "id": "lineage_reject_unsupported_operation",
+      "kind": "lineage",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "testnet",
+        "operationType": "upscale",
+        "outputDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "parametersDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222",
+          "3333333333333333333333333333333333333333333333333333333333333333",
+          "4444444444444444444444444444444444444444444444444444444444444444"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "description": "Reject lineage manifest exceeding MAX_LINEAGE_FANOUT (4)",
+      "expected": {
+        "error_contains": "fan-out exceeds limit",
+        "status": "reject"
+      },
+      "id": "lineage_reject_fanout_exceeded",
+      "kind": "lineage",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "testnet",
+        "operationType": "compose",
+        "outputDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "parametersDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222",
+          "3333333333333333333333333333333333333333333333333333333333333333",
+          "4444444444444444444444444444444444444444444444444444444444444444",
+          "5555555555555555555555555555555555555555555555555555555555555555"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "description": "Reject lineage graph exceeding MAX_LINEAGE_DEPTH (4)",
+      "expected": {
+        "error_contains": "depth exceeds limit",
+        "status": "reject"
+      },
+      "graph": {
+        "depth": 5
+      },
+      "id": "lineage_reject_depth_exceeded",
+      "kind": "lineage",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "testnet",
+        "operationType": "compose",
+        "outputDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "parametersDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222",
+          "3333333333333333333333333333333333333333333333333333333333333333",
+          "4444444444444444444444444444444444444444444444444444444444444444"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "description": "Reject lineage graph containing a transitive cycle A -> B -> C -> A",
+      "expected": {
+        "error_contains": "cycle",
+        "status": "reject"
+      },
+      "graph": {
+        "ancestry": {
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+            "parent_proof_ids": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          },
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+            "parent_proof_ids": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ]
+          }
+        },
+        "depth": 2
+      },
+      "id": "lineage_reject_transitive_cycle",
+      "kind": "lineage",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "testnet",
+        "operationType": "crop",
+        "outputDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parametersDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "parentProofIds": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "toolIdentity": "harpocrates-studio",
+        "toolVersion": "1.0.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "relationship": "parentOf",
+              "title": "synthetic-parent-1.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "relationship": "componentOf",
+              "title": "synthetic-parent-2.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "scheme": "proprietary-v0"
+            },
+            "label": "vendor.unsupported.watermark"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "silent",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      },
+      "description": "Derived silent-tier asset with mixed supported/unsupported C2PA ingredients and valid redact lineage",
+      "expected": {
+        "c2pa_status": "accept",
+        "corroboration_mismatches": [],
+        "corroboration_ok": true,
+        "lineage_digest": "80b639016c3421c14fe69dfd7e4dc4e32b450d2aee1deebd7e223555b19a940e",
+        "lineage_status": "accept",
+        "unknown_assertion_labels": [
+          "c2pa.ingredient",
+          "c2pa.ingredient",
+          "vendor.unsupported.watermark"
+        ]
+      },
+      "graph": {
+        "depth": 2
+      },
+      "id": "interop_mixed_ingredients_valid_lineage",
+      "kind": "interop",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "redact",
+        "outputDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parametersDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "toolIdentity": "harpocrates-redactor",
+        "toolVersion": "2.1.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "relationship": "parentOf",
+              "title": "synthetic-parent-1.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "relationship": "componentOf",
+              "title": "synthetic-parent-2.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "scheme": "proprietary-v0"
+            },
+            "label": "vendor.unsupported.watermark"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "silent",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      },
+      "description": "C2PA manifest parses with unsupported ingredients, but corroboration fails against mismatched lineage outputDigest",
+      "expected": {
+        "c2pa_status": "accept",
+        "corroboration_mismatches": [
+          "video_hash"
+        ],
+        "corroboration_ok": false,
+        "lineage_digest": "2217632eef84c8a09fbd7a0482bda573693a79e2429f98fd89e9a3eb773f711a",
+        "lineage_status": "accept",
+        "unknown_assertion_labels": [
+          "c2pa.ingredient",
+          "c2pa.ingredient",
+          "vendor.unsupported.watermark"
+        ]
+      },
+      "graph": {
+        "depth": 2
+      },
+      "id": "interop_c2pa_lineage_digest_mismatch",
+      "kind": "interop",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "redact",
+        "outputDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "parametersDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "toolIdentity": "harpocrates-redactor",
+        "toolVersion": "2.1.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "sha256",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "silent",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "relationship": "parentOf",
+              "title": "synthetic-parent-1.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "relationship": "componentOf",
+              "title": "synthetic-parent-2.mp4"
+            },
+            "label": "c2pa.ingredient"
+          },
+          {
+            "data": {
+              "scheme": "proprietary-v0"
+            },
+            "label": "vendor.unsupported.watermark"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "silent",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      },
+      "description": "C2PA manifest with unsupported ingredients parses, but linked lineage fails closed on unsupported operation",
+      "expected": {
+        "c2pa_status": "accept",
+        "corroboration_mismatches": [],
+        "corroboration_ok": true,
+        "lineage_error_contains": "Unsupported lineage operation",
+        "lineage_status": "reject",
+        "unknown_assertion_labels": [
+          "c2pa.ingredient",
+          "c2pa.ingredient",
+          "vendor.unsupported.watermark"
+        ]
+      },
+      "id": "interop_mixed_ingredients_unsupported_lineage_op",
+      "kind": "interop",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "ai-enhance",
+        "outputDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parametersDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "toolIdentity": "harpocrates-redactor",
+        "toolVersion": "2.1.0"
+      }
+    },
+    {
+      "c2pa_manifest": {
+        "alg": "md5",
+        "assertions": [
+          {
+            "data": {
+              "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+              "mapping_version": 1,
+              "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "network": "Test SDF Network ; September 2015",
+              "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "tier": "source",
+              "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "label": "harpocrates.binding/v1"
+          },
+          {
+            "data": {
+              "title": "synthetic-parent.mp4"
+            },
+            "label": "c2pa.ingredient"
+          }
+        ],
+        "claim_generator": "harpocrates",
+        "harpocrates_binding": {
+          "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+          "mapping_version": 1,
+          "metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "network": "Test SDF Network ; September 2015",
+          "proof_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "tier": "source",
+          "video_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "spec_version": "1.3"
+      },
+      "description": "Interop vector fails closed when C2PA manifest uses unsupported md5 algorithm",
+      "expected": {
+        "c2pa_reason": "unsupported_algorithm",
+        "c2pa_status": "reject"
+      },
+      "id": "interop_reject_c2pa_unsupported_algorithm",
+      "kind": "interop",
+      "lineage_manifest": {
+        "actorAddress": "GAJC1234567890TESTACTOR",
+        "network": "Test SDF Network ; September 2015",
+        "operationType": "redact",
+        "outputDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parametersDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "parentProofIds": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "toolIdentity": "harpocrates-redactor",
+        "toolVersion": "2.1.0"
+      }
+    }
+  ],
+  "corpus_version": 1,
+  "description": "Synthetic offline C2PA and lineage interoperability corpus (no network access, no real media)."
+}

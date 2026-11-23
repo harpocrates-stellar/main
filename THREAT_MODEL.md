@@ -637,6 +637,7 @@ must be reconciled against on-chain data for any security-sensitive decision.
 | Mitigation | Location |
 |------------|----------|
 | Seeds are encrypted in `localStorage` via AES-GCM and PBKDF2 | `credentialVault.ts` → `setup` |
+| Imported and stored vault envelopes are bounded (`MAX_VAULT_ENVELOPE_BYTES` = 16 KiB, `MAX_VAULT_CIPHERTEXT_BYTES` = 4 KiB) before ciphertext decoding or PBKDF2 key derivation; failed imports preserve the existing encrypted vault | `credentialVault.ts` → `parseVaultEnvelope`, `importEnvelope`, `unlock` |
 | Vault automatically locks after 15 minutes of inactivity | `credentialVault.ts` → `resetTimeout` |
 | Explicit zeroization when locking or destroying the vault | `credentialVault.ts` → `lock`, `destroy` |
 | Only the encrypted envelope is persisted, not plaintext seeds | `safeStorage.ts` |
