@@ -160,6 +160,23 @@ describe('parseManifest', () => {
       expect(parsed.protocol).toBe('harpocrates')
     }
   })
+
+  it('preserves unknown optional extensions on round-trip without affecting identity fields', () => {
+    const current = createProofManifest(VALID_INPUT)
+    const withExt = { ...current, extensions: { 'x-audit-note': 'synthetic', 'x-rank': 7 } }
+    const parsed = parseManifest(JSON.stringify(withExt)) as ProofManifest & { extensions?: Record<string, unknown> }
+    expect(parsed.extensions).toEqual({ 'x-audit-note': 'synthetic', 'x-rank': 7 })
+    expect(parsed.proofId).toBe(current.proofId)
+    expect(parsed.videoHash).toBe(current.videoHash)
+    expect(parsed.tier).toBe(current.tier)
+  })
+
+  it('rejects unsupported required extension semantics', () => {
+    const current = createProofManifest(VALID_INPUT)
+    expect(() =>
+      parseManifest(JSON.stringify({ ...current, requiredExtensions: ['x-unknown-critical'] })),
+    ).toThrow('unsupported required extension')
+  })
 })
 
 describe('createProofManifest — golden serialization', () => {

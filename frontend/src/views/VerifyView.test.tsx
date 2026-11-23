@@ -17,6 +17,10 @@ vi.mock('../components/ChainProofPanel', () => ({
   formatProofExpiry: () => 'Never',
 }))
 
+vi.mock('../components/DisputePanel', () => ({
+  DisputePanel: () => <div data-testid="dispute-panel" />,
+}))
+
 vi.mock('../components/VerifierSetStatusPanel', () => ({
   VerifierSetStatusPanel: () => <div data-testid="verifier-set-status-panel" />,
 }))
@@ -483,5 +487,101 @@ describe('VerifyView – structured trust dimensions', () => {
       'data-state',
       'failed',
     )
+  })
+})
+
+describe('VerifyView – stale verification link cache guard', () => {
+  it('suppresses a cached success banner after editing the video hash and requires a fresh result', async () => {
+    const user = userEvent.setup()
+    const initialHook = makeHook({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult: 'Public verification record loaded. Confirm the embedded artifact before treating it as authentic.',
+    })
+    const { rerender } = render(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={initialHook}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.getByText(/public verification record loaded/i),
+    ).toBeInTheDocument()
+
+    const hashInput = screen.getByLabelText(/video hash/i)
+    await user.clear(hashInput)
+    await user.type(hashInput, 'f'.repeat(64))
+
+    expect(
+      screen.queryByText(/public verification record loaded/i),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/verification context changed\. run a fresh verification/i),
+    ).toBeInTheDocument()
+
+    // A fresh explicit verification result for the new hash restores the banner
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={makeHook({
+          status: 'success',
+          verifyHash: 'f'.repeat(64),
+          verifyResult: 'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+        })}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.getByText(/confirmed: embedded harpocrates metadata/i),
+    ).toBeInTheDocument()
+  })
+
+  it('suppresses a cached success banner when offline mode or network mismatch changes the trust snapshot', () => {
+    const baseHook = makeHook({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult: 'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      offline: false,
+    })
+
+    const { rerender } = render(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={baseHook}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(screen.getByText(/confirmed: embedded harpocrates metadata/i)).toBeInTheDocument()
+
+    // Switching trust snapshot to offline invalidates the cached online success banner
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={{ ...baseHook, offline: true }}
+        provenanceRecord={null}
+      />,
+    )
+    expect(screen.queryByText(/confirmed: embedded harpocrates metadata/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/verification context changed/i)).toBeInTheDocument()
+
+    // An active network mismatch also blocks the cached success banner
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch="Wallet is connected to Mainnet instead of Testnet."
+        verification={baseHook}
+        provenanceRecord={null}
+      />,
+    )
+    expect(screen.queryByText(/confirmed: embedded harpocrates metadata/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/resolve the network mismatch and run a fresh verification/i)).toBeInTheDocument()
   })
 })

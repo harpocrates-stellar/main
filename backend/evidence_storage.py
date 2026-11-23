@@ -32,6 +32,52 @@ from __future__ import annotations
 
 from pathlib import Path
 
+EXPORT_MANIFEST_VERSION = 1
+DEFAULT_ENVELOPE_VERSION = "fernet-v1"
+_HEX_32_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
+
+
+class UnsupportedEnvelopeVersionError(ValueError):
+    """Raised when an encryption envelope version is unknown or unsupported."""
+
+
+class LegacyEnvelopeVersionError(ValueError):
+    """Raised when a known legacy envelope version cannot be decrypted directly."""
+
+
+def classify_envelope_version(envelope_version: object) -> str:
+    """Classify an encryption envelope version as supported, known legacy, or unsupported.
+
+    A ``None`` value represents a pre-versioning legacy metadata row and is
+    classified as ``legacy``. Explicit legacy identifiers in
+    ``KNOWN_LEGACY_ENVELOPE_VERSIONS`` are also classified as ``legacy``.
+    Any other unrecognized, empty, or non-string value is ``unsupported``.
+    """
+    if envelope_version is None:
+        return ENVELOPE_CLASS_LEGACY
+    if not isinstance(envelope_version, str):
+        return ENVELOPE_CLASS_UNSUPPORTED
+    normalized = envelope_version.strip()
+    if normalized in SUPPORTED_ENVELOPE_VERSIONS:
+        return ENVELOPE_CLASS_SUPPORTED
+    if normalized in KNOWN_LEGACY_ENVELOPE_VERSIONS:
+        return ENVELOPE_CLASS_LEGACY
+    return ENVELOPE_CLASS_UNSUPPORTED
+
+
+def validate_envelope_version(envelope_version: object) -> str:
+    """Validate and return a supported envelope version for new evidence blobs."""
+    if not isinstance(envelope_version, str):
+        raise UnsupportedEnvelopeVersionError("envelope_version must be a supported string identifier")
+    normalized = envelope_version.strip()
+    if normalized in SUPPORTED_ENVELOPE_VERSIONS:
+        return normalized
+    if normalized in KNOWN_LEGACY_ENVELOPE_VERSIONS:
+        raise LegacyEnvelopeVersionError(
+            f"legacy envelope_version {normalized!r} cannot be used for new evidence blobs"
+        )
+    raise UnsupportedEnvelopeVersionError(f"unsupported envelope_version: {envelope_version!r}")
+
 
 def assert_safe_destination(
     destination: Path,

@@ -47,6 +47,13 @@ Implementation:
 - Cancel / timeout / destroy / unmount all settle with a stable `CANCELLED`
   (or `TIMEOUT` / `CRASHED`) code whose message never contains witness values,
   seeds, proof hex, or media identifiers beyond stage names.
+- Proof-worker diagnostic messages forwarded to telemetry via
+  `boundProofWorkerDiagnostic` / `ProofWorkerManager.forwardDiagnosticToTelemetry`
+  redact witness-shaped values (witness/secret/proof/evidence fields, byte
+  buffers, bigints, witness arrays, hex and field-element tokens) and cap the
+  serialized UTF-8 payload at `PROOF_WORKER_MEMORY_LIMITS.maxDiagnosticBytes`
+  (4096 bytes by default) while retaining stable `stage` and `errorCode`/`code`
+  identifiers.
 
 ## State machine
 

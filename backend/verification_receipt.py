@@ -71,6 +71,17 @@ class VerificationReceiptInput(TypedDict):
     verifierVersion: str
 
 
+# Receipt metadata extensions are keyed by name. A key prefixed with "critical:"
+# marks an extension the verifier MUST understand; unknown critical extensions
+# cause the receipt to be rejected (fail closed). Non-critical (optional)
+# extensions are preserved verbatim so they survive round trips.
+CRITICAL_EXTENSION_PREFIX = "critical:"
+
+# Critical extensions this verifier implements. Empty today: any critical
+# extension is unsupported and must be rejected.
+SUPPORTED_CRITICAL_EXTENSIONS: frozenset[str] = frozenset()
+
+
 def build_verification_receipt(
     context: Mapping[str, object],
     *,
@@ -81,9 +92,17 @@ def build_verification_receipt(
     A receipt is only emitted when the caller supplies the complete canonical
     evidence context. This prevents the selective-disclosure endpoint from
     inventing proof IDs or hashes from unrelated request fields.
+
+    Any metadata extensions present in ``context['extensions']`` are checked:
+    unknown critical extensions are rejected, while optional extensions are
+    preserved in the returned mapping under ``extensions``.
+
+    Canonical parent-child statement binding is validated before the unsigned
+    receipt input is returned; conflicting evidence or derivative identifiers
+    are rejected fail-closed.
     """
 
-    return {
+    receipt: VerificationReceiptInput = {
         "result": result,
         "verifiedAt": datetime.now(timezone.utc).isoformat(),
         "proofId": _hex32(context.get("proofId"), "proofId"),
@@ -97,6 +116,78 @@ def build_verification_receipt(
         "circuitVersion": _text(context.get("circuitVersion"), "circuitVersion"),
         "verifierVersion": _text(context.get("verifierVersion"), "verifierVersion"),
     }
+    _validate_statement_binding(receipt, context)
+    extensions = _extensions(context.get("extensions"))
+    if extensions:
+        receipt["extensions"] = extensions  # type: ignore[typeddict-unknown-key]
+    return receipt
+
+
+def _validate_statement_binding(
+    receipt: VerificationReceiptInput,
+    context: Mapping[str, object],
+) -> None:
+    """Reject receipt inputs whose evidence and derivative identifiers conflict.
+
+    The receipt's ``proofId`` is a derivative identifier: it must bind the same
+    canonical evidence (``videoHash`` and ``metadataHash``) as the parent
+    statement. If the caller supplies a parent statement, its evidence digests
+    and proof identifier must match the receipt exactly. Any mismatch is a
+    conflicting-evidence error and the receipt is not emitted.
+    """
+
+    parent = context.get("parentStatement")
+    if parent is None:
+        return
+    if not isinstance(parent, Mapping):
+        raise ValueError("parentStatement must be a mapping or null")
+
+    parent_video = _hex32(parent.get("videoHash"), "parentStatement.videoHash")
+    parent_metadata = _hex32(
+        parent.get("metadataHash"), "parentStatement.metadataHash"
+    )
+    parent_proof = _hex32(parent.get("proofId"), "parentStatement.proofId")
+
+    if parent_video != receipt["videoHash"]:
+        raise ValueError(
+            "conflicting evidence: parentStatement.videoHash does not match videoHash"
+        )
+    if parent_metadata != receipt["metadataHash"]:
+        raise ValueError(
+            "conflicting evidence: parentStatement.metadataHash does not match metadataHash"
+        )
+    if parent_proof != receipt["proofId"]:
+        raise ValueError(
+            "conflicting derivative identifier: parentStatement.proofId does not match proofId"
+        )
+
+    parent_tier = parent.get("tier")
+    if parent_tier is not None:
+        parent_tier_norm = _choice(
+            parent_tier, "parentStatement.tier", ("silent", "source", "seal")
+        )
+        if parent_tier_norm != receipt["tier"]:
+            raise ValueError(
+                "conflicting evidence: parentStatement.tier does not match tier"
+            )
+
+
+def _extensions(value: object) -> dict[str, object]:
+    """Validate receipt metadata extensions, failing closed on unknown critical ones."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("extensions must be a mapping or null")
+    preserved: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("extension names must be non-empty strings")
+        if key.startswith(CRITICAL_EXTENSION_PREFIX):
+            if key not in SUPPORTED_CRITICAL_EXTENSIONS:
+                raise ValueError(f"unsupported critical extension: {key}")
+        preserved[key] = item
+    return preserved
 
 
 def _text(value: object, field: str) -> str:
@@ -150,6 +241,8 @@ _HEX_FIELDS: tuple[str, ...] = (
     "transactionHash",
 )
 
+_DERIVATIVE_IDENTIFIER_FIELDS: tuple[str, ...] = ("proofId",)
+
 
 def _validate_receipt_for_comparison(
     receipt: Mapping[str, object],
@@ -181,6 +274,28 @@ def _validate_receipt_for_comparison(
             "circuitVersion": _text(receipt.get("circuitVersion"), "circuitVersion"),
             "verifierVersion": _text(receipt.get("verifierVersion"), "verifierVersion"),
         }
+    except ValueError as exc:
+        raise ValueError(f"{label} receipt invalid: {exc}") from exc
+
+
+def _validate_receipt_binding(
+    receipt: Mapping[str, object],
+    label: str,
+) -> None:
+    """Reject receipts whose derivative identifiers conflict with evidence."""
+
+    parent = receipt.get("parentStatement")
+    if parent is None:
+        return
+    if not isinstance(parent, Mapping):
+        raise ValueError(
+            f"{label} receipt invalid: parentStatement must be a mapping or null"
+        )
+    try:
+        _validate_statement_binding(
+            _validate_receipt_for_comparison(receipt, label),
+            {"parentStatement": parent},
+        )
     except ValueError as exc:
         raise ValueError(f"{label} receipt invalid: {exc}") from exc
 
@@ -372,6 +487,8 @@ def compare_verification_receipts(
 
     base_norm = _validate_receipt_for_comparison(baseline, "baseline")
     cand_norm = _validate_receipt_for_comparison(candidate, "candidate")
+    _validate_receipt_binding(baseline, "baseline")
+    _validate_receipt_binding(candidate, "candidate")
 
     base_trust = _optional_mapping(baseline, "trust", "baseline")
     cand_trust = _optional_mapping(candidate, "trust", "candidate")
@@ -574,6 +691,119 @@ def compare_verification_receipts(
         "chainChanges": buckets["chain"],
         "presentationChanges": buckets["presentation"],
         "explanations": explanations,
+    }
+
+
+TrustDependency = Literal["stellar_anchor", "rfc3161_anchor", "backdating_risk"]
+TrustOutcome = Literal["trusted", "invalid_signature", "unavailable", "not_present"]
+
+
+class TimestampChainDependency(TypedDict):
+    """One time-attestation dependency and its bounded trust result."""
+
+    dependency: TrustDependency
+    source: str
+    outcome: TrustOutcome
+    explanation: str
+
+
+class TimestampChainReport(TypedDict):
+    """Offline timestamp-chain validation report for one receipt."""
+
+    valid: bool
+    dependencies: list[TimestampChainDependency]
+    invalidSignatures: list[str]
+    unavailableTrust: list[str]
+    summary: str
+
+
+def build_timestamp_chain_report(
+    receipt: Mapping[str, object],
+) -> TimestampChainReport:
+    """Enumerate time-attestation dependencies with bounded, offline trust results.
+
+    Invalid signatures (a TSA or anchor that reports a failed verification) are
+    reported separately from unavailable trust material (a missing, unreachable
+    or unknown verification status). Nothing is fetched over the network.
+    """
+
+    ta = _optional_time_attestation(receipt, "candidate")
+    dependencies: list[TimestampChainDependency] = []
+    invalid: list[str] = []
+    unavailable: list[str] = []
+
+    if ta is None:
+        summary = "No time attestation present; no timestamp chain to validate."
+        return {
+            "valid": True,
+            "dependencies": [],
+            "invalidSignatures": [],
+            "unavailableTrust": [],
+            "summary": summary,
+        }
+
+    for anchor in ta.stellar_anchors:
+        source = f"stellar:{anchor.network_passphrase}@{anchor.ledger_sequence}"
+        dependencies.append(
+            {
+                "dependency": "stellar_anchor",
+                "source": source,
+                "outcome": "trusted",
+                "explanation": "Stellar ledger anchor is present for offline cross-check.",
+            }
+        )
+
+    for anchor in ta.rfc3161_anchors:
+        status = anchor.verification_status
+        source = f"rfc3161:{anchor.tsa_url}"
+        if status == "verified":
+            outcome: TrustOutcome = "trusted"
+            explanation = "RFC 3161 token signature verified against held trust material."
+        elif status in ("invalid", "failed", "bad_signature"):
+            outcome = "invalid_signature"
+            explanation = f"RFC 3161 token signature is invalid ({status})."
+            invalid.append(source)
+        else:
+            outcome = "unavailable"
+            explanation = (
+                f"RFC 3161 trust material unavailable or unknown ({status!r})."
+            )
+            unavailable.append(source)
+        dependencies.append(
+            {
+                "dependency": "rfc3161_anchor",
+                "source": source,
+                "outcome": outcome,
+                "explanation": explanation,
+            }
+        )
+
+    risk = check_backdating_risk(ta)["risk_level"]
+    dependencies.append(
+        {
+            "dependency": "backdating_risk",
+            "source": "time_attestation",
+            "outcome": "trusted" if risk == "low" else "unavailable",
+            "explanation": f"Backdating risk assessed as '{risk}' from local anchors.",
+        }
+    )
+    if risk != "low":
+        unavailable.append("time_attestation:backdating_risk")
+
+    valid = not invalid and not unavailable
+    if invalid:
+        summary = f"Invalid signatures detected in {len(invalid)} anchor(s)."
+    elif unavailable:
+        summary = f"Trust material unavailable for {len(unavailable)} dependency(ies)."
+    else:
+        summary = "All time-attestation dependencies validated offline."
+
+    return {
+        "valid": valid,
+        "dependencies": dependencies,
+        "invalidSignatures": invalid,
+        "unavailableTrust": unavailable,
+        "summary": summary,
     }
 
 
