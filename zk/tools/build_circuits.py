@@ -24,9 +24,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = REPO_ROOT / "zk" / "toolchain.lock.json"
@@ -345,6 +346,115 @@ def run_manifest_tool(
     return proc.returncode
 
 
+@contextmanager
+def _staged_manifest_path(manifest_path: Path) -> Iterator[Path]:
+    """Yield a staging path on the target's filesystem for atomic replacement."""
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(
+        tempfile.mkdtemp(prefix=f".{manifest_path.name}.", dir=str(manifest_path.parent))
+    )
+    try:
+        yield staging_dir / manifest_path.name
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _display_path(path: Path, repo_root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(repo_root.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def promote_staged_manifest(
+    staged: Path,
+    manifest_path: Path,
+    lock_path: Path,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    verify: bool = True,
+) -> None:
+    """Verify a staged manifest, then atomically publish it over ``manifest_path``.
+
+    Verification re-digests the built tree through the manifest tool, so a
+    staged manifest that does not match what was built never replaces the
+    previous one. ``os.replace`` is atomic on the same filesystem, so readers
+    see either the old manifest or the verified new one.
+    """
+    if verify:
+        status = run_manifest_tool(
+            ["--lock", str(lock_path), "verify", "--manifest", str(staged)],
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if status != 0:
+            raise BuildError(
+                "staged manifest failed verification; previous manifest retained",
+                exit_code=status,
+            )
+    os.replace(staged, manifest_path)
+    signal("manifest.promoted", path=_display_path(manifest_path, repo_root))
+
+
+def write_manifest_atomically(
+    lock_path: Path,
+    manifest_path: Path,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    verify: bool = True,
+) -> None:
+    """Write, verify, and atomically publish a fresh artifact manifest."""
+    with _staged_manifest_path(manifest_path) as staged:
+        status = run_manifest_tool(
+            [
+                "--lock",
+                str(lock_path),
+                "write",
+                "--root",
+                str(repo_root),
+                "--output",
+                str(staged),
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if status != 0:
+            raise BuildError(
+                "manifest write failed; previous manifest retained", exit_code=status
+            )
+        if not staged.is_file():
+            raise BuildError("manifest write produced no output; previous manifest retained")
+        promote_staged_manifest(
+            staged,
+            manifest_path,
+            lock_path,
+            repo_root=repo_root,
+            runner=runner,
+            verify=verify,
+        )
+
+
+def publish_manifest_file(
+    source: Path,
+    manifest_path: Path,
+    lock_path: Path,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    verify: bool = True,
+) -> None:
+    """Verify and atomically publish an already-written manifest file."""
+    with _staged_manifest_path(manifest_path) as staged:
+        shutil.copyfile(source, staged)
+        promote_staged_manifest(
+            staged,
+            manifest_path,
+            lock_path,
+            repo_root=repo_root,
+            runner=runner,
+            verify=verify,
+        )
+
+
 def cmd_build(
     args: argparse.Namespace,
     repo_root: Path = REPO_ROOT,
@@ -392,13 +502,12 @@ def cmd_build(
 
     if mode == "single":
         build_all_circuits("single", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(manifest_path)],
+        write_manifest_atomically(
+            lock_path,
+            manifest_path,
             repo_root=repo_root,
             runner=runner,
         )
-        if status != 0:
-            raise BuildError("manifest write failed", exit_code=status)
         signal("run.ok", detail="manifest written")
         return EXIT_OK
 
@@ -444,7 +553,13 @@ def cmd_build(
             signal("run.failed", detail="builds are not reproducible")
             return compare_status
 
-        shutil.copyfile(second_manifest, manifest_path)
+        publish_manifest_file(
+            second_manifest,
+            manifest_path,
+            lock_path,
+            repo_root=repo_root,
+            runner=runner,
+        )
         signal("run.ok", detail="reproducible; manifest written")
         return EXIT_OK
 

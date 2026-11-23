@@ -1234,3 +1234,34 @@ def test_digest_artifact_rejects_symlink_escape(tmp_path: Path, lock: am.Lock):
 
     with pytest.raises(am.ArtifactPathEscapeError):
         am.digest_artifact(declaration, lock, root)
+
+
+# ── Atomic manifest write (#1220) ───────────────────────────────────────────
+
+
+def test_atomic_write_replaces_existing_manifest(tmp_path: Path):
+    target = tmp_path / "manifest.json"
+    target.write_text("previous\n", encoding="utf-8")
+
+    am.atomic_write_text(target, "new\n")
+
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert list(tmp_path.glob(".manifest.json.*")) == []
+
+
+def test_atomic_write_retains_previous_manifest_when_publish_fails(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "manifest.json"
+    target.write_text("previous\n", encoding="utf-8")
+
+    def fail_replace(source, destination):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(am.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="rename failed"):
+        am.atomic_write_text(target, "new\n")
+
+    assert target.read_text(encoding="utf-8") == "previous\n"
+    assert list(tmp_path.glob(".manifest.json.*")) == []

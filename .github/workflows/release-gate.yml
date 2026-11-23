@@ -56,10 +56,14 @@ jobs:
           python-version: '3.12'
       - name: Verify dependency pins and lockfiles
         run: python3 devx/check_dependency_pins.py
+      - name: Check source-path case collisions
+        run: python3 devx/check_case_collisions.py
       - name: Install backend dependencies
         run: python3 -m pip install --requirement backend/requirements.txt
       - name: Verify manifest and digests
         run: python3 devx/release_guard.py
+      - name: Verify cross-layer protocol compatibility
+        run: python3 devx/protocol_compatibility.py --check
       - name: Publish cross-layer compatibility report
         if: always()
         continue-on-error: true

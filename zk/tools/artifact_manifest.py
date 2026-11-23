@@ -54,6 +54,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -546,6 +547,29 @@ def serialize_manifest(manifest: dict) -> str:
     """Deterministic on-disk form: sorted keys, two-space indent, one trailing
     newline. Two builds that agree produce byte-identical files."""
     return json.dumps(manifest, sort_keys=True, indent=2) + "\n"
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` through a sibling staging file.
+
+    The staged file is flushed and fsynced before ``os.replace`` publishes it,
+    so an interrupted or failing write leaves the previous file intact instead
+    of truncating it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, staging_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    staging = Path(staging_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staging, path)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
 
 
 # ── Drift comparison ────────────────────────────────────────────────────────
@@ -1412,8 +1436,7 @@ def command_write(args: argparse.Namespace) -> int:
     _fail_on_fatal(run)
 
     output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(serialize_manifest(manifest), encoding="utf-8")
+    atomic_write_text(output, serialize_manifest(manifest))
 
     signal(
         "manifest.written",

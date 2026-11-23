@@ -154,6 +154,14 @@ promoted. Cancellation (SIGINT) is handled the same way: the double-build driver
 cleans its work directory on `EXIT INT TERM`, and the manifest is only written
 after every artifact has resolved.
 
+Manifest publication is also atomic. `build --single` writes the manifest to a
+staging file on the target filesystem, re-digests the built tree through
+`artifact_manifest.py verify`, and only then `os.replace`s the staged file over
+`zk/artifacts.manifest.json`. The double build promotes the compared second
+manifest the same way. A failed build subprocess, a failed staged verification,
+or a missing staged output leaves the previous manifest untouched, and
+`artifact_manifest.py write` stages its own output before publishing.
+
 ## Local verification
 
 Install the pinned toolchain (inside WSL on Windows — see `zk/noir/README.md`):
