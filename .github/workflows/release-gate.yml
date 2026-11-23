@@ -1,6 +1,9 @@
 name: Compatibility release gate
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
   pull_request:
     paths:
       - 'release/**'
@@ -16,6 +19,8 @@ on:
       - '.github/dependabot.yml'
       - '.github/workflows/release-gate.yml'
   push:
+      - '.github/workflows/release-gate.yml'
+  push:
     branches: [main]
     paths:
       - 'release/**'
@@ -28,6 +33,7 @@ on:
       - '.github/labels.yml'
       - '.github/labeler.yml'
       - '.github/dependabot.yml'
+      - '.github/workflows/release-gate.yml'
 
 permissions:
   contents: read
@@ -42,6 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
@@ -53,6 +61,8 @@ jobs:
       - name: Verify manifest and digests
         run: python3 devx/release_guard.py
       - name: Publish cross-layer compatibility report
+        if: always()
+        continue-on-error: true
         run: |
           python3 devx/compatibility_report.py --write --stable --check
           python3 devx/compatibility_report.py --verify-existing --stable --check
@@ -74,4 +84,11 @@ jobs:
           python3 devx/check_changelog_fragment.py --labels "$PR_LABELS"
       - name: Exercise negative release-gate paths
         run: python3 -m unittest discover -s devx -p 'test_*.py' -v
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-report
+          path: release/compatibility-report.json
+          if-no-files-found: ignore
 

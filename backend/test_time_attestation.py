@@ -9,6 +9,7 @@ Covers:
 - Resource bounds
 - Multiple anchor types
 - Offline verification scenarios
+- Rejection of receipt metadata containing unsupported critical extensions
 """
 
 import time
@@ -31,6 +32,7 @@ from time_attestation import (
     MAX_TIMESTAMP_TOKEN_SIZE,
     MAX_ANCHOR_COUNT,
     PROFILE_ID,
+    validate_receipt_input,
 )
 
 
@@ -39,6 +41,8 @@ from time_attestation import (
 VALID_EVIDENCE_DIGEST = "a" * 64
 VALID_TX_HASH = "b" * 64
 STELLAR_TESTNET_PASSPHRASE = "Test SDF Network ; September 2015"
+PARENT_STATEMENT_ID = "e" * 64
+CHILD_STATEMENT_ID = "f" * 64
 
 
 @pytest.fixture
@@ -56,6 +60,18 @@ def valid_attestation(current_time_ms):
     )
 
 
+@pytest.fixture
+def bound_attestation(current_time_ms):
+    return create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 1000,
+        claimed_source_label="device_clock",
+        uncertainty_ms=500,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id=CHILD_STATEMENT_ID,
+    )
+
+
 # ── Creation and encoding ──────────────────────────────────────────────────
 
 def test_create_time_attestation_minimal():
@@ -69,6 +85,8 @@ def test_create_time_attestation_minimal():
     assert attestation.claimed_time is None
     assert attestation.stellar_anchors == []
     assert attestation.rfc3161_anchors == []
+    assert attestation.parent_statement_id is None
+    assert attestation.child_statement_id is None
 
 
 def test_create_time_attestation_with_claimed(current_time_ms):
@@ -85,6 +103,18 @@ def test_create_time_attestation_with_claimed(current_time_ms):
     assert attestation.claimed_time.uncertainty_ms == 200
 
 
+def test_create_time_attestation_with_statement_binding(current_time_ms):
+    attestation = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 5000,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id=CHILD_STATEMENT_ID,
+    )
+
+    assert attestation.parent_statement_id == PARENT_STATEMENT_ID
+    assert attestation.child_statement_id == CHILD_STATEMENT_ID
+
+
 def test_encode_decode_roundtrip(valid_attestation):
     encoded = encode_time_attestation(valid_attestation)
     decoded = decode_time_attestation(encoded)
@@ -96,6 +126,16 @@ def test_encode_decode_roundtrip(valid_attestation):
     assert decoded.observed_time.unix_ms == valid_attestation.observed_time.unix_ms
 
 
+def test_encode_decode_roundtrip_statement_binding(bound_attestation):
+    encoded = encode_time_attestation(bound_attestation)
+    decoded = decode_time_attestation(encoded)
+
+    assert decoded.parent_statement_id == PARENT_STATEMENT_ID
+    assert decoded.child_statement_id == CHILD_STATEMENT_ID
+    assert encoded["parentStatementId"] == PARENT_STATEMENT_ID
+    assert encoded["childStatementId"] == CHILD_STATEMENT_ID
+
+
 def test_canonical_hash_deterministic(valid_attestation):
     hash1 = canonical_time_attestation_hash(valid_attestation)
     hash2 = canonical_time_attestation_hash(valid_attestation)
@@ -103,6 +143,23 @@ def test_canonical_hash_deterministic(valid_attestation):
     assert hash1 == hash2
     assert len(hash1) == 64
     int(hash1, 16)  # Verify it's valid hex
+
+
+def test_canonical_hash_binds_statement_ids(valid_attestation, current_time_ms):
+    base = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 1000,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id=CHILD_STATEMENT_ID,
+    )
+    other = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=current_time_ms - 1000,
+        parent_statement_id=PARENT_STATEMENT_ID,
+        child_statement_id="1" * 64,
+    )
+
+    assert canonical_time_attestation_hash(base) != canonical_time_attestation_hash(other)
 
 
 # ── Validation ─────────────────────────────────────────────────────────────
@@ -118,6 +175,15 @@ def test_validate_wrong_evidence_digest(valid_attestation):
     
     assert len(errors) > 0
     assert any("digest mismatch" in err.lower() for err in errors)
+
+
+def test_validate_rejects_conflicting_statement_binding(bound_attestation):
+    errors = validate_time_attestation(
+        bound_attestation,
+        VALID_EVIDENCE_DIGEST,
+        expected_parent_statement_id="2" * 64,
+    )
+    assert any("parent statement" in err.lower() for err in errors)
 
 
 def test_validate_rejects_future_time(current_time_ms):
@@ -525,6 +591,44 @@ def test_multiple_stellar_anchors_from_different_networks(valid_attestation, cur
     assert with_both.stellar_anchors[0].network_passphrase != with_both.stellar_anchors[1].network_passphrase
 
 
+# ── Receipt input binding ──────────────────────────────────────────────────
+
+def test_receipt_input_accepts_canonical_binding(bound_attestation):
+    receipt_input = validate_receipt_input(
+        bound_attestation,
+        VALID_EVIDENCE_DIGEST,
+        expected_parent_statement_id=PARENT_STATEMENT_ID,
+        expected_child_statement_id=CHILD_STATEMENT_ID,
+    )
+
+    assert receipt_input["evidenceDigest"] == VALID_EVIDENCE_DIGEST
+    assert receipt_input["parentStatementId"] == PARENT_STATEMENT_ID
+    assert receipt_input["childStatementId"] == CHILD_STATEMENT_ID
+    # Frontend retains signing and envelope versioning ownership.
+    assert "signature" not in receipt_input
+    assert "envelopeVersion" not in receipt_input
+
+
+def test_receipt_input_rejects_conflicting_parent(bound_attestation):
+    with pytest.raises(ValueError, match="parent statement"):
+        validate_receipt_input(
+            bound_attestation,
+            VALID_EVIDENCE_DIGEST,
+            expected_parent_statement_id="2" * 64,
+            expected_child_statement_id=CHILD_STATEMENT_ID,
+        )
+
+
+def test_receipt_input_rejects_conflicting_child(bound_attestation):
+    with pytest.raises(ValueError, match="child statement"):
+        validate_receipt_input(
+            bound_attestation,
+            VALID_EVIDENCE_DIGEST,
+            expected_parent_statement_id=PARENT_STATEMENT_ID,
+            expected_child_statement_id="3" * 64,
+        )
+
+
 # ── Time bounds (explicit inclusive/exclusive) ────────────────────────────────
 
 def test_encode_includes_time_bounds(valid_attestation, current_time_ms):
@@ -565,6 +669,8 @@ def test_encode_time_bounds_minimal_attestation():
     assert "claimedTime" not in bounds
     assert "stellarAnchors" not in bounds
     assert "rfc3161Anchors" not in bounds
+    assert "parentStatementId" not in bounds
+    assert "childStatementId" not in bounds
 
 
 def test_decode_ignores_time_bounds_for_backward_compatibility(valid_attestation, current_time_ms):

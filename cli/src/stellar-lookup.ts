@@ -319,7 +319,7 @@ export async function getOpenDisputeCount(
 async function simulateRead(
   contractId: string,
   method: string,
-  args: unknown[],
+  args: xdr.ScVal[],
   options: StellarLookupOptions,
 ): Promise<any> {
   const rpcUrl = resolveRpcUrl(options.rpcUrl)

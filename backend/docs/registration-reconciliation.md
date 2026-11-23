@@ -55,6 +55,18 @@ API keys, or private keys.
   imply a complete backlog: when `batch.complete=true` but `backlog.complete=false`,
   more pending rows exist and further calls are required.
 - `force=true` overwrites terminal statuses (repair / rollback aid).
+- Operator repair preview: `POST /api/proofs/reconcile/preview` accepts the same
+  body as `/api/proofs/reconcile` and returns, for each selected row, the proposed
+  `tx_status` update together with the chain evidence used to derive it (Horizon
+  endpoint, transaction success bit, ledger number, confirmation count) and the
+  expected row revision (`expectedRevision`) that a later apply must match. The
+  preview performs no database writes. If a row's stored state contradicts the
+  chain evidence (for example a row recorded as `confirmed` whose transaction is
+  reported failed or absent), the preview marks that row `contradictory` with a
+  reason code and proposes no update for it; contradictory rows never produce a
+  write, even with `force=true`. Preview responses carry only status, reason codes,
+  ledger numbers and truncated `txHash` prefixes, consistent with the privacy rules
+  above.
 - Horizon dependency failures return HTTP 503 for single-hash calls and are
   counted under `summary.error` for batch calls without writing durable state.
 - A provider outage (all Horizon endpoints unavailable / RPC unreachable) is an

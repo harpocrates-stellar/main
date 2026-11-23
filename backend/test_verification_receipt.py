@@ -1,3 +1,4 @@
+import copy
 import pytest
 
 from time_attestation import (
@@ -13,6 +14,7 @@ from verification_receipt import (
     build_verification_receipt,
     compare_verification_receipts,
     format_receipt_comparison_report,
+    validate_receipt_input,
 )
 
 
@@ -31,6 +33,7 @@ def context() -> dict[str, object]:
     }
 
 
+
 def test_receipt_matches_the_frontend_unsigned_model():
     receipt = build_verification_receipt(context())
 
@@ -44,6 +47,7 @@ def test_receipt_matches_the_frontend_unsigned_model():
     assert "proof" not in receipt
 
 
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("proofId", "short"), ("transactionHash", "not-hex")],
@@ -54,6 +58,7 @@ def test_rejects_invalid_digest_fields(field: str, value: str):
 
     with pytest.raises(ValueError, match=field):
         build_verification_receipt(invalid)
+
 
 
 def test_rejects_incomplete_context_without_inventing_receipt_fields():
@@ -94,6 +99,7 @@ def _receipt(**overrides: object) -> dict[str, object]:
     return base
 
 
+
 def test_compare_identical_receipts():
     run_a = _receipt()
     run_b = _receipt()
@@ -110,6 +116,7 @@ def test_compare_identical_receipts():
     assert report["chainChanges"] == []
     assert report["presentationChanges"] == []
     assert report["explanations"] == []
+
 
 
 def test_compare_distinguishes_presentation_only_differences():
@@ -141,6 +148,7 @@ def test_compare_distinguishes_presentation_only_differences():
     assert "Only presentation differences detected" in report["summary"]
 
 
+
 def test_compare_detects_evidence_changes_and_tier_separation():
     run_a = _receipt(tier="silent", videoHash="1" * 64, metadataHash="2" * 64)
     run_b = _receipt(tier="seal", videoHash="3" * 64, metadataHash="2" * 64)
@@ -153,6 +161,7 @@ def test_compare_detects_evidence_changes_and_tier_separation():
     fields = [item["field"] for item in report["evidenceChanges"]]
     assert fields == ["videoHash", "tier"]
     assert any("Identity tier changed from 'silent' to 'seal'" in e for e in report["explanations"])
+
 
 
 def test_compare_explains_trust_revocation_and_chain_observations():
@@ -191,6 +200,7 @@ def test_compare_explains_trust_revocation_and_chain_observations():
     assert "Trust Observations:" in rendered
     assert "Revocation Observations:" in rendered
     assert "Chain Observations:" in rendered
+
 
 
 def test_compare_explains_time_attestation_chain_and_trust_changes():
@@ -232,6 +242,7 @@ def test_compare_explains_time_attestation_chain_and_trust_changes():
     ]
 
 
+
 def test_compare_fails_closed_on_invalid_receipt_or_observations():
     valid = _receipt()
     bad_hex = _receipt(proofId="not-a-hex-digest")
@@ -247,6 +258,7 @@ def test_compare_fails_closed_on_invalid_receipt_or_observations():
 
     with pytest.raises(ValueError, match="timeAttestation malformed"):
         compare_verification_receipts(valid, _receipt(timeAttestation={"version": 99}))
+
 
 
 # ── Time bounds in receipt comparison ────────────────────────────────────────
@@ -289,6 +301,7 @@ def test_compare_time_attestation_with_time_bounds():
     assert encoded_after["timeBounds"]["stellarAnchors"] == "inclusive"
 
 
+
 def test_compare_fixed_clock_exact_boundary_match():
     """Receipt comparison with fixed clock at exact boundary."""
     digest = "b" * 64
@@ -314,6 +327,7 @@ def test_compare_fixed_clock_exact_boundary_match():
     assert report["identical"] is True
     assert report["equivalentEvidence"] is True
     assert report["presentationOnly"] is False
+
 
 
 def test_compare_time_bounds_presentation_only_difference():

@@ -105,6 +105,8 @@ This section documents all environment variables that can be used to configure t
 | VERIFIER_CACHE_MAX_SIZE | integer | 10000 | must be positive | Maximum number of entries in the verifier proof cache | no | no |
 | VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
 | VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
+| WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT | integer | 2 | must be positive | Maximum concurrent expensive video jobs (`embed`, `extract`) leased per tenant | no | no |
+| WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT | integer | 10 | must be positive | Maximum queued (pending) expensive video jobs (`embed`, `extract`) per tenant | no | no |
 
 ## Chain Indexer Backpressure
 
@@ -156,6 +158,27 @@ stale heartbeats via `get_job_heartbeat_state` and `reclaim_stale_jobs`.
 - Stale heartbeats are reported independently of proof validity: unverified or
   incomplete worker output is never classified as a cryptographic failure, and
   private job payloads are never included in reclaimed-job summaries or logs.
+
+## Per-Tenant Fair Scheduling for Expensive Video Jobs
+
+Expensive video jobs (`embed`, `extract`) are bounded and fairly scheduled per
+tenant in `backend/db.py` and `backend/worker.py`:
+
+- **Per-tenant queue bound**: `enqueue_job` enforces
+  `WORKER_MAX_QUEUED_VIDEO_JOBS_PER_TENANT` (default: `10`, must be positive)
+  for pending `embed`/`extract` jobs per `tenant_id`, raising
+  `TenantQueueLimitExceededError` when exceeded without affecting other tenants
+  or non-video jobs (`verify_tx`, `silent_witness`).
+- **Per-tenant concurrency bound & fair leasing**: `lease_job` enforces
+  `WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT` (default: `2`, must be
+  positive) for running `embed`/`extract` jobs per tenant and schedules
+  eligible tenants fairly (fewest running video jobs first, then
+  least-recently-leased tenant, then FIFO within a tenant).
+- **Independent deadlines & admission controls**: Each job preserves its own
+  optional `deadline_at` / `deadline_seconds` independently of other tenants'
+  delays and existing HTTP `AdmissionController` limits. Expired pending jobs
+  are failed on lease without consuming a tenant concurrency slot, and running
+  jobs that exceed their independent deadline are failed by the worker loop.
 
 ## Noir Developer Worker
 
@@ -249,6 +272,24 @@ Output never includes connection strings or secrets: every line is scrubbed of
 the `DATABASE_URL` value, URL credentials, and `password=`/`token=`-style
 values, and unexpected exceptions are reported by type name only.
 
+## Index Rebuild Dry-Run
+
+The chain indexer can reconstruct a temporary projection from synthetic events
+and report differences against the live index without replacing it. The dry-run
+is read-only with respect to the live index: it writes only to a temporary
+state directory that is removed after the run.
+
+Each projection carries a deterministic fingerprint: a SHA-256 digest over a
+canonical, sorted encoding of the projected records. Identical event inputs
+always yield identical fingerprints, so the live and rebuilt projections can be
+compared by digest alone. Differences are reported per record key with the
+fingerprint of each side; no raw evidence, media, or secrets are included in
+the report.
+
+Rollback: the dry-run stores no new durable evidence and changes no schema.
+Removing the dry-run entry point and its focused coverage restores the previous
+behaviour. Temporary state directories are deleted automatically.
+
 ## Privacy-Safe Service Metrics
 
 `GET /metrics` exposes service workload, latency, status code distributions, and bounded upload-size metrics in standard Prometheus format.
@@ -257,6 +298,7 @@ values, and unexpected exceptions are reported by type name only.
 
 - Metric labels strictly record generic HTTP attributes: HTTP `method`, parameterized route rule `endpoint` (e.g., `/api/proofs/by-video/<video_hash>`), and HTTP `status`.
 - Filenames, video hashes, metadata hashes, wallet addresses, proof payload data, and secret seeds are strictly excluded.
+- Analytics telemetry dimensions are strictly validated against an allowed vocabulary (`ALLOWED_DIMENSION_VOCABULARY`) prior to aggregation; raw filenames and cryptographic hashes are rejected from becoming metric labels.
 - Upload sizes are recorded in bounded histogram buckets.
 
 ### Endpoint Protection
@@ -410,6 +452,24 @@ store = CheckpointStore(deployment=deployment)
 checkpoint = store.record(1_250)
 ```
 
+## Encryption Envelope Versions
+
+`evidence_storage.py` records an explicit `envelope_version` column on `blobs`
+(default `fernet-v1`, added in migration 13):
+
+- `classify_envelope_version()` distinguishes supported versions (`fernet-v1`),
+  known legacy envelopes (`None` for pre-versioning rows, `legacy-v0`,
+  `fernet-v0`), and unsupported formats (any unrecognized, empty, or non-string
+  identifier).
+- `record_blob()` validates and stores `envelope_version`, rejecting known
+  legacy or unsupported values on write.
+- `decrypt_blob_ciphertext()` dispatches strictly on the recorded
+  `envelope_version` and never guesses a decryption algorithm from malformed
+  ciphertext. Known legacy versions raise `LegacyEnvelopeVersionError`, while
+  unsupported formats fail closed with `UnsupportedEnvelopeVersionError`.
+  Pre-versioning rows with `envelope_version IS NULL` remain compatible with
+  Fernet.
+
 ## Test
 
 ```powershell
@@ -419,3 +479,25 @@ python -m unittest test_app.py test_stego.py test_registration_reconcile.py
 The service uses temporary files while processing and does not persist uploaded
 source videos.
 
+
+## Registration Idempotency
+
+`POST /api/proofs/register` enforces idempotency at both the request layer (`idempotency.py`) and the persistence layer (`db.upsert_register_event`):
+
+- The canonical idempotency binding includes the HTTP method, path, query string, identity `tier` (`silent`, `source`, or `seal`), and raw request body.
+- When an explicit `Idempotency-Key` header is supplied, the key is bound to the canonical digest and identity tier. Replaying the same key with the same payload replays the stored response; reusing the key with a changed identity tier returns `409 Conflict` (`{"error": "idempotency key reused with conflicting payload", "conflict_field": "tier"}`) without invoking the handler or enqueueing another `verify_tx` registration job.
+
+## Evidence Retention Previews
+
+`evidence_storage.preview_tenant_retention(tenant_id, *, now=None, ttl_seconds=None)` returns a read-only retention preview scoped strictly to the authenticated `tenant_id`:
+
+- Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
+- Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
+- Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.
+
+## Evidence Storage Consistency Report
+
+`evidence_storage.generate_consistency_report(storage_dir=None, *, now=None)` returns a read-only consistency report comparing `blobs` metadata, active `tenant_blob_refs` (`ref_count > 0`), and physical files under `storage_dir` (defaulting to `HARPOCRATES_STORAGE_DIR` / `storage.default_storage_dir` without creating or mutating directories):
+
+- Reports `consistent` (`bool`), aggregate `summary` counts, and itemized discrepancies: `missing_files`, `orphaned_blobs`, `orphaned_tenant_refs`, `orphaned_files`, and `size_mismatches`.
+- Strictly read-only: never modifies database rows, never deletes physical files, and never queries or returns `encrypted_dek`.

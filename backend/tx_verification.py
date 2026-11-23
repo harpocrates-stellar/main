@@ -19,6 +19,10 @@ class TxVerificationResult:
     index_stale: bool = False
 
 
+class NetworkMismatchError(ValueError):
+    """Raised when a transaction belongs to a different Stellar network."""
+
+
 def normalize_tx_hash(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("txHash must be a string")
@@ -58,6 +62,7 @@ _DEFAULT_RPC_URLS = (
 
 TERMINAL_STATUSES = frozenset({"confirmed", "failed", "missing"})
 ALLOWED_STATUSES = frozenset({"pending", "confirmed", "failed", "missing", "error"})
+NETWORK_MISMATCH_REASON = "network_passphrase_mismatch"
 
 # Maximum ledger lag tolerated before a read index is considered stale.
 # Override with HORIZON_MAX_INDEX_LAG_LEDGERS.
@@ -178,6 +183,7 @@ def verify_transaction(
     *,
     min_confirmations: int = 1,
     timeout: float = 10.0,
+    expected_network_passphrase: str | None = None,
 ) -> TxVerificationResult:
     """
     Check a transaction against Horizon with failover.
@@ -214,6 +220,22 @@ def verify_transaction(
                 )
                 saw_dependency_failure = True
                 continue
+
+            try:
+                _check_network_binding(data, expected_network_passphrase)
+            except NetworkMismatchError as exc:
+                # Wrong-network evidence is terminal: retrying the same
+                # incompatible transaction cannot succeed, so do not fail over.
+                LOGGER.warning(
+                    "horizon_network_mismatch source=%s tx=%s",
+                    rpc_url,
+                    _short_hash(normalized),
+                )
+                return TxVerificationResult(
+                    status="failed",
+                    source=rpc_url,
+                    reason=str(exc).split(":", 1)[0],
+                )
 
             successful = bool(data.get("successful", False))
             ledger_raw = data.get("ledger")
@@ -268,6 +290,12 @@ def verify_transaction(
                 reason="confirmed",
             )
         except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) == "malformed_network_passphrase":
+                return TxVerificationResult(
+                    status="failed",
+                    source=rpc_url,
+                    reason="malformed_network_passphrase",
+                )
             saw_dependency_failure = True
             LOGGER.warning(
                 "horizon_query_error source=%s tx=%s err_type=%s",

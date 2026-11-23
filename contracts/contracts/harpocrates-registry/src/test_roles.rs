@@ -5,7 +5,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, BytesN, Env, IntoVal, Symbol,
 };
 

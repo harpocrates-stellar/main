@@ -6,6 +6,9 @@ import { ProofBufferLedger } from '../proofWorkerMemory';
 const logger = new ProofWorkerLogger({ enabled: true });
 
 export class ProofWorkerManager {
+  // Preserve the currently active proof result to avoid losing state on unexpected messages
+  private activeProofResult: ProofWorkerResponse | null = null;
+
   private worker: Worker | null = null;
   private cspConfig: ReturnType<typeof validateCSPPolicy>;
   private messageHandlers: Map<string, (response: ProofWorkerResponse) => void> = new Map();
