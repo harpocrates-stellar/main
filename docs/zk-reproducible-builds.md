@@ -161,8 +161,10 @@ bbup   --version 0.87.0
 Then:
 
 ```bash
-# Full double build: build twice from clean, compare, write the manifest.
+# Full double build: build twice from clean in isolated output directories, compare, write the manifest.
 python zk/tools/build_circuits.py build
+python zk/tools/build_circuits.py build --report zk/repro-report.json
+python zk/tools/build_circuits.py build --report zk/repro-report.md --report-format markdown
 zk/noir/scripts/reproducible-build.sh
 
 # One build, write a manifest.
@@ -227,7 +229,9 @@ Both the script and the tool emit single-line JSON on **stderr**:
 | `manifest.written` | `path`, `artifacts`, `skipped`, `sources` | Success |
 | `drift.finding` | `detail` | One drift finding |
 | `verify.ok` / `verify.failed` | `artifacts` / `findings` | Verdict |
-| `compare.ok` / `compare.failed` | `artifacts` / `findings` | Double-build verdict |
+| `compare.ok` / `compare.failed` | `artifacts` / `findings`, `executable_drift`, `metadata_only_drift` | Double-build verdict |
+| `compare.report.written` | `path`, `format`, `status` | Reproducibility comparison report written |
+| `compare.metadata_drift` | `count`, `status` | Nondeterministic metadata-only drift allowed |
 | `coverage.ok` / `coverage.failed` | `circuits` / `findings` | Circuit-coverage verdict |
 | `run.fatal` / `run.error` / `run.cancelled` | `path`, `state`, `reason` | Terminal failure |
 

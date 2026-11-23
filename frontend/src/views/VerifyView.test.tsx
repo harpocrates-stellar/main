@@ -17,6 +17,10 @@ vi.mock('../components/ChainProofPanel', () => ({
   formatProofExpiry: () => 'Never',
 }))
 
+vi.mock('../components/DisputePanel', () => ({
+  DisputePanel: () => <div data-testid="dispute-panel" />,
+}))
+
 vi.mock('../components/VerifierSetStatusPanel', () => ({
   VerifierSetStatusPanel: () => <div data-testid="verifier-set-status-panel" />,
 }))
@@ -419,5 +423,165 @@ describe('VerifyView – portable proof manifest loading', () => {
       fireEvent.keyDown(dropzone, { key: 'Enter', code: 'Enter' })
       expect(clicked).toBe(false)
     })
+  })
+})
+
+// ─── Structured Trust Dimensions ────────────────────────────────────────────
+
+describe('VerifyView – structured trust dimensions', () => {
+  it('renders all four independent trust dimensions on a confirmed verification', () => {
+    renderView({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult:
+        'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      chainProof: {
+        videoHash: 'a'.repeat(64),
+        metadataHash: 'b'.repeat(64),
+        tier: 1,
+        status: 1,
+        createdAt: '2026-01-01T00:00:00Z',
+        expiresAt: 0,
+        source: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        issuer: null,
+      },
+    })
+
+    const section = screen.getByRole('region', { name: /verification trust dimensions/i })
+    expect(section).toHaveAttribute('data-overall-verdict', 'verified')
+    expect(screen.getByText('Content Integrity')).toBeInTheDocument()
+    expect(screen.getByText('Chain Registration')).toBeInTheDocument()
+    expect(screen.getByText('Issuer Trust')).toBeInTheDocument()
+    expect(screen.getByText('Freshness')).toBeInTheDocument()
+  })
+
+  it('surfaces a failed dimension without allowing successful dimensions to mask it', () => {
+    renderView({
+      status: 'error',
+      errorCode: 'EXPIRED_EVIDENCE',
+      verifyHash: 'a'.repeat(64),
+      verifyResult:
+        'Expired: the chain record for this artifact has expired. Do not treat it as valid evidence.',
+      chainProof: {
+        videoHash: 'a'.repeat(64),
+        metadataHash: 'b'.repeat(64),
+        tier: 1,
+        status: 3,
+        createdAt: '2025-01-01T00:00:00Z',
+        expiresAt: 1_700_000_000,
+        source: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        issuer: null,
+      },
+    })
+
+    const section = screen.getByRole('region', { name: /verification trust dimensions/i })
+    expect(section).toHaveAttribute('data-overall-verdict', 'failed')
+    expect(
+      screen.getByText(/successful dimensions do not override failures/i),
+    ).toBeInTheDocument()
+    expect(section.querySelector('[data-dimension="chainRegistration"]')).toHaveAttribute(
+      'data-state',
+      'verified',
+    )
+    expect(section.querySelector('[data-dimension="freshness"]')).toHaveAttribute(
+      'data-state',
+      'failed',
+    )
+  })
+})
+
+describe('VerifyView – stale verification link cache guard', () => {
+  it('suppresses a cached success banner after editing the video hash and requires a fresh result', async () => {
+    const user = userEvent.setup()
+    const initialHook = makeHook({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult: 'Public verification record loaded. Confirm the embedded artifact before treating it as authentic.',
+    })
+    const { rerender } = render(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={initialHook}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.getByText(/public verification record loaded/i),
+    ).toBeInTheDocument()
+
+    const hashInput = screen.getByLabelText(/video hash/i)
+    await user.clear(hashInput)
+    await user.type(hashInput, 'f'.repeat(64))
+
+    expect(
+      screen.queryByText(/public verification record loaded/i),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/verification context changed\. run a fresh verification/i),
+    ).toBeInTheDocument()
+
+    // A fresh explicit verification result for the new hash restores the banner
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={makeHook({
+          status: 'success',
+          verifyHash: 'f'.repeat(64),
+          verifyResult: 'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+        })}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.getByText(/confirmed: embedded harpocrates metadata/i),
+    ).toBeInTheDocument()
+  })
+
+  it('suppresses a cached success banner when offline mode or network mismatch changes the trust snapshot', () => {
+    const baseHook = makeHook({
+      status: 'success',
+      verifyHash: 'a'.repeat(64),
+      verifyResult: 'Confirmed: embedded Harpocrates metadata is corroborated by database and active chain records.',
+      offline: false,
+    })
+
+    const { rerender } = render(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={baseHook}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(screen.getByText(/confirmed: embedded harpocrates metadata/i)).toBeInTheDocument()
+
+    // Switching trust snapshot to offline invalidates the cached online success banner
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch={null}
+        verification={{ ...baseHook, offline: true }}
+        provenanceRecord={null}
+      />,
+    )
+    expect(screen.queryByText(/confirmed: embedded harpocrates metadata/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/verification context changed/i)).toBeInTheDocument()
+
+    // An active network mismatch also blocks the cached success banner
+    rerender(
+      <VerifyView
+        wallet=""
+        networkMismatch="Wallet is connected to Mainnet instead of Testnet."
+        verification={baseHook}
+        provenanceRecord={null}
+      />,
+    )
+    expect(screen.queryByText(/confirmed: embedded harpocrates metadata/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/resolve the network mismatch and run a fresh verification/i)).toBeInTheDocument()
   })
 })

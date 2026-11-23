@@ -145,6 +145,35 @@ class FakeCursor:
                 for k in to_delete:
                     del self.connection.tenant_refs[k]
 
+        elif "from tenant_blob_refs r join blobs b" in normalized:
+            (tenant_id,) = params
+            with self.connection.lock:
+                matched = []
+                for (ref_tenant, content_hash), ref in self.connection.tenant_refs.items():
+                    if ref_tenant != tenant_id or ref["ref_count"] <= 0:
+                        continue
+                    blob = self.connection.blobs.get(content_hash)
+                    if blob is None:
+                        continue
+                    shared = any(
+                        other_tenant != tenant_id
+                        and other_hash == content_hash
+                        and other_ref["ref_count"] > 0
+                        for (other_tenant, other_hash), other_ref in self.connection.tenant_refs.items()
+                    )
+                    matched.append(
+                        FakeRow(
+                            content_hash=content_hash,
+                            ref_count=ref["ref_count"],
+                            size_bytes=blob["size_bytes"],
+                            created_at=blob["created_at"],
+                            shared_with_other_tenants=shared,
+                        )
+                    )
+                matched.sort(key=lambda r: (r["created_at"], r["content_hash"]))
+            self._results = matched
+            self._idx = 0
+
     def fetchone(self) -> FakeRow | None:
         if self._results and self._idx < len(self._results):
             row = self._results[self._idx]
@@ -575,6 +604,156 @@ def test_metrics_do_not_expose_hashes(fake_db: FakeConnection, tmp_path: Path):
     assert sensitive_hash not in metrics
     assert "super_secret" not in metrics
     assert "harpocrates_retention_deleted_blobs_total 1" in metrics
+
+
+# ---------------------------------------------------------------------------
+# Per-tenant retention preview tests
+# ---------------------------------------------------------------------------
+
+
+def test_preview_tenant_retention_counts_ages_and_eligibility(
+    fake_db: FakeConnection, tmp_path: Path
+) -> None:
+    now_ts = 1_700_000_000.0
+
+    # Exclusive old blob (eligible when ttl=3600)
+    evidence_storage.record_blob("hash_a_old", b"dek1", 1000, str(tmp_path / "a_old.enc"))
+    fake_db.blobs["hash_a_old"]["created_at"] = now_ts - 7200.0
+    evidence_storage.record_tenant_ref("tenant_a", "hash_a_old")
+    evidence_storage.record_tenant_ref("tenant_a", "hash_a_old")
+
+    # Exclusive recent blob (within retention window when ttl=3600)
+    evidence_storage.record_blob("hash_a_new", b"dek2", 500, str(tmp_path / "a_new.enc"))
+    fake_db.blobs["hash_a_new"]["created_at"] = now_ts - 600.0
+    evidence_storage.record_tenant_ref("tenant_a", "hash_a_new")
+
+    # Shared old blob (ineligible because tenant_b also references it)
+    evidence_storage.record_blob("hash_shared", b"dek3", 250, str(tmp_path / "shared.enc"))
+    fake_db.blobs["hash_shared"]["created_at"] = now_ts - 10800.0
+    evidence_storage.record_tenant_ref("tenant_a", "hash_shared")
+    evidence_storage.record_tenant_ref("tenant_b", "hash_shared")
+
+    # Tenant B's private blob (must never appear in tenant_a's preview)
+    evidence_storage.record_blob(
+        "hash_b_secret", b"dek4", 9999, str(tmp_path / "tenant_b_private_path.enc")
+    )
+    fake_db.blobs["hash_b_secret"]["created_at"] = now_ts - 20000.0
+    evidence_storage.record_tenant_ref("tenant_b", "hash_b_secret")
+
+    preview = evidence_storage.preview_tenant_retention(
+        "tenant_a", now=now_ts, ttl_seconds=3600
+    )
+
+    assert preview["tenant_id"] == "tenant_a"
+    assert preview["ttl_seconds"] == 3600
+    assert preview["blob_count"] == 3
+    assert preview["total_ref_count"] == 4
+    assert preview["total_size_bytes"] == 1750
+    assert preview["eligible_for_deletion_count"] == 1
+    assert preview["retained_count"] == 2
+    assert preview["shared_blob_count"] == 1
+    assert preview["oldest_age_seconds"] == pytest.approx(10800.0)
+    assert preview["newest_age_seconds"] == pytest.approx(600.0)
+    assert preview["average_age_seconds"] == pytest.approx((10800.0 + 7200.0 + 600.0) / 3)
+
+    by_hash = {item["content_hash"]: item for item in preview["blobs"]}
+    assert set(by_hash.keys()) == {"hash_a_old", "hash_a_new", "hash_shared"}
+
+    assert by_hash["hash_a_old"]["ref_count"] == 2
+    assert by_hash["hash_a_old"]["age_seconds"] == pytest.approx(7200.0)
+    assert by_hash["hash_a_old"]["deletion_eligible"] is True
+    assert by_hash["hash_a_old"]["deletion_ineligible_reason"] is None
+
+    assert by_hash["hash_a_new"]["ref_count"] == 1
+    assert by_hash["hash_a_new"]["age_seconds"] == pytest.approx(600.0)
+    assert by_hash["hash_a_new"]["deletion_eligible"] is False
+    assert by_hash["hash_a_new"]["deletion_ineligible_reason"] == "within_retention_window"
+
+    assert by_hash["hash_shared"]["ref_count"] == 1
+    assert by_hash["hash_shared"]["age_seconds"] == pytest.approx(10800.0)
+    assert by_hash["hash_shared"]["deletion_eligible"] is False
+    assert by_hash["hash_shared"]["deletion_ineligible_reason"] == "shared_with_other_tenants"
+
+    # Read-only: DB state untouched
+    assert len(fake_db.blobs) == 4
+    assert fake_db.tenant_refs[("tenant_a", "hash_a_old")]["ref_count"] == 2
+
+
+def test_preview_tenant_retention_keeps_other_tenants_and_storage_paths_private(
+    fake_db: FakeConnection, tmp_path: Path
+) -> None:
+    now_ts = 1_700_000_000.0
+    path_a = str(tmp_path / "secret_dir_a" / "blob_a.enc")
+    path_b = str(tmp_path / "secret_dir_b" / "blob_b.enc")
+    hash_b = "b_private_hash_987654321"
+
+    evidence_storage.record_blob("hash_a_only", b"dek_a", 128, path_a)
+    fake_db.blobs["hash_a_only"]["created_at"] = now_ts - 100.0
+    evidence_storage.record_tenant_ref("tenant_a", "hash_a_only")
+
+    evidence_storage.record_blob(hash_b, b"dek_b", 256, path_b)
+    fake_db.blobs[hash_b]["created_at"] = now_ts - 500.0
+    evidence_storage.record_tenant_ref("tenant_b", hash_b)
+
+    preview = evidence_storage.preview_tenant_retention("tenant_a", now=now_ts)
+    serialized = str(preview)
+
+    assert hash_b not in serialized
+    assert "tenant_b" not in serialized
+    assert path_a not in serialized
+    assert path_b not in serialized
+    assert "storage_path" not in serialized
+    assert "encrypted_dek" not in serialized
+
+    # Verify the SQL query itself does not select storage_path or encrypted_dek
+    sql, params = fake_db.executed[-1]
+    normalized_sql = " ".join(sql.lower().split())
+    assert "storage_path" not in normalized_sql
+    assert "encrypted_dek" not in normalized_sql
+    assert params == ("tenant_a",)
+
+
+def test_preview_tenant_retention_empty_and_boundary_cases(fake_db: FakeConnection) -> None:
+    now_ts = 1_700_000_000.0
+
+    # Empty tenant
+    empty = evidence_storage.preview_tenant_retention("tenant_empty", now=now_ts, ttl_seconds=60)
+    assert empty["blob_count"] == 0
+    assert empty["total_ref_count"] == 0
+    assert empty["total_size_bytes"] == 0
+    assert empty["eligible_for_deletion_count"] == 0
+    assert empty["retained_count"] == 0
+    assert empty["shared_blob_count"] == 0
+    assert empty["oldest_age_seconds"] is None
+    assert empty["newest_age_seconds"] is None
+    assert empty["average_age_seconds"] is None
+    assert empty["blobs"] == []
+
+    # Exact TTL boundary: age == ttl_seconds is eligible
+    evidence_storage.record_blob("hash_boundary", b"dek", 64, "/blobs/boundary")
+    fake_db.blobs["hash_boundary"]["created_at"] = now_ts - 60.0
+    evidence_storage.record_tenant_ref("tenant_bound", "hash_boundary")
+
+    boundary = evidence_storage.preview_tenant_retention(
+        "tenant_bound", now=now_ts, ttl_seconds=60
+    )
+    assert boundary["eligible_for_deletion_count"] == 1
+    assert boundary["blobs"][0]["deletion_eligible"] is True
+    assert boundary["blobs"][0]["deletion_ineligible_reason"] is None
+
+
+def test_preview_tenant_retention_rejects_invalid_inputs(fake_db: FakeConnection) -> None:
+    with pytest.raises(ValueError, match="tenant_id must be a non-empty string"):
+        evidence_storage.preview_tenant_retention("")
+
+    with pytest.raises(ValueError, match="tenant_id must be a non-empty string"):
+        evidence_storage.preview_tenant_retention("   ")
+
+    with pytest.raises(ValueError, match="ttl_seconds must be a non-negative number"):
+        evidence_storage.preview_tenant_retention("tenant_a", ttl_seconds=-1)
+
+    with pytest.raises(ValueError, match="ttl_seconds must be a non-negative number"):
+        evidence_storage.preview_tenant_retention("tenant_a", ttl_seconds=True)
 
 
 class EvidenceStorageUnittestSuite(unittest.TestCase):

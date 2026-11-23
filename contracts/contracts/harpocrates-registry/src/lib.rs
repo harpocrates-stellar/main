@@ -27,6 +27,52 @@ pub const SCHEMA_ID_REVOCATION_WITNESS: u32 = 2;
 /// enforce the appended circuit-version field without touching the v1 codec.
 pub const SCHEMA_ID_SILENT_WITNESS_V2: u32 = 3;
 
+/// Bounded compatibility entry for one accepted proof-statement schema.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofStatementSchemaDescriptor {
+    /// Numeric schema selector accepted by `classify_public_inputs`.
+    pub schema_id: u32,
+    /// Verifier-input codec version (`1` for `hpx-vi/1`, `2` for `hpx-vi/2`).
+    pub verifier_input_version: u32,
+    /// Circuit version associated with this schema.
+    pub circuit_version: u32,
+    /// Exact byte length of canonical public inputs for this schema.
+    pub public_inputs_len: u32,
+    /// Bitmask of critical fields supported by this schema.
+    pub supported_critical_fields: u32,
+}
+
+/// Bounded proof statement compatibility descriptor exposed by the registry.
+///
+/// Describes accepted schema selectors, verifier-input codec versions, active
+/// circuit-version bounds, proof-blob size bounds, and supported critical-field
+/// bitmasks. Unsupported critical fields always fail closed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofStatementCompatibilityDescriptor {
+    /// Format version of this compatibility descriptor.
+    pub descriptor_version: u32,
+    /// Lowest accepted verifier-input codec version (`hpx-vi/1` = 1).
+    pub min_verifier_input_version: u32,
+    /// Highest accepted verifier-input codec version (`hpx-vi/2` = 2).
+    pub max_verifier_input_version: u32,
+    /// Lowest circuit version currently accepted by the active verifier window.
+    pub min_circuit_version: u32,
+    /// Highest circuit version currently accepted by the active verifier window.
+    pub max_circuit_version: u32,
+    /// Minimum accepted proof-blob length in bytes.
+    pub min_proof_bytes: u32,
+    /// Maximum accepted proof-blob length in bytes.
+    pub max_proof_bytes: u32,
+    /// Union bitmask of all critical fields supported by this build.
+    pub supported_critical_fields: u32,
+    /// Always `true`: unknown or unsupported critical fields fail closed.
+    pub fail_closed_on_unknown_critical_fields: bool,
+    /// Bounded, deterministic list of accepted proof-statement schemas.
+    pub schemas: SorobanVec<ProofStatementSchemaDescriptor>,
+}
+
 /// Maximum Merkle depth for the `revocation_witness` circuit (#357).
 /// Must match `MAX_REVOCATION_WITNESS_DEPTH` in the Noir circuit and host tooling.
 /// Raising this value requires a new circuit version — do not change it silently.
@@ -374,6 +420,16 @@ pub struct VerifierState {
     pub overlap_window: u64,
     pub rollback_window: u64,
     pub rollback_window_end: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RolePolicy {
+    pub timelock_min_delay_secs: u64,
+    pub verifier: Option<Address>,
+    pub guardian: Option<Address>,
+    pub paused_domains: u32,
+    pub schema_version: u32,
 }
 
 /// Aggregate snapshot of the registry's operational configuration (#721).
@@ -1855,6 +1911,8 @@ pub enum DataKey {
     /// Pause record for a single registration domain bit (#87).
     Pause(u32),
     PendingAdmin,
+    /// Optional expiry timestamp (Unix seconds) for `PendingAdmin`.
+    PendingAdminExpiry,
     /// Merkle root of the credential-revocation tree (set by admin).
     RevocationRoot,
     ProofHistorySeq(BytesN<32>),
@@ -1877,6 +1935,10 @@ pub enum DataKey {
     ProposalSeq,
     /// Timelock proposal by sequential ID (#86).
     Proposal(u32),
+    /// Intent digest for a council proposal (#1184).
+    CouncilIntent(u32),
+    /// Intent digest for a timelock proposal (#1184).
+    TimelockIntent(u32),
     /// Minimum timelock delay in seconds (#86).
     TimelockMinDelay,
     /// Schema definition by schema hash.
@@ -2036,6 +2098,10 @@ pub enum RegistryError {
     LineageChildrenLimitExceeded = 79,
     /// Parent already holds MAX_LINEAGE_CHILDREN_PER_PARENT children (#335).
     LineageChildrenSaturated = 80,
+    /// Stored intent digest does not match the proposal's parameters (#1184).
+    IntentDigestMismatch = 90,
+    /// Proposal has no stored intent digest; refuse to execute (fail-closed) (#1184).
+    MissingIntentDigest = 91,
     /// Metadata envelope version is zero or above `METADATA_ENVELOPE_VERSION_MAX` (#317).
     UnsupportedMetadataEnvelopeVersion = 68,
     /// Metadata envelope hash is zero / malformed (#317).
@@ -2066,6 +2132,33 @@ pub enum RegistryError {
     ReporterDisputesSaturated = 88,
     /// The action requires admin council threshold approvals.
     InsufficientApprovals = 89,
+    /// Role invitation expiry duration was zero, above `MAX_ROLE_INVITATION_TTL_SECS`, or overflowed.
+    InvalidRoleInvitationExpiry = 90,
+    /// The pending role invitation has expired and can no longer be accepted.
+    RoleInvitationExpired = 91,
+}
+
+/// Maximum TTL for an expiring admin role invitation (30 days).
+pub const MAX_ROLE_INVITATION_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Lifecycle state of a pending role invitation.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoleInvitationStatus {
+    Nonexistent,
+    Active,
+    Expired,
+}
+
+/// Read-only view of the current admin role invitation and its expiry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleInvitationView {
+    pub status: RoleInvitationStatus,
+    pub pending_admin: Option<Address>,
+    /// Unix timestamp in seconds when the invitation expires, or `0` when
+    /// nonexistent or created without an expiry window.
+    pub expires_at: u64,
 }
 
 #[contract]
@@ -2073,6 +2166,30 @@ pub struct HarpocratesRegistry;
 
 #[contractimpl]
 impl HarpocratesRegistry {
+    pub fn get_role_policy_digest(env: Env) -> BytesN<32> {
+        let now = env.ledger().timestamp();
+        let mut paused_domains = 0u32;
+        for bit in PAUSE_DOMAIN_SINGLE_BITS {
+            if domain_is_paused(&env, bit, now) {
+                paused_domains |= bit;
+            }
+        }
+
+        let storage = env.storage().persistent();
+        let policy = RolePolicy {
+            timelock_min_delay_secs: storage.get::<_, u64>(&DataKey::TimelockMinDelay).unwrap_or(DEFAULT_TIMELOCK_MIN_DELAY_SECS),
+            verifier: storage.get::<_, Address>(&DataKey::Verifier),
+            guardian: storage.get::<_, Address>(&DataKey::Guardian),
+            paused_domains,
+            schema_version: storage.get::<_, u32>(&DataKey::SchemaVersion).unwrap_or(SchemaVersion::V1 as u32),
+        };
+        
+        let mut bytes = Bytes::new(&env);
+        bytes.push(0x01); // Version 1
+        bytes.append(&policy.to_xdr(&env));
+        env.crypto().sha256(&bytes)
+    }
+
     pub fn init(env: Env, admin: Address) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic_with_error!(&env, RegistryError::AlreadyInitialized);
@@ -2217,6 +2334,42 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdminExpiry);
+        AdminProposed {
+            pending_admin,
+            current_admin: admin,
+        }
+        .publish(&env);
+    }
+
+    /// Propose a pending admin with a bounded expiry window (`duration_secs`).
+    ///
+    /// The invitation is active while `ledger().timestamp() < expires_at` and
+    /// becomes expired once `ledger().timestamp() >= expires_at`.
+    pub fn propose_admin_with_expiry(
+        env: Env,
+        admin: Address,
+        pending_admin: Address,
+        duration_secs: u64,
+    ) {
+        require_admin(&env, &admin);
+        require_admin_role_available(&env, &pending_admin);
+
+        if duration_secs == 0 || duration_secs > MAX_ROLE_INVITATION_TTL_SECS {
+            panic_with_error!(&env, RegistryError::InvalidRoleInvitationExpiry);
+        }
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(duration_secs)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::InvalidRoleInvitationExpiry));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &pending_admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdminExpiry, &expires_at);
         AdminProposed {
             pending_admin,
             current_admin: admin,
@@ -2229,9 +2382,51 @@ impl HarpocratesRegistry {
         env.storage().persistent().get(&DataKey::Admin)
     }
 
-    /// Return the pending admin address, if an admin transfer is proposed.
+    /// Return the active pending admin address, or `None` if no invitation
+    /// exists or the invitation has expired. Read-only: never mutates state.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&DataKey::PendingAdmin)
+        let pending_admin: Address = env.storage().persistent().get(&DataKey::PendingAdmin)?;
+        let expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminExpiry)
+            .unwrap_or(0);
+        if expires_at != 0 && env.ledger().timestamp() >= expires_at {
+            None
+        } else {
+            Some(pending_admin)
+        }
+    }
+
+    /// Inspect the current admin role invitation status and expiry without
+    /// mutating contract state or performing hidden cleanup.
+    pub fn get_role_invitation(env: Env) -> RoleInvitationView {
+        let pending_admin: Option<Address> =
+            env.storage().persistent().get(&DataKey::PendingAdmin);
+        match pending_admin {
+            None => RoleInvitationView {
+                status: RoleInvitationStatus::Nonexistent,
+                pending_admin: None,
+                expires_at: 0,
+            },
+            Some(candidate) => {
+                let expires_at: u64 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::PendingAdminExpiry)
+                    .unwrap_or(0);
+                let status = if expires_at != 0 && env.ledger().timestamp() >= expires_at {
+                    RoleInvitationStatus::Expired
+                } else {
+                    RoleInvitationStatus::Active
+                };
+                RoleInvitationView {
+                    status,
+                    pending_admin: Some(candidate),
+                    expires_at,
+                }
+            }
+        }
     }
 
     /// Read-only: does `address` hold the registry administrator role?
@@ -2259,6 +2454,7 @@ impl HarpocratesRegistry {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingAdmin));
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminExpiry);
         AdminTransferCancelled {
             pending_admin,
             current_admin: admin,
@@ -2277,6 +2473,14 @@ impl HarpocratesRegistry {
         if proposed_admin != pending_admin {
             panic_with_error!(&env, RegistryError::Unauthorized);
         }
+        let expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminExpiry)
+            .unwrap_or(0);
+        if expires_at != 0 && env.ledger().timestamp() >= expires_at {
+            panic_with_error!(&env, RegistryError::RoleInvitationExpired);
+        }
         require_admin_role_available(&env, &pending_admin);
 
         let previous_admin: Address = env
@@ -2288,6 +2492,7 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminExpiry);
         AdminAccepted {
             new_admin: pending_admin,
             previous_admin,
@@ -2977,6 +3182,16 @@ impl HarpocratesRegistry {
             executed: false,
             cancelled: false,
         };
+        let intent = intent_digest(
+            &env,
+            TIMELOCK_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::TimelockIntent(proposal_id), &intent);
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
@@ -3029,6 +3244,23 @@ impl HarpocratesRegistry {
         if is_council_active(&env) && (proposal.action == 1 || proposal.action == 2) {
             panic_with_error!(&env, RegistryError::InsufficientApprovals);
         }
+        // Intent digest: bind execution to the approved parameters (#1184).
+        let stored_intent: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TimelockIntent(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::MissingIntentDigest));
+        let recomputed = intent_digest(
+            &env,
+            TIMELOCK_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        if recomputed != stored_intent {
+            panic_with_error!(&env, RegistryError::IntentDigestMismatch);
+        }
+
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -3057,6 +3289,23 @@ impl HarpocratesRegistry {
         if proposal.action == ProposalAction::UpgradeWasm as u32 {
             panic_with_error!(&env, RegistryError::InvalidProposalAction);
         }
+        // Intent digest: the emergency path is not a bypass (#1184).
+        let stored_intent: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TimelockIntent(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::MissingIntentDigest));
+        let recomputed = intent_digest(
+            &env,
+            TIMELOCK_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        if recomputed != stored_intent {
+            panic_with_error!(&env, RegistryError::IntentDigestMismatch);
+        }
+
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -3302,6 +3551,16 @@ impl HarpocratesRegistry {
             cancelled: false,
         };
 
+        let intent = intent_digest(
+            &env,
+            COUNCIL_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::CouncilIntent(proposal_id), &intent);
         env.storage()
             .persistent()
             .set(&DataKey::CouncilProposal(proposal_id), &proposal);
@@ -3394,6 +3653,23 @@ impl HarpocratesRegistry {
         // Threshold enforcement
         if proposal.approvals.len() < council.threshold {
             panic_with_error!(&env, RegistryError::InsufficientApprovals);
+        }
+
+        // Intent digest: bind execution to the approved parameters (#1184).
+        let stored_intent: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CouncilIntent(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::MissingIntentDigest));
+        let recomputed = intent_digest(
+            &env,
+            COUNCIL_INTENT_DOMAIN,
+            proposal.action,
+            &proposal.target,
+            &proposal.payload,
+        );
+        if recomputed != stored_intent {
+            panic_with_error!(&env, RegistryError::IntentDigestMismatch);
         }
 
         proposal.executed = true;
@@ -5588,6 +5864,83 @@ impl HarpocratesRegistry {
             Ok(()) => verifier_inputs::ACCEPTED_CODE,
             Err(code) => code.as_code(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof statement compatibility descriptor
+    // -----------------------------------------------------------------------
+
+    /// Return the bounded proof statement compatibility descriptor for this
+    /// registry deployment.
+    ///
+    /// Read-only, side-effect free, and bounded: describes the accepted schema
+    /// selectors, verifier-input codec versions, active circuit-version window,
+    /// proof-blob size window, and supported critical-field bitmasks. Safe to
+    /// call without authentication and while any registration domain is paused.
+    /// No private witness values, nullifiers, or media commitments are surfaced.
+    pub fn get_proof_statement_compatibility(env: Env) -> ProofStatementCompatibilityDescriptor {
+        let (min_circuit_version, max_circuit_version) = get_verifier_circuit_versions_raw(&env);
+        let mut schemas: SorobanVec<ProofStatementSchemaDescriptor> = SorobanVec::new(&env);
+        for entry in verifier_inputs::SUPPORTED_SCHEMAS.iter() {
+            schemas.push_back(ProofStatementSchemaDescriptor {
+                schema_id: entry.schema_id,
+                verifier_input_version: entry.verifier_input_version,
+                circuit_version: entry.circuit_version,
+                public_inputs_len: entry.public_inputs_len,
+                supported_critical_fields: entry.supported_critical_fields,
+            });
+        }
+
+        ProofStatementCompatibilityDescriptor {
+            descriptor_version: verifier_inputs::COMPATIBILITY_DESCRIPTOR_VERSION,
+            min_verifier_input_version: verifier_inputs::MIN_VERIFIER_INPUT_VERSION,
+            max_verifier_input_version: verifier_inputs::MAX_VERIFIER_INPUT_VERSION,
+            min_circuit_version,
+            max_circuit_version,
+            min_proof_bytes: verifier_inputs::MIN_PROOF_BYTES,
+            max_proof_bytes: verifier_inputs::MAX_PROOF_BYTES,
+            supported_critical_fields: verifier_inputs::CRITICAL_FIELDS_ALL_SUPPORTED,
+            fail_closed_on_unknown_critical_fields: true,
+            schemas,
+        }
+    }
+
+    /// Fail-closed pre-flight check for a proof statement's schema selector,
+    /// verifier-input codec version, active circuit-version window, and
+    /// required critical-field bitmask.
+    ///
+    /// Returns [`verifier_inputs::ACCEPTED_CODE`] (`0`) when compatible, or
+    /// the stable [`RejectCode::as_code`] value otherwise:
+    /// - [`RejectCode::UnknownSchema`] (`9`) for unknown `schema_id`
+    /// - [`RejectCode::VersionMismatch`] (`10`) for mismatched
+    ///   `verifier_input_version` or a schema whose circuit version falls
+    ///   outside the active verifier's circuit-version window
+    /// - [`RejectCode::UnsupportedCriticalField`] (`11`) when any bit in
+    ///   `required_critical_fields` is not supported by the selected schema
+    ///   (fail-closed on unknown or cross-schema critical fields)
+    pub fn check_proof_statement_compatibility(
+        env: Env,
+        schema_id: u32,
+        verifier_input_version: u32,
+        required_critical_fields: u32,
+    ) -> u32 {
+        let entry = match verifier_inputs::check_statement_compatibility(
+            schema_id,
+            verifier_input_version,
+            required_critical_fields,
+        ) {
+            Ok(entry) => entry,
+            Err(code) => return code.as_code(),
+        };
+
+        let (min_circuit_version, max_circuit_version) = get_verifier_circuit_versions_raw(&env);
+        if entry.circuit_version < min_circuit_version
+            || entry.circuit_version > max_circuit_version
+        {
+            return RejectCode::VersionMismatch.as_code();
+        }
+
+        verifier_inputs::ACCEPTED_CODE
     }
 
     // -----------------------------------------------------------------------
@@ -7830,6 +8183,37 @@ fn count_pending_proposals(env: &Env) -> u32 {
         }
     }
     pending
+}
+
+
+// ---------------------------------------------------------------------------
+// Role-change intent digest (#1184)
+// ---------------------------------------------------------------------------
+//
+// A queued privileged transition binds its approved (action, target, payload)
+// tuple with an intent digest computed at propose time and stored alongside
+// the proposal. Execute paths recompute the digest from the freshly loaded
+// proposal and reject any mismatch before dispatch, so a substituted target
+// role cannot be applied. Council and timelock use distinct domains so a
+// council intent cannot be replayed as a timelock intent.
+
+const COUNCIL_INTENT_DOMAIN: &[u8] = b"harpocrates.council.intent.v1";
+const TIMELOCK_INTENT_DOMAIN: &[u8] = b"harpocrates.timelock.intent.v1";
+
+fn intent_digest(
+    env: &Env,
+    domain: &[u8],
+    action: u32,
+    target: &Address,
+    payload: &BytesN<32>,
+) -> BytesN<32> {
+    let mut pre = Bytes::new(env);
+    pre.extend_from_slice(domain);
+    pre.extend_from_slice(&action.to_be_bytes());
+    let target_xdr = target.clone().to_xdr(env);
+    pre.append(&target_xdr);
+    pre.append(payload);
+    env.crypto().sha256(&pre).into()
 }
 
 fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {

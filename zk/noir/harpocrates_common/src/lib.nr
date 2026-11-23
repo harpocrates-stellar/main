@@ -12,6 +12,8 @@ pub global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82
 pub global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
 pub global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
 
+// Verifier scope and epoch are intentionally bound by the scoped nullifier,
+// not the deployment-level protocol/version/network tag.
 pub fn expected_domain_tag() -> Field {
     std::hash::pedersen_hash([
         DOMAIN_PROTOCOL_FIELD,

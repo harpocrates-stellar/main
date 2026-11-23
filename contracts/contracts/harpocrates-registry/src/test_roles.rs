@@ -6,7 +6,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    vec, Address, BytesN, Env, IntoVal, Symbol,
+    Address, BytesN, Env, IntoVal, Symbol,
 };
 
 fn b32(env: &Env, value: u8) -> BytesN<32> {
@@ -343,200 +343,198 @@ fn update_issuer_metadata_fails_for_non_admin_caller() {
     client.update_issuer_metadata(&stranger, &issuer, &b32(&env, 0x33));
 }
 
+
 // ---------------------------------------------------------------------------
-// Institutional role revocation readiness report tests (#1193)
+// Role-change intent digest (#1184)
 // ---------------------------------------------------------------------------
+//
+// The digest binds the approved (action, target, payload) tuple. These tests
+// prove that a substitute target/action/payload at execute time reverts with
+// IntentDigestMismatch (90), a missing digest reverts with
+// MissingIntentDigest (91), and the emergency timelock path is not a bypass.
 
 #[test]
-fn test_readiness_report_for_unregistered_account_is_cleanly_not_ready() {
-    let (env, contract_id, _admin) = setup();
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    let unknown = Address::generate(&env);
-
-    let report = client.get_role_revocation_readiness(&unknown);
-    assert_eq!(report.role, unknown);
-    assert_eq!(report.role_address(), &unknown);
-    assert!(!report.is_issuer);
-    assert!(!report.is_active_issuer);
-    assert!(!report.is_council_member);
-    assert!(!report.is_admin);
-    assert_eq!(report.delegations_affected, 0);
-    assert_eq!(report.outstanding_approvals, 0);
-    assert_eq!(report.pending_revocation_proposals, 0);
-    assert_eq!(report.revocation_proposal_approvals, 0);
-    assert!(!report.has_active_rotation_grace);
-    assert!(!report.council_governance_active);
-    assert!(!report.revocation_ready);
-    assert!(!report.is_ready());
-
-    // Alias produces identical report
-    let alias_report = client.get_institutional_role_revocation_readiness(&unknown);
-    assert_eq!(report, alias_report);
-}
-
-#[test]
-fn test_readiness_report_for_active_issuer_single_admin_policy() {
-    let (env, contract_id, admin) = setup();
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    let issuer = Address::generate(&env);
-
-    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
-
-    let report = client.get_role_revocation_readiness(&issuer);
-    assert_eq!(report.role, issuer);
-    assert!(report.is_issuer);
-    assert!(report.is_active_issuer);
-    assert!(!report.is_council_member);
-    assert!(!report.is_admin);
-    assert_eq!(report.delegations_affected, 0);
-    assert_eq!(report.outstanding_approvals, 0);
-    assert_eq!(report.pending_revocation_proposals, 0);
-    assert_eq!(report.revocation_proposal_approvals, 0);
-    assert!(!report.has_active_rotation_grace);
-    assert!(!report.council_governance_active);
-    assert!(report.revocation_ready);
-    assert!(report.is_ready());
-}
-
-#[test]
-fn test_readiness_report_identifies_affected_delegations_and_post_revocation_state() {
-    let (env, contract_id, admin) = setup();
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    let issuer = Address::generate(&env);
-    let delegate1 = Address::generate(&env);
-    let delegate2 = Address::generate(&env);
-
-    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
-    client.grant_delegation(&issuer, &delegate1, &DELEGATION_SCOPE_REGISTER_SEAL, &3600);
-    client.grant_delegation(&issuer, &delegate2, &DELEGATION_SCOPE_REGISTER_SEAL, &7200);
-
-    let report = client.get_role_revocation_readiness(&issuer);
-    assert!(report.is_active_issuer);
-    assert_eq!(report.delegations_affected, 2);
-    assert!(report.revocation_ready);
-
-    // Revoke issuer
-    client.revoke_issuer(&admin, &issuer);
-
-    let post_report = client.get_role_revocation_readiness(&issuer);
-    assert!(post_report.is_issuer);
-    assert!(!post_report.is_active_issuer);
-    assert_eq!(post_report.delegations_affected, 2);
-    assert!(!post_report.revocation_ready);
-}
-
-#[test]
-fn test_readiness_report_identifies_active_rotation_grace() {
-    let (env, contract_id, admin) = setup();
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    let previous_issuer = Address::generate(&env);
-    let replacement_issuer = Address::generate(&env);
-
-    client.add_issuer(&admin, &previous_issuer, &b32(&env, 0xA1));
-    client.rotate_issuer(
-        &admin,
-        &previous_issuer,
-        &replacement_issuer,
-        &b32(&env, 0xA2),
-        &86_400,
-    );
-
-    let report = client.get_role_revocation_readiness(&previous_issuer);
-    assert!(report.is_issuer);
-    assert!(!report.is_active_issuer);
-    assert!(report.has_active_rotation_grace);
-    assert!(!report.revocation_ready);
-
-    let repl_report = client.get_role_revocation_readiness(&replacement_issuer);
-    assert!(repl_report.is_issuer);
-    assert!(repl_report.is_active_issuer);
-    assert!(!repl_report.has_active_rotation_grace);
-    assert!(repl_report.revocation_ready);
-}
-
-#[test]
-fn test_readiness_report_preserves_council_revocation_policy_and_approvals() {
-    let (env, contract_id, admin) = setup();
-    let client = HarpocratesRegistryClient::new(&env, &contract_id);
-    let issuer = Address::generate(&env);
-    let m1 = Address::generate(&env);
-    let m2 = Address::generate(&env);
-    let m3 = Address::generate(&env);
-
-    client.add_issuer(&admin, &issuer, &b32(&env, 0xA1));
-
-    // Configure 2-of-3 council and advance time past delay
-    let members = vec![&env, m1.clone(), m2.clone(), m3.clone()];
-    client.set_admin_council(&admin, &members, &2);
-    env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
-
-    // With active council, single-admin direct revocation is blocked
-    let report_before = client.get_role_revocation_readiness(&issuer);
-    assert!(report_before.council_governance_active);
-    assert_eq!(report_before.pending_revocation_proposals, 0);
-    assert_eq!(report_before.revocation_proposal_approvals, 0);
-    assert!(!report_before.revocation_ready, "cannot revoke directly under active council");
-
-    // Council member m1 proposes revocation
-    let proposal_id = client.create_council_proposal(
-        &m1,
-        &(CouncilAction::RevokeIssuer as u32),
-        &issuer,
-        &b32(&env, 0x00),
-        &86_400,
-    );
-
-    // Proposal created: 1 approval, threshold 2 not met
-    let report_proposed = client.get_role_revocation_readiness(&issuer);
-    assert_eq!(report_proposed.pending_revocation_proposals, 1);
-    assert_eq!(report_proposed.revocation_proposal_approvals, 1);
-    assert!(!report_proposed.revocation_ready, "threshold 2 not yet met");
-
-    // Council member m2 approves proposal: threshold 2 met!
-    client.approve_council_proposal(&m2, &proposal_id);
-    let report_approved = client.get_role_revocation_readiness(&issuer);
-    assert_eq!(report_approved.pending_revocation_proposals, 1);
-    assert_eq!(report_approved.revocation_proposal_approvals, 2);
-    assert!(report_approved.revocation_ready, "threshold met, ready for execution");
-
-    // Execute proposal
-    client.execute_council_proposal(&m1, &proposal_id);
-    let report_after = client.get_role_revocation_readiness(&issuer);
-    assert!(!report_after.is_active_issuer);
-    assert_eq!(report_after.pending_revocation_proposals, 0);
-    assert!(!report_after.revocation_ready);
-}
-
-#[test]
-fn test_readiness_report_identifies_council_member_outstanding_approvals() {
+fn council_intent_digest_happy_path_sets_verifier() {
     let (env, contract_id, admin) = setup();
     let client = HarpocratesRegistryClient::new(&env, &contract_id);
     let m1 = Address::generate(&env);
     let m2 = Address::generate(&env);
-    let verifier = Address::generate(&env);
+    let mut members = SorobanVec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    client.set_admin_council(&admin, &members, &2u32);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_council_action(&m1, &1u32, &target, &payload);
+    client.approve_council_proposal(&m1, &id);
+    client.approve_council_proposal(&m2, &id);
+    client.execute_council_proposal(&m2, &id);
+    assert_eq!(client.get_verifier(), Some(target));
+}
 
-    let members = vec![&env, m1.clone(), m2.clone()];
-    client.set_admin_council(&admin, &members, &2);
-    env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_TIMELOCK_MIN_DELAY_SECS + 1);
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn council_execute_rejects_substituted_target() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let mut members = SorobanVec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    client.set_admin_council(&admin, &members, &2u32);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_council_action(&m1, &1u32, &target, &payload);
+    client.approve_council_proposal(&m1, &id);
+    client.approve_council_proposal(&m2, &id);
+    // Attacker substitutes the target on the stored proposal.
+    env.as_contract(&contract_id, || {
+        let mut p: CouncilProposal = env.storage().persistent().get(&DataKey::CouncilProposal(id)).unwrap();
+        p.target = Address::generate(&env);
+        env.storage().persistent().set(&DataKey::CouncilProposal(id), &p);
+    });
+    client.execute_council_proposal(&m2, &id);
+}
 
-    let report_initial = client.get_role_revocation_readiness(&m1);
-    assert!(report_initial.is_council_member);
-    assert_eq!(report_initial.outstanding_approvals, 0);
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn council_execute_rejects_substituted_payload() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let mut members = SorobanVec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    client.set_admin_council(&admin, &members, &2u32);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_council_action(&m1, &1u32, &target, &payload);
+    client.approve_council_proposal(&m1, &id);
+    client.approve_council_proposal(&m2, &id);
+    env.as_contract(&contract_id, || {
+        let mut p: CouncilProposal = env.storage().persistent().get(&DataKey::CouncilProposal(id)).unwrap();
+        p.payload = b32(&env, 0xFF);
+        env.storage().persistent().set(&DataKey::CouncilProposal(id), &p);
+    });
+    client.execute_council_proposal(&m2, &id);
+}
 
-    // m1 proposes an action
-    let proposal_id = client.create_council_proposal(
-        &m1,
-        &(CouncilAction::SetVerifier as u32),
-        &verifier,
-        &b32(&env, 0x00),
-        &86_400,
-    );
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn council_execute_rejects_substituted_action() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let mut members = SorobanVec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    client.set_admin_council(&admin, &members, &2u32);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_council_action(&m1, &1u32, &target, &payload);
+    client.approve_council_proposal(&m1, &id);
+    client.approve_council_proposal(&m2, &id);
+    env.as_contract(&contract_id, || {
+        let mut p: CouncilProposal = env.storage().persistent().get(&DataKey::CouncilProposal(id)).unwrap();
+        p.action = 2u32;
+        env.storage().persistent().set(&DataKey::CouncilProposal(id), &p);
+    });
+    client.execute_council_proposal(&m2, &id);
+}
 
-    let report_active = client.get_role_revocation_readiness(&m1);
-    assert_eq!(report_active.outstanding_approvals, 1);
+#[test]
+#[should_panic(expected = "Error(Contract, #91)")]
+fn council_execute_rejects_missing_intent() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let mut members = SorobanVec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    client.set_admin_council(&admin, &members, &2u32);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_council_action(&m1, &1u32, &target, &payload);
+    client.approve_council_proposal(&m1, &id);
+    client.approve_council_proposal(&m2, &id);
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().remove(&DataKey::CouncilIntent(id));
+    });
+    client.execute_council_proposal(&m2, &id);
+}
 
-    // Cancel proposal -> outstanding approvals drops to 0
-    client.cancel_council_proposal(&m1, &proposal_id);
-    let report_cancelled = client.get_role_revocation_readiness(&m1);
-    assert_eq!(report_cancelled.outstanding_approvals, 0);
+#[test]
+fn timelock_intent_digest_happy_path() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_timelocked_action(&admin, &1u32, &target, &payload);
+    let delay = client.get_timelock_min_delay();
+    env.ledger().set_timestamp(1_000 + delay + 1);
+    client.execute_timelocked_proposal(&admin, &id);
+    assert_eq!(client.get_verifier(), Some(target));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn timelock_execute_rejects_substituted_target() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_timelocked_action(&admin, &1u32, &target, &payload);
+    let delay = client.get_timelock_min_delay();
+    env.ledger().set_timestamp(1_000 + delay + 1);
+    env.as_contract(&contract_id, || {
+        let mut p: TimelockProposal = env.storage().persistent().get(&DataKey::Proposal(id)).unwrap();
+        p.target = Address::generate(&env);
+        env.storage().persistent().set(&DataKey::Proposal(id), &p);
+    });
+    client.execute_timelocked_proposal(&admin, &id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #91)")]
+fn timelock_execute_rejects_missing_intent() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_timelocked_action(&admin, &1u32, &target, &payload);
+    let delay = client.get_timelock_min_delay();
+    env.ledger().set_timestamp(1_000 + delay + 1);
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().remove(&DataKey::TimelockIntent(id));
+    });
+    client.execute_timelocked_proposal(&admin, &id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #90)")]
+fn emergency_timelock_execute_rejects_substituted_target() {
+    let (env, contract_id, admin) = setup();
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let payload = b32(&env, 0x01);
+    let id = client.propose_timelocked_action(&admin, &1u32, &target, &payload);
+    env.as_contract(&contract_id, || {
+        let mut p: TimelockProposal = env.storage().persistent().get(&DataKey::Proposal(id)).unwrap();
+        p.target = Address::generate(&env);
+        env.storage().persistent().set(&DataKey::Proposal(id), &p);
+    });
+    client.emergency_execute_timelock(&admin, &id);
 }

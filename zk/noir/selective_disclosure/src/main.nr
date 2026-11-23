@@ -3,6 +3,7 @@ use std::hash::pedersen_hash;
 global MAX_ATTRIBUTES: u32 = 16;
 global MAX_PREDICATES: u32 = 8;
 global MAX_SET_MEMBERS: u32 = 8;
+global MAX_INTERVALS: u32 = 4;
 global CURRENT_CIRCUIT_VERSION: u32 = 1;
 
 unconstrained fn eq_predicate_type() -> Field {
@@ -17,12 +18,22 @@ unconstrained fn range_predicate_type() -> Field {
     2
 }
 
+unconstrained fn interval_intersection_predicate_type() -> Field {
+    3
+}
+
+unconstrained fn interval_intersection_exclusive_predicate_type() -> Field {
+    4
+}
+
 fn assert_valid_predicate_type(predicate_type: Field, is_active: bool) {
     let is_eq = predicate_type == eq_predicate_type();
     let is_set = predicate_type == set_membership_predicate_type();
     let is_range = predicate_type == range_predicate_type();
+    let is_int_incl = predicate_type == interval_intersection_predicate_type();
+    let is_int_excl = predicate_type == interval_intersection_exclusive_predicate_type();
     assert(
-        !is_active | (is_eq | is_set | is_range),
+        !is_active | (is_eq | is_set | is_range | is_int_incl | is_int_excl),
         "unsupported predicate type",
     );
 }
@@ -76,6 +87,16 @@ fn verify_predicate(
     let range_upper_valid = attr_value <= upper_bound;
     assert(!(is_active & is_range) | range_lower_valid, "malformed");
     assert(!(is_active & is_range) | range_upper_valid, "malformed");
+
+    let is_int_incl = predicate_type == interval_intersection_predicate_type();
+    let is_int_excl = predicate_type == interval_intersection_exclusive_predicate_type();
+    for i in 0..MAX_INTERVALS {
+        let is_slot_active = i < set_len;
+        let lo = set_values[2 * i];
+        let hi = set_values[2 * i + 1];
+        assert(!(is_active & is_slot_active & is_int_incl) | ((attr_value >= lo) & (attr_value <= hi)), "malformed");
+        assert(!(is_active & is_slot_active & is_int_excl) | ((attr_value > lo) & (attr_value < hi)), "malformed");
+    }
 }
 
 fn compute_predicate_commitment(
@@ -150,6 +171,14 @@ fn main(
         let set_len_valid = predicates[i].set_len <= MAX_SET_MEMBERS;
         assert(!check_set | set_len_gt_0, "malformed");
         assert(!check_set | set_len_valid, "oversized");
+
+        let is_int_incl = predicates[i].predicate_type == interval_intersection_predicate_type();
+        let is_int_excl = predicates[i].predicate_type == interval_intersection_exclusive_predicate_type();
+        let check_intersection = is_active & (is_int_incl | is_int_excl);
+        let int_len_gt_0 = predicates[i].set_len > 0;
+        let int_len_valid = predicates[i].set_len <= MAX_INTERVALS;
+        assert(!check_intersection | int_len_gt_0, "malformed");
+        assert(!check_intersection | int_len_valid, "oversized");
     }
 
     let mut commitments: [Field; MAX_ATTRIBUTES] = [0; MAX_ATTRIBUTES];
@@ -565,6 +594,48 @@ fn test_too_many_predicates() {
         preds,
         true,
     );
+}
+
+#[test]
+fn test_valid_interval_intersection_inclusive() {
+    let mut preds = default_padding_predicates();
+    preds[0] = make_predicate(3, 0, 0, [10, 20, 15, 25, 0, 0, 0, 0], 2, 0, 0);
+    run_test(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef, 2, default_attr_values(), default_blindings(), 1, preds, false);
+}
+
+#[test]
+fn test_interval_intersection_inclusive_lower_boundary() {
+    let mut preds = default_padding_predicates();
+    preds[0] = make_predicate(3, 0, 0, [10, 25, 18, 30, 0, 0, 0, 0], 2, 0, 0);
+    run_test(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef, 2, default_attr_values(), default_blindings(), 1, preds, false);
+}
+
+#[test]
+fn test_valid_interval_intersection_exclusive() {
+    let mut preds = default_padding_predicates();
+    preds[0] = make_predicate(4, 0, 0, [10, 25, 15, 30, 0, 0, 0, 0], 2, 0, 0);
+    run_test(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef, 2, default_attr_values(), default_blindings(), 1, preds, false);
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_interval_intersection_exclusive_boundary_rejected() {
+    let mut preds = default_padding_predicates();
+    preds[0] = make_predicate(4, 0, 0, [10, 25, 18, 30, 0, 0, 0, 0], 2, 0, 0);
+    run_test(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef, 2, default_attr_values(), default_blindings(), 1, preds, true);
+}
+
+#[test(should_fail_with = "malformed")]
+fn test_interval_intersection_empty_rejected() {
+    let mut preds = default_padding_predicates();
+    preds[0] = make_predicate(3, 0, 0, [0, 5, 10, 15, 0, 0, 0, 0], 2, 0, 0);
+    run_test(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef, 2, default_attr_values(), default_blindings(), 1, preds, true);
+}
+
+#[test(should_fail_with = "oversized")]
+fn test_interval_intersection_oversized_rejected() {
+    let mut preds = default_padding_predicates();
+    preds[0] = make_predicate(3, 0, 0, [0, 100, 5, 95, 10, 90, 15, 85], 5, 0, 0);
+    run_test(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef, 2, default_attr_values(), default_blindings(), 1, preds, true);
 }
 
 #[test(should_fail_with = "unsupported predicate type")]

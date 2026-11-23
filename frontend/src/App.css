@@ -1553,6 +1553,59 @@ code {
   line-height: 1.45;
 }
 
+.network-mismatch-recovery__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  flex: 1;
+}
+
+.network-mismatch-recovery__title {
+  font-size: 0.9rem;
+  color: #ffe28a;
+}
+
+.network-mismatch-recovery__reason,
+.network-mismatch-recovery__error {
+  margin: 0;
+}
+
+.network-mismatch-recovery__details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.5rem;
+  margin: 0.15rem 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.network-mismatch-recovery__details dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+.network-mismatch-recovery__details dd {
+  margin: 0.1rem 0 0;
+  font-weight: 600;
+}
+
+.network-mismatch-recovery__steps {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.network-mismatch-recovery__error {
+  color: #ffb3a7;
+  font-weight: 500;
+}
+
+.network-mismatch-recovery__actions {
+  margin-top: 0.25rem;
+}
+
 .release-compatibility-banner {
   justify-content: space-between;
   align-items: center;

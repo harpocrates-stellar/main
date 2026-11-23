@@ -209,6 +209,24 @@ bbup
 
 Circuit artifact building, proof generation, and verification key management are driven by `zk/tools/build_circuits.py`. Toolchain versions, the hermetic environment, artifact normalization rules, and resource limits are pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json).
 
+The cross-circuit public-input compatibility report checks the actual `main`
+public-input order and `Field` types for Silent Witness, redacted ancestry, and
+selective disclosure, then reports encodings for identically named public
+fields. Run it from the repository root:
+
+```bash
+python zk/tools/public_input_compatibility.py
+```
+
+The command prints JSON and exits nonzero if a circuit's public-input order has
+drifted, a shared field lacks an encoding declaration, or an encoding difference
+does not exactly match its reviewed entry in `zk/tools/public_input_compatibility.py`.
+The current reviewed differences are the credential-root derivation, nullifier
+derivations, and public circuit-version values. Video-hash halves and the domain
+tag use the same encodings where they are shared. A new or changed difference
+must be reviewed and recorded explicitly; the report does not normalize values
+or imply that fields with the same name are interchangeable.
+
 ```bash
 # Unified driver commands:
 python zk/tools/build_circuits.py build               # double build + compare, write manifest
@@ -259,6 +277,24 @@ The public-input codec shared by the backend, browser, and Soroban registry is
 pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_conformance_v1.json).
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
+
+## Protocol domain separation
+
+[`fixtures/protocol_domain_separation_vectors.json`](fixtures/protocol_domain_separation_vectors.json)
+publishes independently derived Pedersen vectors for the configured protocol,
+domain-version, and network fields, plus rejected one-field replay mutations
+and scope-specific nullifiers. The baseline has one configured deployment
+tuple; the frontend's `testnet` / `mainnet` descriptor strings are not separate
+Noir field configurations. Verifier scope and epoch are intentionally bound in
+the scoped-nullifier derivation, not in the deployment-level `domain_tag`.
+`DOMAIN_VERSION_FIELD` and the proof-envelope `circuit_version` are independent
+axes; the latter is constrained by `CURRENT_CIRCUIT_VERSION`.
+
+The vector tags were calculated using the pinned `@aztec/bb.js` 0.87.0
+Pedersen implementation, separately from `expected_domain_tag()` in Noir. The
+Silent Witness tests pin the canonical vector, reject alternate protocol,
+domain-version, and network tags, and prove that a nullifier from one verifier
+scope cannot be reused in another.
 
 ## Build
 

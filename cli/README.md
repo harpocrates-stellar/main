@@ -61,8 +61,7 @@ only when `--receipt` is supplied, never a fabricated `valid`), and
 `hirpocrates.export.v1` (`unsigned: true`). It contains only public manifest
 and registry fields; it never carries media bytes, witness values, secrets,
 proof bytes, or signing keys, and the exporter never signs. Out-of-band you
-sign the result with your own C2PA signer. Missing `--manifest` exits 2;
-malformed, unsupported, or unreadable input exits 8. The export is
+sign the result with your own C2PA signer. Missing `--manifest` or an `--output` path that resolves to the same file as an input path (including symlink aliases) exits 2 without modifying the input file; malformed, unsupported, or unreadable input exits 8. The export is
 deterministic, so the same manifest and receipt always produce the same bytes
 (reproducible in CI via `devx/validate_c2pa_fixture.py`).
 
@@ -84,11 +83,12 @@ Script authors and CI integrations can rely on the following exit codes to deter
 | `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
 | `4` | `network_mismatch` | `verify` |
 | `5` | `contract_mismatch` | `verify` |
-| `6` | `pending` (offline verification) | `verify` |
-| `7` | `failed` transaction | `verify` |
-| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `6` | `incomplete` / `pending` (offline verification, skipped required checks, or bounded lineage traversal) | `verify`, `verify-lineage`, batch verification |
+| `7` | `invalid` / `failed` (failed transaction, invalid signed receipt, disputed ancestor, or lineage cycle) | `verify`, `verify-receipt`, `verify-lineage`, batch verification |
+| `8` | `error` (malformed input, unreadable file, internal error) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+| `9` | `unavailable` (RPC timeout, unreachable network, or verification dependency failure) | `verify`, `status`, `verify-lineage`, batch verification |
 
-An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
+An offline verification exits `6` (`incomplete` / `pending`): it checks syntax and deployment binding but **cannot** establish on-chain validity. Skipped required checks (including empty batch runs or lineage graphs truncated by depth/fan-out bounds) never exit `0`. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) or unreachable dependency exits `9` (`unavailable`), distinct from invalid verification (`7`) and malformed input (`8`).
 
 Harpocrates CLI environment variables:
 
@@ -107,7 +107,15 @@ contains only public manifest and registry fields, but hashes and addresses
 can still be sensitive in context; restrict receipt access accordingly.
 
 Manifest v2 adds `verifierScope` and `epoch`, matching the frontend. V1 input
-remains readable, without silently upgrading its version. Existing v1 receipt
+remains readable, without silently upgrading its version.
+
+Unknown optional manifest extensions are preserved during normalization. An
+extension is carried through verbatim (round-trip compatible) under its
+original key and never alters the critical statement identity fields used for
+the manifest hash and registry binding. Extensions marked as required
+(`required: true`) with semantics this CLI does not support are rejected with
+exit code `8` (`error`) rather than silently dropped, so verification fails
+closed. Missing or supported optional extensions behave as before. Existing v1 receipt
 shape and exit-code mapping remain unchanged. For rollback, deploy the prior
 CLI build; no chain, metadata, or registry migration is required. The trust
 boundary is the selected Stellar RPC and local clock (used to detect elapsed
