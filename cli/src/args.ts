@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util'
 export type Command =
   | 'verify'
   | 'status'
+  | 'check-compat'
   | 'manifest'
   | 'hash'
   | 'verify-receipt'
@@ -66,6 +67,14 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     rpcUrl: text,
     'source-address': text,
     sourceAddress: text,
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
+  'check-compat': {
+    manifest: alias('m'),
+    'contract-id': text,
+    contractId: text,
     network: text,
     output: alias('o'),
     debug: toggle,

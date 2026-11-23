@@ -60,6 +60,9 @@ classify_cli_error = lambda x: x
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 """Legacy payload-limit code retained for compatibility (413)."""
 
+UPLOAD_TERMINATED_PREMATURELY = "UPLOAD_TERMINATED_PREMATURELY"
+"""The client disconnected or the upload stream ended before completion (400)."""
+
 STEGO_LIMIT_EXCEEDED = "STEGO_LIMIT_EXCEEDED"
 """Steganography processing exceeded configured memory or CPU limits (413)."""
 
@@ -83,6 +86,15 @@ FORBIDDEN = "FORBIDDEN"
 
 DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
 """A required backing service failed; the request was rejected, not applied (503)."""
+
+STORAGE_QUOTA_EXHAUSTED = "STORAGE_QUOTA_EXHAUSTED"
+"""Storage capacity or configured byte quota is exhausted; retryable operational condition (507)."""
+
+EVIDENCE_CORRUPTED = "EVIDENCE_CORRUPTED"
+"""Stored evidence failed cryptographic authentication or digest verification (422)."""
+
+STORAGE_IO_UNAVAILABLE = "STORAGE_IO_UNAVAILABLE"
+"""A non-quota, non-corruption storage I/O error occurred; retryable operational condition (503)."""
 
 FORBIDDEN_ORIGIN = "FORBIDDEN_ORIGIN"
 """The request's Origin is not on the configured CORS allow-list (403).

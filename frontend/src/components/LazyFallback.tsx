@@ -14,12 +14,13 @@ export function LazyFallback({ label = 'Loading workspace' }: LazyFallbackProps)
   return (
     <div
       ref={ref}
+      data-testid="lazy-workspace-loading"
       className="lazy-fallback"
       role="status"
       aria-live="polite"
       aria-busy="true"
       aria-label={label}
-      tabPolinter="-1"
+      tabIndex={-1}
       style={{
         display: 'flex',
         alignItems: 'center',

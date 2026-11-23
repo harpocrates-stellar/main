@@ -5,6 +5,9 @@ import { CircuitInputError } from './circuitInputSchema'
 type BrowserArtifactEntry = {
   path: string
   raw_bytes?: number
+  normalized_bytes?: number
+  role?: string
+  kind?: string
 }
 
 type JsonResponseLike = {
@@ -24,6 +27,67 @@ export type ProofWorkerMemoryUsage = {
   secretBytes?: number | null
 }
 
+export type ProofWorkerExecutionMode =
+  | 'multithreaded'
+  | 'single-threaded-fallback'
+  | 'rejected'
+
+export type ProofWorkerAdmissionReasonCode =
+  | 'admitted'
+  | 'fallback_single_thread_not_isolated'
+  | 'fallback_single_thread_low_concurrency'
+  | 'fallback_single_thread_memory_constrained'
+  | 'memory_budget_exceeded'
+  | 'concurrency_limit_reached'
+
+export type ProofWorkerResourceAdmissionInput = {
+  usage?: ProofWorkerMemoryUsage
+  /** Optional CSP / manager memory cap in megabytes. */
+  maxMemoryMB?: number
+  /** Optional browser device-memory hint in gigabytes (e.g. navigator.deviceMemory). */
+  deviceMemoryGB?: number | null
+  /** Whether SharedArrayBuffer multithreading is permitted (crossOriginIsolated). */
+  crossOriginIsolated?: boolean
+  /** Reported logical CPU count (e.g. navigator.hardwareConcurrency). */
+  hardwareConcurrency?: number | null
+  /** Number of currently active proving/verification tasks. */
+  activeTasks?: number
+  /** Maximum concurrent tasks permitted (defaults to 1). */
+  maxConcurrentTasks?: number
+}
+
+export type ProofWorkerResourceAdmissionDecision = {
+  readonly admitted: boolean
+  readonly mode: ProofWorkerExecutionMode
+  readonly fallbackApplied: boolean
+  readonly reasonCodes: readonly ProofWorkerAdmissionReasonCode[]
+  /** Privacy-safe human-readable summary of memory, thread, and concurrency restrictions. */
+  readonly summary: string
+  readonly memory: {
+    readonly admitted: boolean
+    readonly estimatedBytes: number
+    readonly runtimeLimitBytes: number
+    readonly maxMemoryBytes: number | null
+    readonly deviceMemoryGB: number | null
+    readonly constrained: boolean
+    readonly detail: string
+  }
+  readonly threads: {
+    readonly requested: number
+    readonly admitted: number
+    readonly crossOriginIsolated: boolean
+    readonly fallbackSingleThread: boolean
+    readonly detail: string
+  }
+  readonly concurrency: {
+    readonly admitted: boolean
+    readonly activeTasks: number
+    readonly maxConcurrentTasks: number
+    readonly availableSlots: number
+    readonly detail: string
+  }
+}
+
 const manifestArtifacts = (browserArtifactManifest.artifacts ?? []) as BrowserArtifactEntry[]
 const publishedArtifactBytes = manifestArtifacts.reduce(
   (total, entry) => total + safeBytes(entry.raw_bytes),
@@ -35,6 +99,7 @@ export const PROOF_WORKER_MEMORY_LIMITS = Object.freeze({
   maxWitnessBytes: Number(benchLock.limits.max_witness_bytes),
   maxProofBytes: Number(benchLock.limits.max_proof_bytes),
   maxPublicInputBytes: Number(benchLock.limits.max_public_input_bytes),
+  maxDiagnosticBytes: 4096,
   maxRuntimeBytes:
     Number(benchLock.limits.max_witness_bytes) +
     Number(benchLock.limits.max_proof_bytes) +
@@ -57,6 +122,94 @@ function assertByteCount(value: number | null | undefined, limit: number): numbe
   if (value === null || value === undefined) return 0
   if (!Number.isSafeInteger(value) || value < 0 || value > limit) failMemoryLimit()
   return value
+}
+
+export type BrowserArtifactManifestLike = {
+  format?: string
+  version?: number
+  artifacts?: readonly BrowserArtifactEntry[]
+  skipped?: readonly string[]
+  toolchain?: {
+    barretenberg?: string
+    nargo?: string
+    oracle_hash?: string
+    proving_scheme?: string
+  }
+}
+
+export type ProofWorkerArtifactEntryMetadata = {
+  readonly path: string
+  readonly role?: string
+  readonly kind?: string
+  readonly rawBytes: number
+  readonly normalizedBytes?: number
+  readonly withinArtifactLimit: boolean
+}
+
+export type ProofWorkerArtifactMetadataReport = {
+  readonly format: string
+  readonly version: number
+  readonly toolchain: {
+    readonly barretenberg?: string
+    readonly nargo?: string
+    readonly oracleHash?: string
+    readonly provingScheme?: string
+  }
+  readonly publishedArtifactCount: number
+  readonly skippedArtifactCount: number
+  readonly totalPublishedArtifactBytes: number
+  readonly allArtifactsWithinLimit: boolean
+  readonly artifacts: readonly ProofWorkerArtifactEntryMetadata[]
+  readonly memoryLimits: typeof PROOF_WORKER_MEMORY_LIMITS
+}
+
+/**
+ * Inspect configured browser proving artifact metadata offline.
+ * Uses only static manifest metadata and memory ceilings — never fetches or loads artifacts.
+ */
+export function inspectProofWorkerArtifactMetadata(
+  manifest: BrowserArtifactManifestLike = browserArtifactManifest,
+): ProofWorkerArtifactMetadataReport {
+  const entries = (manifest.artifacts ?? []).map((entry) => {
+    const rawBytes = safeBytes(entry.raw_bytes)
+    const normalizedBytes =
+      entry.normalized_bytes !== undefined ? safeBytes(entry.normalized_bytes) : undefined
+    return Object.freeze({
+      path: entry.path,
+      ...(entry.role !== undefined ? { role: entry.role } : {}),
+      ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
+      rawBytes,
+      ...(normalizedBytes !== undefined ? { normalizedBytes } : {}),
+      withinArtifactLimit:
+        rawBytes > 0 && rawBytes <= PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes,
+    })
+  })
+
+  const totalPublishedArtifactBytes = entries.reduce((total, entry) => total + entry.rawBytes, 0)
+  const allArtifactsWithinLimit = entries.every((entry) => entry.withinArtifactLimit)
+
+  return Object.freeze({
+    format: manifest.format ?? 'unknown',
+    version: Number.isSafeInteger(manifest.version) ? Number(manifest.version) : 0,
+    toolchain: Object.freeze({
+      ...(manifest.toolchain?.barretenberg !== undefined
+        ? { barretenberg: manifest.toolchain.barretenberg }
+        : {}),
+      ...(manifest.toolchain?.nargo !== undefined ? { nargo: manifest.toolchain.nargo } : {}),
+      ...(manifest.toolchain?.oracle_hash !== undefined
+        ? { oracleHash: manifest.toolchain.oracle_hash }
+        : {}),
+      ...(manifest.toolchain?.proving_scheme !== undefined
+        ? { provingScheme: manifest.toolchain.proving_scheme }
+        : {}),
+    }),
+    publishedArtifactCount: entries.length,
+    skippedArtifactCount: (manifest.skipped ?? []).length,
+    totalPublishedArtifactBytes,
+    allArtifactsWithinLimit,
+    artifacts: Object.freeze(entries),
+    memoryLimits: PROOF_WORKER_MEMORY_LIMITS,
+  })
 }
 
 export function browserArtifactByteLimit(path: string): number {
@@ -100,6 +253,177 @@ export function assertProofWorkerMemoryBudget(usage: ProofWorkerMemoryUsage): vo
   if (artifactBytes + witnessBytes + proofBytes + publicInputBytes + secretBytes > runtimeLimit) {
     failMemoryLimit()
   }
+}
+
+const MAX_WASM_THREADS = 8
+const LOW_DEVICE_MEMORY_GB_THRESHOLD = 2
+const BYTES_PER_MIB = 1024 * 1024
+
+function isByteCountWithin(value: number | null | undefined, limit: number): boolean {
+  if (value === null || value === undefined) return true
+  return Number.isSafeInteger(value) && value >= 0 && value <= limit
+}
+
+function normalizeNonNegativeInt(value: number | null | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.max(0, Math.floor(value))
+}
+
+/**
+ * Evaluate proof-worker resource admission before proving starts.
+ *
+ * Explains memory, thread, and concurrency restrictions in a privacy-safe
+ * structured decision while preserving a safe single-threaded fallback for
+ * constrained or non-cross-origin-isolated browsers.
+ */
+export function evaluateProofWorkerResourceAdmission(
+  input: ProofWorkerResourceAdmissionInput = {},
+): ProofWorkerResourceAdmissionDecision {
+  const usage = input.usage ?? {}
+  const artifactBytes = safeBytes(usage.artifactBytes)
+  const witnessBytes = safeBytes(usage.witnessBytes)
+  const proofBytes = safeBytes(usage.proofBytes)
+  const publicInputLimitBytes =
+    usage.publicInputLimitBytes !== undefined && usage.publicInputLimitBytes !== null
+      ? safeBytes(usage.publicInputLimitBytes)
+      : PROOF_WORKER_MEMORY_LIMITS.maxPublicInputBytes
+  const publicInputBytes = safeBytes(usage.publicInputBytes)
+  const secretBytes = safeBytes(usage.secretBytes)
+
+  const estimatedBytes =
+    artifactBytes + witnessBytes + proofBytes + publicInputBytes + secretBytes
+  const runtimeLimitBytes =
+    PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes +
+    PROOF_WORKER_MEMORY_LIMITS.maxProofBytes +
+    publicInputLimitBytes +
+    Math.max(artifactBytes, publishedArtifactBytes)
+
+  const maxMemoryBytes =
+    typeof input.maxMemoryMB === 'number' && Number.isFinite(input.maxMemoryMB) && input.maxMemoryMB > 0
+      ? Math.floor(input.maxMemoryMB * BYTES_PER_MIB)
+      : null
+
+  const deviceMemoryGB =
+    typeof input.deviceMemoryGB === 'number' && Number.isFinite(input.deviceMemoryGB) && input.deviceMemoryGB > 0
+      ? input.deviceMemoryGB
+      : null
+  const memoryConstrained =
+    deviceMemoryGB !== null && deviceMemoryGB <= LOW_DEVICE_MEMORY_GB_THRESHOLD
+
+  const memoryFieldsValid =
+    isByteCountWithin(usage.artifactBytes, PROOF_WORKER_MEMORY_LIMITS.maxArtifactBytes) &&
+    isByteCountWithin(usage.witnessBytes, PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes) &&
+    isByteCountWithin(usage.proofBytes, PROOF_WORKER_MEMORY_LIMITS.maxProofBytes) &&
+    isByteCountWithin(usage.publicInputLimitBytes, PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes) &&
+    isByteCountWithin(usage.publicInputBytes, publicInputLimitBytes) &&
+    isByteCountWithin(usage.secretBytes, PROOF_WORKER_MEMORY_LIMITS.maxWitnessBytes)
+
+  const withinRuntimeLimit = estimatedBytes <= runtimeLimitBytes
+  const withinMaxMemoryCap = maxMemoryBytes === null || estimatedBytes <= maxMemoryBytes
+  const memoryAdmitted = memoryFieldsValid && withinRuntimeLimit && withinMaxMemoryCap
+
+  const memoryDetail = !memoryAdmitted
+    ? `Memory budget exceeded (${estimatedBytes} B estimated against ${
+        maxMemoryBytes !== null ? Math.min(runtimeLimitBytes, maxMemoryBytes) : runtimeLimitBytes
+      } B limit).`
+    : memoryConstrained
+      ? `Device memory is constrained (${deviceMemoryGB} GB); using single-threaded fallback within ${runtimeLimitBytes} B runtime budget.`
+      : `Memory within budget (${estimatedBytes} B / ${runtimeLimitBytes} B runtime limit).`
+
+  const crossOriginIsolated = Boolean(input.crossOriginIsolated)
+  const rawHardwareConcurrency =
+    typeof input.hardwareConcurrency === 'number' &&
+    Number.isFinite(input.hardwareConcurrency) &&
+    input.hardwareConcurrency > 0
+      ? Math.floor(input.hardwareConcurrency)
+      : 1
+  const requestedThreads = Math.max(1, Math.min(rawHardwareConcurrency, MAX_WASM_THREADS))
+
+  const activeTasks = normalizeNonNegativeInt(input.activeTasks, 0)
+  const maxConcurrentTasks =
+    typeof input.maxConcurrentTasks === 'number' && Number.isFinite(input.maxConcurrentTasks)
+      ? Math.max(0, Math.floor(input.maxConcurrentTasks))
+      : 1
+  const availableSlots = Math.max(0, maxConcurrentTasks - activeTasks)
+  const concurrencyAdmitted = maxConcurrentTasks > 0 && activeTasks < maxConcurrentTasks
+  const concurrencyDetail = concurrencyAdmitted
+    ? `Concurrency slot available (${activeTasks}/${maxConcurrentTasks} active).`
+    : `Concurrency limit reached (${activeTasks}/${maxConcurrentTasks} active tasks).`
+
+  const reasonCodes: ProofWorkerAdmissionReasonCode[] = []
+  if (!memoryAdmitted) reasonCodes.push('memory_budget_exceeded')
+  if (!concurrencyAdmitted) reasonCodes.push('concurrency_limit_reached')
+
+  const admitted = memoryAdmitted && concurrencyAdmitted
+
+  let admittedThreads: number
+  let fallbackSingleThread = false
+  let threadsDetail: string
+
+  if (!admitted) {
+    admittedThreads = 0
+    threadsDetail = 'Thread allocation skipped because admission was rejected.'
+  } else if (!crossOriginIsolated) {
+    admittedThreads = 1
+    fallbackSingleThread = true
+    reasonCodes.push('fallback_single_thread_not_isolated')
+    threadsDetail =
+      'Cross-origin isolation unavailable; falling back to 1 thread (SharedArrayBuffer disabled).'
+  } else if (memoryConstrained) {
+    admittedThreads = 1
+    fallbackSingleThread = true
+    reasonCodes.push('fallback_single_thread_memory_constrained')
+    threadsDetail = `Constrained device memory (${deviceMemoryGB} GB); falling back to 1 thread.`
+  } else if (requestedThreads <= 1) {
+    admittedThreads = 1
+    fallbackSingleThread = true
+    reasonCodes.push('fallback_single_thread_low_concurrency')
+    threadsDetail = 'Single logical core detected; running in single-threaded fallback mode.'
+  } else {
+    admittedThreads = requestedThreads
+    fallbackSingleThread = false
+    reasonCodes.push('admitted')
+    threadsDetail = `Multithreaded WASM proving admitted with ${admittedThreads} threads.`
+  }
+
+  const mode: ProofWorkerExecutionMode = !admitted
+    ? 'rejected'
+    : fallbackSingleThread
+      ? 'single-threaded-fallback'
+      : 'multithreaded'
+
+  const summary = `${memoryDetail} ${threadsDetail} ${concurrencyDetail}`
+
+  return Object.freeze({
+    admitted,
+    mode,
+    fallbackApplied: admitted && fallbackSingleThread,
+    reasonCodes: Object.freeze(reasonCodes),
+    summary,
+    memory: Object.freeze({
+      admitted: memoryAdmitted,
+      estimatedBytes,
+      runtimeLimitBytes,
+      maxMemoryBytes,
+      deviceMemoryGB,
+      constrained: memoryConstrained,
+      detail: memoryDetail,
+    }),
+    threads: Object.freeze({
+      requested: requestedThreads,
+      admitted: admittedThreads,
+      crossOriginIsolated,
+      fallbackSingleThread,
+      detail: threadsDetail,
+    }),
+    concurrency: Object.freeze({
+      admitted: concurrencyAdmitted,
+      activeTasks,
+      maxConcurrentTasks,
+      availableSlots,
+      detail: concurrencyDetail,
+    }),
+  })
 }
 
 export function byteLengthOfProofWorkerValue(value: unknown): number {
@@ -227,4 +551,285 @@ function parseTextJson(text: string, rawBytes: number): { value: unknown; rawByt
   } catch {
     throw new CircuitInputError('circuit_load_failed')
   }
+}
+
+
+export const PROOF_MEMORY_BUFFER_CLASSES = [
+  'artifact',
+  'witness',
+  'proof',
+  'publicInput',
+  'secret',
+] as const
+
+export type ProofMemoryBufferClass = (typeof PROOF_MEMORY_BUFFER_CLASSES)[number]
+
+export const PROOF_MEMORY_ACCOUNTING_LIMITS = Object.freeze({
+  maxClassAllocations: 1024,
+  maxTrackedOperations: 32,
+})
+
+export type ProofBufferClassCounter = {
+  readonly allocatedCount: number
+  readonly releasedCount: number
+  readonly allocatedBytes: number
+  readonly releasedBytes: number
+  readonly activeBytes: number
+  readonly peakBytes: number
+}
+
+export type ProofOperationMemoryStatus =
+  | 'active'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out'
+
+export type ProofOperationMemoryReport = {
+  readonly operationId: string
+  readonly operation: string
+  readonly status: ProofOperationMemoryStatus
+  /**
+   * Scopes these counters strictly to tracked operation buffer classes.
+   * Does not claim browser-wide heap, WASM, or OS-level memory precision.
+   */
+  readonly precision: 'operation-buffer-estimate'
+  readonly browserWidePrecision: false
+  readonly classes: Readonly<Record<ProofMemoryBufferClass, ProofBufferClassCounter>>
+  readonly totals: ProofBufferClassCounter
+}
+
+export type ProofOperationMemoryOptions = {
+  publicInputLimitBytes?: number
+  maxClassAllocations?: number
+}
+
+type MutableBufferClassCounter = {
+  allocatedCount: number
+  releasedCount: number
+  allocatedBytes: number
+  releasedBytes: number
+  activeBytes: number
+  peakBytes: number
+}
+
+const VALID_BUFFER_CLASSES = new Set<string>(PROOF_MEMORY_BUFFER_CLASSES)
+
+function isProofMemoryBufferClass(value: string): value is ProofMemoryBufferClass {
+  return VALID_BUFFER_CLASSES.has(value)
+}
+
+function emptyClassCounter(): MutableBufferClassCounter {
+  return {
+    allocatedCount: 0,
+    releasedCount: 0,
+    allocatedBytes: 0,
+    releasedBytes: 0,
+    activeBytes: 0,
+    peakBytes: 0,
+  }
+}
+
+/**
+ * Tracks allocated and released buffer classes for a single proof-worker
+ * operation using bounded counters. Never stores witness, proof, or secret
+ * payloads and explicitly marks reports as operation-level buffer estimates
+ * rather than browser-wide memory measurements.
+ */
+export class ProofOperationMemoryAccountant {
+  private readonly operationId: string
+  private readonly operation: string
+  private readonly publicInputLimitBytes?: number
+  private readonly maxClassAllocations: number
+  private status: ProofOperationMemoryStatus = 'active'
+  private totalPeakBytes = 0
+  private readonly classes: Record<ProofMemoryBufferClass, MutableBufferClassCounter> = {
+    artifact: emptyClassCounter(),
+    witness: emptyClassCounter(),
+    proof: emptyClassCounter(),
+    publicInput: emptyClassCounter(),
+    secret: emptyClassCounter(),
+  }
+
+  constructor(
+    operationId: string,
+    operation: string,
+    options?: ProofOperationMemoryOptions,
+  ) {
+    if (typeof operationId !== 'string' || operationId.trim().length === 0) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (typeof operation !== 'string' || operation.trim().length === 0) {
+      throw new CircuitInputError('invalid_input')
+    }
+
+    const maxAlloc = options?.maxClassAllocations ?? PROOF_MEMORY_ACCOUNTING_LIMITS.maxClassAllocations
+    if (
+      !Number.isSafeInteger(maxAlloc) ||
+      maxAlloc <= 0 ||
+      maxAlloc > PROOF_MEMORY_ACCOUNTING_LIMITS.maxClassAllocations
+    ) {
+      failMemoryLimit()
+    }
+
+    this.operationId = operationId
+    this.operation = operation
+    this.publicInputLimitBytes = options?.publicInputLimitBytes
+    this.maxClassAllocations = maxAlloc
+  }
+
+  allocate(bufferClass: ProofMemoryBufferClass, bytes: number): void {
+    if (!isProofMemoryBufferClass(bufferClass)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      failMemoryLimit()
+    }
+
+    const counter = this.classes[bufferClass]
+    if (counter.allocatedCount + 1 > this.maxClassAllocations) {
+      failMemoryLimit()
+    }
+
+    const nextActive = counter.activeBytes + bytes
+    if (!Number.isSafeInteger(nextActive)) {
+      failMemoryLimit()
+    }
+
+    const usage: ProofWorkerMemoryUsage = {
+      artifactBytes: this.classes.artifact.activeBytes,
+      witnessBytes: this.classes.witness.activeBytes,
+      proofBytes: this.classes.proof.activeBytes,
+      publicInputBytes: this.classes.publicInput.activeBytes,
+      secretBytes: this.classes.secret.activeBytes,
+      ...(this.publicInputLimitBytes !== undefined
+        ? { publicInputLimitBytes: this.publicInputLimitBytes }
+        : {}),
+    }
+
+    switch (bufferClass) {
+      case 'artifact':
+        usage.artifactBytes = nextActive
+        break
+      case 'witness':
+        usage.witnessBytes = nextActive
+        break
+      case 'proof':
+        usage.proofBytes = nextActive
+        break
+      case 'publicInput':
+        usage.publicInputBytes = nextActive
+        break
+      case 'secret':
+        usage.secretBytes = nextActive
+        break
+    }
+
+    assertProofWorkerMemoryBudget(usage)
+
+    counter.allocatedCount += 1
+    counter.allocatedBytes += bytes
+    counter.activeBytes = nextActive
+    if (counter.activeBytes > counter.peakBytes) {
+      counter.peakBytes = counter.activeBytes
+    }
+
+    const currentTotalActive = this.activeTotalBytes()
+    if (currentTotalActive > this.totalPeakBytes) {
+      this.totalPeakBytes = currentTotalActive
+    }
+  }
+
+  release(bufferClass: ProofMemoryBufferClass, bytes: number): void {
+    if (!isProofMemoryBufferClass(bufferClass)) {
+      throw new CircuitInputError('invalid_input')
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      failMemoryLimit()
+    }
+
+    const counter = this.classes[bufferClass]
+    if (counter.releasedCount + 1 > counter.allocatedCount || bytes > counter.activeBytes) {
+      failMemoryLimit()
+    }
+
+    counter.releasedCount += 1
+    counter.releasedBytes += bytes
+    counter.activeBytes -= bytes
+  }
+
+  releaseAll(status?: Exclude<ProofOperationMemoryStatus, 'active'>): void {
+    for (const bufferClass of PROOF_MEMORY_BUFFER_CLASSES) {
+      const counter = this.classes[bufferClass]
+      const unreleasedCount = counter.allocatedCount - counter.releasedCount
+      if (unreleasedCount > 0) {
+        counter.releasedCount += unreleasedCount
+      }
+      if (counter.activeBytes > 0) {
+        counter.releasedBytes += counter.activeBytes
+        counter.activeBytes = 0
+      }
+    }
+    if (status !== undefined) {
+      this.status = status
+    }
+  }
+
+  setStatus(status: ProofOperationMemoryStatus): void {
+    this.status = status
+  }
+
+  snapshot(): ProofOperationMemoryReport {
+    let allocatedCount = 0
+    let releasedCount = 0
+    let allocatedBytes = 0
+    let releasedBytes = 0
+    let activeBytes = 0
+
+    const frozenClasses = {} as Record<ProofMemoryBufferClass, ProofBufferClassCounter>
+    for (const bufferClass of PROOF_MEMORY_BUFFER_CLASSES) {
+      const counter = this.classes[bufferClass]
+      allocatedCount += counter.allocatedCount
+      releasedCount += counter.releasedCount
+      allocatedBytes += counter.allocatedBytes
+      releasedBytes += counter.releasedBytes
+      activeBytes += counter.activeBytes
+      frozenClasses[bufferClass] = Object.freeze({ ...counter })
+    }
+
+    return Object.freeze({
+      operationId: this.operationId,
+      operation: this.operation,
+      status: this.status,
+      precision: 'operation-buffer-estimate',
+      browserWidePrecision: false,
+      classes: Object.freeze(frozenClasses),
+      totals: Object.freeze({
+        allocatedCount,
+        releasedCount,
+        allocatedBytes,
+        releasedBytes,
+        activeBytes,
+        peakBytes: this.totalPeakBytes,
+      }),
+    })
+  }
+
+  private activeTotalBytes(): number {
+    return (
+      this.classes.artifact.activeBytes +
+      this.classes.witness.activeBytes +
+      this.classes.proof.activeBytes +
+      this.classes.publicInput.activeBytes +
+      this.classes.secret.activeBytes
+    )
+  }
+}
+
+export function createProofOperationMemoryAccountant(
+  operationId: string,
+  operation: string,
+  options?: ProofOperationMemoryOptions,
+): ProofOperationMemoryAccountant {
+  return new ProofOperationMemoryAccountant(operationId, operation, options)
 }

@@ -674,7 +674,7 @@ def _generate_aggregator(
             "version": 1,
             "type": "error",
             "reasonCode": "oversized",
-            "detail": f"batch size must be between 1 and 8 (got {batch_count})",
+            "detail": f"disclosure predicate list size must be between 1 and 8 (got {batch_count})",
         }
         print(json.dumps(err))
         return EXIT_OK

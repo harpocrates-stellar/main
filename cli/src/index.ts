@@ -30,7 +30,7 @@ export {
   REQUIRED_EMBED_METADATA,
 } from './metadata.js'
 export type { HarpocratesMetadata, IdentityTier } from './metadata.js'
-export { createProofManifest, serializeManifest, parseManifest } from './manifest.js'
+export { createProofManifest, serializeManifest, parseManifest, readBoundedManifest, MAX_MANIFEST_BYTES } from './manifest.js'
 export type { ProofManifest, ManifestInput } from './manifest.js'
 export {
   lookupByVideoHash,

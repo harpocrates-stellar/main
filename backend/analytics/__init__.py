@@ -10,6 +10,7 @@ try:
         AnalyticsPersistenceConfig,
         AnalyticsRolloutConfig,
         CryptoDomainVersion,
+        DimensionConfig,
         ExportConfig,
         SamplingConfig,
         load_analytics_config,
@@ -97,13 +98,17 @@ except Exception:
 
 try:
     from analytics.log_processor import (
+        ALLOWED_DIMENSION_VOCABULARY,
         EXPORT_LOG_VERSION,
         ErrorTelemetryConfig,
         LogEntry,
         LogProcessor,
         export_json_logs,
         import_json_logs,
+        is_evidence_hash,
+        is_raw_filename,
         sanitize_error_context,
+        validate_dimension,
         validate_log_export_safety,
     )
 except Exception:
@@ -122,11 +127,20 @@ except Exception:
 
 try:
     from analytics.export_manager import (
+        EXCLUDED_SENSITIVE_CLASSES,
         EXPORT_FORMAT_VERSION,
+        EXPORT_POLICY_DEFAULT,
+        MANIFEST_DIGEST_PREFIX,
+        TENANT_EXPORT_MANIFEST_VERSION,
         ExportArtifact,
         ExportManager,
         ExportPolicy,
-        EXPORT_POLICY_DEFAULT,
+        TenantExportManifest,
+        build_tenant_export_manifest,
+        compute_manifest_digest,
+        compute_redaction_policy_digest,
+        is_sensitive_record_class,
+        verify_tenant_export_manifest,
     )
 except Exception:
     pass
@@ -148,6 +162,19 @@ try:
 except Exception:
     pass
 
+try:
+    from analytics.redaction_policy_diff import (
+        FieldDiff,
+        PolicyComparisonReport,
+        RecordComparison,
+        RedactionPolicyRevision,
+        build_synthetic_analytics_records,
+        compare_redaction_policies,
+        load_policy_revision,
+    )
+except Exception:
+    pass
+
 __all__ = [
     "ANALYTICS_CONFIG_SCHEMA_VERSION",
     "ANALYTICS_ROLLOUT_PHASE",
@@ -157,6 +184,7 @@ __all__ = [
     "AnalyticsPersistenceConfig",
     "AnalyticsRolloutConfig",
     "CryptoDomainVersion",
+    "DimensionConfig",
     "ExportConfig",
     "SamplingConfig",
     "load_analytics_config",
@@ -209,23 +237,36 @@ __all__ = [
     "stable_encode_key",
     "versioned_domain_tag",
     "EXPORT_LOG_VERSION",
+    "ALLOWED_DIMENSION_VOCABULARY",
     "ErrorTelemetryConfig",
     "LogEntry",
     "LogProcessor",
     "export_json_logs",
     "import_json_logs",
+    "is_evidence_hash",
+    "is_raw_filename",
     "sanitize_error_context",
+    "validate_dimension",
     "validate_log_export_safety",
     "AnalyticsOperationalMetrics",
     "MetricDomain",
     "RecoverySignal",
     "SaturationSignal",
     "operational_collector",
+    "EXCLUDED_SENSITIVE_CLASSES",
     "EXPORT_FORMAT_VERSION",
+    "MANIFEST_DIGEST_PREFIX",
+    "TENANT_EXPORT_MANIFEST_VERSION",
     "ExportArtifact",
     "ExportManager",
     "ExportPolicy",
     "EXPORT_POLICY_DEFAULT",
+    "TenantExportManifest",
+    "build_tenant_export_manifest",
+    "compute_manifest_digest",
+    "compute_redaction_policy_digest",
+    "is_sensitive_record_class",
+    "verify_tenant_export_manifest",
     "AnalyticsEngine",
     "AnalyticsError",
     "EngineHealthSnapshot",
@@ -233,4 +274,11 @@ __all__ = [
     "get_engine",
     "set_engine",
     "register_analytics_routes",
+    "FieldDiff",
+    "PolicyComparisonReport",
+    "RecordComparison",
+    "RedactionPolicyRevision",
+    "build_synthetic_analytics_records",
+    "compare_redaction_policies",
+    "load_policy_revision",
 ]

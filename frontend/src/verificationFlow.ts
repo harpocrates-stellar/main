@@ -77,7 +77,6 @@ export async function verifyArtifact({
 }
 
 async function extractMetadata(_apiBase: string, file: File): Promise<unknown> {
-  const { extractMetadata: extractMetadataLocal, MalformedEvidenceError: StegoError } = await import('./stego')
   try {
     return await extractMetadataLocal(file)
   } catch (err) {

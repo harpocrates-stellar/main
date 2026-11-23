@@ -1,8 +1,33 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { VerifyView } from './VerifyView'
 import type { UseVerificationReturn } from '../hooks/useVerification'
+import { useIssuerTrust } from '../hooks/useIssuerTrust'
+import { STELLAR_STRKEY_LENGTH, type IssuerTrust } from '../provenance/issuerTrust'
+import type { ChainProofRecord } from '../stellarTypes'
+
+vi.mock('../hooks/useIssuerTrust', () => ({
+  useIssuerTrust: vi.fn(),
+}))
+
+const mockedUseIssuerTrust = vi.mocked(useIssuerTrust)
+
+function issuerTrustStub(overrides: Partial<IssuerTrust> = {}): IssuerTrust {
+  return {
+    state: 'unsupported',
+    label: 'No issuer',
+    description: 'This identity tier does not carry an issuer address.',
+    severity: 'neutral',
+    issuer: null,
+    ...overrides,
+  }
+}
+
+beforeEach(() => {
+  mockedUseIssuerTrust.mockReset()
+  mockedUseIssuerTrust.mockReturnValue(issuerTrustStub())
+})
 
 vi.mock('../stellar', () => ({
   CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Future Network ; October 2022',
@@ -15,6 +40,10 @@ vi.mock('../stellar', () => ({
 vi.mock('../components/ChainProofPanel', () => ({
   ChainProofPanel: () => <div data-testid="chain-proof-panel" />,
   formatProofExpiry: () => 'Never',
+}))
+
+vi.mock('../components/DisputePanel', () => ({
+  DisputePanel: () => <div data-testid="dispute-panel" />,
 }))
 
 vi.mock('../components/VerifierSetStatusPanel', () => ({
@@ -419,5 +448,24 @@ describe('VerifyView – portable proof manifest loading', () => {
       fireEvent.keyDown(dropzone, { key: 'Enter', code: 'Enter' })
       expect(clicked).toBe(false)
     })
+  })
+})
+
+describe('VerifyView – receipt comparison view', () => {
+  it('toggles the receipt comparison view on and off', async () => {
+    const user = userEvent.setup()
+    renderView()
+
+    const toggle = screen.getByRole('button', { name: /compare two receipts/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: /compare verification receipts/i })).not.toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('heading', { name: /compare verification receipts/i })).toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: /compare verification receipts/i })).not.toBeInTheDocument()
   })
 })

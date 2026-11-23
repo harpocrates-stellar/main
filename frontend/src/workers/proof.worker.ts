@@ -1,8 +1,16 @@
 /// <reference lib="webworker" />
 
-import type { ProofWorkerMessage, ProofWorkerResponse } from './proof.worker.types';
+import {
+  PROOF_WORKER_PROTOCOL_VERSION,
+  type ProofWorkerMessage,
+  type ProofWorkerResponse,
+} from './proof.worker.types';
 import { ProofWorkerLogger } from './proof-worker-logger';
-import { validateCSPPolicy, isOriginAllowed, createCSPHeaders } from './csp-policy';
+import { validateCSPPolicy } from './csp-policy';
+import {
+  createProtocolMismatchResponse,
+  validateWorkerProtocolVersion,
+} from './proof-worker-manager';
 
 const logger = new ProofWorkerLogger({ enabled: true });
 
@@ -54,7 +62,6 @@ function validateInput(payload: ProofWorkerMessage['payload']): void {
 async function verifyProof(payload: ProofWorkerMessage['payload']): Promise<ProofWorkerResponse> {
   validateInput(payload);
 
-  const timeout = payload?.timeout ?? cspConfig?.maxExecutionTimeMs ?? 30000;
   const evidence = payload?.evidence ?? '';
   const proof = payload?.proof ?? '';
   const contract = payload?.contract ?? '';
@@ -64,6 +71,7 @@ async function verifyProof(payload: ProofWorkerMessage['payload']): Promise<Proo
   const isValid = evidence.length > 0 && proof.length > 0 && contract.length > 0;
 
   return {
+    protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
     type: 'success',
     data: {
       valid: isValid,
@@ -73,15 +81,37 @@ async function verifyProof(payload: ProofWorkerMessage['payload']): Promise<Proo
 }
 
 self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
-  const message = event.data;
-  const messageId = message.id ?? 'unknown';
+  const rawMessage: unknown = event.data;
+  const candidate =
+    typeof rawMessage === 'object' && rawMessage !== null && !Array.isArray(rawMessage)
+      ? (rawMessage as Record<string, unknown>)
+      : null;
+  const messageId = candidate && typeof candidate.id === 'string' ? candidate.id : 'unknown';
+
+  // Fail closed before accepting transferred buffers or parsing payload fields.
+  const versionCheck = validateWorkerProtocolVersion(
+    candidate ? candidate.protocolVersion : undefined
+  );
+  if (!versionCheck.compatible) {
+    logger.warn('Rejected incompatible main-thread protocol version', {
+      expectedVersion: versionCheck.expectedVersion,
+      receivedVersion: versionCheck.receivedVersion,
+      reloadRequired: true,
+    });
+    self.postMessage(createProtocolMismatchResponse(versionCheck, messageId));
+    return;
+  }
+
+  const message = rawMessage as ProofWorkerMessage;
 
   try {
     switch (message.type) {
       case 'init': {
         if (message.payload?.metadata) {
           try {
-            cspConfig = validateCSPPolicy(message.payload.metadata as any);
+            cspConfig = validateCSPPolicy(
+              message.payload.metadata as Partial<ReturnType<typeof validateCSPPolicy>>
+            );
             logger.info('CSP policy initialized', { config: cspConfig });
           } catch (error) {
             logger.error('Failed to initialize CSP policy', { error });
@@ -107,12 +137,20 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
 
         try {
           const response = await verifyProof(message.payload);
-          logger.info('Proof verification completed', { id: messageId, valid: response.data?.valid });
-          self.postMessage({ ...response, id: messageId } as ProofWorkerResponse);
+          logger.info('Proof verification completed', {
+            id: messageId,
+            valid: response.data?.valid,
+          });
+          self.postMessage({
+            ...response,
+            protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
+            id: messageId,
+          } as ProofWorkerResponse);
         } catch (error) {
           const sanitizedError = sanitizeError(error);
           logger.error('Proof verification failed', { id: messageId, error: sanitizedError });
           self.postMessage({
+            protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
             type: 'error',
             id: messageId,
             error: sanitizedError,
@@ -131,6 +169,7 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
           isRunning = false;
           currentTaskId = null;
           self.postMessage({
+            protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
             type: 'status',
             id: messageId,
             data: { message: 'Task cancelled' },
@@ -141,6 +180,7 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
 
       case 'status': {
         self.postMessage({
+          protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
           type: 'status',
           id: messageId,
           data: {
@@ -154,6 +194,7 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
       default: {
         logger.warn('Unknown message type', { type: message.type });
         self.postMessage({
+          protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
           type: 'error',
           id: messageId,
           error: {
@@ -168,6 +209,7 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
     const sanitizedError = sanitizeError(error);
     logger.error('Worker error', { id: messageId, error: sanitizedError });
     self.postMessage({
+      protocolVersion: PROOF_WORKER_PROTOCOL_VERSION,
       type: 'error',
       id: messageId,
       error: sanitizedError,
@@ -176,5 +218,9 @@ self.onmessage = async (event: MessageEvent<ProofWorkerMessage>) => {
 };
 
 self.onerror = (event: ErrorEvent) => {
-  logger.error('Worker global error', { error: event.message, filename: event.filename, lineno: event.lineno });
+  logger.error('Worker global error', {
+    error: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+  });
 };

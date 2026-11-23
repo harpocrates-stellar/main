@@ -141,17 +141,27 @@ def test_retention_dry_run_counts_without_deleting(mock_count, mock_purge, capsy
     assert code == manage.EXIT_OK
     assert payload["dry_run"] is True
     assert payload["expired"] == 7
+    assert "upload_sessions" in payload
+    assert "expired" in payload["upload_sessions"]
+    assert "reclaimable_bytes" in payload["upload_sessions"]
     mock_purge.assert_not_called()
 
 
+@patch("streaming_upload.purge_expired_upload_sessions", return_value=(2, 1024, 1))
 @patch("db.purge_expired_events")
-def test_retention_run_purges_until_short_batch(mock_purge, capsys):
+def test_retention_run_purges_until_short_batch(mock_purge, mock_session_purge, capsys):
     mock_purge.side_effect = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
-    code, payload = run_json(capsys, "retention", "--run", "--batch-size", "2")
+    code, payload = run_json(capsys, "retention", "--run", "--batch-size", "2", "--session-limit", "50")
     assert code == manage.EXIT_OK
     assert payload["deleted"] == 3
     assert payload["batches"] == 2
+    assert payload["upload_sessions"] == {
+        "deleted": 2,
+        "reclaimed_bytes": 1024,
+        "active_skipped": 1,
+    }
     assert all(c.kwargs == {"batch_size": 2} for c in mock_purge.call_args_list)
+    mock_session_purge.assert_called_once_with(limit=50)
 
 
 def test_retention_requires_a_mode(capsys):
@@ -181,6 +191,76 @@ def test_reconcile_passes_limit(capsys):
 def test_reconcile_rejects_non_positive_limit(capsys):
     with pytest.raises(SystemExit) as exc:
         manage.main(["reconcile", "--limit", "0"])
+    assert exc.value.code == manage.EXIT_USAGE
+
+
+# --- projection reconciliation ---------------------------------------------
+
+
+def test_projection_reconcile_reports_discrepancies(capsys):
+    stub = MagicMock()
+    stub.MAX_LEDGER_RANGE = 10_000
+    stub.reconcile_projection_range.return_value = {
+        "ok": False,
+        "complete": True,
+        "range": {"start_ledger": 10, "end_ledger": 12},
+        "summary": {"scanned": 4, "recognized": 4, "unknown": 0, "missing": 1, "conflicts": 1},
+        "missing_events": [{"tx_hash": "ab" * 32, "event_index": 1}],
+        "conflicts": [{"tx_hash": "cd" * 32, "event_index": 2, "fields": ["event_type"]}],
+    }
+    with patch.dict(sys.modules, {"projection_reconcile": stub}):
+        code, payload = run_json(
+            capsys,
+            "projection-reconcile",
+            "--start-ledger",
+            "10",
+            "--end-ledger",
+            "12",
+            "--contract-id",
+            "C" * 56,
+            "--limit",
+            "20",
+        )
+
+    assert code == manage.EXIT_PROBLEMS
+    assert payload["complete"] is True
+    assert payload["summary"]["missing"] == 1
+    stub.reconcile_projection_range.assert_called_once_with(
+        start_ledger=10,
+        end_ledger=12,
+        contract_id="C" * 56,
+        max_events=20,
+        rpc_url=None,
+    )
+
+
+def test_projection_reconcile_rejects_event_limit_over_maximum(capsys):
+    with pytest.raises(SystemExit) as exc:
+        manage.main([
+            "projection-reconcile",
+            "--start-ledger",
+            "10",
+            "--end-ledger",
+            "12",
+            "--contract-id",
+            "C" * 56,
+            "--limit",
+            "10001",
+        ])
+    assert exc.value.code == manage.EXIT_USAGE
+
+
+def test_projection_reconcile_rejects_range_over_maximum(capsys):
+    with pytest.raises(SystemExit) as exc:
+        manage.main([
+            "projection-reconcile",
+            "--start-ledger",
+            "1",
+            "--end-ledger",
+            "10001",
+            "--contract-id",
+            "C" * 56,
+        ])
     assert exc.value.code == manage.EXIT_USAGE
 
 
