@@ -47,6 +47,9 @@ C2PA_HARPOCRATES_MAPPING_VERSION: int = 1
 _MAPPING_LABEL = "harpocrates.binding/v1"
 """C2PA assertion label used to embed the Harpocrates binding."""
 
+_SUPPORTED_ASSERTION_LABELS: frozenset[str] = frozenset({_MAPPING_LABEL})
+"""Assertion labels whose semantics are supported by this version."""
+
 _C2PA_MANIFEST_CLAIM_GENERATOR = "harpocrates"
 _C2PA_SPEC_VERSION = "1.3"  # Version we target for compatibility labelling.
 
@@ -161,6 +164,7 @@ class _Reason:
     RECURSION_DETECTED = "recursion_detected"
     EMBEDDED_BINDING_MISMATCH = "embedded_binding_mismatch"
     EMBEDDED_BINDING_DUPLICATE = "embedded_binding_duplicate"
+    UNSUPPORTED_CRITICAL_ASSERTION = "unsupported_critical_assertion"
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +217,39 @@ class PrivacyFlags:
         }
 
 
+@dataclass(frozen=True)
+class C2paAssertionCompatibilityReport:
+    """
+    Machine-readable compatibility report for assertions in a C2PA manifest.
+
+    Classifies assertion labels into:
+    - ``supported_assertions``: labels whose semantics are supported by this version.
+    - ``optional_unknown_assertions``: unrecognised assertions not marked critical/required.
+    - ``required_unknown_assertions``: unrecognised assertions marked ``critical: true``
+      or ``required: true``.
+
+    ``compatible`` is True only when ``required_unknown_assertions`` is empty.
+    ``fail_closed`` is True whenever unsupported critical semantics are present.
+    Only assertion *labels* (never assertion data or digest values) are included.
+    """
+
+    supported_assertions: tuple[str, ...] = ()
+    optional_unknown_assertions: tuple[str, ...] = ()
+    required_unknown_assertions: tuple[str, ...] = ()
+    compatible: bool = True
+    fail_closed: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Privacy-safe JSON-serialisable report (labels and booleans only)."""
+        return {
+            "supported_assertions": list(self.supported_assertions),
+            "optional_unknown_assertions": list(self.optional_unknown_assertions),
+            "required_unknown_assertions": list(self.required_unknown_assertions),
+            "compatible": self.compatible,
+            "fail_closed": self.fail_closed,
+        }
+
+
 @dataclass
 class C2paParsedManifest:
     """
@@ -228,6 +265,9 @@ class C2paParsedManifest:
     binding: C2paHarpocratesBinding
     unknown_assertions: list[C2paUnknownAssertion] = field(default_factory=list)
     trust_status: C2paTrustStatus = C2paTrustStatus.SIGNATURE_NOT_CHECKED
+    compatibility_report: C2paAssertionCompatibilityReport = field(
+        default_factory=C2paAssertionCompatibilityReport
+    )
 
 
 @dataclass(frozen=True)
@@ -269,20 +309,51 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
     Parse and validate a C2PA-compatible manifest.
 
     Applies strict size, depth, algorithm, and resource limits before any
-    semantic processing.  Unknown assertions are preserved in
+    semantic processing.  Optional unknown assertions are preserved in
     ``C2paParsedManifest.unknown_assertions`` without affecting the binding.
+    Unknown assertions marked ``critical: true`` or ``required: true`` fail
+    closed with ``C2paParseError("unsupported_critical_assertion", ...)``.
 
     Args:
         raw: Raw manifest bytes or string (UTF-8 JSON).
 
     Returns:
-        A ``C2paParsedManifest`` on success.
+        A ``C2paParsedManifest`` on success, including its
+        ``compatibility_report``.
 
     Raises:
-        C2paParseError: On any structural, size, or semantic violation.
+        C2paParseError: On any structural, size, or semantic violation,
+            including unsupported critical assertions.
             Error payloads contain only reason codes and field names; no
             manifest content is included.
     """
+    return _parse_manifest_internal(raw, fail_on_critical=True)
+
+
+def build_assertion_compatibility_report(
+    raw: bytes | str,
+) -> C2paAssertionCompatibilityReport:
+    """
+    Build a critical-assertion compatibility report for a C2PA manifest.
+
+    Applies all structural, size, depth, algorithm, and binding consistency
+    checks (raising ``C2paParseError`` on malformed manifests), then classifies
+    all assertions into:
+    - ``supported_assertions``
+    - ``optional_unknown_assertions``
+    - ``required_unknown_assertions``
+
+    Unlike ``parse_c2pa_manifest``, this function does not raise on unsupported
+    critical assertions; instead it returns a report with ``compatible=False``
+    and ``fail_closed=True`` so callers can inspect why an import would be
+    rejected fail-closed.
+    """
+    return _parse_manifest_internal(raw, fail_on_critical=False).compatibility_report
+
+
+def _parse_manifest_internal(
+    raw: bytes | str, *, fail_on_critical: bool
+) -> C2paParsedManifest:
     if isinstance(raw, str):
         raw = raw.encode("utf-8")
 
@@ -330,6 +401,10 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
 
     unknown: list[C2paUnknownAssertion] = []
     assertion_bindings: list[C2paHarpocratesBinding] = []
+    supported_labels: list[str] = []
+    optional_unknown_labels: list[str] = []
+    required_unknown_labels: list[str] = []
+
     for idx, assertion in enumerate(assertions_raw):
         if not isinstance(assertion, dict):
             raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}]")
@@ -345,14 +420,30 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
             raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}]")
         if len(assertion_bytes) > _MAX_ASSERTION_DATA_BYTES:
             raise C2paParseError(_Reason.ASSERTION_DATA_TOO_LARGE, f"assertions[{idx}]")
+
+        is_critical = _is_assertion_critical(assertion, idx)
+
         # The binding is embedded a second time as a named assertion (see
         # docs/c2pa-interoperability.md); parse it so the two copies can be
         # required to agree below.
-        if label == _MAPPING_LABEL:
-            assertion_bindings.append(
-                _parse_binding(assertion.get("data"), prefix=f"assertions[{idx}].data")
-            )
+        if label in _SUPPORTED_ASSERTION_LABELS:
+            if label == _MAPPING_LABEL:
+                assertion_bindings.append(
+                    _parse_binding(assertion.get("data"), prefix=f"assertions[{idx}].data")
+                )
+            supported_labels.append(label)
             continue
+
+        if is_critical:
+            if fail_on_critical:
+                raise C2paParseError(
+                    _Reason.UNSUPPORTED_CRITICAL_ASSERTION,
+                    f"assertions[{idx}]",
+                )
+            required_unknown_labels.append(label)
+        else:
+            optional_unknown_labels.append(label)
+
         # Preserve unknown assertions.
         unknown.append(
             C2paUnknownAssertion(
@@ -382,12 +473,21 @@ def parse_c2pa_manifest(raw: bytes | str) -> C2paParsedManifest:
     if assertion_bindings:
         _require_consistent_embedded_binding(binding, assertion_bindings[0])
 
+    compatibility_report = C2paAssertionCompatibilityReport(
+        supported_assertions=tuple(supported_labels),
+        optional_unknown_assertions=tuple(optional_unknown_labels),
+        required_unknown_assertions=tuple(required_unknown_labels),
+        compatible=not required_unknown_labels,
+        fail_closed=bool(required_unknown_labels),
+    )
+
     return C2paParsedManifest(
         claim_generator=claim_generator.strip(),
         spec_version=spec_version,
         binding=binding,
         unknown_assertions=unknown,
         trust_status=C2paTrustStatus.SIGNATURE_NOT_CHECKED,
+        compatibility_report=compatibility_report,
     )
 
 
@@ -658,6 +758,23 @@ def corroborate_binding(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_assertion_critical(assertion: dict[str, Any], idx: int) -> bool:
+    """Return True if an assertion declares critical/required semantics.
+
+    Validates that ``critical`` and ``required``, when present, are booleans
+    so ambiguous non-boolean values fail closed.
+    """
+    is_critical = False
+    for flag_name in ("critical", "required"):
+        if flag_name in assertion:
+            flag_val = assertion[flag_name]
+            if not isinstance(flag_val, bool):
+                raise C2paParseError(_Reason.INVALID_TYPE, f"assertions[{idx}].{flag_name}")
+            if flag_val:
+                is_critical = True
+    return is_critical
 
 
 def _parse_binding(

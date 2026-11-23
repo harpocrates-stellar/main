@@ -3,7 +3,9 @@
  *
  * Responsibility: combine the Flask extraction, NeonDB lookup, and the
  * Soroban on-chain registry into a single structured result with independent
- * trust dimensions. No React state.
+ * trust dimensions, and bind cached verification results to their statement
+ * and trust snapshot identity so incompatible context changes require a fresh
+ * explicit verification result. No React state.
  */
 
 import type { ChainProofRecord, IssuerRecord } from '../stellarTypes'
@@ -68,6 +70,131 @@ export type VerificationResult = {
   events: ProofEvent[]
   onChain: ChainProofRecord | null
   trust: StructuredVerificationModel
+}
+
+export type VerificationStatementIdentity = {
+  videoHash: string
+  proofId?: string | null
+  metadataHash?: string | null
+}
+
+export type TrustSnapshotIdentity = {
+  network: string
+  contractId: string
+  offline: boolean
+  networkMismatch?: string | null
+}
+
+export type VerificationContextIdentity = {
+  statement: VerificationStatementIdentity
+  trustSnapshot: TrustSnapshotIdentity
+}
+
+export type CachedVerificationEntry<T = VerificationResult> = {
+  contextKey: string
+  context: VerificationContextIdentity
+  result: T
+}
+
+export type StaleVerificationReason =
+  | 'MISSING_CACHE'
+  | 'NETWORK_MISMATCH'
+  | 'CONTEXT_CHANGED'
+
+export type CachedVerificationResolution<T = VerificationResult> =
+  | { usable: true; result: T }
+  | { usable: false; reason: StaleVerificationReason }
+
+function normalizeDigest(value: string | null | undefined): string {
+  if (typeof value !== 'string') return ''
+  return value.trim().toLowerCase()
+}
+
+function normalizeText(value: string | null | undefined): string {
+  if (typeof value !== 'string') return ''
+  return value.trim()
+}
+
+/**
+ * Build a canonical key binding a verification result to both the statement
+ * identity (videoHash, proofId, metadataHash) and the trust snapshot identity
+ * (network, contractId, offline mode, networkMismatch).
+ */
+export function buildVerificationContextKey(
+  context: VerificationContextIdentity,
+): string {
+  return JSON.stringify({
+    statement: {
+      videoHash: normalizeDigest(context.statement.videoHash),
+      proofId: normalizeDigest(context.statement.proofId),
+      metadataHash: normalizeDigest(context.statement.metadataHash),
+    },
+    trustSnapshot: {
+      network: normalizeText(context.trustSnapshot.network),
+      contractId: normalizeText(context.trustSnapshot.contractId),
+      offline: Boolean(context.trustSnapshot.offline),
+      networkMismatch: normalizeText(context.trustSnapshot.networkMismatch),
+    },
+  })
+}
+
+/**
+ * Return true only when a cached verification result was produced for the same
+ * statement and trust snapshot identity without an active network mismatch.
+ */
+export function isVerificationContextCompatible(
+  cached: VerificationContextIdentity,
+  current: VerificationContextIdentity,
+): boolean {
+  if (
+    normalizeText(cached.trustSnapshot.networkMismatch) ||
+    normalizeText(current.trustSnapshot.networkMismatch)
+  ) {
+    return false
+  }
+  if (!normalizeDigest(current.statement.videoHash)) {
+    return false
+  }
+  return buildVerificationContextKey(cached) === buildVerificationContextKey(current)
+}
+
+/**
+ * Bind a verification result to its statement and trust snapshot identity.
+ */
+export function createCachedVerificationEntry<T = VerificationResult>(
+  context: VerificationContextIdentity,
+  result: T,
+): CachedVerificationEntry<T> {
+  return {
+    contextKey: buildVerificationContextKey(context),
+    context,
+    result,
+  }
+}
+
+/**
+ * Resolve whether a cached verification result can be displayed for the
+ * current context, or whether an incompatible context change requires a fresh
+ * explicit verification result.
+ */
+export function resolveCachedVerificationResult<T = VerificationResult>(
+  entry: CachedVerificationEntry<T> | null,
+  currentContext: VerificationContextIdentity,
+): CachedVerificationResolution<T> {
+  if (!entry) {
+    return { usable: false, reason: 'MISSING_CACHE' }
+  }
+  if (normalizeText(currentContext.trustSnapshot.networkMismatch)) {
+    return { usable: false, reason: 'NETWORK_MISMATCH' }
+  }
+  const currentKey = buildVerificationContextKey(currentContext)
+  if (
+    entry.contextKey !== currentKey ||
+    !isVerificationContextCompatible(entry.context, currentContext)
+  ) {
+    return { usable: false, reason: 'CONTEXT_CHANGED' }
+  }
+  return { usable: true, result: entry.result }
 }
 
 const CONTENT_FAILURE_CODES = new Set([

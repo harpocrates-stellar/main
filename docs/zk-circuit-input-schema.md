@@ -68,3 +68,23 @@ statement. The current source fails the pinned Nargo `1.0.0-beta.9` compile
 check, so that migration must resolve the source build first. Stored
 proofs are not rewritten. Rollback is the previous browser bundle; this change
 does not modify on-chain storage or the verifier codec.
+
+## Stable error categories for unsupported input versions
+
+Pre-prover validation (`zk/tools/circuit_input_version.py` and the browser input
+guard in `frontend/src/circuitInputSchema.ts`) rejects unsupported or malformed
+circuit input versions **before** invoking an expensive prover, and maps
+failures to stable, privacy-safe error categories that never echo witness
+secrets or raw inputs:
+
+| Category | Trigger | Stage |
+| :--- | :--- | :--- |
+| `unsupported_circuit_version` | `circuit_version` does not match `CURRENT_CIRCUIT_VERSION` (`2`), or Noir asserts `"circuit version mismatch"` | Pre-prover guard & first constraint in `silent_witness/src/main.nr` |
+| `unsupported_input_schema_version` | `input_schema_version` does not match `CIRCUIT_INPUT_SCHEMA_VERSION` (`1`) | Pre-prover guard |
+| `malformed_circuit_version` | `circuit_version` or `input_schema_version` is non-integer, boolean, or negative | Pre-prover guard |
+| `circuit_constraint_unsatisfied` | Witness or domain constraint fails after version validation (`"malformed"` / `"unsupported"`) | Prover / witness execution |
+
+Inside `zk/noir/silent_witness/src/main.nr`, `circuit_version` is asserted
+before witness derivation so that version mismatches are always reported as
+`"circuit version mismatch"` rather than conflated with unsatisfied circuit
+constraints (`"malformed"`).

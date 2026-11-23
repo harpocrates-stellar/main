@@ -53,14 +53,24 @@ function getCliVersion(): string {
 
 // ── I/O helpers ───────────────────────────────────────────────────────────
 
-async function readText(path: string): Promise<string> {
+export async function readText(
+  source: string | NodeJS.ReadableStream,
+  limit: number = MAX_MANIFEST_BYTES,
+): Promise<string> {
   const chunks: Buffer[] = []
   let size = 0
-  const source = path === '-' ? process.stdin : createReadStream(path)
-  for await (const chunk of source) {
+  const stream: NodeJS.ReadableStream =
+    typeof source !== 'string'
+      ? source
+      : source === '-'
+        ? process.stdin
+        : createReadStream(source)
+  for await (const chunk of stream) {
     size += Buffer.byteLength(chunk)
-    if (size > 1024 * 1024) {
-      if (path !== '-') source.destroy()
+    if (size > limit) {
+      if (typeof (stream as unknown as { destroy?: () => void }).destroy === 'function') {
+        (stream as unknown as { destroy: () => void }).destroy()
+      }
       throw new Error('input exceeds 1 MiB limit')
     }
     chunks.push(Buffer.from(chunk))

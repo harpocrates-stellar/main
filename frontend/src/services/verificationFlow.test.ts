@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ChainProofRecord } from '../stellarTypes'
 import {
+  buildVerificationContextKey,
   buildVerificationDimensions,
+  createCachedVerificationEntry,
+  isVerificationContextCompatible,
+  resolveCachedVerificationResult,
   runVerificationFlow,
   verifyUploadedVideo,
+  type VerificationContextIdentity,
 } from './verificationFlow'
 
 vi.mock('./verificationService', () => ({
@@ -186,5 +191,99 @@ describe('runVerificationFlow & verifyUploadedVideo', () => {
     expect(result.trust.dimensions.contentIntegrity.state).toBe('unverified')
     expect(result.trust.dimensions.chainRegistration.state).toBe('verified')
     expect(result.trust.overall).toBe('incomplete')
+  })
+})
+
+describe('cached verification context binding', () => {
+  function makeContext(
+    overrides: {
+      statement?: Partial<VerificationContextIdentity['statement']>
+      trustSnapshot?: Partial<VerificationContextIdentity['trustSnapshot']>
+    } = {},
+  ): VerificationContextIdentity {
+    return {
+      statement: {
+        videoHash: VALID_HASH,
+        proofId: 'c'.repeat(64),
+        metadataHash: 'b'.repeat(64),
+        ...overrides.statement,
+      },
+      trustSnapshot: {
+        network: 'Test SDF Network ; September 2015',
+        contractId: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+        offline: false,
+        networkMismatch: null,
+        ...overrides.trustSnapshot,
+      },
+    }
+  }
+
+  it('reuses a cached result when statement and trust snapshot identity match', () => {
+    const context = makeContext()
+    const entry = createCachedVerificationEntry(context, 'Confirmed: verified')
+
+    expect(
+      resolveCachedVerificationResult(entry, makeContext({
+        statement: { videoHash: VALID_HASH.toUpperCase() },
+      })),
+    ).toEqual({
+      usable: true,
+      result: 'Confirmed: verified',
+    })
+  })
+
+  it('rejects a cached result when statement identity changes', () => {
+    const entry = createCachedVerificationEntry(makeContext(), 'Confirmed: verified')
+
+    expect(
+      resolveCachedVerificationResult(
+        entry,
+        makeContext({ statement: { videoHash: 'd'.repeat(64) } }),
+      ),
+    ).toEqual({ usable: false, reason: 'CONTEXT_CHANGED' })
+
+    expect(
+      resolveCachedVerificationResult(
+        entry,
+        makeContext({ statement: { proofId: 'e'.repeat(64) } }),
+      ),
+    ).toEqual({ usable: false, reason: 'CONTEXT_CHANGED' })
+  })
+
+  it('rejects a cached result when trust snapshot identity changes or network mismatches', () => {
+    const entry = createCachedVerificationEntry(makeContext(), 'Confirmed: verified')
+
+    expect(
+      resolveCachedVerificationResult(
+        entry,
+        makeContext({ trustSnapshot: { offline: true } }),
+      ),
+    ).toEqual({ usable: false, reason: 'CONTEXT_CHANGED' })
+
+    expect(
+      resolveCachedVerificationResult(
+        entry,
+        makeContext({ trustSnapshot: { network: 'Public Global Stellar Network ; September 2015' } }),
+      ),
+    ).toEqual({ usable: false, reason: 'CONTEXT_CHANGED' })
+
+    expect(
+      resolveCachedVerificationResult(
+        entry,
+        makeContext({ trustSnapshot: { networkMismatch: 'Wallet is on Mainnet' } }),
+      ),
+    ).toEqual({ usable: false, reason: 'NETWORK_MISMATCH' })
+  })
+
+  it('treats missing cache or empty videoHash as incompatible', () => {
+    const emptyHashContext = makeContext({ statement: { videoHash: '   ' } })
+    expect(resolveCachedVerificationResult(null, makeContext())).toEqual({
+      usable: false,
+      reason: 'MISSING_CACHE',
+    })
+    expect(isVerificationContextCompatible(emptyHashContext, emptyHashContext)).toBe(false)
+    expect(buildVerificationContextKey(makeContext())).not.toBe(
+      buildVerificationContextKey(makeContext({ trustSnapshot: { offline: true } })),
+    )
   })
 })

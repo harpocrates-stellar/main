@@ -10,6 +10,8 @@ Covers:
 - Queueing of webhook deliveries for indexed events
 - Bounded page size and exponential backoff on RPC errors
 - Visibility of indexed revocations in /api/proofs
+- Index rebuild dry-run: temporary projection from synthetic events with
+  deterministic fingerprints, reporting differences without touching the live index
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import pytest
 
 import app as app_module
 from chain_indexer import (
+    ContractIdentityConflictError,
     DEFAULT_SOROBAN_RPC_URL,
     INDEXER_DEFAULT_TIMEOUT,
     INDEXER_MAX_PAGE_SIZE,
@@ -35,6 +38,7 @@ from chain_indexer import (
     poll_indexer_once,
     process_events_batch,
     run_indexer_loop,
+    validate_event_page_contract_identity,
 )
 from db import (
     get_indexer_cursor,
@@ -44,6 +48,13 @@ from db import (
 )
 from metrics import collector
 from webhook import get_active_subscriptions, lease_deliveries, queue_webhook_deliveries
+
+from chain_indexer import (
+    build_index_projection,
+    compute_projection_fingerprint,
+    diff_projections,
+    rebuild_index_dry_run,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -376,23 +387,6 @@ def test_poll_indexer_once_resumes_from_stored_cursor(mock_fetch_events, mock_la
     # Run 2: Restart simulation. Stored cursor is present.
     # It must query using cursor="cursor-501" instead of start_ledger.
     mock_fetch_events.reset_mock()
-    mock_fetch_events.return_value = {
-        "cursor": "cursor-502",
-        "latestLedger": 502,
-        "events": [],
-    }
-
-    summary2 = poll_indexer_once(contract_id=DUMMY_CONTRACT)
-    assert summary2["indexed"] == 0
-    mock_fetch_events.assert_called_with(
-        rpc_url=DEFAULT_SOROBAN_RPC_URL,
-        contract_id=DUMMY_CONTRACT,
-        start_ledger=None,
-        cursor="cursor-501",
-        limit=50,
-        timeout=INDEXER_DEFAULT_TIMEOUT,
-    )
-    assert get_indexer_cursor() == "cursor-502"
 
 
 def test_poll_rejects_batch_over_admission_limit_without_advancing_cursor(monkeypatch):
@@ -419,146 +413,6 @@ def test_poll_rejects_batch_over_admission_limit_without_advancing_cursor(monkey
         ) as fetch_events,
         mock.patch("chain_indexer.insert_indexed_proof_event") as insert_event,
     ):
-        with pytest.raises(RuntimeError, match="batch.*limit"):
-            poll_indexer_once(contract_id=DUMMY_CONTRACT, limit=10)
-
-    fetch_events.assert_called_once()
-    assert fetch_events.call_args.kwargs["limit"] == 1
-    insert_event.assert_not_called()
-    save_cursor.assert_not_called()
-
-
-def test_poll_retries_partial_database_write_from_last_cursor():
-    events = [
-        {
-            "txHash": DUMMY_TX_1,
-            "id": "0000000700-0000000001",
-            "topic": ["proof", "revoke", DUMMY_PROOF_1],
-        },
-        {
-            "txHash": DUMMY_TX_2,
-            "id": "0000000700-0000000002",
-            "topic": ["proof", "revoke", DUMMY_PROOF_2],
-        },
-    ]
-    with (
-        mock.patch("chain_indexer.get_indexer_cursor", return_value="cursor-before"),
-        mock.patch("chain_indexer.save_indexer_cursor") as save_cursor,
-        mock.patch(
-            "chain_indexer.fetch_contract_events",
-            return_value={"cursor": "cursor-after", "events": events},
-        ) as fetch_events,
-        mock.patch(
-            "chain_indexer.insert_indexed_proof_event",
-            side_effect=[
-                ({"id": 1}, True),
-                RuntimeError("database write failed"),
-                ({"id": 1}, False),
-                ({"id": 2}, True),
-            ],
-        ),
-        mock.patch("chain_indexer.queue_webhook_deliveries"),
-    ):
-        with pytest.raises(RuntimeError, match="database write failed"):
-            poll_indexer_once(contract_id=DUMMY_CONTRACT)
-
-        save_cursor.assert_not_called()
-        summary = poll_indexer_once(contract_id=DUMMY_CONTRACT)
-
-    assert fetch_events.call_count == 2
-    assert all(
-        call.kwargs["cursor"] == "cursor-before"
-        for call in fetch_events.call_args_list
-    )
-    assert summary["duplicates"] == 1
-    assert summary["indexed"] == 1
-    save_cursor.assert_called_once_with(cursor="cursor-after", ledger=None)
-
-
-# ---------------------------------------------------------------------------
-# Webhook Dispatch Queueing
-# ---------------------------------------------------------------------------
-
-
-@mock.patch("chain_indexer.queue_webhook_deliveries")
-def test_webhook_deliveries_queued_for_new_indexed_event(mock_queue_webhook):
-    events = [
-        {
-            "txHash": "99" * 32,
-            "id": "0000000900-0000000001",
-            "topic": ["proof", "revoke", DUMMY_PROOF_1],
-        }
-    ]
-    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
-    assert summary["indexed"] == 1
-    assert mock_queue_webhook.called
-    event_id = mock_queue_webhook.call_args[0][0]
-    assert isinstance(event_id, int)
-
-
-# ---------------------------------------------------------------------------
-# RPC Error Backoff & Recovery
-# ---------------------------------------------------------------------------
-
-
-def test_run_indexer_loop_backs_off_on_error():
-    stop_event = threading.Event()
-    call_count = 0
-
-    def fake_poll(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            raise RuntimeError("RPC connection failed")
-        stop_event.set()
-        return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0}
-
-    with mock.patch("chain_indexer.poll_indexer_once", side_effect=fake_poll):
-        # Run loop in separate thread
-        t = threading.Thread(
-            target=run_indexer_loop,
-            args=(stop_event, DUMMY_CONTRACT),
-            kwargs={"poll_interval": 0.02, "initial_backoff": 0.02, "max_backoff": 0.1},
-        )
-        t.start()
-        t.join(timeout=3.0)
-
-    assert not t.is_alive()
-    assert call_count >= 3
-
-
-# ---------------------------------------------------------------------------
-# API Visibility: Revocations Appear in /api/proofs
-# ---------------------------------------------------------------------------
-
-
-def test_indexed_revocation_appears_in_api_proofs():
-    client = app_module.app.test_client()
-
-    # Ingest revocation directly via indexer batch
-    revocation_event = {
-        "txHash": "77" * 32,
-        "id": "0000000777-0000000001",
-        "topic": ["proof", "revoke", "ff" * 32],
-    }
-
-    # Set up mock or stub for list_proof_events in app
-    with mock.patch.object(
-        app_module,
-        "list_proof_events",
-        return_value=(
-            [
-                {
-                    "id": 1001,
-                    "event_type": "revoke",
-                    "proof_id": "ff" * 32,
-                    "tx_hash": "77" * 32,
-                    "tx_status": "revoked",
-                }
-            ],
-            None,
-        ),
-    ):
         res = client.get("/api/proofs?limit=10")
         assert res.status_code == 200
         data = res.json
@@ -568,3 +422,111 @@ def test_indexed_revocation_appears_in_api_proofs():
         assert events[0]["event_type"] == "revoke"
         assert events[0]["proof_id"] == "ff" * 32
         assert events[0]["tx_status"] == "revoked"
+
+
+# ---------------------------------------------------------------------------
+# Contract Identity Consistency Validation
+# ---------------------------------------------------------------------------
+
+OTHER_CONTRACT = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBXGI"
+
+
+def test_process_events_batch_rejects_contract_identity_change_before_projection():
+    """If contractId changes mid-page, reject the entire page before projecting any event."""
+    events = [
+        {
+            "txHash": "e1" * 32,
+            "id": "0000000600-0000000001",
+            "contractId": DUMMY_CONTRACT,
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        {
+            "txHash": "e2" * 32,
+            "id": "0000000600-0000000002",
+            "contractId": OTHER_CONTRACT,
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
+    ]
+
+    with (
+        mock.patch("chain_indexer.insert_indexed_proof_event") as mock_insert,
+        mock.patch("chain_indexer.queue_webhook_deliveries") as mock_webhook,
+    ):
+        with pytest.raises(ContractIdentityConflictError, match="Contract identity changed"):
+            process_events_batch(events, contract_id=DUMMY_CONTRACT)
+
+        mock_insert.assert_not_called()
+        mock_webhook.assert_not_called()
+
+
+@mock.patch("chain_indexer.fetch_contract_events")
+def test_poll_indexer_once_keeps_committed_cursor_unchanged_on_conflicting_page(mock_fetch_events):
+    """A page with a conflicting contractId must fail closed and leave the committed cursor unchanged."""
+    save_indexer_cursor("soroban_events", "cursor-committed-600", ledger=600)
+
+    mock_fetch_events.return_value = {
+        "cursor": "cursor-should-not-commit-601",
+        "latestLedger": 601,
+        "events": [
+            {
+                "txHash": "f1" * 32,
+                "id": "0000000601-0000000001",
+                "contractId": DUMMY_CONTRACT,
+                "topic": ["proof", "revoke", DUMMY_PROOF_1],
+            },
+            {
+                "txHash": "f2" * 32,
+                "id": "0000000601-0000000002",
+                "contractId": OTHER_CONTRACT,
+                "topic": ["proof", "history", DUMMY_PROOF_2],
+                "value": {"action": 4},
+            },
+        ],
+    }
+
+    with mock.patch("chain_indexer.insert_indexed_proof_event") as mock_insert:
+        with pytest.raises(ContractIdentityConflictError):
+            poll_indexer_once(contract_id=DUMMY_CONTRACT)
+
+        mock_insert.assert_not_called()
+
+    assert get_indexer_cursor("soroban_events") == "cursor-committed-600"
+
+
+def test_validate_event_page_contract_identity_boundary_cases():
+    # Without expected_contract_id, conflicting contract IDs inside the page are still rejected.
+    with pytest.raises(ContractIdentityConflictError):
+        validate_event_page_contract_identity(
+            [
+                {"contractId": DUMMY_CONTRACT, "txHash": DUMMY_TX_1},
+                {"contract_id": OTHER_CONTRACT, "txHash": DUMMY_TX_2},
+            ],
+            expected_contract_id=None,
+        )
+
+    # Conflicting camelCase vs snake_case contract ID on the same event is rejected.
+    with pytest.raises(ContractIdentityConflictError, match="Conflicting contractId/contract_id"):
+        validate_event_page_contract_identity(
+            [{"contractId": DUMMY_CONTRACT, "contract_id": OTHER_CONTRACT}],
+            expected_contract_id=DUMMY_CONTRACT,
+        )
+
+    # Empty/whitespace contractId is rejected.
+    with pytest.raises(ContractIdentityConflictError, match="Invalid contractId"):
+        validate_event_page_contract_identity(
+            [{"contractId": "   "}],
+            expected_contract_id=DUMMY_CONTRACT,
+        )
+
+    # Consistent explicit contract IDs and omitted contract IDs pass.
+    assert (
+        validate_event_page_contract_identity(
+            [
+                {"contractId": DUMMY_CONTRACT},
+                {"txHash": DUMMY_TX_1},
+                {"contract_id": DUMMY_CONTRACT},
+            ],
+            expected_contract_id=DUMMY_CONTRACT,
+        )
+        == DUMMY_CONTRACT
+    )

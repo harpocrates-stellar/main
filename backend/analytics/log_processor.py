@@ -25,11 +25,83 @@ EXPORT_LOG_VERSION = "1.0.0"
 VALID_SEVERITIES = {"debug", "info", "warning", "error", "critical", "fatal"}
 
 
-SAFE_LABEL_KEYS = {
+ALLOWED_DIMENSION_VOCABULARY = frozenset({
     "endpoint", "method", "status", "error_code", "category", "operation",
     "retry_attempt", "source", "version", "schema", "rollout", "host",
-    "service", "error_type",
-}
+    "service", "error_type", "lifecycle", "event_name", "status_code",
+    "environment", "domain",
+})
+
+SAFE_LABEL_KEYS = set(ALLOWED_DIMENSION_VOCABULARY)
+
+EVIDENCE_FILE_EXTENSIONS = frozenset({
+    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp", "svg", "heic",
+    "mp4", "avi", "mov", "mkv", "webm", "mp3", "wav", "flac", "ogg", "m4a",
+    "bin", "dat", "raw", "blob", "pdf", "doc", "docx", "xls", "xlsx",
+    "zip", "tar", "gz", "tgz", "rar", "7z", "txt", "csv",
+})
+
+
+def is_evidence_hash(val: Any) -> bool:
+    if not isinstance(val, (str, bytes)):
+        return False
+    if isinstance(val, bytes):
+        try:
+            val = val.decode("utf-8", "ignore")
+        except Exception:
+            return False
+    clean = val.strip()
+    if clean.startswith("0x") or clean.startswith("0X"):
+        clean = clean[2:]
+    if len(clean) >= 32 and re.fullmatch(r"[a-fA-F0-9]{32,}", clean):
+        return True
+    if ":" in clean:
+        parts = clean.split(":", 1)
+        if len(parts[1]) >= 32 and re.fullmatch(r"[a-fA-F0-9]{32,}", parts[1]):
+            return True
+    return False
+
+
+def is_raw_filename(val: Any) -> bool:
+    if not isinstance(val, (str, bytes)):
+        return False
+    if isinstance(val, bytes):
+        try:
+            val = val.decode("utf-8", "ignore")
+        except Exception:
+            return False
+    val_clean = val.strip().lower()
+    if "/" in val_clean or "\\" in val_clean:
+        if any(val_clean.startswith(prefix) for prefix in (
+            "uploads/", "uploads\\", "evidence/", "evidence\\", "media/", "media\\",
+            "/uploads/", "\\uploads\\", "/evidence/", "\\evidence\\", "/media/", "\\media\\"
+        )):
+            return True
+        if re.search(r"[/\\][a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+", val_clean):
+            return True
+    if "." in val_clean:
+        ext = val_clean.rsplit(".", 1)[-1]
+        if ext in EVIDENCE_FILE_EXTENSIONS:
+            return True
+        if ("/" in val_clean or "\\" in val_clean) and ext.isalnum() and not ext.isdigit():
+            return True
+        if re.fullmatch(r"[a-zA-Z0-9_\-]+\.[a-zA-Z]{1,10}", val_clean) and ext not in (
+            "action", "internal", "operation", "observed", "signal", "violation", "error", "event"
+        ):
+            return True
+    return False
+
+
+def validate_dimension(key: str, val: Any) -> Tuple[bool, Optional[str]]:
+    val_str = str(val) if val is not None else ""
+    key_str = str(key) if key is not None else ""
+    if is_evidence_hash(val_str) or is_evidence_hash(key_str):
+        return (False, "dimension_rejected_hash")
+    if is_raw_filename(val_str) or is_raw_filename(key_str):
+        return (False, "dimension_rejected_filename")
+    if key_str not in ALLOWED_DIMENSION_VOCABULARY:
+        return (False, "dimension_rejected_vocabulary")
+    return (True, None)
 
 
 LABEL_KEY_PATTERN = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
@@ -155,11 +227,14 @@ class LogEntry:
     export_signature: Optional[str] = None
     source: str = "backend"
     annotations: Dict[str, str] = field(default_factory=dict)
+    consent_policy_revision: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.severity not in VALID_SEVERITIES:
             self.severity = "info"
         self.message_summary = _cap_bytes(self.message_summary, 512)
+        if self.consent_policy_revision is not None:
+            self.consent_policy_revision = _cap_bytes(self.consent_policy_revision, 128)
 
 
 @dataclass
@@ -190,10 +265,16 @@ class LogProcessor:
         self,
         config: Optional[ErrorTelemetryConfig] = None,
         redaction_engine: Optional[Any] = None,
+        consent_policy_revision: Optional[str] = None,
     ) -> None:
         self._entries: List[LogEntry] = []
         self._lock: threading.RLock = threading.RLock()
         self._config: ErrorTelemetryConfig = config if config is not None else ErrorTelemetryConfig()
+        self._consent_policy_revision = (
+            _cap_bytes(consent_policy_revision, 128)
+            if consent_policy_revision is not None
+            else None
+        )
         self._total_entries_processed: int = 0
         self._export_safety_violations: int = 0
         self._oversized_dropped: int = 0
@@ -253,8 +334,8 @@ class LogProcessor:
                 break
             if not isinstance(k, str):
                 continue
-            key_ok = (k in SAFE_LABEL_KEYS) or bool(LABEL_KEY_PATTERN.match(k))
-            if not key_ok:
+            valid, _ = validate_dimension(k, v)
+            if not valid:
                 continue
             if not isinstance(v, str):
                 try:
@@ -452,6 +533,7 @@ class LogProcessor:
             export_signature=None,
             source="backend",
             annotations={},
+            consent_policy_revision=self._consent_policy_revision,
         )
 
         if self._config.require_export_safety_validation:
@@ -605,6 +687,7 @@ class LogProcessor:
                     export_signature=item.get("export_signature"),
                     source=_cap_bytes(item.get("source", "backend"), 64),
                     annotations=filtered_annotations,
+                    consent_policy_revision=item.get("consent_policy_revision"),
                 )
                 validate_log_export_safety(entry)
                 results.append(entry)
@@ -637,9 +720,13 @@ def _get_default_engine() -> Any:
 
 
 def _label_key_is_valid(k: str) -> bool:
-    if k in SAFE_LABEL_KEYS:
+    return k in ALLOWED_DIMENSION_VOCABULARY
+
+
+def _counter_key_is_valid(k: str) -> bool:
+    if k in SAFE_LABEL_KEYS or k in ALLOWED_DIMENSION_VOCABULARY:
         return True
-    return bool(LABEL_KEY_PATTERN.match(k))
+    return bool(COUNTER_KEY_PATTERN.match(k))
 
 
 def validate_log_export_safety(entry: LogEntry) -> Tuple[bool, List[str]]:
@@ -674,6 +761,10 @@ def validate_log_export_safety(entry: LogEntry) -> Tuple[bool, List[str]]:
         if not isinstance(lk, str) or not _label_key_is_valid(lk):
             reasons.append(f"invalid_label_key:{lk}")
             break
+        valid, err = validate_dimension(lk, lv)
+        if not valid:
+            reasons.append(f"{err}:{lk}")
+            break
         if isinstance(lv, str):
             if len(lv.encode("utf-8")) > 256:
                 reasons.append(f"label_value_too_long:{lk}")
@@ -682,7 +773,7 @@ def validate_log_export_safety(entry: LogEntry) -> Tuple[bool, List[str]]:
     if len(entry.counters) > 32:
         reasons.append("counters_count_exceeded")
     for ck, cv in entry.counters.items():
-        if not isinstance(ck, str) or not _label_key_is_valid(ck):
+        if not isinstance(ck, str) or not _counter_key_is_valid(ck):
             reasons.append(f"invalid_counter_key:{ck}")
             break
         if isinstance(cv, bool) or not isinstance(cv, int):

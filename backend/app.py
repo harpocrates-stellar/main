@@ -29,7 +29,7 @@ from http_security import (
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from config import load_config
@@ -44,6 +44,7 @@ from errors import (
     NOT_FOUND,
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
+    UPLOAD_TERMINATED_PREMATURELY,
     RATE_LIMITED,
     UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
@@ -150,7 +151,7 @@ from capture_attestation import (
 from c2pa import (
     C2paParseError,
     C2paTrustStatus,
-    compute_privacy_flags,
+    build_assertion_compatibility_report,
     corroborate_binding,
     export_c2pa_manifest,
     parse_c2pa_manifest,
@@ -160,6 +161,7 @@ from errors import (
     INTERNAL_ERROR,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
+    UPLOAD_TERMINATED_PREMATURELY,
     STEGO_LIMIT_EXCEEDED,
     VALIDATION_ERROR,
     error_response,
@@ -178,17 +180,16 @@ from tracing import (
 )
 from readiness import ReadinessManager
 from verifier_cache import VerifierCache
-from admission import (
-    AdmissionController,
-    AdmissionRejectedError,
-    _get_client_identity,
-    admit_verified_work,
-    require_capacity,
-)
+from admission import AdmissionController, require_capacity, _get_client_identity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
+try:
+    from chain_indexer import index_freshness_summary
+except ImportError:
+    index_freshness_summary = None
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
+    PrematureUploadTerminationError,
     ResumableUploadSessionStore,
     SessionNotFoundError,
     StreamingFileStorage,
@@ -473,12 +474,13 @@ def create_app() -> Flask:
         max_queue=config.max_queue_size,
         max_per_identity=config.max_concurrent_per_identity,
         timeout_seconds=config.admission_timeout_seconds,
+        max_temp_storage_per_identity=config.upload_temp_budget_bytes,
     )
 
     upload_session_store = ResumableUploadSessionStore(
         base_dir=resolve_temp_dir(getattr(config, "upload_temp_dir", None)) or tempfile.gettempdir(),
         default_chunk_size=getattr(config, "upload_chunk_bytes", None),
-        default_max_size=config.upload_max_bytes if config.upload_max_bytes is not None else config.max_video_bytes,
+        default_max_size=getattr(config, "upload_max_bytes", None) if getattr(config, "upload_max_bytes", None) is not None else config.max_video_bytes,
     )
 
     @app.before_request
@@ -767,6 +769,22 @@ def create_app() -> Flask:
             status=413,
         )
 
+    @app.errorhandler(PrematureUploadTerminationError)
+    def upload_terminated_prematurely(error: PrematureUploadTerminationError):
+        return error_response(
+            code=error.code,
+            message=str(error),
+            status=error.status_code,
+        )
+
+    @app.errorhandler(ClientDisconnected)
+    def client_disconnected(_error: ClientDisconnected):
+        return error_response(
+            code=UPLOAD_TERMINATED_PREMATURELY,
+            message="upload terminated prematurely before completion",
+            status=400,
+        )
+
     @app.errorhandler(ValueError)
     def bad_request(error: ValueError):
         # Metadata failures carry a canonical taxonomy code; serialize them
@@ -885,6 +903,27 @@ def create_app() -> Flask:
         video.seek(0)
         return size <= effective_max
 
+    def _expected_upload_size(video) -> int:
+        """
+        Estimate the expected upload size for storage budget reservation.
+        
+        Returns the maximum possible size based on:
+        - Content-Length header (if available and reasonable)
+        - Configured max_video_bytes / upload_max_bytes
+        - Falls back to max_video_bytes
+        """
+        # Use Content-Length if available (includes multipart overhead)
+        if request.content_length is not None and request.content_length > 0:
+            # Cap at the configured maximum to avoid reserving more than needed
+            upload_max = getattr(config, "upload_max_bytes", None)
+            effective_max = max(0, int(upload_max)) if upload_max is not None else config.max_video_bytes
+            return min(request.content_length, effective_max + UPLOAD_MULTIPART_OVERHEAD_BYTES)
+        
+        # Fall back to the configured maximum
+        upload_max = getattr(config, "upload_max_bytes", None)
+        effective_max = max(0, int(upload_max)) if upload_max is not None else config.max_video_bytes
+        return effective_max + UPLOAD_MULTIPART_OVERHEAD_BYTES
+
     def _enable_streaming_for_large_uploads():
         """Wrap large multipart uploads with bounded-chunk stream hashing."""
         threshold = getattr(
@@ -930,73 +969,87 @@ def create_app() -> Flask:
                 MetadataError(METADATA_OVERSIZED, "metadata is too large")
             )
 
+        # Reserve temporary upload storage budget
+        identity = _get_client_identity()
+        expected_size = _expected_upload_size(video)
+        reserved_ok, reserve_reason = admission_controller.reserve_storage(identity, expected_size)
+        if not reserved_ok:
+            return jsonify({
+                "error": "storage budget exceeded",
+                "reason": reserve_reason
+            }), 503
+
         try:
-            metadata = json.loads(metadata_raw)
-        except json.JSONDecodeError:
-            return metadata_error_response(
-                MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                return metadata_error_response(
+                    MetadataError(METADATA_MALFORMED, "metadata must be valid JSON")
+                )
+            try:
+                validate_embed_metadata(metadata)
+            except MetadataError as exc:
+                return metadata_error_response(exc)
+            except ValueError as exc:
+                return metadata_error_response(classify_validation_error(exc))
+
+            normalized_name = normalize_filename(video.filename)
+            try:
+                quarantine_context = isolate_upload(
+                    video,
+                    filename=normalized_name,
+                    content_type=video.content_type,
+                )
+                with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                    source_url = workspace.get_url("source.video")
+                    output_url = workspace.get_url("embedded.mp4")
+                    with quarantined_path.open("rb") as quarantined:
+                        workspace.write_encrypted(
+                            "source.video",
+                            quarantined,
+                            size=quarantined_path.stat().st_size,
+                        )
+
+                    embed_metadata(source_url, output_url, metadata)
+                    output_bytes = workspace.read_decrypted("embedded.mp4")
+                    source_hash = workspace.sha256("source.video")
+                    embedded_hash = workspace.sha256("embedded.mp4")
+                    metadata_hash = canonical_metadata_hash(metadata)
+            except QuarantineError as exc:
+                return error_response(
+                    code=UNSUPPORTED_MEDIA_TYPE,
+                    message=str(exc),
+                    status=400,
+                )
+
+            db_event = insert_proof_event(
+                event_type="embed",
+                file_name=normalized_name,
+                video_hash=embedded_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId"),
+                tier=metadata.get("tier"),
+                embedded_hash=embedded_hash,
+                metadata=redact_metadata(metadata),
             )
-        try:
-            validate_embed_metadata(metadata)
-        except MetadataError as exc:
-            return metadata_error_response(exc)
-        except ValueError as exc:
-            return metadata_error_response(classify_validation_error(exc))
 
-        normalized_name = normalize_filename(video.filename)
-        try:
-            quarantine_context = isolate_upload(
-                video,
-                filename=normalized_name,
-                content_type=video.content_type,
-            )
-            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
-                source_url = workspace.get_url("source.video")
-                output_url = workspace.get_url("embedded.mp4")
-                with quarantined_path.open("rb") as quarantined:
-                    workspace.write_encrypted(
-                        "source.video",
-                        quarantined,
-                        size=quarantined_path.stat().st_size,
-                    )
+            if db_event and db_event.get("id"):
+                queue_webhook_deliveries(db_event["id"])
 
-                embed_metadata(source_url, output_url, metadata)
-                output_bytes = workspace.read_decrypted("embedded.mp4")
-                source_hash = workspace.sha256("source.video")
-                embedded_hash = workspace.sha256("embedded.mp4")
-                metadata_hash = canonical_metadata_hash(metadata)
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
-            )
-
-        db_event = insert_proof_event(
-            event_type="embed",
-            file_name=normalized_name,
-            video_hash=embedded_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId"),
-            tier=metadata.get("tier"),
-            embedded_hash=embedded_hash,
-            metadata=redact_metadata(metadata),
-        )
-
-        if db_event and db_event.get("id"):
-            queue_webhook_deliveries(db_event["id"])
-
-        response = Response(output_bytes, mimetype="video/mp4")
-        response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
-        response.headers["X-Harpocrates-Source-Hash"] = source_hash
-        response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
-        response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
-        response.headers["X-Harpocrates-Db-Event"] = str(db_event)
-        if config.expose_metadata_header:
-            response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
-                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            ).decode("ascii")
-        return response
+            response = Response(output_bytes, mimetype="video/mp4")
+            response.headers["Content-Disposition"] = 'attachment; filename="harpocrates-evidence.mp4"'
+            response.headers["X-Harpocrates-Source-Hash"] = source_hash
+            response.headers["X-Harpocrates-Embedded-Hash"] = embedded_hash
+            response.headers["X-Harpocrates-Metadata-Hash"] = metadata_hash
+            response.headers["X-Harpocrates-Db-Event"] = str(db_event)
+            if config.expose_metadata_header:
+                response.headers["X-Harpocrates-Metadata"] = base64.b64encode(
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                ).decode("ascii")
+            return response
+        finally:
+            # Release the storage reservation regardless of outcome
+            admission_controller.release_storage(identity, expected_size)
 
     def _extract_upload_session_auth() -> tuple[str | None, str | None]:
         auth_header = request.headers.get("Authorization", "").strip()
@@ -1077,8 +1130,46 @@ def create_app() -> Flask:
         if chunk_index < 0:
             return jsonify({"error": "chunk_index must be non-negative"}), 400
 
-        session_token, owner = _extract_upload_session_auth()
-        chunk_sha256 = (request.headers.get("X-Chunk-Sha256") or "").strip() or None
+        # Handle declared size consistency check
+        declared_size_header = request.headers.get("X-Declared-Size")
+        metadata_path = session_dir / "session.json"
+        
+        if declared_size_header is not None:
+            try:
+                declared_size = int(declared_size_header)
+                if declared_size < 0:
+                    return jsonify({"error": "X-Declared-Size must be non-negative"}), 400
+            except ValueError:
+                return jsonify({"error": "X-Declared-Size must be an integer"}), 400
+            
+            if metadata_path.exists():
+                # Session metadata exists, validate declared size matches
+                try:
+                    with metadata_path.open("r") as f:
+                        session_meta = json.load(f)
+                    stored_declared = session_meta.get("declared_size")
+                    if stored_declared is not None and stored_declared != declared_size:
+                        return jsonify({
+                            "error": "declared size mismatch",
+                            "expected": stored_declared,
+                            "received": declared_size
+                        }), 400
+                except (json.JSONDecodeError, OSError):
+                    # If metadata is corrupted, treat as no declared size
+                    pass
+            else:
+                # First chunk with declared size - store it
+                session_meta = {"declared_size": declared_size, "total_uploaded": 0}
+                try:
+                    with metadata_path.open("w") as f:
+                        json.dump(session_meta, f)
+                except OSError:
+                    pass  # Non-critical, continue without tracking
+
+        # Persist each session chunk with bounded-chunk hashing for integrity.
+        g.upload_config = config
+        streaming_chunk = create_streaming_file_storage(chunk)
+        chunk_path = session_dir / f"chunk-{chunk_index}"
         try:
             progress, total_bytes = upload_session_store.write_chunk(
                 session_id,
@@ -1090,10 +1181,25 @@ def create_app() -> Flask:
             )
         except RequestEntityTooLarge:
             return jsonify({"error": "chunk exceeds size limit"}), 413
-        except SessionNotFoundError:
-            return jsonify({"error": "session not found"}), 404
-        except UploadSessionError as exc:
-            return error_response(code=exc.code, message=str(exc), status=exc.status_code)
+
+        # Update total uploaded bytes if tracking
+        if metadata_path.exists():
+            try:
+                with metadata_path.open("r") as f:
+                    session_meta = json.load(f)
+                session_meta["total_uploaded"] = session_meta.get("total_uploaded", 0) + streaming_chunk.bytes_written
+                # Check if total exceeds declared size
+                declared = session_meta.get("declared_size")
+                if declared is not None and session_meta["total_uploaded"] > declared:
+                    return jsonify({
+                        "error": "total uploaded bytes exceeds declared size",
+                        "declared": declared,
+                        "uploaded": session_meta["total_uploaded"]
+                    }), 400
+                with metadata_path.open("w") as f:
+                    json.dump(session_meta, f)
+            except (json.JSONDecodeError, OSError):
+                pass  # Non-critical
 
         return jsonify({
             "ok": True,
@@ -1125,6 +1231,23 @@ def create_app() -> Flask:
             return jsonify({"error": "session not found"}), 404
         except UploadSessionError as exc:
             return error_response(code=exc.code, message=str(exc), status=exc.status_code)
+
+        # Validate declared size consistency at commit time
+        metadata_path = session_dir / "session.json"
+        if metadata_path.exists():
+            try:
+                with metadata_path.open("r") as f:
+                    session_meta = json.load(f)
+                declared = session_meta.get("declared_size")
+                total_uploaded = session_meta.get("total_uploaded", 0)
+                if declared is not None and total_uploaded != declared:
+                    return jsonify({
+                        "error": "total uploaded bytes does not match declared size",
+                        "declared": declared,
+                        "uploaded": total_uploaded
+                    }), 400
+            except (json.JSONDecodeError, OSError):
+                pass  # Non-critical
 
         metadata_raw = request.form.get("metadata")
         if metadata_raw is None:
@@ -1251,62 +1374,76 @@ def create_app() -> Flask:
             return jsonify({"error": "video payload exceeds size limit"}), 413
         validate_video_upload(video)
 
-        normalized_name = normalize_filename(video.filename)
+        # Reserve temporary upload storage budget
+        identity = _get_client_identity()
+        expected_size = _expected_upload_size(video)
+        reserved_ok, reserve_reason = admission_controller.reserve_storage(identity, expected_size)
+        if not reserved_ok:
+            return jsonify({
+                "error": "storage budget exceeded",
+                "reason": reserve_reason
+            }), 503
+
         try:
-            quarantine_context = isolate_upload(
-                video,
-                filename=normalized_name,
-                content_type=video.content_type,
+            normalized_name = normalize_filename(video.filename)
+            try:
+                quarantine_context = isolate_upload(
+                    video,
+                    filename=normalized_name,
+                    content_type=video.content_type,
+                )
+                with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
+                    source_url = workspace.get_url("source.video")
+                    with quarantined_path.open("rb") as quarantined:
+                        workspace.write_encrypted(
+                            "source.video",
+                            quarantined,
+                            size=quarantined_path.stat().st_size,
+                        )
+                    metadata = extract_metadata(source_url)
+                    video_hash = workspace.sha256("source.video")
+                    metadata_hash = canonical_metadata_hash(metadata) if metadata else None
+            except QuarantineError as exc:
+                return error_response(
+                    code=UNSUPPORTED_MEDIA_TYPE,
+                    message=str(exc),
+                    status=400,
+                )
+
+            retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
+            if retention_class not in config.retention_classes:
+                return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
+            retention_days = config.retention_classes[retention_class]
+            expires_at = None
+            if retention_days >= 0:
+                expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
+            db_event = insert_proof_event(
+                event_type="extract",
+                file_name=normalized_name,
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=metadata.get("proofId") if metadata else None,
+                tier=metadata.get("tier") if metadata else None,
+                retention_class=retention_class,
+                expires_at=expires_at,
+                metadata=redact_metadata(metadata),
             )
-            with quarantine_context as quarantined_path, EncryptedWorkspace() as workspace:
-                source_url = workspace.get_url("source.video")
-                with quarantined_path.open("rb") as quarantined:
-                    workspace.write_encrypted(
-                        "source.video",
-                        quarantined,
-                        size=quarantined_path.stat().st_size,
-                    )
-                metadata = extract_metadata(source_url)
-                video_hash = workspace.sha256("source.video")
-                metadata_hash = canonical_metadata_hash(metadata) if metadata else None
-        except QuarantineError as exc:
-            return error_response(
-                code=UNSUPPORTED_MEDIA_TYPE,
-                message=str(exc),
-                status=400,
+
+            if db_event and db_event.get("id"):
+                queue_webhook_deliveries(db_event["id"])
+
+            return jsonify(
+                {
+                    "video_hash": video_hash,
+                    "metadata_hash": metadata_hash,
+                    "metadata": metadata,
+                    "db_event": db_event,
+                }
             )
-
-        retention_class = request.headers.get("X-Harpocrates-Retention-Class") or (metadata.get("retentionClass", "default") if metadata else "default")
-        if retention_class not in config.retention_classes:
-            return jsonify({"error": f"invalid retention class: {retention_class}"}), 400
-        retention_days = config.retention_classes[retention_class]
-        expires_at = None
-        if retention_days >= 0:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
-
-        db_event = insert_proof_event(
-            event_type="extract",
-            file_name=normalized_name,
-            video_hash=video_hash,
-            metadata_hash=metadata_hash,
-            proof_id=metadata.get("proofId") if metadata else None,
-            tier=metadata.get("tier") if metadata else None,
-            retention_class=retention_class,
-            expires_at=expires_at,
-            metadata=redact_metadata(metadata),
-        )
-
-        if db_event and db_event.get("id"):
-            queue_webhook_deliveries(db_event["id"])
-
-        return jsonify(
-            {
-                "video_hash": video_hash,
-                "metadata_hash": metadata_hash,
-                "metadata": metadata,
-                "db_event": db_event,
-            }
-        )
+        finally:
+            # Release the storage reservation regardless of outcome
+            admission_controller.release_storage(identity, expected_size)
 
     @app.get("/api/proofs")
     def proofs():
@@ -2603,13 +2740,74 @@ def create_app() -> Flask:
             "hashes_verified": bool(corroboration is not None and corroboration.ok),
             "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
-            "privacy_flags": compute_privacy_flags(parsed).to_dict(),
+            "compatibility_report": parsed.compatibility_report.to_dict(),
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
                 "verification. A matching 'expected' block is integrity "
                 "corroboration only. Corroborate this binding against on-chain "
                 "records before making any trust decision."
             ),
+        })
+
+    @app.post("/api/c2pa/compatibility")
+    def c2pa_compatibility():
+        """
+        Return a C2PA critical-assertion compatibility report for a manifest.
+
+        Classifies assertions into supported, optional unknown, and required
+        unknown assertions. Unsupported critical semantics are reported with
+        ``compatible: false`` and ``fail_closed: true`` (and rejected fail-closed
+        by ``POST /api/c2pa/import``).
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        if isinstance(manifest_raw, dict):
+            try:
+                import json as _json
+                manifest_bytes = _json.dumps(manifest_raw, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="manifest object could not be serialised",
+                    status=400,
+                )
+        elif isinstance(manifest_raw, str):
+            manifest_bytes = manifest_raw.encode("utf-8")
+        else:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            report = build_assertion_compatibility_report(manifest_bytes)
+        except C2paParseError as exc:
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        return ok_response({
+            "compatibility_report": report.to_dict(),
+            "trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
         })
 
     return app
