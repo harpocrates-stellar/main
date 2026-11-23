@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import hmac
+import json
 import os
 import re
 import threading
@@ -19,9 +21,19 @@ except Exception:
         LogProcessor = None
         validate_log_export_safety = None
 
+try:
+    from analytics.consent import CONSENT_SCHEMA_VERSION
+except ImportError:
+    try:
+        from backend.analytics.consent import CONSENT_SCHEMA_VERSION
+    except ImportError:
+        CONSENT_SCHEMA_VERSION = None
+
 
 EXPORT_FORMAT_VERSION = "1.0.0"
 DELETION_PREVIEW_SCHEMA_VERSION = "1.0.0"
+EXPORT_RECEIPT_VERSION = "receipt-v1"
+EXPORT_POLICY_REVISION_PREFIX = "pol-v1:"
 
 # Sentinel values distinguishing withdrawn consent from data never collected.
 CONSENT_STATE_NEVER_COLLECTED = "never_collected"
@@ -190,6 +202,10 @@ class ExportArtifact:
     # Caller-requested display label. Only populated for authorized output.
     display_label: Optional[str] = None
 
+    # Completion receipt (see docs/analytics-export-receipts.md). Metadata only:
+    # scope, policy revision, counts and the output digest, never entries.
+    receipt: dict[str, Any] | None = None
+
 
 def resolve_consent_state(entries: List[LogEntry]) -> Tuple[Optional[str], str]:
     """Derive the consent policy revision and state for a set of entries.
@@ -226,6 +242,21 @@ def sanitize_display_label(label: Optional[str]) -> Optional[str]:
         return None
     cleaned = "".join(ch for ch in str(label) if ch.isprintable())
     return cleaned[:128]
+
+
+def export_policy_revision(policy: ExportPolicy) -> str:
+    """Stable identifier of the export policy settings in force.
+
+    Any change to a policy field changes the revision; equal settings always
+    give the same revision. Policies that are not dataclasses (duck-typed
+    policy objects are accepted by ``ExportManager``) use their attributes.
+    """
+    if dataclasses.is_dataclass(policy) and not isinstance(policy, type):
+        settings = dataclasses.asdict(policy)
+    else:
+        settings = {k: v for k, v in vars(policy).items() if not k.startswith("_")}
+    canonical = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
+    return EXPORT_POLICY_REVISION_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 class ExportManager:
@@ -278,17 +309,27 @@ class ExportManager:
         rollout_phase: str = "shadow",
         export_token_verified: bool = False,
         display_label: Optional[str] = None,
+        requested_max_entries: int | None = None,
     ) -> Tuple[Optional[ExportArtifact], str, int]:
+        """Create an export of ``entries`` (or the processor's buffer).
+
+        ``requested_max_entries`` is the limit the requester asked for, if
+        any; it is only recorded in the completion receipt's scope.
+        """
         with self._lock:
             policy = self._policy
             if not export_token_verified and policy.require_export_token and not policy.allow_unauthenticated_export_shadow_mode:
                 return None, "export_token_required", 0
             if entries is not None:
                 entries_filtered = list(entries)
+                entry_source = "explicit"
             elif self._processor is not None:
                 entries_filtered = list(self._processor._entries[:])
+                entry_source = "processor"
             else:
                 entries_filtered = []
+                entry_source = "none"
+            candidate_count = len(entries_filtered)
             if not policy.include_sampled_out_events:
                 entries_filtered = [e for e in entries_filtered if e.export_safe]
             if validate_log_export_safety is not None:
@@ -301,7 +342,6 @@ class ExportManager:
                     safety_sig = self.compute_safety_signature(entries_filtered)
             else:
                 safety_sig = None
-            consent_revision, consent_state = resolve_consent_state(entries_filtered)
             if not export_token_verified:
                 entries_filtered = []
             entries_filtered = entries_filtered[:policy.max_artifacts_per_export]
@@ -316,8 +356,14 @@ class ExportManager:
             else:
                 serialized = "[]"
                 count = 0
+            exported_entries = sorted(
+                entries_filtered,
+                key=lambda entry: entry.timestamp_epoch_seconds,
+            )[:count]
+            consent_revision, consent_state = resolve_consent_state(exported_entries)
             payload_bytes = len(serialized.encode("utf-8"))
-            checksum = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+            output_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+            checksum = output_digest[:16]
             artifact_id = self.generate_export_id()
             artifact = ExportArtifact(
                 artifact_id=artifact_id,
@@ -335,6 +381,15 @@ class ExportManager:
                 server_file_name=self.generate_server_file_name(artifact_id, use_compress),
                 display_label=sanitize_display_label(display_label) if export_token_verified else None,
             )
+            artifact.receipt = self._build_receipt(
+                artifact,
+                policy=policy,
+                entry_source=entry_source,
+                candidate_count=candidate_count,
+                export_token_verified=export_token_verified,
+                requested_max_entries=requested_max_entries,
+                output_digest=output_digest,
+            )
             if len(self._artifacts) >= self._max_artifacts_memory:
                 if self._artifact_queue:
                     oldest_id = self._artifact_queue.pop(0)
@@ -342,6 +397,51 @@ class ExportManager:
             self._artifacts[artifact_id] = artifact
             self._artifact_queue.append(artifact_id)
             return artifact, serialized, count
+
+    @staticmethod
+    def _build_receipt(
+        artifact: ExportArtifact,
+        *,
+        policy: ExportPolicy,
+        entry_source: str,
+        candidate_count: int,
+        export_token_verified: bool,
+        requested_max_entries: int | None,
+        output_digest: str,
+    ) -> dict[str, Any]:
+        """Completion receipt for ``artifact``: built from settings, counts and
+        digests only, so no entry field (ids, messages, labels, account or
+        session tags) can reach it."""
+        return {
+            "receipt_version": EXPORT_RECEIPT_VERSION,
+            "artifact_id": artifact.artifact_id,
+            "completed_at_epoch_seconds": artifact.generated_at_epoch_seconds,
+            "scope": {
+                "entry_source": entry_source,
+                "requested_max_entries": (
+                    requested_max_entries
+                    if isinstance(requested_max_entries, int) and not isinstance(requested_max_entries, bool)
+                    else None
+                ),
+                "candidate_count": candidate_count if export_token_verified else None,
+                "exported_count": artifact.entry_count,
+                "max_entries": policy.max_artifacts_per_export,
+                "max_bytes": policy.max_artifact_bytes,
+                "include_sampled_out_events": policy.include_sampled_out_events,
+                "export_token_verified": bool(export_token_verified),
+                "compress": artifact.compress,
+                "rollout_phase": artifact.rollout_phase,
+            },
+            "policy_revision": export_policy_revision(policy),
+            "consent_policy_revision": (
+                artifact.consent_policy_revision if export_token_verified else None
+            ),
+            "consent_schema_version": CONSENT_SCHEMA_VERSION,
+            "redaction_version": artifact.redaction_version,
+            "format_version": artifact.schema_version,
+            "output_digest": "sha256:" + output_digest,
+            "payload_bytes": artifact.payload_bytes,
+        }
 
     def get_artifact(self, artifact_id: str) -> Optional[ExportArtifact]:
         with self._lock:

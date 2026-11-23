@@ -227,11 +227,14 @@ class LogEntry:
     export_signature: Optional[str] = None
     source: str = "backend"
     annotations: Dict[str, str] = field(default_factory=dict)
+    consent_policy_revision: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.severity not in VALID_SEVERITIES:
             self.severity = "info"
         self.message_summary = _cap_bytes(self.message_summary, 512)
+        if self.consent_policy_revision is not None:
+            self.consent_policy_revision = _cap_bytes(self.consent_policy_revision, 128)
 
 
 @dataclass
@@ -262,10 +265,16 @@ class LogProcessor:
         self,
         config: Optional[ErrorTelemetryConfig] = None,
         redaction_engine: Optional[Any] = None,
+        consent_policy_revision: Optional[str] = None,
     ) -> None:
         self._entries: List[LogEntry] = []
         self._lock: threading.RLock = threading.RLock()
         self._config: ErrorTelemetryConfig = config if config is not None else ErrorTelemetryConfig()
+        self._consent_policy_revision = (
+            _cap_bytes(consent_policy_revision, 128)
+            if consent_policy_revision is not None
+            else None
+        )
         self._total_entries_processed: int = 0
         self._export_safety_violations: int = 0
         self._oversized_dropped: int = 0
@@ -524,6 +533,7 @@ class LogProcessor:
             export_signature=None,
             source="backend",
             annotations={},
+            consent_policy_revision=self._consent_policy_revision,
         )
 
         if self._config.require_export_safety_validation:
@@ -677,6 +687,7 @@ class LogProcessor:
                     export_signature=item.get("export_signature"),
                     source=_cap_bytes(item.get("source", "backend"), 64),
                     annotations=filtered_annotations,
+                    consent_policy_revision=item.get("consent_policy_revision"),
                 )
                 validate_log_export_safety(entry)
                 results.append(entry)
