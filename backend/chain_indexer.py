@@ -10,13 +10,16 @@ Indexes lifecycle events emitted directly on-chain by the Harpocrates Registry c
 - supersede_dispute (DisputeSuperseded)
 
 Decodes events into proof_events rows idempotently (unique on tx_hash + event_index),
+validates that every event in a fetched page belongs to a single consistent contract
+identity before projection (rejecting conflicting pages without advancing the cursor),
 persists the ledger cursor, queues webhook deliveries, skips and counts unknown topics,
-bounds page size, and backs off exponentially on RPC errors.
+admits at most one bounded page at a time, and backs off on RPC or database errors.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +34,7 @@ from typing import Any
 from db import (
     get_indexer_cursor,
     insert_indexed_proof_event,
+    list_proof_events,
     save_indexer_cursor,
 )
 from fetch_external import safe_urlopen
@@ -54,6 +58,15 @@ INDEXER_DEFAULT_PAGE_SIZE = 50
 INDEXER_MAX_PAGE_SIZE = 100
 INDEXER_DEFAULT_POLL_INTERVAL = 5.0
 INDEXER_DEFAULT_TIMEOUT = 10.0
+
+
+class IndexerBackpressureError(RuntimeError):
+    """Raised when an RPC response exceeds the indexer's bounded batch capacity."""
+
+
+def _bounded_page_size(limit: int) -> int:
+    """Clamp an event page to the supported in-memory batch bounds."""
+    return max(1, min(int(limit), INDEXER_MAX_PAGE_SIZE))
 
 
 # ---------------------------------------------------------------------------
@@ -351,15 +364,83 @@ def classify_and_decode_event(
 # ---------------------------------------------------------------------------
 
 
+class ContractIdentityConflictError(ValueError):
+    """Raised when an event page contains events from a conflicting contract identity."""
+
+
+def _extract_event_contract_id(event: dict[str, Any]) -> str | None:
+    """Extract and validate explicit contract identity fields from a raw event."""
+    raw_camel = event.get("contractId")
+    raw_snake = event.get("contract_id")
+
+    candidates: list[str] = []
+    for field_name, raw_val in (("contractId", raw_camel), ("contract_id", raw_snake)):
+        if raw_val is None:
+            continue
+        if not isinstance(raw_val, str) or not raw_val.strip():
+            raise ContractIdentityConflictError(
+                f"Invalid {field_name} in event: expected non-empty string"
+            )
+        candidates.append(raw_val.strip())
+
+    if len(candidates) == 2 and candidates[0] != candidates[1]:
+        raise ContractIdentityConflictError(
+            f"Conflicting contractId/contract_id within event: {candidates[0]} != {candidates[1]}"
+        )
+
+    return candidates[0] if candidates else None
+
+
+def validate_event_page_contract_identity(
+    events: list[dict[str, Any]],
+    expected_contract_id: str | None = None,
+) -> str | None:
+    """Validate that every event in a page belongs to a single consistent contract identity.
+
+    When expected_contract_id is provided, every event with an explicit contractId/contract_id
+    must match it. When expected_contract_id is omitted, all explicit contract IDs in the
+    page must agree with each other.
+
+    Raises ContractIdentityConflictError on any mismatch so the page is rejected before
+    projection and before any cursor is committed.
+    """
+    baseline = (
+        expected_contract_id.strip()
+        if isinstance(expected_contract_id, str) and expected_contract_id.strip()
+        else None
+    )
+
+    for idx, raw in enumerate(events):
+        if not isinstance(raw, dict):
+            continue
+        event_contract_id = _extract_event_contract_id(raw)
+        if event_contract_id is None:
+            continue
+        if baseline is None:
+            baseline = event_contract_id
+        elif event_contract_id != baseline:
+            raise ContractIdentityConflictError(
+                f"Contract identity changed inside event page at index {idx}: "
+                f"expected {baseline}, got {event_contract_id}"
+            )
+
+    return baseline
+
+
 def process_events_batch(
     events: list[dict[str, Any]],
     contract_id: str | None = None,
+    *,
+    max_events: int = INDEXER_MAX_PAGE_SIZE,
 ) -> dict[str, Any]:
     """Ingest a list of raw Soroban RPC events.
 
-    Decodes lifecycle events, inserts them idempotently into proof_events,
-    queues webhooks for newly written events, and tracks unknown topics.
+    Validates every event's contract identity before projection, decodes lifecycle events,
+    inserts them idempotently into proof_events, queues webhooks for newly written events,
+    and tracks unknown topics.
     """
+    validate_event_page_contract_identity(events, expected_contract_id=contract_id)
+
     summary = {
         "scanned": 0,
         "indexed": 0,
@@ -439,9 +520,10 @@ def fetch_contract_events(
     cursor: str | None = None,
     limit: int = INDEXER_DEFAULT_PAGE_SIZE,
     timeout: float = INDEXER_DEFAULT_TIMEOUT,
+    end_ledger: int | None = None,
 ) -> dict[str, Any]:
     """Call Soroban RPC getEvents with bounded pagination and filter."""
-    page_limit = max(1, min(int(limit), INDEXER_MAX_PAGE_SIZE))
+    page_limit = _bounded_page_size(limit)
     params: dict[str, Any] = {
         "filters": [
             {
@@ -459,6 +541,8 @@ def fetch_contract_events(
         params["cursor"] = cursor
     elif start_ledger is not None:
         params["startLedger"] = start_ledger
+    if end_ledger is not None:
+        params["endLedger"] = end_ledger
 
     payload = {
         "jsonrpc": "2.0",
@@ -509,17 +593,24 @@ def poll_indexer_once(
         latest = fetch_latest_ledger(active_rpc_url, timeout=timeout)
         start_ledger = latest
 
+    page_limit = _bounded_page_size(limit)
     rpc_result = fetch_contract_events(
         rpc_url=active_rpc_url,
         contract_id=active_contract_id,
         start_ledger=start_ledger,
         cursor=cursor,
-        limit=limit,
+        limit=page_limit,
         timeout=timeout,
     )
 
     events = rpc_result.get("events") or []
-    summary = process_events_batch(events, contract_id=active_contract_id)
+    if not isinstance(events, list):
+        raise RuntimeError("Soroban RPC events must be a list")
+    summary = process_events_batch(
+        events,
+        contract_id=active_contract_id,
+        max_events=page_limit,
+    )
 
     new_cursor = rpc_result.get("cursor")
     latest_ledger = rpc_result.get("latestLedger")
@@ -574,3 +665,136 @@ def run_indexer_loop(
             )
             stop_event.wait(backoff)
             backoff = min(max_backoff, backoff * 2.0)
+
+
+
+# ---------------------------------------------------------------------------
+# Index rebuild dry-run: deterministic projection fingerprints
+# ---------------------------------------------------------------------------
+
+_PROJECTION_DOMAIN = "harpocrates:index-projection:v1"
+
+
+def _projection_tx_hash(event: dict[str, Any]) -> str:
+    value = event.get("txHash") or event.get("tx_hash") or ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _projection_event_id(event: dict[str, Any]) -> str:
+    value = event.get("id") or event.get("event_id") or event.get("eventId")
+    return str(value) if value is not None else ""
+
+
+def _projection_topic(event: dict[str, Any]) -> list[Any]:
+    value = event.get("topic")
+    return value if isinstance(value, list) else []
+
+
+def build_index_projection(
+    events: list[dict[str, Any]],
+    *,
+    contract_id: str | None = None,
+    skipped: list[Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build an in-memory proof projection from decoded or synthetic events.
+
+    The projection is keyed by ``"<txHash>:<eventId>"`` so a rebuild is
+    invariant to the order events are fed in. Malformed events (missing hash,
+    empty topic) are skipped and appended to ``skipped`` when provided.
+    """
+    projection: dict[str, dict[str, Any]] = {}
+    for position, event in enumerate(events):
+        if not isinstance(event, dict):
+            if skipped is not None:
+                skipped.append(position)
+            continue
+        tx_hash = _projection_tx_hash(event)
+        topic = _projection_topic(event)
+        if not tx_hash or not topic:
+            if skipped is not None:
+                skipped.append(position)
+            continue
+        event_id = _projection_event_id(event) or str(position)
+        key = f"{tx_hash}:{event_id}"
+        event_type = topic[0] if isinstance(topic[0], str) else "unknown"
+        projection[key] = {
+            "tx_hash": tx_hash,
+            "event_id": event_id,
+            "event_type": event_type,
+            "topic": list(topic),
+            "contract_id": event.get("contract_id") or contract_id,
+            "value": event.get("value"),
+        }
+    return projection
+
+
+def compute_projection_fingerprint(projection: dict[str, dict[str, Any]]) -> str:
+    """Return a canonical SHA-256 fingerprint for a projection."""
+    canonical = {
+        key: projection[key] for key in sorted(projection)
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256((_PROJECTION_DOMAIN + payload).encode("utf-8")).hexdigest()
+
+
+def diff_projections(
+    live: dict[str, dict[str, Any]],
+    rebuilt: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Report keys added, removed or changed between two projections."""
+    live_keys = set(live)
+    rebuilt_keys = set(rebuilt)
+    added = sorted(rebuilt_keys - live_keys)
+    removed = sorted(live_keys - rebuilt_keys)
+    changed = sorted(
+        key for key in live_keys & rebuilt_keys if live[key] != rebuilt[key]
+    )
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def rebuild_index_dry_run(
+    events: list[dict[str, Any]],
+    *,
+    contract_id: str | None = None,
+    live_projection: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Rebuild the projection in memory and diff it against the live index.
+
+    Nothing is written: the live projection and indexer cursor are untouched.
+    """
+    skipped: list[Any] = []
+    rebuilt = build_index_projection(events, contract_id=contract_id, skipped=skipped)
+    live = live_projection if live_projection is not None else {}
+    diff = diff_projections(live, rebuilt)
+    differences = len(diff["added"]) + len(diff["removed"]) + len(diff["changed"])
+    return {
+        "dry_run": True,
+        "contract_id": contract_id,
+        "fingerprint": compute_projection_fingerprint(rebuilt),
+        "rebuilt_fingerprint": compute_projection_fingerprint(rebuilt),
+        "live_fingerprint": compute_projection_fingerprint(live),
+        "added": diff["added"],
+        "removed": diff["removed"],
+        "changed": diff["changed"],
+        "differences": differences,
+        "skipped": len(skipped),
+        "rebuilt_entries": len(rebuilt),
+        "live_entries": len(live),
+    }
+
+
+def dry_run_index_rebuild(*, limit: int = 1000) -> dict[str, Any]:
+    """CLI entrypoint: rebuild the projection from stored proof events."""
+    rows, _ = list_proof_events(limit=limit)
+    events = [
+        {
+            "txHash": row.get("tx_hash"),
+            "id": row.get("id"),
+            "topic": [row.get("event_type") or "unknown"],
+            "value": None,
+            "contract_id": row.get("contract_id"),
+        }
+        for row in rows
+    ]
+    live = build_index_projection(events)
+    return rebuild_index_dry_run(events, live_projection=live)

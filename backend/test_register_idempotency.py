@@ -123,3 +123,155 @@ class IdempotentDecoratorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TierIdempotencyBindingTest(unittest.TestCase):
+    """Focused coverage for identity tier binding in registration idempotency."""
+
+    def _make_flask_app(self):
+        from flask import Flask, jsonify
+
+        flask_app = Flask(__name__)
+        jobs_enqueued: list[dict] = []
+
+        @flask_app.post("/api/proofs/register")
+        @idem_mod.idempotent("register")
+        def register_view():
+            from flask import request
+
+            payload = request.get_json(silent=True) or {}
+            jobs_enqueued.append(
+                {"proof_id": payload.get("proofId"), "tier": payload.get("tier")}
+            )
+            return jsonify({"ok": True, "created": True, "tier": payload.get("tier")}), 201
+
+        return flask_app, jobs_enqueued
+
+    def test_canonical_digest_includes_identity_tier(self) -> None:
+        from flask import Flask
+
+        flask_app = Flask(__name__)
+        body_silent = {"videoHash": "aa" * 32, "proofId": "bb" * 32, "tier": "silent"}
+        body_seal = {"videoHash": "aa" * 32, "proofId": "bb" * 32, "tier": "seal"}
+
+        with flask_app.test_request_context("/api/proofs/register", method="POST", json=body_silent):
+            d_silent = idem_mod._canonical_digest()
+        with flask_app.test_request_context("/api/proofs/register", method="POST", json=body_seal):
+            d_seal = idem_mod._canonical_digest()
+
+        self.assertNotEqual(d_silent, d_seal)
+
+    def test_reused_registration_key_with_changed_tier_returns_409_without_new_job(self) -> None:
+        flask_app, jobs_enqueued = self._make_flask_app()
+        store: dict[tuple[str, str], dict] = {}
+        next_id = [1]
+
+        def fake_get(digest: str, request_type: str):
+            return store.get((digest, request_type))
+
+        def fake_create(digest: str, request_type: str, expires_at=None):
+            key = (digest, request_type)
+            if key in store:
+                return store[key]["id"], store[key]["status"]
+            rid = next_id[0]
+            next_id[0] += 1
+            store[key] = {"id": rid, "status": "PENDING", "response_payload": None}
+            return rid, "PENDING"
+
+        def fake_store_response(record_id: int, payload: dict):
+            for rec in store.values():
+                if rec["id"] == record_id:
+                    rec["status"] = "COMPLETED"
+                    rec["response_payload"] = payload
+
+        base_payload = {"videoHash": "aa" * 32, "proofId": "bb" * 32, "tier": "silent"}
+        changed_tier_payload = {"videoHash": "aa" * 32, "proofId": "bb" * 32, "tier": "seal"}
+
+        with patch.object(idem_mod, "_db_available", return_value=True), patch.object(
+            idem_mod, "get_idempotency_record", side_effect=fake_get
+        ), patch.object(
+            idem_mod, "create_idempotency_record", side_effect=fake_create
+        ), patch.object(
+            idem_mod, "store_response", side_effect=fake_store_response
+        ):
+            client = flask_app.test_client()
+
+            # 1. First registration succeeds and creates one job.
+            r1 = client.post(
+                "/api/proofs/register",
+                json=base_payload,
+                headers={"Idempotency-Key": "reg-key-001"},
+            )
+            self.assertEqual(r1.status_code, 201)
+            self.assertEqual(len(jobs_enqueued), 1)
+
+            # 2. Exact retry with same key and same tier replays 201 without creating a new job.
+            r2 = client.post(
+                "/api/proofs/register",
+                json=base_payload,
+                headers={"Idempotency-Key": "reg-key-001"},
+            )
+            self.assertEqual(r2.status_code, 201)
+            self.assertEqual(r2.get_json()["tier"], "silent")
+            self.assertEqual(len(jobs_enqueued), 1)
+
+            # 3. Reusing the same key with a changed tier returns 409 without creating a new job.
+            r3 = client.post(
+                "/api/proofs/register",
+                json=changed_tier_payload,
+                headers={"Idempotency-Key": "reg-key-001"},
+            )
+            self.assertEqual(r3.status_code, 409)
+            self.assertEqual(r3.get_json()["conflict_field"], "tier")
+            self.assertIn("conflict", r3.get_json()["error"])
+            self.assertEqual(len(jobs_enqueued), 1)
+
+    def test_boundary_reused_key_trimmed_header_and_missing_tier_conflicts(self) -> None:
+        flask_app, jobs_enqueued = self._make_flask_app()
+        store: dict[tuple[str, str], dict] = {}
+        next_id = [1]
+
+        def fake_get(digest: str, request_type: str):
+            return store.get((digest, request_type))
+
+        def fake_create(digest: str, request_type: str, expires_at=None):
+            key = (digest, request_type)
+            if key in store:
+                return store[key]["id"], store[key]["status"]
+            rid = next_id[0]
+            next_id[0] += 1
+            store[key] = {"id": rid, "status": "PENDING", "response_payload": None}
+            return rid, "PENDING"
+
+        def fake_store_response(record_id: int, payload: dict):
+            for rec in store.values():
+                if rec["id"] == record_id:
+                    rec["status"] = "COMPLETED"
+                    rec["response_payload"] = payload
+
+        with patch.object(idem_mod, "_db_available", return_value=True), patch.object(
+            idem_mod, "get_idempotency_record", side_effect=fake_get
+        ), patch.object(
+            idem_mod, "create_idempotency_record", side_effect=fake_create
+        ), patch.object(
+            idem_mod, "store_response", side_effect=fake_store_response
+        ):
+            client = flask_app.test_client()
+
+            r1 = client.post(
+                "/api/proofs/register",
+                json={"videoHash": "aa" * 32, "proofId": "bb" * 32, "tier": "source"},
+                headers={"Idempotency-Key": "  reg-key-002  "},
+            )
+            self.assertEqual(r1.status_code, 201)
+            self.assertEqual(len(jobs_enqueued), 1)
+
+            # Omitting tier on the same key must conflict on tier and not enqueue another job.
+            r2 = client.post(
+                "/api/proofs/register",
+                json={"videoHash": "aa" * 32, "proofId": "bb" * 32},
+                headers={"Idempotency-Key": "reg-key-002"},
+            )
+            self.assertEqual(r2.status_code, 409)
+            self.assertEqual(r2.get_json()["conflict_field"], "tier")
+            self.assertEqual(len(jobs_enqueued), 1)
