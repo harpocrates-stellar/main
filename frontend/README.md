@@ -79,3 +79,18 @@ All application-owned browser persistence must go through the wrappers in
 Credential or nullifier seeds, proof witnesses, generated proofs, raw private
 inputs, and every other field are prohibited from both `localStorage` and
 `sessionStorage`. Keep secret proof-generation data in memory only.
+
+### Encrypted credential vault bounds
+
+When optional client-side credential vault persistence is used via
+`src/credentialVault.ts`, only an encrypted `VaultEnvelope` (`{ v, salt, iv, ct }`)
+is persisted under `harpocrates:credential-vault`.
+
+- `parseVaultEnvelope` / `validateVaultEnvelope` bound serialized envelopes to
+  `MAX_VAULT_ENVELOPE_BYTES` (16 KiB UTF-8) and decoded ciphertext to
+  `MAX_VAULT_CIPHERTEXT_BYTES` (4 KiB / 8,192 hex characters) before JSON
+  parsing, hex decoding, or PBKDF2 key derivation.
+- `CredentialVault.importEnvelope` validates size, structure, and passphrase
+  decryption before replacing stored state; any failure rejects with
+  `VaultEnvelopeSizeError` / validation error (or `false` on decryption failure)
+  while preserving the existing encrypted vault.

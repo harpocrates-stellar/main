@@ -5,6 +5,7 @@ import {
   type LineageFetcher,
   MAX_LINEAGE_DEPTH,
   MAX_LINEAGE_FANOUT,
+  type LineageTranscriptFixture,
 } from '../src/verify-lineage.js'
 import type { LineageRecord, ProofStatus } from '../src/stellar-lookup.js'
 
@@ -249,7 +250,7 @@ describe('verifyLineageTree', () => {
   })
 
   it('enforces depth bounds client-side', async () => {
-    // 6 levels deep (exceeding MAX_LINEAGE_DEPTH = 4)
+    // 6 levels deep (exceeding MAX_LINEAGE_DEPTH= 4)
     const lineages: Record<string, LineageRecord> = {}
     for (let i = 0; i <= 5; i++) {
       lineages[`level_${i}`] = {
@@ -276,7 +277,7 @@ describe('verifyLineageTree', () => {
   })
 
   it('enforces fan-out bounds client-side', async () => {
-    // A node naming 5 parents (exceeding MAX_LINEAGE_FANOUT = 4)
+    // A node naming 5 parents (exceeding MAX_LINEAGE_FANOUT= 4)
     const lineages: Record<string, LineageRecord> = {
       fanout_node: {
         parentProofIds: ['p1', 'p2', 'p3', 'p4', 'p5'],
@@ -301,4 +302,215 @@ describe('verifyLineageTree', () => {
     const rendered = formatLineageTree(result.root)
     expect(rendered).toContain('fan-out bound exceeded (5 > 4)')
   })
+
+  it('replays the canonical success transcript fixture with stable output and exit status', async () => {
+    const fixture = requireFixture('success')
+    const fetcher = fixtureFetcher(fixture)
+
+    const result = await verifyLineageTree(fixture.rootDigest, fetcher)
+    const rendered = formatLineageTree(result.root)
+
+    expect(result.success).toBe(fixture.expected.success)
+    expect(rendered).toBe(fixture.expected.rendered)
+    expect(fixture.expected.exitCode).toBe(0)
+  })
+
+  it('replays the canonical failure transcript fixture with stable output and exit status', async () => {
+    const fixture = requireFixture('revoked')
+    const fetcher = fixtureFetcher(fixture)
+
+    const result = await verifyLineageTree(fixture.rootDigest, fetcher)
+    const rendered = formatLineageTree(result.root)
+
+    expect(result.success).toBe(fixture.expected.success)
+    expect(rendered).toBe(fixture.expected.rendered)
+    expect(fixture.expected.exitCode).toBe(1)
+  })
+
+  it('replays missing-parent and cycle transcript fixtures fail-closed', async () => {
+    for (const name of ['missing', 'cycle'] as const) {
+      const fixture = requireFixture(name)
+      const fetcher = fixtureFetcher(fixture)
+
+      const result = await verifyLineageTree(fixture.rootDigest, fetcher)
+      const rendered = formatLineageTree(result.root)
+
+      expect(result.success).toBe(false)
+      expect(rendered).toBe(fixture.expected.rendered)
+      expect(fixture.expected.exitCode).toBe(1)
+    }
+  })
+
+  it('rejects transcript fixtures that contain non-synthetic media or endpoints', () => {
+    const fixture = requireFixture('success')
+    const serialized = JSON.stringify(fixture)
+
+    // Fixtures must not reference live network endpoints or real media.
+    expect(serialized).not.toMatch(/https?:\/\//i)
+    expect(serialized).not.toMatch(/ipfs:\/\//i)
+    expect(serialized).not.toMatch(/arweave:/)
+    expect(fixture.expected.rendered).not.toContain('metadata')
+  })
 })
+
+// ------------------------------------------------------------------------------
+// Synthetic transcript fixture helpers
+// ------------------------------------------------------------------------------
+
+type FixtureName = 'success' | 'revoked' | 'missing' | 'cycle'
+
+const FAKE_ACTOR = 'GACTORFIXTURE0000000000000000000000000000000000000000000000'
+
+const FICTIVES: Record<FixtureName, LineageTranscriptFixture> = {
+  success: {
+    name: 'success',
+    rootDigest: 'root_digest',
+    lineages: {
+      root_digest: {
+        parentProofIds: ['mid1_digest', 'mid2_digest'],
+        parentCommitments: ['c1', 'c2'],
+        manifestDigest: 'm_root',
+        actor: FAKE_ACTOR,
+        operationType: 'compose',
+        outputDigest: 'root_digest',
+        depth: 2,
+      },
+      mid1_digest: {
+        parentProofIds: ['leaf1_proof', 'leaf2_proof'],
+        parentCommitments: ['c3', 'c4'],
+        manifestDigest: 'm_mid1',
+        actor: FAKE_ACTOR,
+        operationType: 'crop',
+        outputDigest: 'mid1_digest',
+        depth: 1,
+      },
+      mid2_digest: {
+        parentProofIds: ['leaf3_proof'],
+        parentCommitments: ['c5'],
+        manifestDigest: 'm_mid2',
+        actor: FAKE_ACTOR,
+        operationType: 'blur',
+        outputDigest: 'mid2_digest',
+        depth: 1,
+      },
+    },
+    proofs: {
+      leaf1_proof: 'valid',
+      leaf2_proof: 'valid',
+      leaf3_proof: 'valid',
+    },
+    expected: {
+      success: true,
+      exitCode: 0,
+      rendered: [
+        'root_digest (derivative: compose)',
+        '  ├─ mid1_digest (derivative: crop)',
+        '  |   ├─ leaf1_proof (original: valid)',
+        '  |   └─ leaf2_proof (original: valid)',
+        '  └─ mid2_digest (derivative: blur)',
+        '      └─ leaf3_proof (original: valid)',
+      ].join('\n'),
+    },
+  },
+  revoked: {
+    name: 'revoked',
+    rootDigest: 'root_digest',
+    lineages: {
+      root_digest: {
+        parentProofIds: ['parent1_proof', 'parent2_proof'],
+        parentCommitments: ['c1', 'c2'],
+        manifestDigest: 'm_root',
+        actor: FAKE_ACTOR,
+        operationType: 'crop',
+        outputDigest: 'root_digest',
+        depth: 1,
+      },
+    },
+    proofs: {
+      parent1_proof: 'valid',
+      parent2_proof: 'revoked',
+    },
+    expected: {
+      success: false,
+      exitCode: 1,
+      rendered: [
+        'root_digest (derivative: crop)',
+        '  ├─ parent1_proof (original: valid)',
+        '  └─ parent2_proof (original: revoked)',
+      ].join('\n'),
+    },
+  },
+  missing: {
+    name: 'missing',
+    rootDigest: 'root_digest',
+    lineages: {
+      root_digest: {
+        parentProofIds: ['nonexistent_proof'],
+        parentCommitments: ['c1'],
+        manifestDigest: 'm_root',
+        actor: FAKE_ACTOR,
+        operationType: 'redact',
+        outputDigest: 'root_digest',
+        depth: 1,
+      },
+    },
+    proofs: {},
+    expected: {
+      success: false,
+      exitCode: 1,
+      rendered: [
+        'root_digest (derivative: redact)',
+        '  └─ nonexistent_proof (original: missing)',
+      ].join('\n'),
+    },
+  },
+  cycle: {
+    name: 'cycle',
+    rootDigest: 'node_a',
+    lineages: {
+      node_a: {
+        parentProofIds: ['node_b'],
+        parentCommitments: ['c1'],
+        manifestDigest: 'm1',
+        actor: FAKE_ACTOR,
+        operationType: 'crop',
+        outputDigest: 'node_a',
+        depth: 1,
+      },
+      node_b: {
+        parentProofIds: ['node_a'],
+        parentCommitments: ['c2'],
+        manifestDigest: 'm2',
+        actor: FAKE_ACTOR,
+        operationType: 'transcode',
+        outputDigest: 'node_b',
+        depth: 2,
+      },
+    },
+    proofs: {
+      node_b: 'valid',
+    },
+    expected: {
+      success: false,
+      exitCode: 1,
+      rendered: [
+        'node_a (derivative: crop)',
+        '  └─ node_b (derivative: transcode)',
+        '     └─ [ERROR: cycle detected]',
+      ].join('\n'),
+    },
+  },
+}
+
+function requireFixture(name: FixtureName): LineageTranscriptFixture {
+  const fixture = FICTURES[name]
+  if (!fixture) throw new Error(`unknown transcript fixture: ${name}`)
+  return fixture
+}
+
+function fixtureFetcher(fixture: LineageTranscriptFixture): LineageFetcher {
+  return {
+    getLineage: vi.fn(async (digest) => fixture.lineages[digest] ?? null),
+    getProofStatus: vi.fn(async (proofId) => fixture.proofs[proofId] ?? 'missing'),
+  }
+}
