@@ -1,13 +1,25 @@
+from contextlib import contextmanager
 import threading
 from functools import wraps
-from typing import Dict, Tuple
+from typing import Dict, Iterator, Tuple
 
 from flask import request, jsonify
+
+
+class AdmissionRejectedError(Exception):
+    """Raised when admission control rejects work due to backpressure."""
+
+    def __init__(self, reason: str, status_code: int, retry_after: int):
+        super().__init__(f"admission rejected: {reason}")
+        self.reason = reason
+        self.status_code = status_code
+        self.retry_after = retry_after
 
 
 class AdmissionController:
     """
     Manages capacity and queue limits, providing backpressure via admission control.
+    Also tracks per-identity temporary upload storage budget reservations.
     """
 
     def __init__(
@@ -16,15 +28,18 @@ class AdmissionController:
         max_queue: int,
         max_per_identity: int,
         timeout_seconds: float,
+        max_temp_storage_per_identity: int | None = None,
     ):
         self.max_concurrent = max_concurrent
         self.max_queue = max_queue
         self.max_per_identity = max_per_identity
         self.timeout_seconds = timeout_seconds
+        self.max_temp_storage_per_identity = max_temp_storage_per_identity
 
         self._lock = threading.Lock()
         self._current_queue = 0
         self._identity_counts: Dict[str, int] = {}
+        self._reserved_storage: Dict[str, int] = {}
         self._semaphore = threading.Semaphore(max_concurrent)
 
     def acquire(self, identity: str) -> Tuple[bool, str]:
@@ -80,6 +95,52 @@ class AdmissionController:
         
         self._semaphore.release()
 
+    def reserve_storage(self, identity: str, bytes_needed: int) -> Tuple[bool, str]:
+        """
+        Reserve temporary upload storage for an identity.
+        
+        Returns (True, "ok") if reservation succeeds, or (False, reason) if budget exceeded.
+        """
+        if self.max_temp_storage_per_identity is None:
+            # No budget limit configured
+            return True, "ok"
+        
+        if bytes_needed < 0:
+            return False, "invalid_size"
+        
+        with self._lock:
+            current_reserved = self._reserved_storage.get(identity, 0)
+            if current_reserved + bytes_needed > self.max_temp_storage_per_identity:
+                return False, "storage_budget_exceeded"
+            
+            self._reserved_storage[identity] = current_reserved + bytes_needed
+            return True, "ok"
+
+    def release_storage(self, identity: str, bytes_to_release: int) -> None:
+        """
+        Release previously reserved temporary upload storage for an identity.
+        """
+        if self.max_temp_storage_per_identity is None:
+            return
+        
+        if bytes_to_release < 0:
+            return
+        
+        with self._lock:
+            current_reserved = self._reserved_storage.get(identity, 0)
+            new_reserved = max(0, current_reserved - bytes_to_release)
+            if new_reserved == 0:
+                self._reserved_storage.pop(identity, None)
+            else:
+                self._reserved_storage[identity] = new_reserved
+
+    def get_reserved_storage(self, identity: str) -> int:
+        """
+        Get the currently reserved storage for an identity.
+        """
+        with self._lock:
+            return self._reserved_storage.get(identity, 0)
+
 
 def _get_client_identity() -> str:
     """Extract a stable identity string for the client."""
@@ -127,3 +188,37 @@ def require_capacity(controller: AdmissionController):
                 controller.release(identity)
         return wrapped
     return decorator
+
+
+@contextmanager
+def admit_verified_work(
+    controller: AdmissionController,
+    identity: str,
+    *,
+    endpoint: str | None = None,
+) -> Iterator[None]:
+    """Acquire an admission slot for *identity* after pre-flight verification.
+
+    Use this instead of ``@require_capacity`` when a request must first pass
+    authentication and content-hash verification before consuming processing
+    capacity.  Raises ``AdmissionRejectedError`` on backpressure.
+    """
+    acquired, reason = controller.acquire(identity)
+    if not acquired:
+        try:
+            from metrics import collector as metrics_collector
+
+            metrics_collector.record_rejection(reason, endpoint or "verified_work")
+        except Exception:
+            pass
+        status_code = 429 if reason == "identity_limit" else 503
+        retry_after = int(controller.timeout_seconds * 2) or 5
+        raise AdmissionRejectedError(
+            reason=reason,
+            status_code=status_code,
+            retry_after=retry_after,
+        )
+    try:
+        yield
+    finally:
+        controller.release(identity)
