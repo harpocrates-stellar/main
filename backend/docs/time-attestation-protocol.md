@@ -281,6 +281,14 @@ Verification requires:
 
 **Note:** Full RFC 3161 verification is complex and should use established libraries (e.g., `cryptography`, `pyasn1`).
 
+### Private Incident Exports
+
+Use `export_time_attestation_for_incident(attestation)` for private diagnostic
+exports. It preserves the TSA provider origin while removing URL credentials,
+paths, query values, and fragments. Invalid or non-HTTP(S) URLs are replaced
+with a fixed marker. Raw verifier errors are replaced with a stable
+`verificationErrorCategory`; the canonical attestation encoding is unchanged.
+
 ## Offline Verification
 
 Time attestations support offline verification:

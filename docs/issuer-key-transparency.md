@@ -58,6 +58,18 @@ A `ConsistencyProofBundle` (`protocol: harpocrates-issuer-key-transparency`, `ve
 - Verify continuity offline without trusting a live directory response via `verify_consistency_proof_bundle(bundle, expected_organization_identity_hash=..., expected_earlier_checkpoint=...)` or fail-closed `require_valid_consistency_proof_bundle(...)`.
 - Verification confirms non-regression (`detect_rollback` and checkpoint timestamps), contiguous monotonic sequences, `previousEventHash` chaining, and `advance_tree_head(earlier.tree_head_hash, intervening_events) == later.tree_head_hash`.
 
+## Bounded consistency verification
+
+For untrusted event streams, use `verify_directory_consistency_bounded` with
+`ConsistencyWorkBudget`. Event-count and canonical serialized-byte budgets are
+checked before `rebuild_directory` runs. The result uses
+`status: "incomplete_proof"` and `consistent: false` when a budget is exceeded
+or the supplied events do not reach the checkpoint; stable `reason_code` values
+identify the limit. Set `max_events`, `max_total_bytes`, and
+`max_single_event_bytes` only within the module's hard limits. Ordinary
+inconsistencies are reported separately as `status: "inconsistent"` with
+`errors`; only a complete, error-free proof returns `status: "consistent"`.
+
 ## Caching & freshness (fail-closed)
 
 | Mode | Max age | Behavior |

@@ -13,7 +13,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from capture_attestation import (
     VALID_INTEGRITY_CLAIMS,
@@ -32,6 +32,8 @@ SUPPORTED_VERSIONS = {1}
 MAX_ACTIVE_KEYS = 8
 MAX_EXPLANATION_EVENTS = 16
 MAX_EVENTS = 10_000
+DEFAULT_CONSISTENCY_MAX_EVENTS = 1_000
+MAX_CONSISTENCY_EVENT_BYTES = 16_384
 MAX_SIMULATION_ITEMS = 1_000
 MAX_MANIFEST_BYTES = 8_192
 MAX_CHECKPOINT_BYTES = 16_384
@@ -604,6 +606,114 @@ def rebuild_directory(
     for manifest in manifests or []:
         directory.publish_manifest(manifest)
     return directory
+
+
+@dataclass(frozen=True)
+class ConsistencyWorkBudget:
+    """Resource limits applied before rebuilding untrusted directory events."""
+
+    max_events: int = DEFAULT_CONSISTENCY_MAX_EVENTS
+    max_total_bytes: int = MAX_CONSISTENCY_BUNDLE_BYTES
+    max_single_event_bytes: int = MAX_CONSISTENCY_EVENT_BYTES
+
+    def __post_init__(self) -> None:
+        limits = (
+            ("max_events", self.max_events, MAX_EVENTS),
+            ("max_total_bytes", self.max_total_bytes, MAX_CONSISTENCY_BUNDLE_BYTES),
+            (
+                "max_single_event_bytes",
+                self.max_single_event_bytes,
+                MAX_CONSISTENCY_EVENT_BYTES,
+            ),
+        )
+        for name, value, maximum in limits:
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise ValueError(f"{name} must be between 1 and {maximum}")
+        if self.max_single_event_bytes > self.max_total_bytes:
+            raise ValueError("max_single_event_bytes cannot exceed max_total_bytes")
+
+
+@dataclass(frozen=True)
+class BoundedConsistencyResult:
+    """Bounded directory consistency outcome; incomplete proofs are never valid."""
+
+    status: Literal["consistent", "inconsistent", "incomplete_proof"]
+    consistent: bool
+    incomplete: bool
+    reason_code: str | None = None
+    errors: tuple[str, ...] = ()
+
+
+def verify_directory_consistency_bounded(
+    organization_identity_hash: str,
+    events: Iterable[DirectoryEvent],
+    checkpoint: DirectoryCheckpoint,
+    *,
+    manifests: list[IssuerManifest] | None = None,
+    budget: ConsistencyWorkBudget | None = None,
+) -> BoundedConsistencyResult:
+    """Preflight event count and encoded size before rebuilding a directory."""
+    limits = budget or ConsistencyWorkBudget()
+    bounded_events: list[DirectoryEvent] = []
+    total_bytes = 0
+
+    for event in events:
+        if len(bounded_events) >= limits.max_events:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="event_count_limit_exceeded",
+            )
+        event_data = event.to_dict()
+        if any(
+            isinstance(value, str) and len(value) > limits.max_single_event_bytes
+            for value in event_data.values()
+        ):
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="single_event_byte_limit_exceeded",
+            )
+        event_bytes = len(_canonical_json(event_data))
+        if event_bytes > limits.max_single_event_bytes:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="single_event_byte_limit_exceeded",
+            )
+        if total_bytes + event_bytes > limits.max_total_bytes:
+            return BoundedConsistencyResult(
+                status="incomplete_proof",
+                consistent=False,
+                incomplete=True,
+                reason_code="byte_budget_exceeded",
+            )
+        bounded_events.append(event)
+        total_bytes += event_bytes
+
+    if checkpoint.event_count > len(bounded_events):
+        return BoundedConsistencyResult(
+            status="incomplete_proof",
+            consistent=False,
+            incomplete=True,
+            reason_code="checkpoint_ahead_of_supplied_events",
+        )
+
+    directory = rebuild_directory(
+        organization_identity_hash,
+        bounded_events,
+        manifests,
+    )
+    errors = tuple(verify_checkpoint_consistency(directory, checkpoint))
+    return BoundedConsistencyResult(
+        status="consistent" if not errors else "inconsistent",
+        consistent=not errors,
+        incomplete=False,
+        errors=errors,
+    )
 
 
 def verify_checkpoint_consistency(

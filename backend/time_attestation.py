@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 try:
     from rfc3161_chain import (
@@ -584,6 +585,73 @@ def add_rfc3161_anchor(
         parent_statement_digest=attestation.parent_statement_digest,
         statement_binding_digest=attestation.statement_binding_digest,
     )
+
+
+def redact_tsa_url(raw_url: str) -> str:
+    """Return only the validated HTTP(S) origin from an external TSA URL."""
+    if any(char.isspace() or ord(char) < 32 for char in raw_url):
+        return "[redacted-invalid-tsa-url]"
+    try:
+        parsed = urlsplit(raw_url)
+        hostname = parsed.hostname
+        port = parsed.port
+        if parsed.scheme.lower() not in ("http", "https") or not hostname:
+            raise ValueError("invalid TSA URL")
+        if any(char.isspace() or ord(char) < 32 for char in hostname):
+            raise ValueError("invalid TSA hostname")
+        safe_host = hostname.encode("idna").decode("ascii").lower()
+        if ":" in safe_host:
+            safe_host = f"[{safe_host}]"
+        authority = safe_host if port is None else f"{safe_host}:{port}"
+    except (UnicodeError, ValueError):
+        return "[redacted-invalid-tsa-url]"
+    return f"{parsed.scheme.lower()}://{authority}"
+
+
+def classify_tsa_error_category(
+    error: object, verification_status: object = None
+) -> str:
+    """Map private verifier details to a stable, closed incident category."""
+    message = str(error or "").lower()
+    if not message:
+        return "unverified_no_chain" if verification_status == "unverified" else "none"
+    if "chain not provided" in message or "no chain" in message:
+        return "unverified_no_chain"
+    if "url" in message:
+        return "malformed_tsa_url"
+    if "depend" in message or "unavailable" in message:
+        return "dependency_unavailable"
+    if "malformed" in message or "parse" in message or "decode" in message:
+        return "malformed_certificate_or_chain"
+    if "algorithm" in message or "unsupported" in message:
+        return "unsupported_algorithm"
+    if "expir" in message or "not yet valid" in message:
+        return "certificate_expired_or_not_yet_valid"
+    if "revok" in message:
+        return "certificate_revoked"
+    if "untrust" in message or "root" in message:
+        return "untrusted_root"
+    if "signature" in message or "invalid" in message:
+        return "signature_invalid"
+    return "verification_failed"
+
+
+def export_time_attestation_for_incident(
+    attestation: TimeAttestation,
+) -> dict[str, Any]:
+    """Serialize time-attestation diagnostics without exposing TSA URL secrets."""
+    exported = encode_time_attestation(attestation)
+    for anchor in exported.get("rfc3161Anchors", []):
+        safe_url = redact_tsa_url(anchor["tsaUrl"])
+        anchor["tsaUrl"] = safe_url
+        anchor["providerIdentity"] = (
+            "unknown" if safe_url == "[redacted-invalid-tsa-url]" else safe_url
+        )
+        error = anchor.pop("verificationError", None)
+        anchor["verificationErrorCategory"] = classify_tsa_error_category(
+            error, anchor.get("verificationStatus")
+        )
+    return exported
 
 
 
