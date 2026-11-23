@@ -5,7 +5,7 @@ import functools
 import hashlib
 from typing import Any, Optional, Tuple
 
-from flask import Response, jsonify, request
+from flask import Response, has_request_context, jsonify, request
 
 from db import Jsonb, get_connection
 
@@ -21,6 +21,15 @@ from db import Jsonb, get_connection
 #   response_payload JSONB NULL
 #   error_payload JSONB NULL
 #   UNIQUE (request_digest, request_type)
+#
+# Race model (deterministic fixtures in tests/test_registration_races.py):
+#   * Duplicate submissions converge on a single PENDING/COMPLETED record via
+#     the UNIQUE constraint; losers replay the winner's stored outcome.
+#   * A worker that dies while holding PENDING leaves the record in place.
+#     Once ``expires_at`` passes, the stale PENDING lock is reclaimed by the
+#     next caller so a replacement worker can proceed exactly once.
+#   * Only one caller may transition a reclaimed record back to PENDING; the
+#     reclaim is a conditional UPDATE, so concurrent reclaimers cannot both win.
 
 
 def _now() -> datetime.datetime:
@@ -47,9 +56,13 @@ def create_idempotency_record(
     """Insert a new idempotency record with status PENDING.
 
     Returns (record_id, status). If a record already exists, returns its id and current status.
+    A stale PENDING record whose lock has expired is reclaimed for this caller
+    (status returned as PENDING with the reclaimed id), so a replacement worker
+    can retry after the original worker vanished.
     """
     if expires_at is None:
         expires_at = _default_expiry()
+    now = _now()
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -62,8 +75,27 @@ def create_idempotency_record(
                 (request_digest, request_type, expires_at),
             )
             row = cur.fetchone()
+            record_id, status = int(row["id"]), row["status"]
+
+            if status == "PENDING":
+                # Reclaim only if the existing lock is stale. Conditional UPDATE
+                # ensures at most one replacement worker wins the reclaim.
+                cur.execute(
+                    """
+                    UPDATE idempotency_records
+                    SET expires_at = %s
+                    WHERE id = %s AND status = 'PENDING' AND expires_at <= %s
+                    RETURNING id;
+                    """,
+                    (expires_at, record_id, now),
+                )
+                reclaimed = cur.fetchone()
+                if reclaimed is not None:
+                    conn.commit()
+                    return record_id, "PENDING"
+
             conn.commit()
-            return int(row["id"]), row["status"]
+            return record_id, status
 
 
 def get_idempotency_record(request_digest: str, request_type: str) -> Optional[dict]:
@@ -120,13 +152,44 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+def _extract_identity_tier() -> Optional[str]:
+    """Extract the identity tier from a JSON request body when present."""
+    if not has_request_context():
+        return None
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        tier = payload.get("tier")
+        if isinstance(tier, str):
+            return tier.strip()
+    return None
+
+
+def _idempotency_key_header() -> Optional[str]:
+    """Return the trimmed Idempotency-Key header value if present."""
+    if not has_request_context():
+        return None
+    raw = request.headers.get("Idempotency-Key")
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if trimmed:
+            return trimmed
+    return None
+
+
+def _idempotency_key_digest(request_type: str, key: str) -> str:
+    """Derive a fixed-length lookup digest for an explicit Idempotency-Key."""
+    data = b"|".join([b"key", request_type.encode(), key.encode()])
+    return hashlib.sha256(data).hexdigest()
+
+
 def _canonical_digest() -> str:
-    """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
+    """SHA-256 of method, path, query string, identity tier, and raw body (canonical request identity)."""
     method = request.method.encode()
     path = request.path.encode()
     query = request.query_string  # already bytes
+    tier = (_extract_identity_tier() or "").encode()
     body = request.get_data() or b""
-    data = b"|".join([method, path, query, body])
+    data = b"|".join([method, path, query, tier, body])
     return hashlib.sha256(data).hexdigest()
 
 
@@ -155,10 +218,28 @@ def _extract_response_parts(result: Any) -> tuple[Any, int]:
     return None, status
 
 
-def _replay_stored(record: dict):
+def _replay_stored(
+    record: dict,
+    *,
+    binding_digest: Optional[str] = None,
+    tier: Optional[str] = None,
+):
     status = record.get("status")
     if status == "COMPLETED":
         payload = record.get("response_payload") or {}
+        if (
+            binding_digest is not None
+            and isinstance(payload, dict)
+            and isinstance(payload.get("binding"), dict)
+        ):
+            stored_binding = payload["binding"]
+            if stored_binding.get("digest") != binding_digest:
+                conflict: dict[str, Any] = {
+                    "error": "idempotency key reused with conflicting payload"
+                }
+                if stored_binding.get("tier") != tier:
+                    conflict["conflict_field"] = "tier"
+                return jsonify(conflict), 409
         if isinstance(payload, dict) and "body" in payload and "status" in payload:
             body = payload.get("body")
             code = int(payload.get("status") or 200)
@@ -181,10 +262,13 @@ def _replay_stored(record: dict):
 def idempotent(request_type: str):
     """Flask view decorator to enforce idempotent request handling.
 
-    Uses a canonical request digest. Completed records replay the stored JSON
-    body and HTTP status. Pending records return 409. When DATABASE_URL is
-    unset (local/unit tests), the decorator is a no-op so callers still rely
-    on semantic upsert idempotency in the register path.
+    Uses a canonical request digest (including identity tier). When an explicit
+    ``Idempotency-Key`` header is supplied, the key is bound to the canonical
+    digest and identity tier; reusing the key with a changed tier or payload
+    returns 409 Conflict without invoking the handler. Completed records replay
+    the stored JSON body and HTTP status. Pending records return 409. When
+    DATABASE_URL is unset (local/unit tests), the decorator is a no-op so
+    callers still rely on semantic upsert idempotency in the register path.
     """
 
     def decorator(func):
@@ -193,31 +277,60 @@ def idempotent(request_type: str):
             if not _db_available():
                 return func(*args, **kwargs)
 
-            digest = _canonical_digest()
-            record = get_idempotency_record(digest, request_type)
-            if record:
-                return _replay_stored(record)
+            binding_digest = _canonical_digest()
+            tier = _extract_identity_tier()
+            idem_key = _idempotency_key_header()
+            lookup_digest = (
+                _idempotency_key_digest(request_type, idem_key)
+                if idem_key is not None
+                else binding_digest
+            )
 
-            record_id, status = create_idempotency_record(digest, request_type)
+            record = get_idempotency_record(lookup_digest, request_type)
+            if record:
+                return _replay_stored(
+                    record,
+                    binding_digest=binding_digest if idem_key is not None else None,
+                    tier=tier,
+                )
+
+            record_id, status = create_idempotency_record(lookup_digest, request_type)
             if status != "PENDING":
                 # Lost the race to another worker that already finished (or is in flight).
-                existing = get_idempotency_record(digest, request_type) or {
+                existing = get_idempotency_record(lookup_digest, request_type) or {
                     "status": status,
                     "response_payload": None,
                     "error_payload": None,
                 }
-                return _replay_stored(existing)
+                return _replay_stored(
+                    existing,
+                    binding_digest=binding_digest if idem_key is not None else None,
+                    tier=tier,
+                )
 
             try:
                 result = func(*args, **kwargs)
                 body, code = _extract_response_parts(result)
-                if 200 <= code < 500:
+                if code == 503:
+                    # Retryable operational outage (e.g. chain RPC unavailable):
+                    # keep the request retryable and never cache it as evidence invalidity.
+                    clear_idempotency_record(record_id)
+                elif 200 <= code < 500:
                     # Cache 2xx and stable 4xx for exact replay (no raw media/secrets).
-                    store_response(record_id, {"status": code, "body": body})
+                    stored_payload: dict[str, Any] = {"status": code, "body": body}
+                    if idem_key is not None:
+                        stored_payload["binding"] = {
+                            "digest": binding_digest,
+                            "tier": tier,
+                        }
+                    store_response(record_id, stored_payload)
                 else:
                     # Do not cache server failures — allow a later retry to re-acquire.
                     clear_idempotency_record(record_id)
                 return result
+            except RetryableOperationalError:
+                clear_idempotency_record(record_id)
+                raise
             except Exception:
                 # Privacy-safe: never persist exception strings (may contain paths/secrets).
                 store_error(record_id, {"error": "request processing failed", "status": 500})

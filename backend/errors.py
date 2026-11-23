@@ -60,6 +60,9 @@ classify_cli_error = lambda x: x
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 """Legacy payload-limit code retained for compatibility (413)."""
 
+UPLOAD_TERMINATED_PREMATURELY = "UPLOAD_TERMINATED_PREMATURELY"
+"""The client disconnected or the upload stream ended before completion (400)."""
+
 STEGO_LIMIT_EXCEEDED = "STEGO_LIMIT_EXCEEDED"
 """Steganography processing exceeded configured memory or CPU limits (413)."""
 
