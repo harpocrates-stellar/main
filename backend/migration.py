@@ -566,6 +566,7 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "encrypted_dek", "type": "text"},
         {"column": "size_bytes", "type": "bigint"},
         {"column": "storage_path", "type": "text"},
+        {"column": "envelope_version", "type": "text"},
         {"column": "created_at", "type": "timestamp with time zone"},
     ],
     "tenant_blob_refs": [

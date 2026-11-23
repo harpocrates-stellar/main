@@ -1,0 +1,373 @@
+{
+  "description": "Reproducible CLI transcript fixtures for verify-lineage. All digests, proof IDs, actors and manifest hashes are synthetic and never correspond to real media or chain state.",
+  "version": 1,
+  "command": "verify-lineage",
+  "cases": [
+    {
+      "name": "valid-multi-level-lineage",
+      "description": "A derivative whose ancestors all resolve to valid registered originals.",
+      "input": {
+        "outputDigest": "root_digest",
+        "lineage": {
+          "root_digest": {
+            "parentProofIds": ["mid1_digest", "mid2_digest"],
+            "parentCommitments": ["c1", "c2"],
+            "manifestDigest": "m_root",
+            "actor": "GACTOR",
+            "operationType": "compose",
+            "outputDigest": "root_digest",
+            "depth": 2
+          },
+          "mid1_digest": {
+            "parentProofIds": ["leaf1_proof", "leaf2_proof"],
+            "parentCommitments": ["c3", "c4"],
+            "manifestDigest": "m_mid1",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "mid1_digest",
+            "depth": 1
+          },
+          "mid2_digest": {
+            "parentProofIds": ["leaf3_proof"],
+            "parentCommitments": ["c5"],
+            "manifestDigest": "m_mid2",
+            "actor": "GACTOR",
+            "operationType": "blur",
+            "outputDigest": "mid2_digest",
+            "depth": 1
+          }
+        },
+        "proofStatuses": {
+          "leaf1_proof": "valid",
+          "leaf2_proof": "valid",
+          "leaf3_proof": "valid"
+        }
+      },
+      "expected": {
+        "exitCode": 0,
+        "success": true,
+        "failureReason": null,
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 0,
+          "disputedCount": 0,
+          "missingCount": 0,
+          "incompleteCount": 0,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "root_digest (derivative: compose)\n├── mid1_digest (derivative: crop)\n│   ├── leaf1_proof (original: valid)\n│   └── leaf2_proof (original: valid)\n└── mid2_digest (derivative: blur)\n    └── leaf3_proof (original: valid)"
+      }
+    },
+    {
+      "name": "revoked-ancestor",
+      "description": "A derivative with one revoked parent fails closed.",
+      "input": {
+        "outputDigest": "root_digest",
+        "lineage": {
+          "root_digest": {
+            "parentProofIds": ["parent1_proof", "parent2_proof"],
+            "parentCommitments": ["c1", "c2"],
+            "manifestDigest": "m_root",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "root_digest",
+            "depth": 1
+          }
+        },
+        "proofStatuses": {
+          "parent1_proof": "valid",
+          "parent2_proof": "revoked"
+        }
+      },
+      "expected": {
+        "exitCode": 2,
+        "success": false,
+        "failureReason": "1 ancestor(s) revoked",
+        "counts": {
+          "revokedCount": 1,
+          "expiredCount": 0,
+          "disputedCount": 0,
+          "missingCount": 0,
+          "incompleteCount": 0,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "root_digest (derivative: crop)\n├── parent1_proof (original: valid)\n└── parent2_proof (original: revoked)"
+      }
+    },
+    {
+      "name": "expired-ancestor",
+      "description": "An expired original ancestor fails verification.",
+      "input": {
+        "outputDigest": "root_digest",
+        "lineage": {
+          "root_digest": {
+            "parentProofIds": ["parent_proof"],
+            "parentCommitments": ["c1"],
+            "manifestDigest": "m_root",
+            "actor": "GACTOR",
+            "operationType": "transcode",
+            "outputDigest": "root_digest",
+            "depth": 1
+          }
+        },
+        "proofStatuses": {
+          "parent_proof": "expired"
+        }
+      },
+      "expected": {
+        "exitCode": 1,
+        "success": false,
+        "failureReason": "1 ancestor(s) expired",
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 1,
+          "disputedCount": 0,
+          "missingCount": 0,
+          "incompleteCount": 0,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "root_digest (derivative: transcode)\n└── parent_proof (original: expired)"
+      }
+    },
+    {
+      "name": "disputed-ancestor",
+      "description": "A disputed original ancestor fails verification.",
+      "input": {
+        "outputDigest": "root_digest",
+        "lineage": {
+          "root_digest": {
+            "parentProofIds": ["parent_proof"],
+            "parentCommitments": ["c1"],
+            "manifestDigest": "m_root",
+            "actor": "GACTOR",
+            "operationType": "blur",
+            "outputDigest": "root_digest",
+            "depth": 1
+          }
+        },
+        "proofStatuses": {
+          "parent_proof": "disputed"
+        }
+      },
+      "expected": {
+        "exitCode": 7,
+        "success": false,
+        "failureReason": "1 ancestor(s) disputed",
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 0,
+          "disputedCount": 1,
+          "missingCount": 0,
+          "incompleteCount": 0,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "root_digest (derivative: blur)\n└── parent_proof (original: disputed)"
+      }
+    },
+    {
+      "name": "missing-ancestor",
+      "description": "An unregistered parent resolves to a missing status and fails closed.",
+      "input": {
+        "outputDigest": "root_digest",
+        "lineage": {
+          "root_digest": {
+            "parentProofIds": ["nonexistent_proof"],
+            "parentCommitments": ["c1"],
+            "manifestDigest": "m_root",
+            "actor": "GACTOR",
+            "operationType": "redact",
+            "outputDigest": "root_digest",
+            "depth": 1
+          }
+        },
+        "proofStatuses": {
+          "nonexistent_proof": "missing"
+        }
+      },
+      "expected": {
+        "exitCode": 3,
+        "success": false,
+        "failureReason": "1 ancestor(s) missing or unregistered",
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 0,
+          "disputedCount": 0,
+          "missingCount": 1,
+          "incompleteCount": 0,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "root_digest (derivative: redact)\n└── nonexistent_proof (original: missing)"
+      }
+    },
+    {
+      "name": "cycle-detected",
+      "description": "A cyclic lineage graph is rejected as invalid.",
+      "input": {
+        "outputDigest": "node_a",
+        "lineage": {
+          "node_a": {
+            "parentProofIds": ["node_b"],
+            "parentCommitments": ["c1"],
+            "manifestDigest": "m1",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "node_a",
+            "depth": 1
+          },
+          "node_b": {
+            "parentProofIds": ["node_c"],
+            "parentCommitments": ["c2"],
+            "manifestDigest": "m2",
+            "actor": "GACTOR",
+            "operationType": "transcode",
+            "outputDigest": "node_b",
+            "depth": 2
+          },
+          "node_c": {
+            "parentProofIds": ["node_a"],
+            "parentCommitments": ["c3"],
+            "manifestDigest": "m3",
+            "actor": "GACTOR",
+            "operationType": "blur",
+            "outputDigest": "node_c",
+            "depth": 3
+          }
+        },
+        "proofStatuses": {}
+      },
+      "expected": {
+        "exitCode": 7,
+        "success": false,
+        "failureReason": "cycle detected in lineage graph",
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 0,
+          "disputedCount": 0,
+          "missingCount": 0,
+          "incompleteCount": 0,
+          "unavailableCount": 0
+        },
+        "cycleDetected": true,
+        "stdout": "node_a (derivative: crop)\n└── node_b (derivative: transcode)\n    └── node_c (derivative: blur)\n        └── node_a (derivative: unknown) [ERROR: cycle detected]"
+      }
+    },
+    {
+      "name": "depth-bound",
+      "description": "A tree deeper than MAX_LINEAGE_DEPTH is truncated and reported as incomplete.",
+      "input": {
+        "outputDigest": "level_0",
+        "lineage": {
+          "level_0": {
+            "parentProofIds": ["level_1"],
+            "parentCommitments": ["c"],
+            "manifestDigest": "m0",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "level_0",
+            "depth": 1
+          },
+          "level_1": {
+            "parentProofIds": ["level_2"],
+            "parentCommitments": ["c"],
+            "manifestDigest": "m1",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "level_1",
+            "depth": 2
+          },
+          "level_2": {
+            "parentProofIds": ["level_3"],
+            "parentCommitments": ["c"],
+            "manifestDigest": "m2",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "level_2",
+            "depth": 3
+          },
+          "level_3": {
+            "parentProofIds": ["level_4"],
+            "parentCommitments": ["c"],
+            "manifestDigest": "m3",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "level_3",
+            "depth": 4
+          },
+          "level_4": {
+            "parentProofIds": ["level_5"],
+            "parentCommitments": ["c"],
+            "manifestDigest": "m4",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "level_4",
+            "depth": 5
+          },
+          "level_5": {
+            "parentProofIds": ["level_6"],
+            "parentCommitments": ["c"],
+            "manifestDigest": "m5",
+            "actor": "GACTOR",
+            "operationType": "crop",
+            "outputDigest": "level_5",
+            "depth": 6
+          }
+        },
+        "proofStatuses": {}
+      },
+      "expected": {
+        "exitCode": 6,
+        "success": false,
+        "failureReason": "1 lineage branch(es) incomplete: lineage tree contains errors or bound violations",
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 0,
+          "disputedCount": 0,
+          "missingCount": 0,
+          "incompleteCount": 1,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "level_0 (derivative: crop)\n└── level_1 (derivative: crop)\n    └── level_2 (derivative: crop)\n        └── level_3 (derivative: crop)\n            └── level_4 (derivative: crop)\n                └── level_5 (derivative: crop) [ERROR: depth bound exceeded (> 4)]"
+      }
+    },
+    {
+      "name": "fan-out-bound",
+      "description": "A node with more parents than MAX_LINEAGE_FANOUT is truncated and reported as incomplete.",
+      "input": {
+        "outputDigest": "fanout_node",
+        "lineage": {
+          "fanout_node": {
+            "parentProofIds": ["p1", "p2", "p3", "p4", "p5"],
+            "parentCommitments": ["c1", "c2", "c3", "c4", "c5"],
+            "manifestDigest": "m",
+            "actor": "GACTOR",
+            "operationType": "compose",
+            "outputDigest": "fanout_node",
+            "depth": 1
+          }
+        },
+        "proofStatuses": {}
+      },
+      "expected": {
+        "exitCode": 6,
+        "success": false,
+        "failureReason": "1 lineage branch(es) incomplete: lineage tree contains errors or bound violations",
+        "counts": {
+          "revokedCount": 0,
+          "expiredCount": 0,
+          "disputedCount": 0,
+          "missingCount": 0,
+          "incompleteCount": 1,
+          "unavailableCount": 0
+        },
+        "cycleDetected": false,
+        "stdout": "fanout_node (derivative: compose) [ERROR: fan-out bound exceeded (> 4)]"
+      }
+    }
+  ]
+}

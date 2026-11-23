@@ -4,6 +4,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from register_auth import ScopedKey, parse_scoped_keys
 
@@ -11,24 +12,6 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
-        """Return a dict representation of the config where secret fields are redacted.
-        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
-        presence (True if set, False otherwise). Non‑secret fields retain their original
-        values.
-        """
-        from dataclasses import asdict
-        secret_fields = {
-            "metrics_token",
-            "tracing_endpoint",
-            "register_api_key",
-            "register_api_key_previous",
-        }
-        raw = asdict(self)
-        for field in secret_fields:
-            if field in raw:
-                raw[field] = raw[field] is not None
-        return raw
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -81,13 +64,8 @@ class AppConfig:
     external_fetch_max_response_bytes: int = 65_536
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
-    job_file_ttl_seconds: int = 86_400
-    retention_blob_gc_enabled: bool = False
-    retention_unreferenced_blobs_enabled: bool = False
-    retention_dry_run: bool = False
-    # None falls back to MAX_VIDEO_BYTES; zero allows no file payload.
-    upload_max_bytes: int | None = None
-
+    registration_reconcile_state_dir: str = ""
+    stellar_network_passphrase: str = ""
 
 
 def load_config() -> AppConfig:
@@ -109,6 +87,11 @@ def load_config() -> AppConfig:
         raise RuntimeError(
             "REGISTER_API_KEY_PREVIOUS is required when REGISTER_API_KEY_PREVIOUS_EXPIRES is set"
         )
+
+    deletion_receipts_enabled = _bool_env("HARPOCRATES_DELETION_RECEIPTS_ENABLED", False)
+    deletion_receipt_salt = _str_env("DELETION_RECEIPT_SALT")
+    if deletion_receipts_enabled and deletion_receipt_salt is None:
+        raise RuntimeError("DELETION_RECEIPT_SALT is required when deletion receipts are enabled")
 
     return AppConfig(
         app_env=app_env,
@@ -163,13 +146,13 @@ def load_config() -> AppConfig:
         external_fetch_read_timeout_seconds=_float_env("EXTERNAL_FETCH_READ_TIMEOUT_SECONDS", 10.0),
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
-        job_file_ttl_seconds=_job_file_ttl_env(),
-        retention_blob_gc_enabled=_blob_gc_enabled_env(),
-        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
-        retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
-        upload_max_bytes=_optional_nonnegative_int_env("UPLOAD_MAX_BYTES"),
+        registration_reconcile_state_dir=_str_env("HARPOCRATES_REGISTRATION_RECONCILE_DIR") or "",
+        stellar_network_passphrase=(
+            _str_env("STELLAR_NETWORK_PASSPHRASE")
+            or _str_env("HARPOCRATES_NETWORK_PASSPHRASE")
+            or ""
+        ),
     )
-
 
 
 def _upload_chunk_bytes() -> int:
@@ -257,19 +240,10 @@ def _datetime_env(name: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
+        raise RuntimeError(f"{name} must be an ISO-8601 datetime") from except ValueError as exc:
         raise RuntimeError(f"{name} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
-        raise RuntimeError(f"{name} must include a timezone")
-    return parsed.astimezone(timezone.utc)
-
-
-def _float_env(name: str, default: float) -> float:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    parsed = float(value)
-    if parsed <= 0.0:
-        raise RuntimeError(f"{name} must be positive")
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 
 
@@ -305,13 +279,21 @@ def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", de
 
 
 JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
+# Queue expiry (time a job may wait as ``pending``) and execution timeout (time a
+# leased job may run) are separate limits. 0 disables a limit.
+JOB_QUEUE_TTL_SECONDS_DEFAULT = 0
+JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT = 0
 
 
 def _job_file_ttl_env(
     name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
     default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
 ) -> int:
-    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
+    """Load a non-negative integer seconds setting.
+
+    Defaults to HARPOCRATES_JOB_FILE_TTL_SECONDS (24h = 86400s); also used for
+    HARPOCRATES_JOB_QUEUE_TTL_SECONDS and HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS.
+    """
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -336,4 +318,24 @@ def _blob_gc_enabled_env() -> bool:
         if val is not None:
             return val.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+UPLOAD_SESSION_TTL_SECONDS_DEFAULT = 3600
+
+
+def _upload_session_ttl_env(
+    name: str = "UPLOAD_SESSION_TTL_SECONDS",
+    default: int = UPLOAD_SESSION_TTL_SECONDS_DEFAULT,
+) -> int:
+    """Load UPLOAD_SESSION_TTL_SECONDS (or HARPOCRATES_UPLOAD_SESSION_TTL_SECONDS)."""
+    raw = os.getenv(name) or os.getenv("HARPOCRATES_UPLOAD_SESSION_TTL_SECONDS")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be non-negative")
+    return parsed
 

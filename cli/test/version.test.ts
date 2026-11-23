@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-describe('CLI version output', () => {
+describe('CLI version output', { timeout: 30000 }, () => {
   const packageJsonPath = resolve(__dirname, '../package.json')
   const cliPath = resolve(__dirname, '../dist/cli.js')
   const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string }

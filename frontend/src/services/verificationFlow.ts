@@ -1,13 +1,21 @@
 /**
- * verificationFlow — orchestrates the verification portal flow.
+ * verificationFlow — orchestrates the verification portal flow and maps
+ * stable trust reason codes to accessible, privacy-safe copy.
  *
  * Responsibility: combine the Flask extraction, NeonDB lookup, and the
  * Soroban on-chain registry into a single structured result with independent
- * trust dimensions. No React state.
+ * trust dimensions, and bind cached verification results to their statement
+ * and trust snapshot identity so incompatible context changes require a fresh
+ * explicit verification result. No React state.
  */
 
 import type { ChainProofRecord, IssuerRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
+import type { VerificationErrorCode, VerificationStatus } from '../hooks/useVerification'
+import {
+  isLookupEligibleIssuer,
+  type IssuerTrustState,
+} from '../provenance/issuerTrust'
 import { assertValidVideoHash } from './videoHash'
 import {
   extractMetadata,
@@ -15,51 +23,38 @@ import {
   getOnChainProof,
 } from './verificationService'
 
-export type TrustDimensionKey =
-  | 'contentIntegrity'
-  | 'chainRegistration'
-  | 'issuerTrust'
-  | 'freshness'
+export type ObservationSource = 'local' | 'backend' | 'soroban'
 
-export type TrustDimensionState =
-  | 'verified'
-  | 'failed'
-  | 'unverified'
-  | 'not_applicable'
+export type ObservationFreshness = 'fresh' | 'stale' | 'unknown'
 
-export type TrustDimensionResult = {
-  key: TrustDimensionKey
+export type SourceAgreement = 'aligned' | 'stale' | 'contradictory' | 'incomplete'
+
+export type LedgerBounds = {
+  minLedger: number | null
+  maxLedger: number | null
+  expiresAt: number | null
+  observedAt: string | null
+}
+
+export type SourceObservation = {
+  source: ObservationSource
   label: string
-  state: TrustDimensionState
-  code: string
+  freshness: ObservationFreshness
+  ledgerBounds: LedgerBounds
+  detail: string
+}
+
+export type ObservationDiagnostics = {
+  agreement: SourceAgreement
+  freshness: ObservationFreshness
   summary: string
-}
-
-export type TrustDimensions = {
-  contentIntegrity: TrustDimensionResult
-  chainRegistration: TrustDimensionResult
-  issuerTrust: TrustDimensionResult
-  freshness: TrustDimensionResult
-}
-
-export type OverallTrustVerdict = 'verified' | 'failed' | 'incomplete'
-
-export type StructuredVerificationModel = {
-  overall: OverallTrustVerdict
-  hasFailure: boolean
-  failedDimensions: TrustDimensionKey[]
-  dimensions: TrustDimensions
-}
-
-export type VerificationDimensionsInput = {
-  hasHarpocratesMetadata?: boolean | null
-  metadataEnvelopeMismatch?: boolean
-  onChain: ChainProofRecord | null
-  events?: ProofEvent[]
-  issuerRecord?: IssuerRecord | null
-  offline?: boolean
-  errorCode?: string | null
-  nowUnixSeconds?: number
+  ledgerBounds: LedgerBounds
+  disagreementReasons: string[]
+  staleReasons: string[]
+  sources: {
+    backend: SourceObservation
+    soroban: SourceObservation
+  }
 }
 
 export type VerificationResult = {
@@ -67,325 +62,230 @@ export type VerificationResult = {
   hasHarpocratesMetadata: boolean
   events: ProofEvent[]
   onChain: ChainProofRecord | null
-  trust: StructuredVerificationModel
+  observations?: ObservationDiagnostics
 }
 
-const CONTENT_FAILURE_CODES = new Set([
-  'EMPTY_INPUT',
-  'UNSUPPORTED_ARTIFACT',
-  'OVERSIZED_ARTIFACT',
-  'INVALID_EVIDENCE',
-])
+/** Default threshold (24 hours) after which backend observations are marked stale. */
+export const DEFAULT_OBSERVATION_STALE_MS = 24 * 60 * 60 * 1000
 
-const CHAIN_FAILURE_CODES = new Set([
-  'DEPENDENCY_UNAVAILABLE',
-  'TIMEOUT',
-  'VERIFICATION_FAILED',
-  'WALLET_UNAVAILABLE',
-])
+const CHAIN_TIER_MAP: Record<number, string> = {
+  1: 'silent',
+  2: 'source',
+  3: 'seal',
+}
 
-/**
- * Evaluate each verification trust dimension independently so a successful
- * dimension can never mask another dimension's failure.
- */
-export function buildVerificationDimensions(
-  input: VerificationDimensionsInput,
-): StructuredVerificationModel {
-  const {
-    hasHarpocratesMetadata = null,
-    metadataEnvelopeMismatch = false,
-    onChain,
-    issuerRecord,
-    offline = false,
-    errorCode = null,
-    nowUnixSeconds = Math.floor(Date.now() / 1000),
-  } = input
+function normaliseToken(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().toLowerCase()
+  return trimmed.length > 0 ? trimmed : null
+}
 
-  // 1. Content integrity
-  let contentIntegrity: TrustDimensionResult
-  if (metadataEnvelopeMismatch || errorCode === 'METADATA_ENVELOPE_MISMATCH') {
-    contentIntegrity = {
-      key: 'contentIntegrity',
-      label: 'Content Integrity',
-      state: 'failed',
-      code: 'METADATA_ENVELOPE_MISMATCH',
-      summary: 'Embedded metadata hash does not match the on-chain envelope.',
-    }
-  } else if (errorCode && CONTENT_FAILURE_CODES.has(errorCode)) {
-    contentIntegrity = {
-      key: 'contentIntegrity',
-      label: 'Content Integrity',
-      state: 'failed',
-      code: errorCode,
-      summary: 'Artifact failed content validation or metadata extraction.',
-    }
-  } else if (hasHarpocratesMetadata === true) {
-    contentIntegrity = {
-      key: 'contentIntegrity',
-      label: 'Content Integrity',
-      state: 'verified',
-      code: 'METADATA_CONFIRMED',
-      summary: 'Embedded Harpocrates metadata was extracted and validated.',
-    }
-  } else {
-    contentIntegrity = {
-      key: 'contentIntegrity',
-      label: 'Content Integrity',
-      state: 'unverified',
-      code: 'METADATA_ABSENT',
-      summary: 'No valid embedded Harpocrates metadata was confirmed for this artifact.',
-    }
-  }
+function extractLedgerBoundsFromEvents(events: ProofEvent[]): LedgerBounds {
+  let minLedger: number | null = null
+  let maxLedger: number | null = null
+  let latestMs: number | null = null
+  let observedAt: string | null = null
 
-  // 2. Chain registration
-  let chainRegistration: TrustDimensionResult
-  if (offline) {
-    chainRegistration = {
-      key: 'chainRegistration',
-      label: 'Chain Registration',
-      state: 'unverified',
-      code: 'OFFLINE_NOT_CHECKED',
-      summary: 'On-chain registry was not queried in offline mode.',
-    }
-  } else if (onChain) {
-    if (onChain.status === 2 || errorCode === 'REVOKED_EVIDENCE') {
-      chainRegistration = {
-        key: 'chainRegistration',
-        label: 'Chain Registration',
-        state: 'failed',
-        code: 'CHAIN_REVOKED',
-        summary: 'On-chain registry record has been revoked.',
-      }
-    } else {
-      chainRegistration = {
-        key: 'chainRegistration',
-        label: 'Chain Registration',
-        state: 'verified',
-        code: 'CHAIN_REGISTERED',
-        summary: 'Proof record is registered on the Stellar Soroban registry.',
+  for (const event of events) {
+    const anchors = event.time_attestation?.stellarAnchors ?? []
+    for (const anchor of anchors) {
+      if (Number.isSafeInteger(anchor.ledgerSequence) && anchor.ledgerSequence > 0) {
+        minLedger = minLedger === null ? anchor.ledgerSequence : Math.min(minLedger, anchor.ledgerSequence)
+        maxLedger = maxLedger === null ? anchor.ledgerSequence : Math.max(maxLedger, anchor.ledgerSequence)
       }
     }
-  } else if (errorCode === 'REVOKED_EVIDENCE') {
-    chainRegistration = {
-      key: 'chainRegistration',
-      label: 'Chain Registration',
-      state: 'failed',
-      code: 'CHAIN_REVOKED',
-      summary: 'On-chain registry record has been revoked.',
+    const parsed = Date.parse(event.created_at)
+    if (!Number.isNaN(parsed) && (latestMs === null || parsed > latestMs)) {
+      latestMs = parsed
+      observedAt = event.created_at
     }
-  } else if (errorCode && CHAIN_FAILURE_CODES.has(errorCode)) {
-    chainRegistration = {
-      key: 'chainRegistration',
-      label: 'Chain Registration',
-      state: 'failed',
-      code: errorCode,
-      summary: 'Unable to confirm on-chain registration due to a verification error.',
-    }
-  } else {
-    chainRegistration = {
-      key: 'chainRegistration',
-      label: 'Chain Registration',
-      state: 'unverified',
-      code: 'CHAIN_NOT_FOUND',
-      summary: 'No matching proof record was found on the Stellar registry.',
-    }
-  }
-
-  // 3. Issuer trust (preserves Silent / Source / Seal tier separation)
-  let issuerTrust: TrustDimensionResult
-  if (offline) {
-    issuerTrust = {
-      key: 'issuerTrust',
-      label: 'Issuer Trust',
-      state: 'unverified',
-      code: 'OFFLINE_NOT_CHECKED',
-      summary: 'Issuer standing was not checked in offline mode.',
-    }
-  } else if (issuerRecord !== undefined && issuerRecord !== null) {
-    issuerTrust = issuerRecord.active
-      ? {
-          key: 'issuerTrust',
-          label: 'Issuer Trust',
-          state: 'verified',
-          code: 'ISSUER_ACTIVE',
-          summary: 'Institutional issuer is active in the on-chain registry.',
-        }
-      : {
-          key: 'issuerTrust',
-          label: 'Issuer Trust',
-          state: 'failed',
-          code: 'ISSUER_REVOKED',
-          summary: 'Institutional issuer has been revoked in the on-chain registry.',
-        }
-  } else if (onChain) {
-    if (onChain.tier === 0) {
-      issuerTrust = {
-        key: 'issuerTrust',
-        label: 'Issuer Trust',
-        state: 'not_applicable',
-        code: 'SILENT_TIER_NO_ISSUER',
-        summary: 'Silent tier preserves anonymous witness privacy without an issuer.',
-      }
-    } else if (onChain.tier === 1) {
-      issuerTrust = onChain.source
-        ? {
-            key: 'issuerTrust',
-            label: 'Issuer Trust',
-            state: 'verified',
-            code: 'SOURCE_ATTRIBUTED',
-            summary: 'Source tier proof is attributed to a Stellar source address.',
-          }
-        : {
-            key: 'issuerTrust',
-            label: 'Issuer Trust',
-            state: 'failed',
-            code: 'SOURCE_MISSING',
-            summary: 'Source tier proof is missing its attributed source address.',
-          }
-    } else if (onChain.tier === 2) {
-      if (!onChain.issuer) {
-        issuerTrust = {
-          key: 'issuerTrust',
-          label: 'Issuer Trust',
-          state: 'failed',
-          code: 'ISSUER_MISSING',
-          summary: 'Seal tier proof is missing an institutional issuer address.',
-        }
-      } else if (issuerRecord === null) {
-        issuerTrust = {
-          key: 'issuerTrust',
-          label: 'Issuer Trust',
-          state: 'failed',
-          code: 'ISSUER_NOT_FOUND',
-          summary: 'Institutional issuer was not found in the on-chain registry.',
-        }
-      } else {
-        issuerTrust = {
-          key: 'issuerTrust',
-          label: 'Issuer Trust',
-          state: 'unverified',
-          code: 'ISSUER_STANDING_UNCHECKED',
-          summary: 'Seal tier issuer address is present, but registry standing was not verified.',
-        }
-      }
-    } else {
-      issuerTrust = {
-        key: 'issuerTrust',
-        label: 'Issuer Trust',
-        state: 'unverified',
-        code: 'ISSUER_UNVERIFIED',
-        summary: 'Issuer trust could not be determined for this identity tier.',
-      }
-    }
-  } else {
-    issuerTrust = {
-      key: 'issuerTrust',
-      label: 'Issuer Trust',
-      state: 'unverified',
-      code: 'ISSUER_UNVERIFIED',
-      summary: 'No on-chain record is available to evaluate issuer trust.',
-    }
-  }
-
-  // 4. Freshness
-  let freshness: TrustDimensionResult
-  if (offline) {
-    freshness = {
-      key: 'freshness',
-      label: 'Freshness',
-      state: 'unverified',
-      code: 'OFFLINE_NOT_CHECKED',
-      summary: 'Record expiry and freshness were not checked in offline mode.',
-    }
-  } else if (errorCode === 'EXPIRED_EVIDENCE' || onChain?.status === 3) {
-    freshness = {
-      key: 'freshness',
-      label: 'Freshness',
-      state: 'failed',
-      code: 'RECORD_EXPIRED',
-      summary: 'On-chain proof record has expired.',
-    }
-  } else if (onChain) {
-    if (onChain.expiresAt === null || onChain.expiresAt === 0) {
-      freshness = {
-        key: 'freshness',
-        label: 'Freshness',
-        state: 'verified',
-        code: 'NO_EXPIRY',
-        summary: 'On-chain proof record does not expire.',
-      }
-    } else if (onChain.expiresAt <= nowUnixSeconds) {
-      freshness = {
-        key: 'freshness',
-        label: 'Freshness',
-        state: 'failed',
-        code: 'RECORD_EXPIRED',
-        summary: 'On-chain proof record has passed its expiration timestamp.',
-      }
-    } else {
-      freshness = {
-        key: 'freshness',
-        label: 'Freshness',
-        state: 'verified',
-        code: 'WITHIN_VALIDITY_WINDOW',
-        summary: 'On-chain proof record is within its active validity window.',
-      }
-    }
-  } else {
-    freshness = {
-      key: 'freshness',
-      label: 'Freshness',
-      state: 'unverified',
-      code: 'FRESHNESS_UNVERIFIED',
-      summary: 'No on-chain record is available to evaluate freshness.',
-    }
-  }
-
-  const dimensions: TrustDimensions = {
-    contentIntegrity,
-    chainRegistration,
-    issuerTrust,
-    freshness,
-  }
-
-  const dimensionList: TrustDimensionResult[] = [
-    contentIntegrity,
-    chainRegistration,
-    issuerTrust,
-    freshness,
-  ]
-
-  const failedDimensions = dimensionList
-    .filter((d) => d.state === 'failed')
-    .map((d) => d.key)
-
-  const hasFailure = failedDimensions.length > 0
-
-  let overall: OverallTrustVerdict
-  if (hasFailure) {
-    overall = 'failed'
-  } else if (
-    dimensionList.every((d) => d.state === 'verified' || d.state === 'not_applicable') &&
-    dimensionList.some((d) => d.state === 'verified')
-  ) {
-    overall = 'verified'
-  } else {
-    overall = 'incomplete'
   }
 
   return {
-    overall,
-    hasFailure,
-    failedDimensions,
-    dimensions,
+    minLedger,
+    maxLedger,
+    expiresAt: null,
+    observedAt,
   }
 }
 
-export type VerificationFlowOptions = {
-  signal?: AbortSignal
-  sourceAddress?: string
-  issuerRecord?: IssuerRecord | null
-  nowUnixSeconds?: number
+export function formatLedgerBounds(bounds: LedgerBounds): string {
+  const parts: string[] = []
+  if (bounds.minLedger !== null && bounds.maxLedger !== null) {
+    parts.push(
+      bounds.minLedger === bounds.maxLedger
+        ? `Ledger #${bounds.minLedger}`
+        : `Ledgers #${bounds.minLedger}–#${bounds.maxLedger}`,
+    )
+  }
+  if (bounds.expiresAt !== null) {
+    if (bounds.expiresAt === 0) {
+      parts.push('No expiry bound')
+    } else if (Number.isSafeInteger(bounds.expiresAt) && bounds.expiresAt > 0) {
+      parts.push(`Expires ${new Date(bounds.expiresAt * 1000).toISOString().slice(0, 10)}`)
+    }
+  }
+  return parts.length > 0 ? parts.join(' · ') : 'Ledger bounds unavailable'
+}
+
+/**
+ * Evaluate observation freshness, ledger bounds, and source disagreements
+ * across backend (NeonDB) events and Soroban on-chain records.
+ */
+export function evaluateVerificationObservations(input: {
+  events: ProofEvent[]
+  chainProof: ChainProofRecord | null
+  errorCode?: string | null
+  offline?: boolean
+  nowMs?: number
+  staleAfterMs?: number
+}): ObservationDiagnostics {
+  const nowMs = input.nowMs ?? Date.now()
+  const staleAfterMs = input.staleAfterMs ?? DEFAULT_OBSERVATION_STALE_MS
+  const { events, chainProof, errorCode = null, offline = false } = input
+
+  const eventBounds = extractLedgerBoundsFromEvents(events)
+  const chainExpiresAt = chainProof?.expiresAt ?? null
+  const chainBounds: LedgerBounds = {
+    minLedger: eventBounds.minLedger,
+    maxLedger: eventBounds.maxLedger,
+    expiresAt: chainExpiresAt,
+    observedAt: chainProof?.createdAt ?? null,
+  }
+  const combinedBounds: LedgerBounds = {
+    minLedger: eventBounds.minLedger,
+    maxLedger: eventBounds.maxLedger,
+    expiresAt: chainExpiresAt,
+    observedAt: eventBounds.observedAt ?? chainProof?.createdAt ?? null,
+  }
+
+  const staleReasons: string[] = []
+  const disagreementReasons: string[] = []
+
+  // Backend freshness
+  let backendFreshness: ObservationFreshness = 'unknown'
+  if (events.length > 0 && eventBounds.observedAt) {
+    const parsed = Date.parse(eventBounds.observedAt)
+    if (!Number.isNaN(parsed)) {
+      if (nowMs - parsed > staleAfterMs) {
+        backendFreshness = 'stale'
+        staleReasons.push('Backend event observation exceeds the freshness window.')
+      } else {
+        backendFreshness = 'fresh'
+      }
+    }
+  }
+
+  // Soroban freshness
+  let sorobanFreshness: ObservationFreshness = 'unknown'
+  if (chainProof) {
+    const expiredByTimestamp =
+      chainExpiresAt !== null &&
+      Number.isSafeInteger(chainExpiresAt) &&
+      chainExpiresAt > 0 &&
+      chainExpiresAt * 1000 <= nowMs
+    if (chainProof.status === 3 || errorCode === 'EXPIRED_EVIDENCE' || expiredByTimestamp) {
+      sorobanFreshness = 'stale'
+      staleReasons.push('Soroban registry record has passed its expiry ledger bound.')
+    } else {
+      sorobanFreshness = 'fresh'
+    }
+  } else if (errorCode === 'EXPIRED_EVIDENCE') {
+    sorobanFreshness = 'stale'
+    staleReasons.push('Soroban registry record has passed its expiry ledger bound.')
+  }
+
+  // Source disagreements (contradictory observations)
+  if (errorCode === 'METADATA_ENVELOPE_MISMATCH') {
+    disagreementReasons.push('Embedded metadata digest contradicts the on-chain envelope.')
+  }
+
+  if (chainProof && events.length > 0) {
+    const chainTier = CHAIN_TIER_MAP[chainProof.tier] ?? null
+    if (chainTier) {
+      const mismatchedTier = events.some((event) => {
+        const eventTier = normaliseToken(event.tier)
+        return eventTier !== null && eventTier !== chainTier
+      })
+      if (mismatchedTier) {
+        disagreementReasons.push('Backend tier observation disagrees with the Soroban registry tier.')
+      }
+    }
+
+    const chainVideoHash = normaliseToken(chainProof.videoHash)
+    if (chainVideoHash) {
+      const mismatchedHash = events.some((event) => {
+        const eventHash = normaliseToken(event.video_hash)
+        return eventHash !== null && eventHash !== chainVideoHash
+      })
+      if (mismatchedHash) {
+        disagreementReasons.push('Backend fingerprint observation disagrees with the Soroban registry record.')
+      }
+    }
+
+    if (chainProof.status === 2 || errorCode === 'REVOKED_EVIDENCE') {
+      const hasRevocationEvent = events.some((event) => /revok/i.test(event.event_type))
+      if (!hasRevocationEvent) {
+        disagreementReasons.push('Soroban registry reports revoked status while backend events show active registration.')
+      }
+    }
+  }
+
+  const overallFreshness: ObservationFreshness =
+    backendFreshness === 'stale' || sorobanFreshness === 'stale'
+      ? 'stale'
+      : backendFreshness === 'fresh' || sorobanFreshness === 'fresh'
+        ? 'fresh'
+        : 'unknown'
+
+  let agreement: SourceAgreement
+  let summary: string
+
+  if (disagreementReasons.length > 0) {
+    agreement = 'contradictory'
+    summary = disagreementReasons[0]
+  } else if (staleReasons.length > 0) {
+    agreement = 'stale'
+    summary = staleReasons[0]
+  } else if (!offline && events.length > 0 && chainProof) {
+    agreement = 'aligned'
+    summary = 'Backend and Soroban observations are fresh and aligned.'
+  } else {
+    agreement = 'incomplete'
+    summary = offline
+      ? 'Offline mode: only local browser observations are available.'
+      : 'Waiting for corroborating backend and Soroban observations.'
+  }
+
+  return {
+    agreement,
+    freshness: overallFreshness,
+    summary,
+    ledgerBounds: combinedBounds,
+    disagreementReasons,
+    staleReasons,
+    sources: {
+      backend: {
+        source: 'backend',
+        label: 'Backend (NeonDB)',
+        freshness: backendFreshness,
+        ledgerBounds: eventBounds,
+        detail:
+          events.length > 0
+            ? `${events.length} event${events.length === 1 ? '' : 's'} · ${formatLedgerBounds(eventBounds)}`
+            : 'No backend observations',
+      },
+      soroban: {
+        source: 'soroban',
+        label: 'Soroban Registry',
+        freshness: sorobanFreshness,
+        ledgerBounds: chainBounds,
+        detail: chainProof
+          ? `Status ${chainProof.status} · ${formatLedgerBounds(chainBounds)}`
+          : 'No Soroban observations',
+      },
+    },
+  }
 }
 
 /**
@@ -398,25 +298,26 @@ export async function runVerificationFlow(
   videoHash: string,
   options: VerificationFlowOptions = {},
 ): Promise<VerificationResult> {
+  throwIfAborted(options.signal)
   const safeHash = assertValidVideoHash(videoHash)
 
   const events = await fetchProofEventsByVideo(safeHash, options.signal)
-  const onChain = await getOnChainProof(safeHash, options.sourceAddress)
-  const hasHarpocratesMetadata = events.length > 0
+  throwIfAborted(options.signal)
 
-  return {
+  const onChain = await getOnChainProof(safeHash, options.sourceAddress)
+  throwIfAborted(options.signal)
+
+  const result: VerificationResult = {
     videoHash: safeHash,
     hasHarpocratesMetadata,
     events,
-    onChain,
-    trust: buildVerificationDimensions({
-      hasHarpocratesMetadata,
-      events,
-      onChain,
-      issuerRecord: options.issuerRecord,
-      nowUnixSeconds: options.nowUnixSeconds,
-    }),
+    onChain: onChain,
+    observations: evaluateVerificationObservations({ events, chainProof: onChain }),
   }
+  if (options.revision !== undefined) {
+    result.revision = options.revision
+  }
+  return result
 }
 
 /**
@@ -428,9 +329,11 @@ export async function verifyUploadedVideo(
   videoHash: string,
   options: VerificationFlowOptions = {},
 ): Promise<VerificationResult> {
+  throwIfAborted(options.signal)
   // Validate before hitting the network at all.
   const safeHash = assertValidVideoHash(videoHash)
   const extract = await extractMetadata(file, options.signal)
+  throwIfAborted(options.signal)
   const result = await runVerificationFlow(safeHash, options)
   const hasHarpocratesMetadata = extract.hasHarpocratesMetadata
   return {
