@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -28,6 +29,84 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from db import list_pending_registration_txs, update_tx_status
+from tx_verification import (
+    TERMINAL_STATUSES,
+    TxVerificationResult,
+    normalize_tx_hash,
+    verify_transaction,
+)
+
+LOGGER = logging.getLogger("harpocrates.registration_reconcile")
+if not LOGGER.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    LOGGER.addHandler(handler)
+LOGGER.setLevel(logging.INFO)
+
+MAX_RECONCILE_BATCH = 50
+DEFAULT_MIN_CONFIRMATIONS = 1
+
+# Retryable operational code returned when the chain dependency is unavailable.
+RPC_UNAVAILABLE_CODE = "rpc_unavailable"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value >= 1 else default
+
+
+def default_min_confirmations() -> int:
+    return _env_int("TX_MIN_CONFIRMATIONS", DEFAULT_MIN_CONFIRMATIONS)
+
+
+def _short_hash(tx_hash: str) -> str:
+    return tx_hash[:8]
+
+
+def clamp_reconcile_limit(limit: object) -> int:
+    if limit is None:
+        return MAX_RECONCILE_BATCH
+    try:
+        parsed = int(limit)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError("limit must be a positive integer") from None
+    if parsed < 1:
+        raise ValueError("limit must be a positive integer")
+    return min(parsed, MAX_RECONCILE_BATCH)
+
+
+def _result_payload(
+    *,
+    tx_hash: str,
+    previous_status: str | None,
+    verification: TxVerificationResult,
+    updated: bool,
+    proof_id: str | None = None,
+    event_id: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "txHash": tx_hash,
+        "previousStatus": previous_status,
+        "status": verification.status,
+        "updated": updated,
+        "reason": verification.reason,
+        "confirmations": verification.confirmations,
+        "ledger": verification.ledger,
+        "minConfirmationsApplied": None,
+    }
+    if proof_id is not None:
+        payload["proofId"] = proof_id
+    if event_id is not None:
+        payload["eventId"] = event_id
+    return payload
 
 DOMAIN_TAG = "harpocrates:registration-reconcile:v1"
 CHECKPOINT_VERSION = 1
@@ -607,3 +686,88 @@ def reconcile_registration(
         event_id=event_id,
     )
     return payload
+
+def reconcile_pending_registrations(
+    *,
+    limit: int = MAX_RECONCILE_BATCH,
+    min_confirmations: int | None = None,
+) -> dict[str, Any]:
+    """Reconcile up to ``limit`` pending registration rows."""
+    page_size = clamp_reconcile_limit(limit)
+    min_conf = (
+        default_min_confirmations()
+        if min_confirmations is None
+        else int(min_confirmations)
+    )
+    if min_conf < 1:
+        raise ValueError("minConfirmations must be >= 1")
+
+    pending = list_pending_registration_txs(limit=page_size)
+    results: list[dict[str, Any]] = []
+    summary = {
+        "scanned": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "missing": 0,
+        "pending": 0,
+        "error": 0,
+        "updated": 0,
+    }
+
+    selected = len(pending)
+    for row in pending:
+        summary["scanned"] += 1
+        item = reconcile_registration(
+            row.get("tx_hash"),
+            previous_status=row.get("tx_status") or "pending",
+            proof_id=row.get("proof_id"),
+            event_id=row.get("id"),
+            min_confirmations=min_conf,
+            force=False,
+        )
+        results.append(item)
+        status = item.get("status") or "error"
+        if status in summary:
+            summary[status] += 1
+        else:
+            summary["error"] += 1
+        if item.get("updated"):
+            summary["updated"] += 1
+
+    processed = len(results)
+    deferred = selected - processed
+    complete_batch = selected >= page_size
+    complete_backlog = (not complete_batch) and deferred == 0
+
+    return {
+        "ok": True,
+        "summary": summary,
+        "batch": {
+            "selected": selected,
+            "processed": processed,
+            "deferred": deferred,
+            "limit": page_size,
+            "completeBatch": complete_batch,
+            "completeBacklog": complete_backlog,
+        },
+        "minConfirmations": min_conf,
+        "results": results,
+    }
+
+
+def process_verify_tx_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Worker entrypoint for ``verify_tx`` jobs enqueued at registration time."""
+    if not isinstance(payload, dict):
+        raise ValueError("verify_tx payload must be an object")
+    tx_hash = payload.get("tx_hash") or payload.get("txHash")
+    proof_id = payload.get("proof_id") or payload.get("proofId")
+    min_confirmations = payload.get("min_confirmations") or payload.get("minConfirmations")
+    result = reconcile_registration(
+        tx_hash,
+        previous_status="pending",
+        proof_id=proof_id if isinstance(proof_id, str) else None,
+        min_confirmations=int(min_confirmations) if min_confirmations is not None else None,
+    )
+    if result.get("status") == "error":
+        raise RuntimeError(result.get("code") or RPC_UNAVAILABLE_CODE)
+    return result
