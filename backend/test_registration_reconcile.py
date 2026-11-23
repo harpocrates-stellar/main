@@ -14,7 +14,8 @@ import pytest
 
 import registration_reconcile as rr
 from registration_reconcile import reconcile_registration
-from tx_verification import TxVerificationResult, clamp_reconcile_limit, verify_transaction
+from registration_reconcile import clamp_reconcile_limit
+from tx_verification import TxVerificationResult, verify_transaction
 
 VALID_TX = "a" * 64
 

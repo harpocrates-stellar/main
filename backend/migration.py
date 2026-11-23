@@ -451,6 +451,13 @@ MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    Migration(
+        id=13,
+        name="add envelope_version to blobs",
+        sql="""
+        ALTER TABLE blobs ADD COLUMN IF NOT EXISTS envelope_version TEXT;
+        """,
+    ),
 ]
 
 
@@ -556,6 +563,7 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "encrypted_dek", "type": "text"},
         {"column": "size_bytes", "type": "bigint"},
         {"column": "storage_path", "type": "text"},
+        {"column": "envelope_version", "type": "text"},
         {"column": "created_at", "type": "timestamp with time zone"},
     ],
     "tenant_blob_refs": [

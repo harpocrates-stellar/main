@@ -102,13 +102,12 @@ class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
 
 
-class ManifestVerificationError(BuildError):
-    """Signature verification failed or required fields are missing.
+class ArtifactSizeMismatchError(BuildError):
+    """A declared artifact size disagrees with the on-disk size.
 
-    Raised by :func:`verify_manifest` and :func:`load_verified_artifacts`
-    *before* any artifact bytes are read, so an unsigned or tampered release
-    manifest can never reach a client. The message names only the failure
-    reason — never artifact content or key material.
+    Raised *before* the file is hashed or decompressed, so a size mismatch
+    costs only a stat() rather than the full read/normalize/digest pipeline.
+    The message names the declared path and the two sizes only.
     """
 
 
@@ -315,6 +314,29 @@ def _rel(path: Path, root: Path = REPO_ROOT) -> str:
         return path.name
 
 
+def resolve_within_root(declared: str, root: Path) -> Path:
+    """Resolve *declared* against *root* and require the result to stay inside.
+
+    Aliases (``..`` segments and symlinks) are resolved first, then the result
+    is required to live under the resolved *root*. On any escape the helper
+    raises :class:`ArtifactPathEscapeError` naming only the declared path and
+    the root name — never the absolute host path.
+    """
+    try:
+        root_resolved = root.resolve()
+        resolved = (root_resolved / declared).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ArtifactPathEscapeError(
+            f"artifact path {declared!r} cannot be resolved: {type(exc).__name__}"
+        ) from exc
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise ArtifactPathEscapeError(
+            f"artifact path {declared!r} resolves outside the release directory "
+            f"{root.name!r}; refusing to read it"
+        )
+    return resolved
+
+
 @dataclass
 class ArtifactResult:
     path: str
@@ -361,7 +383,7 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
     kind = declaration["kind"]
     role = declaration.get("role", "unknown")
     required = bool(declaration.get("required", False))
-    target = root / relative
+    target = resolve_within_root(relative, root)
 
     result = ArtifactResult(path=relative, kind=kind, role=role, state=ArtifactState.MISSING)
 
@@ -370,6 +392,7 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
         signal("artifact.state", path=relative, state=result.state, required=required)
         return result
 
+    # Use the resolved path for subsequent filesystem operations.
     size = target.stat().st_size
     if size > lock.limits.max_artifact_bytes:
         result.state = ArtifactState.OVERSIZE
@@ -382,6 +405,27 @@ def digest_artifact(declaration: dict, lock: Lock, root: Path) -> ArtifactResult
             limit=lock.limits.max_artifact_bytes,
         )
         return result
+
+    # Size validation (#1218): if the lock declares an expected size, check it
+    # against the on-disk stat *before* reading, normalizing, or hashing. A
+    # mismatch is rejected explicitly and deterministically; the error names
+    # the declared path and both sizes, never the absolute host path.
+    declared_size = declaration.get("size_bytes")
+    if declared_size is not None:
+        try:
+            declared_int = int(declared_size)
+        except (TypeError, ValueError) as exc:
+            raise BuildError(
+                f"artifact {relative}: declared size_bytes is not an integer"
+            ) from exc
+        if declared_int < 0:
+            raise BuildError(
+                f"artifact {relative}: declared size_bytes is negative"
+            )
+        if declared_int != size:
+            raise ArtifactSizeMismatchError(
+                f"artifact {relative}: declared size {declared_int} != actual {size}"
+            )
 
     try:
         data = target.read_bytes()
@@ -558,6 +602,12 @@ def compare_manifests(expected: dict, actual: dict) -> list[str]:
         if after is None:
             findings.append(f"artifact {path}: missing from the rebuilt tree")
             continue
+        before_size = before.get("size_bytes", before.get("raw_bytes"))
+        after_size = after.get("size_bytes", after.get("raw_bytes"))
+        if before_size is not None and after_size is not None and before_size != after_size:
+            findings.append(
+                f"artifact {path}: size {before_size} -> {after_size}"
+            )
         if before.get("normalized_sha256") != after.get("normalized_sha256"):
             findings.append(
                 f"artifact {path}: normalized digest "
@@ -1047,11 +1097,6 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
     for declaration in published_acir_declarations(lock):
         published_path = declaration["path"]
         target_path = published_to_build_target(published_path)
-        published = root / published_path
-        target = root / target_path
-        if not published.is_file() or not target.is_file():
-            continue
-
         published_decl = {
             "path": published_path,
             "kind": declaration.get("kind", "json"),
@@ -1066,6 +1111,12 @@ def compare_published_to_targets(lock: Lock, root: Path) -> list[str]:
         }
         published_result = digest_artifact(published_decl, lock, root)
         target_result = digest_artifact(target_decl, lock, root)
+
+        # Missing files are not drift: either side may await a later publish.
+        if published_result.state in (ArtifactState.MISSING, ArtifactState.SKIPPED):
+            continue
+        if target_result.state in (ArtifactState.MISSING, ArtifactState.SKIPPED):
+            continue
 
         if published_result.state != ArtifactState.DIGESTED:
             findings.append(

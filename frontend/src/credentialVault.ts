@@ -70,6 +70,24 @@ export function getVaultFormatCompatibility(): VaultFormatCompatibilityDescripto
   return VAULT_FORMAT_COMPATIBILITY
 }
 
+const SALT_HEX_LENGTH = 32 // 16 bytes
+const IV_HEX_LENGTH = 24 // 12 bytes
+const MIN_CIPHERTEXT_HEX_LENGTH = 32 // 16-byte AES-GCM authentication tag
+
+/**
+ * Maximum serialized UTF-8 byte size accepted for an encrypted vault envelope.
+ * Rejects oversized payloads before JSON parsing, hex decoding, or PBKDF2 key derivation.
+ */
+export const MAX_VAULT_ENVELOPE_BYTES = 16 * 1024 // 16 KiB
+
+/**
+ * Maximum decoded ciphertext size in bytes for a vault envelope.
+ * Checked against the hex length before decoding ciphertext or deriving keys.
+ */
+export const MAX_VAULT_CIPHERTEXT_BYTES = 4 * 1024 // 4 KiB
+const MAX_CIPHERTEXT_HEX_LENGTH = MAX_VAULT_CIPHERTEXT_BYTES * 2
+const HEX_PATTERN = /^[0-9a-fA-F]+$/
+
 export interface VaultEnvelope {
   v: number
   salt: string // hex
@@ -154,6 +172,113 @@ export function validateVaultEnvelope(candidate: unknown): VaultEnvelope {
   }
 }
 
+export class VaultEnvelopeSizeError extends Error {
+  readonly actualBytes: number
+  readonly maxBytes: number
+
+  constructor(message: string, actualBytes: number, maxBytes: number) {
+    super(message)
+    this.name = 'VaultEnvelopeSizeError'
+    this.actualBytes = actualBytes
+    this.maxBytes = maxBytes
+  }
+}
+
+/**
+ * Validates a parsed vault envelope object and enforces ciphertext size bounds
+ * before hex decoding or key derivation.
+ */
+export function validateVaultEnvelope(candidate: unknown): VaultEnvelope {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  const record = candidate as Record<string, unknown>
+  if (record.v !== VAULT_VERSION) {
+    throw new Error(`Unsupported vault version: ${String(record.v)}`)
+  }
+
+  if (
+    typeof record.salt !== 'string' ||
+    typeof record.iv !== 'string' ||
+    typeof record.ct !== 'string'
+  ) {
+    throw new Error('Vault corrupted: malformed envelope fields')
+  }
+
+  if (record.ct.length > MAX_CIPHERTEXT_HEX_LENGTH) {
+    const actualCiphertextBytes = Math.ceil(record.ct.length / 2)
+    throw new VaultEnvelopeSizeError(
+      `Vault ciphertext exceeds maximum size of ${MAX_VAULT_CIPHERTEXT_BYTES} bytes (got ${actualCiphertextBytes} bytes)`,
+      actualCiphertextBytes,
+      MAX_VAULT_CIPHERTEXT_BYTES
+    )
+  }
+
+  if (record.salt.length !== SALT_HEX_LENGTH || !HEX_PATTERN.test(record.salt)) {
+    throw new Error('Vault corrupted: invalid salt encoding')
+  }
+
+  if (record.iv.length !== IV_HEX_LENGTH || !HEX_PATTERN.test(record.iv)) {
+    throw new Error('Vault corrupted: invalid iv encoding')
+  }
+
+  if (
+    record.ct.length < MIN_CIPHERTEXT_HEX_LENGTH ||
+    record.ct.length % 2 !== 0 ||
+    !HEX_PATTERN.test(record.ct)
+  ) {
+    throw new Error('Vault corrupted: invalid ciphertext encoding')
+  }
+
+  return {
+    v: VAULT_VERSION,
+    salt: record.salt,
+    iv: record.iv,
+    ct: record.ct,
+  }
+}
+
+/**
+ * Parses and validates a serialized vault envelope, rejecting oversized inputs
+ * before JSON parsing, ciphertext decoding, or PBKDF2 key derivation.
+ */
+export function parseVaultEnvelope(
+  serialized: string,
+  maxEnvelopeBytes = MAX_VAULT_ENVELOPE_BYTES
+): VaultEnvelope {
+  if (typeof serialized !== 'string') {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  // Fast-path lower bound: UTF-8 byte length is always >= UTF-16 code-unit length.
+  if (serialized.length > maxEnvelopeBytes) {
+    throw new VaultEnvelopeSizeError(
+      `Vault envelope exceeds maximum size of ${maxEnvelopeBytes} bytes`,
+      serialized.length,
+      maxEnvelopeBytes
+    )
+  }
+
+  const byteLength = new TextEncoder().encode(serialized).byteLength
+  if (byteLength > maxEnvelopeBytes) {
+    throw new VaultEnvelopeSizeError(
+      `Vault envelope exceeds maximum size of ${maxEnvelopeBytes} bytes (got ${byteLength} bytes)`,
+      byteLength,
+      maxEnvelopeBytes
+    )
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    throw new Error('Vault corrupted: unable to parse envelope')
+  }
+
+  return validateVaultEnvelope(parsed)
+}
+
 function bufToHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
@@ -187,6 +312,49 @@ async function deriveKey(password: string, salt: ArrayBuffer): Promise<CryptoKey
     false, // extractable
     ['encrypt', 'decrypt']
   )
+}
+
+async function decryptEnvelope(
+  envelope: VaultEnvelope,
+  password: string
+): Promise<{ key: CryptoKey; seeds: SeedPair } | null> {
+  const salt = hexToBuf(envelope.salt)
+  const iv = hexToBuf(envelope.iv)
+  const ct = hexToBuf(envelope.ct)
+
+  try {
+    const key = await deriveKey(password, salt as unknown as ArrayBuffer)
+    const pt = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv as unknown as ArrayBuffer,
+      },
+      key,
+      ct as unknown as ArrayBuffer
+    )
+
+    const dec = new TextDecoder()
+    const seedsRaw = JSON.parse(dec.decode(pt)) as Partial<SeedPair> | null
+    if (
+      !seedsRaw ||
+      typeof seedsRaw !== 'object' ||
+      typeof seedsRaw.credentialSeed !== 'string' ||
+      typeof seedsRaw.nullifierSeed !== 'string'
+    ) {
+      return null
+    }
+
+    return {
+      key,
+      seeds: {
+        credentialSeed: seedsRaw.credentialSeed,
+        nullifierSeed: seedsRaw.nullifierSeed,
+      },
+    }
+  } catch {
+    // Typically an OperationError if decryption fails due to bad password
+    return null
+  }
 }
 
 export class CredentialVault {
@@ -269,35 +437,18 @@ export class CredentialVault {
 
     const envelope = validateVaultEnvelope(parsed)
 
-    const salt = hexToBuf(envelope.salt)
-    const iv = hexToBuf(envelope.iv)
-    const ct = hexToBuf(envelope.ct)
+  async unlock(password: string): Promise<boolean> {
+    const stored = window.localStorage.getItem(VAULT_STORAGE_KEY)
+    if (!stored) throw new Error('Vault is empty')
 
-    try {
-      const key = await deriveKey(password, salt as unknown as ArrayBuffer)
-      const pt = await crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: iv as unknown as ArrayBuffer,
-        },
-        key,
-        ct as unknown as ArrayBuffer
-      )
+    const envelope = parseVaultEnvelope(stored)
+    const decrypted = await decryptEnvelope(envelope, password)
+    if (!decrypted) return false
 
-      const dec = new TextDecoder()
-      const seedsRaw = JSON.parse(dec.decode(pt))
-      
-      this.memoryKey = key
-      this.seeds = {
-        credentialSeed: seedsRaw.credentialSeed,
-        nullifierSeed: seedsRaw.nullifierSeed,
-      }
-      this.resetTimeout()
-      return true
-    } catch {
-      // Typically an OperationError if decryption fails due to bad password
-      return false
-    }
+    this.memoryKey = decrypted.key
+    this.seeds = decrypted.seeds
+    this.resetTimeout()
+    return true
   }
 
   lock(): void {

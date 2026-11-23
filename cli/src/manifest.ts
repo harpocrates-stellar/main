@@ -124,12 +124,41 @@ export function serializeManifest(manifest: ProofManifest): string {
   return JSON.stringify(manifest, Object.keys(manifest).sort())
 }
 
+export const MAX_MANIFEST_BYTES = 1024 * 1024
+
+/**
+ * Read and bound a streamed manifest text before JSON parsing.
+ * Halts and destroys the stream as soon as limit is exceeded.
+ */
+export async function readBoundedManifest(
+  source: NodeJS.ReadableStream,
+  limit = MAX_MANIFEST_BYTES,
+): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of source) {
+    size += Buffer.byteLength(chunk)
+    if (size > limit) {
+      if (typeof (source as unknown as { destroy?: () => void }).destroy === 'function') {
+        (source as unknown as { destroy: () => void }).destroy()
+      }
+      throw new Error(`input exceeds ${limit} byte limit`)
+    }
+    chunks.push(Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks).toString('utf-8')
+}
+
 /**
  * Parse and validate a serialised proof manifest.
  *
  * Returns the typed manifest on success or throws on invalid input.
  */
 export function parseManifest(json: string): ProofManifest {
+  if (typeof json === 'string' && Buffer.byteLength(json, 'utf-8') > MAX_MANIFEST_BYTES) {
+    throw new Error('manifest exceeds 1 MiB limit')
+  }
+
   let parsed: unknown
   try {
     parsed = JSON.parse(json)

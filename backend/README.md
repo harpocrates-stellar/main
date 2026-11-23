@@ -452,27 +452,23 @@ store = CheckpointStore(deployment=deployment)
 checkpoint = store.record(1_250)
 ```
 
-## Offline Upload Integrity Report
+## Encryption Envelope Versions
 
-`streaming_upload.py` provides offline integrity inspection for failed upload
-sessions without exposing uploaded media bytes, filesystem paths, or private
-filenames:
+`evidence_storage.py` records an explicit `envelope_version` column on `blobs`
+(default `fernet-v1`, added in migration 13):
 
-- `inspect_failed_upload_session(session_dir, ...)` scans only `chunk-<N>`
-  files in bounded chunks, computing SHA-256 digests and byte counts for each
-  chunk and for the assembled stream.
-- `build_upload_integrity_report(...)` constructs a report directly from
-  session metrics (for example, when admission control rejects a session before
-  any chunks are written).
-- `write_upload_integrity_report(report, destination)` persists the report as
-  canonical JSON.
-
-Each `UploadIntegrityReport` records `expected_bytes`, `observed_bytes`,
-`byte_count_status` (`matched`, `underflow`, `overflow`, `unknown`),
-`expected_digest`, `observed_digest`, `digest_status` (`matched`, `mismatch`,
-`unverified`, `unavailable`), `missing_chunk_indices`, and per-chunk numeric
-summaries. Path-like `session_id` values are rejected (recorded as `null`),
-and non-`chunk-<N>` files in the session directory are ignored.
+- `classify_envelope_version()` distinguishes supported versions (`fernet-v1`),
+  known legacy envelopes (`None` for pre-versioning rows, `legacy-v0`,
+  `fernet-v0`), and unsupported formats (any unrecognized, empty, or non-string
+  identifier).
+- `record_blob()` validates and stores `envelope_version`, rejecting known
+  legacy or unsupported values on write.
+- `decrypt_blob_ciphertext()` dispatches strictly on the recorded
+  `envelope_version` and never guesses a decryption algorithm from malformed
+  ciphertext. Known legacy versions raise `LegacyEnvelopeVersionError`, while
+  unsupported formats fail closed with `UnsupportedEnvelopeVersionError`.
+  Pre-versioning rows with `envelope_version IS NULL` remain compatible with
+  Fernet.
 
 ## Test
 
@@ -498,3 +494,10 @@ source videos.
 - Reports aggregate counts (`blob_count`, `total_ref_count`, `total_size_bytes`, `eligible_for_deletion_count`, `retained_count`, `shared_blob_count`), age summaries (`oldest_age_seconds`, `newest_age_seconds`, `average_age_seconds`), and per-blob deletion eligibility (`deletion_eligible`, `deletion_ineligible_reason`).
 - Blobs still referenced by another tenant are marked ineligible (`shared_with_other_tenants`), and blobs younger than `ttl_seconds` (when provided) are marked ineligible (`within_retention_window`).
 - Privacy: other tenants' content hashes, tenant identifiers, encrypted DEKs, and all filesystem `storage_path` values are never queried or returned.
+
+## Evidence Storage Consistency Report
+
+`evidence_storage.generate_consistency_report(storage_dir=None, *, now=None)` returns a read-only consistency report comparing `blobs` metadata, active `tenant_blob_refs` (`ref_count > 0`), and physical files under `storage_dir` (defaulting to `HARPOCRATES_STORAGE_DIR` / `storage.default_storage_dir` without creating or mutating directories):
+
+- Reports `consistent` (`bool`), aggregate `summary` counts, and itemized discrepancies: `missing_files`, `orphaned_blobs`, `orphaned_tenant_refs`, `orphaned_files`, and `size_mismatches`.
+- Strictly read-only: never modifies database rows, never deletes physical files, and never queries or returns `encrypted_dek`.

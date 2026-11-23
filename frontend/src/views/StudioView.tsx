@@ -1,7 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
-import { TIERS } from '../hooks/useEvidence'
+import { EVIDENCE_REPLACED_MESSAGE, TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
@@ -57,18 +57,82 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     cancelProving,
   } = evidence
 
-  const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
+  const {
+    verifyHash,
+    verifyResult,
+    events,
+    chainProof,
+    status: verifyStatus,
+    verifyEvidence,
+    loadEvents,
+    clear: clearVerification,
+  } = verification
+
+  const [verificationCleared, setVerificationCleared] = useState(false)
+  const [verificationClearedNotice, setVerificationClearedNotice] = useState<string | null>(null)
+  const [clearedRegistrationHash, setClearedRegistrationHash] = useState<string | null>(null)
+
+  const effectiveVerifyHash = verificationCleared ? '' : verifyHash
+  const effectiveVerifyResult = verificationCleared ? '' : verifyResult
+  const effectiveChainProof = verificationCleared ? null : chainProof
+  const effectiveEvents = verificationCleared ? [] : events
+  const effectiveProvenanceRecord =
+    verificationCleared && provenanceRecord?.ledger.status !== null ? null : provenanceRecord
+
+  const hasFreshRegistration =
+    stage === 'registered' &&
+    Boolean(registration?.hash) &&
+    registration?.hash !== clearedRegistrationHash
+
+  const stateChangeExplanation = hasFreshRegistration
+    ? null
+    : (verificationClearedNotice ?? evidenceChangeNotice ?? null)
 
   const { statusLabel, isBusy } = useA11yStage(stage)
   const isProving = stage === 'proving'
   const revocationProofId =
-    events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
+    effectiveEvents.find((event) => event.video_hash === effectiveVerifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
   const stageHeadingRef = useRef<HTMLHeadingElement | null>(null)
   const registerActionRef = useRef<HTMLButtonElement | null>(null)
 
   useStageFocus(stage, stageHeadingRef, registerActionRef)
+
+  function handleStudioFileChange(nextFile: File | null) {
+    if (!nextFile) return
+
+    const hadVerificationState = Boolean(
+      !verificationCleared &&
+        (verifyHash || verifyResult || chainProof || events.length > 0 || verifyStatus !== 'idle'),
+    )
+    const hadPriorEvidence = Boolean(file || proof || registration)
+
+    if (hadVerificationState) {
+      clearVerification()
+      setVerificationCleared(true)
+      setClearedRegistrationHash(registration?.hash ?? null)
+      setVerificationClearedNotice(EVIDENCE_REPLACED_MESSAGE)
+    } else if (hadPriorEvidence) {
+      setClearedRegistrationHash(registration?.hash ?? null)
+      setVerificationClearedNotice(EVIDENCE_REPLACED_MESSAGE)
+    } else {
+      setClearedRegistrationHash(null)
+      setVerificationClearedNotice(null)
+    }
+
+    void handleEvidence(nextFile)
+  }
+
+  function handleQuickVerifyChange(nextFile: File | null) {
+    if (nextFile) {
+      setVerificationCleared(false)
+      setClearedRegistrationHash(null)
+      setVerificationClearedNotice(null)
+      clearEvidenceChangeNotice?.()
+    }
+    void verifyEvidence(nextFile, wallet || undefined)
+  }
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -175,6 +239,18 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
+        {stateChangeExplanation ? (
+          <div
+            className="studio-state-notice"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            data-testid="studio-evidence-change-notice"
+          >
+            <p>{stateChangeExplanation}</p>
+          </div>
+        ) : null}
+
         {/* Dropzone — keyboard: Tab focuses the label, Enter/Space opens the file picker */}
         <label
           className="dropzone"
@@ -197,7 +273,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             accept="video/*"
             tabIndex={-1}
             aria-hidden="true"
-            onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+            onChange={(event) => handleStudioFileChange(event.target.files?.[0] ?? null)}
           />
         </label>
 
@@ -400,34 +476,34 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <input
               type="file"
               accept="video/*"
-              onChange={(event) =>
-                void verifyEvidence(event.target.files?.[0] ?? null, wallet || undefined)
-              }
+              onChange={(event) => handleQuickVerifyChange(event.target.files?.[0] ?? null)}
             />
             <span>Choose received video</span>
           </label>
           <div className="verify-result">
-            <CheckCircle2 size={14} aria-hidden="true" />
-            <p>{verifyResult || 'No verification run yet.'}</p>
+            {effectiveVerifyResult && verifyStatus === 'success' ? (
+              <CheckCircle2 size={14} aria-hidden="true" />
+            ) : null}
+            <p>{effectiveVerifyResult || 'No verification run yet.'}</p>
           </div>
-          <code>{shortHash(verifyHash)}</code>
+          <code>{shortHash(effectiveVerifyHash)}</code>
         </div>
 
         <div className="rail-block">
           <h3>Chain Registry</h3>
           <ChainProofPanel
-            chainProof={chainProof}
+            chainProof={effectiveChainProof}
             proofId={revocationProofId}
             sourceAddress={wallet || undefined}
           />
           <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
           <VerifierSetStatusPanel />
-          {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
+          {effectiveProvenanceRecord ? <ProvenanceCard provenance={effectiveProvenanceRecord} /> : null}
         </div>
 
         <div className="rail-block">
           <h3>Events</h3>
-          <EventList events={events} onRefresh={() => void loadEvents()} />
+          <EventList events={effectiveEvents} onRefresh={() => void loadEvents()} />
         </div>
       </aside>
     </section>

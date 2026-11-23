@@ -47,7 +47,11 @@ class FakeCursor:
         normalized = " ".join(sql.lower().split())
 
         if normalized.startswith("insert into blobs"):
-            content_hash, encrypted_dek, size_bytes, storage_path = params
+            if len(params) == 5:
+                content_hash, encrypted_dek, size_bytes, storage_path, envelope_version = params
+            else:
+                content_hash, encrypted_dek, size_bytes, storage_path = params
+                envelope_version = None
             # ON CONFLICT (content_hash) DO NOTHING
             with self.connection.lock:
                 if content_hash not in self.connection.blobs:
@@ -56,6 +60,7 @@ class FakeCursor:
                         "encrypted_dek": encrypted_dek,
                         "size_bytes": size_bytes,
                         "storage_path": storage_path,
+                        "envelope_version": envelope_version,
                         "created_at": time.time(),
                     }
             self._last_row = None
@@ -75,7 +80,7 @@ class FakeCursor:
                     }
             self._last_row = None
 
-        elif normalized.startswith("select encrypted_dek, storage_path from blobs"):
+        elif normalized.startswith("select encrypted_dek, storage_path, envelope_version from blobs"):
             (content_hash,) = params
             with self.connection.lock:
                 blob = self.connection.blobs.get(content_hash)
@@ -85,6 +90,7 @@ class FakeCursor:
                     self._last_row = FakeRow(
                         encrypted_dek=blob["encrypted_dek"],
                         storage_path=blob["storage_path"],
+                        envelope_version=blob.get("envelope_version"),
                     )
 
         elif "select ref_count from tenant_blob_refs" in normalized:
@@ -172,6 +178,34 @@ class FakeCursor:
                     )
                 matched.sort(key=lambda r: (r["created_at"], r["content_hash"]))
             self._results = matched
+            self._idx = 0
+
+        elif "select content_hash, size_bytes, storage_path from blobs" in normalized:
+            with self.connection.lock:
+                self._results = [
+                    FakeRow(
+                        content_hash=b["content_hash"],
+                        size_bytes=b["size_bytes"],
+                        storage_path=b["storage_path"],
+                    )
+                    for _, b in sorted(self.connection.blobs.items(), key=lambda item: item[0])
+                ]
+            self._idx = 0
+
+        elif "select tenant_id, content_hash, ref_count from tenant_blob_refs" in normalized:
+            with self.connection.lock:
+                rows = [
+                    FakeRow(
+                        tenant_id=ref["tenant_id"],
+                        content_hash=ref["content_hash"],
+                        ref_count=ref["ref_count"],
+                    )
+                    for ref in self.connection.tenant_refs.values()
+                    if ref["ref_count"] > 0
+                ]
+                rows.sort(key=lambda r: (r["tenant_id"], r["content_hash"]))
+                self._results = rows
+            self._idx = 0
             self._idx = 0
 
     def fetchone(self) -> FakeRow | None:
@@ -338,14 +372,15 @@ def test_record_blob_executes_parameterized_insert_and_commits(
     assert len(fake_db.executed) == 1
     sql, params = fake_db.executed[0]
     normalized_sql = " ".join(sql.lower().split())
-    assert "insert into blobs (content_hash, encrypted_dek, size_bytes, storage_path)" in normalized_sql
-    assert "values (%s, %s, %s, %s)" in normalized_sql
+    assert "insert into blobs (content_hash, encrypted_dek, size_bytes, storage_path, envelope_version)" in normalized_sql
+    assert "values (%s, %s, %s, %s, %s)" in normalized_sql
     assert "on conflict (content_hash) do nothing" in normalized_sql
     assert params == (
         content_hash,
         encrypted_dek.decode(),
         size_bytes,
         storage_path,
+        evidence_storage.DEFAULT_ENVELOPE_VERSION,
     )
 
 
@@ -361,14 +396,27 @@ def test_record_blob_idempotent_on_duplicate_content_hash(
 
     assert fake_db.commits == 2
     assert len(fake_db.executed) == 2
-    assert fake_db.executed[0][1] == (content_hash, first_dek.decode(), 1024, "/blobs/first")
-    assert fake_db.executed[1][1] == (content_hash, second_dek.decode(), 9999, "/blobs/second")
+    assert fake_db.executed[0][1] == (
+        content_hash,
+        first_dek.decode(),
+        1024,
+        "/blobs/first",
+        evidence_storage.DEFAULT_ENVELOPE_VERSION,
+    )
+    assert fake_db.executed[1][1] == (
+        content_hash,
+        second_dek.decode(),
+        9999,
+        "/blobs/second",
+        evidence_storage.DEFAULT_ENVELOPE_VERSION,
+    )
 
     # Duplicate content_hash preserves the original blob entry (DO NOTHING)
     info = evidence_storage.get_blob_info(content_hash)
     assert info == {
         "encrypted_dek": first_dek.decode(),
         "storage_path": "/blobs/first",
+        "envelope_version": evidence_storage.DEFAULT_ENVELOPE_VERSION,
     }
 
 
@@ -405,7 +453,7 @@ def test_get_blob_info_returns_none_for_unknown_and_dict_for_known(
 
     assert evidence_storage.get_blob_info(unknown_hash) is None
     sql, params = fake_db.executed[-1]
-    assert "select encrypted_dek, storage_path from blobs where content_hash = %s" in " ".join(
+    assert "select encrypted_dek, storage_path, envelope_version from blobs where content_hash = %s" in " ".join(
         sql.lower().split()
     )
     assert params == (unknown_hash,)
@@ -416,6 +464,7 @@ def test_get_blob_info_returns_none_for_unknown_and_dict_for_known(
     assert result == {
         "encrypted_dek": encrypted_dek.decode(),
         "storage_path": storage_path,
+        "envelope_version": evidence_storage.DEFAULT_ENVELOPE_VERSION,
     }
     assert isinstance(result, dict)
 
@@ -756,6 +805,187 @@ def test_preview_tenant_retention_rejects_invalid_inputs(fake_db: FakeConnection
         evidence_storage.preview_tenant_retention("tenant_a", ttl_seconds=True)
 
 
+# ---------------------------------------------------------------------------
+# Evidence storage consistency report tests
+# ---------------------------------------------------------------------------
+
+
+def test_consistency_report_clean_state(fake_db: FakeConnection, tmp_path: Path) -> None:
+    now_ts = 1_700_000_000.0
+    blob_dir = tmp_path / "aa"
+    blob_dir.mkdir()
+    blob_file = blob_dir / "blob_1.enc"
+    blob_file.write_bytes(b"encrypted-payload-1")
+
+    evidence_storage.record_blob("hash_1", b"dek_1", len(b"encrypted-payload-1"), str(blob_file))
+    evidence_storage.record_tenant_ref("tenant_a", "hash_1")
+    evidence_storage.record_tenant_ref("tenant_b", "hash_1")
+
+    report = evidence_storage.generate_consistency_report(storage_dir=tmp_path, now=now_ts)
+
+    assert report["consistent"] is True
+    assert report["storage_dir"] == str(tmp_path.resolve())
+    assert report["summary"] == {
+        "total_blobs": 1,
+        "total_tenant_refs": 2,
+        "total_physical_files": 1,
+        "missing_files_count": 0,
+        "orphaned_blobs_count": 0,
+        "orphaned_tenant_refs_count": 0,
+        "orphaned_files_count": 0,
+        "size_mismatches_count": 0,
+    }
+    assert report["missing_files"] == []
+    assert report["orphaned_blobs"] == []
+    assert report["orphaned_tenant_refs"] == []
+    assert report["orphaned_files"] == []
+    assert report["size_mismatches"] == []
+
+
+def test_consistency_report_detects_missing_and_orphaned_records_without_modifying(
+    fake_db: FakeConnection, tmp_path: Path
+) -> None:
+    now_ts = 1_700_000_000.0
+
+    # 1. Healthy blob
+    healthy_file = tmp_path / "healthy.enc"
+    healthy_file.write_bytes(b"12345")
+    evidence_storage.record_blob("hash_healthy", b"dek_h", 5, str(healthy_file))
+    evidence_storage.record_tenant_ref("tenant_a", "hash_healthy")
+
+    # 2. Missing physical file
+    missing_path = tmp_path / "missing.enc"
+    evidence_storage.record_blob("hash_missing_file", b"dek_m", 10, str(missing_path))
+    evidence_storage.record_tenant_ref("tenant_a", "hash_missing_file")
+
+    # 3. Empty storage_path
+    evidence_storage.record_blob("hash_empty_path", b"dek_e", 10, "")
+    evidence_storage.record_tenant_ref("tenant_a", "hash_empty_path")
+
+    # 4. storage_path points to a directory
+    dir_path = tmp_path / "not_a_file_dir"
+    dir_path.mkdir()
+    evidence_storage.record_blob("hash_dir_path", b"dek_d", 10, str(dir_path))
+    evidence_storage.record_tenant_ref("tenant_a", "hash_dir_path")
+
+    # 5. Orphaned blob (no active tenant refs; include a zero ref_count row to verify it is ignored)
+    orphan_blob_file = tmp_path / "orphan_blob.enc"
+    orphan_blob_file.write_bytes(b"orphan")
+    evidence_storage.record_blob("hash_orphan_blob", b"dek_o", 6, str(orphan_blob_file))
+    fake_db.tenant_refs[("tenant_zero", "hash_orphan_blob")] = {
+        "tenant_id": "tenant_zero",
+        "content_hash": "hash_orphan_blob",
+        "ref_count": 0,
+    }
+
+    # 6. Orphaned tenant reference (missing blob metadata)
+    evidence_storage.record_tenant_ref("tenant_dangling", "hash_no_blob")
+
+    # 7. Orphaned physical file (no blob metadata)
+    orphan_disk_file = tmp_path / "untracked.enc"
+    orphan_disk_file.write_bytes(b"stray-bytes")
+
+    # 8. Size mismatch
+    mismatch_file = tmp_path / "mismatch.enc"
+    mismatch_file.write_bytes(b"actual-12345")
+    evidence_storage.record_blob("hash_size_mismatch", b"dek_s", 999, str(mismatch_file))
+    evidence_storage.record_tenant_ref("tenant_a", "hash_size_mismatch")
+
+    blobs_before = dict(fake_db.blobs)
+    refs_before = dict(fake_db.tenant_refs)
+    files_before = sorted(p for p in tmp_path.rglob("*") if p.is_file())
+
+    report = evidence_storage.generate_consistency_report(storage_dir=tmp_path, now=now_ts)
+
+    assert report["consistent"] is False
+    assert report["summary"] == {
+        "total_blobs": 6,
+        "total_tenant_refs": 6,
+        "total_physical_files": 4,
+        "missing_files_count": 3,
+        "orphaned_blobs_count": 1,
+        "orphaned_tenant_refs_count": 1,
+        "orphaned_files_count": 1,
+        "size_mismatches_count": 1,
+    }
+
+    missing_by_hash = {item["content_hash"]: item for item in report["missing_files"]}
+    assert set(missing_by_hash.keys()) == {"hash_dir_path", "hash_empty_path", "hash_missing_file"}
+    assert missing_by_hash["hash_missing_file"]["reason"] == "file_not_found"
+    assert missing_by_hash["hash_empty_path"]["reason"] == "missing_storage_path"
+    assert missing_by_hash["hash_dir_path"]["reason"] == "not_a_file"
+
+    assert report["orphaned_blobs"] == [
+        {"content_hash": "hash_orphan_blob", "size_bytes": 6, "file_exists": True}
+    ]
+    assert report["orphaned_tenant_refs"] == [
+        {"tenant_id": "tenant_dangling", "content_hash": "hash_no_blob", "ref_count": 1}
+    ]
+    assert report["orphaned_files"] == [
+        {"path": str(orphan_disk_file.resolve()), "size_bytes": len(b"stray-bytes")}
+    ]
+    assert report["size_mismatches"] == [
+        {
+            "content_hash": "hash_size_mismatch",
+            "expected_size_bytes": 999,
+            "actual_size_bytes": len(b"actual-12345"),
+        }
+    ]
+
+    # Privacy: encrypted_dek must never be queried or returned
+    serialized = str(report)
+    assert "encrypted_dek" not in serialized
+    assert "dek_h" not in serialized
+    for sql, _ in fake_db.executed[-2:]:
+        assert "encrypted_dek" not in sql.lower()
+
+    # Read-only: DB state and physical files must be completely unmodified
+    assert fake_db.blobs == blobs_before
+    assert fake_db.tenant_refs == refs_before
+    assert sorted(p for p in tmp_path.rglob("*") if p.is_file()) == files_before
+    assert orphan_disk_file.exists()
+    assert orphan_blob_file.exists()
+
+
+def test_consistency_report_empty_and_nonexistent_storage_dir(
+    fake_db: FakeConnection, tmp_path: Path
+) -> None:
+    nonexistent = tmp_path / "does_not_exist_yet"
+    assert not nonexistent.exists()
+
+    empty_report = evidence_storage.generate_consistency_report(storage_dir=nonexistent)
+    assert empty_report["consistent"] is True
+    assert empty_report["summary"]["total_blobs"] == 0
+    assert empty_report["summary"]["total_physical_files"] == 0
+    # Read-only: must not create missing storage directory
+    assert not nonexistent.exists()
+
+    # When a blob points into a non-existent directory, it is reported as missing
+    evidence_storage.record_blob("hash_missing", b"dek", 4, str(nonexistent / "blob.enc"))
+    evidence_storage.record_tenant_ref("tenant_a", "hash_missing")
+
+    report = evidence_storage.generate_consistency_report(storage_dir=nonexistent)
+    assert report["consistent"] is False
+    assert report["summary"]["missing_files_count"] == 1
+    assert report["missing_files"][0]["content_hash"] == "hash_missing"
+    assert report["missing_files"][0]["reason"] == "file_not_found"
+    assert not nonexistent.exists()
+
+
+def test_consistency_report_uses_env_storage_dir_when_omitted(
+    fake_db: FakeConnection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HARPOCRATES_STORAGE_DIR", str(tmp_path))
+    orphan_file = tmp_path / "stray.enc"
+    orphan_file.write_bytes(b"abc")
+
+    report = evidence_storage.generate_consistency_report()
+    assert report["consistent"] is False
+    assert report["storage_dir"] == str(tmp_path.resolve())
+    assert report["summary"]["orphaned_files_count"] == 1
+    assert report["orphaned_files"][0]["path"] == str(orphan_file.resolve())
+
+
 class EvidenceStorageUnittestSuite(unittest.TestCase):
     """Unittest-compatible test case so `python -m unittest discover` also exercises the suite."""
 
@@ -799,6 +1029,7 @@ class EvidenceStorageUnittestSuite(unittest.TestCase):
             {
                 "encrypted_dek": encrypted_dek.decode(),
                 "storage_path": "/blobs/ee",
+                "envelope_version": evidence_storage.DEFAULT_ENVELOPE_VERSION,
             },
         )
         unwrapped_dek = evidence_storage.decrypt_dek(
@@ -806,9 +1037,101 @@ class EvidenceStorageUnittestSuite(unittest.TestCase):
         )
         self.assertEqual(unwrapped_dek, dek)
         self.assertEqual(
-            evidence_storage.get_encryptor(unwrapped_dek).decrypt(ciphertext),
+            evidence_storage.decrypt_blob_ciphertext(
+                unwrapped_dek,
+                ciphertext,
+                envelope_version=blob_info["envelope_version"],
+            ),
             b"evidence-bytes",
         )
+
+
+# ---------------------------------------------------------------------------
+# Encryption envelope version tests
+# ---------------------------------------------------------------------------
+
+
+def test_classify_envelope_version_distinguishes_supported_legacy_and_unsupported() -> None:
+    assert (
+        evidence_storage.classify_envelope_version(evidence_storage.ENVELOPE_VERSION_FERNET_V1)
+        == evidence_storage.ENVELOPE_CLASS_SUPPORTED
+    )
+    assert (
+        evidence_storage.classify_envelope_version("  fernet-v1  ")
+        == evidence_storage.ENVELOPE_CLASS_SUPPORTED
+    )
+
+    # Known legacy formats (including pre-versioning NULL metadata)
+    assert evidence_storage.classify_envelope_version(None) == evidence_storage.ENVELOPE_CLASS_LEGACY
+    assert evidence_storage.classify_envelope_version("legacy-v0") == evidence_storage.ENVELOPE_CLASS_LEGACY
+    assert evidence_storage.classify_envelope_version("fernet-v0") == evidence_storage.ENVELOPE_CLASS_LEGACY
+
+    # Unsupported formats
+    for bad in ("", "   ", "aes-gcm-v2", "fernet-v99", "unknown", 1, True, b"fernet-v1"):
+        assert (
+            evidence_storage.classify_envelope_version(bad)
+            == evidence_storage.ENVELOPE_CLASS_UNSUPPORTED
+        )
+
+
+def test_record_blob_rejects_legacy_and_unsupported_envelope_versions(
+    fake_db: FakeConnection,
+) -> None:
+    content_hash = "f" * 64
+    encrypted_dek = b"gAAAAABk-fake-dek"
+
+    with pytest.raises(evidence_storage.LegacyEnvelopeVersionError):
+        evidence_storage.record_blob(
+            content_hash, encrypted_dek, 128, "/blobs/legacy", envelope_version="legacy-v0"
+        )
+
+    with pytest.raises(evidence_storage.UnsupportedEnvelopeVersionError):
+        evidence_storage.record_blob(
+            content_hash, encrypted_dek, 128, "/blobs/unknown", envelope_version="aes-gcm-v2"
+        )
+
+    with pytest.raises(evidence_storage.UnsupportedEnvelopeVersionError):
+        evidence_storage.record_blob(
+            content_hash, encrypted_dek, 128, "/blobs/empty", envelope_version="   "
+        )
+
+    assert fake_db.commits == 0
+    assert fake_db.executed == []
+
+
+def test_decrypt_blob_ciphertext_never_guesses_algorithm_from_malformed_ciphertext() -> None:
+    dek = Fernet.generate_key()
+    plaintext = b"synthetic-evidence-envelope-test"
+    valid_ciphertext = evidence_storage.get_encryptor(dek).encrypt(plaintext)
+
+    # Supported explicit version decrypts cleanly
+    assert (
+        evidence_storage.decrypt_blob_ciphertext(
+            dek, valid_ciphertext, envelope_version=evidence_storage.ENVELOPE_VERSION_FERNET_V1
+        )
+        == plaintext
+    )
+
+    # Pre-versioning legacy row (None) remains compatible with Fernet
+    assert (
+        evidence_storage.decrypt_blob_ciphertext(dek, valid_ciphertext, envelope_version=None)
+        == plaintext
+    )
+
+    # Malformed ciphertext fails closed with InvalidToken (never guesses another algorithm)
+    for malformed in (b"", b"not-fernet", b"\x00\x01\x02aes-gcm-like-header", valid_ciphertext[:-4]):
+        with pytest.raises(InvalidToken):
+            evidence_storage.decrypt_blob_ciphertext(
+                dek, malformed, envelope_version=evidence_storage.ENVELOPE_VERSION_FERNET_V1
+            )
+
+    # Known legacy version raises LegacyEnvelopeVersionError without attempting decryption
+    with pytest.raises(evidence_storage.LegacyEnvelopeVersionError):
+        evidence_storage.decrypt_blob_ciphertext(dek, valid_ciphertext, envelope_version="legacy-v0")
+
+    # Unsupported version raises UnsupportedEnvelopeVersionError even if ciphertext is valid Fernet
+    with pytest.raises(evidence_storage.UnsupportedEnvelopeVersionError):
+        evidence_storage.decrypt_blob_ciphertext(dek, valid_ciphertext, envelope_version="aes-gcm-v2")
 
 
 if __name__ == "__main__":
