@@ -4,10 +4,12 @@ import base64
 import binascii
 import hashlib
 import logging
+import re
 import os
+import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Iterator
 
 import psycopg
@@ -63,6 +65,32 @@ _TRANSIENT_MESSAGE_FRAGMENTS = (
     "couldn't connect to compute",
     "error connecting to compute node",
 )
+
+# Diagnostic bounds for worker exception text persisted on job failure.
+JOB_ERROR_MAX_BYTES = 2048
+_JOB_ERROR_REDACTED = "[redacted]"
+_PRIVATE_PATH_RE = re.compile(r"(?:/(?:home|Users|root|tmp|var|srv|opt|etc)/[^\s'\"]*)")
+_SECRET_SHAPED_RE = re.compile(
+    r"(?i)((?:password|passwd|secret|token|api[_-]?key|authorization|bearer)\s*[=:]?\s*)\S+"
+)
+_LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
+
+
+def sanitize_job_error(error: object) -> str:
+    """Return a bounded, redacted diagnostic string for job-failure storage.
+
+    Strips private filesystem paths and secret-shaped values and caps the
+    result at ``JOB_ERROR_MAX_BYTES`` UTF-8 bytes so arbitrary exception text
+    cannot bloat storage or leak credentials.
+    """
+    text = str(error) if error is not None else ""
+    text = _PRIVATE_PATH_RE.sub(_JOB_ERROR_REDACTED, text)
+    text = _SECRET_SHAPED_RE.sub(lambda m: m.group(1) + _JOB_ERROR_REDACTED, text)
+    text = _LONG_HEX_RE.sub(_JOB_ERROR_REDACTED, text)
+    encoded = text.encode("utf-8")
+    if len(encoded) > JOB_ERROR_MAX_BYTES:
+        text = encoded[:JOB_ERROR_MAX_BYTES].decode("utf-8", errors="ignore")
+    return text
 
 
 def encode_proof_events_cursor(event_id: int) -> str:
@@ -1171,24 +1199,95 @@ def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list
 
 
 _JOBS: dict[int, dict[str, Any]] = {}
+# Guards check-then-write on job records: a worker's main loop (deadlines) and
+# its work thread (completion) can touch the same job concurrently.
+_JOBS_LOCK = threading.RLock()
+
+# Terminal reasons set when a processing deadline closes a job.
+JOB_QUEUE_EXPIRED = "queue_expired"
+JOB_EXECUTION_TIMEOUT = "execution_timeout"
+_DEADLINE_REASONS = frozenset({JOB_QUEUE_EXPIRED, JOB_EXECUTION_TIMEOUT})
 _next_job_id = 1
+_TENANT_LAST_LEASED_SEQ: dict[str, int] = {}
+_lease_seq = 0
+
+EXPENSIVE_VIDEO_JOB_TYPES = frozenset({"embed", "extract"})
+DEFAULT_TENANT_ID = "default"
+DEFAULT_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT = 2
+DEFAULT_MAX_QUEUED_VIDEO_JOBS_PER_TENANT = 10
+DEADLINE_EXCEEDED_REASON = "processing_deadline_exceeded"
+
+
+DEFAULT_CANCELLATION_REASON = "Job cancelled"
+
+
+def _cancelled_result(reason: str | None = None) -> dict[str, Any]:
+    """Build the stable cancelled result payload returned to requesters."""
+    text = (
+        reason.strip()
+        if isinstance(reason, str) and reason.strip()
+        else DEFAULT_CANCELLATION_REASON
+    )
+    return {"cancelled": True, "reason": text}
 
 
 def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
     """Enqueue a background job and return its job id."""
     global _next_job_id
+    resolved_tenant = _resolve_tenant_id(tenant_id, payload)
+
+    if deadline_at is not None and deadline_seconds is not None:
+        raise ValueError("specify at most one of deadline_at or deadline_seconds")
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    resolved_deadline: datetime | None = None
+    if deadline_seconds is not None:
+        if float(deadline_seconds) <= 0:
+            raise ValueError("deadline_seconds must be positive")
+        resolved_deadline = current + timedelta(seconds=float(deadline_seconds))
+    elif deadline_at is not None:
+        resolved_deadline = (
+            deadline_at if deadline_at.tzinfo is not None else deadline_at.replace(tzinfo=timezone.utc)
+        )
+
+    if job_type in EXPENSIVE_VIDEO_JOB_TYPES:
+        limit = (
+            max_queued_per_tenant
+            if max_queued_per_tenant is not None
+            else max_queued_video_jobs_per_tenant()
+        )
+        if limit <= 0:
+            raise ValueError("max_queued_per_tenant must be positive")
+        queued_count = count_tenant_video_jobs(resolved_tenant, status="pending")
+        if queued_count >= limit:
+            raise TenantQueueLimitExceededError(
+                tenant_id=resolved_tenant,
+                limit=limit,
+                queued_count=queued_count,
+                job_type=job_type,
+            )
+
     job_id = _next_job_id
     _next_job_id += 1
-    _JOBS[job_id] = {
+    record: dict[str, Any] = {
         "id": job_id,
         "type": job_type,
+        "tenant_id": resolved_tenant,
         "payload": payload,
         "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
         "progress": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": current.isoformat(),
+        # Queue expiry is measured from when the job (re)entered the queue.
+        "_queued_at": time.time(),
     }
+    if resolved_deadline is not None:
+        record["deadline_at"] = resolved_deadline.isoformat()
+    _JOBS[job_id] = record
     return job_id
 
 
@@ -1197,12 +1296,69 @@ def get_job(job_id: int) -> dict[str, Any] | None:
     return _JOBS.get(job_id)
 
 
-def cancel_job(job_id: int) -> bool:
-    """Cancel a pending job. Returns True on success."""
+def cancel_job(job_id: int, *, reason: str | None = None) -> bool:
+    """Cancel a pending or running job without affecting failure retry counts.
+
+    Preserves a stable cancelled result for the requester and records
+    ``cancelled_at``. Returns True when the job transitioned to ``cancelled``,
+    False when the job does not exist or is already in a terminal state.
+    """
     job = _JOBS.get(job_id)
-    if job and job["status"] == "pending":
+    if job and job.get("status") in ("pending", "running"):
         job["status"] = "cancelled"
+        job["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+        job["result"] = _cancelled_result(reason)
+        job.pop("worker_id", None)
         return True
+    return False
+
+
+def mark_job_cancelled(job_id: int, reason: str | None = None) -> bool:
+    """Record intentional worker cancellation for a job.
+
+    Unlike :func:`fail_job`, cancellation never increments ``retry_count``,
+    never re-queues the job for automatic retry, and never sets failure fields
+    (``error`` / ``failed_at``). If the job is already ``cancelled``, its
+    existing ``cancelled_at`` and ``result`` are preserved unchanged.
+    """
+    job = _JOBS.get(job_id)
+    if not job:
+        return False
+    status = job.get("status")
+    if status == "cancelled":
+        if not isinstance(job.get("result"), dict) or job["result"].get("cancelled") is not True:
+            job["result"] = _cancelled_result(reason)
+        job.setdefault("cancelled_at", datetime.now(timezone.utc).isoformat())
+        job.pop("worker_id", None)
+        return True
+    if status in ("pending", "running"):
+        return cancel_job(job_id, reason=reason)
+    return False
+
+
+def is_job_cancelled(job_id: int) -> bool:
+    """Return True when the job exists and is in the ``cancelled`` state."""
+    job = _JOBS.get(job_id)
+    return bool(job and job.get("status") == "cancelled")
+
+
+def _claim_is_current(job: dict[str, Any], generation: int | None, action: str) -> bool:
+    """Return whether a write from the claim ``generation`` may touch ``job``.
+
+    Every lease and every release bumps the job's ``_claim_generation``, so a
+    worker that lost its claim (for example after the shutdown grace period
+    expired and the job was released or re-leased) holds a stale generation.
+    ``None`` keeps the pre-fencing behaviour for callers that do not pass one.
+    """
+    if generation is None or generation == job.get("_claim_generation", 0):
+        return True
+    logger.warning(
+        "job_claim_stale job_id=%s action=%s claim_generation=%s current_generation=%s",
+        job.get("id"),
+        action,
+        generation,
+        job.get("_claim_generation", 0),
+    )
     return False
 
 
@@ -1210,34 +1366,354 @@ def lease_job(
     worker_id: str,
     job_types: list[str],
     lease_duration: int = 300,
+    *,
+    now: datetime | None = None,
+    max_concurrent_per_tenant: int | None = None,
 ) -> dict[str, Any] | None:
-    """Lease the next pending in-memory job matching ``job_types``."""
-    del lease_duration  # in-memory queue has no TTL enforcement yet
-    for job in _JOBS.values():
-        if job.get("status") == "pending" and job.get("type") in job_types:
-            job["status"] = "running"
-            job["worker_id"] = worker_id
-            return dict(job)
-    return None
+    """Lease the next eligible pending in-memory job matching ``job_types``.
+
+    Expensive video jobs (``embed``, ``extract``) are fairly scheduled across
+    tenants (fewest running video jobs first, then least-recently-leased
+    tenant, then FIFO within a tenant) and bounded by
+    ``max_concurrent_per_tenant`` (or
+    ``WORKER_MAX_CONCURRENT_VIDEO_JOBS_PER_TENANT``). Jobs whose independent
+    ``deadline_at`` has already elapsed are failed without consuming a tenant
+    concurrency slot or blocking other tenants.
+
+    The returned job carries ``_claim_generation`` (internal; stripped from
+    the public job view): pass it back to :func:`complete_job`,
+    :func:`fail_job`, :func:`report_job_progress` and :func:`heartbeat_job`
+    so writes from a superseded claim are ignored.
+    """
+    global _lease_seq
+    lease_seconds = float(lease_duration)
+    if lease_seconds <= 0:
+        raise ValueError("lease_duration must be positive")
+    concurrent_limit = (
+        max_concurrent_per_tenant
+        if max_concurrent_per_tenant is not None
+        else max_concurrent_video_jobs_per_tenant()
+    )
+    if concurrent_limit <= 0:
+        raise ValueError("max_concurrent_per_tenant must be positive")
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.isoformat()
+
+    with _JOBS_LOCK:
+        running_video_by_tenant: dict[str, int] = {}
+        for job in _JOBS.values():
+            if job.get("status") == "running" and job.get("type") in EXPENSIVE_VIDEO_JOB_TYPES:
+                tenant = job.get("tenant_id", DEFAULT_TENANT_ID)
+                running_video_by_tenant[tenant] = running_video_by_tenant.get(tenant, 0) + 1
+
+        eligible_video: list[dict[str, Any]] = []
+        eligible_other: list[dict[str, Any]] = []
+        for job in _JOBS.values():
+            if job.get("status") != "pending" or job.get("type") not in job_types:
+                continue
+            deadline = _parse_iso_utc(job.get("deadline_at"))
+            if deadline is not None and current >= deadline:
+                job["status"] = "failed"
+                job["error"] = "processing deadline exceeded"
+                job["failed_at"] = current_iso
+                job["processing_state"] = {
+                    "reason": DEADLINE_EXCEEDED_REASON,
+                    "retryable": False,
+                    "category": PROCESSING_STATE_CATEGORY,
+                    "cryptographic_failure": False,
+                    "detected_at": current_iso,
+                }
+                continue
+            if job.get("type") in EXPENSIVE_VIDEO_JOB_TYPES:
+                tenant = job.get("tenant_id", DEFAULT_TENANT_ID)
+                if running_video_by_tenant.get(tenant, 0) >= concurrent_limit:
+                    continue
+                eligible_video.append(job)
+            else:
+                eligible_other.append(job)
+
+        chosen: dict[str, Any] | None = None
+        best_video: dict[str, Any] | None = None
+        if eligible_video:
+            best_video = min(
+                eligible_video,
+                key=lambda j: (
+                    running_video_by_tenant.get(j.get("tenant_id", DEFAULT_TENANT_ID), 0),
+                    _TENANT_LAST_LEASED_SEQ.get(j.get("tenant_id", DEFAULT_TENANT_ID), -1),
+                    j["id"],
+                ),
+            )
+        best_other = min(eligible_other, key=lambda j: j["id"]) if eligible_other else None
+
+        if best_video is not None and best_other is not None:
+            chosen = best_other if best_other["id"] < best_video["id"] else best_video
+        else:
+            chosen = best_video if best_video is not None else best_other
+
+        if chosen is None:
+            return None
+
+        chosen["status"] = "running"
+        chosen["worker_id"] = worker_id
+        chosen["leased_at"] = current_iso
+        chosen["heartbeat_at"] = current_iso
+        chosen["lease_duration_seconds"] = lease_seconds
+        chosen.pop("processing_state", None)
+        # Execution timeout is measured from the lease.
+        chosen["_started_at"] = time.time()
+        if chosen.get("type") in EXPENSIVE_VIDEO_JOB_TYPES:
+            _lease_seq += 1
+            _TENANT_LAST_LEASED_SEQ[chosen.get("tenant_id", DEFAULT_TENANT_ID)] = _lease_seq
+        return dict(chosen)
 
 
-def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+def _close_by_deadline(job: dict[str, Any], reason: str, message: str) -> None:
+    job["status"] = "failed"
+    job["failure_reason"] = reason
+    job["error"] = message
+    job["failed_at"] = datetime.now(UTC).isoformat()
+    job.pop("worker_id", None)
+    logger.warning("job_deadline_exceeded job_id=%s reason=%s", job.get("id"), reason)
+
+
+def expire_queued_jobs(queue_ttl_seconds: float, *, now: float | None = None) -> int:
+    """Fail ``pending`` jobs that waited in the queue for ``queue_ttl_seconds``.
+
+    Queue expiry is measured from when the job last entered the queue (enqueue
+    or a retryable release), never from its execution. Expired jobs end as
+    ``failed`` with ``failure_reason`` ``"queue_expired"``. A limit of 0 or
+    less disables expiry. Returns the number of jobs expired.
+    """
+    if not queue_ttl_seconds or queue_ttl_seconds <= 0:
+        return 0
+    current = time.time() if now is None else now
+    expired = 0
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("status") != "pending":
+                continue
+            queued_at = job.get("_queued_at")
+            if queued_at is None or current - queued_at < queue_ttl_seconds:
+                continue
+            _close_by_deadline(job, JOB_QUEUE_EXPIRED, "Queue expiry exceeded")
+            expired += 1
+    return expired
+
+
+def time_out_job(job_id: int, execution_timeout_seconds: float, *, now: float | None = None) -> bool:
+    """Fail a ``running`` job whose execution exceeded ``execution_timeout_seconds``.
+
+    Execution time is measured from the lease, independently of how long the
+    job waited in the queue. The job ends as ``failed`` with ``failure_reason``
+    ``"execution_timeout"`` and is not retried. Because the process that holds
+    it may still be writing, the job is marked as having an active writer
+    until :func:`release_job_writer` is called; artifact cleanup waits for
+    that. Returns True when the job was timed out.
+    """
+    if not execution_timeout_seconds or execution_timeout_seconds <= 0:
+        return False
+    current = time.time() if now is None else now
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        started_at = job.get("_started_at")
+        if started_at is None or current - started_at < execution_timeout_seconds:
+            return False
+        _close_by_deadline(job, JOB_EXECUTION_TIMEOUT, "Execution timeout exceeded")
+        job["_writer_active"] = True
+        return True
+
+
+def job_writer_active(job_id: int | str) -> bool:
+    """Return whether a process may still be writing this job's artifacts."""
+    job = _JOBS.get(job_id)
+    return bool(job and job.get("_writer_active"))
+
+
+def release_job_writer(job_id: int) -> bool:
+    """Record that the process working on ``job_id`` stopped writing.
+
+    Returns True when the job had been closed by a deadline while its process
+    was still active, i.e. its partial artifacts can now be cleaned.
+    """
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        return bool(job and job.pop("_writer_active", False))
+
+
+def _closed_by_deadline(job: dict[str, Any], action: str) -> bool:
+    if job.get("failure_reason") not in _DEADLINE_REASONS:
+        return False
+    logger.warning(
+        "job_deadline_final job_id=%s action=%s reason=%s",
+        job.get("id"),
+        action,
+        job.get("failure_reason"),
+    )
+    return True
+
+
+def heartbeat_job(
+    job_id: int,
+    progress: float | None = None,
+    lease_duration: int = 300,
+    *,
+    now: datetime | None = None,
+    generation: int | None = None,
+) -> None:
     """Record a heartbeat against an in-memory job lease.
 
     The heartbeat only extends the lease. Progress is reported separately via
     :func:`report_job_progress`; ``progress`` is accepted for backwards
     compatibility and ignored so a heartbeat never overwrites real progress.
+    A heartbeat from a stale claim ``generation`` is ignored.
     """
-    del lease_duration, progress
-    job = _JOBS.get(job_id)
-    if job and job.get("status") == "running":
-        job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    del progress
+    lease_seconds = float(lease_duration)
+    if lease_seconds <= 0:
+        raise ValueError("lease_duration must be positive")
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job and job.get("status") == "running" and _claim_is_current(job, generation, "heartbeat"):
+            current = now if now is not None else datetime.now(timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            job["heartbeat_at"] = current.isoformat()
+            job["lease_duration_seconds"] = lease_seconds
+            job.pop("processing_state", None)
+
+def get_job_heartbeat_state(
+    job: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Assess whether a running job's worker heartbeat is stale.
+
+    Returns a retryable processing-state descriptor that is strictly
+    independent of cryptographic/proof validity so unverified output is never
+    classified as a cryptographic failure.
+    """
+    raw_threshold = (
+        stale_after_seconds
+        if stale_after_seconds is not None
+        else job.get("lease_duration_seconds", DEFAULT_HEARTBEAT_STALE_SECONDS)
+    )
+    threshold = float(raw_threshold)
+    if threshold <= 0:
+        raise ValueError("stale_after_seconds must be positive")
+
+    if job.get("status") != "running":
+        return {
+            "stale": False,
+            "reason": None,
+            "retryable": False,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "heartbeat_age_seconds": None,
+            "stale_after_seconds": threshold,
+        }
+
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    reference = (
+        _parse_iso_utc(job.get("heartbeat_at"))
+        or _parse_iso_utc(job.get("leased_at"))
+        or _parse_iso_utc(job.get("created_at"))
+    )
+    if reference is None:
+        return {
+            "stale": False,
+            "reason": None,
+            "retryable": False,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "heartbeat_age_seconds": None,
+            "stale_after_seconds": threshold,
+        }
+
+    age_seconds = max(0.0, (current - reference).total_seconds())
+    is_stale = age_seconds >= threshold
+    return {
+        "stale": is_stale,
+        "reason": STALE_HEARTBEAT_REASON if is_stale else None,
+        "retryable": is_stale,
+        "category": PROCESSING_STATE_CATEGORY,
+        "cryptographic_failure": False,
+        "heartbeat_age_seconds": round(age_seconds, 3),
+        "stale_after_seconds": threshold,
+    }
+
+
+def reclaim_stale_jobs(
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float | None = None,
+) -> list[dict[str, Any]]:
+    """Re-queue running jobs whose worker heartbeat has gone stale.
+
+    Stale jobs are transitioned back to ``pending`` with a retryable
+    ``processing_state`` reason (``stale_worker_heartbeat``) rather than being
+    marked ``failed`` or classified as a cryptographic failure.
+    """
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.isoformat()
+
+    reclaimed: list[dict[str, Any]] = []
+    for job in _JOBS.values():
+        if job.get("status") != "running":
+            continue
+        state = get_job_heartbeat_state(
+            job,
+            now=current,
+            stale_after_seconds=stale_after_seconds,
+        )
+        if not state["stale"]:
+            continue
+        job["status"] = "pending"
+        job.pop("worker_id", None)
+        # Back in the queue: queue expiry restarts, as for a retryable release.
+        job["_queued_at"] = current.timestamp()
+        job["processing_state"] = {
+            "reason": STALE_HEARTBEAT_REASON,
+            "retryable": True,
+            "category": PROCESSING_STATE_CATEGORY,
+            "cryptographic_failure": False,
+            "detected_at": current_iso,
+            "heartbeat_age_seconds": state["heartbeat_age_seconds"],
+            "stale_after_seconds": state["stale_after_seconds"],
+        }
+        reclaimed.append(
+            {
+                "id": job["id"],
+                "type": job["type"],
+                "status": job["status"],
+                "processing_state": dict(job["processing_state"]),
+            }
+            reclaimed.append(
+                {
+                    "id": job["id"],
+                    "type": job["type"],
+                    "status": job["status"],
+                    "processing_state": dict(job["processing_state"]),
+                }
+            )
+    return reclaimed
 
 
 # Processors may call report_job_progress as often as they like (for example
 # once per decoded frame); updates are stored at most once per this interval.
 JOB_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
 JOB_PROGRESS_PHASE_MAX_LENGTH = 64
+TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 def report_job_progress(
@@ -1245,7 +1721,9 @@ def report_job_progress(
     phase: str,
     percent: float | None = None,
     *,
+    stage_revision: int | None = None,
     now: float | None = None,
+    generation: int | None = None,
 ) -> bool:
     """Record ``{"phase", "percent"}`` progress for a running job.
 
@@ -1253,53 +1731,62 @@ def report_job_progress(
     ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
     measurable fraction. Updates are throttled to at most one per
     ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
-    updated. Returns True when the update was stored.
+    updated; an update from a stale claim ``generation`` is ignored. Returns
+    True when the update was stored.
     """
-    job = _JOBS.get(job_id)
-    if not job or job.get("status") != "running":
-        return False
-    if not isinstance(phase, str) or not phase.strip():
-        raise ValueError("progress phase must be a non-empty string")
-    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
-    if percent is not None:
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            raise ValueError("progress percent must be a number or None") from None
-        if percent != percent:  # NaN
-            raise ValueError("progress percent must be a number or None")
-        percent = round(min(100.0, max(0.0, percent)), 1)
-    current = time.monotonic() if now is None else now
-    last = job.get("_progress_at")
-    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
-        return False
-    job["_progress_at"] = current
-    job["progress"] = {"phase": phase, "percent": percent}
-    return True
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return False
+        if not _claim_is_current(job, generation, "progress"):
+            return False
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("progress phase must be a non-empty string")
+        phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+        if percent is not None:
+            try:
+                percent = float(percent)
+            except (TypeError, ValueError):
+                raise ValueError("progress percent must be a number or None") from None
+            if percent != percent:  # NaN
+                raise ValueError("progress percent must be a number or None")
+            percent = round(min(100.0, max(0.0, percent)), 1)
+        current = time.monotonic() if now is None else now
+        last = job.get("_progress_at")
+        if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+            return False
+        job["_progress_at"] = current
+        job["progress"] = {"phase": phase, "percent": percent}
+        return True
 
 
 def complete_job(job_id: int, result: Any = None) -> None:
     """Mark an in-memory job completed."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["status"] = "completed"
-    job["result"] = result
-    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or _closed_by_deadline(job, "complete"):
+            # A job closed by a processing deadline is final: a late result
+            # from the process that overran it is dropped.
+            return
+        job["status"] = "completed"
+        job["result"] = result
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
     """Mark an in-memory job failed (fatal) or pending for retry."""
-    job = _JOBS.get(job_id)
-    if not job:
-        return
-    job["error"] = error
-    job["failed_at"] = datetime.now(timezone.utc).isoformat()
-    if is_fatal:
-        job["status"] = "failed"
-    else:
-        job["status"] = "pending"
-        job.pop("worker_id", None)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or _closed_by_deadline(job, "fail"):
+            return
+        job["error"] = sanitize_job_error(error)
+        job["failed_at"] = datetime.now(timezone.utc).isoformat()
+        if is_fatal:
+            job["status"] = "failed"
+        else:
+            job["status"] = "pending"
+            job.pop("worker_id", None)
+            job["_queued_at"] = time.time()  # back in the queue: queue expiry restarts
 
 
 def get_job_queue_metrics() -> dict[str, Any]:
@@ -1527,6 +2014,36 @@ def insert_indexed_proof_event(
     raise RuntimeError(f"Conflict on tx {tx_hash}:{event_index} but row not found")
 
 
+def get_indexed_proof_events(
+    event_keys: list[tuple[str, int]],
+) -> list[dict[str, Any]]:
+    """Read indexed projection rows for the supplied (tx_hash, event_index) keys."""
+    if not event_keys:
+        return []
+    if not database_url():
+        return [
+            dict(_INDEXED_EVENTS[key])
+            for key in event_keys
+            if key in _INDEXED_EVENTS
+        ]
+
+    tx_hashes, event_indexes = zip(*event_keys)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select tx_hash, event_index, event_type, proof_id, contract_id,
+                       tx_status, metadata
+                from proof_events
+                where (tx_hash, event_index) in (
+                    select * from unnest(%s::text[], %s::integer[])
+                );
+                """,
+                (list(tx_hashes), list(event_indexes)),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
 def get_indexer_cursor(indexer_id: str = "soroban_events") -> str | None:
     if not database_url():
         return _INDEXER_STATE.get(indexer_id, {}).get("cursor")
@@ -1568,3 +2085,57 @@ def save_indexer_cursor(
                 (indexer_id, cursor, ledger),
             )
         connection.commit()
+
+
+def get_indexer_checkpoint_manifest(
+    indexer_id: str = "soroban_events",
+) -> dict[str, Any] | None:
+    """Return the stored checkpoint manifest dict for an indexer, if any."""
+    if not database_url():
+        state = _INDEXER_STATE.get(indexer_id)
+        if not state:
+            return None
+        manifest = state.get("manifest")
+        return dict(manifest) if isinstance(manifest, dict) else None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select cursor, ledger from indexer_state where id = %s;",
+                (indexer_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            raw_cursor = row.get("cursor")
+            if isinstance(raw_cursor, str) and raw_cursor.startswith("{"):
+                try:
+                    parsed = json.loads(raw_cursor)
+                    if isinstance(parsed, dict) and "manifest_hash" in parsed:
+                        return parsed
+                except Exception:
+                    return None
+            return None
+
+
+def save_indexer_checkpoint_manifest(
+    manifest: dict[str, Any],
+    indexer_id: str = "soroban_events",
+) -> None:
+    """Persist the verified checkpoint manifest alongside the indexer cursor."""
+    cursor_val = str(manifest.get("cursor") or "")
+    ledger_val = manifest.get("observed_ledger")
+    if not database_url():
+        _INDEXER_STATE[indexer_id] = {
+            "cursor": cursor_val,
+            "ledger": ledger_val,
+            "manifest": dict(manifest),
+            "updated_at": datetime.now(timezone.utc),
+        }
+        return
+
+    save_indexer_cursor(
+        indexer_id=indexer_id,
+        cursor=cursor_val,
+        ledger=ledger_val if isinstance(ledger_val, int) else None,
+    )

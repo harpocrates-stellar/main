@@ -4,6 +4,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from register_auth import ScopedKey, parse_scoped_keys
 
@@ -11,24 +12,6 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
-        """Return a dict representation of the config where secret fields are redacted.
-        Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
-        presence (True if set, False otherwise). Non‑secret fields retain their original
-        values.
-        """
-        from dataclasses import asdict
-        secret_fields = {
-            "metrics_token",
-            "tracing_endpoint",
-            "register_api_key",
-            "register_api_key_previous",
-        }
-        raw = asdict(self)
-        for field in secret_fields:
-            if field in raw:
-                raw[field] = raw[field] is not None
-        return raw
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -109,6 +92,11 @@ def load_config() -> AppConfig:
             "REGISTER_API_KEY_PREVIOUS is required when REGISTER_API_KEY_PREVIOUS_EXPIRES is set"
         )
 
+    deletion_receipts_enabled = _bool_env("HARPOCRATES_DELETION_RECEIPTS_ENABLED", False)
+    deletion_receipt_salt = _str_env("DELETION_RECEIPT_SALT")
+    if deletion_receipts_enabled and deletion_receipt_salt is None:
+        raise RuntimeError("DELETION_RECEIPT_SALT is required when deletion receipts are enabled")
+
     return AppConfig(
         app_env=app_env,
         cors_origins=cors_origins,
@@ -170,7 +158,6 @@ def load_config() -> AppConfig:
     )
 
 
-
 def _upload_chunk_bytes() -> int:
     """Load UPLOAD_CHUNK_BYTES clamped into the supported streaming range."""
     raw = os.getenv("UPLOAD_CHUNK_BYTES")
@@ -187,6 +174,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:
@@ -243,19 +243,10 @@ def _datetime_env(name: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
+        raise RuntimeError(f"{name} must be an ISO-8601 datetime") from except ValueError as exc:
         raise RuntimeError(f"{name} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
-        raise RuntimeError(f"{name} must include a timezone")
-    return parsed.astimezone(timezone.utc)
-
-
-def _float_env(name: str, default: float) -> float:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    parsed = float(value)
-    if parsed <= 0.0:
-        raise RuntimeError(f"{name} must be positive")
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 
 
@@ -291,13 +282,21 @@ def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", de
 
 
 JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
+# Queue expiry (time a job may wait as ``pending``) and execution timeout (time a
+# leased job may run) are separate limits. 0 disables a limit.
+JOB_QUEUE_TTL_SECONDS_DEFAULT = 0
+JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT = 0
 
 
 def _job_file_ttl_env(
     name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
     default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
 ) -> int:
-    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
+    """Load a non-negative integer seconds setting.
+
+    Defaults to HARPOCRATES_JOB_FILE_TTL_SECONDS (24h = 86400s); also used for
+    HARPOCRATES_JOB_QUEUE_TTL_SECONDS and HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS.
+    """
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default

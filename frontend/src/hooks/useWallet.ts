@@ -25,22 +25,6 @@ export type UseWalletReturn = {
   disconnectWallet: () => void
 }
 
-const WATCHER_UNAVAILABLE_MESSAGE =
-  'Freighter became unavailable. Unlock the extension and reconnect your wallet.'
-const WATCHER_ADDRESS_UNAVAILABLE_MESSAGE =
-  'Freighter did not return a wallet address. Unlock the extension and reconnect.'
-
-type WalletChangeEvent = {
-  address: string
-  networkPassphrase: string
-  error?: unknown
-}
-
-type WalletWatcher = {
-  stop: () => void
-  watch: (callback: (event: WalletChangeEvent) => void) => unknown
-}
-
 export function useWallet(): UseWalletReturn {
   const [wallet, setWallet] = useState('')
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)

@@ -1,63 +1,78 @@
+import hashlib
+import json
 import logging
 import os
 import re
+import shutil
 import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-LOGGER = logging.getLogger(__name__)
+from evidence_storage import assert_safe_destination
 
-default_storage_dir = "/tmp/harpocrates_jobs"
-
-
-def _log_warning(message: str) -> None:
-    try:
-        import logging
-
-        logging.getLogger(__name__).warning(message)
-    except Exception:
-        pass
+RECEIPT_FILENAME = "deletion_receipts.jsonl"
+RECEIPT_PHASE_SELECTED = "selected"
+RECEIPT_PHASE_COMPLETED = "completed"
 
 
-def _get_owner_uid(path: Path) -> int | None:
-    try:
-        return path.stat().st_uid
-    except OSError:
+@dataclass(frozen=True)
+class StorageConfig:
+    """Runtime configuration for the local blob store."""
+
+    storage_path: Path
+    """Root directory for evidence blobs."""
+
+    protected_paths: frozenset[Path]
+    """Canonical paths that blob destinations must not alias."""
+
+
+def load_storage_config() -> StorageConfig | None:
+    """Return a :class:`StorageConfig` built from environment variables.
+
+    Returns ``None`` when ``EVIDENCE_STORAGE_PATH`` is not set, which
+    disables local blob storage without raising an error.
+
+    Raises
+    ------
+    RuntimeError
+        When ``EVIDENCE_STORAGE_PATH`` is set but resolves to a path
+        that conflicts with a protected file or directory.
+    """
+    raw = os.getenv("EVIDENCE_STORAGE_PATH", "").strip()
+    if not raw:
         return None
 
+    storage_path = Path(raw)
+    protected = _collect_protected_paths(storage_path)
 
-def get_storage_dir() -> Path:
-    storage_dir = Path(os.getenv("HARPOCRATES_STORAGE_DIR", default_storage_dir))
+    # The storage root itself must not alias any protected path.
+    resolved_root = storage_path.resolve()
+    for protected_path in protected:
+        if _paths_alias(resolved_root, protected_path):
+            raise RuntimeError(
+                f"EVIDENCE_STORAGE_PATH '{storage_path}' conflicts with "
+                f"protected path '{protected_path}'"
+            )
 
-    posix = os.name == "posix"
-    if posix:
-        storage_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
-            owner_uid = _get_owner_uid(storage_dir)
-            if owner_uid == os.getuid():
-                current_mode = stat.S_IMODE(storage_dir.stat().st_mode)
-                if current_mode != 0o700:
-                    os.chmod(storage_dir, 0o700)
-            elif owner_uid is not None:
-                _log_warning(
-                    "Storage directory is owned by another user; "
-                    "unable to tighten permissions."
-                )
-        except OSError:
-            pass
-    else:
-        storage_dir.mkdir(parents=True, exist_ok=True)
-
-    return storage_dir
+    return StorageConfig(
+        storage_path=storage_path,
+        protected_paths=protected,
+    )
 
 
-def get_job_input_path(job_id: int | str) -> Path:
-    return get_storage_dir() / f"job_{job_id}_input"
+class BlobStore:
+    """Write and retrieve encrypted evidence blobs under a root directory.
 
 
 def get_job_output_path(job_id: int | str) -> Path:
     return get_storage_dir() / f"job_{job_id}_output"
+
+
+def get_integrity_progress_path(filename: str = "evidence_integrity_progress.json") -> Path:
+    if not filename or Path(filename).name != filename or filename in {".", ".."}:
+        raise ValueError("filename must be a simple file name without path separators")
+    return get_storage_dir() / filename
 
 
 def _parse_timestamp(val: Any) -> datetime:
@@ -74,6 +89,79 @@ def _parse_timestamp(val: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _canonical_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _receipt_digest(file_name: str) -> str:
+    # Only a one-way digest of the file name is stored: no plaintext paths,
+    # media contents or key material ever enter the receipt log.
+    return hashlib.sha256(file_name.encode("utf-8")).hexdigest()
+
+
+def _append_receipt(
+    target_dir: Path,
+    record: dict[str, Any],
+) -> None:
+    receipt_path = target_dir / RECEIPT_FILENAME
+    line = _canonical_json(record) + "\n"
+    fd = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, line.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def record_deletion_selection(
+    target_dir: Path,
+    selected: list[Path],
+    receipt_id: str,
+    now: datetime,
+) -> dict[str, Any]:
+    """Phase one: durably record the approved selection before any unlink."""
+    record = {
+        "receipt_id": receipt_id,
+        "phase": RECEIPT_PHASE_SELECTED,
+        "recorded_at": now.isoformat(),
+        "selected_digests": sorted(_receipt_digest(p.name) for p in selected),
+        "selected_count": len(selected),
+    }
+    _append_receipt(target_dir, record)
+    return record
+
+
+def record_deletion_completion(
+    target_dir: Path,
+    selection: dict[str, Any],
+    completed: list[Path],
+    failed: list[Path],
+    now: datetime,
+) -> dict[str, Any]:
+    """Phase two: record which selected actions actually completed."""
+    completed_digests = sorted(_receipt_digest(p.name) for p in completed)
+    failed_digests = sorted(_receipt_digest(p.name) for p in failed)
+    record = {
+        "receipt_id": selection["receipt_id"],
+        "phase": RECEIPT_PHASE_COMPLETED,
+        "recorded_at": now.isoformat(),
+        "selection_sha256": hashlib.sha256(
+            _canonical_json(
+                {
+                    "receipt_id": selection["receipt_id"],
+                    "selected_digests": selection["selected_digests"],
+                }
+            ).encode("utf-8")
+        ).hexdigest(),
+        "completed_digests": completed_digests,
+        "failed_digests": failed_digests,
+        "completed_count": len(completed_digests),
+        "failed_count": len(failed_digests),
+    }
+    _append_receipt(target_dir, record)
+    return record
+
+
 def sweep_job_files(
     storage_dir: Path | str | None = None,
     ttl_seconds: int | float | None = None,
@@ -83,61 +171,119 @@ def sweep_job_files(
 
     Deletes files for jobs in terminal states older than TTL, and orphaned files
     with no job row older than TTL.
-    Never removes files for running or pending jobs.
+    Never removes files for running or pending jobs, nor for a job whose
+    process is still writing after a deadline closed it (``_writer_active``).
     Logs counts only, never file names derived from user input.
+
+    Each sweep writes a two-phase deletion receipt: the approved selection is
+    recorded before any unlink, and the completed/failed outcome after. Receipts
+    hold only SHA-256 digests of file names and counts, never media or keys.
 
     Returns the count of deleted files.
     """
-    if storage_dir is None:
-        target_dir = get_storage_dir()
-    else:
-        target_dir = Path(storage_dir)
 
-    if not target_dir.exists():
-        return 0
+    def __init__(self, config: StorageConfig) -> None:
+        self._config = config
 
-    if ttl_seconds is None:
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def write(self, relative_name: str, data: bytes) -> Path:
+        """Persist *data* at *relative_name* inside the storage root.
+
+        Parameters
+        ----------
+        relative_name:
+            A simple filename (or a single-level sub-path).  It must not
+            contain path traversal sequences.
+        data:
+            Raw bytes to write; the caller is responsible for encrypting
+            the blob before passing it here.
+
+        Returns
+        -------
+        Path
+            The absolute path of the written file.
+
+        Raises
+        ------
+        ValueError
+            When *relative_name* would escape the storage root or alias a
+            protected path.
+        RuntimeError
+            When an I/O error prevents the write.
+        """
+        destination = self._resolve_destination(relative_name)
+        assert_safe_destination(destination, self._config.protected_paths)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+        return destination
+
+    def read(self, relative_name: str) -> bytes:
+        """Return the raw bytes stored at *relative_name*.
+
+        Raises
+        ------
+        ValueError
+            When *relative_name* would escape the storage root or alias a
+            protected path.
+        FileNotFoundError
+            When no blob exists for the given name.
+        """
+        destination = self._resolve_destination(relative_name)
+        assert_safe_destination(destination, self._config.protected_paths)
+        return destination.read_bytes()
+
+    def delete(self, relative_name: str) -> bool:
+        """Remove the blob at *relative_name*.
+
+        Returns ``True`` if the file was deleted, ``False`` if it did not
+        exist.  Raises :class:`ValueError` on path-safety violations.
+        """
+        destination = self._resolve_destination(relative_name)
+        assert_safe_destination(destination, self._config.protected_paths)
         try:
-            from config import load_config
+            destination.unlink()
+            return True
+        except FileNotFoundError:
+            return False
 
-            ttl_seconds = load_config().job_file_ttl_seconds
-        except Exception:
-            ttl_seconds = 86_400
+    def collect_unreferenced(self, referenced_names: set[str]) -> list[Path]:
+        """Return paths of blobs not in *referenced_names* (for GC).
 
-    if now is None:
-        now_dt = datetime.now(timezone.utc)
-    elif isinstance(now, datetime):
-        now_dt = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    elif isinstance(now, (int, float)):
-        now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
-    else:
-        now_dt = datetime.now(timezone.utc)
+        Only files directly inside the storage root are considered; the
+        caller decides whether to delete them.
+        """
+        storage_root = self._config.storage_path.resolve()
+        if not storage_root.is_dir():
+            return []
 
     terminal_states = {"completed", "failed", "cancelled", "abandoned"}
-    purged_count = 0
 
-    for entry in list(target_dir.iterdir()):
+    # Phase one: select without deleting.
+    selected: list[Path] = []
+    for entry in sorted(target_dir.iterdir()):
         if not entry.is_file():
             continue
 
-        # Extract job_id from filename pattern: job_<id>_input, job_<id>_output, etc.
-        job_id: int | str | None = None
-        match = re.match(r"^job_([^_]+)(?:_(?:input|output).*)?$", entry.name)
-        if match:
-            raw_id = match.group(1)
-            job_id = int(raw_id) if raw_id.isdigit() else raw_id
+    def _resolve_destination(self, relative_name: str) -> Path:
+        """Resolve *relative_name* relative to the storage root.
 
-        job = None
-        if job_id is not None:
-            try:
-                from db import get_job
+        Raises :class:`ValueError` when the resolved path escapes the root.
+        """
+        if not relative_name or not relative_name.strip():
+            raise ValueError("evidence blob name must not be empty")
 
-                job = get_job(job_id)
-            except Exception:
-                job = None
+        # Reject obvious traversal markers before resolving.
+        candidate = Path(relative_name)
+        if candidate.is_absolute():
+            raise ValueError(
+                f"evidence blob name must be relative, got: {relative_name!r}"
+            )
 
-        file_stat = entry.stat()
-        file_mtime = datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc)
+        storage_root = self._config.storage_path.resolve()
+        destination = (storage_root / candidate).resolve()
 
         if job is None:
             # Orphaned file with no job row
@@ -148,6 +294,10 @@ def sweep_job_files(
                     purged_count += 1
                 except OSError:
                     pass
+        elif job.get("_writer_active"):
+            # The job was closed by a deadline while its process was still
+            # running: never remove artifacts that may still be written.
+            continue
         else:
             status = job.get("status")
             if status in terminal_states:
@@ -168,14 +318,32 @@ def sweep_job_files(
 
                 job_age = (now_dt - job_dt).total_seconds()
                 if job_age >= ttl_seconds:
-                    try:
-                        entry.unlink(missing_ok=True)
-                        purged_count += 1
-                        job["purged"] = True
-                    except OSError:
-                        pass
+                    selected.append(entry)
             # If status not in terminal_states (e.g., 'running' or 'pending'), do not remove.
 
+    if not selected:
+        return 0
+
+    receipt_id = hashlib.sha256(
+        f"{now_dt.isoformat()}|{len(selected)}|{os.getpid()}".encode("utf-8")
+    ).hexdigest()[:32]
+
+    # Receipt is durable before the first unlink; if it cannot be written, fail closed.
+    selection = record_deletion_selection(target_dir, selected, receipt_id, now_dt)
+
+    # Phase two: perform the approved actions and record the outcome.
+    completed: list[Path] = []
+    failed: list[Path] = []
+    for entry in selected:
+        try:
+            entry.unlink(missing_ok=True)
+            completed.append(entry)
+        except OSError:
+            failed.append(entry)
+
+    record_deletion_completion(target_dir, selection, completed, failed, now_dt)
+
+    purged_count = len(completed)
     if purged_count > 0:
         LOGGER.info("Purged %d stale job files", purged_count)
 
@@ -183,3 +351,199 @@ def sweep_job_files(
 
 
 purge_stale_job_files = sweep_job_files
+
+
+STORAGE_QUOTA_EXHAUSTED = "STORAGE_QUOTA_EXHAUSTED"
+EVIDENCE_CORRUPTED = "EVIDENCE_CORRUPTED"
+STORAGE_IO_UNAVAILABLE = "STORAGE_IO_UNAVAILABLE"
+
+_WINDOWS_DISK_FULL_WINERRORS = frozenset({39, 112, 1816})
+
+
+class EvidenceStorageOperationalError(RuntimeError):
+    """Privacy-safe operational storage error carrying a stable reason code."""
+
+    reason_code: str = STORAGE_IO_UNAVAILABLE
+    retryable: bool = True
+    quarantine_eligible: bool = False
+    http_status: int = 503
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or self.reason_code)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "reasonCode": self.reason_code,
+            "retryable": self.retryable,
+            "quarantined": False,
+        }
+
+
+class StorageQuotaExhaustedError(EvidenceStorageOperationalError):
+    """Raised when disk free space or configured storage quota is exhausted."""
+
+    reason_code = STORAGE_QUOTA_EXHAUSTED
+    retryable = True
+    quarantine_eligible = False
+    http_status = 507
+
+
+class EvidenceCorruptionError(EvidenceStorageOperationalError):
+    """Raised when ciphertext authentication or canonical digest verification fails."""
+
+    reason_code = EVIDENCE_CORRUPTED
+    retryable = False
+    quarantine_eligible = True
+    http_status = 422
+
+
+class StorageIOUnavailableError(EvidenceStorageOperationalError):
+    """Raised on non-corruption, non-quota storage I/O failures."""
+
+    reason_code = STORAGE_IO_UNAVAILABLE
+    retryable = True
+    quarantine_eligible = False
+    http_status = 503
+
+
+def is_quota_or_capacity_error(exc: BaseException) -> bool:
+    """Return True when *exc* represents disk-full or storage quota exhaustion."""
+    if isinstance(exc, StorageQuotaExhaustedError):
+        return True
+    if not isinstance(exc, OSError):
+        return False
+    quota_errnos = {errno.ENOSPC}
+    edquot = getattr(errno, "EDQUOT", None)
+    if edquot is not None:
+        quota_errnos.add(edquot)
+    if exc.errno in quota_errnos:
+        return True
+    winerror = getattr(exc, "winerror", None)
+    if winerror in _WINDOWS_DISK_FULL_WINERRORS:
+        return True
+    return False
+
+
+def classify_storage_exception(exc: BaseException) -> EvidenceStorageOperationalError:
+    """Map low-level storage or crypto exceptions into stable operational reason codes."""
+    if isinstance(exc, EvidenceStorageOperationalError):
+        return exc
+    if type(exc).__name__ == "InvalidToken":
+        return EvidenceCorruptionError("evidence failed cryptographic authentication")
+    if is_quota_or_capacity_error(exc):
+        return StorageQuotaExhaustedError("storage capacity or quota exhausted")
+    if isinstance(exc, OSError):
+        return StorageIOUnavailableError("storage I/O unavailable")
+    return StorageIOUnavailableError("unexpected storage operational failure")
+
+
+def _positive_env_bytes(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        parsed = int(raw.strip())
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return parsed
+
+
+def directory_used_bytes(target_dir: Path) -> int:
+    if not target_dir.exists():
+        return 0
+    total = 0
+    for root, _dirs, files in os.walk(target_dir):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def check_storage_capacity(
+    target_dir: Path | str,
+    required_bytes: int,
+    *,
+    quota_bytes: int | None = None,
+    min_free_bytes: int | None = None,
+) -> None:
+    """Verify configured quota and filesystem free capacity before writing bytes."""
+    if required_bytes < 0:
+        raise ValueError("required_bytes must be non-negative")
+    directory = Path(target_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+
+    effective_quota = (
+        quota_bytes
+        if quota_bytes is not None
+        else _positive_env_bytes("HARPOCRATES_STORAGE_QUOTA_BYTES")
+    )
+    if effective_quota is not None:
+        used = directory_used_bytes(directory)
+        if used + required_bytes > effective_quota:
+            raise StorageQuotaExhaustedError("configured storage byte quota exceeded")
+
+    effective_min_free = (
+        min_free_bytes
+        if min_free_bytes is not None
+        else (_positive_env_bytes("HARPOCRATES_STORAGE_MIN_FREE_BYTES") or 0)
+    )
+    try:
+        usage = shutil.disk_usage(directory)
+    except OSError as exc:
+        raise classify_storage_exception(exc) from exc
+    if usage.free < required_bytes + effective_min_free:
+        raise StorageQuotaExhaustedError("insufficient filesystem free capacity")
+
+
+def atomic_write_blob_bytes(
+    target_path: Path | str,
+    payload: bytes,
+    *,
+    quota_bytes: int | None = None,
+    min_free_bytes: int | None = None,
+) -> int:
+    """Write blob bytes atomically while preserving existing files on quota exhaustion."""
+    dest = Path(target_path)
+    parent = dest.parent
+    check_storage_capacity(
+        parent,
+        len(payload),
+        quota_bytes=quota_bytes,
+        min_free_bytes=min_free_bytes,
+    )
+    fd: int | None = None
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=".blob_", suffix=".tmp")
+        handle = os.fdopen(fd, "wb")
+        fd = None
+        with handle:
+            handle.write(payload)
+            handle.flush()
+        if os.name == "posix":
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+        os.replace(tmp_path, dest)
+        tmp_path = None
+        return len(payload)
+    except BaseException as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        if isinstance(exc, (OSError, EvidenceStorageOperationalError)):
+            raise classify_storage_exception(exc) from exc
+        raise

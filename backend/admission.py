@@ -1,14 +1,46 @@
 import contextlib
 import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
 from functools import wraps
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from flask import request, jsonify
+from flask import g, request, jsonify
+
+
+class AdmissionState(str, Enum):
+    QUEUED = "queued"
+    ACTIVE = "active"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
+    RELEASED = "released"
+
+
+@dataclass
+class AdmissionTicket:
+    id: str
+    identity: str
+    state: AdmissionState = AdmissionState.QUEUED
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    queued: bool = False
+
+
+class AdmissionRejectedError(Exception):
+    """Raised when admission control rejects work due to backpressure."""
+
+    def __init__(self, reason: str, status_code: int, retry_after: int):
+        super().__init__(f"admission rejected: {reason}")
+        self.reason = reason
+        self.status_code = status_code
+        self.retry_after = retry_after
 
 
 class AdmissionController:
     """
     Manages capacity and queue limits, providing backpressure via admission control.
+    Also tracks per-identity temporary upload storage budget reservations.
     """
 
     def __init__(
@@ -17,11 +49,13 @@ class AdmissionController:
         max_queue: int,
         max_per_identity: int,
         timeout_seconds: float,
+        max_temp_storage_per_identity: int | None = None,
     ):
         self.max_concurrent = max_concurrent
         self.max_queue = max_queue
         self.max_per_identity = max_per_identity
         self.timeout_seconds = timeout_seconds
+        self.max_temp_storage_per_identity = max_temp_storage_per_identity
 
         self._lock = threading.Lock()
         self._current_queue = 0
@@ -42,41 +76,95 @@ class AdmissionController:
 
     def _acquire_slot(self, identity: str) -> Tuple[bool, str]:
         with self._lock:
-            # 1. Per-identity fairness
             if self._identity_counts.get(identity, 0) >= self.max_per_identity:
-                return False, "identity_limit"
+                return None
+            ticket = AdmissionTicket(id=str(uuid.uuid4()), identity=identity)
+            self._tickets[ticket.id] = ticket
+            self._identity_tickets.setdefault(identity, []).append(ticket.id)
+            return ticket
 
-            # Take an immediately available execution slot without consuming
-            # queue capacity. This keeps max_queue=0 useful as "no waiting".
+    def acquire(self, identity: str) -> Tuple[bool, str]:
+        ok, reason, _ticket = self.acquire_ticket(identity)
+        return ok, reason
+
+    def acquire_ticket(
+        self,
+        identity: str,
+        ticket: Optional[AdmissionTicket] = None,
+    ) -> Tuple[bool, str, Optional[AdmissionTicket]]:
+        ticket = ticket or self.create_ticket(identity)
+        if ticket is None:
+            return False, "identity_limit", None
+        if ticket.identity != identity or ticket.state is not AdmissionState.QUEUED:
+            return False, "cancelled", ticket
+
+        with self._lock:
+            if self._identity_counts.get(identity, 0) >= self.max_per_identity:
+                self._finish_ticket(ticket, AdmissionState.RELEASED)
+                return False, "identity_limit", ticket
+
             if self._semaphore.acquire(blocking=False):
                 self._identity_counts[identity] = (
                     self._identity_counts.get(identity, 0) + 1
                 )
-                return True, "ok"
+                ticket.state = AdmissionState.ACTIVE
+                return True, "ok", ticket
 
-            # 2. Queue limits apply only when all execution slots are busy.
             if self._current_queue >= self.max_queue:
-                return False, "queue_full"
+                self._finish_ticket(ticket, AdmissionState.RELEASED)
+                return False, "queue_full", ticket
 
-            # Join the queue
             self._current_queue += 1
+            ticket.queued = True
             self._identity_counts[identity] = self._identity_counts.get(identity, 0) + 1
 
-        # 3. Wait for global concurrency
-        acquired = self._semaphore.acquire(timeout=self.timeout_seconds)
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            if ticket.cancel_event.is_set():
+                with self._lock:
+                    self._leave_queue(ticket)
+                    self._finish_ticket(ticket, AdmissionState.CANCELLED)
+                return False, "cancelled", ticket
 
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with self._lock:
+                    self._leave_queue(ticket)
+                    self._finish_ticket(ticket, AdmissionState.RELEASED)
+                return False, "timeout", ticket
+
+            if self._semaphore.acquire(blocking=False):
+                with self._lock:
+                    if ticket.cancel_event.is_set():
+                        self._semaphore.release()
+                        self._leave_queue(ticket)
+                        self._finish_ticket(ticket, AdmissionState.CANCELLED)
+                        return False, "cancelled", ticket
+                    self._current_queue -= 1
+                    ticket.queued = False
+                    ticket.state = AdmissionState.ACTIVE
+                return True, "ok", ticket
+
+            ticket.cancel_event.wait(min(0.02, remaining))
+
+    def get_ticket(self, ticket_id: str) -> Optional[AdmissionTicket]:
         with self._lock:
-            # Leave the queue
-            self._current_queue -= 1
-            
-            if not acquired:
-                # Timed out waiting
-                self._identity_counts[identity] -= 1
-                if self._identity_counts[identity] == 0:
-                    del self._identity_counts[identity]
-                return False, "timeout"
+            return self._tickets.get(ticket_id)
 
-        return True, "ok"
+    def cancel(self, ticket_id: str) -> bool:
+        with self._lock:
+            ticket = self._tickets.get(ticket_id)
+            if ticket is None or ticket.state not in (
+                AdmissionState.QUEUED,
+                AdmissionState.ACTIVE,
+            ):
+                return False
+            ticket.cancel_event.set()
+            if ticket.state is AdmissionState.ACTIVE:
+                ticket.state = AdmissionState.CANCELLING
+            else:
+                ticket.state = AdmissionState.CANCELLED
+            return True
 
     def release(self, identity: str, session_id: str | None = None) -> None:
         """
@@ -86,11 +174,7 @@ class AdmissionController:
         if session_id:
             self.release_session(session_id)
         with self._lock:
-            self._identity_counts[identity] -= 1
-            if self._identity_counts[identity] == 0:
-                del self._identity_counts[identity]
-        
-        self._semaphore.release()
+            return self._reserved_storage.get(identity, 0)
 
     def acquire_session(self, session_id: str) -> None:
         """Register an active worker reference to an upload session.
@@ -140,10 +224,6 @@ class AdmissionController:
 
 def _get_client_identity() -> str:
     """Extract a stable identity string for the client."""
-    # Note: In a real production deployment behind a load balancer, 
-    # this should securely parse X-Forwarded-For or use a more robust token.
-    # We take the first IP in X-Forwarded-For to avoid spoofing if possible,
-    # but for this scope we just safely read it.
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -158,6 +238,7 @@ def require_capacity(controller: AdmissionController):
     view_args), marks the session as active while processing so retention
     sweeps avoid deleting chunks referenced by active workers.
     """
+
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
@@ -169,25 +250,57 @@ def require_capacity(controller: AdmissionController):
             acquired, reason = controller.acquire(identity, session_id=session_id)
             
             if not acquired:
-                # Import here to avoid circular imports if needed
                 from metrics import collector as metrics_collector
-                
-                # Record the rejection metric
+
                 endpoint = request.url_rule.rule if request.url_rule else request.path
                 metrics_collector.record_rejection(reason, endpoint)
-                
+
                 status_code = 429 if reason == "identity_limit" else 503
                 response = jsonify({
-                    "error": "service overloaded", 
-                    "reason": reason
+                    "error": "service overloaded",
+                    "reason": reason,
                 })
                 response.status_code = status_code
                 response.headers["Retry-After"] = str(int(controller.timeout_seconds * 2) or 5)
                 return response
-                
+
             try:
                 return f(*args, **kwargs)
             finally:
                 controller.release(identity, session_id=session_id)
         return wrapped
     return decorator
+
+
+@contextmanager
+def admit_verified_work(
+    controller: AdmissionController,
+    identity: str,
+    *,
+    endpoint: str | None = None,
+) -> Iterator[None]:
+    """Acquire an admission slot for *identity* after pre-flight verification.
+
+    Use this instead of ``@require_capacity`` when a request must first pass
+    authentication and content-hash verification before consuming processing
+    capacity.  Raises ``AdmissionRejectedError`` on backpressure.
+    """
+    acquired, reason = controller.acquire(identity)
+    if not acquired:
+        try:
+            from metrics import collector as metrics_collector
+
+            metrics_collector.record_rejection(reason, endpoint or "verified_work")
+        except Exception:
+            pass
+        status_code = 429 if reason == "identity_limit" else 503
+        retry_after = int(controller.timeout_seconds * 2) or 5
+        raise AdmissionRejectedError(
+            reason=reason,
+            status_code=status_code,
+            retry_after=retry_after,
+        )
+    try:
+        yield
+    finally:
+        controller.release(identity)

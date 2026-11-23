@@ -3,11 +3,177 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import hmac
+import json
 from typing import Any, Optional, Tuple
 
-from flask import Response, jsonify, request
+from flask import Response, has_request_context, jsonify, request
 
 from db import Jsonb, get_connection
+
+INTENT_STATEMENT_VERSION = "harpocrates.registration_intent.v1"
+_INTENT_DOMAIN_PREFIX = b"harpocrates:registration-intent:v1:"
+REGISTRATION_INTENT_REQUEST_TYPE = "registration_intent"
+
+
+class IntentConflictError(ValueError):
+    """Raised when a tx_hash is already bound to a different intent digest."""
+
+
+def _normalize_hex_32(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a 32-byte hex string")
+    normalized = value.strip().lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 64 or not all(c in "0123456789abcdef" for c in normalized):
+        raise ValueError(f"{field_name} must be a 32-byte hex string")
+    return normalized
+
+
+def normalize_intent_digest(value: object) -> str:
+    """Validate and normalize a 32-byte hex intent digest."""
+    return _normalize_hex_32(value, "intent_digest")
+
+
+def _normalize_optional_str(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("optional statement field must be a string or None")
+    stripped = value.strip()
+    return stripped if stripped else None
+
+
+def canonical_evidence_statement(
+    *,
+    video_hash: object,
+    metadata_hash: object,
+    proof_id: object,
+    tier: object,
+    source_address: object = None,
+    contract_id: object = None,
+) -> dict[str, Any]:
+    """Build the canonical evidence statement bound to a proof registration intent.
+
+    Privacy: contains only content/metadata hashes, proof identifier, tier,
+    and public Stellar identifiers — never raw media, metadata envelopes,
+    witness values, or credentials.
+    """
+    if not isinstance(tier, str) or not tier.strip():
+        raise ValueError("tier must be a non-empty string")
+    return {
+        "version": INTENT_STATEMENT_VERSION,
+        "video_hash": _normalize_hex_32(video_hash, "video_hash"),
+        "metadata_hash": _normalize_hex_32(metadata_hash, "metadata_hash"),
+        "proof_id": _normalize_hex_32(proof_id, "proof_id"),
+        "tier": tier.strip().lower(),
+        "source_address": _normalize_optional_str(source_address),
+        "contract_id": _normalize_optional_str(contract_id),
+    }
+
+
+def compute_intent_digest(statement: dict[str, Any]) -> str:
+    """Compute the domain-separated SHA-256 digest of a canonical evidence statement."""
+    if not isinstance(statement, dict):
+        raise ValueError("statement must be a mapping")
+    canonical = canonical_evidence_statement(
+        video_hash=statement.get("video_hash") if "video_hash" in statement else statement.get("videoHash"),
+        metadata_hash=statement.get("metadata_hash") if "metadata_hash" in statement else statement.get("metadataHash"),
+        proof_id=statement.get("proof_id") if "proof_id" in statement else statement.get("proofId"),
+        tier=statement.get("tier"),
+        source_address=statement.get("source_address") if "source_address" in statement else statement.get("sourceAddress"),
+        contract_id=statement.get("contract_id") if "contract_id" in statement else statement.get("contractId"),
+    )
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(_INTENT_DOMAIN_PREFIX + encoded).hexdigest()
+
+
+def registration_intent_digest(
+    *,
+    video_hash: object,
+    metadata_hash: object,
+    proof_id: object,
+    tier: object,
+    source_address: object = None,
+    contract_id: object = None,
+) -> str:
+    """Convenience helper to build and hash a canonical evidence statement."""
+    return compute_intent_digest(
+        canonical_evidence_statement(
+            video_hash=video_hash,
+            metadata_hash=metadata_hash,
+            proof_id=proof_id,
+            tier=tier,
+            source_address=source_address,
+            contract_id=contract_id,
+        )
+    )
+
+
+def get_registration_intent(tx_hash: str) -> Optional[dict[str, Any]]:
+    """Return the persisted registration intent record for ``tx_hash``, if any."""
+    if not _db_available():
+        return None
+    normalized_tx = _normalize_hex_32(tx_hash, "tx_hash")
+    record = get_idempotency_record(normalized_tx, REGISTRATION_INTENT_REQUEST_TYPE)
+    if not record:
+        return None
+    payload = record.get("response_payload")
+    if isinstance(payload, dict) and isinstance(payload.get("intent_digest"), str):
+        return payload
+    return None
+
+
+def persist_registration_intent(
+    tx_hash: str,
+    intent_digest: str,
+    *,
+    expires_at: Optional[datetime.datetime] = None,
+) -> str:
+    """Persist an approved registration intent digest keyed by ``tx_hash``.
+
+    Idempotent when the same ``(tx_hash, intent_digest)`` is persisted again.
+    Raises ``IntentConflictError`` if ``tx_hash`` is already bound to a
+    different intent digest.
+    """
+    normalized_tx = _normalize_hex_32(tx_hash, "tx_hash")
+    normalized_digest = normalize_intent_digest(intent_digest)
+    if not _db_available():
+        return normalized_digest
+
+    existing = get_registration_intent(normalized_tx)
+    if existing is not None:
+        existing_digest = existing.get("intent_digest", "")
+        if not hmac.compare_digest(existing_digest, normalized_digest):
+            raise IntentConflictError(
+                "transaction hash is already bound to a different registration intent digest"
+            )
+        return normalized_digest
+
+    record_id, status = create_idempotency_record(
+        normalized_tx,
+        REGISTRATION_INTENT_REQUEST_TYPE,
+        expires_at=expires_at,
+    )
+    if status == "COMPLETED":
+        reread = get_registration_intent(normalized_tx)
+        if reread is not None:
+            existing_digest = reread.get("intent_digest", "")
+            if not hmac.compare_digest(existing_digest, normalized_digest):
+                raise IntentConflictError(
+                    "transaction hash is already bound to a different registration intent digest"
+                )
+        return normalized_digest
+
+    store_response(
+        record_id,
+        {
+            "version": INTENT_STATEMENT_VERSION,
+            "intent_digest": normalized_digest,
+        },
+    )
+    return normalized_digest
 
 
 # Table: idempotency_records
@@ -21,6 +187,31 @@ from db import Jsonb, get_connection
 #   response_payload JSONB NULL
 #   error_payload JSONB NULL
 #   UNIQUE (request_digest, request_type)
+#
+# Race model (deterministic fixtures in tests/test_registration_races.py):
+#   * Duplicate submissions converge on a single PENDING/COMPLETED record via
+#     the UNIQUE constraint; losers replay the winner's stored outcome.
+#   * A worker that dies while holding PENDING leaves the record in place.
+#     Once ``expires_at`` passes, the stale PENDING lock is reclaimed by the
+#     next caller so a replacement worker can proceed exactly once.
+#   * Only one caller may transition a reclaimed record back to PENDING; the
+#     reclaim is a conditional UPDATE, so concurrent reclaimers cannot both win.
+
+
+# Outcome classification for reconciliation timeline consumers.
+OUTCOME_SUBMITTED = "submitted"
+OUTCOME_CONFIRMED = "confirmed"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_UNKNOWN = "unknown"
+
+_STATUS_TO_OUTCOME = {
+    "PENDING": OUTCOME_SUBMITTED,
+    "COMPLETED": OUTCOME_CONFIRMED,
+    "FAILED": OUTCOME_REJECTED,
+}
+
+# Upper bound on records returned by timeline queries (bounded output).
+TIMELINE_MAX_RECORDS = 100
 
 
 def _now() -> datetime.datetime:
@@ -47,9 +238,13 @@ def create_idempotency_record(
     """Insert a new idempotency record with status PENDING.
 
     Returns (record_id, status). If a record already exists, returns its id and current status.
+    A stale PENDING record whose lock has expired is reclaimed for this caller
+    (status returned as PENDING with the reclaimed id), so a replacement worker
+    can retry after the original worker vanished.
     """
     if expires_at is None:
         expires_at = _default_expiry()
+    now = _now()
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -62,8 +257,27 @@ def create_idempotency_record(
                 (request_digest, request_type, expires_at),
             )
             row = cur.fetchone()
+            record_id, status = int(row["id"]), row["status"]
+
+            if status == "PENDING":
+                # Reclaim only if the existing lock is stale. Conditional UPDATE
+                # ensures at most one replacement worker wins the reclaim.
+                cur.execute(
+                    """
+                    UPDATE idempotency_records
+                    SET expires_at = %s
+                    WHERE id = %s AND status = 'PENDING' AND expires_at <= %s
+                    RETURNING id;
+                    """,
+                    (expires_at, record_id, now),
+                )
+                reclaimed = cur.fetchone()
+                if reclaimed is not None:
+                    conn.commit()
+                    return record_id, "PENDING"
+
             conn.commit()
-            return int(row["id"]), row["status"]
+            return record_id, status
 
 
 def get_idempotency_record(request_digest: str, request_type: str) -> Optional[dict]:
@@ -77,6 +291,57 @@ def get_idempotency_record(request_digest: str, request_type: str) -> Optional[d
             if row:
                 return dict(row)
             return None
+
+
+def get_reconciliation_timeline(
+    request_type: str, limit: int = TIMELINE_MAX_RECORDS
+) -> list[dict]:
+    """Return bounded observation/transition records for a request type.
+
+    Each entry exposes only the classified outcome, lifecycle timestamps and
+    record id. Request digests, response payloads and error payloads are
+    deliberately omitted to preserve evidence privacy. Callers are expected to
+    have already authorized the requester.
+
+    Outcomes are one of: submitted (PENDING), confirmed (COMPLETED),
+    rejected (FAILED), or unknown (any other/unrecognized status).
+    """
+    bounded_limit = max(1, min(int(limit), TIMELINE_MAX_RECORDS))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, created_at, expires_at
+                FROM idempotency_records
+                WHERE request_type = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (request_type, bounded_limit),
+            )
+            rows = cur.fetchall()
+    return [classify_observation(dict(row)) for row in rows]
+
+
+def classify_observation(record: dict) -> dict:
+    """Map a stored record to a privacy-safe timeline entry."""
+    status = record.get("status")
+    outcome = _STATUS_TO_OUTCOME.get(status, OUTCOME_UNKNOWN)
+    return {
+        "id": record.get("id"),
+        "outcome": outcome,
+        "status": status if status in _STATUS_TO_OUTCOME else None,
+        "created_at": _iso(record.get("created_at")),
+        "expires_at": _iso(record.get("expires_at")),
+    }
+
+
+def _iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def store_response(record_id: int, payload: Any) -> None:
@@ -120,13 +385,44 @@ def clear_idempotency_record(record_id: int) -> None:
             conn.commit()
 
 
+def _extract_identity_tier() -> Optional[str]:
+    """Extract the identity tier from a JSON request body when present."""
+    if not has_request_context():
+        return None
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        tier = payload.get("tier")
+        if isinstance(tier, str):
+            return tier.strip()
+    return None
+
+
+def _idempotency_key_header() -> Optional[str]:
+    """Return the trimmed Idempotency-Key header value if present."""
+    if not has_request_context():
+        return None
+    raw = request.headers.get("Idempotency-Key")
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if trimmed:
+            return trimmed
+    return None
+
+
+def _idempotency_key_digest(request_type: str, key: str) -> str:
+    """Derive a fixed-length lookup digest for an explicit Idempotency-Key."""
+    data = b"|".join([b"key", request_type.encode(), key.encode()])
+    return hashlib.sha256(data).hexdigest()
+
+
 def _canonical_digest() -> str:
-    """SHA-256 of method, path, query string, and raw body (canonical request identity)."""
+    """SHA-256 of method, path, query string, identity tier, and raw body (canonical request identity)."""
     method = request.method.encode()
     path = request.path.encode()
     query = request.query_string  # already bytes
+    tier = (_extract_identity_tier() or "").encode()
     body = request.get_data() or b""
-    data = b"|".join([method, path, query, body])
+    data = b"|".join([method, path, query, tier, body])
     return hashlib.sha256(data).hexdigest()
 
 
@@ -155,10 +451,28 @@ def _extract_response_parts(result: Any) -> tuple[Any, int]:
     return None, status
 
 
-def _replay_stored(record: dict):
+def _replay_stored(
+    record: dict,
+    *,
+    binding_digest: Optional[str] = None,
+    tier: Optional[str] = None,
+):
     status = record.get("status")
     if status == "COMPLETED":
         payload = record.get("response_payload") or {}
+        if (
+            binding_digest is not None
+            and isinstance(payload, dict)
+            and isinstance(payload.get("binding"), dict)
+        ):
+            stored_binding = payload["binding"]
+            if stored_binding.get("digest") != binding_digest:
+                conflict: dict[str, Any] = {
+                    "error": "idempotency key reused with conflicting payload"
+                }
+                if stored_binding.get("tier") != tier:
+                    conflict["conflict_field"] = "tier"
+                return jsonify(conflict), 409
         if isinstance(payload, dict) and "body" in payload and "status" in payload:
             body = payload.get("body")
             code = int(payload.get("status") or 200)
@@ -181,10 +495,13 @@ def _replay_stored(record: dict):
 def idempotent(request_type: str):
     """Flask view decorator to enforce idempotent request handling.
 
-    Uses a canonical request digest. Completed records replay the stored JSON
-    body and HTTP status. Pending records return 409. When DATABASE_URL is
-    unset (local/unit tests), the decorator is a no-op so callers still rely
-    on semantic upsert idempotency in the register path.
+    Uses a canonical request digest (including identity tier). When an explicit
+    ``Idempotency-Key`` header is supplied, the key is bound to the canonical
+    digest and identity tier; reusing the key with a changed tier or payload
+    returns 409 Conflict without invoking the handler. Completed records replay
+    the stored JSON body and HTTP status. Pending records return 409. When
+    DATABASE_URL is unset (local/unit tests), the decorator is a no-op so
+    callers still rely on semantic upsert idempotency in the register path.
     """
 
     def decorator(func):
@@ -193,31 +510,60 @@ def idempotent(request_type: str):
             if not _db_available():
                 return func(*args, **kwargs)
 
-            digest = _canonical_digest()
-            record = get_idempotency_record(digest, request_type)
-            if record:
-                return _replay_stored(record)
+            binding_digest = _canonical_digest()
+            tier = _extract_identity_tier()
+            idem_key = _idempotency_key_header()
+            lookup_digest = (
+                _idempotency_key_digest(request_type, idem_key)
+                if idem_key is not None
+                else binding_digest
+            )
 
-            record_id, status = create_idempotency_record(digest, request_type)
+            record = get_idempotency_record(lookup_digest, request_type)
+            if record:
+                return _replay_stored(
+                    record,
+                    binding_digest=binding_digest if idem_key is not None else None,
+                    tier=tier,
+                )
+
+            record_id, status = create_idempotency_record(lookup_digest, request_type)
             if status != "PENDING":
                 # Lost the race to another worker that already finished (or is in flight).
-                existing = get_idempotency_record(digest, request_type) or {
+                existing = get_idempotency_record(lookup_digest, request_type) or {
                     "status": status,
                     "response_payload": None,
                     "error_payload": None,
                 }
-                return _replay_stored(existing)
+                return _replay_stored(
+                    existing,
+                    binding_digest=binding_digest if idem_key is not None else None,
+                    tier=tier,
+                )
 
             try:
                 result = func(*args, **kwargs)
                 body, code = _extract_response_parts(result)
-                if 200 <= code < 500:
+                if code == 503:
+                    # Retryable operational outage (e.g. chain RPC unavailable):
+                    # keep the request retryable and never cache it as evidence invalidity.
+                    clear_idempotency_record(record_id)
+                elif 200 <= code < 500:
                     # Cache 2xx and stable 4xx for exact replay (no raw media/secrets).
-                    store_response(record_id, {"status": code, "body": body})
+                    stored_payload: dict[str, Any] = {"status": code, "body": body}
+                    if idem_key is not None:
+                        stored_payload["binding"] = {
+                            "digest": binding_digest,
+                            "tier": tier,
+                        }
+                    store_response(record_id, stored_payload)
                 else:
                     # Do not cache server failures — allow a later retry to re-acquire.
                     clear_idempotency_record(record_id)
                 return result
+            except RetryableOperationalError:
+                clear_idempotency_record(record_id)
+                raise
             except Exception:
                 # Privacy-safe: never persist exception strings (may contain paths/secrets).
                 store_error(record_id, {"error": "request processing failed", "status": 500})

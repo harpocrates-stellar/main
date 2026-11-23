@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react'
-import { BadgeCheck, CheckCircle2, Loader2, Upload, XCircle } from 'lucide-react'
+import { BadgeCheck, CheckCircle2, Loader2, RotateCcw, Upload, XCircle } from 'lucide-react'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
-import { TIERS } from '../hooks/useEvidence'
+import { EVIDENCE_REPLACED_MESSAGE, TIERS } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { EventList } from '../components/EventList'
@@ -9,10 +9,12 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import { shortHash } from '../utils'
 import { useA11yStage } from '../hooks/useA11y'
-import { PROOF_STAGE_SEQUENCE, proofStageLabel, proofStageStatus } from '../proofStage'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
 import { RedactionPreview } from '../components/RedactionPreview'
+import { ProofPreparationPreview } from '../components/ProofPreparationPreview'
+import { ExportPrivacySummary } from '../components/ExportPrivacySummary'
+import { buildExportPrivacySummary } from '../exportPrivacySummary'
 import { CONTRACT_NETWORK_PASSPHRASE } from '../stellar'
 import type { VerificationShareLinkInput } from '../verificationShareLink'
 
@@ -39,24 +41,104 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     setCredentialSeed,
     nullifierSeed,
     setNullifierSeed,
+    evidenceNotes,
+    setEvidenceNotes,
     message,
+    proofPreparation,
+    acknowledgedSensitiveFields = [],
+    acknowledgeSensitiveFields,
     registration,
     networkMismatch,
+    networkMismatchRecovery = null,
     isCancellable,
+    review,
+    reviewInvalidatedReason,
+    openReview,
+    closeReview,
     handleEvidence,
+    retryEvidence,
     registerProof,
+    revalidateNetworkMismatch,
     cancelEvidence,
     cancelProving,
   } = evidence
 
-  const { verifyHash, verifyResult, events, chainProof, verifyEvidence, loadEvents } = verification
+  const {
+    verifyHash,
+    verifyResult,
+    events,
+    chainProof,
+    status: verifyStatus,
+    verifyEvidence,
+    loadEvents,
+    clear: clearVerification,
+  } = verification
+
+  const [verificationCleared, setVerificationCleared] = useState(false)
+  const [verificationClearedNotice, setVerificationClearedNotice] = useState<string | null>(null)
+  const [clearedRegistrationHash, setClearedRegistrationHash] = useState<string | null>(null)
+
+  const effectiveVerifyHash = verificationCleared ? '' : verifyHash
+  const effectiveVerifyResult = verificationCleared ? '' : verifyResult
+  const effectiveChainProof = verificationCleared ? null : chainProof
+  const effectiveEvents = verificationCleared ? [] : events
+  const effectiveProvenanceRecord =
+    verificationCleared && provenanceRecord?.ledger.status !== null ? null : provenanceRecord
+
+  const hasFreshRegistration =
+    stage === 'registered' &&
+    Boolean(registration?.hash) &&
+    registration?.hash !== clearedRegistrationHash
+
+  const stateChangeExplanation = hasFreshRegistration
+    ? null
+    : (verificationClearedNotice ?? evidenceChangeNotice ?? null)
 
   const { statusLabel, isBusy } = useA11yStage(stage)
   const isProving = stage === 'proving'
   const revocationProofId =
-    events.find((event) => event.video_hash === verifyHash && event.proof_id)?.proof_id ?? null
+    effectiveEvents.find((event) => event.video_hash === effectiveVerifyHash && event.proof_id)?.proof_id ?? null
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
+  const stageHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const registerActionRef = useRef<HTMLButtonElement | null>(null)
+
+  useStageFocus(stage, stageHeadingRef, registerActionRef)
+
+  function handleStudioFileChange(nextFile: File | null) {
+    if (!nextFile) return
+
+    const hadVerificationState = Boolean(
+      !verificationCleared &&
+        (verifyHash || verifyResult || chainProof || events.length > 0 || verifyStatus !== 'idle'),
+    )
+    const hadPriorEvidence = Boolean(file || proof || registration)
+
+    if (hadVerificationState) {
+      clearVerification()
+      setVerificationCleared(true)
+      setClearedRegistrationHash(registration?.hash ?? null)
+      setVerificationClearedNotice(EVIDENCE_REPLACED_MESSAGE)
+    } else if (hadPriorEvidence) {
+      setClearedRegistrationHash(registration?.hash ?? null)
+      setVerificationClearedNotice(EVIDENCE_REPLACED_MESSAGE)
+    } else {
+      setClearedRegistrationHash(null)
+      setVerificationClearedNotice(null)
+    }
+
+    void handleEvidence(nextFile)
+  }
+
+  function handleQuickVerifyChange(nextFile: File | null) {
+    if (nextFile) {
+      setVerificationCleared(false)
+      setClearedRegistrationHash(null)
+      setVerificationClearedNotice(null)
+      clearEvidenceChangeNotice?.()
+    }
+    void verifyEvidence(nextFile, wallet || undefined)
+  }
 
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
@@ -71,19 +153,133 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
     }
   }, [proof, registration?.hash])
 
+  const exportPrivacySummary = useMemo(
+    () =>
+      buildExportPrivacySummary({
+        proof,
+        wallet,
+        acknowledgedSensitiveKeys: acknowledgedSensitiveFields,
+      }),
+    [proof, wallet, acknowledgedSensitiveFields],
+  )
+  const canExportArtifact =
+    exportPrivacySummary.ok && !exportPrivacySummary.requiresAcknowledgement
+
   return (
     <section className="workspace app-page" id="studio" aria-busy={isBusy || undefined} aria-label="Evidence Studio workspace">
       <div className="studio">
         <header className="page-header">
           <h2 id="studio-heading" tabIndex={-1}>Evidence Studio</h2>
-          <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
-          <div className="sr-only" aria-live="polite" aria-atomic="true">{statusLabel}</div>
+          <p id="studio-status" role="status" aria-live="polite" aria-atomic="true">{message}</p>
+          <h3
+            id="studio-stage-heading"
+            ref={stageHeadingRef}
+            tabIndex={-1}
+            className="sr-only"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {statusLabel}
+          </h3>
         </header>
 
-        {networkMismatch ? (
+        {networkMismatchRecovery ? (
+          <div
+            className="network-mismatch-banner network-mismatch-recovery"
+            role="alert"
+            aria-label="Guided network mismatch recovery"
+          >
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <div className="network-mismatch-recovery__body">
+              <strong className="network-mismatch-recovery__title">
+                Network mismatch — switch wallet network to resume
+              </strong>
+              <p className="network-mismatch-recovery__reason">{networkMismatchRecovery.reason}</p>
+              <dl className="network-mismatch-recovery__details">
+                <div>
+                  <dt>Required network</dt>
+                  <dd>{networkMismatchRecovery.requiredNetwork}</dd>
+                </div>
+                <div>
+                  <dt>Current wallet network</dt>
+                  <dd>{networkMismatchRecovery.currentWalletNetwork}</dd>
+                </div>
+              </dl>
+              <ol className="network-mismatch-recovery__steps">
+                <li>{networkMismatchRecovery.remediation}</li>
+                <li>
+                  Run fresh validation of your wallet network and selected evidence intent before
+                  resuming registration.
+                </li>
+              </ol>
+              {networkMismatchRecovery.validationError ? (
+                <p className="network-mismatch-recovery__error">
+                  {networkMismatchRecovery.validationError}
+                </p>
+              ) : null}
+              <div className="network-mismatch-recovery__actions">
+                <button
+                  type="button"
+                  className="secondary-action network-mismatch-recovery__action"
+                  disabled={
+                    networkMismatchRecovery.isValidating || isBusy || !revalidateNetworkMismatch
+                  }
+                  aria-busy={networkMismatchRecovery.isValidating || undefined}
+                  onClick={() => {
+                    if (revalidateNetworkMismatch) {
+                      void revalidateNetworkMismatch(wallet)
+                    }
+                  }}
+                >
+                  {networkMismatchRecovery.isValidating
+                    ? 'Validating network...'
+                    : 'Re-validate & resume'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : networkMismatch ? (
           <div className="network-mismatch-banner" role="alert">
             <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
             <span>{networkMismatch}</span>
+          </div>
+        ) : null}
+
+        {isRejectedUpload && admissionState ? (
+          <div className="admission-queue-banner" role="alert" data-testid="admission-queue-banner">
+            <div className="admission-queue-header">
+              <span className="admission-queue-icon" aria-hidden="true">⏳</span>
+              <strong data-testid="admission-queue-title">
+                Upload Queue & Admission State: Rejected ({admissionState.reason ? admissionState.reason.replace('_', ' ') : 'Capacity Limit'})
+              </strong>
+            </div>
+            <p className="admission-queue-message" data-testid="admission-queue-message">{admissionState.message}</p>
+            {admissionState.retryAfter != null ? (
+              <p className="admission-queue-retry-hint" data-testid="admission-queue-retry-hint">
+                Estimated queue wait: <strong>{admissionState.retryAfter}s</strong>.
+              </p>
+            ) : null}
+            {admissionState.retryable ? (
+              <button
+                type="button"
+                className="retry-upload-btn hero-secondary"
+                onClick={() => void retryUpload()}
+                aria-label="Retry upload"
+                data-testid="retry-upload-btn"
+              >
+                Retry Upload
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {isInvalidEvidence ? (
+          <div className="invalid-evidence-banner" role="alert" data-testid="invalid-evidence-banner">
+            <div className="invalid-evidence-header">
+              <span className="invalid-evidence-icon" aria-hidden="true">⚠</span>
+              <strong>Invalid Evidence Payload</strong>
+            </div>
+            <p className="invalid-evidence-message" data-testid="invalid-evidence-message">{message}</p>
           </div>
         ) : null}
 
@@ -109,7 +305,7 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             accept="video/*"
             tabIndex={-1}
             aria-hidden="true"
-            onChange={(event) => void handleEvidence(event.target.files?.[0] ?? null)}
+            onChange={(event) => handleStudioFileChange(event.target.files?.[0] ?? null)}
           />
         </label>
 
@@ -171,6 +367,20 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
+        {stage === 'error' ? (
+          <div className="verify-actions" role="group" aria-label="Evidence studio error actions">
+            <button
+              type="button"
+              className="hero-secondary retry-action-btn"
+              onClick={() => void retryEvidence()}
+              aria-label="Retry evidence processing"
+            >
+              <RotateCcw size={14} aria-hidden="true" />
+              Retry evidence processing
+            </button>
+          </div>
+        ) : null}
+
         {isCancellable ? (
           <div className="verify-actions" role="group" aria-label="Evidence studio actions">
             <button
@@ -185,7 +395,31 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           </div>
         ) : null}
 
+        <div className="evidence-notes-panel">
+          <label htmlFor="evidence-notes">
+            <span>Evidence Notes</span>
+            <textarea
+              id="evidence-notes"
+              aria-label="Evidence notes"
+              placeholder="Enter notes or context for this evidence…"
+              value={evidenceNotes}
+              onChange={(event) => setEvidenceNotes(event.target.value)}
+              rows={3}
+            />
+          </label>
+        </div>
+
         <dl className="data-list" aria-label="Evidence data">
+          <div>
+            <dt>Admission State</dt>
+            <dd data-testid="admission-state-value">
+              {admissionState
+                ? `${admissionState.status.toUpperCase()}${admissionState.reason ? ` (${admissionState.reason})` : ''}`
+                : proof
+                  ? 'ADMITTED'
+                  : 'IDLE'}
+            </dd>
+          </div>
           <div>
             <dt>Source Hash</dt>
             <dd>{shortHash(proof?.sourceHash ?? '')}</dd>
@@ -222,7 +456,17 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <dt>Tx Status</dt>
             <dd>{registration?.status ?? 'Not submitted'}</dd>
           </div>
+          {proof?.evidenceNotes ? (
+            <div>
+              <dt>Evidence Notes</dt>
+              <dd>{proof.evidenceNotes}</dd>
+            </div>
+          ) : null}
         </dl>
+
+        {selectedTier === 'silent' && proof ? (
+          <ProofPreparationPreview preparation={proofPreparation} />
+        ) : null}
 
         <RedactionPreview
           proof={proof}
@@ -233,45 +477,152 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
           }}
         />
 
-        {processedVideoUrl ? (
-          <a
-            className="download-link"
-            href={processedVideoUrl}
-            download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
-            aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
-          >
-            Download embedded evidence video
-          </a>
+        {proof ? (
+          <ExportPrivacySummary
+            summary={exportPrivacySummary}
+            onAcknowledgeSensitiveFields={acknowledgeSensitiveFields}
+          />
         ) : null}
 
-        <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={!proof || !!networkMismatch || isBusy}
-            aria-busy={isBusy || undefined}
-            onClick={() => void registerProof(wallet)}
-          >
-            {isBusy ? (
-              <Loader2 className="spin" size={18} aria-hidden="true" />
-            ) : (
-              <BadgeCheck size={18} aria-hidden="true" />
-            )}
-            Register proof
-          </button>
-
-          {isProving ? (
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => cancelProving()}
-              aria-label="Cancel proof generation"
+        {processedVideoUrl ? (
+          canExportArtifact ? (
+            <a
+              className="download-link"
+              href={processedVideoUrl}
+              download={proof?.fileName ?? 'harpocrates-evidence.mp4'}
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'}`}
             >
-              <XCircle size={18} aria-hidden="true" />
-              Cancel proving
+              Download embedded evidence video
+            </a>
+          ) : (
+            <button
+              type="button"
+              className="download-link download-link--blocked"
+              disabled
+              aria-disabled="true"
+              aria-label={`Download ${proof?.fileName ?? 'evidence video'} (acknowledge newly exposed sensitive fields first)`}
+            >
+              Download embedded evidence video
             </button>
-          ) : null}
-        </div>
+          )
+        ) : null}
+
+        {reviewInvalidatedReason ? (
+          <div className="review-invalidated-banner" role="alert">
+            <span>{reviewInvalidatedReason}</span>
+          </div>
+        ) : null}
+
+        {review ? (
+          <section
+            className="evidence-review"
+            role="region"
+            aria-label="Evidence processing review"
+          >
+            <header className="evidence-review__header">
+              <BadgeCheck size={16} aria-hidden="true" />
+              <h3>Evidence Processing Review</h3>
+            </header>
+            <p className="evidence-review__summary">
+              Confirm the identity tier, statement digest, and target network before submitting to Stellar.
+            </p>
+            <dl className="evidence-review__list" aria-label="Registration review details">
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Identity Tier</dt>
+                <dd className="evidence-review__value">
+                  {review.tierTitle} ({review.tierLabel})
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Statement Digest</dt>
+                <dd className="evidence-review__value">
+                  <code data-testid="review-statement-digest">{review.statementDigest}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Network</dt>
+                <dd className="evidence-review__value">
+                  <span>{review.networkName}</span>{' '}
+                  <code>{review.networkPassphrase}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Video Hash</dt>
+                <dd className="evidence-review__value">
+                  <code>{shortHash(review.videoHash)}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Metadata Hash</dt>
+                <dd className="evidence-review__value">
+                  <code>{shortHash(review.metadataHash)}</code>
+                </dd>
+              </div>
+              <div className="evidence-review__row">
+                <dt className="evidence-review__label">Proof ID</dt>
+                <dd className="evidence-review__value">
+                  <code>{shortHash(review.proofId)}</code>
+                </dd>
+              </div>
+            </dl>
+            <p className="evidence-review__footnote muted">
+              Private seeds, witness proofs, and raw media remain local to this browser.
+            </p>
+            <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button
+                className="primary-action"
+                type="button"
+                disabled={!!networkMismatch || isBusy}
+                aria-busy={isBusy || undefined}
+                onClick={() => void registerProof(wallet)}
+              >
+                {isBusy ? (
+                  <Loader2 className="spin" size={18} aria-hidden="true" />
+                ) : (
+                  <BadgeCheck size={18} aria-hidden="true" />
+                )}
+                Confirm &amp; register proof
+              </button>
+              <button
+                className="secondary-action"
+                type="button"
+                disabled={isBusy}
+                onClick={closeReview}
+              >
+                Back
+              </button>
+            </div>
+          </section>
+        ) : (
+          <div className="action-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              className="primary-action"
+              type="button"
+              disabled={!proof || !!networkMismatch || isBusy}
+              aria-busy={isBusy || undefined}
+              onClick={() => void openReview()}
+            >
+              {isBusy ? (
+                <Loader2 className="spin" size={18} aria-hidden="true" />
+              ) : (
+                <BadgeCheck size={18} aria-hidden="true" />
+              )}
+              Review before registering
+            </button>
+
+            {isProving ? (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => cancelProving()}
+                aria-label="Cancel proof generation"
+              >
+                <XCircle size={18} aria-hidden="true" />
+                Cancel proving
+              </button>
+            ) : null}
+          </div>
+        )}
 
         <ShareVerificationLink input={shareLinkInput} />
       </div>
@@ -288,34 +639,34 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
             <input
               type="file"
               accept="video/*"
-              onChange={(event) =>
-                void verifyEvidence(event.target.files?.[0] ?? null, wallet || undefined)
-              }
+              onChange={(event) => handleQuickVerifyChange(event.target.files?.[0] ?? null)}
             />
             <span>Choose received video</span>
           </label>
           <div className="verify-result">
-            <CheckCircle2 size={14} aria-hidden="true" />
-            <p>{verifyResult || 'No verification run yet.'}</p>
+            {effectiveVerifyResult && verifyStatus === 'success' ? (
+              <CheckCircle2 size={14} aria-hidden="true" />
+            ) : null}
+            <p>{effectiveVerifyResult || 'No verification run yet.'}</p>
           </div>
-          <code>{shortHash(verifyHash)}</code>
+          <code>{shortHash(effectiveVerifyHash)}</code>
         </div>
 
         <div className="rail-block">
           <h3>Chain Registry</h3>
           <ChainProofPanel
-            chainProof={chainProof}
+            chainProof={effectiveChainProof}
             proofId={revocationProofId}
             sourceAddress={wallet || undefined}
           />
           <h4 style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Verifier Set Status</h4>
           <VerifierSetStatusPanel />
-          {provenanceRecord ? <ProvenanceCard provenance={provenanceRecord} /> : null}
+          {effectiveProvenanceRecord ? <ProvenanceCard provenance={effectiveProvenanceRecord} /> : null}
         </div>
 
         <div className="rail-block">
           <h3>Events</h3>
-          <EventList events={events} onRefresh={() => void loadEvents()} />
+          <EventList events={effectiveEvents} onRefresh={() => void loadEvents()} />
         </div>
       </aside>
     </section>
