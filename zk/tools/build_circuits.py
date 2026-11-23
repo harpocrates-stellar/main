@@ -345,6 +345,99 @@ def run_manifest_tool(
     return proc.returncode
 
 
+def _stage_build_outputs(repo_root: Path, isolated_dir: Path, lock_path: Path) -> None:
+    """Copy declared build artifacts and provenance sources into an isolated output directory."""
+    lock = load_toolchain_lock(lock_path)
+    isolated_dir.mkdir(parents=True, exist_ok=True)
+
+    for entry in lock.get("artifacts", []):
+        rel_path = entry.get("path")
+        if not rel_path:
+            continue
+        src = repo_root / rel_path
+        if src.is_file():
+            dst = isolated_dir / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    for pattern in lock.get("provenance_sources", {}).get("globs", []):
+        for src in sorted(repo_root.glob(pattern)):
+            if src.is_file():
+                rel = src.relative_to(repo_root)
+                dst = isolated_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+
+def run_two_build_comparison(
+    *,
+    toolchain: ToolchainInfo,
+    lock_path: Path,
+    manifest_path: Path,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    report_path: Path | None = None,
+    report_format: str = "json",
+    allow_metadata_drift: bool = False,
+) -> int:
+    """Run two clean builds in isolated output directories and compare canonical digests."""
+    with tempfile.TemporaryDirectory() as work_dir:
+        work = Path(work_dir)
+        build_1_dir = work / "build_1"
+        build_2_dir = work / "build_2"
+        first_manifest = work / "first.json"
+        second_manifest = work / "second.json"
+
+        build_all_circuits("first", toolchain, repo_root=repo_root, runner=runner)
+        _stage_build_outputs(repo_root, build_1_dir, lock_path)
+        status = run_manifest_tool(
+            ["--lock", str(lock_path), "write", "--root", str(build_1_dir), "--output", str(first_manifest)],
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if status != 0:
+            raise BuildError("manifest write failed on first build", exit_code=status)
+
+        build_all_circuits("second", toolchain, repo_root=repo_root, runner=runner)
+        _stage_build_outputs(repo_root, build_2_dir, lock_path)
+        status = run_manifest_tool(
+            ["--lock", str(lock_path), "write", "--root", str(build_2_dir), "--output", str(second_manifest)],
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if status != 0:
+            raise BuildError("manifest write failed on second build", exit_code=status)
+
+        compare_args = [
+            "--lock",
+            str(lock_path),
+            "compare",
+            str(first_manifest),
+            str(second_manifest),
+            "--first-dir",
+            "build_1",
+            "--second-dir",
+            "build_2",
+        ]
+        if report_path is not None:
+            compare_args.extend(["--report", str(report_path), "--report-format", report_format])
+        if allow_metadata_drift:
+            compare_args.append("--allow-metadata-drift")
+
+        compare_status = run_manifest_tool(
+            compare_args,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if compare_status != 0:
+            signal("run.failed", detail="builds are not reproducible")
+            return compare_status
+
+        shutil.copyfile(second_manifest, manifest_path)
+        signal("run.ok", detail="reproducible; manifest written")
+        return EXIT_OK
+
+
 def cmd_build(
     args: argparse.Namespace,
     repo_root: Path = REPO_ROOT,
@@ -404,6 +497,10 @@ def cmd_build(
 
     if mode == "verify":
         build_all_circuits("verify", toolchain, repo_root=repo_root, runner=runner)
+        # Pre-package stale-dependency check (#1215): a source or helper
+        # whose digest changed since the manifest was recorded makes the
+        # derived artifact stale. The manifest tool's verify command
+        # reports this; we surface the same signal here before packaging.
         status = run_manifest_tool(
             ["--lock", str(lock_path), "verify", "--manifest", str(manifest_path)],
             repo_root=repo_root,
@@ -411,42 +508,71 @@ def cmd_build(
         )
         return status
 
-    # Double build
-    with tempfile.TemporaryDirectory() as work_dir:
-        work = Path(work_dir)
-        first_manifest = work / "first.json"
-        second_manifest = work / "second.json"
+    # Double build in isolated output directories
+    report_path = Path(args.report) if getattr(args, "report", None) else None
+    report_format = getattr(args, "report_format", "json") or "json"
+    allow_metadata_drift = bool(getattr(args, "allow_metadata_drift", False))
+    return run_two_build_comparison(
+        toolchain=toolchain,
+        lock_path=lock_path,
+        manifest_path=manifest_path,
+        repo_root=repo_root,
+        runner=runner,
+        report_path=report_path,
+        report_format=report_format,
+        allow_metadata_drift=allow_metadata_drift,
+    )
 
-        build_all_circuits("first", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(first_manifest)],
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if status != 0:
-            raise BuildError("manifest write failed on first build", exit_code=status)
 
-        build_all_circuits("second", toolchain, repo_root=repo_root, runner=runner)
-        status = run_manifest_tool(
-            ["--lock", str(lock_path), "write", "--output", str(second_manifest)],
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if status != 0:
-            raise BuildError("manifest write failed on second build", exit_code=status)
+def cmd_sign_release(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
+    """Sign the current artifact manifest with a caller-supplied key."""
+    import hashlib as _hashlib
+    from artifact_manifest import (
+        _load_manifest,
+        load_lock,
+        sha256_hex,
+        sign_manifest,
+        serialize_manifest,
+    )
 
-        compare_status = run_manifest_tool(
-            ["--lock", str(lock_path), "compare", str(first_manifest), str(second_manifest)],
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if compare_status != 0:
-            signal("run.failed", detail="builds are not reproducible")
-            return compare_status
+    lock_path = Path(args.lock) if args.lock else (repo_root / "zk" / "toolchain.lock.json")
+    manifest_path = Path(args.manifest) if args.manifest else (repo_root / "zk" / "artifacts.manifest.json")
+    output_path = Path(args.output) if args.output else (repo_root / "zk" / "release.manifest.json")
 
-        shutil.copyfile(second_manifest, manifest_path)
-        signal("run.ok", detail="reproducible; manifest written")
-        return EXIT_OK
+    key: bytes = b""
+    if args.key_file:
+        key = Path(args.key_file).read_bytes()
+    if not key:
+        env_key = os.environ.get("HARPOCRATES_RELEASE_KEY", "").strip()
+        if env_key:
+            key = env_key.encode("utf-8")
+    if not key:
+        raise BuildError("signing key required: --key-file or HARPOCRATES_RELEASE_KEY")
+
+    lock = load_lock(lock_path)
+    manifest = _load_manifest(manifest_path)
+
+    toolchain = {
+        "nargo": lock.toolchain["nargo"]["version"],
+        "barretenberg": lock.toolchain["barretenberg"]["version"],
+        "proving_scheme": lock.toolchain["proving_scheme"],
+        "oracle_hash": lock.toolchain["oracle_hash"],
+    }
+    source_revision = sha256_hex(
+        json.dumps(manifest.get("provenance", {}), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    artifacts = {entry["path"]: entry["normalized_sha256"] for entry in manifest["artifacts"]}
+
+    signed = sign_manifest(
+        toolchain=toolchain,
+        source_revision=source_revision,
+        artifacts=artifacts,
+        signing_key=key,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(serialize_manifest(signed), encoding="utf-8")
+    print(json.dumps({"signed": str(output_path), "artifacts": len(artifacts)}))
+    return EXIT_OK
 
 
 def cmd_export(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> int:
@@ -1051,6 +1177,22 @@ def create_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--clean", action="store_true", default=True, help="Clean target before build")
     p_build.add_argument("--manifest", default=None, help="Path to manifest file")
     p_build.add_argument("--lock", default=None, help="Path to toolchain lock file")
+    p_build.add_argument(
+        "--report",
+        default=None,
+        help="Write two-build reproducibility comparison report to this path",
+    )
+    p_build.add_argument(
+        "--report-format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Format for --report output (default: json)",
+    )
+    p_build.add_argument(
+        "--allow-metadata-drift",
+        action="store_true",
+        help="Allow nondeterministic metadata-only drift when canonical digests match",
+    )
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate proof and public inputs for a circuit")
@@ -1063,6 +1205,20 @@ def create_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--output-dir", default=None, help="Output directory for generated artifacts")
     p_gen.add_argument("--verifier-scope", default="0", help="Verifier scope (optional)")
     p_gen.add_argument("--epoch", type=int, default=0, help="Epoch (optional)")
+
+    # --- sign-release ---
+    p_sign = subparsers.add_parser(
+        "sign-release",
+        help="Emit a signed release manifest binding toolchain, source revision, and artifact digests",
+    )
+    p_sign.add_argument("--lock", default=None)
+    p_sign.add_argument("--manifest", default=None, help="artifact manifest to sign")
+    p_sign.add_argument("--output", default=None, help="signed release manifest path")
+    p_sign.add_argument(
+        "--key-file",
+        default=None,
+        help="path to raw signing key bytes (or env HARPOCRATES_RELEASE_KEY)",
+    )
 
     # --- export ---
     p_exp = subparsers.add_parser("export", help="Export proof, public inputs, and VK as hex JSON")
@@ -1110,6 +1266,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_prepare_soroban(args)
         if args.subcommand == "generate":
             return cmd_generate(args)
+        if args.subcommand == "sign-release":
+            return cmd_sign_release(args)
 
         parser.print_help()
         return EXIT_USAGE

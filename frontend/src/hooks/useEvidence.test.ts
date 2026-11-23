@@ -2,9 +2,24 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useEvidence } from './useEvidence'
 
-const { hashFileInWorkerMock, embedVideoMock } = vi.hoisted(() => ({
-  hashFileInWorkerMock: vi.fn(),
-  embedVideoMock: vi.fn(),
+const { hashFileInWorkerMock, embedVideoMock, getWalletNetworkMock, registerProofOnStellarMock } =
+  vi.hoisted(() => ({
+    hashFileInWorkerMock: vi.fn(),
+    embedVideoMock: vi.fn(),
+    getWalletNetworkMock: vi.fn(),
+    registerProofOnStellarMock: vi.fn(),
+  }))
+
+vi.mock('../config', () => ({
+  appConfig: {
+    harpocratesRegistryId: 'CTEST_REGISTRY_ID',
+  },
+}))
+
+vi.mock('../stellar', () => ({
+  CONTRACT_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  getWalletNetwork: getWalletNetworkMock,
+  registerProofOnStellar: registerProofOnStellarMock,
 }))
 
 vi.mock('../workers/fileHashWorkerClient', () => ({
@@ -364,3 +379,158 @@ describe('useEvidence hashing progress', () => {
   })
 })
 
+describe('useEvidence proof preparation preview', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('previews canonical public inputs before proving and submits nothing', async () => {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    const { result } = renderHook(() => useEvidence())
+    expect(result.current.proofPreparation).toMatchObject({
+      ok: false,
+      code: 'MISSING_EVIDENCE',
+    })
+
+    await act(async () => {
+      await result.current.handleEvidence(new File(['x'], 'evidence.mp4'))
+    })
+
+    expect(result.current.stage).toBe('ready')
+    const preview = result.current.proofPreparation
+    expect(preview.ok).toBe(true)
+    if (!preview.ok) return
+
+    expect(preview.policyId).toBe('silent_witness/input-v1')
+    expect(preview.policyVersion).toBe(1)
+    expect(preview.publicInputs.map((field) => field.key)).toEqual([
+      'video_hash_hi',
+      'video_hash_lo',
+      'verifier_scope',
+      'epoch',
+    ])
+    expect(preview.publicInputs.find((field) => field.key === 'verifier_scope')?.value).toBe('0')
+    expect(preview.publicInputs.find((field) => field.key === 'video_hash_hi')?.value).toBe(
+      BigInt(`0x${'b'.repeat(32)}`).toString(10),
+    )
+    expect(preview.concealedInputs.every((field) => field.value === '[REDACTED]')).toBe(true)
+    expect(preview.readOnly).toBe(true)
+    expect(preview.transactionSubmission).toBe('none')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('useEvidence guided network mismatch recovery', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  async function prepareEvidence() {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    const hook = renderHook(() => useEvidence())
+    await act(async () => {
+      await hook.result.current.handleEvidence(new File(['x'], 'evidence.mp4'))
+    })
+    return hook
+  }
+
+  it('populates required and current wallet networks on mismatch and resumes only after fresh validation', async () => {
+    const { result } = await prepareEvidence()
+
+    getWalletNetworkMock.mockResolvedValueOnce('Public Global Stellar Network ; September 2015')
+    await act(async () => {
+      await result.current.registerProof('GSOURCEGAUTH')
+    })
+
+    expect(registerProofOnStellarMock).not.toHaveBeenCalled()
+    expect(result.current.networkMismatchRecovery).toMatchObject({
+      requiredNetwork: 'Testnet',
+      currentWalletNetwork: 'Mainnet',
+      isValidating: false,
+      validationError: null,
+      intent: {
+        tier: 'silent',
+        videoHash: 'b'.repeat(64),
+      },
+    })
+
+    // Still on wrong network — fresh validation must fail closed and keep recovery active.
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Future Network ; October 2022')
+    let resumed = true
+    await act(async () => {
+      resumed = await result.current.revalidateNetworkMismatch('GSOURCEGAUTH')
+    })
+    expect(resumed).toBe(false)
+    expect(result.current.networkMismatchRecovery?.currentWalletNetwork).toBe('Futurenet')
+    expect(result.current.networkMismatchRecovery?.validationError).toContain('Futurenet')
+
+    // Wallet switched to Testnet — fresh validation clears recovery so registration can resume.
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Network ; September 2015')
+    await act(async () => {
+      resumed = await result.current.revalidateNetworkMismatch('GSOURCEGAUTH')
+    })
+    expect(resumed).toBe(true)
+    expect(result.current.networkMismatch).toBeNull()
+    expect(result.current.networkMismatchRecovery).toBeNull()
+    expect(result.current.message).toContain('Network validated on Testnet')
+  })
+
+  it('refuses to resume when the selected identity tier changed since evidence preparation', async () => {
+    const { result } = await prepareEvidence()
+
+    getWalletNetworkMock.mockResolvedValueOnce('Public Global Stellar Network ; September 2015')
+    await act(async () => {
+      await result.current.registerProof('GSOURCEGAUTH')
+    })
+    expect(result.current.networkMismatchRecovery?.requiredNetwork).toBe('Testnet')
+
+    // Switch identity tier without re-preparing evidence.
+    act(() => {
+      result.current.setSelectedTier('source')
+    })
+
+    getWalletNetworkMock.mockResolvedValueOnce('Test SDF Network ; September 2015')
+    let resumed = true
+    await act(async () => {
+      resumed = await result.current.revalidateNetworkMismatch('GSOURCEGAUTH')
+    })
+
+    expect(resumed).toBe(false)
+    expect(result.current.networkMismatchRecovery).not.toBeNull()
+    expect(result.current.networkMismatchRecovery?.validationError).toContain(
+      'Selected identity tier changed',
+    )
+    expect(getWalletNetworkMock).toHaveBeenCalledTimes(1)
+  })
+})

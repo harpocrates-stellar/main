@@ -360,5 +360,10 @@
       "valid": false,
       "error": "InvalidInclusionProof"
     }
-  ]
+  ],
+  "provenance": {
+    "generator": "harpocrates-vectors",
+    "generator_version": 1,
+    "statement_schema": "silent_witness/v1"
+  }
 }

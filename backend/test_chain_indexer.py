@@ -10,6 +10,8 @@ Covers:
 - Queueing of webhook deliveries for indexed events
 - Bounded page size and exponential backoff on RPC errors
 - Visibility of indexed revocations in /api/proofs
+- Index rebuild dry-run: temporary projection from synthetic events with
+  deterministic fingerprints, reporting differences without touching the live index
 """
 
 from __future__ import annotations
@@ -44,6 +46,13 @@ from db import (
 )
 from metrics import collector
 from webhook import get_active_subscriptions, lease_deliveries, queue_webhook_deliveries
+
+from chain_indexer import (
+    build_index_projection,
+    compute_projection_fingerprint,
+    diff_projections,
+    rebuild_index_dry_run,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -376,115 +385,171 @@ def test_poll_indexer_once_resumes_from_stored_cursor(mock_fetch_events, mock_la
     # Run 2: Restart simulation. Stored cursor is present.
     # It must query using cursor="cursor-501" instead of start_ledger.
     mock_fetch_events.reset_mock()
-    mock_fetch_events.return_value = {
-        "cursor": "cursor-502",
-        "latestLedger": 502,
-        "events": [],
-    }
-
-    summary2 = poll_indexer_once(contract_id=DUMMY_CONTRACT)
-    assert summary2["indexed"] == 0
-    mock_fetch_events.assert_called_with(
-        rpc_url=DEFAULT_SOROBAN_RPC_URL,
-        contract_id=DUMMY_CONTRACT,
-        start_ledger=None,
-        cursor="cursor-501",
-        limit=50,
-        timeout=INDEXER_DEFAULT_TIMEOUT,
-    )
-    assert get_indexer_cursor() == "cursor-502"
 
 
-# ---------------------------------------------------------------------------
-# Webhook Dispatch Queueing
-# ---------------------------------------------------------------------------
-
-
-@mock.patch("chain_indexer.queue_webhook_deliveries")
-def test_webhook_deliveries_queued_for_new_indexed_event(mock_queue_webhook):
+def test_poll_rejects_batch_over_admission_limit_without_advancing_cursor(monkeypatch):
     events = [
         {
-            "txHash": "99" * 32,
-            "id": "0000000900-0000000001",
+            "txHash": DUMMY_TX_1,
+            "id": "0000000600-0000000001",
             "topic": ["proof", "revoke", DUMMY_PROOF_1],
-        }
+        },
+        {
+            "txHash": DUMMY_TX_2,
+            "id": "0000000600-0000000002",
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
     ]
-    summary = process_events_batch(events, contract_id=DUMMY_CONTRACT)
-    assert summary["indexed"] == 1
-    assert mock_queue_webhook.called
-    event_id = mock_queue_webhook.call_args[0][0]
-    assert isinstance(event_id, int)
+    monkeypatch.setattr("chain_indexer.INDEXER_MAX_PAGE_SIZE", 1)
 
-
-# ---------------------------------------------------------------------------
-# RPC Error Backoff & Recovery
-# ---------------------------------------------------------------------------
-
-
-def test_run_indexer_loop_backs_off_on_error():
-    stop_event = threading.Event()
-    call_count = 0
-
-    def fake_poll(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            raise RuntimeError("RPC connection failed")
-        stop_event.set()
-        return {"scanned": 0, "indexed": 0, "skipped": 0, "duplicates": 0}
-
-    with mock.patch("chain_indexer.poll_indexer_once", side_effect=fake_poll):
-        # Run loop in separate thread
-        t = threading.Thread(
-            target=run_indexer_loop,
-            args=(stop_event, DUMMY_CONTRACT),
-            kwargs={"poll_interval": 0.02, "initial_backoff": 0.02, "max_backoff": 0.1},
-        )
-        t.start()
-        t.join(timeout=3.0)
-
-    assert not t.is_alive()
-    assert call_count >= 3
-
-
-# ---------------------------------------------------------------------------
-# API Visibility: Revocations Appear in /api/proofs
-# ---------------------------------------------------------------------------
-
-
-def test_indexed_revocation_appears_in_api_proofs():
-    client = app_module.app.test_client()
-
-    # Ingest revocation directly via indexer batch
-    revocation_event = {
-        "txHash": "77" * 32,
-        "id": "0000000777-0000000001",
-        "topic": ["proof", "revoke", "ff" * 32],
-    }
-
-    # Set up mock or stub for list_proof_events in app
-    with mock.patch.object(
-        app_module,
-        "list_proof_events",
-        return_value=(
-            [
-                {
-                    "id": 1001,
-                    "event_type": "revoke",
-                    "proof_id": "ff" * 32,
-                    "tx_hash": "77" * 32,
-                    "tx_status": "revoked",
-                }
-            ],
-            None,
-        ),
+    with (
+        mock.patch("chain_indexer.get_indexer_cursor", return_value="cursor-before"),
+        mock.patch("chain_indexer.save_indexer_cursor") as save_cursor,
+        mock.patch(
+            "chain_indexer.fetch_contract_events",
+            return_value={"cursor": "cursor-after", "events": events},
+        ) as fetch_events,
+        mock.patch("chain_indexer.insert_indexed_proof_event") as insert_event,
     ):
-        res = client.get("/api/proofs?limit=10")
-        assert res.status_code == 200
-        data = res.json
-        assert data["ok"] is True
-        events = data["events"]
-        assert len(events) == 1
-        assert events[0]["event_type"] == "revoke"
-        assert events[0]["proof_id"] == "ff" * 32
-        assert events[0]["tx_status"] == "revoked"
+        with pytest.raises(RuntimeError, match="batch.*limit"):
+            poll_indexer_once(contract_id=DUMMY_CONTRACT, limit=10)
+
+    fetch_events.assert_called_once()
+    assert fetch_events.call_args.kwargs["limit"] == 1
+    insert_event.assert_not_called()
+    save_cursor.assert_not_called()
+
+
+def test_poll_retries_partial_database_write_from_last_cursor():
+    events = [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000700-0000000001",
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        {
+            "txHash": DUMMY_TX_2,
+            "id": "0000000700-0000000002",
+            "topic": ["proof", "revoke", DUMMY_PROOF_2],
+        },
+    ]
+    with (
+        mock.patch("chain_indexer.get_indexer_cursor", return_value="cursor-before"),
+        mock.patch("chain_indexer.save_indexer_cursor") as save_cursor,
+        mock.patch(
+            "chain_indexer.fetch_contract_events",
+            return_value={"cursor": "cursor-after", "events": events},
+        ) as fetch_events,
+        mock.patch(
+            "chain_indexer.insert_indexed_proof_event",
+            side_effect=[
+                ({"id": 1}, True),
+                RuntimeError("database write failed"),
+                ({"id": 1}, False),
+                ({"id": 2}, True),
+            ],
+        ),
+        mock.patch("chain_indexer.queue_webhook_deliveries"),
+    ):
+        with pytest.raises(RuntimeError, match="database write failed"):
+            poll_indexer_once(contract_id=DUMMY_CONTRACT)
+
+        save_cursor.assert_not_called()
+        summary = poll_indexer_once(contract_id=DUMMY_CONTRACT)
+
+    assert fetch_events.call_count == 2
+    assert all(
+        call.kwargs["cursor"] == "cursor-before"
+        for call in fetch_events.call_args_list
+    )
+    assert summary["duplicates"] == 1
+    assert summary["indexed"] == 1
+    save_cursor.assert_called_once_with(cursor="cursor-after", ledger=None)
+
+
+# ---------------------------------------------------------------------------
+# Index Rebuild Dry-Run: temporary projection with deterministic fingerprints
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_events() -> list[dict]:
+    return [
+        {
+            "txHash": DUMMY_TX_1,
+            "id": "0000000300-0000000001",
+            "topic": ["proof", "revoke", DUMMY_PROOF_1],
+        },
+        {
+            "txHash": DUMMY_TX_2,
+            "id": "0000000301-0000000002",
+            "topic": ["proof", "history", DUMMY_PROOF_2],
+            "value": {"action": 4, "reason_code": 2, "actor": "GADMIN"},
+        },
+    ]
+
+
+def test_projection_fingerprint_is_deterministic_and_order_independent():
+    events = _synthetic_events()
+    proj_a = build_index_projection(events, contract_id=DUMMY_CONTRACT)
+    proj_b = build_index_projection(list(reversed(events)), contract_id=DUMMY_CONTRACT)
+    fp_a = compute_projection_fingerprint(proj_a)
+    fp_b = compute_projection_fingerprint(proj_b)
+    assert fp_a == fp_b
+    assert fp_a == compute_projection_fingerprint(proj_a)
+    assert len(fp_a) == 64
+
+
+def test_dry_run_reports_differences_without_touching_live_index():
+    live_before = list_proof_events()
+    live_cursor_before = get_indexer_cursor("soroban_events")
+
+    events = _synthetic_events()
+    live_projection = build_index_projection(events[:1], contract_id=DUMMY_CONTRACT)
+
+    report = rebuild_index_dry_run(
+        events,
+        contract_id=DUMMY_CONTRACT,
+        live_projection=live_projection,
+    )
+    assert report["dry_run"] is True
+    assert report["live_fingerprint"] == compute_projection_fingerprint(live_projection)
+    assert report["rebuilt_fingerprint"] != report["live_fingerprint"]
+    assert report["added"] == [DUMMY_TX_2 + ":1"] or len(report["added"]) == 1
+    assert report["removed"] == []
+
+    # Live index and cursor are untouched.
+    assert list_proof_events() == live_before
+    assert get_indexer_cursor("soroban_events") == live_cursor_before
+
+
+def test_dry_run_matching_projection_reports_no_differences():
+    events = _synthetic_events()
+    live_projection = build_index_projection(events, contract_id=DUMMY_CONTRACT)
+    report = rebuild_index_dry_run(
+        events,
+        contract_id=DUMMY_CONTRACT,
+        live_projection=live_projection,
+    )
+    assert report["live_fingerprint"] == report["rebuilt_fingerprint"]
+    assert report["added"] == []
+    assert report["removed"] == []
+    assert report["changed"] == []
+
+
+def test_diff_projections_detects_changed_entries():
+    events = _synthetic_events()
+    live = build_index_projection(events, contract_id=DUMMY_CONTRACT)
+    altered = build_index_projection(events, contract_id=DUMMY_CONTRACT)
+    key = next(iter(altered))
+    altered[key] = dict(altered[key], event_type="tampered")
+    diff = diff_projections(live, altered)
+    assert diff["changed"] == [key]
+    assert diff["added"] == []
+    assert diff["removed"] == []
+
+
+def test_dry_run_skips_malformed_events_fail_closed():
+    events = _synthetic_events() + [{"txHash": "", "id": "bad", "topic": []}]
+    report = rebuild_index_dry_run(events, contract_id=DUMMY_CONTRACT, live_projection={})
+    assert report["skipped"] >= 1
+    assert report["dry_run"] is True

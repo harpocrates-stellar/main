@@ -35,6 +35,11 @@ except ImportError:  # pragma: no cover - package layout / optional path
 PROFILE_ID = "harpocrates-time-attestation/v1"
 SUPPORTED_VERSIONS = {1}
 
+# Extension keys understood by this implementation. Any extension key that is
+# marked critical (prefixed with "!") but not listed here MUST cause rejection.
+SUPPORTED_CRITICAL_EXTENSIONS: frozenset[str] = frozenset()
+CRITICAL_EXTENSION_PREFIX = "!"
+
 # Maximum allowed future drift: 5 minutes (accounts for clock skew)
 MAX_FUTURE_DRIFT_SECONDS = 300
 
@@ -47,6 +52,9 @@ TimeSourceType = Literal["claimed", "observed", "stellar_ledger", "rfc3161_tsa"]
 
 # Verification status
 VerificationStatus = Literal["valid", "invalid", "unverified", "expired", "untrusted"]
+
+# Time bound semantics for explicit boundary interpretation
+TimeBoundType = Literal["inclusive", "exclusive"]
 
 
 # ── Data model ─────────────────────────────────────────────────────────────
@@ -106,6 +114,8 @@ class TimeAttestation:
     observed_time: ObservedTime | None = None
     stellar_anchors: list[StellarAnchor] = field(default_factory=list)
     rfc3161_anchors: list[RFC3161Anchor] = field(default_factory=list)
+    # Optional extension fields preserved verbatim across round trips.
+    extensions: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Encoding ───────────────────────────────────────────────────────────────
@@ -131,18 +141,24 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
         "evidenceDigest": attestation.evidence_digest,
     }
     
+    time_bounds: dict[str, TimeBoundType] = {}
+    
     if attestation.claimed_time:
         obj["claimedTime"] = {
             "unixMs": attestation.claimed_time.unix_ms,
             "sourceLabel": attestation.claimed_time.source_label,
             "uncertaintyMs": attestation.claimed_time.uncertainty_ms,
         }
+        # Claimed time represents a point estimate with uncertainty - bounds are inclusive
+        time_bounds["claimedTime"] = "inclusive"
     
     if attestation.observed_time:
         obj["observedTime"] = {
             "unixMs": attestation.observed_time.unix_ms,
             "sourceLabel": attestation.observed_time.source_label,
         }
+        # Observed time is a concrete registration timestamp - bounds are inclusive
+        time_bounds["observedTime"] = "inclusive"
     
     if attestation.stellar_anchors:
         obj["stellarAnchors"] = [
@@ -154,6 +170,8 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
             }
             for anchor in attestation.stellar_anchors
         ]
+        # Stellar ledger timestamps are inclusive bounds (ledger closed at this time)
+        time_bounds["stellarAnchors"] = "inclusive"
     
     if attestation.rfc3161_anchors:
         obj["rfc3161Anchors"] = []
@@ -170,6 +188,12 @@ def encode_time_attestation(attestation: TimeAttestation) -> dict[str, Any]:
             if anchor.certificate_chain is not None:
                 entry["certificateChain"] = list(anchor.certificate_chain)
             obj["rfc3161Anchors"].append(entry)
+        # RFC 3161 generation times are inclusive bounds (token generated at this time)
+        time_bounds["rfc3161Anchors"] = "inclusive"
+    
+    # Add explicit time bounds for cross-API/offline tool normalization
+    if time_bounds:
+        obj["timeBounds"] = time_bounds
     
     return obj
 
@@ -178,6 +202,8 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
     """Decode and validate a time attestation dictionary."""
     
     _validate_time_attestation_obj(obj)
+    
+    extensions = _extract_extensions(obj)
     
     claimed_time = None
     if "claimedTime" in obj:
@@ -230,6 +256,7 @@ def decode_time_attestation(obj: dict[str, Any]) -> TimeAttestation:
         observed_time=observed_time,
         stellar_anchors=stellar_anchors,
         rfc3161_anchors=rfc3161_anchors,
+        extensions=extensions,
     )
 
 
@@ -639,3 +666,21 @@ def _validate_time_attestation_obj(obj: dict[str, Any]) -> None:
     
     if not _is_valid_hex(obj["evidenceDigest"], 64):
         raise ValueError("evidenceDigest must be 64-character hex string")
+
+
+def _extract_extensions(obj: dict[str, Any]) -> dict[str, Any]:
+    """Collect unknown top-level extension keys, failing closed on unknown critical ones."""
+    known = {
+        "version", "protocol", "evidenceDigest", "claimedTime", "observedTime",
+        "stellarAnchors", "rfc3161Anchors",
+    }
+    extensions: dict[str, Any] = {}
+    for key, value in obj.items():
+        if key in known:
+            continue
+        if key.startswith(CRITICAL_EXTENSION_PREFIX):
+            if key not in SUPPORTED_CRITICAL_EXTENSIONS:
+                raise ValueError(f"Unsupported critical extension: {key}")
+            continue
+        extensions[key] = value
+    return extensions

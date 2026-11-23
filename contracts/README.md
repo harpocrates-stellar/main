@@ -265,10 +265,12 @@ init
 get_storage_schema_version
 upgrade_storage
 propose_admin
+propose_admin_with_expiry
 cancel_admin_transfer
 accept_admin
 get_admin
 get_pending_admin
+get_role_invitation
 get_schema_version
 is_admin
 is_issuer
@@ -355,21 +357,28 @@ The rotation state is persisted and can be inspected via `get_verifier_state`.
 
 Admin control uses a two-step transfer:
 
-1. The current admin calls `propose_admin`, which creates or replaces the pending
-   admin proposal.
-2. The pending admin calls `accept_admin` to complete the transfer.
+1. The current admin calls `propose_admin` (no expiry) or
+   `propose_admin_with_expiry` (bounded by `MAX_ROLE_INVITATION_TTL_SECS`),
+   which creates or replaces the pending admin proposal.
+2. The pending admin calls `accept_admin` before expiry to complete the transfer.
 
-The current admin may call `cancel_admin_transfer` before acceptance. Proposals,
-cancellations, and acceptances emit `["admin", "propose"]`,
-`["admin", "cancel"]`, and `["admin", "accept"]` lifecycle events.
+Callers can inspect the invitation's lifecycle state (`Nonexistent`, `Active`,
+or `Expired`) and `expires_at` timestamp via `get_role_invitation` without
+mutating contract state or performing hidden cleanup. `get_pending_admin`
+remains read-only and returns `None` once an expiring invitation has lapsed.
+
+The current admin may call `cancel_admin_transfer` before acceptance (including
+to clear an expired invitation). Proposals, cancellations, and acceptances emit
+`["admin", "propose"]`, `["admin", "cancel"]`, and `["admin", "accept"]`
+lifecycle events.
 
 ### Storage compatibility
 
 The existing `DataKey::Admin` value and all existing record layouts are
-unchanged. `DataKey::PendingAdmin` is appended as a new, independent persistent
-storage key, so upgrading an initialized contract preserves its current admin
-and all existing registry data. An upgraded contract starts with no pending
-admin proposal.
+unchanged. `DataKey::PendingAdmin` and `DataKey::PendingAdminExpiry` are
+independent persistent storage keys, so upgrading an initialized contract
+preserves its current admin and all existing registry data. An upgraded
+contract starts with no pending admin proposal.
 
 ## Admin and issuer role separation (storage V2)
 

@@ -1,6 +1,6 @@
 import json
 import os
-from pathlib simport Path
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +15,7 @@ class FakeStorage:
         self.jobs.mkdir(parents=True, exist_ok=True)
 
     def job_dir(self, job_id):
-        d) = self.jobs / job_id
+        d = self.jobs / job_id
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -26,39 +26,32 @@ class FakeStorage:
 
     def get_job_output_path(self, job_id, name):
         path = self.job_dir(job_id) / name
-        path.parent.mkdir(
-            parents=True, exist_ok=True
-        )
+        path.parent.mkdir(parents=True, exist_ok=True)
         return str(path)
 
 
-@fixture
+@pytest.fixture
 def storage(tmp_path):
     return FakeStorage(tmp_path)
 
 
-def _write_input(storage, job_id, name, content):
-    path = storage.get_job_input_path(job_id, name)
-    path = Path(path)
-    path.parent.mkdir(
-        parents=True, exist_ok=True
-    )
+def _write_text(storage, job_id, name, content):
+    path = Path(storage.get_job_input_path(job_id, name))
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return str(path)
 
 
 def _write_bytes(storage, job_id, name, content):
     path = Path(storage.get_job_input_path(job_id, name))
-    path.parent.mkdir(
-        parents=True, exist_ok=True
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return str(path)
 
 
 def test_process_embed_success(storage, monkeypatch):
     job_id = "embed-1"
-    _write_bytes(storage, job_id, "input.wav", bivwave")
+    _write_bytes(storage, job_id, "input.wav", b"wave")
     _write_text(storage, job_id, "message.txt", "secret")
 
     output_path = storage.get_job_output_path(job_id, "output.wav")
@@ -86,7 +79,7 @@ def test_process_embed_success(storage, monkeypatch):
 
 def test_process_embed_failure(storage, monkeypatch):
     job_id = "embed-2"
-    _write_bytes(storage, job_id, "input.wav", bivwave")
+    _write_bytes(storage, job_id, "input.wav", b"wave")
     _write_text(storage, job_id, "message.txt", "secret")
 
     def fail_embed(input_path, message, output_path):
@@ -108,7 +101,7 @@ def test_process_embed_failure(storage, monkeypatch):
 
 def test_process_extract_success(storage, monkeypatch):
     job_id = "extract-1"
-    _write_bytes(storage, job_id, "input.wav", bivwave)
+    _write_bytes(storage, job_id, "input.wav", b"wave")
 
     output_path = storage.get_job_output_path(job_id, "message.txt")
 
@@ -133,7 +126,7 @@ def test_process_extract_success(storage, monkeypatch):
 
 def test_process_extract_failure(storage, monkeypatch):
     job_id = "extract-2"
-    _write_bytes(storage, job_id, "input.wav", bivwave)
+    _write_bytes(storage, job_id, "input.wav", b"wave")
 
     def fail_extract(input_path, output_path):
         raise RuntimeError("extract failed")
@@ -243,7 +236,7 @@ def test_process_verify_tx_failure(storage, monkeypatch):
         )
 
 
-def test_is_fatal_value_error_non/verify():
+def test_is_fatal_value_error_non_verify():
     assert worker.is_fatal("embed", ValueError("bad input")) is True
     assert worker.is_fatal("extract", ValueError("bad input")) is True
     assert worker.is_fatal("silent_witness", ValueError("bad input")) is True

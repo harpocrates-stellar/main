@@ -5,9 +5,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StudioView } from './StudioView'
+import { buildProofPreparationPreview } from '../proofPreparationPreview'
 import type { UseEvidenceReturn } from '../hooks/useEvidence'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import type { ProofPackage } from '../types'
@@ -51,14 +52,20 @@ function makeEvidence(overrides: Partial<UseEvidenceReturn>): UseEvidenceReturn 
     evidenceNotes: '',
     setEvidenceNotes: vi.fn(),
     message: 'Upload evidence to begin.',
+    proofPreparation: buildProofPreparationPreview({ proof: null, tier: 'silent' }),
+    acknowledgedSensitiveFields: [],
+    acknowledgeSensitiveFields: vi.fn(),
     registration: null,
     networkMismatch: null,
+    networkMismatchRecovery: null,
     isCancellable: false,
     handleEvidence: vi.fn(),
     retryEvidence: vi.fn(),
     registerProof: vi.fn(),
+    revalidateNetworkMismatch: vi.fn(),
     cancelEvidence: vi.fn(),
     cancelProving: vi.fn(),
+    hashProgress: null,
     ...overrides,
   }
 }
@@ -80,6 +87,55 @@ beforeEach(() => {
     timestamp: '2026-01-01T00:00:00.000Z',
     tier: 'silent',
   }
+})
+
+describe('StudioView – proof preparation preview', () => {
+  it('shows canonical public inputs and the policy version before proving', () => {
+    const preparation = buildProofPreparationPreview({
+      proof,
+      tier: 'silent',
+      verifierScope: '0',
+      epoch: 20_000,
+    })
+
+    renderStudio(makeEvidence({ stage: 'ready', proof, proofPreparation: preparation }))
+
+    const region = screen.getByRole('region', {
+      name: 'Read-only proof preparation preview',
+    })
+    expect(region).toHaveTextContent('silent_witness/input-v1')
+    expect(region).toHaveTextContent(BigInt(`0x${'b'.repeat(32)}`).toString(10))
+    expect(region).toHaveTextContent('20000')
+    expect(region).toHaveTextContent('[REDACTED]')
+    expect(within(region).queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('is hidden for identity tiers that do not generate a zero-knowledge proof', () => {
+    const sourceMeta = {
+      id: 'source' as const,
+      title: 'Consistent Source',
+      label: 'Pseudonymous Wallet',
+      icon: vi.fn(),
+      description: 'Freighter signature links evidence to a recurring Stellar source.',
+    }
+
+    renderStudio(
+      makeEvidence({
+        selectedTier: 'source',
+        selectedTierMeta: sourceMeta,
+        stage: 'ready',
+        proof: { ...proof, tier: 'source' },
+        proofPreparation: buildProofPreparationPreview({
+          proof: { ...proof, tier: 'source' },
+          tier: 'source',
+        }),
+      }),
+    )
+
+    expect(
+      screen.queryByRole('region', { name: 'Read-only proof preparation preview' }),
+    ).not.toBeInTheDocument()
+  })
 })
 
 describe('StudioView – cancel button', () => {
@@ -128,64 +184,160 @@ describe('StudioView – cancel button', () => {
   })
 })
 
-describe('StudioView – evidence notes and recoverable failure retry', () => {
-  it('renders the evidence notes textarea with current value and invokes setEvidenceNotes on edit', async () => {
-    const user = userEvent.setup()
-    const setEvidenceNotes = vi.fn()
+describe('StudioView – export privacy summary', () => {
+  it('shows metadata classes and public identifiers and allows immediate export for baseline silent tier', () => {
     renderStudio(
       makeEvidence({
-        evidenceNotes: 'Initial witness note',
-        setEvidenceNotes,
+        stage: 'ready',
+        proof,
+        processedVideoUrl: 'blob:synthetic-evidence',
       }),
     )
 
-    const textarea = screen.getByRole('textbox', { name: 'Evidence notes' })
-    expect(textarea).toBeInTheDocument()
-    expect(textarea).toHaveValue('Initial witness note')
+    const summaryRegion = screen.getByRole('region', { name: 'Export privacy summary' })
+    expect(summaryRegion).toHaveTextContent('Container & file metadata')
+    expect(summaryRegion).toHaveTextContent('Cryptographic digests')
+    expect(summaryRegion).toHaveTextContent('Ready to export')
+    expect(within(summaryRegion).queryByRole('checkbox')).not.toBeInTheDocument()
 
-    await user.type(textarea, ' - additional detail')
-    expect(setEvidenceNotes).toHaveBeenCalled()
+    const downloadLink = screen.getByRole('link', { name: /Download harpocrates-clip\.mp4/i })
+    expect(downloadLink).toHaveAttribute('href', 'blob:synthetic-evidence')
   })
 
-  it('renders a retry button when in error stage and invokes retryEvidence on click', async () => {
+  it('blocks export until newly exposed sensitive fields are explicitly acknowledged on source tier', async () => {
     const user = userEvent.setup()
-    const retryEvidence = vi.fn()
-    renderStudio(
+    const acknowledgeSensitiveFields = vi.fn()
+    const sourceProof: ProofPackage = { ...proof, tier: 'source' }
+
+    const { rerender } = renderStudio(
       makeEvidence({
-        stage: 'error',
-        message: 'Steganography service did not accept the video.',
-        retryEvidence,
+        selectedTier: 'source',
+        stage: 'ready',
+        proof: sourceProof,
+        processedVideoUrl: 'blob:synthetic-source-evidence',
+        acknowledgedSensitiveFields: [],
+        acknowledgeSensitiveFields,
       }),
     )
 
-    const retryBtn = screen.getByRole('button', { name: 'Retry evidence processing' })
-    expect(retryBtn).toBeInTheDocument()
-    expect(retryBtn).toHaveTextContent('Retry evidence processing')
+    expect(
+      screen.queryByRole('link', { name: /Download harpocrates-clip\.mp4/i }),
+    ).not.toBeInTheDocument()
+    const blockedButton = screen.getByRole('button', {
+      name: /Download harpocrates-clip\.mp4 \(acknowledge newly exposed sensitive fields first\)/i,
+    })
+    expect(blockedButton).toBeDisabled()
 
-    await user.click(retryBtn)
-    expect(retryEvidence).toHaveBeenCalledTimes(1)
+    const checkbox = screen.getByRole('checkbox')
+    await user.click(checkbox)
+    expect(acknowledgeSensitiveFields).toHaveBeenCalledWith(['publicIdentity'])
+
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          selectedTier: 'source',
+          stage: 'ready',
+          proof: sourceProof,
+          processedVideoUrl: 'blob:synthetic-source-evidence',
+          acknowledgedSensitiveFields: ['publicIdentity'],
+          acknowledgeSensitiveFields,
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    const downloadLink = screen.getByRole('link', { name: /Download harpocrates-clip\.mp4/i })
+    expect(downloadLink).toHaveAttribute('href', 'blob:synthetic-source-evidence')
+  })
+})
+
+describe('StudioView – guided network mismatch recovery', () => {
+  it('shows required and current wallet networks, blocks registration, and triggers fresh re-validation', async () => {
+    const user = userEvent.setup()
+    const revalidateNetworkMismatch = vi.fn().mockResolvedValue(true)
+
+    renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        networkMismatch:
+          'Wallet is on Mainnet but the contract is deployed on Testnet. Open Freighter, switch to Testnet, then reconnect your wallet.',
+        networkMismatchRecovery: {
+          requiredNetwork: 'Testnet',
+          currentWalletNetwork: 'Mainnet',
+          reason: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+          remediation: 'Open Freighter, switch to Testnet, then reconnect your wallet.',
+          isValidating: false,
+          intent: {
+            proofId: proof.proofId,
+            tier: 'silent',
+            videoHash: proof.videoHash,
+          },
+          validationError: null,
+        },
+        revalidateNetworkMismatch,
+      }),
+    )
+
+    const alert = screen.getByRole('alert', { name: 'Guided network mismatch recovery' })
+    expect(alert).toHaveTextContent('Required network')
+    expect(alert).toHaveTextContent('Testnet')
+    expect(alert).toHaveTextContent('Current wallet network')
+    expect(alert).toHaveTextContent('Mainnet')
+    expect(alert).not.toHaveTextContent('GSOURCEGAUTH')
+
+    expect(screen.getByRole('button', { name: /register proof/i })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: /re-validate & resume/i }))
+    expect(revalidateNetworkMismatch).toHaveBeenCalledWith('GSOURCEGAUTH')
   })
 
-  it('does not render a retry button during non-error stages', () => {
-    renderStudio(makeEvidence({ stage: 'ready' }))
-    expect(screen.queryByRole('button', { name: 'Retry evidence processing' })).not.toBeInTheDocument()
+  it('displays validation errors and keeps registration blocked until fresh validation clears the mismatch', () => {
+    const { rerender } = renderStudio(
+      makeEvidence({
+        stage: 'ready',
+        proof,
+        networkMismatch: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+        networkMismatchRecovery: {
+          requiredNetwork: 'Testnet',
+          currentWalletNetwork: 'Mainnet',
+          reason: 'Wallet is on Mainnet but the contract is deployed on Testnet.',
+          remediation: 'Open Freighter, switch to Testnet, then reconnect your wallet.',
+          isValidating: false,
+          intent: {
+            proofId: proof.proofId,
+            tier: 'silent',
+            videoHash: proof.videoHash,
+          },
+          validationError:
+            'Selected identity tier changed since evidence preparation. Re-upload or switch back to the prepared tier before resuming.',
+        },
+      }),
+    )
 
-    renderStudio(makeEvidence({ stage: 'idle' }))
-    expect(screen.queryByRole('button', { name: 'Retry evidence processing' })).not.toBeInTheDocument()
-  })
+    const alert = screen.getByRole('alert', { name: 'Guided network mismatch recovery' })
+    expect(alert).toHaveTextContent(/Selected identity tier changed since evidence preparation/i)
+    expect(screen.getByRole('button', { name: /register proof/i })).toBeDisabled()
 
-  it('renders evidence notes in the data list when proof includes notes', () => {
-    const proofWithNotes: ProofPackage = {
-      fileName: 'evidence.mp4',
-      sourceHash: 'a'.repeat(64),
-      videoHash: 'b'.repeat(64),
-      metadataHash: 'c'.repeat(64),
-      proofId: 'd'.repeat(64),
-      timestamp: '2026-01-01T00:00:00.000Z',
-      tier: 'silent',
-      evidenceNotes: 'Observed at 14:00 UTC',
-    }
-    renderStudio(makeEvidence({ stage: 'ready', proof: proofWithNotes }))
-    expect(screen.getByText('Observed at 14:00 UTC')).toBeInTheDocument()
+    rerender(
+      <StudioView
+        wallet="GSOURCEGAUTH"
+        evidence={makeEvidence({
+          stage: 'ready',
+          proof,
+          networkMismatch: null,
+          networkMismatchRecovery: null,
+        })}
+        verification={makeVerification()}
+        provenanceRecord={null}
+      />,
+    )
+
+    expect(
+      screen.queryByRole('alert', { name: 'Guided network mismatch recovery' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /register proof/i })).not.toBeDisabled()
   })
 })

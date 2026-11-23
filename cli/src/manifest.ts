@@ -28,9 +28,29 @@ export type ProofManifest = {
     predicateCommitment: string
     circuitVersion: number
   }
+  /**
+   * Unknown optional extension members, preserved verbatim through parse and
+   * serialise so later tooling can round-trip them. They never influence
+   * identity fields (proofId, hashes, tier, etc.).
+   */
+  extensions?: Record<string, unknown>
 }
 
 const MANIFEST_VERSION = 2
+
+/** Known top-level manifest fields (anything else is an extension candidate). */
+const KNOWN_FIELDS = new Set([
+  'contractId', 'metadataHash', 'network', 'proofId', 'protocol', 'sourceHash',
+  'tier', 'timestamp', 'transactionRef', 'version', 'videoHash',
+  'verifierScope', 'epoch', 'scopeName', 'selectiveDisclosure', 'extensions',
+])
+
+/**
+ * Extension keys must be namespaced and optional: `x-<name>` (lowercase).
+ * Unknown keys that do not match are rejected, which keeps required-semantic
+ * extensions (which would need a different prefix) fail-closed.
+ */
+const EXTENSION_KEY = /^x-[a-z0-9][a-z0-9._-]{0,63}$/
 
 export type ManifestInput = {
   proofId: string
@@ -46,6 +66,7 @@ export type ManifestInput = {
   epoch?: number
   scopeName?: string
   selectiveDisclosure?: ProofManifest['selectiveDisclosure']
+  extensions?: Record<string, unknown>
 }
 
 /**
@@ -74,7 +95,23 @@ export function createProofManifest(input: ManifestInput): ProofManifest {
   }
   if (input.scopeName) manifest.scopeName = input.scopeName
   if (input.selectiveDisclosure) manifest.selectiveDisclosure = input.selectiveDisclosure
+  if (input.extensions && Object.keys(input.extensions).length > 0) {
+    manifest.extensions = sortKeys(input.extensions)
+  }
   return manifest
+}
+
+/** Recursively sort object keys so extension payloads serialise deterministically. */
+function sortKeys(value: unknown): any {
+  if (Array.isArray(value)) return value.map(sortKeys)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const k of Object.keys(value as Record<string, unknown>).sort()) {
+      out[k] = sortKeys((value as Record<string, unknown>)[k])
+    }
+    return out
+  }
+  return value
 }
 
 /**
@@ -106,13 +143,35 @@ export function parseManifest(json: string): ProofManifest {
 
   const m = parsed as Record<string, unknown>
 
-  const fields = new Set([
-    'contractId', 'metadataHash', 'network', 'proofId', 'protocol', 'sourceHash',
-    'tier', 'timestamp', 'transactionRef', 'version', 'videoHash',
-    'verifierScope', 'epoch', 'scopeName', 'selectiveDisclosure',
-  ])
-  if (Object.keys(m).some((key) => !fields.has(key))) {
+  // Unknown top-level keys are only tolerated when they are namespaced
+  // optional extensions (`x-...`). Anything else is rejected fail-closed.
+  for (const key of Object.keys(m)) {
+    if (KNOWN_FIELDS.has(key)) continue
+    if (EXTENSION_KEY.test(key)) continue
     throw new Error('manifest contains unsupported fields')
+  }
+
+  // Extensions may be supplied as a nested object of namespaced members
+  // (`extensions: { "x-foo": ... }`) or as top-level `x-` members. Both are
+  // accepted and preserved; neither may shadow a known field.
+  let extensions: Record<string, unknown> | undefined
+  if (m.extensions !== undefined) {
+    const ext = m.extensions
+    if (!ext || typeof ext !== 'object' || Array.isArray(ext)) {
+      throw new Error('manifest extensions must be an object')
+    }
+    for (const key of Object.keys(ext as Record<string, unknown>)) {
+      if (!EXTENSION_KEY.test(key)) {
+        throw new Error('manifest contains unsupported extension')
+      }
+    }
+    extensions = { ...(ext as Record<string, unknown>) }
+  }
+  for (const key of Object.keys(m)) {
+    if (!EXTENSION_KEY.test(key)) continue
+    extensions = extensions ?? {}
+    if (key in extensions) throw new Error('manifest contains duplicate extension')
+    extensions[key] = m[key]
   }
 
   if (m.protocol !== 'harpocrates') {
@@ -165,5 +224,14 @@ export function parseManifest(json: string): ProofManifest {
     }
   }
 
-  return m as ProofManifest
+  const result = { ...m } as Record<string, unknown>
+  for (const key of Object.keys(result)) {
+    if (EXTENSION_KEY.test(key)) delete result[key]
+  }
+  if (extensions && Object.keys(extensions).length > 0) {
+    result.extensions = sortKeys(extensions)
+  } else {
+    delete result.extensions
+  }
+  return result as ProofManifest
 }
