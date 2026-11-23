@@ -364,8 +364,18 @@ def register_analytics_routes(
             body["artifact_id"] = None
             body["entry_count"] = 0
             body["count"] = 0
-            body["error"] = "export_failed_or_token_required"
-        status_code = 200 if artifact is not None else 401 if (not token_verified and require_token and not allow_shadow) else 200
+            if serialized == "analytics_store_unavailable":
+                body["error"] = "analytics_store_unavailable"
+            else:
+                body["error"] = "export_failed_or_token_required"
+        if artifact is not None:
+            status_code = 200
+        elif not token_verified and require_token and not allow_shadow:
+            status_code = 401
+        elif serialized == "analytics_store_unavailable":
+            status_code = 503
+        else:
+            status_code = 200
         return make_response(body, status_code)
 
     def _export_artifact_view(artifact_id: str) -> Any:

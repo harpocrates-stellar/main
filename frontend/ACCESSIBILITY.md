@@ -20,7 +20,7 @@ This document records the accessibility implementation for the Harpocrates front
 | Criterion | Implementation |
 |-----------|----------------|
 | 1.1.1 Non-text Content | SVG workflow diagram has `<title>` and `aria-labelledby`; decorative icons use `aria-hidden="true"`; EvilEye WebGL canvas container is `aria-hidden="true"` |
-| 1.3.1 Info and Relationships | Nav uses `<nav aria-label="Site navigation">`; tier tabs and batch filter tabs use `role="group"`; seed inputs have explicit `<label htmlFor>`; `<dl>` has `aria-label`; event list uses `role="list"` with `role="listitem"` |
+| 1.3.1 Info and Relationships | Nav uses `<nav aria-label="Site navigation">`; tier tabs and batch filter tabs use `role="group"`; seed inputs have explicit `<label htmlFor>`; `<dl>` has `aria-label`; event list uses `role="list"` with `role="listitem"`; Verification Detail Explorer uses `role="region"`, `aria-labelledby`, and hierarchical `<h3>`/`<h4>` headings |
 | 1.3.3 Sensory Characteristics | Selected tier indicated by `aria-pressed` (not colour alone); active tier tab also has `box-shadow` border, not just background colour |
 | 1.4.1 Use of Colour | Tier tab active state adds `box-shadow: inset 0 0 0 1px rgba(255,255,255,0.38)` in addition to background change |
 | 1.4.3 Contrast (Minimum) | Data-list `dt` raised from 0.38 to 0.62 opacity (~4.5:1 on dark background); `dd` raised to 0.92; page header sub-text raised to 0.72; lede text raised to 0.78; rail block headings raised to 0.62 |
@@ -99,6 +99,7 @@ Two hidden live regions are rendered unconditionally before `<main>`:
 - Progress messages (hashing, embedding, proving, ready) → `liveStatus.announce()` → polite region  
 - Error messages (network, steganography, registration, wallet) → `liveAlert.announce()` → assertive region  
 - The visible status `<p>` in the studio header also carries `role="status" aria-live="polite" aria-atomic="true"` as a secondary announcement path
+- Replacing the selected file in Evidence Studio immediately clears stale proof, registration, and verification badges (`StudioView.tsx` + `useEvidence.ts`) and renders a dedicated privacy-safe `.studio-state-notice` (`role="status" aria-live="polite" aria-atomic="true"`) explaining that prior verification state was cleared until the new file is verified or registered
 
 ---
 
@@ -383,12 +384,29 @@ The evidence data `<dl>` has `aria-label="Evidence data"` so screen readers can 
 
 Each nav button (`Evidence`, `Verify`, `Batch Workspace`) has `aria-current="page"` when its view is active.
 
+## Verification Detail Explorer Accessibility
+
+The verification portal (`VerifyView.tsx`) includes a keyboard-accessible detail explorer component (`VerificationDetailExplorer.tsx`) providing inspection of backend observations, public-input checks, and Soroban on-chain records:
+
+1. **Meaningful Heading Hierarchy:** Structured with an `<h3>` container heading ("Verification Detail Explorer") followed by `<h4>` section headings for "Public-Input Checks", "Chain Observations", and "Trust Decisions & Reasons".
+2. **Accessible Disclosure Controls:** Each section header contains a `<button>` trigger with explicit `aria-expanded` and `aria-controls` referencing its target panel. An overarching "Expand all" / "Collapse all" control also maintains `aria-expanded` status.
+3. **Region Landmark Association:** Each expandable panel is wrapped in `<div role="region" aria-labelledby="section-header-id">` allowing screen reader users to jump between sections and identify the context of active panels.
+4. **Focus Order Preservation:** Inactive / collapsed panels use the HTML `hidden` attribute. Collapsed content is fully removed from the accessibility and sequential tab focus tree, preventing keyboard traps and maintaining predictable focus order.
+5. **Visible Focus Appearance:** Interactive buttons and disclosure headers have custom `:focus-visible` styling (`outline: 2px solid #4a9eff; outline-offset: 2px`).
+6. **Privacy Boundaries:** Hashes are formatted with `shortHash` or canonical hex prefixes without rendering raw proof witnesses, credentials, or private media fixtures.
+
 ---
 
 ## Files Changed
 
 | File | Change |
 |------|--------|
+| `src/components/VerificationDetailExplorer.tsx` | New: keyboard-accessible verification detail explorer with expandable disclosure regions |
+| `src/components/VerificationDetailExplorer.test.tsx` | New: unit and keyboard navigation tests for headings, ARIA disclosure states, and focus order |
+| `src/views/VerifyView.tsx` | Updated: integrated `VerificationDetailExplorer` with reactive status, chain records, and boundary checks |
+| `src/services/verificationFlow.ts` | Updated: exposed `buildVerificationDetails` and structured public-input, chain-observation, and trust-reason models |
+| `src/services/verificationFlow.test.ts` | New: comprehensive unit test coverage for confirmed, revoked, expired, metadata-mismatch, and offline verification details |
+| `src/App.css` | Updated: accessible styles for explorer containers, focus states, and badges |
 | `src/a11y.axe.test.tsx` | Updated: renders `BatchVerificationWorkspace` in idle, in-progress and completed states against a scripted `BatchVerifier` |
 | `src/components/BatchVerificationWorkspace.tsx` | Updated: file input is a labelled sibling of the dropzone instead of nested inside its `role="button"` (axe `nested-interactive`); filter tab group carries `role="group"` (axe `aria-prohibited-attr`) |
 | `src/components/BatchVerificationWorkspace.test.tsx` | Updated: file-input lookups target the input element directly |

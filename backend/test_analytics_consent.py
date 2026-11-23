@@ -29,11 +29,13 @@ from analytics.consent import (
     CONSENT_GRACE_PERIOD_SECONDS,
     CONSENT_SCHEMA_VERSION,
     ConsentDecision,
+    ConsentDeletionAudit,
     ConsentManager,
     ConsentSource,
     ConsentStatus,
     ConsentState,
     DEFAULT_CONSENT_STATE,
+    RetentionCheckpoint,
 )
 
 
@@ -300,3 +302,371 @@ class TestConsentManagerCheckConsent:
         # After expiry: not allowed (expired consent never reports active)
         allowed, state = cm.check_consent("acct_exp", scope="telemetry", now_epoch_seconds=expiry + 0.1)
         assert allowed is False
+
+    @pytest.mark.parametrize("status", [ConsentStatus.WITHDRAWN, ConsentStatus.INVALID, ConsentStatus.EXPIRED])
+    def test_check_consent_inactive_statuses_rejected(self, status: str) -> None:
+        cm = ConsentManager()
+        decision = ConsentDecision(
+            status=status,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["telemetry"],
+            expires_at_epoch_seconds=0.0,
+            granted_at_epoch_seconds=10_000.0,
+        )
+        cm.set_consent("acct_inactive", decision)
+
+        allowed, state = cm.check_consent("acct_inactive", scope="telemetry", now_epoch_seconds=20_000.0)
+        assert allowed is False
+        assert state.status == status
+
+
+# ===========================================================================
+# ConsentManager set_consent, withdraw_consent, invalidate_consent tests
+# ===========================================================================
+
+
+class TestConsentManagerModifications:
+    """Verifies state mutation methods: set_consent, withdraw_consent, invalidate_consent."""
+
+    def test_set_consent_creates_new_state(self) -> None:
+        cm = ConsentManager()
+        decision = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["metrics"],
+            expires_at_epoch_seconds=40_000.0,
+            granted_at_epoch_seconds=10_000.0,
+            consent_token="cst-v1:token123",
+        )
+        state = cm.set_consent("acct_set", decision)
+
+        assert state.account_tag == "acct_set"
+        assert state.status == ConsentStatus.GRANTED
+        assert state.source == ConsentSource.USER_EXPLICIT
+        assert state.granted_scopes == ["metrics"]
+        assert state.expires_at_epoch_seconds == 40_000.0
+        assert state.granted_at_epoch_seconds == 10_000.0
+        assert state.consent_token == "cst-v1:token123"
+
+    def test_set_consent_idempotent_retains_existing(self) -> None:
+        cm = ConsentManager()
+        decision = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["metrics"],
+            expires_at_epoch_seconds=40_000.0,
+            granted_at_epoch_seconds=10_000.0,
+            consent_token="cst-v1:token123",
+        )
+        state1 = cm.set_consent("acct_idem", decision)
+        state2 = cm.set_consent("acct_idem", decision)
+
+        assert state1 is state2
+
+    def test_withdraw_consent_for_existing_account(self) -> None:
+        cm = ConsentManager()
+        decision = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["metrics"],
+            expires_at_epoch_seconds=40_000.0,
+            granted_at_epoch_seconds=10_000.0,
+        )
+        cm.set_consent("acct_withdraw", decision)
+
+        state = cm.withdraw_consent("acct_withdraw", reason="user_requested")
+        assert state.status == ConsentStatus.WITHDRAWN
+        assert state.withdrawal_epoch_seconds is not None
+        assert state.withdrawal_epoch_seconds > 0
+
+        # Verify check_consent reflects withdrawal
+        allowed, _ = cm.check_consent("acct_withdraw", scope="metrics", now_epoch_seconds=20_000.0)
+        assert allowed is False
+
+    def test_withdraw_consent_for_unknown_account(self) -> None:
+        cm = ConsentManager()
+        state = cm.withdraw_consent("acct_unseen_withdraw")
+        assert state.account_tag == "acct_unseen_withdraw"
+        assert state.status == ConsentStatus.WITHDRAWN
+        assert state.source == ConsentSource.USER_EXPLICIT
+
+    def test_invalidate_consent_for_existing_account(self) -> None:
+        cm = ConsentManager()
+        decision = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["metrics"],
+            expires_at_epoch_seconds=40_000.0,
+            granted_at_epoch_seconds=10_000.0,
+        )
+        cm.set_consent("acct_invalid", decision)
+
+        state = cm.invalidate_consent("acct_invalid", reason="policy_change")
+        assert state.status == ConsentStatus.INVALID
+
+        allowed, _ = cm.check_consent("acct_invalid", scope="metrics", now_epoch_seconds=20_000.0)
+        assert allowed is False
+
+    def test_invalidate_consent_for_unknown_account(self) -> None:
+        cm = ConsentManager()
+        state = cm.invalidate_consent("acct_unseen_invalid")
+        assert state.account_tag == "acct_unseen_invalid"
+        assert state.status == ConsentStatus.INVALID
+        assert state.source == ConsentSource.SYSTEM_DEFAULT
+
+
+# ===========================================================================
+# ConsentManager prune_expired tests
+# ===========================================================================
+
+
+class TestConsentManagerPruneExpired:
+    """Verifies prune_expired logic, grace period enforcement, and max_to_prune limits."""
+
+    def test_prune_expired_removes_aged_terminal_states(self) -> None:
+        grace = 1800.0
+        cm = ConsentManager(grace_period_seconds=grace)
+
+        now = 100_000.0
+        old_time = now - grace - 100.0
+
+        # Populate states with various terminal statuses that are older than grace period
+        cm.withdraw_consent("acct_withdrawn")
+        cm._consent_states["acct_withdrawn"].last_modified_epoch_seconds = old_time
+
+        cm.invalidate_consent("acct_invalid")
+        cm._consent_states["acct_invalid"].last_modified_epoch_seconds = old_time
+
+        expired_decision = ConsentDecision(
+            status=ConsentStatus.EXPIRED,
+            source=ConsentSource.SYSTEM_DEFAULT,
+            scope=[],
+            expires_at_epoch_seconds=old_time,
+            granted_at_epoch_seconds=old_time - 1000,
+        )
+        cm.set_consent("acct_expired", expired_decision)
+        cm._consent_states["acct_expired"].last_modified_epoch_seconds = old_time
+
+        # Active granted state should NOT be pruned even if old
+        granted_decision = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["telemetry"],
+            expires_at_epoch_seconds=now + 10_000,
+            granted_at_epoch_seconds=old_time,
+        )
+        cm.set_consent("acct_granted", granted_decision)
+        cm._consent_states["acct_granted"].last_modified_epoch_seconds = old_time
+
+        removed = cm.prune_expired(now_epoch_seconds=now)
+        assert removed == 3
+        assert "acct_withdrawn" not in cm._consent_states
+        assert "acct_invalid" not in cm._consent_states
+        assert "acct_expired" not in cm._consent_states
+        assert "acct_granted" in cm._consent_states
+
+    def test_prune_expired_keeps_states_within_grace_period(self) -> None:
+        grace = 1800.0
+        cm = ConsentManager(grace_period_seconds=grace)
+
+        now = 100_000.0
+        recent_time = now - grace + 100.0  # within grace period
+
+        cm.withdraw_consent("acct_recent_withdrawn")
+        cm._consent_states["acct_recent_withdrawn"].last_modified_epoch_seconds = recent_time
+
+        removed = cm.prune_expired(now_epoch_seconds=now)
+        assert removed == 0
+        assert "acct_recent_withdrawn" in cm._consent_states
+
+    def test_prune_expired_respects_max_to_prune(self) -> None:
+        grace = 1800.0
+        cm = ConsentManager(grace_period_seconds=grace)
+
+        now = 100_000.0
+        old_time = now - grace - 50.0
+
+        total_records = 15
+        max_to_prune = 6
+
+        for i in range(total_records):
+            tag = f"acct_{i:03d}"
+            cm.withdraw_consent(tag)
+            cm._consent_states[tag].last_modified_epoch_seconds = old_time
+
+        assert len(cm._consent_states) == total_records
+
+        removed = cm.prune_expired(now_epoch_seconds=now, max_to_prune=max_to_prune)
+        assert removed == max_to_prune
+        assert len(cm._consent_states) == total_records - max_to_prune
+
+        # Pruning the remaining states
+        second_removed = cm.prune_expired(now_epoch_seconds=now, max_to_prune=total_records)
+        assert second_removed == total_records - max_to_prune
+        assert len(cm._consent_states) == 0
+
+
+# ===========================================================================
+# ConsentManager generate_consent_token tests
+# ===========================================================================
+
+
+class TestConsentManagerGenerateConsentToken:
+    """Verifies token formatting, account tag redaction, and deterministic hashing stability."""
+
+    def test_generate_consent_token_format(self) -> None:
+        cm = ConsentManager()
+        token = cm.generate_consent_token(
+            account_tag="user_account_98765",
+            status=ConsentStatus.GRANTED,
+            scopes=["telemetry", "diagnostics"],
+        )
+        assert isinstance(token, str)
+        assert token.startswith("cst-v1:")
+        hex_part = token.split(":", 1)[1]
+        assert len(hex_part) == 24
+        # Validate that hex_part consists of valid hex digits
+        int(hex_part, 16)
+
+    def test_generate_consent_token_redacts_account_tag(self) -> None:
+        cm = ConsentManager()
+        sensitive_account = "super_secret_account_id_9999"
+        token = cm.generate_consent_token(
+            account_tag=sensitive_account,
+            status=ConsentStatus.GRANTED,
+            scopes=["telemetry"],
+        )
+        assert sensitive_account not in token
+
+    def test_generate_consent_token_stable_for_same_inputs_with_fixed_entropy(self) -> None:
+        cm = ConsentManager()
+        fixed_entropy = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+
+        with patch("os.urandom", return_value=fixed_entropy):
+            token_a = cm.generate_consent_token(
+                account_tag="acct_1",
+                status=ConsentStatus.GRANTED,
+                scopes=["telemetry", "metrics"],
+            )
+            # Same scopes in reverse order must produce identical token due to internal sort
+            token_b = cm.generate_consent_token(
+                account_tag="acct_1",
+                status=ConsentStatus.GRANTED,
+                scopes=["metrics", "telemetry"],
+            )
+            assert token_a == token_b
+
+    def test_generate_consent_token_differs_for_different_inputs(self) -> None:
+        cm = ConsentManager()
+        fixed_entropy = b"\xaa" * 8
+
+        with patch("os.urandom", return_value=fixed_entropy):
+            base_token = cm.generate_consent_token(
+                account_tag="acct_1",
+                status=ConsentStatus.GRANTED,
+                scopes=["telemetry"],
+            )
+            different_account = cm.generate_consent_token(
+                account_tag="acct_2",
+                status=ConsentStatus.GRANTED,
+                scopes=["telemetry"],
+            )
+            different_status = cm.generate_consent_token(
+                account_tag="acct_1",
+                status=ConsentStatus.DENIED,
+                scopes=["telemetry"],
+            )
+            different_scope = cm.generate_consent_token(
+                account_tag="acct_1",
+                status=ConsentStatus.GRANTED,
+                scopes=["metrics"],
+            )
+
+            assert base_token != different_account
+            assert base_token != different_status
+            assert base_token != different_scope
+
+
+# ===========================================================================
+# ConsentManager prune_expired_batch (resumable retention checkpoint) tests
+# ===========================================================================
+
+
+class TestPruneExpiredBatch:
+    """Bounded, resumable consent cleanup with a deletion audit trail."""
+
+    def _aged_terminal_manager(self, count: int, grace: float = 1800.0):
+        cm = ConsentManager(grace_period_seconds=grace)
+        now = 100_000.0
+        old_time = now - grace - 100.0
+        for i in range(count):
+            tag = f"acct_{i:03d}"
+            cm.withdraw_consent(tag)
+            cm._consent_states[tag].last_modified_epoch_seconds = old_time
+        return cm, now
+
+    def test_processes_bounded_batches_and_resumes_until_complete(self) -> None:
+        cm, now = self._aged_terminal_manager(15)
+        cp = None
+        batches = 0
+        while True:
+            cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=6, checkpoint=cp)
+            batches += 1
+            if cp.complete:
+                break
+            # Each non-final batch prunes no more than the batch size.
+            assert cp.removed <= batches * 6
+        assert batches == 3  # 6 + 6 + 3
+        assert cp.removed == 15
+        assert len(cm._consent_states) == 0
+        assert len(cp.deletion_audits) == 15
+
+    def test_single_batch_leaves_remainder_and_is_not_complete(self) -> None:
+        cm, now = self._aged_terminal_manager(10)
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=4)
+        assert cp.removed == 4
+        assert cp.complete is False
+        assert len(cm._consent_states) == 6
+        assert len(cp.deletion_audits) == 4
+
+    def test_records_deletion_audit_references(self) -> None:
+        cm, now = self._aged_terminal_manager(3)
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=100)
+        assert cp.complete is True
+        assert len(cp.deletion_audits) == 3
+        for audit in cp.deletion_audits:
+            assert isinstance(audit, ConsentDeletionAudit)
+            assert audit.account_tag.startswith("acct_")
+            assert audit.prior_status == ConsentStatus.WITHDRAWN
+            assert audit.deleted_at_epoch_seconds == now
+            assert audit.audit_ref.startswith("del-v1:")
+            assert len(audit.audit_ref) == len("del-v1:") + 16
+
+    def test_preserves_active_consent(self) -> None:
+        cm, now = self._aged_terminal_manager(2)
+        granted = ConsentDecision(
+            status=ConsentStatus.GRANTED,
+            source=ConsentSource.USER_EXPLICIT,
+            scope=["telemetry"],
+            expires_at_epoch_seconds=now + 10_000,
+            granted_at_epoch_seconds=now - 5000,
+        )
+        cm.set_consent("acct_granted", granted)
+        cm._consent_states["acct_granted"].last_modified_epoch_seconds = now - 5000
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=100)
+        assert cp.complete is True
+        assert cp.removed == 2
+        assert "acct_granted" in cm._consent_states
+
+    def test_empty_manager_is_immediately_complete(self) -> None:
+        cm = ConsentManager()
+        cp = cm.prune_expired_batch(now_epoch_seconds=100_000.0)
+        assert cp.complete is True
+        assert cp.removed == 0
+        assert cp.deletion_audits == []
+
+    def test_non_positive_batch_size_is_coerced_to_one(self) -> None:
+        cm, now = self._aged_terminal_manager(3)
+        cp = cm.prune_expired_batch(now_epoch_seconds=now, batch_size=0)
+        assert cp.removed == 1
+        assert cp.complete is False

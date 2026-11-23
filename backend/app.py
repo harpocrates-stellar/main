@@ -88,30 +88,12 @@ except ImportError:
     default_min_confirmations = None
     reconcile_pending_registrations = None
     reconcile_registration = None
-
-
-def build_reconcile_batch_report(
-    *,
-    limit: int,
-    selected: int,
-    processed: int,
-    deferred: int,
-) -> dict:
-    """Describe a reconciliation batch for administrative responses.
-
-    ``complete_batch`` is true when every selected item in this batch was
-    processed.  ``complete_backlog`` is true only when nothing was deferred,
-    meaning no further pending work remains beyond this batch.
-    """
-    return {
-        "limit": int(limit),
-        "selected": int(selected),
-        "processed": int(processed),
-        "deferred": int(deferred),
-        "complete_batch": int(processed) == int(selected),
-        "complete_backlog": int(deferred) == 0 and int(processed) == int(selected),
-    }
-from idempotency import idempotent
+from idempotency import (
+    IntentConflictError,
+    idempotent,
+    persist_registration_intent,
+    registration_intent_digest,
+)
 from lineage import (
     LineageValidationError,
     canonical_lineage_manifest,
@@ -135,7 +117,7 @@ from metadata_errors import (
     metadata_error_response,
 )
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
-from verification_receipt import build_verification_receipt
+from verification_receipt import build_verification_receipt, signing_key_history
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
 try:
     from stego import StegoLimitExceededError
@@ -151,7 +133,7 @@ from capture_attestation import (
 from c2pa import (
     C2paParseError,
     C2paTrustStatus,
-    compute_privacy_flags,
+    build_assertion_compatibility_report,
     corroborate_binding,
     export_c2pa_manifest,
     parse_c2pa_manifest,
@@ -183,6 +165,10 @@ from verifier_cache import VerifierCache
 from admission import AdmissionController, require_capacity, _get_client_identity
 from webhook import WebhookWorker, queue_webhook_deliveries
 from quarantine import QuarantineError, isolate_upload, sniff_media_type_stream, sniff_media_type_path
+try:
+    from chain_indexer import index_freshness_summary
+except ImportError:
+    index_freshness_summary = None
 from strkey import validate_source_address, validate_contract_id
 from streaming_upload import (
     PrematureUploadTerminationError,
@@ -1842,6 +1828,23 @@ def create_app() -> Flask:
                 "conflict_field": exc.field,
             }), 409
 
+        intent_digest = None
+        if normalized_tx_hash:
+            intent_digest = registration_intent_digest(
+                video_hash=video_hash,
+                metadata_hash=metadata_hash,
+                proof_id=proof_id,
+                tier=tier,
+                source_address=validated_source_address,
+                contract_id=validated_contract_id,
+            )
+            try:
+                persist_registration_intent(normalized_tx_hash, intent_digest)
+            except IntentConflictError:
+                return jsonify({
+                    "error": "transaction hash is already bound to a different registration intent",
+                }), 409
+
         if db_event and db_event.get("id") and created:
             # A newly registered proof can change the on-chain verification
             # result. Evict all cached results for this proof before clients
@@ -1849,10 +1852,21 @@ def create_app() -> Flask:
             app.extensions["verifier_cache"].invalidate_proof(proof_id)
             queue_webhook_deliveries(db_event["id"])
             if normalized_tx_hash:
-                enqueue_job("verify_tx", {"proof_id": proof_id, "tx_hash": normalized_tx_hash, "contract_id": validated_contract_id})
+                enqueue_job(
+                    "verify_tx",
+                    {
+                        "proof_id": proof_id,
+                        "tx_hash": normalized_tx_hash,
+                        "contract_id": validated_contract_id,
+                        "intent_digest": intent_digest,
+                    },
+                )
 
         status = 201 if created else 200
-        return jsonify({"ok": True, "db_event": db_event, "created": created}), status
+        body = {"ok": True, "db_event": db_event, "created": created}
+        if intent_digest is not None:
+            body["intentDigest"] = intent_digest
+        return jsonify(body), status
 
     @app.post("/api/proofs/reconcile")
     def reconcile_registration_confirmations():
@@ -2736,13 +2750,74 @@ def create_app() -> Flask:
             "hashes_verified": bool(corroboration is not None and corroboration.ok),
             "hashes_compared": list(corroboration.compared_fields) if corroboration else [],
             "unknown_assertions": unknown,
-            "privacy_flags": compute_privacy_flags(parsed).to_dict(),
+            "compatibility_report": parsed.compatibility_report.to_dict(),
             "note": (
                 "C2PA trust status is independent of Harpocrates on-chain and ZK "
                 "verification. A matching 'expected' block is integrity "
                 "corroboration only. Corroborate this binding against on-chain "
                 "records before making any trust decision."
             ),
+        })
+
+    @app.post("/api/c2pa/compatibility")
+    def c2pa_compatibility():
+        """
+        Return a C2PA critical-assertion compatibility report for a manifest.
+
+        Classifies assertions into supported, optional unknown, and required
+        unknown assertions. Unsupported critical semantics are reported with
+        ``compatible: false`` and ``fail_closed: true`` (and rejected fail-closed
+        by ``POST /api/c2pa/import``).
+        """
+        if not request.is_json:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+            )
+        body = request.get_json(silent=True) or {}
+
+        if "manifest" not in body:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="missing required field: manifest",
+                status=400,
+            )
+
+        manifest_raw = body["manifest"]
+        if isinstance(manifest_raw, dict):
+            try:
+                import json as _json
+                manifest_bytes = _json.dumps(manifest_raw, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return error_response(
+                    code=VALIDATION_ERROR,
+                    message="manifest object could not be serialised",
+                    status=400,
+                )
+        elif isinstance(manifest_raw, str):
+            manifest_bytes = manifest_raw.encode("utf-8")
+        else:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="manifest must be a JSON object or string",
+                status=400,
+            )
+
+        try:
+            report = build_assertion_compatibility_report(manifest_bytes)
+        except C2paParseError as exc:
+            err_payload = exc.to_dict()
+            return error_response(
+                code=VALIDATION_ERROR,
+                message=f"C2PA manifest parse failed: {err_payload['reason']}"
+                        + (f" (field: {err_payload['field']})" if err_payload.get("field") else ""),
+                status=400,
+            )
+
+        return ok_response({
+            "compatibility_report": report.to_dict(),
+            "trust_status": C2paTrustStatus.SIGNATURE_NOT_CHECKED.value,
         })
 
     return app

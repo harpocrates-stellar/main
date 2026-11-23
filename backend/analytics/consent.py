@@ -115,6 +115,19 @@ class ConsentState:
             stable_account_tag=self.account_tag,
         )
 
+    def to_export_summary(self) -> Dict[str, object]:
+        """Return a credential-free summary suitable for tenant export manifests.
+
+        Explicitly omits ``consent_token`` and any credential material by construction.
+        """
+        return {
+            "account_tag": self.account_tag,
+            "status": self.status,
+            "policy_revision": self.policy_revision,
+            "granted_scopes": sorted(set(self.granted_scopes)),
+            "version": self.version,
+        }
+
 
 DEFAULT_CONSENT_STATE = ConsentState(
     status=ConsentStatus.UNKNOWN,
@@ -123,6 +136,37 @@ DEFAULT_CONSENT_STATE = ConsentState(
     expires_at_epoch_seconds=0,
     consent_token=None,
 )
+
+
+@dataclass
+class ConsentDeletionAudit:
+    """Audit reference for a pruned consent record.
+
+    Retains only non-reversible references (the account tag plus a hashed
+    audit ref), so a deletion stays auditable after the consent state is gone.
+    """
+
+    account_tag: str
+    prior_status: str
+    last_modified_epoch_seconds: float
+    deleted_at_epoch_seconds: float
+    audit_ref: str
+
+
+@dataclass
+class RetentionCheckpoint:
+    """Resumable checkpoint for bounded, long-running consent cleanup.
+
+    ``prune_expired_batch`` returns one of these after processing a batch.
+    Pass it back in to resume after an interruption; ``complete`` is True once
+    no eligible states remain. ``deletion_audits`` accumulates one entry per
+    pruned state across all batches.
+    """
+
+    processed: int = 0
+    removed: int = 0
+    complete: bool = False
+    deletion_audits: List[ConsentDeletionAudit] = field(default_factory=list)
 
 
 class ConsentManager:
@@ -258,6 +302,68 @@ class ConsentManager:
                 del self._consent_states[tag]
                 removed += 1
         return removed
+
+    def _is_prunable(self, state: ConsentState, now: float) -> bool:
+        if state.status not in {ConsentStatus.EXPIRED, ConsentStatus.WITHDRAWN, ConsentStatus.INVALID}:
+            return False
+        return (now - state.last_modified_epoch_seconds) > self._grace_period
+
+    def _deletion_audit_ref(self, account_tag: str, state: ConsentState) -> str:
+        raw = "|".join(
+            [
+                account_tag,
+                state.status,
+                repr(state.last_modified_epoch_seconds),
+                state.version,
+            ]
+        ).encode("utf-8")
+        return "del-v1:" + hashlib.sha256(raw).hexdigest()[:16]
+
+    def prune_expired_batch(
+        self,
+        now_epoch_seconds: float | None = None,
+        batch_size: int = 256,
+        checkpoint: Optional[RetentionCheckpoint] = None,
+    ) -> RetentionCheckpoint:
+        """Prune aged terminal consent states in bounded, resumable batches.
+
+        Processes at most ``batch_size`` eligible states per call and returns an
+        updated :class:`RetentionCheckpoint`. Pass the returned checkpoint back
+        in to resume after an interruption; ``checkpoint.complete`` is True once
+        no eligible states remain. Each pruned state is recorded as a
+        :class:`ConsentDeletionAudit` so the deletion stays auditable after the
+        consent record is removed. Grace-period and terminal-status rules match
+        :meth:`prune_expired`; active consent is never pruned.
+        """
+        now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+        cp = checkpoint if checkpoint is not None else RetentionCheckpoint()
+        if batch_size < 1:
+            batch_size = 1
+        with self._lock:
+            eligible: List[str] = []
+            for tag, state in self._consent_states.items():
+                if len(eligible) >= batch_size:
+                    break
+                if self._is_prunable(state, now):
+                    eligible.append(tag)
+            for tag in eligible:
+                state = self._consent_states[tag]
+                cp.deletion_audits.append(
+                    ConsentDeletionAudit(
+                        account_tag=tag,
+                        prior_status=state.status,
+                        last_modified_epoch_seconds=state.last_modified_epoch_seconds,
+                        deleted_at_epoch_seconds=now,
+                        audit_ref=self._deletion_audit_ref(tag, state),
+                    )
+                )
+                del self._consent_states[tag]
+                cp.removed += 1
+            cp.processed += len(eligible)
+            cp.complete = not any(
+                self._is_prunable(state, now) for state in self._consent_states.values()
+            )
+        return cp
 
     def generate_consent_token(self, account_tag: str, status: str, scopes: List[str]) -> str:
         sorted_scopes = sorted(scopes)

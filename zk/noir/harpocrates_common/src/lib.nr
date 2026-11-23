@@ -6,6 +6,7 @@
 // =============================================================================
 
 pub global DIGEST_ALGORITHM_SHA256: Field = 0;
+pub global MAX_DISCLOSURE_PREDICATES: u32 = 8;
 pub global SCOPED_NULLIFIER_V1: Field = 0x00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631;
 
 pub global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;

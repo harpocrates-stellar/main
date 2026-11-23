@@ -41,6 +41,7 @@ const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet
  */
 export const CONTRACT_NETWORK_PASSPHRASE: string = Networks.TESTNET
 
+const NETWORK_PASSPHRASE = CONTRACT_NETWORK_PASSPHRASE
 const NETWORK_PASSTHRASE = CONTRACT_NETWORK_PASSPHRASE
 const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 const POLL_INTERVAL_MS = 1000
@@ -389,91 +390,6 @@ export async function getIssuerRecord(
   }
 }
 
-/**
- * Read a dispute record from the registry by dispute ID.
- *
- * Simulation-only read following the pattern of `getProofHistoryCount`; no
- * signing is required. Resolves to `null` when the contract returns an
- * empty `Option` (no such dispute).
- */
-export async function getDispute(
-  contractId: string,
-  disputeId: string,
-  sourceAddress?: string,
-): Promise<ChainDisputeRecord | null> {
-  const source = requireReadSource(sourceAddress)
-
-  const server = new rpc.Server(RPC_URL)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-  const transaction = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call('get_dispute' satisfies RegistryMethod, scBytes32(asHex32(disputeId, 'disputeId'))))
-    .setTimeout(30)
-    .build()
-
-  const simulation = await server.simulateTransaction(transaction)
-  if (rpc.Api.isSimulationError(simulation)) {
-    throw new Error(simulation.error)
-  }
-  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return null
-  }
-
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
-  if (native === null || native === undefined) return null
-
-  return {
-    disputeId: native.dispute_id?.toString?.() ?? String(native.dispute_id),
-    proofId: native.proof_id?.toString?.() ?? String(native.proof_id),
-    opener: native.opener ?? null,
-    reason: native.reason ?? '',
-    status: Number(native.status),
-    createdAt: native.created_at?.toString?.() ?? String(native.created_at),
-    resolvedAt: toUnixSeconds(native.resolved_at),
-  }
-}
-
-/**
- * Read the number of open disputes for a proof ID.
- *
- * Simulation-only read following the pattern of `getProofHistoryCount`; no
- * signing is required. Resolves to `null` when the contract returns an
- * empty `Option`.
- */
-export async function getOpenDisputeCount(
-  contractId: string,
-  proofId: string,
-  sourceAddress?: string,
-): Promise<number | null> {
-  const source = requireReadSource(sourceAddress)
-
-  const server = new rpc.Server(RPC_URL)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-  const transaction = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call('get_open_dispute_count' satisfies RegistryMethod, scBytes32(asHex32(proofId, 'proofId'))))
-    .setTimeout(30)
-    .build()
-
-  const simulation = await server.simulateTransaction(transaction)
-  if (rpc.Api.isSimulationError(simulation)) {
-    throw new Error(simulation.error)
-  }
-  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
-    return null
-  }
-
-  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
-  if (native === null || native === undefined) return null
-
-  return Number(native)
-}
 
 export async function getVerifierState(
   contractId: string,
@@ -777,6 +693,8 @@ export async function respondDispute(
     throw error
   }
 }
+
+
 
 
 

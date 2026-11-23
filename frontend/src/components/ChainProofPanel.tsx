@@ -1,6 +1,7 @@
 import type { ChainProofRecord } from '../stellarTypes'
 import { useIssuerTrust } from '../hooks/useIssuerTrust'
 import { useProofRevocationReason } from '../hooks/useProofRevocationReason'
+import type { IssuerTrust } from '../provenance/issuerTrust'
 import { IssuerTrustBadge } from '../provenance/IssuerTrustBadge'
 import { shortHash } from '../utils'
 
@@ -8,6 +9,7 @@ type Props = {
   chainProof: ChainProofRecord | null
   proofId?: string | null
   sourceAddress?: string
+  issuerTrust?: IssuerTrust
 }
 
 export function formatProofExpiry(expiresAt: number | null): string {
@@ -21,15 +23,16 @@ export function formatProofExpiry(expiresAt: number | null): string {
   return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toISOString()
 }
 
-export function ChainProofPanel({ chainProof, proofId, sourceAddress }: Props) {
+export function ChainProofPanel({ chainProof, proofId, sourceAddress, issuerTrust: providedIssuerTrust }: Props) {
   // The badge reflects the registry's issuer standing, which is separate from
   // the record's own status: a record can stay REGISTERED on chain while its
   // issuer has since been revoked (see THREAT_MODEL.md T3).
-  const issuerTrust = useIssuerTrust({
+  const lookedUpIssuerTrust = useIssuerTrust({
     issuer: chainProof?.issuer ?? null,
     expiresAt: chainProof?.expiresAt ?? null,
-    enabled: chainProof !== null,
+    enabled: chainProof !== null && providedIssuerTrust === undefined,
   })
+  const issuerTrust = providedIssuerTrust ?? lookedUpIssuerTrust
   const revocationReason = useProofRevocationReason({
     proofId,
     sourceAddress,

@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   CredentialVault,
-  VAULT_FORMAT_COMPATIBILITY,
-  getVaultFormatCompatibility,
-  validateVaultEnvelope,
+  buildVaultBackupPreview,
+  type VaultExportDestination,
 } from './credentialVault'
 
 describe('CredentialVault', () => {
@@ -122,113 +121,102 @@ describe('CredentialVault', () => {
     await expect(restoredVault.unlock('secret')).rejects.toThrow('Vault corrupted: unable to parse envelope')
   })
 
-  it('should expose a frozen machine-readable vault format compatibility descriptor', () => {
-    const descriptor = getVaultFormatCompatibility()
-    expect(descriptor).toBe(VAULT_FORMAT_COMPATIBILITY)
-    expect(Object.isFrozen(descriptor)).toBe(true)
-    expect(Object.isFrozen(descriptor.supportedEnvelopeVersions)).toBe(true)
-    expect(Object.isFrozen(descriptor.supportedKdfVersions)).toBe(true)
-    expect(Object.isFrozen(descriptor.kdf)).toBe(true)
-    expect(Object.isFrozen(descriptor.cipher)).toBe(true)
+  describe('backup export preview and destination selection', () => {
+    it('returns envelope version and nonsecret compatibility metadata even when locked', async () => {
+      const seeds = {
+        credentialSeed: 'synthetic-cred-seed-secret-01',
+        nullifierSeed: 'synthetic-null-seed-secret-02',
+      }
+      await vault.setup('synthetic-passphrase-99!', seeds)
+      vault.lock()
 
-    expect(descriptor).toEqual({
-      storageKey: 'harpocrates:credential-vault',
-      currentEnvelopeVersion: 1,
-      supportedEnvelopeVersions: [1],
-      currentKdfVersion: 'pbkdf2-sha256-v1',
-      supportedKdfVersions: ['pbkdf2-sha256-v1'],
-      kdf: {
-        id: 'pbkdf2-sha256-v1',
-        algorithm: 'PBKDF2',
-        hash: 'SHA-256',
-        iterations: 600000,
+      const storedRaw = window.localStorage.getItem('harpocrates:credential-vault')!
+      const storedEnvelope = JSON.parse(storedRaw) as { salt: string; iv: string; ct: string }
+
+      const preview = vault.getBackupExportPreview()
+      expect(preview.ok).toBe(true)
+      if (!preview.ok) return
+
+      expect(preview.requiresDestinationSelection).toBe(true)
+      expect(preview.metadata).toMatchObject({
+        envelopeVersion: 1,
+        compatible: true,
+        kdf: 'PBKDF2-SHA256',
+        kdfIterations: 600000,
+        cipher: 'AES-256-GCM',
         saltBytes: 16,
-      },
-      cipher: {
-        algorithm: 'AES-GCM',
-        keyLengthBits: 256,
         ivBytes: 12,
-      },
-      encoding: 'hex',
-    })
-  })
-
-  it('should reject non-object envelopes and invalid required hex parameters consistently', async () => {
-    expect(() => validateVaultEnvelope(null)).toThrow('Vault corrupted: envelope must be an object')
-    expect(() => validateVaultEnvelope([])).toThrow('Vault corrupted: envelope must be an object')
-
-    const validSalt = 'aa'.repeat(16)
-    const validIv = 'bb'.repeat(12)
-    const validCt = 'cc'.repeat(32)
-
-    expect(validateVaultEnvelope({ v: 1, salt: validSalt, iv: validIv, ct: validCt })).toEqual({
-      v: 1,
-      salt: validSalt,
-      iv: validIv,
-      ct: validCt,
-    })
-
-    // Wrong salt length
-    expect(() => validateVaultEnvelope({ v: 1, salt: 'aabb', iv: validIv, ct: validCt })).toThrow(
-      'Unsupported vault parameter: salt must be 16 bytes (32 hex chars)'
-    )
-    // Non-hex iv
-    expect(() => validateVaultEnvelope({ v: 1, salt: validSalt, iv: 'zz'.repeat(12), ct: validCt })).toThrow(
-      'Unsupported vault parameter: iv must be a non-empty hex string'
-    )
-    // Empty or odd-length ct
-    expect(() => validateVaultEnvelope({ v: 1, salt: validSalt, iv: validIv, ct: '' })).toThrow(
-      'Unsupported vault parameter: ct must be a non-empty hex string'
-    )
-    expect(() => validateVaultEnvelope({ v: 1, salt: validSalt, iv: validIv, ct: 'abc' })).toThrow(
-      'Unsupported vault parameter: ct must be a non-empty hex string'
-    )
-
-    // Unlock also rejects mutated required parameters
-    window.localStorage.setItem(
-      VAULT_FORMAT_COMPATIBILITY.storageKey,
-      JSON.stringify({ v: 1, salt: 'deadbeef', iv: validIv, ct: validCt })
-    )
-    const restoredVault = new CredentialVault()
-    await expect(restoredVault.unlock('secret')).rejects.toThrow(
-      'Unsupported vault parameter: salt must be 16 bytes (32 hex chars)'
-    )
-  })
-
-  it('should reject unsupported KDF or cipher parameter overrides consistently', async () => {
-    const base = {
-      v: 1,
-      salt: 'aa'.repeat(16),
-      iv: 'bb'.repeat(12),
-      ct: 'cc'.repeat(32),
-    }
-
-    expect(() => validateVaultEnvelope({ ...base, kdf: 'argon2id-v1' })).toThrow(
-      'Unsupported vault parameter: kdf "argon2id-v1"'
-    )
-    expect(() => validateVaultEnvelope({ ...base, cipher: 'AES-CBC' })).toThrow(
-      'Unsupported vault parameter: cipher "AES-CBC"'
-    )
-    expect(() => validateVaultEnvelope({ ...base, iterations: 1000 })).toThrow(
-      'Unsupported vault parameter: iterations "1000"'
-    )
-    expect(() => validateVaultEnvelope({ ...base, hash: 'SHA-512' })).toThrow(
-      'Unsupported vault parameter: hash "SHA-512"'
-    )
-    expect(() => validateVaultEnvelope({ ...base, keyLengthBits: 128 })).toThrow(
-      'Unsupported vault parameter: keyLengthBits "128"'
-    )
-
-    // Matching explicit parameters are accepted
-    expect(
-      validateVaultEnvelope({
-        ...base,
-        kdf: 'pbkdf2-sha256-v1',
-        cipher: 'AES-GCM',
-        iterations: 600000,
-        hash: 'SHA-256',
-        keyLengthBits: 256,
+        containsSecretsInPreview: false,
       })
-    ).toMatchObject(base)
+      expect(preview.metadata.ciphertextBytes).toBeGreaterThan(0)
+      expect(preview.metadata.encryptedPayloadBytes).toBeGreaterThan(0)
+
+      // Ensure no secret or raw cryptographic field values leak into preview metadata
+      const serializedPreview = JSON.stringify(preview)
+      expect(serializedPreview).not.toContain(seeds.credentialSeed)
+      expect(serializedPreview).not.toContain(seeds.nullifierSeed)
+      expect(serializedPreview).not.toContain('synthetic-passphrase-99!')
+      expect(serializedPreview).not.toContain(storedEnvelope.salt)
+      expect(serializedPreview).not.toContain(storedEnvelope.iv)
+      expect(serializedPreview).not.toContain(storedEnvelope.ct)
+    })
+
+    it('fails closed when no vault exists, envelope is corrupted, or version is unsupported', () => {
+      expect(vault.getBackupExportPreview()).toMatchObject({
+        ok: false,
+        code: 'NO_VAULT',
+      })
+
+      expect(buildVaultBackupPreview('not-json')).toMatchObject({
+        ok: false,
+        code: 'CORRUPTED_ENVELOPE',
+      })
+
+      expect(
+        buildVaultBackupPreview(JSON.stringify({ v: 2, salt: 'aa', iv: 'bb', ct: 'cc' })),
+      ).toMatchObject({
+        ok: false,
+        code: 'UNSUPPORTED_VERSION',
+        envelopeVersion: 2,
+      })
+
+      expect(
+        buildVaultBackupPreview(JSON.stringify({ v: 1, salt: 'not-hex!', iv: 'bb', ct: 'cc' })),
+      ).toMatchObject({
+        ok: false,
+        code: 'INVALID_ENVELOPE_FIELDS',
+        envelopeVersion: 1,
+      })
+    })
+
+    it('requires explicit user selection of a valid encrypted export destination', async () => {
+      const seeds = { credentialSeed: 'cred-export', nullifierSeed: 'null-export' }
+      await vault.setup('export-passphrase', seeds)
+
+      expect(vault.prepareEncryptedBackupExport(null)).toMatchObject({
+        ok: false,
+        code: 'DESTINATION_REQUIRED',
+      })
+      expect(vault.prepareEncryptedBackupExport(undefined)).toMatchObject({
+        ok: false,
+        code: 'DESTINATION_REQUIRED',
+      })
+      expect(
+        vault.prepareEncryptedBackupExport('unknown-dest' as unknown as VaultExportDestination),
+      ).toMatchObject({
+        ok: false,
+        code: 'INVALID_DESTINATION',
+      })
+
+      const result = vault.prepareEncryptedBackupExport('file-download')
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+
+      expect(result.destination).toBe('file-download')
+      expect(result.metadata.envelopeVersion).toBe(1)
+      expect(result.serializedEnvelope).toBe(
+        window.localStorage.getItem('harpocrates:credential-vault'),
+      )
+    })
   })
 })

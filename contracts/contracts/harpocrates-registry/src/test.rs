@@ -527,6 +527,7 @@ fn replaced_admin_proposal_cannot_be_accepted() {
 
     client.init(&admin);
     client.propose_admin(&admin, &first_pending_admin);
+    client.cancel_admin_transfer(&admin);
     client.propose_admin(&admin, &replacement_pending_admin);
     client.accept_admin(&first_pending_admin);
 }
