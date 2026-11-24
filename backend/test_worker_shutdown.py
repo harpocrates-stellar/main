@@ -26,7 +26,7 @@ if not hasattr(tx_verification, "normalize_tx_hash"):
 if not hasattr(tx_verification, "verify_transaction"):
     tx_verification.verify_transaction = lambda *args, **kwargs: None
 
-import backend.worker as worker
+import worker as worker
 
 
 def test_worker_stops_leasing_when_stop_event_set():

@@ -1,0 +1,36 @@
+{
+  "baseline": {
+    "network": "testnet",
+    "protocol": {
+      "crypto_domain": "harpocrates:silent-witness:v1",
+      "name": "harpocrates",
+      "version": 1
+    },
+    "release_id": "harpocrates-1.0.0"
+  },
+  "format": "harpocrates.cross-layer-protocol-manifest",
+  "layers": {
+    "api": {
+      "api_version": 1,
+      "schema_sha256": "786ed3a7a694af5f20cdad7ce105282c9bc3479a266806ee82606191f6cb4910"
+    },
+    "circuit": {
+      "circuit_version": 2,
+      "input_schema_sha256": "4587c5ac03ad9da4022301398aa8002cdc1b3eaf883b94241736fdc9812ebefe",
+      "input_schema_version": 1
+    },
+    "cli": {
+      "manifest_version": 2,
+      "version": "1.0.0"
+    },
+    "contract": {
+      "contract_interface_version": 1,
+      "descriptor_version": 1,
+      "expected_circuit_version": 2,
+      "max_supported_circuit_version": 2,
+      "max_verifier_input_version": 2,
+      "min_verifier_input_version": 1
+    }
+  },
+  "schema_version": 1
+}

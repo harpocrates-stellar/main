@@ -4,6 +4,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from register_auth import ScopedKey, parse_scoped_keys
 
@@ -11,7 +12,8 @@ from register_auth import ScopedKey, parse_scoped_keys
 @dataclass(frozen=True)
 class AppConfig:
     app_env: str
-    def redacted_summary(self) -> dict[str, any]:
+
+    def redacted_summary(self) -> dict[str, Any]:
         """Return a dict representation of the config where secret fields are redacted.
         Secret fields (API keys, endpoints, tokens) are replaced with a boolean indicating
         presence (True if set, False otherwise). Non‑secret fields retain their original
@@ -29,6 +31,7 @@ class AppConfig:
             if field in raw:
                 raw[field] = raw[field] is not None
         return raw
+
     cors_origins: list[str]
     max_content_length: int
     max_video_bytes: int
@@ -85,6 +88,16 @@ class AppConfig:
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
     retention_dry_run: bool = False
+    # None falls back to MAX_VIDEO_BYTES; zero allows no file payload.
+    upload_max_bytes: int | None = None
+    # Per-tenant temporary upload storage budget in bytes (None = unlimited).
+    # This limits the total temporary disk space a single tenant can reserve
+    # for in-flight uploads.
+    upload_temp_budget_bytes: int | None = None
+    job_execution_timeout_seconds: int = 0
+    job_queue_ttl_seconds: int = 0
+    upload_session_ttl_seconds: int = 3600
+    max_batch_size: int = 100
 
 
 
@@ -165,6 +178,12 @@ def load_config() -> AppConfig:
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        upload_max_bytes=_optional_nonnegative_int_env("UPLOAD_MAX_BYTES"),
+        upload_temp_budget_bytes=_optional_nonnegative_int_env("UPLOAD_TEMP_BUDGET_BYTES"),
+        job_queue_ttl_seconds=_job_file_ttl_env("HARPOCRATES_JOB_QUEUE_TTL_SECONDS", JOB_QUEUE_TTL_SECONDS_DEFAULT),
+        job_execution_timeout_seconds=_job_file_ttl_env("HARPOCRATES_JOB_EXECUTION_TIMEOUT_SECONDS", JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT),
+        upload_session_ttl_seconds=_upload_session_ttl_env(),
+        max_batch_size=_int_env("MAX_BATCH_SIZE", 100),
     )
 
 
@@ -185,6 +204,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:
@@ -276,7 +308,10 @@ RETENTION_BATCH_SIZE_DEFAULT = 100
 RETENTION_BATCH_SIZE_MAX = 5000
 
 
-def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", default: int = RETENTION_BATCH_SIZE_DEFAULT) -> int:
+def _retention_batch_size_env(
+    name: str = "HARPOCRATES_RETENTION_BATCH_SIZE",
+    default: int = RETENTION_BATCH_SIZE_DEFAULT,
+) -> int:
     """Load HARPOCRATES_RETENTION_BATCH_SIZE clamped to the 1..5000 range."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -320,4 +355,27 @@ def _blob_gc_enabled_env() -> bool:
         if val is not None:
             return val.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+# Queue expiry (time a job may wait as ``pending``) and execution timeout (time a
+# leased job may run) are separate limits. 0 disables a limit.
+JOB_QUEUE_TTL_SECONDS_DEFAULT = 0
+JOB_EXECUTION_TIMEOUT_SECONDS_DEFAULT = 0
+UPLOAD_SESSION_TTL_SECONDS_DEFAULT = 3600
+
+
+def _upload_session_ttl_env(
+    name: str = "UPLOAD_SESSION_TTL_SECONDS",
+    default: int = UPLOAD_SESSION_TTL_SECONDS_DEFAULT,
+) -> int:
+    """Load UPLOAD_SESSION_TTL_SECONDS (or HARPOCRATES_UPLOAD_SESSION_TTL_SECONDS)."""
+    raw = os.getenv(name) or os.getenv("HARPOCRATES_UPLOAD_SESSION_TTL_SECONDS")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be non-negative")
+    return parsed
 

@@ -139,6 +139,8 @@ call can succeed.
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
 | 88 | `ReporterDisputesSaturated` | resource | no | The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`. |
 | 89 | `InsufficientApprovals` | auth | no | The action requires admin council threshold approvals. |
+| 90 | `RoleConflict` | conflict | no | A role transition was rejected because it conflicts with existing authority, an already queued transition for the same revision, or a stale authority revision. |
+| 91 | `ListLimitExceeded` | oversized | no | The `limit` supplied to `list_verifiers` exceeds `MAX_VERIFIER_LIST_LIMIT`. |
 
 ## Privacy Rules
 
@@ -155,7 +157,7 @@ call can succeed.
 
 ## Compatibility And Migration
 
-- **Additive only.** Codes `1..=88` are frozen at this ABI version. A future change
+- **Additive only.** Codes `1..=91` are frozen at this ABI version. A future change
   that needs a new failure appends the next unused discriminant and adds a row here;
   it must not insert, reorder, or reuse a code.
 - **No storage impact.** The ABI describes revert values. It does not add storage

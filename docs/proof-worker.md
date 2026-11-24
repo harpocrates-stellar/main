@@ -17,7 +17,8 @@ Implementation:
 - `src/workers/proofWorker.ts` — runs inside the worker, wraps `noirClient.ts`
 - `src/workers/proofWorker.types.ts` — shared message/state/runtime types
 - `src/workers/proofWorkerClient.ts` — main-thread client (`ProofWorkerClient`)
-- `src/proofWorkerMemory.ts` — worker memory and artifact-size budget checks
+- `src/workers/proof-worker-manager.ts` — CSP-configured worker manager & pre-flight resource admission (`getResourceAdmissionDecision()`)
+- `src/proofWorkerMemory.ts` — worker memory, artifact-size budget checks, and resource admission evaluator (`evaluateProofWorkerResourceAdmission()`)
 - `src/hooks/useEvidence.ts` — Evidence Studio integration + Cancel button
 - `src/workers/multiBrowserWorkerSupport.ts` — multi-browser capability floor for module-worker proving
 
@@ -47,6 +48,13 @@ Implementation:
 - Cancel / timeout / destroy / unmount all settle with a stable `CANCELLED`
   (or `TIMEOUT` / `CRASHED`) code whose message never contains witness values,
   seeds, proof hex, or media identifiers beyond stage names.
+- Proof-worker diagnostic messages forwarded to telemetry via
+  `boundProofWorkerDiagnostic` / `ProofWorkerManager.forwardDiagnosticToTelemetry`
+  redact witness-shaped values (witness/secret/proof/evidence fields, byte
+  buffers, bigints, witness arrays, hex and field-element tokens) and cap the
+  serialized UTF-8 payload at `PROOF_WORKER_MEMORY_LIMITS.maxDiagnosticBytes`
+  (4096 bytes by default) while retaining stable `stage` and `errorCode`/`code`
+  identifiers.
 
 ## State machine
 
@@ -181,6 +189,24 @@ invoked.
   surfacing as a benign "unhandled rejection" in test output. This has been
   observed not to affect real-browser behavior (verified manually).
 
+## Offline worker capability report
+
+`ProofWorkerManager.getOfflineCapabilityReport()` (and standalone
+`buildOfflineWorkerCapabilityReport()` in `src/workers/proof-worker-manager.ts`)
+plus `inspectProofWorkerArtifactMetadata()` in `src/proofWorkerMemory.ts`
+produce a synchronous, offline readiness report:
+
+- Inspects required browser capabilities (`Worker`, `moduleWorkerType`,
+  `WebAssembly`, `SubtleCrypto`, `BigInt`, `ArrayBuffer`) via
+  `multiBrowserWorkerSupport.ts`.
+- Inspects configured proving artifact metadata and memory ceilings from the
+  statically bundled `zk/browser.artifacts.manifest.json` and
+  `zk/bench/bench.lock.json` without loading proving artifacts or contacting
+  network endpoints.
+- Fails closed (`ready: false`) with privacy-safe capability/metadata issue
+  descriptions when required browser features are missing or configured
+  artifact metadata is empty or exceeds worker/CSP limits.
+
 ## Multi-browser worker support
 
 Browser proving is gated by the same support floor documented in
@@ -208,6 +234,25 @@ Focused coverage lives in:
 
 ```bash
 cd frontend
-npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts
+npx vitest run src/workers/multiBrowserWorkerSupport.test.ts src/proofWorkerMemory.test.ts src/workers/proofWorkerClient.test.ts src/workers/proof-worker-manager.test.ts
 ```
 
+
+
+## Worker / Main-Thread Protocol Versioning
+
+`ProofWorkerManager` (`frontend/src/workers/proof-worker-manager.ts`) and `proof.worker.ts` enforce a strict integer protocol version (`PROOF_WORKER_PROTOCOL_VERSION = 1` in `frontend/src/workers/proof.worker.types.ts`) on worker/main-thread messages:
+
+- **Fail-closed before buffer transfer**: `validateWorkerProtocolVersion()` and `ProofWorkerManager.handleWorkerMessage()` check `protocolVersion` before invoking buffer-acceptance callbacks or parsing payload fields.
+- **No unsafe fallback parsing**: Missing, non-integer, stringified (e.g. `"1"`), zero, negative, `NaN`, or mismatched versions are rejected immediately without coercion.
+- **Clear reload-required result**: Mismatches return a privacy-safe `ProofWorkerResponse` with `type: 'error'`, `error.code = 'PROTOCOL_VERSION_MISMATCH'`, `error.reloadRequired = true`, and `error.privacySafe = true`, settling any matching pending request immediately.
+
+
+## Per-Operation Proof Memory Accounting
+
+`frontend/src/proofWorkerMemory.ts` (`ProofOperationMemoryAccountant` / `createProofOperationMemoryAccountant`) and `ProofWorkerManager` (`frontend/src/workers/proof-worker-manager.ts`) track allocated and released buffer classes per operation with bounded counters:
+
+- **Buffer classes**: `artifact`, `witness`, `proof`, `publicInput`, and `secret` (`PROOF_MEMORY_BUFFER_CLASSES`). Each class reports `allocatedCount`, `releasedCount`, `allocatedBytes`, `releasedBytes`, `activeBytes`, and `peakBytes`.
+- **Bounded counters & history**: Per-class allocations are bounded by `PROOF_MEMORY_ACCOUNTING_LIMITS.maxClassAllocations` (`1024`) and per-class/runtime byte budgets from `PROOF_WORKER_MEMORY_LIMITS`. `ProofWorkerManager` retains at most `PROOF_MEMORY_ACCOUNTING_LIMITS.maxTrackedOperations` (`32`) operation reports, evicting the oldest settled entries first.
+- **Fail-closed accounting**: Over-budget allocations, counter cap overflows, negative/non-integer byte counts, unknown buffer classes, and releases exceeding active bytes or allocation counts fail closed with `CircuitInputError`.
+- **Privacy & precision boundary**: Reports (`getOperationMemoryReport(id)`, `getMemoryAccountingSnapshot()`) never include witness, proof, or secret contents. Every report explicitly sets `precision: 'operation-buffer-estimate'` and `browserWidePrecision: false` to avoid claiming browser-wide heap, WASM, or OS-level memory precision.

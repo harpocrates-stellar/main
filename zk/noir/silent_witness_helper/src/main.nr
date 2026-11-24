@@ -1,8 +1,6 @@
 use harpocrates_common::{
     DIGEST_ALGORITHM_SHA256,
-    DOMAIN_NETWORK_FIELD,
-    DOMAIN_PROTOCOL_FIELD,
-    DOMAIN_VERSION_FIELD,
+    expected_domain_tag,
     SCOPED_NULLIFIER_V1,
 };
 
@@ -37,11 +35,7 @@ fn main(
         nullifier_secret,
         evidence_digest,
     ]);
-    let domain_tag = std::hash::pedersen_hash([
-        DOMAIN_PROTOCOL_FIELD,
-        DOMAIN_VERSION_FIELD,
-        DOMAIN_NETWORK_FIELD,
-    ]);
+    let domain_tag = expected_domain_tag();
 
     (credential_root, nullifier, domain_tag)
 }
@@ -117,7 +111,7 @@ fn test_compute_revocation_tree_params() {
 // zk/vectors/verifier_conformance_v2.json, including zero and max-field edge cases.
 // =============================================================================
 
-global EXPECTED_DOMAIN_TAG: Field = 0x4aa038f0a27b6675d7122ae2d4e197c21e83fbe30143a5c83ff35c9514b92c55;
+global EXPECTED_DOMAIN_TAG: Field = 0x1a73cc6eda5fc8454c3bf62ef9defb0e6e1f7d999ab6857a39692821856ad61d;
 global MAX_FIELD: Field = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000000;
 
 fn compute_expected_nullifier(

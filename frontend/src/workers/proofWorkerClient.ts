@@ -8,7 +8,6 @@ import type {
 } from './proofWorker.types'
 import { assessWorkerSupport } from './multiBrowserWorkerSupport'
 
-const PROOF_TIMEOUT_MS = 60_000
 const HEX64 = /^[0-9a-fA-F]{64}$/
 const MAX_SECRET_BYTES = 256
 

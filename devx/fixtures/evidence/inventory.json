@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "format": "harpocrates.evidence-fixture-inventory",
+  "generatedBy": "devx/validate_evidence_inventory.py",
+  "generatedAt": "2026-11-23T13:41:00Z",
+  "fixtures": [
+    {
+      "id": "rfc3161/valid-leaf-int-root",
+      "path": "devx/fixtures/rfc3161/valid-leaf-int-root.json",
+      "description": "Positive: leaf\u2192intermediate terminates at configured trust root",
+      "generator": "devx/fixtures/rfc3161/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "18d616bed79ab199461e6bab26bcff9566ffbdb2ff031a77a55d57c17168c8a6",
+      "validator": "devx/validate_rfc3161_chains.py",
+      "expect": {
+        "ok": true,
+        "status": "valid"
+      }
+    },
+    {
+      "id": "rfc3161/untrusted-root",
+      "path": "devx/fixtures/rfc3161/untrusted-root.json",
+      "description": "Negative: chain does not anchor to a configured trust root",
+      "generator": "devx/fixtures/rfc3161/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "3efa3a67ac594ea39b849d4334c1a06208dcaece4f462bd08de4be132bed676a",
+      "validator": "devx/validate_rfc3161_chains.py",
+      "expect": {
+        "ok": false,
+        "status": "untrusted",
+        "errorCode": "ERR_UNTRUSTED_ROOT"
+      }
+    },
+    {
+      "id": "rfc3161/revoked-leaf",
+      "path": "devx/fixtures/rfc3161/revoked-leaf.json",
+      "description": "Negative: leaf certificate serial appears in revoked list",
+      "generator": "devx/fixtures/rfc3161/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "092249fab609e40e7a327705603c1d7574c06593f7a4bb22e498bfde6d6b26af",
+      "validator": "devx/validate_rfc3161_chains.py",
+      "expect": {
+        "ok": false,
+        "status": "revoked",
+        "errorCode": "ERR_REVOKED"
+      }
+    },
+    {
+      "id": "rfc3161/expired-leaf",
+      "path": "devx/fixtures/rfc3161/expired-leaf.json",
+      "description": "Negative: leaf certificate not valid at evaluation time",
+      "generator": "devx/fixtures/rfc3161/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "2656f9f4f82c9fdaf9fd19db685b414d0c21223f1930f1954ae862556a0c395a",
+      "validator": "devx/validate_rfc3161_chains.py",
+      "expect": {
+        "ok": false,
+        "status": "expired",
+        "errorCode": "ERR_EXPIRED"
+      }
+    },
+    {
+      "id": "rfc3161/malformed-entry",
+      "path": "devx/fixtures/rfc3161/malformed-entry.json",
+      "description": "Negative: invalid certificate encoding in chain",
+      "generator": "devx/fixtures/rfc3161/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "4e73818677587490fd24b666353975697a33b4c2b68b7e2762b4b6e2285c602d",
+      "validator": "devx/validate_rfc3161_chains.py",
+      "expect": {
+        "ok": false,
+        "status": "malformed",
+        "errorCode": "ERR_MALFORMED"
+      }
+    },
+    {
+      "id": "c2pa/valid-c2pa-manifest",
+      "path": "devx/fixtures/c2pa/valid-c2pa-manifest.json",
+      "description": "Well-formed C2PA manifest containing an embedded Harpocrates metadata assertion",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "e13d33ffd67ac2acec9ed7ea59fd17b23da4b0acc3c5ac1267eede1a81e78d0c",
+      "validator": "devx/validate_c2pa_manifests.py",
+      "expect": {
+        "ok": true,
+        "status": "valid"
+      }
+    },
+    {
+      "id": "c2pa/malformed-manifest",
+      "path": "devx/fixtures/c2pa/malformed-manifest.json",
+      "description": "Invalid JSON / structural schema mismatch",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "747f7985a261fa8c531ed3be715e20d3f2f6ff46a5c2f21a6719cfe69503e321",
+      "validator": "devx/validate_c2pa_manifests.py",
+      "expect": {
+        "ok": false,
+        "status": "malformed",
+        "errorCode": "ERR_MALFORMED"
+      }
+    },
+    {
+      "id": "c2pa/oversized-manifest",
+      "path": "devx/fixtures/c2pa/oversized-manifest.json",
+      "description": "Manifest exceeding maximum byte size or assertion collection limits",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "2f97543ddaecea6d76205acd2c114a145370d63ff6f0aa410ca87e31a881fb1f",
+      "validator": "devx/validate_c2pa_manifests.py",
+      "expect": {
+        "ok": false,
+        "status": "oversized",
+        "errorCode": "ERR_OVERSIZED"
+      }
+    },
+    {
+      "id": "c2pa/unsupported-version",
+      "path": "devx/fixtures/c2pa/unsupported-version.json",
+      "description": "Manifest declaring an unsupported C2PA spec version",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "caa4150092daa3735040b94fbfd4e7fa583a21af016545f2dd9c55e7e42d6d4f",
+      "validator": "devx/validate_c2pa_manifests.py",
+      "expect": {
+        "ok": false,
+        "status": "unsupported",
+        "errorCode": "ERR_UNSUPPORTED_VERSION"
+      }
+    },
+    {
+      "id": "c2pa/expired-manifest",
+      "path": "devx/fixtures/c2pa/expired-manifest.json",
+      "description": "Manifest with an expired claim timestamp or status",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "89a92a78120b7e236ff707550d2bc386b787b512282009f1a2f166fc0f88b72a",
+      "validator": "devx/validate_c2pa_manifests.py",
+      "expect": {
+        "ok": false,
+        "status": "expired",
+        "errorCode": "ERR_EXPIRED"
+      }
+    },
+    {
+      "id": "c2pa/revoked-manifest",
+      "path": "devx/fixtures/c2pa/revoked-manifest.json",
+      "description": "Manifest with a revoked assertion status",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "8f2dd5c142d928dea1222fd870df1caa2c62e3eb5edce2fb215bb32afd564e7e",
+      "validator": "devx/validate_c2pa_manifests.py",
+      "expect": {
+        "ok": false,
+        "status": "revoked",
+        "errorCode": "ERR_REVOKED"
+      }
+    },
+    {
+      "id": "c2pa/manifest",
+      "path": "devx/fixtures/c2pa/manifest.json",
+      "description": "Base C2PA manifest for export generation",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "c71081d6c4e7be9d716304f2908b0c6c391afc50364ec0d213be4c19d43aba84",
+      "validator": "devx/validate_c2pa_manifests.py"
+    },
+    {
+      "id": "c2pa/receipt",
+      "path": "devx/fixtures/c2pa/receipt.json",
+      "description": "C2PA receipt for export validation",
+      "generator": "devx/fixtures/c2pa/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "0628f5c8c3dac7f4756afc51f25819ede422bb640bb834ea0189255aa11cd8d5",
+      "validator": "devx/validate_c2pa_fixture.py"
+    },
+    {
+      "id": "c2pa/expected-export",
+      "path": "devx/fixtures/c2pa/expected-export.json",
+      "description": "Deterministic C2PA export fixture for CLI validation",
+      "generator": "cli/dist/cli.js c2pa",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "6eb3c684bbf5c0bd5f7406fd4af1b26d3748fa44ce9df7f4422cb963d75390b7",
+      "validator": "devx/validate_c2pa_fixture.py",
+      "expect": {
+        "deterministic": true,
+        "privacySafe": true,
+        "byteIdentical": true
+      }
+    },
+    {
+      "id": "e2e-env-matrix/profiles",
+      "path": "devx/fixtures/e2e-env-matrix/profiles.json",
+      "description": "Environment profiles for end-to-end integration testing",
+      "generator": "devx/fixtures/e2e-env-matrix/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "b605ddaff5142cb01256b3af23f544f8388e41d938e9f973a1a75b1290e73215",
+      "validator": "devx/e2e_env_matrix.py"
+    },
+    {
+      "id": "noir/aggregation_vectors",
+      "path": "zk/noir/fixtures/aggregation_vectors.json",
+      "description": "Test vectors for proof aggregation circuits",
+      "generator": "zk/noir/fixtures/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "cee72c07b5e21fbba4a0206f8d2587d1d68b10bdf15b36b72a986cda171db3f3",
+      "validator": "nargo test",
+      "allowSensitiveKeys": true
+    },
+    {
+      "id": "noir/revocation_vectors",
+      "path": "zk/noir/fixtures/revocation_vectors.json",
+      "description": "Test vectors for revocation proof circuits",
+      "generator": "zk/noir/fixtures/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "c11f2de857b63d17b4369209d693fa006021639003bc5e665b571d549cba6633",
+      "validator": "nargo test",
+      "allowSensitiveKeys": true
+    },
+    {
+      "id": "noir/scoped_nullifier_vectors",
+      "path": "zk/noir/fixtures/scoped_nullifier_vectors.json",
+      "description": "Test vectors for scoped nullifier circuits",
+      "generator": "zk/noir/fixtures/generate.py",
+      "license": "Apache-2.0",
+      "schemaVersion": 1,
+      "sha256": "e0460bc97c850aa18929dee02e30706195856ae4fec38fbc8b1b8d91b07a601e",
+      "validator": "nargo test",
+      "allowSensitiveKeys": true
+    }
+  ]
+}

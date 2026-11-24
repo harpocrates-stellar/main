@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -384,3 +385,183 @@ class TestBuildWorkflows:
         assert commands_run[3] == ["nargo", "execute", "witness"]
         assert commands_run[4][:2] == ["bb", "prove"]
         assert commands_run[5][:2] == ["bb", "verify"]
+
+
+# ==============================================================================
+# Atomic manifest promotion (#1220)
+# ==============================================================================
+
+
+class FakeManifestRunner:
+    """Dispatch fake subprocesses for the build driver's manifest workflow."""
+
+    def __init__(
+        self,
+        *,
+        write_output: bool = True,
+        verify_status: int = 0,
+        fail_nargo_check: bool = False,
+    ) -> None:
+        self.write_output = write_output
+        self.verify_status = verify_status
+        self.fail_nargo_check = fail_nargo_check
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd, **kwargs):
+        cmd = list(cmd)
+        self.calls.append(cmd)
+        if cmd[0] == "nargo":
+            if "--version" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="nargo version = 1.0.0-beta.9\n", stderr=""
+                )
+            if self.fail_nargo_check and "check" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[0] == "bb":
+            if "--version" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0.87.0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[0] == sys.executable:
+            if "check-coverage" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "write" in cmd:
+                if self.write_output:
+                    output = Path(cmd[cmd.index("--output") + 1])
+                    output.write_text(
+                        '{"format":"harpocrates.zk-artifact-manifest","version":1}\n',
+                        encoding="utf-8",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "verify" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, self.verify_status, stdout="", stderr=""
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def manifest_calls(self, action: str) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == sys.executable and action in c]
+
+    def arg(self, cmd: list[str], flag: str) -> str:
+        return cmd[cmd.index(flag) + 1]
+
+
+def _single_build_args(tmp_path: Path, manifest_path: Path):
+    lock_path = tmp_path / "zk" / "toolchain.lock.json"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "format": "harpocrates.zk-toolchain-lock",
+                "version": 1,
+                "toolchain": {
+                    "nargo": {"version": "1.0.0-beta.9"},
+                    "barretenberg": {"version": "0.87.0"},
+                    "proving_scheme": "ultra_honk",
+                    "oracle_hash": "keccak",
+                },
+                "environment": {"SOURCE_DATE_EPOCH": "0", "TZ": "UTC"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return bc.create_parser().parse_args(
+        [
+            "build",
+            "all",
+            "--single",
+            "--manifest",
+            str(manifest_path),
+            "--lock",
+            str(lock_path),
+        ]
+    )
+
+
+class TestManifestPromotion:
+    def test_single_build_verifies_staged_manifest_before_promotion(
+        self, tmp_path: Path
+    ):
+        manifest_path = tmp_path / "zk" / "artifacts.manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text("previous\n", encoding="utf-8")
+        args = _single_build_args(tmp_path, manifest_path)
+        runner = FakeManifestRunner()
+
+        rc = bc.cmd_build(args, repo_root=tmp_path, runner=runner)
+
+        assert rc == bc.EXIT_OK
+        write_calls = runner.manifest_calls("write")
+        verify_calls = runner.manifest_calls("verify")
+        assert len(write_calls) == 1
+        assert len(verify_calls) == 1
+        staged = Path(runner.arg(write_calls[0], "--output"))
+        # Staged on the target's filesystem (a sibling directory) so the final
+        # rename is atomic, but never at the published path itself.
+        assert staged.parent.parent == manifest_path.parent
+        assert staged != manifest_path
+        assert runner.arg(verify_calls[0], "--manifest") == str(staged)
+        assert not staged.exists()
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["version"] == 1
+        assert list(manifest_path.parent.glob(f".{manifest_path.name}.*")) == []
+
+    def test_failed_verification_retains_previous_manifest(self, tmp_path: Path):
+        manifest_path = tmp_path / "zk" / "artifacts.manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text("previous\n", encoding="utf-8")
+        args = _single_build_args(tmp_path, manifest_path)
+        runner = FakeManifestRunner(verify_status=bc.EXIT_DRIFT)
+
+        with pytest.raises(bc.BuildError, match="previous manifest retained"):
+            bc.cmd_build(args, repo_root=tmp_path, runner=runner)
+
+        assert manifest_path.read_text(encoding="utf-8") == "previous\n"
+        assert list(manifest_path.parent.glob(f".{manifest_path.name}.*")) == []
+
+    def test_missing_staged_output_retains_previous_manifest(self, tmp_path: Path):
+        manifest_path = tmp_path / "zk" / "artifacts.manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text("previous\n", encoding="utf-8")
+        args = _single_build_args(tmp_path, manifest_path)
+        runner = FakeManifestRunner(write_output=False)
+
+        with pytest.raises(bc.BuildError, match="produced no output"):
+            bc.cmd_build(args, repo_root=tmp_path, runner=runner)
+
+        assert manifest_path.read_text(encoding="utf-8") == "previous\n"
+
+    def test_failed_build_retains_previous_manifest(self, tmp_path: Path):
+        manifest_path = tmp_path / "zk" / "artifacts.manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text("previous\n", encoding="utf-8")
+        (tmp_path / "zk" / "noir" / "silent_witness").mkdir(parents=True)
+        args = _single_build_args(tmp_path, manifest_path)
+        runner = FakeManifestRunner(fail_nargo_check=True)
+
+        with pytest.raises(bc.BuildError, match="nargo check failed"):
+            bc.cmd_build(args, repo_root=tmp_path, runner=runner)
+
+        assert manifest_path.read_text(encoding="utf-8") == "previous\n"
+        assert runner.manifest_calls("write") == []
+
+    def test_publish_manifest_file_is_atomic(self, tmp_path: Path):
+        manifest_path = tmp_path / "zk" / "artifacts.manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text("previous\n", encoding="utf-8")
+        source = tmp_path / "second.json"
+        source.write_text("new\n", encoding="utf-8")
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text("{}", encoding="utf-8")
+        runner = FakeManifestRunner()
+
+        bc.publish_manifest_file(
+            source,
+            manifest_path,
+            lock_path,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+
+        assert manifest_path.read_text(encoding="utf-8") == "new\n"
+        assert source.read_text(encoding="utf-8") == "new\n"
+        assert len(runner.manifest_calls("verify")) == 1
