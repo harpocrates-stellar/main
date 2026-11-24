@@ -227,6 +227,20 @@ tag use the same encodings where they are shared. A new or changed difference
 must be reviewed and recorded explicitly; the report does not normalize values
 or imply that fields with the same name are interchangeable.
 
+For a compatibility gate against a reviewed Git base, pass its commit:
+
+```bash
+python zk/tools/public_input_compatibility.py --base-ref <base-commit>
+```
+
+The gate compares each tracked Noir public signature and circuit version, plus
+the Silent Witness statement descriptor, input-schema frames, and conformance
+vector schemas. A breaking public-input change must increase that circuit's
+version. Silent Witness additionally requires a new versioned frame and vector
+schema while preserving previously reviewed schemas. The `input_schema_version`
+versions the browser input envelope; it is not a substitute for the circuit
+version. CI supplies the pull request base commit automatically.
+
 ```bash
 # Unified driver commands:
 python zk/tools/build_circuits.py build               # double build + compare, write manifest
