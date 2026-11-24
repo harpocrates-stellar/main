@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import functools
 import ipaddress
+import db
 import hashlib
 import json
 import logging
@@ -817,7 +818,7 @@ def create_app() -> Flask:
         app.logger.error("Unhandled runtime error: %s", error, exc_info=True)
         return error_response(
             code=INTERNAL_ERROR,
-            message=str(error) or "internal server error",
+            message=safe_runtime_message(error),
             status=500,
         )
 
@@ -1459,11 +1460,7 @@ def create_app() -> Flask:
         try:
             parsed_limit = clamp_lineage_limit(limit)
         except (TypeError, ValueError):
-            return error_response(
-                code=VALIDATION_ERROR,
-                message="limit must be a positive integer",
-                status=400,
-            )
+            return jsonify({"error": "limit must be a positive integer"}), 400
 
         try:
             validated_actor_address = validate_source_address(actor_address)
@@ -1670,7 +1667,8 @@ def create_app() -> Flask:
         try:
             normalized_tx_hash = normalize_tx_hash(tx_hash)
             normalized_tx_status = normalize_tx_status(tx_status)
-            if normalized_tx_hash:
+            if normalized_tx_hash and normalized_tx_status is None:
+                # A tx hash without a status is still awaiting confirmation.
                 normalized_tx_status = "pending"
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -3004,6 +3002,28 @@ def redact_metadata(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
     return redact_sensitive(value)
+
+
+_SENSITIVE_MESSAGE_RE = re.compile(
+    r"secret|credential|password|passwd|token|api[_-]?key|private|bearer|authorization",
+    re.IGNORECASE,
+)
+
+
+def safe_runtime_message(error: BaseException) -> str:
+    """Return a client-safe message for an unexpected runtime failure.
+
+    Application-authored operational messages (``"database write failed"``,
+    ``"ffmpeg is required ..."``) are useful to operators, but arbitrary
+    exception text may carry credentials or paths, so anything that looks
+    sensitive (or is suspiciously long) collapses to a generic message.
+    """
+    text = str(error).strip() if error is not None else ""
+    if not text or len(text) > 200:
+        return "internal server error"
+    if _SENSITIVE_MESSAGE_RE.search(text):
+        return "internal server error"
+    return text
 
 
 def video_tooling_ready() -> bool:

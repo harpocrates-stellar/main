@@ -426,7 +426,12 @@ class ApiRouteConformanceTest(unittest.TestCase):
         self.assertEqual(schema["info"]["title"], "Harpocrates API")
 
         documented = {path: set(methods) for path, methods in schema["paths"].items()}
-        live = _live_routes(self.app)
+        # The document uses OpenAPI-style {param} segments; normalize the live
+        # Flask rules the same way before comparing.
+        live = {
+            generate_api_schema._normalize_path(rule): methods
+            for rule, methods in _live_routes(self.app).items()
+        }
 
         # The document must describe exactly the routes the AST can see.
         self.assertEqual(set(documented), set(live) - set(DECLARED_OPENAPI_GAP))
@@ -449,7 +454,10 @@ class ApiRouteConformanceTest(unittest.TestCase):
         schema = generate_api_schema.generate_schema(
             self.app_py, BACKEND_DIR / "schemas"
         )
-        live = _live_routes(self.app)
+        live = {
+            generate_api_schema._normalize_path(rule): methods
+            for rule, methods in _live_routes(self.app).items()
+        }
         for path in schema["paths"]:
             self.assertIn(
                 path,

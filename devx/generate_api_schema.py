@@ -25,8 +25,14 @@ def extract_routes_from_ast(app_path: Path):
     return routes
 
 def _normalize_path(path: str) -> str:
-    # Convert Flask-style <param> segments to OpenAPI {param} segments.
-    return re.sub(r"<([^>]+)>", r"{\1}", path)
+    # Convert Flask-style <param> and <converter:param> segments to OpenAPI
+    # {param} segments (the converter, e.g. ``int:``, is dropped).
+    def _repl(match):
+        name = match.group(1)
+        if ":" in name:
+            name = name.split(":", 1)[1]
+        return "{" + name + "}"
+    return re.sub(r"<([^>]+)>", _repl, path)
 
 def _extract_path_params(path: str):
     params = []

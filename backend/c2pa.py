@@ -191,12 +191,25 @@ class C2paHarpocratesBinding:
 
 
 @dataclass
+@dataclass(repr=False)
 class C2paUnknownAssertion:
-    """An assertion whose label or content is not recognised by this version."""
+    """An assertion whose label or content is not recognised by this version.
+
+    The raw payload is kept on ``.data`` for full-fidelity consumers, but the
+    ``repr`` deliberately omits it: unknown ingredient data may carry
+    privacy-sensitive material (source locations, identifying metadata) and
+    the string form must never surface it.
+    """
 
     label: str
     data: Any
     unsupported_semantics: bool = True
+
+    def __repr__(self) -> str:  # noqa: D105
+        return (
+            f"C2paUnknownAssertion(label={self.label!r}, "
+            f"unsupported_semantics={self.unsupported_semantics!r})"
+        )
 
 @dataclass(frozen=True)
 class PrivacyFlags:

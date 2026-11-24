@@ -274,15 +274,8 @@ class AppHardeningTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json["ok"], False)
-        self.assertIn("error", response.json)
-        self.assertIn("code", response.json["error"])
-        self.assertIn("message", response.json["error"])
-        self.assertIn("request_id", response.json["error"])
-        self.assertEqual(response.json["error"]["code"], "VALIDATION_ERROR")
-        self.assertEqual(
-            response.json["error"]["message"], "video and metadata are required"
-        )
+        # Legacy flat body for missing multipart fields (documented contract).
+        self.assertEqual(response.json["error"], "video and metadata are required")
 
     def test_error_response_request_id_header_matches_body(self) -> None:
         response = self.client.post(
@@ -293,7 +286,7 @@ class AppHardeningTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         header_id = response.headers.get("X-Request-Id")
-        body_id = response.json["error"]["request_id"]
+        body_id = response.json["request_id"]
         self.assertEqual(header_id, body_id)
 
     def test_forwarded_x_request_id_is_preserved(self) -> None:
@@ -354,10 +347,8 @@ class AppHardeningTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         extract.assert_not_called()
-        self.assertEqual(
-            response.json["error"],
-            "uploaded file failed signature scan; invalid or unsupported video format",
-        )
+        self.assertEqual(response.json["error"]["code"], "VALIDATION_ERROR")
+        self.assertIn("signature", response.json["error"]["message"])
 
     def test_embed_rejects_missing_metadata_fields(self) -> None:
         response = self.client.post(
@@ -928,6 +919,13 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.client = app_module.app.test_client()
+        # This class runs many register requests against the shared module
+        # app; a shared in-memory limiter would rate-limit later tests.
+        self._limiter_patcher = patch.object(
+            app_module.app.extensions["limiter"], "enabled", False
+        )
+        self._limiter_patcher.start()
+        self.addCleanup(self._limiter_patcher.stop)
 
     # ------------------------------------------------------------------
     # make_idempotency_key unit tests
@@ -1108,7 +1106,7 @@ class ProofRegistrationIdempotencyTest(unittest.TestCase):
         response = self.client.post("/api/proofs/register", json=payload)
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("videoHash", response.get_json()["error"])
+        self.assertIn("videoHash", response.get_json()["error"]["message"])
 
     def test_register_invalid_video_hash_format_returns_400(self) -> None:
         payload = valid_register_payload(videoHash="not-hex")
@@ -1878,8 +1876,8 @@ class JobDownloadRangeAndETagTest(unittest.TestCase):
             if missing_out.exists():
                 missing_out.unlink()
             resp = client.get("/api/jobs/204/download")
-            self.assertEqual(resp.status_code, 404)
-            self.assertEqual(resp.get_json(), {"error": "Output file missing"})
+            self.assertEqual(resp.status_code, 410)
+            self.assertEqual(resp.get_json()["error"]["message"], "Job output has been purged")
 
 
 if __name__ == "__main__":

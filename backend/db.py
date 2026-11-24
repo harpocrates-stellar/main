@@ -450,6 +450,46 @@ def find_lineage_by_actor(actor_address: str, limit: int = 25) -> list[dict[str,
             return [dict(row) for row in cursor.fetchall()]
 
 
+# Process-local proof events used when no database is configured (tests,
+# single-process deployments). Mirrors the row shape returned by Postgres.
+_MEMORY_PROOF_EVENTS: dict[int, dict[str, Any]] = {}
+_MEMORY_PROOF_EVENTS_LOCK = threading.RLock()
+_MEMORY_PROOF_EVENT_SEQ = 0
+
+
+def reset_memory_proof_events() -> None:
+    """Drop every process-local proof event (test isolation helper)."""
+    global _MEMORY_PROOF_EVENT_SEQ
+    with _MEMORY_PROOF_EVENTS_LOCK:
+        _MEMORY_PROOF_EVENTS.clear()
+        _MEMORY_PROOF_EVENT_SEQ = 0
+
+
+def _insert_memory_proof_event(**fields: Any) -> dict[str, Any]:
+    global _MEMORY_PROOF_EVENT_SEQ
+    with _MEMORY_PROOF_EVENTS_LOCK:
+        _MEMORY_PROOF_EVENT_SEQ += 1
+        row = {
+            "id": _MEMORY_PROOF_EVENT_SEQ,
+            "created_at": datetime.now(timezone.utc),
+            **fields,
+        }
+        row.setdefault("tx_status", None)
+        _MEMORY_PROOF_EVENTS[row["id"]] = row
+        return dict(row)
+
+
+def _memory_proof_events_by(**match: Any) -> list[dict[str, Any]]:
+    with _MEMORY_PROOF_EVENTS_LOCK:
+        rows = [
+            dict(row)
+            for row in _MEMORY_PROOF_EVENTS.values()
+            if all(row.get(key) == value for key, value in match.items() if value is not None)
+        ]
+    rows.sort(key=lambda row: row["id"], reverse=True)
+    return rows
+
+
 def insert_proof_event(
     *,
     event_type: str,
@@ -470,7 +510,24 @@ def insert_proof_event(
     claimed_capture_time: str | None = None,
 ) -> dict[str, Any] | None:
     if not database_url():
-        return None
+        return _insert_memory_proof_event(
+            event_type=event_type,
+            file_name=file_name,
+            video_hash=video_hash,
+            metadata_hash=metadata_hash,
+            proof_id=proof_id,
+            tier=tier,
+            embedded_hash=embedded_hash,
+            tx_hash=tx_hash,
+            tx_status=tx_status,
+            source_address=source_address,
+            contract_id=contract_id,
+            retention_class=retention_class,
+            expires_at=expires_at,
+            metadata=metadata,
+            time_attestation=time_attestation,
+            claimed_capture_time=claimed_capture_time,
+        )
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -533,7 +590,7 @@ def list_proof_events(
     the next page, or ``None`` when there are no further rows.
     """
     if not database_url():
-        return [], None
+        return _memory_proof_events_by(), None
 
     page_size = clamp_proof_events_limit(limit)
     fetch_size = page_size + 1
@@ -609,7 +666,7 @@ def find_proof_events_by_video(
     cursor_id: int | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     if not database_url():
-        return [], None
+        return _memory_proof_events_by(video_hash=video_hash)[:limit], None
 
     page_size = clamp_proof_events_limit(limit)
     fetch_size = page_size + 1
