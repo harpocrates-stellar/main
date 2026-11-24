@@ -71,3 +71,5 @@ export const VERIFICATION_LIMITS = {
   maxFileSizeBytes: 100 * 1024 * 1024,
   supportedTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/avi'],
 } as const
+
+export { getMetadataEnvelope } from '../lib/harpocratesRegistry'
