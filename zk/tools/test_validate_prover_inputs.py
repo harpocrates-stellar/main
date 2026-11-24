@@ -25,6 +25,7 @@ from validate_prover_inputs import (  # noqa: E402
     validate_field_element,
     validate_prover_file,
     validate_prover_inputs,
+    validate_scope_identifier,
     main,
 )
 
@@ -169,12 +170,79 @@ def test_cli_exit_code_and_stderr(tmp_path, capsys):
     code = main([str(bad_toml), "--schema", str(SCHEMA_PATH)])
     assert code != 0
     captured = capsys.readouterr()
-    assert "not_a_hex_or_dec" not in captured.stderr
-    assert "not_a_hex_or_dec" not in captured.stdout
-    assert "missing_required_field" in captured.stderr or "malformed_field_element" in captured.stderr
+    err = getattr(captured, "err", getattr(captured, "stderr", ""))
+    out = getattr(captured, "out", getattr(captured, "stdout", ""))
+    assert "not_a_hex_or_dec" not in err
+    assert "not_a_hex_or_dec" not in out
+    assert "missing_required_field" in err or "malformed_field_element" in err
 
 
 def test_cli_success(tmp_path):
     example_path = REPO_ROOT / "zk" / "noir" / "silent_witness" / "Prover.toml.example"
     code = main([str(example_path), "--schema", str(SCHEMA_PATH)])
     assert code == 0
+
+
+@pytest.mark.parametrize(
+    ("raw_scope", "expected"),
+    [
+        ("0", 0),
+        ("42", 42),
+        (0, 0),
+        (1111, 1111),
+        (str(BN254_MODULUS - 1), BN254_MODULUS - 1),
+    ],
+)
+def test_validate_scope_identifier_canonical_accepts(raw_scope, expected):
+    assert validate_scope_identifier(raw_scope, "verifier_scope", BN254_MODULUS) == expected
+
+
+@pytest.mark.parametrize(
+    "bad_scope",
+    [
+        " 0",
+        "0 ",
+        "\t42",
+        "00",
+        "01",
+        "0042",
+        "0x0",
+        "0x2a",
+        "0X2A",
+        "+1",
+        "-1",
+        "",
+        True,
+        None,
+    ],
+)
+def test_validate_scope_identifier_noncanonical_rejects(bad_scope):
+    with pytest.raises(ProverInputValidationError) as exc:
+        validate_scope_identifier(bad_scope, "verifier_scope", BN254_MODULUS)
+    assert exc.value.code == "noncanonical_scope_identifier"
+    assert exc.value.field == "verifier_scope"
+    if isinstance(bad_scope, str) and bad_scope:
+        assert bad_scope not in str(exc.value)
+
+
+def test_validate_scope_identifier_out_of_range():
+    with pytest.raises(ProverInputValidationError) as exc:
+        validate_scope_identifier(str(BN254_MODULUS), "verifier_scope", BN254_MODULUS)
+    assert exc.value.code == "field_element_out_of_range"
+    assert exc.value.field == "verifier_scope"
+
+
+def test_validate_prover_inputs_rejects_noncanonical_verifier_scope():
+    prover_data = {
+        "credential_secret": "12345",
+        "nullifier_secret": "67890",
+        "video_hash_hi": "1",
+        "video_hash_lo": "2",
+        "verifier_scope": "0x2a",
+        "epoch": "0",
+    }
+    schema = load_schema(SCHEMA_PATH)
+    with pytest.raises(ProverInputValidationError) as exc:
+        validate_prover_inputs(prover_data, schema=schema)
+    assert exc.value.code == "noncanonical_scope_identifier"
+    assert exc.value.field == "verifier_scope"

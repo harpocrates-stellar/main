@@ -8,11 +8,15 @@ import shutil
 import struct
 import subprocess
 import threading
+import warnings
 import zlib
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+from metrics import collector as metrics_collector
 from tracing import traced
 
 import numpy as np
@@ -26,8 +30,78 @@ from envelope import (
     canonical_metadata_hash,
 )
 
+from metrics import collector as metrics_collector
+
 BORDER_BLOCK = 6
 BORDER_STRIDE = 2
+
+DEFAULT_STEGO_MEMORY_LIMIT_BYTES = int(os.getenv("STEGO_MEMORY_LIMIT_BYTES", str(536_870_912)))
+DEFAULT_STEGO_CPU_LIMIT_SECONDS = int(os.getenv("STEGO_CPU_LIMIT_SECONDS", "60"))
+DEFAULT_STEGO_POOL_MAX_WORKERS = int(os.getenv("STEGO_POOL_MAX_WORKERS", "4"))
+
+_STEGO_POOL: ProcessPoolExecutor | None = None
+_STEGO_POOL_LOCK = threading.Lock()
+
+
+class StegoError(RuntimeError):
+    """Base exception for steganography processing errors."""
+
+
+class StegoLimitExceededError(StegoError):
+    """Raised when a steganography worker exceeds memory or CPU limits."""
+
+
+def _init_stego_worker(memory_limit_bytes: int, cpu_limit_seconds: int) -> None:
+    if os.name == "nt":
+        warnings.warn(
+            "resource.setrlimit are not supported on Windows; stego worker running without OS-level rlimits",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    try:
+        import resource
+
+        if memory_limit_bytes and memory_limit_bytes > 0:
+            resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, memory_limit_bytes))
+        if cpu_limit_seconds and cpu_limit_seconds > 0:
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit_seconds, cpu_limit_seconds))
+    except (ImportError, ValueError, OSError):
+        pass
+
+
+def _get_stego_pool(
+    memory_limit_bytes: int | None = None,
+    cpu_limit_seconds: int | None = None,
+) -> ProcessPoolExecutor:
+    global _STEGO_POOL
+    with _STEGO_POOL_LOCK:
+        if _STEGO_POOL is None:
+            mem_limit = (
+                memory_limit_bytes
+                if memory_limit_bytes is not None
+                else DEFAULT_STEGO_MEMORY_LIMIT_BYTES
+            )
+            cpu_limit = (
+                cpu_limit_seconds
+                if cpu_limit_seconds is not None
+                else DEFAULT_STEGO_CPU_LIMIT_SECONDS
+            )
+            _STEGO_POOL = ProcessPoolExecutor(
+                max_workers=DEFAULT_STEGO_POOL_MAX_WORKERS,
+                initializer=_init_stego_worker,
+                initargs=(mem_limit, cpu_limit),
+            )
+        return _STEGO_POOL
+
+
+def _reset_stego_pool() -> None:
+    global _STEGO_POOL
+    with _STEGO_POOL_LOCK:
+        pool = _STEGO_POOL
+        _STEGO_POOL = None
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 @dataclass(frozen=True)
@@ -36,6 +110,52 @@ class VideoInfo:
     height: int
     fps: str
     frame_count: int | None
+
+
+_stego_pool: Optional[ProcessPoolExecutor] = None
+_pool_lock = threading.Lock()
+
+
+def _get_stego_pool(
+    memory_limit_bytes: int | None = None,
+    cpu_limit_seconds: int | None = None,
+) -> ProcessPoolExecutor:
+    """Get or create the global steganography process pool."""
+    global _stego_pool
+    with _pool_lock:
+        if _stego_pool is None:
+            _stego_pool = ProcessPoolExecutor(
+                max_workers=1,
+                initializer=_init_stego_worker,
+                initargs=(memory_limit_bytes, cpu_limit_seconds),
+            )
+        return _stego_pool
+
+
+def _reset_stego_pool() -> None:
+    """Reset the global steganography process pool."""
+    global _stego_pool
+    with _pool_lock:
+        if _stego_pool is not None:
+            _stego_pool.shutdown(wait=False, cancel_futures=True)
+            _stego_pool = None
+
+
+def _init_stego_worker(memory_limit_bytes: int | None, cpu_limit_seconds: int | None) -> None:
+    """Initialize resource limits for a steganography worker process."""
+    if os.name == "posix":
+        try:
+            import resource
+            if memory_limit_bytes is not None:
+                resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, memory_limit_bytes))
+            if cpu_limit_seconds is not None:
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit_seconds, cpu_limit_seconds))
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to set resource limits: {e}", RuntimeWarning)
+    else:
+        import warnings
+        warnings.warn("resource.setrlimit are not supported on Windows; resource limits not enforced", RuntimeWarning)
 
 
 def sha256_file(path: Path) -> str:
@@ -50,20 +170,15 @@ def canonical_metadata_hash_compat(metadata: dict[str, Any]) -> str:
     return canonical_metadata_hash(metadata)
 
 
-@traced("media.embed", attributes={"media.operation": "embed"})
-def embed_metadata(
+def _embed_metadata_process(
     source_path: Path | str,
     output_path: Path | str,
     metadata: dict[str, Any],
     progress_callback: Callable[[int, int | None], None] | None = None,
 ) -> None:
-    """Embed ``metadata`` into the video.
-
-    ``progress_callback(frames_done, frames_total)`` is called after each frame is
-    written; ``frames_total`` is ``None`` when ffprobe cannot report a frame count.
-    """
+    """Internal worker function for embedding metadata."""
     ffmpeg = _require("ffmpeg")
-    info = _probe_video(source_path)
+    info = _probe_video(Path(source_path))
     version = metadata.get("version", 2)
     payload = pack_envelope(metadata, version=version)
     bits = _bytes_to_bits(payload)
@@ -142,10 +257,19 @@ def embed_metadata(
     source_path: Path | str,
     output_path: Path | str,
     metadata: dict[str, Any],
+    progress_callback: Callable[[int, int | None], None] | None = None,
     *,
     memory_limit_bytes: int | None = None,
     cpu_limit_seconds: int | None = None,
 ) -> None:
+    if progress_callback is not None:
+        _embed_metadata_process(
+            str(source_path),
+            str(output_path),
+            metadata,
+            progress_callback=progress_callback,
+        )
+        return
     pool = _get_stego_pool(
         memory_limit_bytes=memory_limit_bytes,
         cpu_limit_seconds=cpu_limit_seconds,
@@ -155,6 +279,7 @@ def embed_metadata(
         str(source_path),
         str(output_path),
         metadata,
+        progress_callback,
     )
     try:
         future.result()

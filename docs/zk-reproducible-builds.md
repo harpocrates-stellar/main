@@ -131,6 +131,11 @@ succeeding.
 
 ## State machine
 
+Before an artifact is inspected, its declared path is resolved against the
+selected release directory. Paths that resolve outside that directory,
+including paths escaping through symlinks, are rejected as fatal build errors
+before the external file is read. No manifest is written after such an error.
+
 Each declared artifact reaches exactly one terminal state per run:
 
 ```
@@ -149,6 +154,14 @@ promoted. Cancellation (SIGINT) is handled the same way: the double-build driver
 cleans its work directory on `EXIT INT TERM`, and the manifest is only written
 after every artifact has resolved.
 
+Manifest publication is also atomic. `build --single` writes the manifest to a
+staging file on the target filesystem, re-digests the built tree through
+`artifact_manifest.py verify`, and only then `os.replace`s the staged file over
+`zk/artifacts.manifest.json`. The double build promotes the compared second
+manifest the same way. A failed build subprocess, a failed staged verification,
+or a missing staged output leaves the previous manifest untouched, and
+`artifact_manifest.py write` stages its own output before publishing.
+
 ## Local verification
 
 Install the pinned toolchain (inside WSL on Windows — see `zk/noir/README.md`):
@@ -161,8 +174,10 @@ bbup   --version 0.87.0
 Then:
 
 ```bash
-# Full double build: build twice from clean, compare, write the manifest.
+# Full double build: build twice from clean in isolated output directories, compare, write the manifest.
 python zk/tools/build_circuits.py build
+python zk/tools/build_circuits.py build --report zk/repro-report.json
+python zk/tools/build_circuits.py build --report zk/repro-report.md --report-format markdown
 zk/noir/scripts/reproducible-build.sh
 
 # One build, write a manifest.
@@ -227,7 +242,9 @@ Both the script and the tool emit single-line JSON on **stderr**:
 | `manifest.written` | `path`, `artifacts`, `skipped`, `sources` | Success |
 | `drift.finding` | `detail` | One drift finding |
 | `verify.ok` / `verify.failed` | `artifacts` / `findings` | Verdict |
-| `compare.ok` / `compare.failed` | `artifacts` / `findings` | Double-build verdict |
+| `compare.ok` / `compare.failed` | `artifacts` / `findings`, `executable_drift`, `metadata_only_drift` | Double-build verdict |
+| `compare.report.written` | `path`, `format`, `status` | Reproducibility comparison report written |
+| `compare.metadata_drift` | `count`, `status` | Nondeterministic metadata-only drift allowed |
 | `coverage.ok` / `coverage.failed` | `circuits` / `findings` | Circuit-coverage verdict |
 | `run.fatal` / `run.error` / `run.cancelled` | `path`, `state`, `reason` | Terminal failure |
 

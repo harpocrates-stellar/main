@@ -54,6 +54,25 @@ class RetentionWorker:
             logging.INFO,
             {"event": "retention_worker_dry_run", "eligible_count": eligible},
         )
+        try:
+            from streaming_upload import preview_upload_session_retention
+            session_preview = preview_upload_session_retention()
+            log_structured(
+                LOGGER,
+                logging.INFO,
+                {
+                    "event": "retention_upload_sessions_dry_run",
+                    "eligible_count": session_preview.expired_count,
+                    "reclaimable_bytes": session_preview.reclaimable_bytes,
+                    "active_skipped": session_preview.active_skipped_count,
+                },
+            )
+        except Exception as error:
+            log_structured(
+                LOGGER,
+                logging.ERROR,
+                {"event": "retention_upload_sessions_error", "error_type": type(error).__name__},
+            )
 
     def _purge(self) -> None:
         if getattr(load_config(), "retention_dry_run", False):
@@ -88,6 +107,27 @@ class RetentionWorker:
                 LOGGER,
                 logging.ERROR,
                 {"event": "retention_job_files_error", "error_type": type(error).__name__},
+            )
+
+        try:
+            from streaming_upload import purge_expired_upload_sessions
+            purged_sessions, reclaimed_bytes, active_skipped = purge_expired_upload_sessions()
+            if purged_sessions > 0 or active_skipped > 0:
+                log_structured(
+                    LOGGER,
+                    logging.INFO,
+                    {
+                        "event": "retention_upload_sessions_purged",
+                        "count": purged_sessions,
+                        "reclaimed_bytes": reclaimed_bytes,
+                        "active_skipped": active_skipped,
+                    },
+                )
+        except Exception as error:
+            log_structured(
+                LOGGER,
+                logging.ERROR,
+                {"event": "retention_upload_sessions_error", "error_type": type(error).__name__},
             )
 
         config = load_config()

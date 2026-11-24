@@ -7,7 +7,7 @@ import json
 import pytest
 from flask import Flask
 
-from backend.analytics import routes as analytics_routes
+from analytics import routes as analytics_routes
 
 
 @pytest.fixture()

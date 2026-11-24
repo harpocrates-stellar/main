@@ -30,7 +30,7 @@ export {
   REQUIRED_EMBED_METADATA,
 } from './metadata.js'
 export type { HarpocratesMetadata, IdentityTier } from './metadata.js'
-export { createProofManifest, serializeManifest, parseManifest } from './manifest.js'
+export { createProofManifest, serializeManifest, parseManifest, readBoundedManifest, MAX_MANIFEST_BYTES } from './manifest.js'
 export type { ProofManifest, ManifestInput } from './manifest.js'
 export {
   lookupByVideoHash,
@@ -79,3 +79,42 @@ export {
 } from './verify-lineage.js'
 export type { LineageNode, LineageTreeResult, LineageFetcher } from './verify-lineage.js'
 export { resolveNetwork, DEFAULT_NETWORK_PASSPHRASE } from './network.js'
+export {
+  parseTrustPolicy,
+  compareTrustPolicies,
+  formatTrustPolicyComparison,
+  runCompareTrustPolicy,
+  PolicyParseError,
+} from './compare-trust-policy.js'
+
+export type {
+  TrustPolicy,
+  ReceiptDecision,
+  ReceiptDiff,
+  ManifestDecision,
+  ManifestDiff,
+  TrustPolicyComparisonReport,
+  RunCompareTrustPolicyIo,
+} from './compare-trust-policy.js'
+
+export {
+  checkCompatibility,
+  formatCompatReport,
+  runCheckCompat,
+  COMPAT_EXIT_CODES,
+} from './compat.js'
+
+export {
+  compareReceipts,
+  formatComparisonResult,
+  parseReceiptInput,
+  normalizeReceipt,
+} from './compare-receipt.js'
+export type {
+  ReceiptCategory,
+  ReceiptDifference,
+  ReceiptComparisonResult,
+  NormalizedCanonicalStatement,
+  NormalizedTrustProperties,
+  NormalizedReceipt,
+} from './compare-receipt.js'

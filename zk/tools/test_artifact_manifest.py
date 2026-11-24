@@ -1195,3 +1195,73 @@ def test_coverage_findings_never_contain_artifact_content(tmp_path: Path, monkey
     assert "AAA" not in captured
     assert "bytecode" not in captured
     assert "unpinned_circuit" in captured
+
+
+def test_digest_artifact_rejects_parent_traversal(tmp_path: Path, lock: am.Lock):
+    root = tmp_path / "release"
+    root.mkdir()
+    (tmp_path / "outside.bin").write_bytes(b"outside release")
+
+    declaration = {
+        "path": "../outside.bin",
+        "kind": "binary",
+        "role": "test",
+        "required": True,
+    }
+
+    with pytest.raises(am.ArtifactPathEscapeError):
+        am.digest_artifact(declaration, lock, root)
+
+
+def test_digest_artifact_rejects_symlink_escape(tmp_path: Path, lock: am.Lock):
+    root = tmp_path / "release"
+    root.mkdir()
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside release")
+
+    link = root / "artifact.bin"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlink creation is not supported in this environment")
+
+    declaration = {
+        "path": "artifact.bin",
+        "kind": "binary",
+        "role": "test",
+        "required": True,
+    }
+
+    with pytest.raises(am.ArtifactPathEscapeError):
+        am.digest_artifact(declaration, lock, root)
+
+
+# ── Atomic manifest write (#1220) ───────────────────────────────────────────
+
+
+def test_atomic_write_replaces_existing_manifest(tmp_path: Path):
+    target = tmp_path / "manifest.json"
+    target.write_text("previous\n", encoding="utf-8")
+
+    am.atomic_write_text(target, "new\n")
+
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert list(tmp_path.glob(".manifest.json.*")) == []
+
+
+def test_atomic_write_retains_previous_manifest_when_publish_fails(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "manifest.json"
+    target.write_text("previous\n", encoding="utf-8")
+
+    def fail_replace(source, destination):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(am.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="rename failed"):
+        am.atomic_write_text(target, "new\n")
+
+    assert target.read_text(encoding="utf-8") == "previous\n"
+    assert list(tmp_path.glob(".manifest.json.*")) == []

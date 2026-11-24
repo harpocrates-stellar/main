@@ -209,6 +209,24 @@ bbup
 
 Circuit artifact building, proof generation, and verification key management are driven by `zk/tools/build_circuits.py`. Toolchain versions, the hermetic environment, artifact normalization rules, and resource limits are pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json).
 
+The cross-circuit public-input compatibility report checks the actual `main`
+public-input order and `Field` types for Silent Witness, redacted ancestry, and
+selective disclosure, then reports encodings for identically named public
+fields. Run it from the repository root:
+
+```bash
+python zk/tools/public_input_compatibility.py
+```
+
+The command prints JSON and exits nonzero if a circuit's public-input order has
+drifted, a shared field lacks an encoding declaration, or an encoding difference
+does not exactly match its reviewed entry in `zk/tools/public_input_compatibility.py`.
+The current reviewed differences are the credential-root derivation, nullifier
+derivations, and public circuit-version values. Video-hash halves and the domain
+tag use the same encodings where they are shared. A new or changed difference
+must be reviewed and recorded explicitly; the report does not normalize values
+or imply that fields with the same name are interchangeable.
+
 ```bash
 # Unified driver commands:
 python zk/tools/build_circuits.py build               # double build + compare, write manifest
@@ -259,6 +277,31 @@ The public-input codec shared by the backend, browser, and Soroban registry is
 pinned by [`zk/vectors/verifier_conformance_v1.json`](../vectors/verifier_conformance_v1.json).
 See [docs/zk-conformance-vectors.md](../../docs/zk-conformance-vectors.md) and
 [docs/zk-fuzzing.md](../../docs/zk-fuzzing.md).
+
+## Scoped statement descriptor
+
+[`fixtures/scoped_nullifier_statement_descriptor_v1.json`](fixtures/scoped_nullifier_statement_descriptor_v1.json)
+is the machine-readable scoped-v2 statement descriptor. It lists ordered public
+and private inputs for `silent_witness.main`, the private inputs and public
+outputs for `silent_witness_helper.main`, the public-input order, and the
+canonical encodings. Its `descriptor_sha256` is SHA-256 over canonical JSON
+(sorted keys, compact separators) with that digest field omitted. The descriptor
+also binds to the normalized digests of the reviewed Silent Witness and helper
+ACIR artifacts in [`browser.artifacts.manifest.json`](../browser.artifacts.manifest.json)
+and to LF-normalized hashes of the defining Noir sources.
+
+From the repository root, check the committed descriptor or regenerate it after
+a reviewed statement or artifact change:
+
+```bash
+python zk/tools/scoped_nullifier_descriptor.py check
+python zk/tools/scoped_nullifier_descriptor.py write
+python zk/tools/artifact_manifest.py verify-provenance
+```
+
+The descriptor and its generator are included in the circuit provenance source
+set, so an input, encoding, descriptor, or reviewed artifact change requires an
+explicitly reviewed update rather than silent normalization.
 
 ## Build
 

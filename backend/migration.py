@@ -451,6 +451,38 @@ MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    Migration(
+        id=13,
+        name="add ledger to proof_events for canonical chain ordering",
+        sql="""
+        ALTER TABLE proof_events ADD COLUMN IF NOT EXISTS ledger BIGINT;
+        CREATE INDEX IF NOT EXISTS proof_events_ledger_event_index_idx
+            ON proof_events (ledger ASC NULLS LAST, event_index ASC NULLS LAST, tx_hash ASC)
+            WHERE ledger IS NOT NULL;
+        """,
+    ),
+    Migration(
+        id=14,
+        name="create registration_conflicts quarantine table",
+        sql="""
+        CREATE TABLE IF NOT EXISTS registration_conflicts (
+            id              BIGSERIAL PRIMARY KEY,
+            idempotency_key TEXT      NOT NULL,
+            conflict_field  TEXT      NOT NULL,
+            proof_id        TEXT,
+            video_hash      TEXT,
+            source_address  TEXT,
+            tx_hash         TEXT,
+            conflict_tier_incoming TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at      TIMESTAMPTZ NOT NULL DEFAULT now() + INTERVAL '30 days'
+        );
+        CREATE INDEX IF NOT EXISTS registration_conflicts_key_idx
+            ON registration_conflicts (idempotency_key);
+        CREATE INDEX IF NOT EXISTS registration_conflicts_expires_at_idx
+            ON registration_conflicts (expires_at);
+        """,
+    ),
 ]
 
 
@@ -556,6 +588,7 @@ EXPECTED_TABLES: dict[str, list[dict[str, str]]] = {
         {"column": "encrypted_dek", "type": "text"},
         {"column": "size_bytes", "type": "bigint"},
         {"column": "storage_path", "type": "text"},
+        {"column": "envelope_version", "type": "text"},
         {"column": "created_at", "type": "timestamp with time zone"},
     ],
     "tenant_blob_refs": [
