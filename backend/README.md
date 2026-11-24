@@ -40,7 +40,21 @@ owned by the frontend.
 
 ## Configuration
 
-This section documents all environment variables that can be used to configure the Harpocrates backend service.
+This section documents common environment variables used to configure the
+Harpocrates backend service. The committed example also includes optional
+runtime settings outside this table; the validator below keeps its keys
+aligned with backend code.
+
+Check the committed backend and frontend environment examples against the
+variables consumed by their runtime source with:
+
+```bash
+python devx/validate_example_env.py
+```
+
+The checker reads only the two `.env.example` files and application source. It
+does not open local `.env` files or read process environment variables, and
+reports key names only.
 
 | Variable Name | Type | Default | Bounds | Purpose | Secret? | Required in Production? |
 |---------------|------|---------|--------|---------|---------|-------------------------|
