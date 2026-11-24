@@ -17,8 +17,13 @@ Copy `.env.example` to `.env.local` and set:
 VITE_API_BASE=http://127.0.0.1:5050
 VITE_HARPOCRATES_REGISTRY_ID=...
 VITE_STELLAR_RPC_URL=https://soroban-testnet.stellar.org
+VITE_STELLAR_NETWORK=testnet
 VITE_STELLAR_READONLY_SOURCE=G...
 ```
+
+Check both committed environment examples against runtime environment-key
+references with `python devx/validate_example_env.py` from the repository root.
+The checker does not open local `.env` or `.env.local` files.
 
 ## Stellar Client
 
