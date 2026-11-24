@@ -14,6 +14,8 @@ match their source and the pinned toolchain in ``zk/toolchain.lock.json``.
                     from the matching build-target ACIR when both are on disk
     write-provenance  digest lock-declared circuit sources and emit published provenance
     verify-provenance fail if circuit sources drift from the committed provenance
+    inspect           offline provenance report: source revision, toolchain lock, and
+                      supported statement schemas; performs no downloads or proving
 
 State machine
 -------------

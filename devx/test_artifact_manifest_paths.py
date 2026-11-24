@@ -65,3 +65,10 @@ def test_symlink_within_tree_accepted(tmp_path: Path) -> None:
     (root / "alias.bin").symlink_to(target)
     resolved = resolve_within_root("alias.bin", root)
     assert resolved == target.resolve()
+
+
+def test_missing_file_inside_root_resolves(tmp_path: Path) -> None:
+    root = tmp_path / "release"
+    root.mkdir()
+    resolved = resolve_within_root("not-yet-there.bin", root)
+    assert resolved == (root / "not-yet-there.bin").resolve()
