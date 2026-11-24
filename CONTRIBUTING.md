@@ -40,34 +40,43 @@ noirup
 ## 2. Workspace Setup, Build, and Test Commands
 
 ### 2.1 Workspace Installation
-Install root and workspace dependencies:
+There is no root npm workspace. Install the JavaScript workspaces from their
+own directories and install the Python backend requirements separately:
 
 ```bash
-npm install
+cd frontend && npm ci
+cd ../cli && npm ci
+cd .. && python -m pip install -r backend/requirements.txt
 ```
 
 ## 2.2 Frontend Workspace
 
+Run frontend commands from `frontend/`:
+
 ```bash
 # Build frontend
-npm run build --workspace=frontend
+cd frontend
+npm run build
 
 # Run linter
-npm run lint --workspace=frontend
+npm run lint
 
 # Run component/unit tests
-npm run test --workspace=frontend
-
+npm run test
 ```
 
 ## 2.3 Backend Workspace
 
+The backend is a Flask/Python service, not an npm workspace. Run its checks
+from `backend/`:
+
 ```bash
-# Build backend
-npm run build --workspace=backend
+cd backend
+python -m pip install -r requirements.txt -r requirements-dev.txt pytest pytest-cov
 
 # Run unit/integration tests
-npm run test --workspace=backend
+python -m unittest discover -v
+python -m pytest -v
 ```
 
 ## 2.4 Soroban Smart Contracts (/contracts)
@@ -97,7 +106,13 @@ nargo test
 Each workspace with a test suite publishes its minimum coverage bar as a
 declarative JSON file under `devx/coverage/thresholds/<workspace>.json` (see
 `devx/coverage/README.md`). CI checks a workspace's coverage report against
-its thresholds file with the same
+its thresholds file with the same entry point contributors run locally:
+
+```bash
+python3 devx/coverage/check_coverage.py --workspace backend --report backend/coverage.json
+python3 devx/coverage/check_coverage.py --lint-thresholds
+python3 -m pytest devx/coverage/test_check_coverage.py -v
+```
 
 ## 3. Contributor Workflow Guidelines
 
@@ -170,3 +185,15 @@ The configuration includes:
 - The project's `devx/secret_scanner.py`
 
 These hooks complement (but do not replace) the existing CI jobs.
+
+### 5.1 Documented command check
+
+The contributor command check verifies that the commands in this guide and the
+linked contributor docs still reference committed entry points. It reports
+obsolete commands with the source document and line number, and runs in the
+release gate and before commits that touch contributor docs or `devx/`:
+
+```bash
+python3 devx/check_contributor_commands.py
+python3 -m pytest devx/test_check_contributor_commands.py -q
+```
