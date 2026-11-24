@@ -14,10 +14,15 @@ on:
       - 'contracts/**'
       - 'zk/**'
       - 'changelog.d/**'
+      - 'CONTRIBUTING.md'
+      - 'DEPLOY.md'
+      - 'docs/**'
       - '.github/labels.yml'
       - '.github/labeler.yml'
       - '.github/dependabot.yml'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
       - '.github/workflows/release-gate.yml'
+      - '.pre-commit-config.yaml'
   push:
       - '.github/workflows/release-gate.yml'
   push:
@@ -30,10 +35,14 @@ on:
       - 'backend/**'
       - 'contracts/**'
       - 'zk/**'
+      - 'CONTRIBUTING.md'
+      - 'DEPLOY.md'
+      - 'docs/**'
       - '.github/labels.yml'
       - '.github/labeler.yml'
       - '.github/dependabot.yml'
-      - '.github/workflows/release-gate.yml'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
+      - '.pre-commit-config.yaml'
 
 permissions:
   contents: read
@@ -56,8 +65,8 @@ jobs:
           python-version: '3.12'
       - name: Verify dependency pins and lockfiles
         run: python3 devx/check_dependency_pins.py
-      - name: Check source-path case collisions
-        run: python3 devx/check_case_collisions.py
+      - name: Check documented contributor commands
+        run: python3 devx/check_contributor_commands.py
       - name: Install backend dependencies
         run: python3 -m pip install --requirement backend/requirements.txt
       - name: Verify manifest and digests

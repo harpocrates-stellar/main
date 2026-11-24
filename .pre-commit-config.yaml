@@ -49,3 +49,11 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+
+      - id: contributor-commands
+        name: documented contributor commands
+        entry: python devx/check_contributor_commands.py
+        language: system
+        pass_filenames: false
+        always_run: false
+        files: ^(CONTRIBUTING\.md|DEPLOY\.md|docs/|devx/|contracts/README\.md|\.github/PULL_REQUEST_TEMPLATE\.md)
