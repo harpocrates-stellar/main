@@ -83,6 +83,13 @@ EXIT_DRIFT = 1
 EXIT_USAGE = 2
 EXIT_FATAL = 3
 
+# Stable, documented exit codes for machine consumers (CI, wrappers).
+# EXIT_MISSING_TOOL: a required external tool (e.g. nargo, bb) is absent.
+# EXIT_DIGEST_DRIFT: a manifest/provenance digest no longer matches the tree.
+# Both are distinct from EXIT_FATAL (internal/compilation failure).
+EXIT_MISSING_TOOL = 4
+EXIT_DIGEST_DRIFT = EXIT_DRIFT
+
 
 class ArtifactState:
     """Terminal states an artifact can reach in a single run."""
@@ -101,6 +108,10 @@ FATAL_STATES = frozenset({ArtifactState.OVERSIZE, ArtifactState.UNREADABLE})
 
 class BuildError(RuntimeError):
     """Fatal, non-recoverable condition. Carries no artifact content."""
+
+
+class MissingToolError(BuildError):
+    """A required external toolchain binary is not available on PATH."""
 
 
 class ArtifactSizeMismatchError(BuildError):
@@ -1414,6 +1425,18 @@ def command_check_coverage(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def check_required_tools(names: Iterable[str]) -> None:
+    """Raise :class:`MissingToolError` naming the first absent tool.
+
+    Only the tool name is reported, never its resolved path or environment.
+    """
+    import shutil
+
+    for name in names:
+        if shutil.which(name) is None:
+            raise MissingToolError(f"required tool not found on PATH: {name}")
+
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 
@@ -1758,6 +1781,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         return int(args.handler(args))
+    except MissingToolError as error:
+        signal("run.error", reason=str(error), code="missing_tool")
+        return EXIT_MISSING_TOOL
     except BuildError as error:
         signal("run.error", reason=str(error))
         return EXIT_FATAL
