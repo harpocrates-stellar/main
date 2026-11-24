@@ -52,6 +52,11 @@ EXIT_OK = 0
 EXIT_DRIFT = 1
 EXIT_USAGE = 2
 EXIT_FATAL = 3
+# Stable, documented exit codes for machine consumers (see zk/noir/README.md).
+# EXIT_MISSING_TOOL: a required external tool (nargo/bb) is absent or unusable.
+# EXIT_DIGEST_DRIFT: toolchain version or artifact digest drifted from the lock/manifest.
+EXIT_MISSING_TOOL = 4
+EXIT_DIGEST_DRIFT_CODE = 5
 
 HERMETIC_ENV = {
     "SOURCE_DATE_EPOCH": "0",
@@ -138,15 +143,20 @@ def check_toolchain(
             env=get_hermetic_env(),
         )
     except FileNotFoundError as exc:
-        raise BuildError("nargo not on PATH; see zk/noir/README.md") from exc
+        raise BuildError(
+            "nargo not on PATH; see zk/noir/README.md", exit_code=EXIT_MISSING_TOOL
+        ) from exc
 
     if proc_nargo.returncode != 0:
-        raise BuildError("nargo not on PATH; see zk/noir/README.md")
+        raise BuildError(
+            "nargo not on PATH; see zk/noir/README.md", exit_code=EXIT_MISSING_TOOL
+        )
 
     actual_nargo = extract_semver((proc_nargo.stdout or "") + (proc_nargo.stderr or ""))
     if actual_nargo != expected_nargo:
         raise BuildError(
-            f"nargo version drift: expected {expected_nargo}, found {actual_nargo or 'unknown'}"
+            f"nargo version drift: expected {expected_nargo}, found {actual_nargo or 'unknown'}",
+            exit_code=EXIT_DIGEST_DRIFT_CODE,
         )
 
     # Verify bb
@@ -159,15 +169,20 @@ def check_toolchain(
             env=get_hermetic_env(),
         )
     except FileNotFoundError as exc:
-        raise BuildError("bb not on PATH; see zk/noir/README.md") from exc
+        raise BuildError(
+            "bb not on PATH; see zk/noir/README.md", exit_code=EXIT_MISSING_TOOL
+        ) from exc
 
     if proc_bb.returncode != 0:
-        raise BuildError("bb not on PATH; see zk/noir/README.md")
+        raise BuildError(
+            "bb not on PATH; see zk/noir/README.md", exit_code=EXIT_MISSING_TOOL
+        )
 
     actual_bb = extract_semver((proc_bb.stdout or "") + (proc_bb.stderr or ""))
     if actual_bb != expected_bb:
         raise BuildError(
-            f"bb version drift: expected {expected_bb}, found {actual_bb or 'unknown'}"
+            f"bb version drift: expected {expected_bb}, found {actual_bb or 'unknown'}",
+            exit_code=EXIT_DIGEST_DRIFT_CODE,
         )
 
     signal("toolchain.pinned", detail=f"nargo={actual_nargo} bb={actual_bb}")

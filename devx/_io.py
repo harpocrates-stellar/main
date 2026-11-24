@@ -11,6 +11,19 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None  # type: ignore[assignment]
 
 
+# Stable, documented exit codes for build tooling.
+# 0  success
+# 1  compilation / proof failure (tool ran but the artifact is invalid)
+# 2  user error (bad arguments, malformed input, missing configuration)
+# 3  required tool missing from PATH
+# 4  digest drift (artifact digest does not match the pinned manifest)
+EXIT_OK = 0
+EXIT_COMPILE_FAILURE = 1
+EXIT_USER_ERROR = 2
+EXIT_TOOL_MISSING = 3
+EXIT_DIGEST_DRIFT = 4
+
+
 # Default sensitive key pattern matching concrete secret-bearing field names
 DEFAULT_SENSITIVE_KEY_RE = re.compile(
     r"^(password|secret|private[_-]?key|witness|nullifier|credential|"
@@ -141,3 +154,25 @@ def read_toml_bounded(
         return tomllib.loads(raw)
     except tomllib.TOMLDecodeError as exc:
         raise error_factory(f"malformed TOML in {name}: {exc}") from exc
+
+
+def exit_code_for_error(exc: BaseException) -> int:
+    """Map an exception to a stable exit code without exposing environment values."""
+    if isinstance(exc, FileNotFoundError):
+        return EXIT_TOOL_MISSING
+    if isinstance(exc, ValueError):
+        return EXIT_USER_ERROR
+    return EXIT_COMPILE_FAILURE
+
+
+def machine_readable_result(
+    status: str,
+    exit_code: int,
+    message: str = "",
+) -> str:
+    """Render a JSON result line; the message is screened for sensitive text."""
+    safe_message = "[redacted]" if contains_sensitive_text(message) else message
+    return json.dumps(
+        {"status": status, "exit_code": exit_code, "message": safe_message},
+        sort_keys=True,
+    )
