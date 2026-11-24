@@ -33,9 +33,9 @@ change the public-input frame or make the proof verifier-compatible.
 
 The verifier separately recognizes a five-field unscoped `silent_witness/v1`
 frame (`video_hash_hi`, `video_hash_lo`, `credential_root`, `nullifier`,
-`domain_tag`) and a seven-field scoped `silent_witness/v2` frame with
-`verifier_scope` and `epoch` before `domain_tag`. The browser retains the
-five-field and seven-field ABI paths for matching future artifacts, including
+`domain_tag`) and an eight-field scoped `silent_witness/v2` frame with
+`verifier_scope`, `epoch`, `domain_tag`, and `circuit_version`. The browser retains the
+five-field and eight-field ABI paths for matching future artifacts, including
 domain-tag and scope/epoch forwarding. It checks the returned field count,
 order, and values against the input and helper result. A scoped request cannot
 produce a four- or five-field proof. The aggregated proof path remains available.
@@ -54,20 +54,28 @@ transaction; see
 
 ## Artifact compatibility and migration
 
-The current Noir source declares seven public fields and a three-field helper
+The current Noir source declares eight public fields and a three-field helper
 return. The five-field verifier frame has **no matching checked-in browser
 artifact**. The published four-field proof can be generated and checked against
 its own artifact, but it must not be relabelled as a five-field verifier proof.
 The existing backend and contract verifier require their own five- or
-seven-field frames, so registration of a four-field browser proof still needs
+eight-field frames, so registration of a four-field browser proof still needs
 a coordinated artifact/verifier migration.
 
 Publishing a verifier-compatible browser artifact requires a separate pinned
-build and verifier compatibility check for the five-field and/or seven-field
+build and verifier compatibility check for the five-field and/or eight-field
 statement. The current source fails the pinned Nargo `1.0.0-beta.9` compile
 check, so that migration must resolve the source build first. Stored
 proofs are not rewritten. Rollback is the previous browser bundle; this change
 does not modify on-chain storage or the verifier codec.
+
+The public-input compatibility gate compares the reviewed statement descriptor
+and input-schema frames with the verifier conformance-vector schemas. In CI it
+also compares the Noir public signatures and circuit versions against the pull
+request base. Breaking layout changes require a higher circuit version; the
+Silent Witness layout must be added under a new versioned frame and vector
+schema without rewriting prior reviewed schemas. The input-envelope
+`input_schema_version` remains a separate version.
 
 ## Stable error categories for unsupported input versions
 

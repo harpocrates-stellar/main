@@ -54,6 +54,17 @@ jobs:
       - name: Install test runner
         run: pip install pytest
 
+      - name: Gate reviewed public-input layouts
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_REF" && "$BASE_REF" != "0000000000000000000000000000000000000000" ]]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            python zk/tools/public_input_compatibility.py --base-ref "$BASE_REF"
+          else
+            python zk/tools/public_input_compatibility.py
+          fi
+
       - name: Unit-test the manifest tool
         run: python -m pytest zk/tools -q
 
