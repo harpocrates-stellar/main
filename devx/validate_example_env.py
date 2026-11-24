@@ -225,7 +225,10 @@ def _backend_keys() -> set[str]:
     source_files = sorted((ROOT / "backend").rglob("*.py"))
     source_files = [
         path for path in source_files
-        if not path.name.startswith("test_") and path.parent.name != "tests"
+        if not path.name.startswith("test_")
+        and path.parent.name != "tests"
+        and "site-packages" not in path.parts
+        and ".venv" not in path.parts
     ]
     keys: set[str] = set()
     for path in source_files:
