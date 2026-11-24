@@ -57,6 +57,28 @@ EXIT_FATAL = 3
 # EXIT_DIGEST_DRIFT: toolchain version or artifact digest drifted from the lock/manifest.
 EXIT_MISSING_TOOL = 4
 EXIT_DIGEST_DRIFT_CODE = 5
+# Aliases matching the documented names used by callers and tests.
+EXIT_COMPILE_FAILURE = EXIT_FATAL
+EXIT_DIGEST_DRIFT = EXIT_DIGEST_DRIFT_CODE
+
+_KIND_BY_EXIT_CODE = {
+    EXIT_OK: "ok",
+    EXIT_USAGE: "usage",
+    EXIT_FATAL: "compile_failure",
+    EXIT_MISSING_TOOL: "missing_tool",
+    EXIT_DIGEST_DRIFT_CODE: "digest_drift",
+}
+
+
+def error_to_json(exc: BaseException) -> str:
+    """Serialise a ``BuildError`` (or any fatal error) without environment values."""
+    exit_code = getattr(exc, "exit_code", EXIT_FATAL)
+    payload = {
+        "kind": _KIND_BY_EXIT_CODE.get(exit_code, "compile_failure"),
+        "exitCode": exit_code,
+        "message": _scrub_message(getattr(exc, "args", [str(exc)])[0] if getattr(exc, "args", None) else str(exc)),
+    }
+    return json.dumps(payload, sort_keys=True)
 
 HERMETIC_ENV = {
     "SOURCE_DATE_EPOCH": "0",
@@ -67,6 +89,20 @@ HERMETIC_ENV = {
     "RUST_BACKTRACE": "0",
     "PYTHONHASHSEED": "0",
 }
+
+
+_SENSITIVE_MESSAGE_RE = re.compile(
+    r"secret|credential|password|passwd|token|api[_-]?key|private|bearer|authorization",
+    re.IGNORECASE,
+)
+
+
+def _scrub_message(text: str) -> str:
+    """Return a client-safe message: strip env assignments and sensitive text."""
+    text = re.sub(r"[A-Z][A-Z0-9_]{2,}=", "<redacted-env>", text)
+    if _SENSITIVE_MESSAGE_RE.search(text):
+        return "<redacted>"
+    return text
 
 
 class BuildError(RuntimeError):
@@ -630,7 +666,7 @@ def cmd_prepare_soroban(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -
         soroban_vk_path.write_bytes(vk)
     else:
         raise BuildError(
-            f"Unexpected VK length {len(vk)}. Expected 1764 from bb or 1760 for Soroban verifier."
+            f"unexpected vk length {len(vk)}. Expected 1764 from bb or 1760 for Soroban verifier."
         )
 
     result = {
