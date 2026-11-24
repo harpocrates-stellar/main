@@ -124,6 +124,10 @@ class ArtifactPathEscapeError(BuildError):
     """
 
 
+class ManifestVerificationError(BuildError):
+    """A release manifest failed fail-closed offline verification."""
+
+
 class ArtifactSizeMismatchError(BuildError):
     """A declared artifact size disagrees with the on-disk size.
 

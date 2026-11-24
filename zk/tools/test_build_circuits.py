@@ -7,15 +7,12 @@ Covers:
 - VK transformation for Soroban verifier (1764 -> 1760 bytes endian swap, 1760 passthrough, invalid lengths)
 - Artifact hex export for proof, public inputs, and verification key
 - Circuit compilation and prove workflows with mocked runner
-- Stable exit codes: user errors (missing tools, digest drift) are distinct from
-  compilation failures, and machine-readable error output does not leak env values
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -210,56 +207,6 @@ class TestToolchainChecks:
 
 
 # ==============================================================================
-# Exit Code Classification Tests
-# ==============================================================================
-
-
-class TestExitCodeClassification:
-    """User errors (missing tools, digest drift) must map to distinct, stable
-    exit codes that differ from compilation failures."""
-
-    def test_missing_tool_maps_to_user_error_code(self, sample_lock: Path):
-        def fake_runner(cmd, **kwargs):
-            raise FileNotFoundError("not found")
-
-        with pytest.raises(bc.BuildError) as excinfo:
-            bc.check_toolchain(lock_path=sample_lock, runner=fake_runner)
-        assert excinfo.value.exit_code == bc.EXIT_MISSING_TOOL
-        assert excinfo.value.exit_code != bc.EXIT_COMPILE_FAILURE
-
-    def test_version_drift_maps_to_drift_exit_code(self, sample_lock: Path):
-        def fake_runner(cmd, **kwargs):
-            if cmd[0] == "nargo":
-                return subprocess.CompletedProcess(cmd, 0, stdout="nargo version = 0.31.0\n", stderr="")
-            return subprocess.CompletedProcess(cmd, 0, stdout="0.87.0\n", stderr="")
-
-        with pytest.raises(bc.BuildError) as excinfo:
-            bc.check_toolchain(lock_path=sample_lock, runner=fake_runner)
-        assert excinfo.value.exit_code == bc.EXIT_DIGEST_DRIFT
-        assert excinfo.value.exit_code not in (bc.EXIT_OK, bc.EXIT_COMPILE_FAILURE)
-
-    def test_exit_codes_are_distinct_and_stable(self):
-        codes = {bc.EXIT_OK, bc.EXIT_COMPILE_FAILURE, bc.EXIT_MISSING_TOOL, bc.EXIT_DIGEST_DRIFT}
-        assert len(codes) == 4
-        assert bc.EXIT_OK == 0
-
-    def test_machine_readable_error_omits_env_values(self, sample_lock: Path, monkeypatch):
-        secret_value = "super-secret-env-value-12345"
-        monkeypatch.setenv("HARPOCRATES_TEST_SECRET", secret_value)
-
-        def fake_runner(cmd, **kwargs):
-            raise FileNotFoundError("not found")
-
-        with pytest.raises(bc.BuildError) as excinfo:
-            bc.check_toolchain(lock_path=sample_lock, runner=fake_runner)
-        payload = bc.error_to_json(excinfo.value)
-        parsed = json.loads(payload)
-        assert parsed["exitCode"] == bc.EXIT_MISSING_TOOL
-        assert parsed["kind"] == "missing_tool"
-        assert secret_value not in payload
-
-
-# ==============================================================================
 # Export Tests
 # ==============================================================================
 
@@ -377,9 +324,7 @@ class TestPrepareSoroban:
     def test_prepare_soroban_invalid_length(self, tmp_path: Path):
         target_dir = tmp_path / "target"
         target_dir.mkdir()
-        (target_dir / "vk").write_bytes(bytes(100))
-        (target_dir / "proof").write_bytes(b"")
-        (target_dir / "public_inputs").write_bytes(b"")
+        (target_dir / "vk").write_bytes(b"too_short")
 
         args = bc.create_parser().parse_args([
             "prepare-soroban",
@@ -387,5 +332,99 @@ class TestPrepareSoroban:
             "--target-dir",
             str(target_dir),
         ])
-        with pytest.raises(bc.BuildError, match=r"unexpected vk length"):
+        with pytest.raises(bc.BuildError, match=r"Unexpected VK length 9"):
             bc.cmd_prepare_soroban(args)
+
+
+# ==============================================================================
+# Circuit Build Subprocess Workflow Tests
+# ==============================================================================
+
+
+class TestBuildWorkflows:
+    def test_compile_circuit_runs_expected_subprocesses(self, tmp_path: Path):
+        commands_run = []
+
+        def fake_runner(cmd, **kwargs):
+            commands_run.append(cmd)
+            # Create dummy target artifacts on nargo compile
+            if "compile" in cmd:
+                target = tmp_path / "zk" / "noir" / "silent_witness" / "target"
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "silent_witness.json").write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        toolchain = bc.ToolchainInfo(
+            expected_nargo="1.0.0-beta.9",
+            expected_bb="0.87.0",
+            actual_nargo="1.0.0-beta.9",
+            actual_bb="0.87.0",
+            proving_scheme="ultra_honk",
+            oracle_hash="keccak",
+        )
+
+        circuit_dir = tmp_path / "zk" / "noir" / "silent_witness"
+        circuit_dir.mkdir(parents=True, exist_ok=True)
+
+        bc.compile_circuit(
+            "silent_witness",
+            toolchain,
+            repo_root=tmp_path,
+            clean=True,
+            runner=fake_runner,
+            write_vk_flag=True,
+            prove=True,
+        )
+
+        cmd_names = [c[0] for c in commands_run]
+        assert cmd_names == ["nargo", "nargo", "bb", "nargo", "bb", "bb"]
+        assert commands_run[0] == ["nargo", "check"]
+        assert commands_run[1] == ["nargo", "compile"]
+        assert commands_run[2][:2] == ["bb", "write_vk"]
+        assert commands_run[3] == ["nargo", "execute", "witness"]
+        assert commands_run[4][:2] == ["bb", "prove"]
+        assert commands_run[5][:2] == ["bb", "verify"]
+
+
+class TestExitCodeClassification:
+    """PR #1662: stable, documented exit codes for machine consumers."""
+
+    def test_missing_tool_maps_to_user_error_code(self, sample_lock: Path):
+        def fake_runner(cmd, **kwargs):
+            raise FileNotFoundError("not found")
+
+        with pytest.raises(bc.BuildError) as excinfo:
+            bc.check_toolchain(lock_path=sample_lock, runner=fake_runner)
+        assert excinfo.value.exit_code == bc.EXIT_MISSING_TOOL
+        assert excinfo.value.exit_code != bc.EXIT_COMPILE_FAILURE
+
+    def test_version_drift_maps_to_drift_exit_code(self, sample_lock: Path):
+        def fake_runner(cmd, **kwargs):
+            if cmd[0] == "nargo":
+                return subprocess.CompletedProcess(cmd, 0, stdout="nargo version = 0.31.0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="0.87.0\n", stderr="")
+
+        with pytest.raises(bc.BuildError) as excinfo:
+            bc.check_toolchain(lock_path=sample_lock, runner=fake_runner)
+        assert excinfo.value.exit_code == bc.EXIT_DIGEST_DRIFT
+        assert excinfo.value.exit_code not in (bc.EXIT_OK, bc.EXIT_COMPILE_FAILURE)
+
+    def test_exit_codes_are_distinct_and_stable(self):
+        codes = {bc.EXIT_OK, bc.EXIT_COMPILE_FAILURE, bc.EXIT_MISSING_TOOL, bc.EXIT_DIGEST_DRIFT}
+        assert len(codes) == 4
+        assert bc.EXIT_OK == 0
+
+    def test_machine_readable_error_omits_env_values(self, sample_lock: Path, monkeypatch):
+        secret_value = "super-secret-env-value-12345"
+        monkeypatch.setenv("HARPOCRATES_TEST_SECRET", secret_value)
+
+        def fake_runner(cmd, **kwargs):
+            raise FileNotFoundError("not found")
+
+        with pytest.raises(bc.BuildError) as excinfo:
+            bc.check_toolchain(lock_path=sample_lock, runner=fake_runner)
+        payload = bc.error_to_json(excinfo.value)
+        parsed = json.loads(payload)
+        assert parsed["exitCode"] == bc.EXIT_MISSING_TOOL
+        assert parsed["kind"] == "missing_tool"
+        assert secret_value not in payload
