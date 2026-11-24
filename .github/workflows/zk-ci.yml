@@ -8,6 +8,8 @@ on:
       - "backend/verifier_inputs.py"
       - "backend/test_conformance_vectors.py"
       - "backend/test_verifier_fuzz.py"
+      - "devx/**"
+      - "docs/proof-release-evidence.md"
       - ".github/workflows/zk-ci.yml"
   push:
     branches:
@@ -18,6 +20,8 @@ on:
       - "backend/verifier_inputs.py"
       - "backend/test_conformance_vectors.py"
       - "backend/test_verifier_fuzz.py"
+      - "devx/**"
+      - "docs/proof-release-evidence.md"
       - ".github/workflows/zk-ci.yml"
 
 permissions:
@@ -125,6 +129,20 @@ jobs:
           else
             echo "no committed circuit provenance yet; provenance check is inert"
           fi
+
+      - name: Build credential-free proof release evidence bundle
+        # Static assembly only: no nargo/bb, credentials, witnesses, or network.
+        # Proving checks that were not executed are reported as
+        # missing_evidence, never as passes.
+        run: python devx/proof_release_evidence.py --out zk/release/proof-evidence.json
+
+      - name: Publish proof release evidence bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-release-evidence-${{ github.run_id }}
+          path: zk/release/proof-evidence.json
+          if-no-files-found: error
+          retention-days: 14
 
   circuit-build:
     name: Build Noir circuits and verify artifacts

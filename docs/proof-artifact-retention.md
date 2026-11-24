@@ -6,6 +6,8 @@ CI retains proof artifacts so they can be inspected and compared across runs. Re
 Files with these suffixes, from the explicit source directories only: `.proof`, `.vk`, `.json`, `.sha256`, `.hex`.
 A `retention-manifest.json` (schema `hpx-artifact-retention/1`) lists each file's relative path, size and SHA-256.
 
+`devx/proof_release_evidence.py` reads that manifest as one of its digest sources. It copies only the digests into the release evidence bundle; retained proof bytes and witness values never enter the bundle. If no retention manifest is present, that digest source is reported as `missing_evidence` rather than as a pass. See [docs/proof-release-evidence.md](proof-release-evidence.md).
+
 ## What is never retained
 - Real or test media (video, audio, images) and anything that is not allowlisted
 - Private keys, seeds, secrets, mnemonics, `.env` files

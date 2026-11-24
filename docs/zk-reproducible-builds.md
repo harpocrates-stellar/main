@@ -18,6 +18,8 @@ double-build check, and how to operate and roll back the pipeline.
 | `zk/tools/artifact_manifest.py` | Normalizes, digests, writes, verifies, diffs, and coverage-checks |
 | `zk/tools/test_artifact_manifest.py` | Unit tests for normalization, the state machine, drift detection, the coverage gate, and the privacy properties |
 | `zk/tools/test_build_circuits.py` | Unit tests for circuit build tooling, argument parsing, and toolchain verification |
+| `devx/proof_release_evidence.py` | Assembles the credential-free release evidence bundle from tool versions, digests, and executed-check outcomes |
+| `docs/proof-release-evidence.md` | Bundle schema, validation-record format, and exit codes |
 | `zk/noir/scripts/reproducible-build.sh` | Hermetic double-build driver wrapper around `build_circuits.py build all` |
 | `zk/artifacts.manifest.json` | Committed manifest (written by a build; absent until first published) |
 | `zk/browser.artifacts.manifest.json` | Committed digests for published browser ACIR under `frontend/public/noir/` |
@@ -193,6 +195,9 @@ python zk/tools/artifact_manifest.py check-coverage
 python zk/tools/artifact_manifest.py verify
 python zk/tools/artifact_manifest.py verify-browser
 python zk/tools/artifact_manifest.py verify-provenance
+
+# Static, credential-free release evidence bundle (no nargo/bb required).
+python devx/proof_release_evidence.py --out zk/release/proof-evidence.json
 ```
 
 ## Configuration
@@ -423,6 +428,21 @@ check on. Existing callers are unchanged; this is an additive gate.
 inert again, or revert the publish under `frontend/public/noir/` and regenerate
 with `write-browser`.
 
+## Release evidence bundle
+
+`devx/proof_release_evidence.py` turns the digests above into a release-facing
+bundle without executing tools or reading credentials. It records pinned and
+observed tool versions, every committed digest source, and one outcome per
+check. Crucially, a proving check that was not executed is `missing_evidence`,
+never `pass`: a skipped record entry, an unknown status, or a missing evidence
+label cannot be promoted by a direct CLI claim. See
+[docs/proof-release-evidence.md](proof-release-evidence.md) for the schema,
+record format, and exit codes.
+
+CI builds and publishes the bundle from the committed manifests. When a runner
+has actually executed proving, it can supply a validation record and use
+`--require-complete` to fail on any missing evidence.
+
 ## Limitations
 
 - The double-build check runs twice on the *same* host. It catches
@@ -432,6 +452,8 @@ with `write-browser`.
 - Proof artifacts are not in the manifest: a proof is a function of a witness,
   and witnesses are private material that must never enter a manifest or a CI
   log. Only the circuit, the verification key, and the published ACIR are pinned.
+  The release evidence bundle may carry digests of allowlisted retained proof
+  artifacts, but never witness values or proof bytes.
 - The lock file pins versions, not binary digests, of `nargo` and `bb`. Pinning
   installer digests would require an upstream distribution channel that
   publishes them.

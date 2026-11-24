@@ -42,6 +42,7 @@ DEFAULT_DOCUMENTS = (
     "docs/release-operations.md",
     "docs/dependency-pins.md",
     "docs/proof-artifact-retention.md",
+    "docs/proof-release-evidence.md",
     "devx/coverage/README.md",
     "contracts/README.md",
     "DEPLOY.md",
