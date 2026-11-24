@@ -116,6 +116,14 @@ class MissingToolError(BuildError):
     """A required external toolchain binary is not available on PATH."""
 
 
+class ArtifactPathEscapeError(BuildError):
+    """A declared artifact path resolves outside the release root.
+
+    Messages name only the declared path and the root name, never the
+    absolute host path.
+    """
+
+
 class ArtifactSizeMismatchError(BuildError):
     """A declared artifact size disagrees with the on-disk size.
 

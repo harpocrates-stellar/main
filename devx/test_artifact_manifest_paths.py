@@ -45,6 +45,7 @@ def test_absolute_path_rejected(tmp_path: Path) -> None:
         resolve_within_root("/etc/passwd", root)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="creating symlinks on Windows needs privileges")
 def test_symlink_out_rejected(tmp_path: Path) -> None:
     root = tmp_path / "release"
     root.mkdir()
@@ -57,6 +58,7 @@ def test_symlink_out_rejected(tmp_path: Path) -> None:
     assert str(tmp_path) not in str(exc.value)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="creating symlinks on Windows needs privileges")
 def test_symlink_within_tree_accepted(tmp_path: Path) -> None:
     root = tmp_path / "release"
     (root / "a").mkdir(parents=True)
