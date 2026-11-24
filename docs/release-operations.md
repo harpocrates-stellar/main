@@ -47,73 +47,31 @@ crypto-domain, metadata, and digest outcomes. Digest drift is reported as
 artifact pins are refreshed. Use `--strict` when digests must match exactly.
 The report never includes media, witnesses, credentials, proofs, or secrets.
 
-## Cross-layer protocol compatibility
+## Offline release review bundle
 
-[`release/protocol-compatibility.json`](../release/protocol-compatibility.json)
-binds the API, CLI, circuit, and contract schema versions to the release
-baseline in `release/compatibility-manifest.json`. Each layer records the
-identity that matters to its consumers:
-
-| Layer | Recorded identity |
-| :--- | :--- |
-| `api` | Backend `api_version` and the SHA-256 of the generated OpenAPI schema |
-| `cli` | CLI package version and the proof-manifest version it emits |
-| `circuit` | Circuit version, input-schema version, and input-schema digest |
-| `contract` | Registry interface version, compatibility-descriptor version, accepted verifier-input versions, and the circuit version the verifier expects |
+Reviewers can collect compatibility, artifact verification, and API schema
+results into one offline bundle without network access or production
+credentials:
 
 ```bash
-python3 devx/protocol_compatibility.py --check
-python3 -m unittest discover -s devx -p 'test_protocol_compatibility.py' -v
+python3 devx/release_review_bundle.py --stable --check
+python3 devx/release_review_bundle.py --stable --write --output release/release-review-bundle.json
+python3 devx/release_review_bundle.py --stable --verify-existing --check
+python3 -m unittest discover -s devx -p 'test_release_review_bundle.py' -v
 ```
 
-The check recomputes every layer from the checked-out tree and fails when a
-recorded value drifts, when the baseline no longer matches the release manifest,
-or when the layers disagree with each other (for example a circuit version
-outside the contract's accepted window). It is offline and reads no
-credentials, witnesses, proofs, or production endpoints, so a mixed-layer
-combination is rejected before packaging or deployment. Regenerate the manifest
-only as part of a reviewed baseline change:
+The bundle at [`release/release-review-bundle.json`](../release/release-review-bundle.json)
+records SHA-256 digests for the manifest, each declared artifact, every source
+used by the compatibility and schema checks, and the generated schema. Each
+result section reports `pass` or `fail`, and every failed or skipped check is
+listed explicitly in `missing_evidence` with `check`, `reason`, and `detail`.
 
-```bash
-python3 devx/protocol_compatibility.py --write
-```
-
-## Portable source paths
-
-Portable releases must check out identically on case-insensitive filesystems
-(macOS APFS/HFS+, Windows NTFS). The case-collision gate reads the git index and
-reports every group of tracked paths that would collide after Unicode NFC
-normalization and case folding:
-
-```bash
-python3 devx/check_case_collisions.py
-python3 -m unittest discover -s devx -p 'test_check_case_collisions.py' -v
-```
-
-Output is deterministic on every host: groups are ordered by normalized key and
-each group's paths are sorted. The command exits `1` when a collision exists, so
-the release gate stops before packaging. Use `--paths-from` with a
-NUL/newline-delimited file to check a synthetic list without a git checkout.
-
-## Synthetic media fixtures
-
-Generate synthetic video locally for API, interoperability, or packaging
-workflows without supplying real media:
-
-```bash
-python3 devx/generate_synthetic_media.py --output /tmp/harpocrates-synthetic.mp4 --seed 17
-```
-
-The generator uses FFmpeg's synthetic `testsrc2` source, fixed metadata, and a
-seeded noise filter. It accepts no media input, limits dimensions to 1280x1280,
-duration to 10 seconds, and output to 64 MiB, and does not overwrite an existing
-file unless `--force` is specified. Failures report stable categories without
-printing FFmpeg output or media contents. The output is byte-reproducible for
-identical arguments with the same pinned FFmpeg and encoder build; changing
-that build can change encoded bytes. No canonical metadata, proof, or stored
-evidence format is created or changed. Rolling back only requires removing the
-DevX generator and its focused coverage; there is no migration or deployment
-state to repair.
+A skipped check is never normalized into a successful gate: any missing
+evidence or non-passing section sets top-level `status` to `fail`, and `--check`
+exits 1. Use `--write --stable` only to refresh the checked-in snapshot and
+`--verify-existing` to detect a stale one. The bundle contains only public
+release identity, versions, interface bindings, check outcomes, and digests; it
+never includes media, witnesses, credentials, proofs, or secrets.
 
 ## C2PA Interoperability & Bounded Parser
 

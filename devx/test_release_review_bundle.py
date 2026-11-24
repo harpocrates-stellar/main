@@ -9,6 +9,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import release_review_bundle as bundle_module
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = Path(__file__).resolve().parent / "release_review_bundle.py"
@@ -65,6 +68,30 @@ class ReleaseReviewBundleTest(unittest.TestCase):
         bundle = json.loads(proc.stdout)
         if bundle["missing_evidence"]:
             self.assertEqual(bundle["status"], "fail")
+
+    def test_skipped_layer_check_is_recorded_and_blocks_gate(self) -> None:
+        compat = {
+            "status": "compatible",
+            "layers": [{
+                "name": "frontend",
+                "sources": [],
+                "checks": [{"id": "not_run", "status": "skipped", "detail": "evidence unavailable"}],
+            }],
+            "cross_layer": [],
+        }
+        with patch.object(bundle_module, "run_compatibility_report", return_value=(compat, {})), \
+             patch.object(bundle_module, "run_release_guard", return_value=({"status": "pass", "message": "ok", "artifacts_checked": 0}, {})), \
+             patch.object(bundle_module, "run_schema_check", return_value=({"status": "pass", "message": "ok", "routes_count": 1, "schemas_loaded": 0}, {})):
+            built = bundle_module.build_bundle(MANIFEST)
+        self.assertEqual(built["status"], "fail")
+        self.assertTrue(any(item["reason"] == "layer check skipped" for item in built["missing_evidence"]))
+
+    def test_validation_rejects_pass_with_missing_evidence(self) -> None:
+        built = bundle_module.build_bundle(MANIFEST)
+        tampered = copy.deepcopy(built)
+        tampered["status"] = "pass"
+        with self.assertRaisesRegex(bundle_module.BundleError, "missing evidence"):
+            bundle_module.validate_bundle(tampered)
 
     def test_stable_write_and_verify_roundtrip(self) -> None:
         proc = subprocess.run(
@@ -204,6 +231,20 @@ class ReleaseReviewBundleTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 1)
             self.assertIn("manifest not found", proc.stderr)
+
+    def test_non_object_manifest_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.json"
+            bad.write_text("[]", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "--manifest", str(bad)],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("must be a JSON object", proc.stderr)
 
 
 if __name__ == "__main__":

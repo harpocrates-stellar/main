@@ -22,6 +22,7 @@ DEFAULT_BUNDLE = ROOT / "release" / "release-review-bundle.json"
 FORMAT = "harpocrates.release-review-bundle"
 SCHEMA_VERSION = 1
 MAX_BUNDLE_BYTES = 512 * 1024
+PASS = "pass"
 
 
 class BundleError(ValueError):
@@ -59,9 +60,22 @@ def read_json_bounded(path: Path, limit: int = MAX_BUNDLE_BYTES) -> dict[str, An
     if size > limit:
         raise BundleError(f"{_display_path(path)} exceeds the {limit} byte limit")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BundleError(f"malformed JSON in {_display_path(path)}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise BundleError(f"{_display_path(path)} must be a JSON object")
+    return value
+
+
+def _load_json_output(payload: str, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise BundleError(f"malformed {label} output: {exc}") from exc
+    if not isinstance(value, dict):
+        raise BundleError(f"{label} output must be a JSON object")
+    return value
 
 
 def run_compatibility_report(manifest_path: Path) -> tuple[dict[str, Any], dict[str, str]]:
@@ -76,7 +90,7 @@ def run_compatibility_report(manifest_path: Path) -> tuple[dict[str, Any], dict[
     if result.returncode != 0:
         raise BundleError(f"compatibility_report failed: {result.stderr}")
 
-    report = json.loads(result.stdout)
+    report = _load_json_output(result.stdout, "compatibility_report")
 
     source_digests: dict[str, str] = {}
     for layer in report.get("layers", []):
@@ -106,15 +120,18 @@ def run_release_guard(manifest_path: Path) -> tuple[dict[str, Any], dict[str, st
     artifact_digests: dict[str, str] = {}
     manifest = read_json_bounded(manifest_path)
     for artifact in manifest.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
         rel = artifact.get("path", "")
-        expected = artifact.get("sha256", "")
+        if not isinstance(rel, str):
+            continue
         path = ROOT / rel
         if path.is_file():
             actual = sha256_file(path)
             artifact_digests[rel] = actual
 
     gate_result: dict[str, Any] = {
-        "status": "pass" if result.returncode == 0 else "fail",
+        "status": PASS if result.returncode == 0 else "fail",
         "message": result.stdout.strip() if result.returncode == 0 else result.stderr.strip(),
         "artifacts_checked": len(artifact_digests),
     }
@@ -150,7 +167,7 @@ def run_schema_check() -> tuple[dict[str, Any], dict[str, str]]:
             source_digests[rel] = sha256_file(p)
 
     schema_result: dict[str, Any] = {
-        "status": "pass" if result.returncode == 0 else "fail",
+        "status": PASS if result.returncode == 0 else "fail",
         "message": "schema generated" if result.returncode == 0 else result.stderr.strip(),
         "routes_count": 0,
         "schemas_loaded": 0,
@@ -158,13 +175,13 @@ def run_schema_check() -> tuple[dict[str, Any], dict[str, str]]:
 
     if result.returncode == 0:
         try:
-            schema = json.loads(result.stdout)
+            schema = _load_json_output(result.stdout, "api_schema")
             schema_result["routes_count"] = len(schema.get("paths", {}))
             schema_result["schemas_loaded"] = len(schema.get("components", {}).get("schemas", {}))
             schema_result["schema_digest"] = sha256_bytes(result.stdout.encode("utf-8"))
-        except json.JSONDecodeError as exc:
+        except BundleError as exc:
             schema_result["status"] = "fail"
-            schema_result["message"] = f"malformed schema output: {exc}"
+            schema_result["message"] = str(exc)
 
     return schema_result, source_digests
 
@@ -200,42 +217,50 @@ def build_bundle(manifest_path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
             "reason": "artifact digest drift (version compatible)",
             "detail": "artifact digests do not match manifest",
         })
+    elif compat_status != "compatible":
+        missing_evidence.append({
+            "check": "compatibility_report",
+            "reason": "compatibility report was skipped or produced an unknown status",
+            "detail": str(compat_status),
+        })
 
-    if guard_result["status"] == "fail":
+    if guard_result["status"] != PASS:
         missing_evidence.append({
             "check": "release_guard",
-            "reason": "artifact verification failed",
+            "reason": "artifact verification failed" if guard_result["status"] == "fail" else "artifact verification was skipped",
             "detail": guard_result["message"],
         })
 
-    if schema_result["status"] == "fail":
+    if schema_result["status"] != PASS:
         missing_evidence.append({
             "check": "api_schema",
-            "reason": "schema generation failed",
+            "reason": "schema generation failed" if schema_result["status"] == "fail" else "schema generation was skipped",
             "detail": schema_result["message"],
         })
 
     for layer in compat_report.get("layers", []):
         for check in layer.get("checks", []):
-            if check.get("status") == "fail":
+            if check.get("status") != PASS:
+                skipped = check.get("status") != "fail"
                 missing_evidence.append({
                     "check": f"compatibility.layer.{layer['name']}.{check['id']}",
-                    "reason": "layer check failed",
+                    "reason": "layer check skipped" if skipped else "layer check failed",
                     "detail": check.get("detail", ""),
                 })
 
     for cross in compat_report.get("cross_layer", []):
-        if cross.get("status") == "fail":
+        if cross.get("status") != PASS:
+            skipped = cross.get("status") != "fail"
             missing_evidence.append({
                 "check": f"compatibility.cross.{cross['id']}",
-                "reason": "cross-layer check failed",
+                "reason": "cross-layer check skipped" if skipped else "cross-layer check failed",
                 "detail": cross.get("detail", ""),
             })
 
     gate_passed = (
         compat_status == "compatible"
-        and guard_result["status"] == "pass"
-        and schema_result["status"] == "pass"
+        and guard_result["status"] == PASS
+        and schema_result["status"] == PASS
         and not missing_evidence
     )
 
@@ -246,7 +271,7 @@ def build_bundle(manifest_path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "release_id": release_id,
         "manifest_digest": sha256_file(manifest_path),
-        "status": "pass" if gate_passed else "fail",
+        "status": PASS if gate_passed else "fail",
         "compatibility": {
             "report_status": compat_status,
             "layers": compat_report.get("layers", []),
@@ -283,12 +308,32 @@ def validate_bundle(bundle: dict[str, Any]) -> None:
         raise BundleError("bundle.format is invalid")
     if bundle.get("schema_version") != SCHEMA_VERSION:
         raise BundleError("bundle.schema_version must be 1")
-    if bundle.get("status") not in {"pass", "fail"}:
+    if bundle.get("status") not in {PASS, "fail"}:
         raise BundleError("bundle.status must be 'pass' or 'fail'")
     required_sections = ["compatibility", "artifact_verification", "api_schema", "missing_evidence", "all_source_digests"]
     for section in required_sections:
         if section not in bundle:
             raise BundleError(f"bundle missing required section: {section}")
+    if not isinstance(bundle["missing_evidence"], list):
+        raise BundleError("bundle.missing_evidence must be a list")
+    for section in ("compatibility", "artifact_verification", "api_schema"):
+        if not isinstance(bundle[section], dict):
+            raise BundleError(f"bundle.{section} must be a JSON object")
+    if bundle["status"] == PASS:
+        if bundle["missing_evidence"]:
+            raise BundleError("bundle.status cannot be pass while missing evidence is recorded")
+        for section in ("artifact_verification", "api_schema"):
+            if bundle[section].get("status") != PASS:
+                raise BundleError(f"bundle.status cannot be pass while {section} is not pass")
+        if bundle["compatibility"].get("report_status") != "compatible":
+            raise BundleError("bundle.status cannot be pass while compatibility is not compatible")
+        for layer in bundle["compatibility"].get("layers", []):
+            for check in layer.get("checks", []):
+                if check.get("status") != PASS:
+                    raise BundleError("bundle.status cannot be pass while a layer check is not pass")
+        for cross in bundle["compatibility"].get("cross_layer", []):
+            if cross.get("status") != PASS:
+                raise BundleError("bundle.status cannot be pass while a cross-layer check is not pass")
     encoded = canonical_json(bundle).encode("utf-8")
     if len(encoded) > MAX_BUNDLE_BYTES:
         raise BundleError(f"bundle exceeds the {MAX_BUNDLE_BYTES} byte limit")
@@ -297,7 +342,7 @@ def validate_bundle(bundle: dict[str, Any]) -> None:
 def write_bundle(bundle: dict[str, Any], output: Path) -> None:
     validate_bundle(bundle)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(canonical_json(bundle), encoding="utf-8")
+    output.write_text(canonical_json(bundle), encoding="utf-8", newline="\n")
 
 
 def stabilize(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -333,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(canonical_json(bundle), end="")
 
-        if args.check and bundle["status"] != "pass":
+        if args.check and bundle["status"] != PASS:
             print(f"release review bundle check failed: status={bundle['status']}", file=sys.stderr)
             if bundle["missing_evidence"]:
                 for item in bundle["missing_evidence"]:
